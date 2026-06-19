@@ -29,6 +29,7 @@ use super::SidebarFileRowStateSnapshot;
 use super::file_tree_item::FileTreeItem;
 use crate::model::workspace::{WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId};
 use crate::services::notifications::NotificationSeverity;
+use crate::ui::accessibility;
 
 // glib::wrapper! generates the public GObject wrapper around the private
 // imp.rs subclass; the extends/implements list declares the GTK interfaces the
@@ -94,6 +95,12 @@ impl LushtextWorkspaceSection {
     /// Update the visible workspace header label.
     pub fn set_workspace_name(&self, name: &str) {
         self.imp().header_label.set_label(name);
+        let label = format!("Workspace {name}");
+        accessibility::set_labelled_description(
+            &*self.imp().header_box,
+            &label,
+            "Workspace header with folder actions and collapse control",
+        );
     }
 
     /// Return the current workspace header label text.
@@ -121,6 +128,26 @@ impl LushtextWorkspaceSection {
         for_each_realized_file_row_overlay(self, |overlay| {
             sync_file_row_state_for_overlay(self, &overlay);
         });
+    }
+
+    /// Mirror refresh and watcher failures into the file tree's accessible state.
+    pub(super) fn sync_file_tree_error_state(&self) {
+        let has_refresh_error = self
+            .imp()
+            .refresh_runtime
+            .last_reported_error
+            .borrow()
+            .is_some();
+        let has_watch_error = self
+            .imp()
+            .watch_runtime
+            .last_reported_error
+            .borrow()
+            .is_some();
+        accessibility::set_invalid(
+            &*self.imp().file_tree_view,
+            has_refresh_error || has_watch_error,
+        );
     }
 
     /// Test helper for applying an open/active file projection without a window.

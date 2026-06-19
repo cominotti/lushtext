@@ -3,6 +3,7 @@
 //! File dialogs for the main window: open file, open folder, save as,
 //! and save-changes confirmation on close.
 
+use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -276,6 +277,11 @@ impl super::LushtextWindow {
             on_done(response == RESPONSE_DISCARD);
         });
 
+        accessibility::announce_with_lane(
+            self,
+            &format!("Discard changes to {title}? Unsaved changes will be permanently lost."),
+            AnnouncementLane::Alert,
+        );
         dialog.present(Some(self));
     }
 
@@ -448,6 +454,11 @@ impl super::LushtextWindow {
             }
         });
 
+        accessibility::announce_with_lane(
+            self,
+            "Save changes? Open documents contain unsaved changes. Discarding changes is permanent.",
+            AnnouncementLane::Alert,
+        );
         dialog.present(Some(self));
     }
 

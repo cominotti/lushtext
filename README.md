@@ -24,7 +24,8 @@ A fast, minimalist text editor for GNOME built with Rust, GTK4, and Libadwaita. 
 - **Workspace content search** -- Ctrl+Shift+F parallel grep across the current workspace scope (`All workspaces` or one selected workspace) with streaming results, regex/literal/whole-word modes, .gitignore toggle, glob file filter, F4/Shift+F4 match navigation, progress reporting, search history with full state recall, and named saved searches
 - **Multi-file Replace All** -- preview proposed changes with per-match checkboxes, atomic file writes, stable save/replace coordination, file and undo-memory caps, per-file durable undo journals, skip-modified-tabs safety, and full undo support within the active safety window
 - **Find and replace** -- per-tab search bar with match highlighting
-- **Command palette** -- Ctrl+P search for files, note records, and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated for fuzzy file/command matching via nucleo)
+- **Command palette** -- Ctrl+Shift+P search for files, note records, and commands, scoped to the current workspace selection unless `All workspaces` is active (SIMD-accelerated for fuzzy file/command matching via nucleo)
+- **Accessibility contract** -- GTK-native names, roles, states, keyboard parity, bounded announcements, AT-SPI smoke artifacts, and visual accessibility proof for shell, editor, search, popovers, lists, preview, properties, preferences, and notes workflows
 - **Automation spine** -- same-user agents and smoke tools can discover the action catalog, activate normal exported GTK actions, wait for app-owned workflows to become idle, inspect bounded D-Bus snapshots, and summarize smoke artifacts without exposing document contents or changing LushText's full-filesystem permission model
 - **Large file handling** -- graceful degradation: >1MB toast, >10MB disable syntax, >50MB disable undo, >500MB refuse
 - **Buffer eviction** -- background tabs evicted when total memory exceeds 256MB, transparently reloaded on focus
@@ -300,7 +301,9 @@ make end-user-smoke        # run all host-supported smoke lanes
 
 See [`docs/end-user-coverage.md`](docs/end-user-coverage.md) for the coverage
 map and the expected pull-request, scheduled, release, and local validation
-boundaries. See [`docs/recovery-reliability.md`](docs/recovery-reliability.md)
+boundaries. See [`docs/accessibility.md`](docs/accessibility.md) for keyboard,
+screen-reader, visual accessibility, smoke-proof, and release reference
+guidance. See [`docs/recovery-reliability.md`](docs/recovery-reliability.md)
 for recovery metadata, quarantine, migration-ledger, and crash-smoke triage.
 
 ## First Run
@@ -818,7 +821,7 @@ lushtext-core/src/
     sidebar/         Multi-workspace file tree, dialogs, callbacks, per-section async child-tree loading, and file peek
     properties_panel/ Right-side metadata + formatting controls
     search_panel/    Ctrl+Shift+F workspace content search plus history, list factory, replace, results, and runtime flows
-    command_palette/ Ctrl+P file, note, and command search
+    command_palette/ Ctrl+Shift+P file, note, and command search
     open_popover/    Ctrl+K recent-document Open popover
     search_bar/      Find/replace
     status_bar/      Bottom bar

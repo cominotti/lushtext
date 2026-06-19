@@ -6,6 +6,7 @@ use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_events, present_window, wait_until,
 };
 use gio::prelude::MenuModelExt;
+use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -15,6 +16,7 @@ use lushtext_core::model::workspace::{
 };
 use lushtext_core::services::filesystem::metadata as fs_metadata;
 use lushtext_core::services::workspace_watch::WorkspaceWatchTarget;
+use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 use lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection;
 use std::cell::Cell;
@@ -100,6 +102,26 @@ fn realized_folder_row_widgets(
     (window, icon, label)
 }
 
+fn realized_folder_row_overlay(
+    section: &LushtextWorkspaceSection,
+) -> (gtk4::ApplicationWindow, gtk4::Overlay) {
+    let window = present_section_window(section);
+    wait_until(Duration::from_secs(2), || {
+        section.imp().file_tree_view.first_child().is_some()
+    });
+
+    let row_widget = section
+        .imp()
+        .file_tree_view
+        .first_child()
+        .expect("list view should realize the first row");
+    let overlay = row_widget
+        .first_child()
+        .and_downcast::<gtk4::Overlay>()
+        .expect("row child should be the factory overlay");
+    (window, overlay)
+}
+
 fn themed_icon_names(icon: &gio::Icon) -> Vec<String> {
     icon.downcast_ref::<gio::ThemedIcon>()
         .map(|themed_icon| {
@@ -110,6 +132,328 @@ fn themed_icon_names(icon: &gio::Icon) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[test]
+fn test_workspace_section_header_and_empty_state_expose_accessibility_metadata() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("a11y-ws"));
+    section.set_workspace_name("Accessibility Workspace");
+
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*section.imp().header_box);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Expanded])
+        .assert_on(&*section.imp().collapse_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*section.imp().add_folder_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*section.imp().refresh_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*section.imp().empty_folder_set_label);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            section
+                .imp()
+                .context_menu
+                .borrow()
+                .as_ref()
+                .expect("file context menu should exist"),
+        );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            section
+                .imp()
+                .header_context_menu
+                .borrow()
+                .as_ref()
+                .expect("header context menu should exist"),
+        );
+    section.load_folders(&[]);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::HasPopup,
+            gtk4::AccessibleProperty::KeyShortcuts,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .states(&[gtk4::AccessibleState::Hidden])
+        .assert_on(&*section.imp().file_tree_view);
+
+    section.set_section_body_collapsed(true);
+    assert_eq!(
+        section.imp().collapse_button.tooltip_text().as_deref(),
+        Some("Expand Workspace")
+    );
+    section.set_section_body_collapsed(false);
+    assert_eq!(
+        section.imp().collapse_button.tooltip_text().as_deref(),
+        Some("Collapse Workspace")
+    );
+}
+
+#[test]
+fn test_workspace_section_file_tree_rows_expose_accessibility_metadata() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("a11y-tree-ws"));
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("child.txt"), "content");
+
+    section.load_folders(&[FolderTreeEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+
+    let (_window, overlay) = realized_folder_row_overlay(&section);
+
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ListItem)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[
+            gtk4::AccessibleState::Expanded,
+            gtk4::AccessibleState::Selected,
+        ])
+        .relations(&[
+            gtk4::AccessibleRelation::PosInSet,
+            gtk4::AccessibleRelation::SetSize,
+        ])
+        .assert_on(&overlay);
+}
+
+#[test]
+fn test_workspace_section_file_tree_unbind_clears_stale_accessibility_metadata() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("a11y-row-unbind"));
+    let file = tempfile::NamedTempFile::new().expect("file row fixture");
+    fixture::write_text(file.path(), "content");
+
+    section.load_folders(&[FolderTreeEntry::File {
+        path: file.path().to_path_buf(),
+    }]);
+    let _window = present_section_window(&section);
+    select_path(&section, file.path());
+    let overlay = realized_overlay_for_path(&section, file.path())
+        .expect("file row should be realized before unbind");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Selected])
+        .relations(&[
+            gtk4::AccessibleRelation::PosInSet,
+            gtk4::AccessibleRelation::SetSize,
+        ])
+        .assert_on(&overlay);
+
+    section.load_folders(&[]);
+    wait_until(Duration::from_secs(2), || {
+        !gtk4::test_accessible_has_property(&overlay, gtk4::AccessibleProperty::Label)
+            && !gtk4::test_accessible_has_property(&overlay, gtk4::AccessibleProperty::Description)
+            && !gtk4::test_accessible_has_state(&overlay, gtk4::AccessibleState::Selected)
+            && !gtk4::test_accessible_has_relation(
+                &overlay,
+                gtk4::AccessibleRelation::PosInSet,
+            )
+            && !gtk4::test_accessible_has_relation(&overlay, gtk4::AccessibleRelation::SetSize)
+    });
+}
+
+#[test]
+fn test_workspace_section_file_tree_state_extremes_expose_accessibility_metadata() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("a11y-tree-extremes"));
+    let dir = tempfile::tempdir().expect("file tree state tempdir");
+    let long_file = dir
+        .path()
+        .join("this-is-a-very-long-file-name-used-by-accessibility-row-metadata.txt");
+    let empty_dir = dir.path().join("empty-folder-for-accessibility");
+    let focused_dir = dir.path().join("focused-folder-for-accessibility");
+    fixture::write_text(&long_file, "content");
+    fixture::create_dir_all(&empty_dir);
+    fixture::create_dir_all(&focused_dir);
+    fixture::write_text(&focused_dir.join("child.txt"), "content");
+
+    section.load_folders(&[
+        FolderTreeEntry::File {
+            path: long_file.clone(),
+        },
+        FolderTreeEntry::Directory {
+            path: empty_dir.clone(),
+        },
+        FolderTreeEntry::Directory {
+            path: focused_dir.clone(),
+        },
+    ]);
+    let _window = present_section_window(&section);
+
+    wait_until(Duration::from_secs(2), || {
+        realized_overlay_for_path(&section, &long_file).is_some()
+            && realized_overlay_for_path(&section, &empty_dir).is_some()
+            && realized_overlay_for_path(&section, &focused_dir).is_some()
+    });
+    select_path(&section, &long_file);
+    let file_overlay = realized_overlay_for_path(&section, &long_file)
+        .expect("long file row should be realized");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ListItem)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Selected])
+        .relations(&[
+            gtk4::AccessibleRelation::PosInSet,
+            gtk4::AccessibleRelation::SetSize,
+        ])
+        .assert_on(&file_overlay);
+
+    wait_until(Duration::from_secs(5), || {
+        rows_for_path(&section, &empty_dir).iter().any(|row| {
+            row.item()
+                .and_downcast::<FileTreeItem>()
+                .is_some_and(|item| item.is_empty() == Some(true))
+        })
+    });
+    let empty_overlay = realized_overlay_for_path(&section, &empty_dir)
+        .expect("empty folder row should be realized");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ListItem)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[
+            gtk4::AccessibleState::Expanded,
+            gtk4::AccessibleState::Selected,
+        ])
+        .relations(&[
+            gtk4::AccessibleRelation::PosInSet,
+            gtk4::AccessibleRelation::SetSize,
+        ])
+        .assert_on(&empty_overlay);
+
+    section.focus_folder(&focused_dir);
+    wait_until(Duration::from_secs(2), || {
+        realized_overlay_for_path(&section, &focused_dir).is_some()
+            && !section.imp().drilldown_stack.borrow().is_empty()
+    });
+    let focused_overlay = realized_overlay_for_path(&section, &focused_dir)
+        .expect("focused folder row should be realized");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ListItem)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Expanded])
+        .relations(&[
+            gtk4::AccessibleRelation::PosInSet,
+            gtk4::AccessibleRelation::SetSize,
+        ])
+        .assert_on(&focused_overlay);
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*section.imp().file_tree_view);
+}
+
+#[test]
+fn test_workspace_section_file_tree_dynamic_accessibility_states_update() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("a11y-tree-dynamic"));
+    let dir = tempfile::tempdir().expect("dynamic tree tempdir");
+    let child = dir.path().join("child.txt");
+    fixture::write_text(&child, "content");
+
+    section.load_folders(&[FolderTreeEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(2), || {
+        realized_overlay_for_path(&section, dir.path()).is_some()
+    });
+
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*section.imp().file_tree_view);
+    assert!(section.imp().file_tree_view.is_visible());
+
+    section.set_section_body_collapsed(true);
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .states(&[gtk4::AccessibleState::Hidden])
+        .assert_on(&*section.imp().file_tree_view);
+    section.set_section_body_collapsed(false);
+    flush_events();
+    assert!(section.imp().file_tree_view.is_visible());
+
+    let root_row = row_for_path(&section, dir.path()).expect("root folder row should exist");
+    let root_overlay = realized_overlay_for_path(&section, dir.path())
+        .expect("root folder row should be realized");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Expanded])
+        .assert_on(&root_overlay);
+
+    root_row.set_expanded(true);
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &child));
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Expanded])
+        .assert_on(&root_overlay);
+    assert!(!gtk4::test_accessible_has_state(
+        &*section.imp().file_tree_view,
+        gtk4::AccessibleState::Busy
+    ));
+
+    section.focus_folder(dir.path());
+    wait_until(Duration::from_secs(2), || {
+        !section.imp().drilldown_stack.borrow().is_empty()
+            && realized_overlay_for_path(&section, dir.path()).is_some()
+    });
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*section.imp().file_tree_view);
 }
 
 struct PeekFixture {
@@ -289,6 +633,22 @@ fn realized_expander_for_path(
         .and_then(|overlay| overlay.child().and_downcast::<gtk4::TreeExpander>())
 }
 
+fn inline_rename_entry_for_path(
+    section: &LushtextWorkspaceSection,
+    target_path: &Path,
+) -> Option<gtk4::Entry> {
+    let expander = realized_expander_for_path(section, target_path)?;
+    let content_box = expander.child().and_downcast::<gtk4::Box>()?;
+    let mut child = content_box.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if let Ok(entry) = widget.downcast::<gtk4::Entry>() {
+            return Some(entry);
+        }
+    }
+    None
+}
+
 fn realized_overlay_for_path(
     section: &LushtextWorkspaceSection,
     target_path: &Path,
@@ -407,6 +767,20 @@ fn assert_reorder_handle_visible(
         "reorder-handle sensitivity should track visibility for {}",
         target_path.display()
     );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&handle);
+    if !expected_visible {
+        AccessibleAudit::new()
+            .states(&[
+                gtk4::AccessibleState::Hidden,
+                gtk4::AccessibleState::Disabled,
+            ])
+            .assert_on(&handle);
+    }
 }
 
 fn realized_drop_target_for_path(
@@ -543,6 +917,35 @@ fn selected_path(section: &LushtextWorkspaceSection) -> Option<PathBuf> {
         .and_then(|row| row.item())
         .and_then(|item| item.downcast::<FileTreeItem>().ok())
         .and_then(|item| item.path())
+}
+
+fn emit_key_pressed_on_file_tree(
+    section: &LushtextWorkspaceSection,
+    key: gtk4::gdk::Key,
+) -> glib::Propagation {
+    emit_key_pressed_on_file_tree_with_state(section, key, gtk4::gdk::ModifierType::empty())
+}
+
+fn emit_key_pressed_on_file_tree_with_state(
+    section: &LushtextWorkspaceSection,
+    key: gtk4::gdk::Key,
+    state: gtk4::gdk::ModifierType,
+) -> glib::Propagation {
+    let controllers = section.imp().file_tree_view.observe_controllers();
+    for index in 0..controllers.n_items() {
+        if let Some(controller) = controllers
+            .item(index)
+            .and_then(|object| object.downcast::<gtk4::EventControllerKey>().ok())
+        {
+            let args: [&dyn ToValue; 3] = [&key, &0u32, &state];
+            let stopped: bool =
+                glib::object::ObjectExt::emit_by_name(&controller, "key-pressed", &args);
+            if stopped {
+                return glib::Propagation::Stop;
+            }
+        }
+    }
+    glib::Propagation::Proceed
 }
 
 fn peek_body_text(section: &LushtextWorkspaceSection) -> String {
@@ -884,9 +1287,11 @@ fn test_workspace_folder_reorder_handles_update_on_live_membership_changes() {
     wait_until(Duration::from_secs(5), || {
         top_level_workspace_folder_ids(&section) == ["first".to_string(), "second".to_string()]
             && realized_drag_handle_for_path(&section, second.path())
-                .is_some_and(|handle| handle.is_visible())
+                .as_ref()
+                .is_some_and(gtk4::prelude::WidgetExt::is_visible)
             && realized_drag_handle_for_path(&section, first.path())
-                .is_some_and(|handle| handle.is_visible())
+                .as_ref()
+                .is_some_and(gtk4::prelude::WidgetExt::is_visible)
     });
     assert_reorder_handle_visible(&section, first.path(), true);
     assert_reorder_handle_visible(&section, second.path(), true);
@@ -1120,6 +1525,18 @@ fn test_workspace_folder_drop_indicator_is_a_single_line_surface() {
         drop_target.height() <= 3,
         "visible reorder feedback should allocate as one narrow line, not a row rectangle"
     );
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Hidden,
+            gtk4::AccessibleState::Disabled,
+        ])
+        .assert_on(&drop_target);
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Hidden,
+            gtk4::AccessibleState::Disabled,
+        ])
+        .assert_on(&drop_shield);
     assert!(
         line.height() <= 3,
         "the painted child should stay a narrow rounded insertion line"
@@ -1188,6 +1605,18 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
         !second_shield.can_target() && !nested_shield.can_target(),
         "reorder shields should be inert outside active drags"
     );
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Hidden,
+            gtk4::AccessibleState::Disabled,
+        ])
+        .assert_on(&second_shield);
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Hidden,
+            gtk4::AccessibleState::Disabled,
+        ])
+        .assert_on(&nested_shield);
 
     let expanded_transitions = Rc::new(Cell::new(0));
     let second_transitions = Rc::clone(&expanded_transitions);
@@ -2091,6 +2520,196 @@ fn test_descendant_file_context_menu_keeps_file_actions_under_workspace_folder()
         .activate_action("section.local-history", None)
         .expect("local-history action should exist");
     assert_eq!(*local_history_path.borrow(), Some(file));
+}
+
+#[test]
+fn test_file_tree_context_menu_opens_from_keyboard_for_selected_row() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("keyboard-menu"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let nested = folder.path().join("src");
+    fixture::create_dir_all(&nested);
+    fixture::write_text(&nested.join("main.rs"), "fn main() {}\n");
+
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder-id"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+
+    select_path(&section, &nested);
+    section.imp().file_tree_view.grab_focus();
+    flush_events();
+    assert_eq!(
+        emit_key_pressed_on_file_tree_with_state(
+            &section,
+            gtk4::gdk::Key::F10,
+            gtk4::gdk::ModifierType::SHIFT_MASK,
+        ),
+        glib::Propagation::Stop
+    );
+    wait_until(Duration::from_secs(2), || {
+        section
+            .imp()
+            .context_menu
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    });
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            section
+                .imp()
+                .context_menu
+                .borrow()
+                .as_ref()
+                .expect("file context menu should exist"),
+        );
+
+    let labels = current_context_menu_labels(&section);
+    assert!(labels.iter().any(|label| label == "Focus Folder"));
+    assert!(labels.iter().any(|label| label == "Rename"));
+    assert!(labels.iter().any(|label| label == "Delete"));
+    assert_eq!(section.imp().context_path.borrow().as_ref(), Some(&nested));
+    assert!(section.imp().context_workspace_folder_id.borrow().is_none());
+
+    section
+        .activate_action("section.focus-folder", None)
+        .expect("focus-folder action should be reachable from keyboard menu context");
+    flush_events();
+    assert_eq!(*section.imp().drilldown_stack.borrow(), vec![nested]);
+}
+
+#[test]
+fn test_file_tree_keyboard_context_menu_exposes_workspace_folder_reorder() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("keyboard-reorder"));
+    let first = tempfile::tempdir().expect("first workspace folder");
+    let second = tempfile::tempdir().expect("second workspace folder");
+    let third = tempfile::tempdir().expect("third workspace folder");
+
+    let second_id = WorkspaceFolderId::new("second");
+    section.load_workspace_folders(&[
+        WorkspaceFolder::with_id(WorkspaceFolderId::new("first"), first.path().to_path_buf()),
+        WorkspaceFolder::with_id(second_id.clone(), second.path().to_path_buf()),
+        WorkspaceFolder::with_id(WorkspaceFolderId::new("third"), third.path().to_path_buf()),
+    ]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(2), || {
+        realized_overlay_for_path(&section, second.path()).is_some()
+    });
+
+    select_path(&section, second.path());
+    section.imp().file_tree_view.grab_focus();
+    flush_events();
+    assert_eq!(
+        emit_key_pressed_on_file_tree(&section, gtk4::gdk::Key::Menu),
+        glib::Propagation::Stop
+    );
+    wait_until(Duration::from_secs(2), || {
+        section
+            .imp()
+            .context_menu
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
+    });
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            section
+                .imp()
+                .context_menu
+                .borrow()
+                .as_ref()
+                .expect("workspace-folder context menu should exist"),
+        );
+
+    let labels = current_context_menu_labels(&section);
+    assert!(labels.iter().any(|label| label == "Move Up"));
+    assert!(labels.iter().any(|label| label == "Move Down"));
+    assert!(labels.iter().any(|label| label == "Remove from Workspace"));
+    assert_eq!(
+        section.imp().context_workspace_folder_id.borrow().as_ref(),
+        Some(&second_id)
+    );
+
+    let requested = Rc::new(RefCell::new(None::<(
+        WorkspaceFolderId,
+        WorkspaceFolderMoveDirection,
+    )>));
+    let requested_clone = Rc::clone(&requested);
+    section.connect_reorder_folder_requested(move |_, folder_id, direction| {
+        requested_clone.replace(Some((folder_id.clone(), direction)));
+    });
+    section
+        .activate_action("section.move-folder-up", None)
+        .expect("move-folder-up action should be reachable from keyboard menu context");
+    assert_eq!(
+        *requested.borrow(),
+        Some((second_id, WorkspaceFolderMoveDirection::Up))
+    );
+}
+
+#[test]
+fn test_file_tree_inline_rename_entry_exposes_accessibility_metadata() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("rename-a11y"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let file = folder.path().join("rename-me.txt");
+    fixture::write_text(&file, "rename body\n");
+
+    section.load_folders(&[FolderTreeEntry::File { path: file.clone() }]);
+    let _window = present_section_window(&section);
+    prepare_context_menu_for_path(&section, &file);
+
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(2), || {
+        inline_rename_entry_for_path(&section, &file).is_some()
+    });
+    let entry =
+        inline_rename_entry_for_path(&section, &file).expect("rename entry should be visible");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::KeyShortcuts,
+        ])
+        .assert_on(&entry);
+    entry.emit_by_name::<()>("activate", &[]);
+    wait_until(Duration::from_secs(2), || {
+        inline_rename_entry_for_path(&section, &file).is_none()
+    });
+
+    prepare_context_menu_for_path(&section, &file);
+    section.imp().is_new_item.set(true);
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(2), || {
+        inline_rename_entry_for_path(&section, &file).is_some()
+    });
+    let new_entry =
+        inline_rename_entry_for_path(&section, &file).expect("new-file rename entry should exist");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::KeyShortcuts,
+        ])
+        .assert_on(&new_entry);
+    section.imp().is_new_item.set(false);
 }
 
 #[test]
@@ -3186,6 +3805,17 @@ fn test_watcher_start_failure_surfaces_recoverable_feedback() {
             .any(|message| message.contains(missing.to_string_lossy().as_ref())),
         "watcher feedback should identify the folder that could not be watched"
     );
+    assert!(gtk4::test_accessible_has_state(
+        &*section.imp().file_tree_view,
+        gtk4::AccessibleState::Invalid
+    ));
+
+    section.load_folders(&[]);
+    flush_events();
+    assert!(!gtk4::test_accessible_has_state(
+        &*section.imp().file_tree_view,
+        gtk4::AccessibleState::Invalid
+    ));
 }
 
 #[test]
@@ -3239,6 +3869,19 @@ fn test_manual_refresh_failure_reports_feedback_and_keeps_existing_tree() {
         section.imp().refresh_button.is_sensitive(),
         "manual refresh should remain retryable after a scan failure"
     );
+    assert!(gtk4::test_accessible_has_state(
+        &*section.imp().file_tree_view,
+        gtk4::AccessibleState::Invalid
+    ));
+
+    fixture::create_dir_all(dir.path());
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(2), || {
+        !gtk4::test_accessible_has_state(
+            &*section.imp().file_tree_view,
+            gtk4::AccessibleState::Invalid,
+        )
+    });
 }
 
 #[test]
@@ -3708,6 +4351,70 @@ fn test_file_peek_open_button_promotes_selected_file() {
                 .is_some_and(gtk4::Button::is_sensitive)
     });
 
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            fixture
+                .section
+                .imp()
+                .peek_widgets
+                .popover
+                .borrow()
+                .as_ref()
+                .expect("peek popover should exist"),
+        );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            fixture
+                .section
+                .imp()
+                .peek_widgets
+                .body_stack
+                .borrow()
+                .as_ref()
+                .expect("peek body stack should exist"),
+        );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+            gtk4::AccessibleProperty::MultiLine,
+        ])
+        .assert_on(
+            fixture
+                .section
+                .imp()
+                .peek_widgets
+                .text_view
+                .borrow()
+                .as_ref()
+                .expect("peek text view should exist"),
+        );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(
+            fixture
+                .section
+                .imp()
+                .peek_widgets
+                .open_button
+                .borrow()
+                .as_ref()
+                .expect("peek open button should exist"),
+        );
+
     fixture
         .section
         .imp()
@@ -3750,6 +4457,23 @@ fn test_file_peek_binary_fallback_disables_open() {
             .expect("peek open button should exist")
             .is_sensitive()
     );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .states(&[gtk4::AccessibleState::Disabled])
+        .assert_on(
+            fixture
+                .section
+                .imp()
+                .peek_widgets
+                .open_button
+                .borrow()
+                .as_ref()
+                .expect("peek open button should exist"),
+        );
 }
 
 #[test]

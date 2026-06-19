@@ -121,9 +121,11 @@ impl LushtextCommandPalette {
     /// Close the palette: clear the search entry.
     pub fn close(&self) {
         let imp = self.imp();
+        imp.searching.set(false);
         imp.search_entry.set_text("");
         imp.results_store.remove_all();
         imp.no_results_label.set_visible(false);
+        imp.refresh_accessibility_state();
     }
 
     /// Register a callback for when an item is activated (Enter or click).
@@ -197,6 +199,12 @@ impl LushtextCommandPalette {
         self.imp().pending_index_updates.borrow().len()
     }
 
+    /// Test seam for forcing accessibility projection after mutating adapter state.
+    #[cfg(feature = "test-utils")]
+    pub fn refresh_accessibility_state_for_test(&self) {
+        self.imp().refresh_accessibility_state();
+    }
+
     // --- Incremental index updates ---
 
     /// Add a newly created file to the search index.
@@ -265,6 +273,18 @@ impl Default for LushtextCommandPalette {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Test seam for asserting the palette row metadata used by the list factory.
+#[cfg(feature = "test-utils")]
+pub fn apply_palette_row_accessibility_for_test(
+    row: &gtk4::Box,
+    item: &PaletteItem,
+    selected: bool,
+    position: i32,
+    set_size: i32,
+) {
+    imp::apply_palette_row_accessibility(row, item, selected, position, set_size);
 }
 
 /// Debounce interval for flushing incremental index updates on the GTK main thread.

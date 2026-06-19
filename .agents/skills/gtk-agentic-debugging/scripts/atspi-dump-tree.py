@@ -18,6 +18,7 @@ STATE_FLAGS = (
     ("showing", pyatspi.STATE_SHOWING),
     ("visible", pyatspi.STATE_VISIBLE),
 )
+TEXT_SAMPLE_LIMIT = 120
 
 
 def safe_text(value) -> str:
@@ -66,6 +67,40 @@ def application_name(node) -> str:
         return app.name or ""
     except Exception:
         return ""
+
+
+def node_text_summary(node) -> str:
+    try:
+        text = node.queryText()
+    except Exception:
+        return ""
+
+    try:
+        character_count = int(text.characterCount)
+    except Exception:
+        character_count = -1
+
+    try:
+        caret_offset = int(text.caretOffset)
+    except Exception:
+        caret_offset = -1
+
+    try:
+        selection_count = int(text.getNSelections())
+    except Exception:
+        selection_count = -1
+
+    sample = ""
+    if character_count > 0:
+        try:
+            sample = text.getText(0, min(character_count, TEXT_SAMPLE_LIMIT))
+        except Exception:
+            sample = ""
+
+    return (
+        f" text_chars={character_count} caret={caret_offset} "
+        f"selections={selection_count} text_sample={sample!r}"
+    )
 
 
 def iter_accessibles(root, *, max_depth: int, max_nodes: int):
@@ -119,7 +154,7 @@ def dump_tree(root, *, max_depth: int, max_nodes: int) -> tuple[list[str], list[
         app = application_name(node)
         line = (
             f"path={path} depth={depth} role={role!r} name={name!r} "
-            f"app={app!r} states={states}"
+            f"app={app!r} states={states}{node_text_summary(node)}"
         )
         tree_lines.append(line)
         if "focused" in states.split(","):
@@ -140,8 +175,8 @@ def main() -> int:
     parser.add_argument("--focus-output", required=True, type=Path)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--interval", type=float, default=0.25)
-    parser.add_argument("--max-depth", type=int, default=18)
-    parser.add_argument("--max-nodes", type=int, default=2000)
+    parser.add_argument("--max-depth", type=int, default=30)
+    parser.add_argument("--max-nodes", type=int, default=20000)
     args = parser.parse_args()
 
     app_pattern = re.compile(args.application_regex, re.IGNORECASE)

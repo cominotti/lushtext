@@ -15,10 +15,12 @@ use lushtext_core::services::notifications::{
 };
 use lushtext_core::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
 use lushtext_core::services::{json_store, search_backup};
+use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
     LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchProgressUpdate,
-    set_replace_preview_delay_for_test, set_undo_backup_disk_delay_for_test,
+    apply_search_result_row_accessibility_for_test, set_replace_preview_delay_for_test,
+    set_undo_backup_disk_delay_for_test,
 };
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
@@ -194,43 +196,203 @@ fn test_search_panel_controls_expose_accessibility_roles() {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let imp = panel.imp();
 
-    assert_eq!(
-        imp.search_entry.accessible_role(),
-        gtk4::AccessibleRole::SearchBox
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::SearchBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::HasPopup,
+        ])
+        .assert_on(&*imp.search_entry);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::List)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Hidden])
+        .assert_on(&*imp.results_list);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*imp.count_label);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Alert)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*imp.error_label);
+
+    for toggle in [
+        &*imp.case_toggle,
+        &*imp.regex_toggle,
+        &*imp.word_toggle,
+        &*imp.more_toggle,
+        &*imp.gitignore_toggle,
+    ] {
+        AccessibleAudit::new()
+            .role(gtk4::AccessibleRole::ToggleButton)
+            .properties(&[gtk4::AccessibleProperty::Label])
+            .states(&[gtk4::AccessibleState::Pressed])
+            .assert_on(toggle);
+    }
+
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*imp.glob_entry);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*imp.replace_entry);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .states(&[gtk4::AccessibleState::Disabled])
+        .assert_on(&*imp.replace_all_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .states(&[
+            gtk4::AccessibleState::Disabled,
+            gtk4::AccessibleState::Hidden,
+        ])
+        .assert_on(&*imp.undo_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .assert_on(&*imp.save_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::KeyShortcuts,
+        ])
+        .assert_on(&*imp.close_button);
+}
+
+#[test]
+fn test_search_panel_accessibility_tracks_busy_error_and_result_visibility() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let imp = panel.imp();
+
+    imp.runtime.searching.set(true);
+    panel.refresh_accessibility_state_for_test();
+    assert!(gtk4::test_accessible_has_state(
+        &*imp.search_entry,
+        gtk4::AccessibleState::Busy
+    ));
+    assert!(gtk4::test_accessible_has_state(
+        &*imp.results_list,
+        gtk4::AccessibleState::Busy
+    ));
+
+    imp.runtime.searching.set(false);
+    imp.error_label.set_visible(true);
+    panel.refresh_accessibility_state_for_test();
+    assert!(gtk4::test_accessible_has_state(
+        &*imp.search_entry,
+        gtk4::AccessibleState::Invalid
+    ));
+
+    imp.error_label.set_visible(false);
+    imp.results_body_revealer.set_reveal_child(true);
+    panel.refresh_accessibility_state_for_test();
+    assert!(!gtk4::test_accessible_has_state(
+        &*imp.results_list,
+        gtk4::AccessibleState::Hidden
+    ));
+}
+
+#[test]
+fn test_search_panel_accessibility_tracks_replace_preview_and_undo_state() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let imp = panel.imp();
+
+    imp.preview.preview_pending.set(true);
+    imp.replace_all_button.set_label("Preparing Preview…");
+    imp.replace_all_button.set_sensitive(false);
+    panel.refresh_accessibility_state_for_test();
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Busy,
+            gtk4::AccessibleState::Disabled,
+        ])
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*imp.replace_all_button);
+
+    imp.preview.preview_pending.set(false);
+    imp.preview
+        .undo_backup
+        .replace(Some(sample_replace_backup("/tmp/undo.txt")));
+    imp.undo_button.set_visible(true);
+    panel.refresh_accessibility_state_for_test();
+    assert!(!gtk4::test_accessible_has_state(
+        &*imp.undo_button,
+        gtk4::AccessibleState::Disabled
+    ));
+    assert!(!gtk4::test_accessible_has_state(
+        &*imp.undo_button,
+        gtk4::AccessibleState::Hidden
+    ));
+}
+
+#[test]
+fn test_search_result_row_accessibility_metadata_is_bounded_and_clearable() {
+    ensure_gtk_init();
+    let row = gtk4::TreeExpander::new();
+    let file_item = SearchResultItem::new_file("/project/src/lib.rs", "src/lib.rs", 3);
+
+    apply_search_result_row_accessibility_for_test(&row, &file_item, Some(true));
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Expanded])
+        .assert_on(&row);
+
+    accessibility::clear_row_accessibility(&row);
+    accessibility::set_expanded(&row, None);
+    assert!(!gtk4::test_accessible_has_property(
+        &row,
+        gtk4::AccessibleProperty::Label
+    ));
+
+    let long_line = "needle ".repeat(80);
+    let match_item = SearchResultItem::new_match(
+        "/project/src/lib.rs",
+        42,
+        &long_line,
+        0,
+        6,
+        &long_line,
+        0,
+        6,
     );
-    assert_eq!(imp.results_list.accessible_role(), gtk4::AccessibleRole::List);
-    assert_eq!(
-        imp.case_toggle.accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
-    assert_eq!(
-        imp.regex_toggle.accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
-    assert_eq!(
-        imp.word_toggle.accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
-    assert_eq!(
-        imp.more_toggle.accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
-    assert_eq!(
-        imp.gitignore_toggle.accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
-    assert_eq!(imp.glob_entry.accessible_role(), gtk4::AccessibleRole::TextBox);
-    assert_eq!(
-        imp.replace_entry.accessible_role(),
-        gtk4::AccessibleRole::TextBox
-    );
-    assert_eq!(
-        imp.replace_all_button.accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(imp.undo_button.accessible_role(), gtk4::AccessibleRole::Button);
-    assert_eq!(imp.save_button.accessible_role(), gtk4::AccessibleRole::Button);
-    assert_eq!(imp.close_button.accessible_role(), gtk4::AccessibleRole::Button);
+    apply_search_result_row_accessibility_for_test(&row, &match_item, None);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&row);
 }
 
 #[test]
@@ -751,7 +913,10 @@ fn test_connect_search_progress_callback_stored() {
     panel.connect_search_progress(|update| {
         assert_matches!(
             update,
-            SearchProgressUpdate::Progress { .. } | SearchProgressUpdate::Done { .. }
+            SearchProgressUpdate::Started
+                | SearchProgressUpdate::Progress { .. }
+                | SearchProgressUpdate::Cancelled { .. }
+                | SearchProgressUpdate::Done { .. }
         );
     });
     assert!(panel.imp().callbacks.progress_callback.borrow().is_some());

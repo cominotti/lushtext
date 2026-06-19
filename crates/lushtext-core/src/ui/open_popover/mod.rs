@@ -143,6 +143,11 @@ impl LushtextOpenPopover {
         self.imp().prepare_to_show();
     }
 
+    /// Set the visible filter text for automation and window-level actions.
+    pub fn set_search_text(&self, query: &str) {
+        self.imp().set_search_text(query);
+    }
+
     /// Search entry surface used by automation visual geometry.
     pub(crate) fn search_entry_widget(&self) -> gtk4::SearchEntry {
         self.imp().search_entry.clone()
@@ -319,6 +324,20 @@ impl LushtextOpenPopover {
     #[must_use]
     pub fn list_view_for_test(&self) -> gtk4::ListView {
         self.imp().list_view.clone()
+    }
+
+    /// Expose the empty-state widget to accessibility-focused widget tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn empty_state_for_test(&self) -> gtk4::Box {
+        self.imp().empty_state.clone()
+    }
+
+    /// Expose the recent scroller to accessibility-focused widget tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn recent_scroller_for_test(&self) -> gtk4::ScrolledWindow {
+        self.imp().recent_scroller.clone()
     }
 
     /// Return whether the recent list model is the GNOME-style no-selection wrapper.

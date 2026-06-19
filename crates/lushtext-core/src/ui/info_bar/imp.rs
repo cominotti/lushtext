@@ -11,6 +11,7 @@
 //! `GtkInfoBar`, while ordinary labels and buttons keep the widget compatible
 //! with GTK5.
 
+use crate::ui::accessibility;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -79,6 +80,8 @@ pub struct LushtextInfoBar {
     pub discard_callback: RefCell<Option<Callback>>,
     /// Callback invoked when the user explicitly dismisses the alert.
     pub dismissed_callback: RefCell<Option<Callback>>,
+    /// Throttles repeated warning announcements when notification renders repeat.
+    pub alert_announcement_throttler: accessibility::AnnouncementThrottler,
 }
 
 impl Default for LushtextInfoBar {
@@ -98,6 +101,7 @@ impl Default for LushtextInfoBar {
             save_callback: RefCell::new(None),
             discard_callback: RefCell::new(None),
             dismissed_callback: RefCell::new(None),
+            alert_announcement_throttler: accessibility::AnnouncementThrottler::default(),
         }
     }
 }

@@ -2,12 +2,14 @@
 
 //! Tests for the LushtextSearchBar widget.
 
-use crate::common::ensure_gtk_init;
+use crate::common::{ensure_gtk_init, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::search_bar::LushtextSearchBar;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 #[test]
 fn test_new() {
@@ -44,6 +46,14 @@ fn test_set_match_count_nonzero() {
     ensure_gtk_init();
     let bar = LushtextSearchBar::new();
     bar.set_match_count(3, 10);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*bar.imp().match_label);
 }
 
 #[test]
@@ -101,19 +111,39 @@ fn test_search_controls_expose_accessibility_roles() {
     ensure_gtk_init();
     let bar = LushtextSearchBar::new();
 
-    assert_eq!(
-        bar.search_entry().accessible_role(),
-        gtk4::AccessibleRole::SearchBox
-    );
-    assert_eq!(
-        bar.replace_entry().accessible_role(),
-        gtk4::AccessibleRole::TextBox
-    );
-    assert_eq!(bar.close_button().accessible_role(), gtk4::AccessibleRole::Button);
-    assert_eq!(
-        bar.replace_mode_button().accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::SearchBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(bar.search_entry());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(bar.replace_entry());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::KeyShortcuts,
+        ])
+        .assert_on(bar.close_button());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ToggleButton)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .states(&[gtk4::AccessibleState::Pressed])
+        .assert_on(bar.replace_mode_button());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::HasPopup,
+        ])
+        .assert_on(&*bar.imp().options_button);
 }
 
 // --- Close button ---
@@ -150,6 +180,28 @@ fn test_attach_detach_clears_occurrence_signal_owner() {
 
     bar.detach();
     assert!(bar.imp().occurrences_signals.is_empty());
+}
+
+#[test]
+fn test_no_match_search_sets_accessible_invalid_state() {
+    ensure_gtk_init();
+    let bar = LushtextSearchBar::new();
+    let buffer = sourceview5::Buffer::new(None);
+    buffer.set_text("alpha beta gamma");
+    let view = sourceview5::View::with_buffer(&buffer);
+
+    bar.attach(&buffer, &view);
+    bar.search_entry().set_text("missing");
+
+    wait_until(Duration::from_secs(2), || {
+        gtk4::test_accessible_has_state(bar.search_entry(), gtk4::AccessibleState::Invalid)
+    });
+
+    bar.detach();
+    assert!(!gtk4::test_accessible_has_state(
+        bar.search_entry(),
+        gtk4::AccessibleState::Invalid
+    ));
 }
 
 // --- Replace mode toggle ---

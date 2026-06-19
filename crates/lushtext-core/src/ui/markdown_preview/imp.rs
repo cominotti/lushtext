@@ -16,6 +16,8 @@ use libadwaita::prelude::*;
 use pulldown_cmark::BlockQuoteKind;
 use std::cell::{Cell, RefCell};
 
+use crate::ui::accessibility;
+
 /// Adwaita-matching accent color (blue) for headings and links.
 const ACCENT_LIGHT: &str = "#1c71d8";
 const ACCENT_DARK: &str = "#78aeed";
@@ -270,6 +272,7 @@ impl ObjectImpl for LushtextMarkdownPreview {
         // Create the initial tag table based on current theme.
         let is_dark = libadwaita::StyleManager::default().is_dark();
         create_or_update_tags(&self.text_view.buffer(), is_dark);
+        self.apply_accessibility_metadata();
         self.obj().setup_link_interaction();
         self.background_opacity.set(
             gtk4::gio::Settings::new(crate::config::APP_ID)
@@ -341,6 +344,39 @@ impl WidgetImpl for LushtextMarkdownPreview {
     }
 }
 impl BoxImpl for LushtextMarkdownPreview {}
+
+impl LushtextMarkdownPreview {
+    /// Mark the preview as a read-only document surface before any content is rendered.
+    fn apply_accessibility_metadata(&self) {
+        accessibility::set_role(&*self.obj(), gtk4::AccessibleRole::Document);
+        accessibility::set_labelled_description(
+            &*self.obj(),
+            "Markdown preview",
+            "Read-only rendered Markdown document preview",
+        );
+        accessibility::set_role(&*self.scrolled_window, gtk4::AccessibleRole::Region);
+        accessibility::set_labelled_description(
+            &*self.scrolled_window,
+            "Markdown preview scroll area",
+            "Scrollable read-only rendered Markdown content",
+        );
+        accessibility::set_role(&*self.text_view, gtk4::AccessibleRole::TextBox);
+        accessibility::set_labelled_description(
+            &*self.text_view,
+            "Rendered Markdown content",
+            "Read-only rendered Markdown text",
+        );
+        accessibility::set_read_only(&*self.text_view, true);
+        accessibility::set_multi_line(&*self.text_view, true);
+        accessibility::set_role(&*self.placeholder, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &*self.placeholder,
+            "Markdown preview placeholder",
+            "Open a Markdown file to see a rendered preview",
+        );
+        accessibility::set_hidden(&*self.placeholder, true);
+    }
+}
 
 /// Create (or update in-place) all TextTags used by the Markdown renderer.
 ///

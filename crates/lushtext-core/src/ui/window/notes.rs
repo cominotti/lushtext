@@ -33,12 +33,12 @@ use crate::services::{
     bookmark_excerpt, bookmark_service, document_note_service, folder_note_service, json_store,
     local_history_service, migration_ledger, palette as palette_service,
 };
-use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
 };
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::status_bar::MessageKind;
+use crate::ui::{accessibility, buffer_snapshot};
 use gtk_lush_settle::Debounce;
 
 use super::LushtextWindow;
@@ -580,30 +580,26 @@ impl LushtextWindow {
         title_label.add_css_class("title-4");
         header.append(&title_label);
 
-        let close_button = gtk4::Button::builder()
-            .icon_name("window-close-symbolic")
-            .tooltip_text("Close")
-            .build();
-        let dialog_weak = dialog.downgrade();
-        close_button.connect_clicked(move |_| {
-            if let Some(dialog) = dialog_weak.upgrade() {
-                dialog.close();
-            }
-        });
-        header.append(&close_button);
+        header.append(&build_dialog_close_button(&dialog));
         content.append(&header);
 
         let group = libadwaita::PreferencesGroup::new();
-        group.set_accessible_role(gtk4::AccessibleRole::Group);
-        group.update_property(&[
-            gtk4::accessible::Property::Label("Bookmark fields"),
-            gtk4::accessible::Property::Description("Edit the bookmark label and line number"),
-        ]);
+        accessibility::set_role(&group, gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &group,
+            "Bookmark fields",
+            "Edit the bookmark label and one-based line number",
+        );
 
         // Adwaita preference rows provide standard GNOME labeled form controls
         // here; the explicit accessible group keeps the modal form meaningful
         // outside a preferences window.
         let label_row = libadwaita::EntryRow::builder().title("Label").build();
+        accessibility::set_labelled_description(
+            &label_row,
+            "Bookmark label",
+            "Optional bookmark name shown in lists, gutter tooltips, and note browsers",
+        );
         if let Some(label) = bookmark.label.as_deref() {
             label_row.set_text(label);
         }
@@ -613,6 +609,11 @@ impl LushtextWindow {
             .title("Line")
             .text(bookmark.line.saturating_add(1).to_string())
             .build();
+        accessibility::set_labelled_description(
+            &line_row,
+            "Bookmark line",
+            "One-based document line number for this bookmark",
+        );
         group.add(&line_row);
         content.append(&group);
 
@@ -622,11 +623,19 @@ impl LushtextWindow {
         error_label.set_wrap(true);
         error_label.add_css_class("error");
         error_label.set_visible(false);
+        accessibility::set_role(&error_label, gtk4::AccessibleRole::Status);
+        accessibility::set_label(&error_label, "Bookmark edit feedback");
+        accessibility::set_hidden(&error_label, true);
         content.append(&error_label);
 
         let button_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         button_box.set_halign(gtk4::Align::End);
         let cancel_button = gtk4::Button::with_label("Cancel");
+        accessibility::set_labelled_description(
+            &cancel_button,
+            "Cancel",
+            "Close bookmark editor without saving changes",
+        );
         let dialog_weak = dialog.downgrade();
         cancel_button.connect_clicked(move |_| {
             if let Some(dialog) = dialog_weak.upgrade() {
@@ -637,20 +646,33 @@ impl LushtextWindow {
 
         let save_button = gtk4::Button::with_label("Save");
         save_button.add_css_class("suggested-action");
+        accessibility::set_labelled_description(
+            &save_button,
+            "Save bookmark",
+            "Save the bookmark label and line number",
+        );
         button_box.append(&save_button);
         content.append(&button_box);
 
         let error_weak = error_label.downgrade();
+        let line_row_weak = line_row.downgrade();
         line_row.connect_changed(move |_| {
             if let Some(error_label) = error_weak.upgrade() {
-                error_label.set_visible(false);
+                clear_bookmark_edit_error(&error_label);
+            }
+            if let Some(line_row) = line_row_weak.upgrade() {
+                accessibility::set_invalid(&line_row, false);
             }
         });
 
         let error_weak = error_label.downgrade();
+        let line_row_weak = line_row.downgrade();
         label_row.connect_changed(move |_| {
             if let Some(error_label) = error_weak.upgrade() {
-                error_label.set_visible(false);
+                clear_bookmark_edit_error(&error_label);
+            }
+            if let Some(line_row) = line_row_weak.upgrade() {
+                accessibility::set_invalid(&line_row, false);
             }
         });
 
@@ -663,8 +685,7 @@ impl LushtextWindow {
             let target_line = match parse_bookmark_target_line(&line_row.text()) {
                 Ok(line) => line,
                 Err(message) => {
-                    error_label.set_label(&message);
-                    error_label.set_visible(true);
+                    show_bookmark_edit_error(&error_label, Some(&line_row), &message);
                     return;
                 }
             };
@@ -688,8 +709,13 @@ impl LushtextWindow {
                     }
                 }
                 Err(error) => {
-                    error_label.set_label(&bookmark_edit_error_message(&error));
-                    error_label.set_visible(true);
+                    let message = bookmark_edit_error_message(&error);
+                    let line_row = if matches!(error, BookmarkEditError::NotFound) {
+                        None
+                    } else {
+                        Some(&line_row)
+                    };
+                    show_bookmark_edit_error(&error_label, line_row, &message);
                 }
             }
         });
@@ -1564,7 +1590,10 @@ impl LushtextWindow {
 
     /// Return the active editor only when it has a stable saved file path.
     fn require_saved_editor(&self, missing_path_message: &str) -> Option<LushtextEditorPage> {
-        let editor = self.active_editor()?;
+        let Some(editor) = self.active_editor() else {
+            self.publish_status_message(missing_path_message, MessageKind::Warning);
+            return None;
+        };
         if editor.file_path().is_some() {
             return Some(editor);
         }
@@ -1721,13 +1750,20 @@ impl LushtextWindow {
         let content = browser_content_box(&dialog);
         let search_entry = gtk4::SearchEntry::new();
         search_entry.set_placeholder_text(Some(&format!("Search {WORKSPACE_SCOPE_TITLE}…")));
-        search_entry.update_property(&[
-            gtk4::accessible::Property::Label("Search bookmarks"),
-            gtk4::accessible::Property::Description("Filter bookmarks in the current workspace"),
-        ]);
+        accessibility::set_labelled_description(
+            &search_entry,
+            "Search bookmarks",
+            "Filter bookmarks in the current workspace",
+        );
         content.append(&search_entry);
 
         let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        accessibility::set_role(&rows_box, gtk4::AccessibleRole::List);
+        accessibility::set_labelled_description(
+            &rows_box,
+            "Bookmark results",
+            "Bookmarks in the current workspace matching the search",
+        );
         let scroll = gtk4::ScrolledWindow::builder()
             .vexpand(true)
             .hexpand(true)
@@ -1793,24 +1829,22 @@ impl LushtextWindow {
         let search_entry = gtk4::SearchEntry::new();
         install_dialog_escape_close(&dialog, &search_entry);
         search_entry.set_placeholder_text(Some("Search Notes..."));
-        search_entry.update_property(&[
-            gtk4::accessible::Property::Label("Search notes"),
-            gtk4::accessible::Property::Description(
-                "Filter bookmarks, document notes, and folder notes",
-            ),
-        ]);
+        accessibility::set_labelled_description(
+            &search_entry,
+            "Search notes",
+            "Filter bookmarks, document notes, and folder notes",
+        );
 
         let sidebar = libadwaita::Sidebar::new();
-        sidebar.set_accessible_role(gtk4::AccessibleRole::List);
+        accessibility::set_role(&sidebar, gtk4::AccessibleRole::List);
         sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
         sidebar.set_vexpand(true);
         sidebar.set_placeholder(Some(&empty_browser_label("No notes match that search")));
-        sidebar.update_property(&[
-            gtk4::accessible::Property::Label("Notes results"),
-            gtk4::accessible::Property::Description(
-                "Choose a bookmark, document note, or folder note",
-            ),
-        ]);
+        accessibility::set_labelled_description(
+            &sidebar,
+            "Notes results",
+            "Choose a bookmark, document note, or folder note",
+        );
         let limit_label = gtk4::Label::new(None);
         limit_label.set_halign(gtk4::Align::Start);
         limit_label.set_xalign(0.0);
@@ -1818,6 +1852,12 @@ impl LushtextWindow {
         limit_label.add_css_class("caption");
         limit_label.add_css_class("dim-label");
         limit_label.set_visible(false);
+        accessibility::set_role(&limit_label, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &limit_label,
+            "Notes result limit",
+            "Shown when the notes browser limits a large result set",
+        );
 
         let preview_title = gtk4::Label::new(Some("Select a note"));
         preview_title.set_halign(gtk4::Align::Start);
@@ -1848,6 +1888,13 @@ impl LushtextWindow {
         raw_preview_view.set_right_margin(NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP);
         raw_preview_view.set_top_margin(NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP);
         raw_preview_view.set_bottom_margin(NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP);
+        accessibility::set_labelled_description(
+            &raw_preview_view,
+            "Bookmark source preview",
+            "Read-only source excerpt around the selected bookmark",
+        );
+        accessibility::set_read_only(&raw_preview_view, true);
+        accessibility::set_multi_line(&raw_preview_view, true);
 
         let raw_preview_scroll = gtk4::ScrolledWindow::builder()
             .hexpand(true)
@@ -1865,18 +1912,35 @@ impl LushtextWindow {
         preview_stack.add_named(&markdown_preview, Some(NOTES_PREVIEW_MARKDOWN_CHILD));
         preview_stack.add_named(&raw_preview_scroll, Some(NOTES_PREVIEW_RAW_CHILD));
         preview_stack.set_visible_child_name(NOTES_PREVIEW_MARKDOWN_CHILD);
+        accessibility::set_role(&preview_stack, gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &preview_stack,
+            "Notes preview",
+            "Read-only preview for the selected bookmark, document note, or folder note",
+        );
+        accessibility::set_value_text(&preview_stack, "No note selected");
 
         let open_button = gtk4::Button::with_label("Open");
         open_button.add_css_class("suggested-action");
         open_button.set_sensitive(false);
-        open_button.update_property(&[gtk4::accessible::Property::Label("Open selected note")]);
+        accessibility::set_labelled_description(
+            &open_button,
+            "Open selected note",
+            "Open the selected bookmark, document note, or folder note",
+        );
+        accessibility::set_disabled(&open_button, true);
+        accessibility::set_value_text(&open_button, "No note selected");
 
         let back_button = gtk4::Button::builder()
             .icon_name("go-previous-symbolic")
             .tooltip_text("Back to Notes")
             .visible(false)
             .build();
-        back_button.update_property(&[gtk4::accessible::Property::Label("Back to notes")]);
+        accessibility::set_labelled_description(
+            &back_button,
+            "Back to notes",
+            "Return to the notes result list in compact layouts",
+        );
 
         let split_view = libadwaita::NavigationSplitView::new();
         split_view.set_hexpand(true);
@@ -2151,11 +2215,22 @@ fn build_note_editor_surface(
     stack.set_vexpand(true);
     stack.set_hhomogeneous(true);
     stack.set_vhomogeneous(true);
+    accessibility::set_role(&stack, gtk4::AccessibleRole::Group);
+    accessibility::set_labelled_description(
+        &stack,
+        "Note body view",
+        "Switch between editing the note body and reading the rendered preview",
+    );
 
     let switcher = gtk4::StackSwitcher::new();
     switcher.set_stack(Some(&stack));
     switcher.set_hexpand(true);
     switcher.set_halign(gtk4::Align::Fill);
+    accessibility::set_labelled_description(
+        &switcher,
+        "Note view mode",
+        "Choose whether to edit the note or read the rendered preview",
+    );
     content.append(&switcher);
 
     let note_view = gtk4::TextView::new();
@@ -2170,6 +2245,12 @@ fn build_note_editor_surface(
     note_view.set_top_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
     note_view.set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
     note_view.buffer().set_text(initial_text);
+    accessibility::set_labelled_description(
+        &note_view,
+        "Note body editor",
+        "Editable note body text",
+    );
+    accessibility::set_multi_line(&note_view, true);
 
     let note_scroll = gtk4::ScrolledWindow::builder()
         .width_request(NOTE_EDITOR_SURFACE_WIDTH_SP)
@@ -2205,6 +2286,14 @@ fn build_note_editor_surface(
     preview
         .text_view()
         .set_bottom_margin(NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP);
+    let rendered_note_view = preview.text_view();
+    accessibility::set_labelled_description(
+        &rendered_note_view,
+        "Rendered note preview",
+        "Read-only rendered view of the note body",
+    );
+    accessibility::set_read_only(&rendered_note_view, true);
+    accessibility::set_multi_line(&rendered_note_view, true);
     preview.show_content_placeholder(empty_preview_description);
     // Non-empty notes may open directly in Render, and the hidden Render page
     // still participates in stack measurement when Edit starts first. Render
@@ -2221,8 +2310,14 @@ fn build_note_editor_surface(
     stack.add_titled(&preview, Some("render"), "Render");
 
     match initial_mode {
-        NoteViewMode::Edit => stack.set_visible_child_name("edit"),
-        NoteViewMode::Render => stack.set_visible_child_name("render"),
+        NoteViewMode::Edit => {
+            stack.set_visible_child_name("edit");
+            accessibility::set_value_text(&stack, "Edit mode");
+        }
+        NoteViewMode::Render => {
+            stack.set_visible_child_name("render");
+            accessibility::set_value_text(&stack, "Render mode");
+        }
     }
 
     let buffer = note_view.buffer();
@@ -2230,6 +2325,7 @@ fn build_note_editor_surface(
     let render_context_clone = render_context.clone();
     stack.connect_notify_local(Some("visible-child-name"), move |stack, _| {
         if stack.visible_child_name().as_deref() == Some("render") {
+            accessibility::set_value_text(stack, "Render mode");
             let preview = preview_for_render.clone();
             let buffer = buffer.clone();
             let render_context = render_context_clone.clone();
@@ -2241,6 +2337,8 @@ fn build_note_editor_surface(
                     empty_preview_description,
                 );
             });
+        } else {
+            accessibility::set_value_text(stack, "Edit mode");
         }
     });
 
@@ -2400,6 +2498,12 @@ fn build_empty_notes_dialog() -> libadwaita::Dialog {
             "Bookmarks, document notes, and folder notes will appear here once you save one.",
         )
         .build();
+    accessibility::set_role(&status, gtk4::AccessibleRole::Status);
+    accessibility::set_labelled_description(
+        &status,
+        "No notes yet",
+        "Bookmarks, document notes, and folder notes will appear here once you save one.",
+    );
     status.set_hexpand(true);
     status.set_vexpand(true);
     content.append(&status);
@@ -2639,6 +2743,12 @@ impl NotesBrowserState {
                 .render_markdown_with_context(entry.note_text(), &entry.render_context());
         }
         state.open_button.set_sensitive(true);
+        accessibility::set_disabled(&state.open_button, false);
+        accessibility::set_value_text(
+            &state.open_button,
+            &format!("Open {}", entry.preview_title()),
+        );
+        accessibility::set_value_text(&state.preview_stack, &entry.preview_title());
 
         if user_selected {
             // `show-content` is only visible while collapsed, but setting it
@@ -2662,6 +2772,9 @@ impl NotesBrowserState {
             .set_label("Choose a bookmark, folder note, or document note to preview it here.");
         self.show_markdown_placeholder("Select a note to preview its details.");
         self.open_button.set_sensitive(false);
+        accessibility::set_disabled(&self.open_button, true);
+        accessibility::set_value_text(&self.open_button, "No note selected");
+        accessibility::set_value_text(&self.preview_stack, "No note selected");
     }
 
     /// Switch to the Markdown/status preview child and clear hidden raw state.
@@ -3058,9 +3171,11 @@ fn rebuild_notes_browser_sidebar(state: &Rc<NotesBrowserState>, query: &str) {
         return;
     }
     if truncated {
-        state.limit_label.set_label(&format!(
+        let message = format!(
             "Showing first {NOTES_BROWSER_RENDER_LIMIT} matches. Refine search to narrow results."
-        ));
+        );
+        state.limit_label.set_label(&message);
+        accessibility::set_label(&state.limit_label, &message);
     }
     state.limit_label.set_visible(truncated);
 
@@ -3228,6 +3343,32 @@ fn bookmark_edit_error_message(error: &BookmarkEditError) -> String {
     }
 }
 
+/// Show bookmark-edit validation feedback and expose the failed field to assistive tech.
+fn show_bookmark_edit_error(
+    error_label: &gtk4::Label,
+    invalid_line_row: Option<&libadwaita::EntryRow>,
+    message: &str,
+) {
+    error_label.set_label(message);
+    error_label.set_visible(true);
+    accessibility::set_label(error_label, message);
+    accessibility::set_hidden(error_label, false);
+    accessibility::set_invalid(error_label, true);
+    accessibility::announce_with_lane(error_label, message, accessibility::AnnouncementLane::Alert);
+    if let Some(line_row) = invalid_line_row {
+        accessibility::set_invalid(line_row, true);
+    }
+}
+
+/// Hide bookmark-edit validation feedback and clear stale accessible error state.
+fn clear_bookmark_edit_error(error_label: &gtk4::Label) {
+    error_label.set_visible(false);
+    error_label.set_label("");
+    accessibility::set_label(error_label, "Bookmark edit feedback");
+    accessibility::set_hidden(error_label, true);
+    accessibility::set_invalid(error_label, false);
+}
+
 /// Build the base dialog used by bookmark browsers.
 fn build_browser_dialog(title: &str) -> libadwaita::Dialog {
     let dialog = libadwaita::Dialog::builder()
@@ -3255,7 +3396,11 @@ fn build_dialog_close_button(dialog: &libadwaita::Dialog) -> gtk4::Button {
         .icon_name("window-close-symbolic")
         .tooltip_text("Close")
         .build();
-    close_button.update_property(&[gtk4::accessible::Property::Label("Close")]);
+    accessibility::set_labelled_description(
+        &close_button,
+        "Close",
+        "Close this dialog and return to the editor",
+    );
     let dialog_weak = dialog.downgrade();
     close_button.connect_clicked(move |_| {
         if let Some(dialog) = dialog_weak.upgrade() {
@@ -3356,15 +3501,23 @@ fn append_bookmark_browser_row(
     button.add_css_class("flat");
     button.set_hexpand(true);
     button.set_halign(gtk4::Align::Fill);
+    let bookmark_label = bookmark.display_label();
+    let bookmark_location = format!(
+        "{} · Line {}",
+        bookmark.path.display(),
+        bookmark.line.saturating_add(1)
+    );
     button.set_child(Some(&browser_row_content(
-        &bookmark.display_label(),
-        &format!(
-            "{} · Line {}",
-            bookmark.path.display(),
-            bookmark.line.saturating_add(1)
-        ),
+        &bookmark_label,
+        &bookmark_location,
         None,
     )));
+    button.set_tooltip_text(Some(&bookmark_location));
+    accessibility::set_labelled_description(
+        &button,
+        &format!("Open bookmark {bookmark_label}"),
+        &bookmark_location,
+    );
 
     let window = window.clone();
     let dialog_weak = dialog.downgrade();
@@ -3424,6 +3577,8 @@ fn empty_browser_label(text: &str) -> gtk4::Label {
     let label = gtk4::Label::new(Some(text));
     label.set_halign(gtk4::Align::Center);
     label.add_css_class("dim-label");
+    accessibility::set_role(&label, gtk4::AccessibleRole::Status);
+    accessibility::set_label(&label, text);
     label
 }
 

@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{PathStatus, metadata as fs_metadata};
+use crate::ui::accessibility;
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 use gtk_lush_tasks::spawn_blocking_then;
 
@@ -1395,6 +1396,10 @@ impl LushtextMarkdownPreview {
         imp.placeholder.set_description(Some(description));
         imp.scrolled_window.set_visible(false);
         imp.placeholder.set_visible(true);
+        accessibility::set_description(&*imp.placeholder, description);
+        accessibility::set_hidden(&*imp.scrolled_window, true);
+        accessibility::set_hidden(&*imp.text_view, true);
+        accessibility::set_hidden(&*imp.placeholder, false);
         self.clear_rendered_state();
         imp.showing_content.set(false);
     }
@@ -1474,6 +1479,9 @@ impl LushtextMarkdownPreview {
         if !imp.showing_content.get() {
             imp.scrolled_window.set_visible(true);
             imp.placeholder.set_visible(false);
+            accessibility::set_hidden(&*imp.scrolled_window, false);
+            accessibility::set_hidden(&*imp.text_view, false);
+            accessibility::set_hidden(&*imp.placeholder, true);
             imp.showing_content.set(true);
         }
     }
@@ -1624,6 +1632,12 @@ impl LushtextMarkdownPreview {
                 Ok(paintable) => {
                     let picture = gtk4::Picture::for_paintable(&paintable);
                     picture.add_css_class("markdown-preview-image");
+                    accessibility::set_role(&picture, gtk4::AccessibleRole::Img);
+                    accessibility::set_labelled_description(
+                        &picture,
+                        "Markdown image",
+                        &format!("Rendered image {}", path.display()),
+                    );
                     container.append(&picture);
                 }
                 Err(error) => {
@@ -2203,6 +2217,14 @@ fn build_code_block_widget(code_block: &BufferedCodeBlock, theme: &CodeBlockThem
     container.set_hexpand(true);
     container.set_halign(gtk4::Align::Fill);
     container.add_css_class("markdown-code-block");
+    let language_hint = code_block.language_hint().unwrap_or("plain text");
+    let code_block_label = format!("Markdown {language_hint} code block");
+    accessibility::set_role(&container, gtk4::AccessibleRole::Group);
+    accessibility::set_labelled_description(
+        &container,
+        &code_block_label,
+        "Read-only code block embedded in the rendered Markdown preview",
+    );
 
     let source_buffer = sourceview5::Buffer::new(None);
     let language = code_block
@@ -2228,6 +2250,14 @@ fn build_code_block_widget(code_block: &BufferedCodeBlock, theme: &CodeBlockThem
     source_view.set_halign(gtk4::Align::Fill);
     source_view.add_css_class("monospace");
     source_view.add_css_class("markdown-code-block-view");
+    accessibility::set_role(&source_view, gtk4::AccessibleRole::TextBox);
+    accessibility::set_labelled_description(
+        &source_view,
+        &code_block_label,
+        "Read-only source text for this Markdown code block",
+    );
+    accessibility::set_read_only(&source_view, true);
+    accessibility::set_multi_line(&source_view, true);
     apply_code_block_background_css(
         container.upcast_ref::<gtk4::Widget>(),
         &source_view,
@@ -2298,8 +2328,17 @@ fn build_table_grid(preview: &LushtextMarkdownPreview, table: &BufferedTable) ->
     grid.set_hexpand(true);
     grid.set_halign(gtk4::Align::Fill);
     grid.add_css_class("markdown-table");
-
     let column_count = table.column_count();
+    accessibility::set_role(&grid, gtk4::AccessibleRole::Table);
+    accessibility::set_labelled_description(
+        &grid,
+        "Markdown table",
+        &format!(
+            "Rendered table with {} rows and {column_count} columns",
+            table.rows.len()
+        ),
+    );
+
     let header_rows = table.header_row_count();
     let mut grid_row = 0usize;
 
@@ -2380,6 +2419,19 @@ fn build_table_cell_label(
     if is_header {
         label.add_css_class("markdown-table-header-cell");
     }
+    let cell_text = label.text();
+    let cell_text = if cell_text.is_empty() {
+        "Blank".into()
+    } else {
+        cell_text
+    };
+    if is_header {
+        accessibility::set_role(&label, gtk4::AccessibleRole::ColumnHeader);
+        accessibility::set_label(&label, &format!("Table header {cell_text}"));
+    } else {
+        accessibility::set_role(&label, gtk4::AccessibleRole::Cell);
+        accessibility::set_label(&label, &format!("Table cell {cell_text}"));
+    }
     label
 }
 
@@ -2448,6 +2500,8 @@ fn build_image_fallback_widget(title: &str, body: &str) -> gtk4::Widget {
     container.set_width_request(240);
     container.add_css_class("card");
     container.add_css_class("markdown-preview-image-fallback");
+    accessibility::set_role(&container, gtk4::AccessibleRole::Img);
+    accessibility::set_labelled_description(&container, &format!("Markdown image: {title}"), body);
 
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     content.set_margin_top(12);

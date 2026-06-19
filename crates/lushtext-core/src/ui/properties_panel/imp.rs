@@ -9,6 +9,8 @@ use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
 use std::cell::RefCell;
 
+use crate::ui::accessibility;
+
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/properties-panel.ui")]
 pub struct LushtextPropertiesPanel {
@@ -73,7 +75,66 @@ impl ObjectSubclass for LushtextPropertiesPanel {
     }
 }
 
-impl ObjectImpl for LushtextPropertiesPanel {}
+impl ObjectImpl for LushtextPropertiesPanel {
+    fn constructed(&self) {
+        self.parent_constructed();
+        self.apply_accessibility_metadata();
+    }
+}
+
+impl LushtextPropertiesPanel {
+    /// Give the document-inspection rows stable accessible identities.
+    ///
+    /// AdwActionRow exposes visible titles, but the panel's important state is
+    /// usually in subtitles that change when the active editor changes. The
+    /// helper-backed metadata keeps those values available to AT and tests.
+    fn apply_accessibility_metadata(&self) {
+        accessibility::set_role(&*self.obj(), gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &*self.obj(),
+            "Document properties",
+            "Document metadata, formatting source, and file-health details",
+        );
+        accessibility::set_labelled_description(
+            &*self.location_row,
+            "Document location",
+            "Path or untitled state for the active document",
+        );
+        accessibility::set_labelled_description(
+            &*self.file_size_row,
+            "Document file size",
+            "On-disk size for the active saved document",
+        );
+        accessibility::set_labelled_description(
+            &*self.statistics_row,
+            "Document statistics",
+            "Line and character counts for the active document",
+        );
+        accessibility::set_labelled_description(
+            &*self.formatting_source_row,
+            "Formatting source",
+            "Whether Preferences or EditorConfig currently controls formatting",
+        );
+        accessibility::set_role(&*self.health_group, gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &*self.health_group,
+            "File health",
+            "Encoding, line-ending, and file-health findings for the active document",
+        );
+        accessibility::set_labelled_description(
+            &*self.health_summary_row,
+            "File health summary",
+            "Summary of file-health findings for the active document",
+        );
+        accessibility::set_labelled_description(
+            &*self.health_review_button,
+            "Review file health findings",
+            "Open detailed file-health findings for the active document",
+        );
+        accessibility::set_hidden(&*self.health_review_button, true);
+        accessibility::set_disabled(&*self.health_review_button, true);
+    }
+}
 
 impl WidgetImpl for LushtextPropertiesPanel {}
 impl BoxImpl for LushtextPropertiesPanel {}

@@ -4246,7 +4246,7 @@
           "name": "label",
           "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/0:property",
           "translatable": "yes",
-          "value": "Undo"
+          "value": "Undo replacements"
         },
         {
           "context": "",
@@ -4494,7 +4494,7 @@
           "context": "",
           "name": "label",
           "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/0:property",
-          "value": "Undo"
+          "value": "Undo replacements"
         }
       ]
     },

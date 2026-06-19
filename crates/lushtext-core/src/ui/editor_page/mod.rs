@@ -6,6 +6,7 @@
 //! search-bar choreography, and external file monitoring live in dedicated
 //! sibling modules to keep this driving adapter easier to navigate.
 
+mod accessibility;
 mod bookmarks;
 mod focus_mode;
 // Private implementation module. GTK's GObject bindings split custom widgets
@@ -308,6 +309,7 @@ impl LushtextEditorPage {
         self.clear_modified_line_marks();
         self.refresh_minimap();
         self.notify_estimated_memory_changed();
+        self.refresh_accessibility_metadata();
     }
 
     #[must_use]

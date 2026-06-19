@@ -8,6 +8,7 @@ use gtk4::prelude::*;
 use gtk4::{gio, glib};
 
 use crate::config::{self, keys};
+use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::editor_page::BookmarkNavigationDirection;
 
 use super::{LushtextWindow, imp};
@@ -26,6 +27,16 @@ impl LushtextWindow {
                 .build(),
             gio::ActionEntry::builder("open-recent")
                 .activate(|window: &Self, _, _| window.open_recent_popover())
+                .build(),
+            gio::ActionEntry::builder("set-open-popover-query")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(query) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-open-popover-query: expected string parameter");
+                        return;
+                    };
+                    window.set_open_popover_query(&query);
+                })
                 .build(),
             gio::ActionEntry::builder("open-folder")
                 .activate(|window: &Self, _, _| {
@@ -177,6 +188,37 @@ impl LushtextWindow {
                     }
                 })
                 .build(),
+            gio::ActionEntry::builder("set-search-panel-query")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(query) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("set-search-panel-query: expected string parameter");
+                        return;
+                    };
+                    window.set_search_panel_query(&query);
+                })
+                .build(),
+            gio::ActionEntry::builder("set-search-panel-replace-query")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(text) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!(
+                            "set-search-panel-replace-query: expected string parameter"
+                        );
+                        return;
+                    };
+                    window.set_search_panel_replace_query(&text);
+                })
+                .build(),
+            gio::ActionEntry::builder("preview-search-panel-replacements")
+                .activate(|window: &Self, _, _| window.preview_search_panel_replacements())
+                .build(),
+            gio::ActionEntry::builder("confirm-search-panel-replacements")
+                .activate(|window: &Self, _, _| window.confirm_search_panel_replacements())
+                .build(),
+            gio::ActionEntry::builder("undo-search-panel-replacements")
+                .activate(|window: &Self, _, _| window.undo_search_panel_replacements())
+                .build(),
             gio::ActionEntry::builder("search-next-match")
                 .activate(|window: &Self, _, _| {
                     window.imp().search_panel.navigate_next_match();
@@ -254,8 +296,10 @@ impl LushtextWindow {
                 .activate(|window: &Self, _, _| window.open_notes_browser_selection())
                 .build(),
         ]);
+        self.set_open_popover_actions_enabled(false);
         self.set_notes_browser_actions_enabled(false);
         self.set_command_palette_actions_enabled(false);
+        self.set_search_panel_actions_enabled(false);
 
         let discard_action = gio::SimpleAction::new("discard-changes", None);
         discard_action.set_enabled(false);
@@ -422,6 +466,23 @@ impl LushtextWindow {
             .imp()
             .settings
             .set_boolean(keys::WORKSPACE_SIDEBAR_VISIBLE, visible);
+        self.set_toggle_action_state("toggle-sidebar", visible);
+        self.imp()
+            .status_bar
+            .set_workspace_sidebar_toggle_pressed(visible);
+        self.announce_workflow_update(
+            AnnouncementLane::StatusUpdate,
+            if visible {
+                "workspace-sidebar-shown"
+            } else {
+                "workspace-sidebar-hidden"
+            },
+            if visible {
+                "Workspace sidebar shown"
+            } else {
+                "Workspace sidebar hidden"
+            },
+        );
         self.start_workspace_sidebar_transition();
     }
 
@@ -447,6 +508,26 @@ impl LushtextWindow {
             .imp()
             .settings
             .set_boolean(keys::PROPERTIES_SIDEBAR_VISIBLE, visible);
+        self.set_toggle_action_state("toggle-properties", visible);
+        if self.imp().document_properties_toggle_button.is_active() != visible {
+            self.imp()
+                .document_properties_toggle_button
+                .set_active(visible);
+        }
+        accessibility::set_pressed(&*self.imp().document_properties_toggle_button, visible);
+        self.announce_workflow_update(
+            AnnouncementLane::StatusUpdate,
+            if visible {
+                "document-properties-shown"
+            } else {
+                "document-properties-hidden"
+            },
+            if visible {
+                "Document properties shown"
+            } else {
+                "Document properties hidden"
+            },
+        );
         self.sync_secondary_surface_layout();
     }
 
@@ -469,21 +550,30 @@ impl LushtextWindow {
     /// Update the rendered on/off state that powers both toggle buttons and
     /// any other surfaces bound to the same stateful window actions.
     pub(super) fn sync_secondary_surface_action_states(&self) {
-        self.set_toggle_action_state(
-            "toggle-sidebar",
-            if self.is_focus_mode_active() {
-                self.workspace_sidebar_requested_visible()
-            } else {
-                self.rendered_workspace_sidebar_visible()
-            },
-        );
-        self.set_toggle_action_state(
-            "toggle-properties",
-            if self.is_focus_mode_active() {
-                self.document_properties_requested_visible()
-            } else {
-                self.rendered_document_properties_visible()
-            },
+        let sidebar_visible = if self.is_focus_mode_active() {
+            self.workspace_sidebar_requested_visible()
+        } else {
+            self.rendered_workspace_sidebar_visible()
+        };
+        self.set_toggle_action_state("toggle-sidebar", sidebar_visible);
+        self.imp()
+            .status_bar
+            .set_workspace_sidebar_toggle_pressed(sidebar_visible);
+
+        let properties_visible = if self.is_focus_mode_active() {
+            self.document_properties_requested_visible()
+        } else {
+            self.rendered_document_properties_visible()
+        };
+        self.set_toggle_action_state("toggle-properties", properties_visible);
+        if self.imp().document_properties_toggle_button.is_active() != properties_visible {
+            self.imp()
+                .document_properties_toggle_button
+                .set_active(properties_visible);
+        }
+        accessibility::set_pressed(
+            &*self.imp().document_properties_toggle_button,
+            properties_visible,
         );
     }
 
@@ -532,11 +622,30 @@ impl LushtextWindow {
         }
 
         let action_weak = action.downgrade();
+        let window_weak = self.downgrade();
         self.imp()
             .settings
             .connect_changed(Some(settings_key), move |s, _| {
+                let enabled = s.boolean(settings_key);
                 if let Some(action) = action_weak.upgrade() {
-                    action.set_state(&s.boolean(settings_key).to_variant());
+                    action.set_state(&enabled.to_variant());
+                }
+                if settings_key == keys::SHOW_MINIMAP
+                    && let Some(window) = window_weak.upgrade()
+                {
+                    window.announce_workflow_update(
+                        AnnouncementLane::StatusUpdate,
+                        if enabled {
+                            "minimap-shown"
+                        } else {
+                            "minimap-hidden"
+                        },
+                        if enabled {
+                            "Minimap shown"
+                        } else {
+                            "Minimap hidden"
+                        },
+                    );
                 }
             });
 

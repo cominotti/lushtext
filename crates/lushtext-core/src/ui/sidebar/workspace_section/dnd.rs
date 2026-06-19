@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::model::workspace::{WorkspaceFolderId, WorkspaceId};
+use crate::ui::accessibility;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 
 use super::LushtextWorkspaceSection;
@@ -505,6 +506,8 @@ fn show_drop_indicator(
     shown_position: &Cell<Option<DropPosition>>,
     position: DropPosition,
 ) {
+    accessibility::set_hidden(drop_target_surface, true);
+    accessibility::set_disabled(drop_target_surface, true);
     if shown_position.get() != Some(position) {
         drop_target_surface.set_valign(match position {
             DropPosition::Before => gtk4::Align::Start,
@@ -523,6 +526,8 @@ fn hide_drop_indicator(
 ) {
     shown_position.set(None);
     drop_target_surface.set_visible(false);
+    accessibility::set_hidden(drop_target_surface, true);
+    accessibility::set_disabled(drop_target_surface, true);
 }
 
 fn drop_source_and_new_index(
@@ -673,12 +678,16 @@ fn set_reorder_handle_visible(overlay: &gtk4::Overlay, visible: bool) {
     if let Some(drag_handle) = reorder_drag_handle(overlay) {
         drag_handle.set_visible(visible);
         drag_handle.set_sensitive(visible);
+        accessibility::set_hidden(&drag_handle, !visible);
+        accessibility::set_disabled(&drag_handle, !visible);
     }
 }
 
 fn set_reorder_shield_targetable(overlay: &gtk4::Overlay, targetable: bool) {
     if let Some(shield) = reorder_shield(overlay) {
         shield.set_can_target(targetable);
+        accessibility::set_hidden(&shield, true);
+        accessibility::set_disabled(&shield, true);
     }
 }
 

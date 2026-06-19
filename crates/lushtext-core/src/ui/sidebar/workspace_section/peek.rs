@@ -14,6 +14,7 @@ use gtk4::prelude::*;
 use gtk4::{self, glib};
 
 use crate::services::file_peek::{self, PeekPreviewState, PeekRequestToken, PeekSnapshot};
+use crate::ui::accessibility;
 
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
@@ -61,7 +62,8 @@ impl LushtextWorkspaceSection {
     #[must_use]
     pub fn peek_visible(&self) -> bool {
         self.peek_popover()
-            .is_some_and(|popover| popover.is_visible())
+            .as_ref()
+            .is_some_and(gtk4::prelude::WidgetExt::is_visible)
     }
 
     /// Return the path currently shown in the peek card, if any.
@@ -154,6 +156,11 @@ impl LushtextWorkspaceSection {
         popover.set_width_request(PEEK_CARD_WIDTH);
         popover.set_height_request(PEEK_CARD_HEIGHT);
         popover.add_css_class("card");
+        accessibility::set_labelled_description(
+            &popover,
+            "File peek",
+            "Read-only preview for the selected file",
+        );
 
         let card = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
         card.set_margin_top(12);
@@ -165,17 +172,32 @@ impl LushtextWorkspaceSection {
         title_label.set_xalign(0.0);
         title_label.set_wrap(true);
         title_label.add_css_class("heading");
+        accessibility::set_labelled_description(
+            &title_label,
+            "Peek file name",
+            "Name of the file being previewed",
+        );
 
         let path_label = gtk4::Label::new(None);
         path_label.set_xalign(0.0);
         path_label.set_wrap(true);
         path_label.add_css_class("dim-label");
         path_label.add_css_class("monospace");
+        accessibility::set_labelled_description(
+            &path_label,
+            "Peek file path",
+            "Full path of the file being previewed",
+        );
 
         let meta_label = gtk4::Label::new(None);
         meta_label.set_xalign(0.0);
         meta_label.set_wrap(true);
         meta_label.add_css_class("dim-label");
+        accessibility::set_labelled_description(
+            &meta_label,
+            "Peek file metadata",
+            "Size and modification time for the file being previewed",
+        );
 
         let header = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         header.append(&title_label);
@@ -184,6 +206,11 @@ impl LushtextWorkspaceSection {
 
         let body_stack = gtk4::Stack::new();
         body_stack.set_vexpand(true);
+        accessibility::set_labelled_description(
+            &body_stack,
+            "Peek preview body",
+            "Preview content or an explanation when preview is unavailable",
+        );
 
         let loading_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
         loading_box.set_valign(gtk4::Align::Center);
@@ -202,6 +229,13 @@ impl LushtextWorkspaceSection {
         text_view.set_monospace(true);
         text_view.set_wrap_mode(gtk4::WrapMode::WordChar);
         text_view.add_css_class("monospace");
+        accessibility::set_labelled_description(
+            &text_view,
+            "Peek text preview",
+            "Read-only text sample for the selected file",
+        );
+        accessibility::set_read_only(&text_view, true);
+        accessibility::set_multi_line(&text_view, true);
 
         let text_scroller = gtk4::ScrolledWindow::new();
         text_scroller.set_child(Some(&text_view));
@@ -215,9 +249,19 @@ impl LushtextWorkspaceSection {
         fallback_title_label.set_xalign(0.0);
         fallback_title_label.set_wrap(true);
         fallback_title_label.add_css_class("heading");
+        accessibility::set_labelled_description(
+            &fallback_title_label,
+            "Peek fallback",
+            "Reason an inline preview is unavailable",
+        );
         let fallback_body_label = gtk4::Label::new(None);
         fallback_body_label.set_xalign(0.0);
         fallback_body_label.set_wrap(true);
+        accessibility::set_labelled_description(
+            &fallback_body_label,
+            "Peek fallback detail",
+            "Explanation of the current preview limitation",
+        );
         fallback_box.append(&fallback_title_label);
         fallback_box.append(&fallback_body_label);
         body_stack.add_named(&fallback_box, Some("fallback"));
@@ -226,6 +270,13 @@ impl LushtextWorkspaceSection {
         footer.set_halign(gtk4::Align::End);
         let open_button = gtk4::Button::with_label("Open");
         open_button.add_css_class("suggested-action");
+        accessibility::set_labelled_description(
+            &open_button,
+            "Open previewed file",
+            "Open the previewed file in an editor tab",
+        );
+        accessibility::set_value_text(&open_button, "Open unavailable");
+        accessibility::set_disabled(&open_button, true);
         footer.append(&open_button);
 
         card.append(&header);
@@ -261,6 +312,7 @@ impl LushtextWorkspaceSection {
         *self.imp().peek_widgets.meta_label.borrow_mut() = Some(meta_label);
         *self.imp().peek_widgets.body_stack.borrow_mut() = Some(body_stack);
         *self.imp().peek_widgets.text_buffer.borrow_mut() = Some(text_buffer);
+        *self.imp().peek_widgets.text_view.borrow_mut() = Some(text_view);
         *self.imp().peek_widgets.fallback_title_label.borrow_mut() = Some(fallback_title_label);
         *self.imp().peek_widgets.fallback_body_label.borrow_mut() = Some(fallback_body_label);
         *self.imp().peek_widgets.open_button.borrow_mut() = Some(open_button);
@@ -361,11 +413,35 @@ impl LushtextWorkspaceSection {
         }
         if let Some(button) = self.peek_open_button() {
             button.set_sensitive(snapshot.open_allowed);
+            accessibility::set_disabled(&button, !snapshot.open_allowed);
+            accessibility::set_value_text(
+                &button,
+                if snapshot.open_allowed {
+                    "Open available"
+                } else {
+                    "Open unavailable"
+                },
+            );
         }
         self.imp()
             .peek_session
             .open_allowed
             .set(snapshot.open_allowed);
+
+        let loading = matches!(snapshot.preview_state, PeekPreviewState::Loading);
+        let invalid = matches!(snapshot.preview_state, PeekPreviewState::Unreadable);
+        if let Some(popover) = self.peek_popover() {
+            accessibility::set_description(
+                &popover,
+                &format!("Read-only preview for {}", snapshot.display_path),
+            );
+            accessibility::set_busy(&popover, loading);
+            accessibility::set_invalid(&popover, invalid);
+        }
+        if let Some(stack) = self.peek_body_stack() {
+            accessibility::set_busy(&stack, loading);
+            accessibility::set_invalid(&stack, invalid);
+        }
 
         match snapshot.preview_state {
             PeekPreviewState::Loading => {
@@ -504,9 +580,19 @@ impl LushtextWorkspaceSection {
         self.imp().peek_session.open_allowed.set(false);
         if let Some(button) = self.peek_open_button() {
             button.set_sensitive(false);
+            accessibility::set_disabled(&button, true);
+            accessibility::set_value_text(&button, "Open unavailable");
         }
         if let Some(buffer) = self.peek_text_buffer() {
             buffer.set_text("");
+        }
+        if let Some(popover) = self.peek_popover() {
+            accessibility::set_busy(&popover, false);
+            accessibility::set_invalid(&popover, false);
+        }
+        if let Some(stack) = self.peek_body_stack() {
+            accessibility::set_busy(&stack, false);
+            accessibility::set_invalid(&stack, false);
         }
     }
 

@@ -2,12 +2,13 @@
 
 //! Tests for the LushtextStatusBar widget.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::common::{ensure_gtk_init, flush_after_delay};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::services::notifications::StatusMessage;
+use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::status_bar::{LushtextStatusBar, MessageKind};
 
 // --- Construction ---
@@ -36,22 +37,33 @@ fn test_status_controls_expose_accessibility_roles() {
     ensure_gtk_init();
     let bar = LushtextStatusBar::new();
 
-    assert_eq!(
-        bar.imp().sidebar_toggle_button.accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
-    assert_eq!(
-        bar.imp().metadata_box.accessible_role(),
-        gtk4::AccessibleRole::Group
-    );
-    assert_eq!(
-        bar.imp().line_ending_button.accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(
-        bar.imp().encoding_button.accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ToggleButton)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .assert_on(&*bar.imp().sidebar_toggle_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*bar.imp().metadata_box);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*bar.imp().line_ending_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*bar.imp().encoding_button);
 }
 
 fn status_message(text: &str, severity: MessageKind) -> StatusMessage {
@@ -123,6 +135,96 @@ fn test_render_message_sets_label() {
     let bar = LushtextStatusBar::new();
     bar.render_message(Some(&status_message("File saved", MessageKind::Info)));
     assert_eq!(bar.imp().message_label.label().as_str(), "File saved");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*bar.imp().message_label);
+}
+
+#[test]
+fn test_workflow_announcements_use_status_bar_throttling_policy() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    assert!(bar.announce_workflow_update(
+        AnnouncementLane::StatusUpdate,
+        "document-save",
+        "File saved",
+    ));
+    assert!(
+        !bar.imp()
+            .status_announcement_throttler
+            .should_announce_at(
+                AnnouncementLane::StatusUpdate,
+                "workflow:document-save",
+                Instant::now()
+            ),
+        "workflow status updates should reuse the status-bar throttler"
+    );
+
+    assert!(bar.announce_workflow_update(
+        AnnouncementLane::Alert,
+        "document-save-failed",
+        "Save failed",
+    ));
+    assert!(
+        bar.imp()
+            .status_announcement_throttler
+            .should_announce_at(
+                AnnouncementLane::Alert,
+                "workflow:document-save-failed",
+                Instant::now()
+            ),
+        "alert workflow updates should bypass repeated-status throttling"
+    );
+}
+
+#[test]
+fn test_visible_status_rendering_does_not_announce_info_or_flood_repeated_warnings() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    bar.render_message(Some(&status_message("File saved", MessageKind::Info)));
+    assert!(
+        !bar.imp()
+            .status_announcement_throttler
+            .has_recent_announcement_for_test(
+                AnnouncementLane::StatusUpdate,
+                "status:info:File saved"
+            ),
+        "routine info status text should stay visually visible without speech spam"
+    );
+
+    bar.render_message(Some(&status_message(
+        "Save is still in progress",
+        MessageKind::Warning,
+    )));
+    assert!(
+        bar.imp()
+            .status_announcement_throttler
+            .has_recent_announcement_for_test(
+                AnnouncementLane::StatusUpdate,
+                "status:warning:Save is still in progress"
+            ),
+        "warning status text should be eligible for one spoken update"
+    );
+
+    bar.render_message(Some(&status_message(
+        "Save is still in progress",
+        MessageKind::Warning,
+    )));
+    assert!(
+        !bar.imp()
+            .status_announcement_throttler
+            .should_announce_at(
+                AnnouncementLane::StatusUpdate,
+                "status:warning:Save is still in progress",
+                Instant::now()
+            ),
+        "repeated visible warning status text should stay throttled"
+    );
 }
 
 #[test]
@@ -159,6 +261,9 @@ fn test_render_message_replaces_text() {
     bar.render_message(Some(&status_message("first", MessageKind::Info)));
     bar.render_message(Some(&status_message("second", MessageKind::Warning)));
     assert_eq!(bar.imp().message_label.label().as_str(), "second");
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::Description])
+        .assert_on(&*bar.imp().message_label);
 }
 
 #[test]
@@ -180,6 +285,12 @@ fn test_render_none_empties_label() {
     bar.render_message(Some(&status_message("test", MessageKind::Info)));
     bar.render_message(None);
     assert_eq!(bar.imp().message_label.label().as_str(), "");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*bar.imp().message_label);
 }
 
 #[test]
@@ -347,6 +458,35 @@ fn test_set_editorconfig_inactive_hides_badge_and_separator() {
     bar.set_editorconfig_active(false);
     assert!(!bar.imp().editorconfig_label.is_visible());
     assert!(!bar.imp().editorconfig_separator.is_visible());
+}
+
+#[test]
+fn test_metadata_control_updates_refresh_accessible_value_text() {
+    ensure_gtk_init();
+    let bar = LushtextStatusBar::new();
+
+    bar.set_line_ending_label("CRLF");
+    bar.set_encoding_label("UTF-16 LE");
+
+    assert_eq!(bar.imp().line_ending_button.label().as_deref(), Some("CRLF"));
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*bar.imp().line_ending_button);
+    assert_eq!(
+        bar.imp().encoding_button.label().as_deref(),
+        Some("UTF-16 LE")
+    );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*bar.imp().encoding_button);
 }
 
 #[test]

@@ -11,6 +11,7 @@ use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::model::content_search::{Replacement, SavedSearch, SearchHistoryEntry, SearchMatch};
 use crate::services::content_search::ReplaceUndoBackup;
+use crate::ui::accessibility;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
@@ -225,6 +226,8 @@ pub struct LushtextSearchPanel {
     pub navigation: SearchNavigationState,
     /// Window-provided callback glue.
     pub callbacks: SearchCallbacks,
+    /// Throttles spoken workspace-search result summaries.
+    pub results_announcement_throttler: accessibility::AnnouncementThrottler,
 }
 
 impl Default for LushtextSearchPanel {
@@ -296,6 +299,7 @@ impl Default for LushtextSearchPanel {
             preview: SearchPreviewState::default(),
             navigation: SearchNavigationState::default(),
             callbacks: SearchCallbacks::default(),
+            results_announcement_throttler: accessibility::AnnouncementThrottler::default(),
         }
     }
 }
@@ -340,6 +344,7 @@ impl ObjectImpl for LushtextSearchPanel {
         self.setup_history();
         self.setup_save_button();
         self.apply_accessibility_metadata();
+        self.obj().refresh_accessibility_state();
         self.obj().load_persisted_undo_backup();
         self.history.constructed_complete.set(true);
     }
@@ -449,27 +454,10 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
-            let imp = panel.imp();
-            if imp.preview.preview_mode.get() {
-                // "Confirm Replace" mode: collect checked replacements and fire callback.
-                let replacements = imp.preview.preview_replacements.borrow();
-                let checked = imp.preview.checked_indices.borrow();
-                let selected: Vec<_> = checked
-                    .iter()
-                    .filter_map(|&idx| replacements.get(idx).cloned())
-                    .collect();
-                drop(checked);
-                drop(replacements);
-                panel.exit_preview_mode();
-                if let Some(ref cb) = *imp.callbacks.replace_callback.borrow() {
-                    cb(selected);
-                }
+            if panel.imp().preview.preview_mode.get() {
+                panel.activate_confirm_replacements();
             } else {
-                // "Replace All" mode: enter preview (empty text = delete matches).
-                let text = imp.replace_entry.text().to_string();
-                if panel.has_results() {
-                    panel.enter_preview_mode(&text);
-                }
+                panel.activate_replace_preview();
             }
         });
 
@@ -479,13 +467,7 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
-            let imp = panel.imp();
-            if let Some(backup) = imp.preview.undo_backup.borrow().clone() {
-                panel.hide_undo_button();
-                if let Some(ref cb) = *imp.callbacks.undo_callback.borrow() {
-                    cb(backup);
-                }
-            }
+            panel.activate_undo_replacements();
         });
 
         // 7. Replace entry: update button sensitivity on text change.
@@ -525,42 +507,68 @@ impl LushtextSearchPanel {
     /// Give the workspace-search controls explicit names that screen readers
     /// and AT-SPI smoke helpers can target without relying on widget order.
     fn apply_accessibility_metadata(&self) {
-        self.search_entry.update_property(&[
-            gtk4::accessible::Property::Label("Workspace search query"),
-            gtk4::accessible::Property::Description("Search across workspace files"),
-        ]);
-        self.results_list
-            .set_accessible_role(gtk4::AccessibleRole::List);
-        self.results_list.update_property(&[
-            gtk4::accessible::Property::Label("Workspace search results"),
-            gtk4::accessible::Property::Description("Matching files and lines"),
-        ]);
-        self.case_toggle
-            .update_property(&[gtk4::accessible::Property::Label("Match case")]);
-        self.regex_toggle
-            .update_property(&[gtk4::accessible::Property::Label("Use regular expression")]);
-        self.word_toggle
-            .update_property(&[gtk4::accessible::Property::Label("Match whole words")]);
-        self.more_toggle
-            .update_property(&[gtk4::accessible::Property::Label("Search options")]);
-        self.gitignore_toggle
-            .update_property(&[gtk4::accessible::Property::Label("Respect gitignore")]);
-        self.glob_entry.update_property(&[
-            gtk4::accessible::Property::Label("File glob filter"),
-            gtk4::accessible::Property::Description("Limit workspace search to matching paths"),
-        ]);
-        self.replace_entry.update_property(&[
-            gtk4::accessible::Property::Label("Workspace replacement text"),
-            gtk4::accessible::Property::Description("Replacement text for workspace matches"),
-        ]);
-        self.replace_all_button
-            .update_property(&[gtk4::accessible::Property::Label("Replace all matches")]);
-        self.undo_button
-            .update_property(&[gtk4::accessible::Property::Label("Undo replacements")]);
-        self.save_button
-            .update_property(&[gtk4::accessible::Property::Label("Save search")]);
-        self.close_button
-            .update_property(&[gtk4::accessible::Property::Label("Close workspace search")]);
+        accessibility::set_labelled_description(
+            &*self.search_entry,
+            "Workspace search query",
+            "Search across workspace files",
+        );
+        accessibility::set_has_popup(&*self.search_entry, true);
+        accessibility::set_role(&*self.results_list, gtk4::AccessibleRole::List);
+        accessibility::set_labelled_description(
+            &*self.results_list,
+            "Workspace search results",
+            "Matching files and lines",
+        );
+        accessibility::set_role(&*self.count_label, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &*self.count_label,
+            "Workspace search result count",
+            "Current workspace search status and result total",
+        );
+        accessibility::set_role(&*self.error_label, gtk4::AccessibleRole::Alert);
+        accessibility::set_labelled_description(
+            &*self.error_label,
+            "Workspace search error",
+            "Problem reported by the current workspace search",
+        );
+
+        for (toggle, label) in [
+            (&*self.case_toggle, "Match case"),
+            (&*self.regex_toggle, "Use regular expression"),
+            (&*self.word_toggle, "Match whole words"),
+            (&*self.more_toggle, "Search options"),
+            (&*self.gitignore_toggle, "Respect gitignore"),
+        ] {
+            accessibility::set_label(toggle, label);
+            accessibility::set_pressed(toggle, toggle.is_active());
+            toggle.connect_active_notify(|toggle| {
+                accessibility::set_pressed(toggle, toggle.is_active());
+            });
+        }
+        accessibility::set_controls(
+            &*self.more_toggle,
+            &[self.options_revealer.upcast_ref::<gtk4::Accessible>()],
+        );
+
+        accessibility::set_labelled_description(
+            &*self.glob_entry,
+            "File glob filter",
+            "Limit workspace search to matching paths",
+        );
+        accessibility::set_labelled_description(
+            &*self.replace_entry,
+            "Workspace replacement text",
+            "Replacement text for workspace matches",
+        );
+        accessibility::set_label(&*self.replace_all_button, "Replace all matches");
+        accessibility::set_label(&*self.undo_button, "Undo replacements");
+        accessibility::set_label(&*self.save_button, "Save search");
+        accessibility::set_label(&*self.close_button, "Close workspace search");
+        accessibility::set_key_shortcuts(&*self.close_button, "Escape");
+        accessibility::set_role(&self.saved_searches_list, gtk4::AccessibleRole::List);
+        accessibility::set_label(&self.saved_searches_list, "Saved workspace searches");
+        accessibility::set_role(&self.history_list, gtk4::AccessibleRole::List);
+        accessibility::set_label(&self.history_list, "Recent workspace searches");
     }
 
     /// Set up the search entry with debounced search triggering.

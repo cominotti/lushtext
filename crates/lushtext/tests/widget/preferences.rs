@@ -12,6 +12,7 @@ use lushtext_core::services::format_upgrade::{
 use lushtext_core::services::json_format::{
     KIND_BOOKMARK_SIDECAR, KIND_SESSION, SUPPORTED_JSON_VERSION,
 };
+use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::preferences::LushtextPreferences;
 use libadwaita::prelude::*;
 use serde_json::json;
@@ -113,6 +114,19 @@ fn test_preferences_controls_expose_accessibility_roles() {
         imp.data_convert_button.accessible_role(),
         gtk4::AccessibleRole::Button
     );
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*imp.transparency_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::List)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&imp.data_details_list);
 }
 
 // --- GSettings binding tests ---
@@ -280,6 +294,9 @@ fn test_background_opacity_row_is_visible_with_default_percentage() {
     );
     assert_eq!(imp.transparency_adjustment.value(), 1.0);
     assert_eq!(imp.transparency_label.label().as_str(), "100%");
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*imp.transparency_button);
 }
 
 #[test]
@@ -298,6 +315,9 @@ fn test_background_opacity_row_updates_setting_and_label() {
 
     assert!((settings.double(keys::TAB_CONTENT_OPACITY) - 0.85).abs() < f64::EPSILON);
     assert_eq!(imp.transparency_label.label().as_str(), " 85%");
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*imp.transparency_button);
     assert_ne!(
         imp.transparency_label.label().as_str(),
         " 15%",
@@ -382,6 +402,23 @@ fn test_data_page_reports_current_format_hides_actions_and_shows_verified_curren
     );
     assert!(!imp.data_convert_row.is_visible());
     assert!(!imp.data_convert_button.is_sensitive());
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*imp.data_status_row);
+    AccessibleAudit::new()
+        .states(&[gtk4::AccessibleState::Hidden])
+        .assert_on(&*imp.data_convert_row);
+    AccessibleAudit::new()
+        .states(&[gtk4::AccessibleState::Disabled])
+        .assert_on(&*imp.data_convert_button);
+    assert!(
+        !imp.data_announcement_throttler.should_announce_at(
+            AnnouncementLane::StatusUpdate,
+            "app-data-format-scan",
+            Instant::now()
+        ),
+        "completed Data page scans should announce through the shared status-update lane"
+    );
     assert!(
         imp.data_details_list.first_child().is_some(),
         "current state should still render a concise details row"
@@ -410,6 +447,15 @@ fn test_data_page_refresh_keeps_verifying_state_visible_for_fast_current_scan() 
     assert!(!imp.data_scan_button.is_sensitive());
     assert!(!imp.data_convert_button.is_sensitive());
     assert!(!imp.data_current_indicator.is_visible());
+    AccessibleAudit::new()
+        .states(&[gtk4::AccessibleState::Busy])
+        .assert_on(&*imp.data_status_row);
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Busy,
+            gtk4::AccessibleState::Disabled,
+        ])
+        .assert_on(&*imp.data_scan_button);
 
     while started_at.elapsed() < FAST_SCAN_VISIBLE_DWELL {
         glib::MainContext::default().iteration(false);
@@ -433,6 +479,9 @@ fn test_data_page_refresh_keeps_verifying_state_visible_for_fast_current_scan() 
     assert!(imp.data_scan_button.is_sensitive());
     assert!(imp.data_current_indicator.is_visible());
     assert!(!imp.data_actions_group.is_visible());
+    AccessibleAudit::new()
+        .states(&[gtk4::AccessibleState::Hidden])
+        .assert_on(&*imp.data_convert_row);
 }
 
 #[test]

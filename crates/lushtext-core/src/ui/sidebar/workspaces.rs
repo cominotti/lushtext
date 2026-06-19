@@ -20,6 +20,7 @@ use crate::model::workspace::{
 };
 use crate::services::notifications::NotificationSeverity;
 use crate::services::{json_store, workspace_manager};
+use crate::ui::accessibility;
 use workspace_manager::{
     WorkspaceFolderAddError, WorkspaceFolderRemoveError, WorkspaceFolderReorderError,
 };
@@ -140,6 +141,7 @@ impl LushtextSidebar {
         };
         imp.workspace_filter_dropdown
             .set_tooltip_text(Some(&tooltip));
+        accessibility::set_value_text(&*imp.workspace_filter_dropdown, &tooltip);
     }
 
     /// Show either every workspace section or only the selected one.

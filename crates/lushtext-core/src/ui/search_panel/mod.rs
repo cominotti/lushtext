@@ -25,6 +25,7 @@ use std::sync::atomic::Ordering;
 
 use crate::model::content_search::{Replacement, SearchQuerySpec};
 use crate::services::content_search::ReplaceUndoBackup;
+use crate::ui::accessibility;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -48,8 +49,12 @@ glib::wrapper! {
 /// "progress vs done" semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchProgressUpdate {
+    /// A non-empty search worker has started after the input debounce.
+    Started,
     /// The worker is still running and has visited this many files so far.
     Progress { files_searched: usize },
+    /// The previous worker was cancelled by a newer query or panel close.
+    Cancelled { files_searched: usize },
     /// The worker finished and this is the final visited-file count.
     Done { files_searched: usize },
 }
@@ -113,11 +118,70 @@ impl LushtextSearchPanel {
         // Replace All journal files are intentionally bounded to the active
         // panel lifetime so a later session cannot inherit stale rollback state.
         self.clear_undo_backup();
+        self.refresh_accessibility_state();
     }
 
     /// Pre-fill the search entry with text (e.g., editor selection).
     pub fn set_query(&self, text: &str) {
         self.imp().search_entry.set_text(text);
+    }
+
+    /// Pre-fill the replacement entry without starting a Replace All preview.
+    ///
+    /// This is a main-thread GTK adapter method used by the visible entry and
+    /// automation-friendly window actions; applying replacements still requires
+    /// the explicit preview and confirm steps.
+    pub fn set_replace_query(&self, text: &str) {
+        self.imp().replace_entry.set_text(text);
+    }
+
+    /// Activate the same Replace All preview step as the panel button.
+    ///
+    /// The method stays main-thread-only because it reads GTK widget state and
+    /// then delegates expensive preview construction to the existing background
+    /// worker in `enter_preview_mode`.
+    pub fn activate_replace_preview(&self) {
+        let imp = self.imp();
+        let text = imp.replace_entry.text().to_string();
+        self.enter_preview_mode(&text);
+    }
+
+    /// Confirm the checked replacement preview rows through the normal callback.
+    ///
+    /// This preserves the panel's two-step preview/apply workflow: callers can
+    /// only apply rows that were generated and checked by the current preview.
+    pub fn activate_confirm_replacements(&self) {
+        let imp = self.imp();
+        if !imp.preview.preview_mode.get() {
+            return;
+        }
+        let replacements = imp.preview.preview_replacements.borrow();
+        let checked = imp.preview.checked_indices.borrow();
+        let selected: Vec<_> = checked
+            .iter()
+            .filter_map(|&idx| replacements.get(idx).cloned())
+            .collect();
+        drop(checked);
+        drop(replacements);
+        self.exit_preview_mode();
+        if let Some(ref callback) = *imp.callbacks.replace_callback.borrow() {
+            callback(selected);
+        }
+    }
+
+    /// Trigger the visible Undo Replacements affordance through the normal callback.
+    ///
+    /// The durable undo journal and generation guards remain owned by the
+    /// existing Replace All workflow; this method only mirrors the button
+    /// activation path for action-driven smoke tests.
+    pub fn activate_undo_replacements(&self) {
+        let imp = self.imp();
+        if let Some(backup) = imp.preview.undo_backup.borrow().clone() {
+            self.hide_undo_button();
+            if let Some(ref callback) = *imp.callbacks.undo_callback.borrow() {
+                callback(backup);
+            }
+        }
     }
 
     /// Get the current query text.
@@ -235,6 +299,12 @@ impl LushtextSearchPanel {
         u32::try_from(self.imp().navigation.match_positions.borrow().len()).unwrap_or(u32::MAX)
     }
 
+    /// Return the number of file groups currently represented in search results.
+    #[must_use]
+    pub fn result_file_count(&self) -> u32 {
+        self.imp().runtime.total_files.get()
+    }
+
     /// Return the current flat navigation index, if a match has been selected.
     #[must_use]
     pub fn current_navigation_match_index(&self) -> Option<u32> {
@@ -271,6 +341,7 @@ impl LushtextSearchPanel {
     /// Update the workspace folders to search. Called when workspaces change.
     pub fn set_workspace_folders(&self, folders: Vec<PathBuf>) {
         self.imp().runtime.workspace_folders.replace(folders);
+        self.refresh_accessibility_state();
     }
 
     /// Register a callback invoked when the user activates a match result.
@@ -331,4 +402,82 @@ impl LushtextSearchPanel {
             .message_callback
             .replace(Some(Box::new(f)));
     }
+
+    /// Project the panel's live workflow state into GTK accessible metadata.
+    ///
+    /// Search and replace update several widgets from split modules. Keeping the
+    /// accessibility state projection here prevents each caller from carrying a
+    /// parallel set of rules for busy, invalid, hidden, and value text states.
+    pub(crate) fn refresh_accessibility_state(&self) {
+        let imp = self.imp();
+        let searching = imp.runtime.searching.get();
+        let preview_pending = imp.preview.preview_pending.get();
+        let count_text = imp.count_label.text();
+        let count_value = if count_text.is_empty() {
+            "No workspace search results".to_string()
+        } else {
+            count_text.to_string()
+        };
+
+        accessibility::set_busy(&*imp.search_entry, searching);
+        accessibility::set_busy(&*imp.results_list, searching || preview_pending);
+        accessibility::set_busy(&*imp.replace_all_button, preview_pending);
+        accessibility::set_invalid(&*imp.search_entry, imp.error_label.is_visible());
+        accessibility::set_hidden(
+            &*imp.results_list,
+            !imp.results_body_revealer.reveals_child(),
+        );
+        accessibility::set_value_text(&*imp.count_label, &count_value);
+
+        for toggle in [
+            &*imp.case_toggle,
+            &*imp.regex_toggle,
+            &*imp.word_toggle,
+            &*imp.more_toggle,
+            &*imp.gitignore_toggle,
+        ] {
+            accessibility::set_pressed(toggle, toggle.is_active());
+        }
+        accessibility::set_expanded(&*imp.more_toggle, Some(imp.more_toggle.is_active()));
+
+        accessibility::set_disabled(
+            &*imp.replace_all_button,
+            !imp.replace_all_button.is_sensitive(),
+        );
+        accessibility::set_disabled(&*imp.undo_button, !self.has_undo_backup());
+        accessibility::set_hidden(&*imp.undo_button, !imp.undo_button.is_visible());
+        accessibility::set_hidden(&*imp.save_button, !imp.save_button.is_visible());
+
+        let replace_label = imp
+            .replace_all_button
+            .label()
+            .unwrap_or_else(|| "Replace All".into());
+        accessibility::set_value_text(&*imp.replace_all_button, replace_label.as_str());
+
+        if !searching && !preview_pending && !count_text.is_empty() {
+            imp.results_announcement_throttler.announce_if_allowed(
+                &*imp.count_label,
+                accessibility::AnnouncementLane::DebouncedResults,
+                "workspace-search-results",
+                count_text.as_str(),
+            );
+        }
+    }
+
+    /// Test seam for forcing the same accessibility projection used by runtime
+    /// and replace workflows after a widget test mutates private state.
+    #[cfg(feature = "test-utils")]
+    pub fn refresh_accessibility_state_for_test(&self) {
+        self.refresh_accessibility_state();
+    }
+}
+
+/// Test seam for asserting the search-result row metadata used by the list factory.
+#[cfg(feature = "test-utils")]
+pub fn apply_search_result_row_accessibility_for_test(
+    row_widget: &gtk4::TreeExpander,
+    result_item: &SearchResultItem,
+    expanded: Option<bool>,
+) {
+    list_factory::apply_result_row_accessibility(row_widget, result_item, expanded);
 }

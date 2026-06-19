@@ -149,13 +149,37 @@ Acceptance for these states:
 
 - When an `AdwSidebar` selection drives the content page of an `AdwNavigationSplitView`, user-selected rows should call `set_show_content(true)` regardless of the split view's current `is_collapsed()` value. `show-content` only affects the visible page while collapsed, but setting it before the adaptive layout settles preserves the user's navigation intent during resize transitions and widget-test collapse simulations. Back buttons can still call `set_show_content(false)` to return to the list page.
 
+## Accessibility Metadata And Keyboard Parity
+
+- New or changed UI code should set accessible labels, descriptions, roles,
+  relations, states, and announcements through `crate::ui::accessibility`.
+  Direct `gtk4::accessible::Property::*`, `update_state`, `update_relation`, or
+  `announce` calls belong in that helper unless a local GTK contract requires an
+  explicit exception.
+- Icon-only controls must have a product-facing accessible label and, when it
+  helps sighted users, a visible tooltip. The label must describe the command,
+  not the icon name.
+- Custom rows must expose bounded row names and useful descriptions without
+  leaking unbounded document, note, draft, or search-result text.
+- Hover-only, overlay, drag, and pointer convenience affordances need keyboard
+  or context-menu alternatives plus visible focus indication. Treat hover as an
+  enhancement, not as the only way to reach a command.
+- Use announcement lanes for workflow events: debounced result counts, progress
+  milestones, repeated status updates, and high-priority alerts. Do not
+  announce every keystroke, heartbeat, hover transition, or repeated visual
+  pulse.
+- Widget tests can use `ui::accessibility::test_audit::AccessibleAudit` for
+  metadata presence while the harness has `NO_AT_BRIDGE=1`. Real focus paths,
+  accessible tree shape, and editor text behavior still need
+  `make accessibility-smoke` or a documented manual screen-reader check.
+
 ## Transient Shell Surfaces
 
 - Window-level overlays and secondary shell surfaces must have a clear dismissal contract. Escape closes one topmost visible dismissible surface, then stops; it must not cascade through every open surface in one press.
 - Child-owned popups, dropdowns, dialogs, and focused entries get first chance to handle Escape. The window shell should handle Escape only after child propagation reaches it.
 - Command-palette click-away must close the palette from outside the palette geometry even if keyboard focus has moved elsewhere. Inside clicks on the search entry, mode selector, result rows, scrollbars, or child popup roots must keep the palette open and allow the child interaction to continue.
 - Focus restoration is part of the close contract. Close command-palette overlays through `close_command_palette()` rather than hiding the revealer directly.
-- Test no-context, representative, dense, and constrained states for overlay dismissal, especially when the surface has result lists or can appear above another transient surface such as the search panel or Focus Mode affordance.
+- Test no-context, representative, dense, and constrained states for overlay dismissal, especially when the surface has result lists or can appear above another transient surface such as the search panel or Focus Mode affordance. New transient surfaces also need stable accessible names and focus-restoration proof.
 
 ## File Tree
 

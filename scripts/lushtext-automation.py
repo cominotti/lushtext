@@ -90,6 +90,7 @@ ARTIFACT_SUMMARY_FIELDS = (
     "parity_report",
     "environment_report",
     "missing_capabilities",
+    "case_filters",
     "scenario_id",
     "scenario_type",
     "failure_status",
@@ -564,7 +565,9 @@ def summarize_artifacts(artifact_dir: Path) -> ClientResult:
         if isinstance(summary_payload, dict)
         else manifest.get("parity"),
         "parity_report": artifact_json(artifact_dir / "parity-report.json"),
-        "environment_report": artifact_json(artifact_dir / "environment-report.json"),
+        "environment_report": summary_payload.get("environment_report")
+        if isinstance(summary_payload, dict)
+        else artifact_json(artifact_dir / "environment-report.json"),
         "missing_capabilities": summary_payload.get("missing_capabilities", [])
         if isinstance(summary_payload, dict)
         else manifest.get("missing_capabilities", []),
@@ -1077,6 +1080,9 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
         "missing_capabilities": summary_payload.get("missing_capabilities", [])
         if isinstance(summary_payload, dict)
         else [],
+        "case_filters": summary_payload.get("case_filters", [])
+        if isinstance(summary_payload, dict)
+        else [],
         "scenario_id": None,
         "scenario_type": None,
         "failure_status": None,
@@ -1087,14 +1093,16 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
         "source_manifest": None,
         "summary": summary_payload,
         "runtime_warning_scan": artifact_text(artifact_dir / "assertions/runtime-warning-scan.txt"),
-        "warnings": None,
+        "warnings": summary_payload.get("warnings") if isinstance(summary_payload, dict) else None,
         "workflow_events": workflow_event_summary(artifact_dir),
         "snapshots": sorted(
             path.relative_to(artifact_dir).as_posix()
             for path in (artifact_dir / "assertions").glob("*snapshot*.json")
         ),
         "geometry_snapshots": [],
-        "screenshots": [],
+        "screenshots": summary_payload.get("screenshots", [])
+        if isinstance(summary_payload, dict)
+        else [],
         "protected_regions": [],
         "pixel_anchors": [],
         "relative_pixel_anchors": [],
@@ -1130,15 +1138,15 @@ def summarize_generic_artifacts(artifact_dir: Path) -> ClientResult:
             if any(token in path.name for token in ("dbus", "catalog", "snapshot", "workflow", "introspection"))
         ),
         "state_assertions": manifest_rows,
-        "waits": [],
-        "actions": [],
+        "waits": summary_payload.get("waits", []) if isinstance(summary_payload, dict) else [],
+        "actions": summary_payload.get("actions", []) if isinstance(summary_payload, dict) else [],
     }
 
     if isinstance(summary_payload, dict) and summary_payload.get("status") in {
         "skipped",
         "unsupported-host",
     }:
-        return success("artifact-summary", "visual geometry lane was skipped", data, status="artifact-skipped")
+        return success("artifact-summary", "smoke lane was skipped", data, status="artifact-skipped")
     if animation_failure := animation_artifact_failure(data):
         return failure("artifact-summary", "artifact-error", animation_failure, data)
     failed_visual = next((row for row in visual_cases if row.get("status") == "failed"), None)

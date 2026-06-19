@@ -10,6 +10,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::config::keys;
+use crate::ui::accessibility::AnnouncementLane;
 
 use super::LushtextWindow;
 
@@ -134,6 +135,11 @@ impl LushtextWindow {
         self.refresh_focus_mode_preview_column();
         self.sync_secondary_surface_layout();
         self.reveal_focus_mode_affordance_temporarily();
+        self.announce_workflow_update(
+            AnnouncementLane::StatusUpdate,
+            "focus-mode-on",
+            "Focus mode on",
+        );
         if let Some(editor) = self.active_editor() {
             editor.source_view().grab_focus();
         }
@@ -166,6 +172,11 @@ impl LushtextWindow {
         self.refresh_focus_mode_preview_column();
         self.sync_secondary_surface_layout();
         self.sync_focus_mode_action_state();
+        self.announce_workflow_update(
+            AnnouncementLane::StatusUpdate,
+            "focus-mode-off",
+            "Focus mode off",
+        );
     }
 
     /// Hide or restore persistent chrome according to current Focus Mode state.

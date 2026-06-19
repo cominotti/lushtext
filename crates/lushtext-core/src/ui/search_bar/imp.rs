@@ -5,6 +5,7 @@
 //! This GTK adapter owns template children, search option actions, replace-row
 //! projection, and attach/detach state for one active `GtkSourceView`.
 
+use crate::ui::accessibility;
 use gtk_lush_signals::SignalBag;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -70,6 +71,8 @@ pub struct LushtextSearchBar {
     pub view_ref: RefCell<Option<glib::WeakRef<sourceview5::View>>>,
     /// SearchContext signal lifetimes for the current attachment.
     pub occurrences_signals: SignalBag,
+    /// Debounces screen-reader announcements for changing result counts.
+    pub match_announcement_throttler: accessibility::AnnouncementThrottler,
 
     // --- Navigation state ---
     /// Whether the user navigated to a match (next/prev). When true, Escape
@@ -123,6 +126,15 @@ impl ObjectImpl for LushtextSearchBar {
                 .bind_property("active", revealer, "reveal-child")
                 .sync_create()
                 .build();
+        }
+
+        {
+            let button = self.replace_mode_button.clone();
+            self.replace_mode_button
+                .connect_active_notify(move |button| {
+                    accessibility::set_pressed(button, button.is_active());
+                });
+            accessibility::set_pressed(&button, button.is_active());
         }
 
         // Build the options popover menu with checkbox items for search
@@ -188,28 +200,33 @@ impl LushtextSearchBar {
     /// the AT-SPI smoke lane. Tooltips are visual hints; accessible labels are
     /// the semantic contract assistive technologies query.
     fn apply_accessibility_metadata(&self) {
-        self.search_entry.update_property(&[
-            gtk4::accessible::Property::Label("Find text"),
-            gtk4::accessible::Property::Description("Search within the active document"),
-        ]);
-        self.replace_entry.update_property(&[
-            gtk4::accessible::Property::Label("Replacement text"),
-            gtk4::accessible::Property::Description("Replacement text for find and replace"),
-        ]);
-        self.prev_button
-            .update_property(&[gtk4::accessible::Property::Label("Previous search match")]);
-        self.next_button
-            .update_property(&[gtk4::accessible::Property::Label("Next search match")]);
-        self.replace_mode_button
-            .update_property(&[gtk4::accessible::Property::Label("Toggle replace controls")]);
-        self.options_button
-            .update_property(&[gtk4::accessible::Property::Label("Search options")]);
-        self.close_button
-            .update_property(&[gtk4::accessible::Property::Label("Close search")]);
-        self.replace_button
-            .update_property(&[gtk4::accessible::Property::Label("Replace current match")]);
-        self.replace_all_button
-            .update_property(&[gtk4::accessible::Property::Label("Replace all matches")]);
+        accessibility::set_labelled_description(
+            &*self.search_entry,
+            "Find text",
+            "Search within the active document",
+        );
+        accessibility::set_labelled_description(
+            &*self.replace_entry,
+            "Replacement text",
+            "Replacement text for find and replace",
+        );
+        accessibility::set_role(&*self.match_label, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &*self.match_label,
+            "Search match count",
+            "Current match position and total matches",
+        );
+        accessibility::set_label(&*self.prev_button, "Previous search match");
+        accessibility::set_key_shortcuts(&*self.prev_button, "<Shift>Return");
+        accessibility::set_label(&*self.next_button, "Next search match");
+        accessibility::set_key_shortcuts(&*self.next_button, "Return");
+        accessibility::set_label(&*self.replace_mode_button, "Toggle replace controls");
+        accessibility::set_label(&*self.options_button, "Search options");
+        accessibility::set_has_popup(&*self.options_button, true);
+        accessibility::set_label(&*self.close_button, "Close search");
+        accessibility::set_key_shortcuts(&*self.close_button, "Escape");
+        accessibility::set_label(&*self.replace_button, "Replace current match");
+        accessibility::set_label(&*self.replace_all_button, "Replace all matches");
     }
 
     /// Wire all button clicks and keyboard handlers once during construction.

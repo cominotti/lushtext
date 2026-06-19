@@ -7,6 +7,7 @@ use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
 use lushtext_core::config::{self, keys};
+use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::markdown_preview::{
     LushtextMarkdownPreview, MarkdownPreviewRenderContext,
 };
@@ -40,6 +41,29 @@ fn test_render_markdown_switches_to_content_mode() {
 }
 
 #[test]
+fn test_preview_surface_exposes_read_only_accessibility_metadata() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Document)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&preview);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+            gtk4::AccessibleProperty::MultiLine,
+        ])
+        .assert_on(&preview.text_view());
+}
+
+#[test]
 fn test_preview_background_opacity_tracks_setting() {
     ensure_gtk_init();
     let settings = gio::Settings::new(config::APP_ID);
@@ -66,6 +90,19 @@ fn test_show_placeholder_switches_to_placeholder_mode() {
     assert!(preview.is_showing_content());
     preview.show_placeholder("Not a Markdown file");
     assert!(!preview.is_showing_content());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            &descendants(&preview)
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<libadwaita::StatusPage>().ok())
+                .next()
+                .expect("placeholder status page"),
+        );
 }
 
 #[test]
@@ -109,6 +146,45 @@ fn test_render_inline_code_inserts_text() {
         tags.iter().any(|name| name == "code"),
         "Expected inline code text to keep the inline code tag, got {tags:?}"
     );
+}
+
+#[test]
+fn test_render_code_block_exposes_read_only_accessibility_metadata() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview(&preview);
+
+    preview.render_markdown("```rust\nfn main() {}\n```");
+    wait_until(Duration::from_secs(2), || {
+        !code_block_containers(&preview).is_empty() && !source_views(&preview).is_empty()
+    });
+
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            &code_block_containers(&preview)
+                .into_iter()
+                .next()
+                .expect("code block container"),
+        );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+            gtk4::AccessibleProperty::MultiLine,
+        ])
+        .assert_on(
+            &source_views(&preview)
+                .into_iter()
+                .next()
+                .expect("code block source view"),
+        );
 }
 
 #[test]
@@ -949,6 +1025,18 @@ fn test_render_table_adds_anchored_grid_and_preserves_surrounding_text() {
         1,
         "Expected one anchored table grid"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Table)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(
+            &widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table")
+                .into_iter()
+                .next()
+                .expect("markdown table"),
+        );
 }
 
 #[test]
@@ -972,6 +1060,14 @@ fn test_render_table_exposes_header_and_body_cells() {
 
     assert_eq!(header_cells.len(), 2, "Expected two header cells");
     assert_eq!(body_cells.len(), 2, "Expected two body cells");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ColumnHeader)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .assert_on(&header_cells[0]);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Cell)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .assert_on(&body_cells[0]);
     assert!(
         descendants(&preview)
             .into_iter()
@@ -1181,6 +1277,13 @@ fn test_render_markdown_shows_image_fallback_states() {
         fallback_cards.iter().all(|card| card.width_request() >= 240),
         "Expected fallback cards to reserve enough width for readable path text"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Img)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&fallback_cards[0]);
 }
 
 #[test]

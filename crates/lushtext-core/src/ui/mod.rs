@@ -7,6 +7,7 @@
 //! `automation` is the read-only D-Bus projection over mounted UI state rather
 //! than a visible widget.
 
+pub mod accessibility;
 pub mod automation;
 pub(crate) mod buffer_snapshot;
 pub mod command_palette;

@@ -14,16 +14,19 @@ use lushtext_core::model::encoding::DocumentEncodingState;
 use lushtext_core::services::editor_io::LoadResult;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
-    BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind,
+    BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, EditorLoadState,
+    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind,
 };
+use lushtext_core::ui::info_bar::inline_alert_announcement_key_for_test;
 use sourceview5::prelude::*;
 use std::assert_matches;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 fn button_label(button: &gtk4::Button) -> gtk4::Label {
     button
@@ -576,8 +579,124 @@ fn test_source_view_accessible() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
     let view = page.source_view();
-    // Source view should be functional
+
     assert!(view.is_visible());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::MultiLine,
+            gtk4::AccessibleProperty::ReadOnly,
+        ])
+        .assert_on(view);
+    assert!(!gtk4::test_accessible_has_state(
+        view,
+        gtk4::AccessibleState::Busy
+    ));
+}
+
+#[test]
+fn test_source_view_accessibility_tracks_loading_state() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.imp()
+        .file_path
+        .replace(Some("/tmp/accessibility-main.rs".into()));
+    page.imp().load_state.set(EditorLoadState::Loading);
+    page.refresh_accessibility_metadata_for_test();
+
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+        ])
+        .states(&[gtk4::AccessibleState::Busy])
+        .assert_on(page.source_view());
+
+    page.imp().load_state.set(EditorLoadState::Loaded);
+    page.refresh_accessibility_metadata_for_test();
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Busy
+    ));
+}
+
+#[test]
+fn test_source_view_accessibility_tracks_failed_load_state() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.imp()
+        .file_path
+        .replace(Some("/tmp/broken-document.txt".into()));
+    page.imp().load_state.set(EditorLoadState::Failed);
+    page.refresh_accessibility_metadata_for_test();
+
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Disabled,
+            gtk4::AccessibleState::Invalid,
+        ])
+        .assert_on(page.source_view());
+
+    page.imp().load_state.set(EditorLoadState::Loaded);
+    page.refresh_accessibility_metadata_for_test();
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Disabled
+    ));
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Invalid
+    ));
+}
+
+#[test]
+fn test_source_view_accessibility_tracks_preview_only_state() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.set_preview_only_accessibility_for_test(true);
+    AccessibleAudit::new()
+        .states(&[
+            gtk4::AccessibleState::Disabled,
+            gtk4::AccessibleState::Hidden,
+        ])
+        .assert_on(page.source_view());
+
+    page.set_preview_only_accessibility_for_test(false);
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Hidden
+    ));
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Disabled
+    ));
+}
+
+#[test]
+fn test_source_view_accessibility_keeps_large_file_editable_state() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.apply_loaded_content_for_test("large file marker", 50_000_001);
+
+    assert_eq!(page.size_check(), FileSizeCheck::DisableUndoAndSyntax);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+        ])
+        .assert_on(page.source_view());
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Disabled
+    ));
 }
 
 #[test]
@@ -812,12 +931,20 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
     assert!(page.is_modified());
     assert!(!page.source_view().is_editable());
     assert!(!page.source_view().is_cursor_visible());
+    assert!(gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Busy
+    ));
 
     wait_until(std::time::Duration::from_secs(2), || done.get());
     assert!(!page.is_saving());
     assert!(!page.is_modified());
     assert!(page.source_view().is_editable());
     assert!(page.source_view().is_cursor_visible());
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Busy
+    ));
     assert_eq!(fs_read::text(&path).expect("expected operation to succeed"), content);
 }
 
@@ -840,6 +967,10 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     assert!(page.is_saving());
     assert!(!page.source_view().is_editable());
     assert!(!page.source_view().is_cursor_visible());
+    assert!(gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Busy
+    ));
 
     let duplicate_result: std::rc::Rc<
         std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::SaveError>>>,
@@ -862,6 +993,10 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     assert!(!page.is_saving());
     assert!(page.source_view().is_editable());
     assert!(page.source_view().is_cursor_visible());
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Busy
+    ));
     assert_eq!(
         fs_read::text(tmp.path()).expect("saved duplicate test file"),
         "x".repeat(70_000)
@@ -888,6 +1023,10 @@ fn test_failed_save_restores_previous_modified_state() {
     assert!(!page.is_saving());
     assert!(page.is_modified());
     assert!(page.source_view().is_editable());
+    assert!(!gtk4::test_accessible_has_state(
+        page.source_view(),
+        gtk4::AccessibleState::Busy
+    ));
 }
 
 #[test]
@@ -1814,6 +1953,49 @@ fn test_error_inline_alert_groups_retry_and_dismiss() {
         visible_alert_action_order(&page),
         vec!["retry", "dismiss"],
         "error alerts should group Retry and dismiss in order"
+    );
+}
+
+#[test]
+fn test_inline_alert_announcements_use_shared_throttling_policy() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    let warning = InlineActionNotification {
+        style: InlineNotificationStyle::Warning,
+        title: "Draft Changes Restored".to_string(),
+        body: "Unsaved changes to the document have been restored.".to_string(),
+        primary_button: Some("_Discard...".to_string()),
+        secondary_button: Some("_Save...".to_string()),
+    };
+    page.emit_inline_notification(warning.clone());
+
+    let warning_key = inline_alert_announcement_key_for_test(&warning);
+    assert!(
+        !page
+            .info_bar()
+            .imp()
+            .alert_announcement_throttler
+            .should_announce_at(AnnouncementLane::StatusUpdate, &warning_key, Instant::now()),
+        "warning inline alerts should be throttled after render announces them"
+    );
+
+    let error = InlineActionNotification {
+        style: InlineNotificationStyle::Error,
+        title: "Could Not Open File".to_string(),
+        body: "Permission denied".to_string(),
+        primary_button: Some("_Retry".to_string()),
+        secondary_button: None,
+    };
+    page.emit_inline_notification(error.clone());
+
+    let error_key = inline_alert_announcement_key_for_test(&error);
+    assert!(
+        page.info_bar()
+            .imp()
+            .alert_announcement_throttler
+            .should_announce_at(AnnouncementLane::Alert, &error_key, Instant::now()),
+        "error inline alerts should keep the high-priority alert lane unthrottled"
     );
 }
 

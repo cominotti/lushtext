@@ -43,6 +43,7 @@
 #   make lint-blueprint - Advisory grouped lint triage for Blueprint templates
 #   make check-flatpak-permissions - Ensure Flatpak keeps full filesystem access
 #   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
+#   make check-accessibility-policy - Enforce accessibility helper and proof guardrails
 #   make check-visual-proof-policy - Require visual geometry proof for local visual-sensitive changes
 #   make check-gtk-lush-policy - Verify GTK Lush family scaffolding and constitution rails
 #   make check-gtk-lush-adoption - Run GTK Lush adoption lab, stock fixture, and matrix checks
@@ -72,7 +73,7 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -434,6 +435,11 @@ check-end-user-smoke-workflow:
 	@echo "Checking end-user smoke workflow matrix..."
 	./scripts/check-end-user-smoke-workflow.py
 
+# Guard new UI-sensitive lines against bypassing accessibility helper and proof conventions.
+check-accessibility-policy:
+	@echo "Checking accessibility policy..."
+	./scripts/check-accessibility-policy.py --self-test
+
 # Guard local UI-sensitive edits against missing same-session visual proof.
 check-visual-proof-policy:
 	@echo "Checking visual geometry proof policy..."
@@ -515,7 +521,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test
+check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -728,6 +734,7 @@ help:
 	@echo "  automation-smoke Real-process D-Bus automation smoke under headless Mutter"
 	@echo "  command-palette-notes-smoke Focused Notes palette smoke with all note kinds"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
+	@echo "  check-accessibility-policy Enforce accessibility helper and proof guardrails"
 	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"
 	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"
 	@echo "  check-gtk-lush-adoption Run adoption lab, stock fixture, and matrix checks"

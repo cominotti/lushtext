@@ -40,8 +40,11 @@ owns the action group.
 state, load state, visible shell surfaces, preview/search/focus states,
 workspace scope and persistence state, command-palette mode and counters,
 notes/bookmark availability, local-history availability, content-search and
-Replace All counters, notification/progress summaries, and named visual
-geometry anchors for screenshot invariant tooling. Geometry anchors include
+Replace All counters, notification/progress summaries, accessibility readiness
+diagnostics, and named visual geometry anchors for screenshot invariant tooling.
+Accessibility readiness mirrors the `accessibility-settled` predicate as a
+bounded ready flag plus first blocker string; it does not expose document, note,
+history, or result bodies. Geometry anchors include
 surface rectangles, allocation sizes, absence reasons, scale factor, scroll
 anchor state, native minimap slider diagnostics, and app-computed pixel-anchor
 crop hints for rendered effects such as the minimap viewport edges and fill;
@@ -69,7 +72,11 @@ the narrowest predicate that matches the workflow under test, such as
 `workspace-refresh-complete`. Screenshot scenario helpers should use
 `visual-geometry-settled` before capture so layout, adaptive shell state,
 workspace sidebar transitions, minimap refresh/debounce, and visual workflow
-blockers have settled.
+blockers have settled. Accessibility smoke captures use
+`accessibility-settled` before querying AT-SPI so focus targets, recycled rows,
+search or preview rendering, and announcement-sensitive workflow state have
+settled, then add narrower scenario waits such as `search-complete` when a
+specific workflow needs its own proof.
 `WaitForIdle(timeout_msec)` remains as a compatibility alias for waiting on the
 broader `idle` predicate.
 
@@ -327,13 +334,34 @@ For accessibility-backed anchors, run:
 make accessibility-smoke
 ```
 
-This lane keeps the accessibility bridge enabled, captures shell, command
-palette, and notes-browser states through the same isolated headless Mutter
-helper, and verifies stable AT-SPI names/roles plus the command-palette focus
-target. It skips only with an explicit host-runtime reason when AT-SPI support
-is unavailable, and action/D-Bus assertions do not count as accessibility
+This lane keeps the accessibility bridge enabled, captures shell, editor,
+search, Open popover, command-palette, workspace, properties, preferences,
+Markdown preview, notes-browser, and local-history states through the same isolated headless
+Mutter helper, and verifies stable AT-SPI names/roles plus focus and text
+interface evidence where the host exposes it. Each capture writes a bounded
+`assertions/<scenario>-manifest.json`, the run writes
+`assertions/accessibility-assertions.jsonl`, and the root `summary.json`
+records scenario manifests, readiness waits, screenshots, warning status,
+assertion artifacts, environment metadata, and unsupported-host reasons. It
+skips only with an explicit host-runtime reason when AT-SPI support is
+unavailable, and action or D-Bus assertions do not count as accessibility
 coverage on their own. The stable anchors are documented in
-`docs/automation-reference.md` and checked by `make check-automation-docs`.
+`docs/automation-reference.md` and checked by
+`make check-automation-docs`.
+
+For focused debugging, list scenario names and run one surface or a glob:
+
+```sh
+scripts/run-accessibility-smoke.sh --list-cases
+scripts/run-accessibility-smoke.sh --case open-popover-*
+```
+
+Scenarios that need interleaved action/readiness/action sequences, such as
+workspace Replace All preview followed by confirmation, use the capture helper's
+ordered `--step KIND:VALUE` flag instead of relying on grouped legacy action
+flags. Ordered steps may drive normal app/window actions, wait for Automation1
+or AT-SPI state, click visible AT-SPI buttons, or set the named editor text
+through AT-SPI's editable-text interface for modified-buffer close-safety proof.
 
 ## Driving Actions
 
@@ -349,12 +377,14 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
 - `win.set-properties-visible` with a boolean parameter
 - `win.set-minimap-visible` with a boolean parameter
 - `win.set-search-panel-visible` with a boolean parameter
+- `win.set-search-panel-query` with a string parameter while workspace search is visible
 - `win.set-focus-mode` with a boolean parameter
 - `win.set-preview-pane-visible` with a boolean parameter
 - `win.set-preview-mode` with a boolean parameter
 - `win.select-tab` with a zero-based unsigned tab index
 - `win.set-command-palette-mode` with `all`, `files`, `notes`, or `commands` while the command palette is visible
 - `win.set-command-palette-query` with a string parameter while the command palette is visible
+- `win.set-open-popover-query` with a string parameter while the recent-document Open popover is visible
 - `win.set-notes-browser-query` with a string parameter while Browse Notes is visible
 - `win.select-notes-browser-row` with a zero-based unsigned visible row index
 - `win.open-notes-browser-selection` to press the visible browser's `Open` action

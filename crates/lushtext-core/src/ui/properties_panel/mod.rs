@@ -10,6 +10,7 @@ mod imp;
 
 use crate::config::keys;
 use crate::model::encoding::FileHealthFinding;
+use crate::ui::accessibility;
 use crate::ui::editor_page::LushtextEditorPage;
 use gio::prelude::SettingsExt;
 use glib::Object;
@@ -86,6 +87,7 @@ impl LushtextPropertiesPanel {
                 .set_subtitle("Not available");
             self.set_health_details("Open a document to inspect file health.", &[]);
         }
+        self.refresh_accessibility_state();
     }
 
     /// Replace the dynamic file-health rows for the active document.
@@ -93,6 +95,8 @@ impl LushtextPropertiesPanel {
         let imp = self.imp();
         imp.health_summary_row.set_subtitle(summary);
         imp.health_review_button.set_visible(!findings.is_empty());
+        accessibility::set_hidden(&*imp.health_review_button, findings.is_empty());
+        accessibility::set_disabled(&*imp.health_review_button, findings.is_empty());
 
         for row in imp.health_detail_rows.borrow_mut().drain(..) {
             imp.health_group.remove(&row);
@@ -106,8 +110,26 @@ impl LushtextPropertiesPanel {
                 .build();
             row.set_activatable(false);
             row.set_subtitle_lines(0);
+            accessibility::set_role(&row, gtk4::AccessibleRole::Group);
+            accessibility::set_labelled_description(&row, &finding.title, &finding.body);
             imp.health_group.add(&row);
             detail_rows.push(row);
+        }
+    }
+
+    /// Project the latest row subtitles into accessible value text.
+    fn refresh_accessibility_state(&self) {
+        let imp = self.imp();
+        for row in [
+            &*imp.location_row,
+            &*imp.file_size_row,
+            &*imp.statistics_row,
+            &*imp.formatting_source_row,
+            &*imp.health_summary_row,
+        ] {
+            if let Some(subtitle) = row.subtitle() {
+                accessibility::set_value_text(row, subtitle.as_str());
+            }
         }
     }
 }

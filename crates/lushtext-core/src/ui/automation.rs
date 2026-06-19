@@ -1824,6 +1824,10 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
         };
     let active_editor_search =
         active_editor(window).is_some_and(|editor| editor.is_search_visible());
+    let accessibility_blocker =
+        window_readiness_blocker(window, AutomationReadinessPredicate::AccessibilitySettled)
+            .map(ToOwned::to_owned);
+    let accessibility_ready = accessibility_blocker.is_none();
 
     AutomationSurfaceSnapshot {
         workspace_sidebar_visible: imp.workspace_split_view.shows_sidebar(),
@@ -1845,6 +1849,8 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
             open_popover_visible(window),
             active_editor_search,
         ),
+        accessibility_ready,
+        accessibility_blocker,
     }
 }
 

@@ -10,6 +10,7 @@ mod imp;
 use std::time::Duration;
 
 use crate::services::notifications::{NotificationSeverity, StatusMessage};
+use crate::ui::accessibility::{self, AnnouncementLane};
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
@@ -48,6 +49,7 @@ impl LushtextStatusBar {
         let Some(message) = message else {
             self.clear_message_area_pulse();
             label.set_label("");
+            accessibility::set_description(label, "Current editor status and feedback");
             return;
         };
 
@@ -57,6 +59,8 @@ impl LushtextStatusBar {
             NotificationSeverity::Error => "status-error",
         });
         label.set_label(&message.text);
+        accessibility::set_description(label, &message.text);
+        self.announce_visible_status(message);
     }
 
     /// Briefly flash the full status-message lane using the given severity.
@@ -108,18 +112,76 @@ impl LushtextStatusBar {
 
     /// Update the encoding control label for the active tab.
     pub fn set_encoding_label(&self, label: &str) {
-        self.imp().encoding_button.set_label(label);
+        let button = &*self.imp().encoding_button;
+        button.set_label(label);
+        accessibility::set_labelled_description(
+            button,
+            "Choose text encoding",
+            &format!("Current text encoding: {label}"),
+        );
+        accessibility::set_value_text(button, label);
     }
 
     /// Update the line-ending control label for the active tab.
     pub fn set_line_ending_label(&self, label: &str) {
-        self.imp().line_ending_button.set_label(label);
+        let button = &*self.imp().line_ending_button;
+        button.set_label(label);
+        accessibility::set_labelled_description(
+            button,
+            "Choose line endings",
+            &format!("Current line endings: {label}"),
+        );
+        accessibility::set_value_text(button, label);
     }
 
     /// Show or hide the metadata section between the message area and the
     /// workspace toggle. Hidden when no tabs are open.
     pub fn set_metadata_visible(&self, visible: bool) {
         self.imp().metadata_box.set_visible(visible);
+    }
+
+    /// Mirror the workspace-sidebar state into the visible toggle button.
+    pub fn set_workspace_sidebar_toggle_pressed(&self, pressed: bool) {
+        let button = &*self.imp().sidebar_toggle_button;
+        if button.is_active() != pressed {
+            button.set_active(pressed);
+        }
+        accessibility::set_pressed(button, pressed);
+    }
+
+    /// Announce visible status updates only when they carry user-actionable weight.
+    fn announce_visible_status(&self, message: &StatusMessage) {
+        let Some(lane) = status_announcement_lane(message.severity) else {
+            return;
+        };
+
+        let key = format!(
+            "status:{}:{}",
+            status_announcement_key(message.severity),
+            message.text
+        );
+        self.imp()
+            .status_announcement_throttler
+            .announce_if_allowed(&*self.imp().message_label, lane, &key, &message.text);
+    }
+
+    /// Announce an informational workflow event through the status-bar speech target.
+    ///
+    /// Routine info messages stay visually quiet by default. Callers use this
+    /// explicit path for user-initiated completions and long-running workflow
+    /// milestones that should be spoken without making every info status noisy.
+    /// Returns whether the announcement was accepted by the throttling policy.
+    #[must_use]
+    pub fn announce_workflow_update(
+        &self,
+        lane: AnnouncementLane,
+        key: &str,
+        message: &str,
+    ) -> bool {
+        let key = format!("workflow:{key}");
+        self.imp()
+            .status_announcement_throttler
+            .announce_if_allowed(&*self.imp().message_label, lane, &key, message)
     }
 }
 
@@ -133,6 +195,22 @@ fn clear_message_classes(label: &gtk4::Label) {
     label.remove_css_class("status-info");
     label.remove_css_class("status-warning");
     label.remove_css_class("status-error");
+}
+
+fn status_announcement_lane(severity: NotificationSeverity) -> Option<AnnouncementLane> {
+    match severity {
+        NotificationSeverity::Info => None,
+        NotificationSeverity::Warning => Some(AnnouncementLane::StatusUpdate),
+        NotificationSeverity::Error => Some(AnnouncementLane::Alert),
+    }
+}
+
+fn status_announcement_key(severity: NotificationSeverity) -> &'static str {
+    match severity {
+        NotificationSeverity::Info => "info",
+        NotificationSeverity::Warning => "warning",
+        NotificationSeverity::Error => "error",
+    }
 }
 
 /// Remove both severity and alternating animation classes before a pulse resets.

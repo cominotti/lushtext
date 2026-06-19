@@ -24,12 +24,12 @@ REFERENCE_DOC = REPO_ROOT / "docs/automation-reference.md"
 EXPECTED_HELPER_FLAG_MARKER = (
     "<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary "
     "run-crash-recovery-smoke --artifact-dir --binary "
-    "run-accessibility-smoke --artifact-dir --binary "
+    "run-accessibility-smoke --artifact-dir --binary --case --list-cases "
     "run-visual-smoke --artifact-dir --binary "
     "cargo-gtk-proof-run --artifact-dir --binary --scenario-dir --case-filter --oracle "
     "capture-lushtext-mutter "
     "--file --output --search --expected-search-matches --enable-minimap "
-    "--enable-atspi --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text "
+    "--enable-atspi --app-action --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text --step "
     "--color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts "
     "run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test "
         "lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test "
@@ -37,7 +37,11 @@ EXPECTED_HELPER_FLAG_MARKER = (
         "--scenario-id --size-id --direction --color-scheme --word-wrap --fixture-kind --viewport-position -->"
 )
 REQUIRED_HELPER_TABLE_ROWS = (
+    "| `scripts/run-accessibility-smoke.sh` | `--case PATTERN` | Runs only matching accessibility smoke scenarios; shell-style globs are accepted and the flag may be repeated. |",
+    "| `scripts/run-accessibility-smoke.sh` | `--list-cases` | Prints known accessibility smoke scenario names and exits without launching LushText. |",
+    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--app-action ACTION` | Activates an application-scoped `org.gtk.Actions` action before capture; may be repeated. |",
     "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--window-bool-action ACTION=true\\|false` | Activates a window-scoped `org.gtk.Actions` action with one boolean parameter before capture; may be repeated. |",
+    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--step KIND:VALUE` | Runs ordered app/window action, wait, AT-SPI text, AT-SPI editor-text, or AT-SPI button-click steps for workflows that need interleaved action and readiness proof. |",
 )
 
 

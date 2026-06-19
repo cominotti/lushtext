@@ -11,13 +11,60 @@ ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/visual}"
 BINARY="$REPO_ROOT/target/debug/lushtext"
 WIDTH="${LUSHTEXT_VISUAL_SMOKE_WIDTH:-1600}"
 HEIGHT="${LUSHTEXT_VISUAL_SMOKE_HEIGHT:-1000}"
+VISUAL_CASES=(
+    main-search-minimap
+    modified-tab
+    destructive-close-dialog
+    file-health-properties
+    local-history-restore
+    normal-properties
+    compact-properties
+    constrained-properties
+    short-layout
+    markdown-preview
+    constrained-preview
+    markdown-preview-side-by-side
+    constrained-preview-side-by-side
+    workspace-empty
+    workspace-representative
+    workspace-dense-awkward
+    workspace-constrained
+    workspace-refresh
+    notes-empty
+    notes-few
+    bookmarks-few
+    notes-dense
+    bookmarks-dense
+    notes-constrained
+    bookmarks-constrained
+    command-palette-files
+    command-palette-commands
+    command-palette-notes
+    command-palette-no-results
+    command-palette-dense-files
+    command-palette-dismissed
+    dark-style
+    high-contrast-style
+    large-text-constrained
+    reduced-motion-command-palette
+    transparency-readability
+    recovery-startup
+)
+SELECTED_CASES=()
+LIST_CASES=false
+VISUAL_CASES_RUN=0
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-visual-smoke.sh [--artifact-dir DIR] [--binary PATH]
+Usage: scripts/run-visual-smoke.sh [--artifact-dir DIR] [--binary PATH] [--case PATTERN] [--list-cases]
 
 Launch LushText in isolated headless Mutter sessions, capture representative
 geometry-sensitive desktop states, and preserve screenshots/log artifacts.
+
+Options:
+  --case PATTERN   Run only matching scenario names. Shell-style globs are accepted.
+                   May be repeated.
+  --list-cases     Print known scenario names and exit.
 EOF
 }
 
@@ -33,6 +80,15 @@ while [[ $# -gt 0 ]]; do
             BINARY="$2"
             shift 2
             ;;
+        --case)
+            [[ $# -lt 2 ]] && smoke_fail "--case requires a value"
+            SELECTED_CASES+=("$2")
+            shift 2
+            ;;
+        --list-cases)
+            LIST_CASES=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -42,6 +98,42 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$LIST_CASES" == true ]]; then
+    printf '%s\n' "${VISUAL_CASES[@]}"
+    exit 0
+fi
+
+case_selected() {
+    local name="$1"
+    if ((${#SELECTED_CASES[@]} == 0)); then
+        return 0
+    fi
+
+    local pattern
+    for pattern in "${SELECTED_CASES[@]}"; do
+        if [[ "$name" == $pattern ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+selected_case_description() {
+    if ((${#SELECTED_CASES[@]} == 0)); then
+        printf 'all'
+        return
+    fi
+    local joined=""
+    local pattern
+    for pattern in "${SELECTED_CASES[@]}"; do
+        if [[ -n "$joined" ]]; then
+            joined+=","
+        fi
+        joined+="$pattern"
+    done
+    printf '%s' "$joined"
+}
 
 smoke_require_command dbus-run-session
 smoke_require_command mutter
@@ -56,6 +148,8 @@ smoke_require_command wireplumber
 [[ -x "$BINARY" ]] || smoke_skip "LushText debug binary is missing. Run 'make build-debug' first."
 
 ARTIFACT_DIR="$(smoke_artifact_dir "$ARTIFACT_DIR")"
+VISUAL_CASE_FILTERS="$(selected_case_description)"
+export VISUAL_CASE_FILTERS
 smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 
 rm -rf "$ARTIFACT_DIR/screenshots" "$ARTIFACT_DIR/captures" "$ARTIFACT_DIR/assertions"
@@ -63,6 +157,7 @@ mkdir -p "$ARTIFACT_DIR/fixtures" "$ARTIFACT_DIR/screenshots" "$ARTIFACT_DIR/cap
 
 TEXT_FIXTURE="$ARTIFACT_DIR/fixtures/visual-smoke.txt"
 MARKDOWN_FIXTURE="$ARTIFACT_DIR/fixtures/visual-smoke.md"
+FILE_HEALTH_FIXTURE="$ARTIFACT_DIR/fixtures/visual-file-health.txt"
 smoke_create_text_fixture "$TEXT_FIXTURE"
 cat >"$MARKDOWN_FIXTURE" <<'EOF'
 # LushText visual smoke
@@ -79,6 +174,7 @@ fn main() {
 - short layout
 - preview geometry
 EOF
+printf 'alpha\r\nbeta\ngamma\rdelta\r\n' >"$FILE_HEALTH_FIXTURE"
 
 scan_visual_logs() {
     local name="$1"
@@ -346,6 +442,170 @@ assert_recovery_capture_artifacts() {
     if ! grep -Eiq 'recovery|could not be loaded|draft|session' "$tree_path"; then
         smoke_fail "recovery visual smoke did not expose recovery diagnostics in the AT-SPI tree"
     fi
+}
+
+assert_modified_tab_capture_artifacts() {
+    local name="$1"
+    local capture_dir="$2"
+    local require_dialog="$3"
+    local tree_path="$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+    local snapshot_path="$capture_dir/automation-snapshot.json"
+    local summary_path="$ARTIFACT_DIR/assertions/${name}-modified-tab.txt"
+
+    [[ -s "$tree_path" ]] || smoke_fail "visual smoke '${name}' did not write an AT-SPI tree"
+    [[ -s "$snapshot_path" ]] || smoke_fail "visual smoke '${name}' did not write automation-snapshot.json"
+    /usr/bin/python3 - "$snapshot_path" "$tree_path" "$require_dialog" >"$summary_path" <<'PY'
+import json
+import sys
+
+snapshot_path, tree_path, require_dialog = sys.argv[1:]
+snapshot = json.load(open(snapshot_path, encoding="utf-8"))
+tree = open(tree_path, encoding="utf-8", errors="replace").read()
+window = snapshot["window"]
+assert window is not None, snapshot
+tabs = window["tabs"]
+assert tabs, window
+active = next((tab for tab in tabs if tab["active"]), tabs[0])
+assert active["document_kind"] == "file", active
+assert active["modified"] is True, active
+if require_dialog == "true":
+    assert "Save Changes?" in tree, tree[:2000]
+    assert "unsaved changes" in tree, tree[:2000]
+    assert "permanently lost" in tree, tree[:2000]
+    assert "Cancel" in tree, tree[:2000]
+    assert "Discard" in tree, tree[:2000]
+    assert "Save" in tree, tree[:2000]
+else:
+    assert "Visual smoke modified buffer" in tree, tree[:2000]
+print("active_tab_modified=true")
+print(f"save_changes_dialog={require_dialog}")
+print(f"snapshot={snapshot_path}")
+print(f"tree={tree_path}")
+PY
+}
+
+prepare_local_history_capture_state() {
+    local capture_dir="$1"
+    local fixture="$2"
+
+    /usr/bin/python3 - "$capture_dir" "$fixture" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+FNV_OFFSET = 0xCBF29CE484222325
+FNV_PRIME = 0x100000001B3
+
+
+def stable_hash(data: bytes) -> str:
+    value = FNV_OFFSET
+    for byte in data:
+        value ^= byte
+        value = (value * FNV_PRIME) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+capture_dir = Path(sys.argv[1])
+display_path = Path(sys.argv[2]).resolve()
+data_dir = capture_dir / "data" / "lushtext"
+sidecar_id = stable_hash(str(display_path).encode("utf-8"))
+document_dir = data_dir / "local-history" / sidecar_id
+document_dir.mkdir(parents=True, exist_ok=True)
+
+snapshot_id = "history-00000000000000000000018bcff4aa00-0000000000000001"
+text = "local history saved snapshot\nwith visible restore proof\n"
+(document_dir / f"{snapshot_id}.txt").write_text(text, encoding="utf-8")
+body = text.encode("utf-8")
+index = {
+    "kind": "dev.cominotti.lushtext.local-history-index",
+    "version": 1,
+    "data": {
+        "identity": {
+            "display_path": str(display_path),
+            "canonical_path": str(display_path),
+            "sidecar_id": sidecar_id,
+        },
+        "snapshots": [
+            {
+                "snapshot_id": snapshot_id,
+                "captured_at_millis": 1_700_000_001_000,
+                "origin": "Save",
+                "byte_len": len(body),
+                "content_hash": stable_hash(body),
+            }
+        ],
+    },
+}
+(document_dir / "index.json").write_text(
+    json.dumps(index, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+print(f"local_history_sidecar={sidecar_id}")
+PY
+}
+
+assert_local_history_restore_capture_artifacts() {
+    local name="$1"
+    local capture_dir="$2"
+    local tree_path="$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+    local snapshot_path="$capture_dir/automation-snapshot.json"
+    local summary_path="$ARTIFACT_DIR/assertions/${name}-local-history-restore.txt"
+
+    [[ -s "$tree_path" ]] || smoke_fail "visual smoke '${name}' did not write an AT-SPI tree"
+    [[ -s "$snapshot_path" ]] || smoke_fail "visual smoke '${name}' did not write automation-snapshot.json"
+    /usr/bin/python3 - "$snapshot_path" "$tree_path" "$capture_dir" >"$summary_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+snapshot_path, tree_path, capture_dir = sys.argv[1:]
+snapshot = json.load(open(snapshot_path, encoding="utf-8"))
+tree = open(tree_path, encoding="utf-8", errors="replace").read()
+window = snapshot["window"]
+assert window is not None, snapshot
+tabs = window["tabs"]
+assert tabs, window
+active = next((tab for tab in tabs if tab["active"]), tabs[0])
+assert active["modified"] is True, active
+assert "Restored from Local History" in tree, tree[:2000]
+assert "Undo Restore" in tree, tree[:2000]
+lineages = list((Path(capture_dir) / "data" / "lushtext" / "local-history").glob("*/index.json"))
+assert lineages, capture_dir
+print("local_history_restore_notification=true")
+print("active_tab_modified=true")
+print(f"lineage_indexes={len(lineages)}")
+print(f"snapshot={snapshot_path}")
+print(f"tree={tree_path}")
+PY
+}
+
+assert_file_health_capture_artifacts() {
+    local name="$1"
+    local capture_dir="$2"
+    local tree_path="$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+    local snapshot_path="$capture_dir/automation-snapshot.json"
+    local summary_path="$ARTIFACT_DIR/assertions/${name}-file-health.txt"
+
+    [[ -s "$tree_path" ]] || smoke_fail "visual smoke '${name}' did not write an AT-SPI tree"
+    [[ -s "$snapshot_path" ]] || smoke_fail "visual smoke '${name}' did not write automation-snapshot.json"
+    /usr/bin/python3 - "$snapshot_path" "$tree_path" >"$summary_path" <<'PY'
+import json
+import sys
+
+snapshot_path, tree_path = sys.argv[1:]
+snapshot = json.load(open(snapshot_path, encoding="utf-8"))
+tree = open(tree_path, encoding="utf-8", errors="replace").read()
+window = snapshot["window"]
+assert window is not None, snapshot
+assert window["surfaces"]["document_properties_visible"] is True, window["surfaces"]
+assert "Health" in tree, tree[:2000]
+assert "Mixed line endings" in tree, tree[:2000]
+assert "Review" in tree, tree[:2000]
+print("document_properties_visible=true")
+print("file_health_finding=Mixed line endings")
+print(f"snapshot={snapshot_path}")
+print(f"tree={tree_path}")
+PY
 }
 
 assert_search_minimap_capture_artifacts() {
@@ -823,10 +1083,14 @@ run_capture() {
     local capture_dir="$ARTIFACT_DIR/captures/$name"
     local session_log="$ARTIFACT_DIR/${name}.session.log"
     local manifest="$ARTIFACT_DIR/assertions/${name}-state.txt"
+    local variant_notes=()
 
     mkdir -p "$capture_dir"
     if [[ "$name" == "recovery-startup" ]]; then
         prepare_recovery_capture_state "$capture_dir"
+    fi
+    if [[ "$name" == "local-history-restore" ]]; then
+        prepare_local_history_capture_state "$capture_dir" "$fixture"
     fi
     if [[ "$name" == workspace-* ]]; then
         prepare_workspace_capture_state "$name" "$capture_dir"
@@ -877,10 +1141,63 @@ run_capture() {
     if [[ "$color_scheme" != "default" ]]; then
         capture_args+=(--color-scheme "$color_scheme")
     fi
+    case "$name" in
+        high-contrast-style)
+            capture_args+=(--high-contrast --show-status-shapes)
+            variant_notes+=("high_contrast=true" "show_status_shapes=true")
+            ;;
+        large-text-constrained)
+            capture_args+=(--text-scale 1.45)
+            variant_notes+=("text_scale=1.45")
+            ;;
+        reduced-motion-command-palette)
+            capture_args+=(--reduced-motion)
+            variant_notes+=("reduced_motion=true" "interface_enable_animations=false")
+            ;;
+        transparency-readability)
+            capture_args+=(--tab-content-opacity 0.65 --enable-minimap)
+            variant_notes+=("tab_content_opacity=0.65" "minimap_requested=true")
+            ;;
+    esac
     if [[ "$name" == "recovery-startup" ]]; then
         capture_args+=(
             --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
             --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+        )
+    fi
+    if [[ "$name" == "modified-tab" ]]; then
+        capture_args+=(
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+            --step "atspi-set-editor-text:Visual smoke modified buffer with unsaved changes"
+            --wait-atspi-text "Visual smoke modified buffer"
+        )
+    fi
+    if [[ "$name" == "destructive-close-dialog" ]]; then
+        capture_args+=(
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+            --step "atspi-set-editor-text:Visual smoke modified buffer with unsaved changes"
+            --step "window-action:close-tab"
+            --step "wait-atspi-text:Save Changes?"
+        )
+    fi
+    if [[ "$name" == "file-health-properties" ]]; then
+        capture_args+=(
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+            --wait-atspi-text "Mixed line endings"
+        )
+    fi
+    if [[ "$name" == "local-history-restore" ]]; then
+        capture_args+=(
+            --atspi-tree-output "$ARTIFACT_DIR/assertions/${name}-atspi-tree.txt"
+            --atspi-focus-output "$ARTIFACT_DIR/assertions/${name}-atspi-focus.txt"
+            --step "wait-window-action:show-local-history"
+            --step "window-action:show-local-history"
+            --step "wait-atspi-text:local history saved snapshot"
+            --step "atspi-click-button:^Restore$"
+            --step "wait-atspi-text:Restored from Local History"
         )
     fi
     if [[ "$name" == notes-* || "$name" == bookmarks-* ]]; then
@@ -961,9 +1278,12 @@ run_capture() {
             capture_args+=(--window-action "$action")
         fi
     done
+    if ((${#variant_notes[@]} > 0)); then
+        printf '%s\n' "${variant_notes[@]}" >"$ARTIFACT_DIR/assertions/${name}-variant.txt"
+    fi
 
     if ! /usr/bin/python3 "${capture_args[@]}" >"$session_log" 2>&1; then
-        if grep -qE 'AT-SPI registry did not register|Missing at-spi2-registryd|PipeWire did not become ready|Missing required command' "$session_log"; then
+        if grep -qE 'AT-SPI registry did not register|Missing at-spi2-registryd|PipeWire did not become ready|Missing required command|No such schema|No such key|not writable|outside of the valid range' "$session_log"; then
             tail -n 120 "$session_log" >&2 || true
             write_visual_manifest "$name" "skipped" "host support unavailable" \
                 "$fixture" "$output" "$width" "$height" "$search" "$minimap" \
@@ -989,6 +1309,20 @@ run_capture() {
     if [[ "$name" == "main-search-minimap" ]]; then
         assert_search_minimap_capture_artifacts "$name" "$capture_dir" "$fixture" "$search"
     fi
+    case "$name" in
+        modified-tab)
+            assert_modified_tab_capture_artifacts "$name" "$capture_dir" "false"
+            ;;
+        destructive-close-dialog)
+            assert_modified_tab_capture_artifacts "$name" "$capture_dir" "true"
+            ;;
+        file-health-properties)
+            assert_file_health_capture_artifacts "$name" "$capture_dir"
+            ;;
+        local-history-restore)
+            assert_local_history_restore_capture_artifacts "$name" "$capture_dir"
+            ;;
+    esac
     case "$name" in
         normal-properties|compact-properties|constrained-properties)
             assert_surface_capture_artifacts "$name" "$capture_dir" "true" "false" "false"
@@ -1060,35 +1394,56 @@ run_capture() {
     echo "PASS: visual smoke '${name}' captured at $output"
 }
 
-run_capture "main-search-minimap" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/main-search-minimap.png" "$WIDTH" "$HEIGHT" "needle" "1" "default"
-run_capture "normal-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/normal-properties.png" "1280" "860" "" "0" "default" "toggle-properties"
-run_capture "compact-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/compact-properties.png" "760" "720" "" "0" "default" "toggle-properties"
-run_capture "constrained-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-properties.png" "760" "520" "" "0" "default" "toggle-properties"
-run_capture "short-layout" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/short-layout.png" "1200" "420" "" "0" "default"
-run_capture "markdown-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview.png" "1280" "860" "" "0" "default" "toggle-preview-mode"
-run_capture "constrained-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview.png" "760" "520" "" "0" "default" "toggle-preview-mode"
-run_capture "markdown-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview-side-by-side.png" "1280" "860" "" "0" "default" "set-preview-pane-visible=true"
-run_capture "constrained-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview-side-by-side.png" "760" "520" "" "0" "default" "set-preview-pane-visible=true"
-run_capture "workspace-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-empty.png" "1280" "860" "" "0" "default"
-run_capture "workspace-representative" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-representative.png" "1280" "860" "" "0" "default"
-run_capture "workspace-dense-awkward" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-dense-awkward.png" "1280" "860" "" "0" "default"
-run_capture "workspace-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-constrained.png" "760" "520" "" "0" "default"
-run_capture "workspace-refresh" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-refresh.png" "1280" "860" "" "0" "default"
-run_capture "notes-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-empty.png" "1280" "860" "" "0" "default" "show-notes"
-run_capture "notes-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-few.png" "1280" "860" "" "0" "default" "show-notes"
-run_capture "bookmarks-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-few.png" "1280" "860" "" "0" "default" "show-notes"
-run_capture "notes-dense" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-dense.png" "1280" "860" "" "0" "default" "show-notes"
-run_capture "bookmarks-dense" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-dense.png" "1280" "860" "" "0" "default" "show-notes"
-run_capture "notes-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-constrained.png" "760" "520" "" "0" "default" "show-notes"
-run_capture "bookmarks-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-constrained.png" "760" "520" "" "0" "default" "show-notes"
-run_capture "command-palette-files" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-files.png" "1280" "860" "" "0" "default" "toggle-command-palette"
-run_capture "command-palette-commands" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-commands.png" "1280" "860" "" "0" "default" "toggle-command-palette"
-run_capture "command-palette-notes" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-notes.png" "1280" "860" "" "0" "default" "toggle-command-palette"
-run_capture "command-palette-no-results" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-no-results.png" "1280" "860" "" "0" "default" "toggle-command-palette"
-run_capture "command-palette-dense-files" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-dense-files.png" "1280" "860" "" "0" "default" "toggle-command-palette"
-run_capture "command-palette-dismissed" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-dismissed.png" "1280" "860" "" "0" "default" "toggle-command-palette" "toggle-command-palette"
-run_capture "dark-style" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/dark-style.png" "$WIDTH" "$HEIGHT" "" "0" "force-dark"
-run_capture "recovery-startup" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/recovery-startup.png" "1280" "860" "" "0" "default"
+run_selected_capture() {
+    local name="$1"
+    if ! case_selected "$name"; then
+        return
+    fi
+    VISUAL_CASES_RUN=$((VISUAL_CASES_RUN + 1))
+    run_capture "$@"
+}
+
+run_selected_capture "main-search-minimap" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/main-search-minimap.png" "$WIDTH" "$HEIGHT" "needle" "1" "default"
+run_selected_capture "modified-tab" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/modified-tab.png" "1280" "860" "" "1" "default"
+run_selected_capture "destructive-close-dialog" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/destructive-close-dialog.png" "1280" "860" "" "0" "default"
+run_selected_capture "file-health-properties" "$FILE_HEALTH_FIXTURE" "$ARTIFACT_DIR/screenshots/file-health-properties.png" "1280" "860" "" "0" "default" "toggle-properties"
+run_selected_capture "local-history-restore" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/local-history-restore.png" "1280" "860" "" "0" "default"
+run_selected_capture "normal-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/normal-properties.png" "1280" "860" "" "0" "default" "toggle-properties"
+run_selected_capture "compact-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/compact-properties.png" "760" "720" "" "0" "default" "toggle-properties"
+run_selected_capture "constrained-properties" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-properties.png" "760" "520" "" "0" "default" "toggle-properties"
+run_selected_capture "short-layout" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/short-layout.png" "1200" "420" "" "0" "default"
+run_selected_capture "markdown-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview.png" "1280" "860" "" "0" "default" "toggle-preview-mode"
+run_selected_capture "constrained-preview" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview.png" "760" "520" "" "0" "default" "toggle-preview-mode"
+run_selected_capture "markdown-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/markdown-preview-side-by-side.png" "1280" "860" "" "0" "default" "set-preview-pane-visible=true"
+run_selected_capture "constrained-preview-side-by-side" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/constrained-preview-side-by-side.png" "760" "520" "" "0" "default" "set-preview-pane-visible=true"
+run_selected_capture "workspace-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-empty.png" "1280" "860" "" "0" "default"
+run_selected_capture "workspace-representative" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-representative.png" "1280" "860" "" "0" "default"
+run_selected_capture "workspace-dense-awkward" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-dense-awkward.png" "1280" "860" "" "0" "default"
+run_selected_capture "workspace-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-constrained.png" "760" "520" "" "0" "default"
+run_selected_capture "workspace-refresh" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/workspace-refresh.png" "1280" "860" "" "0" "default"
+run_selected_capture "notes-empty" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-empty.png" "1280" "860" "" "0" "default" "show-notes"
+run_selected_capture "notes-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-few.png" "1280" "860" "" "0" "default" "show-notes"
+run_selected_capture "bookmarks-few" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-few.png" "1280" "860" "" "0" "default" "show-notes"
+run_selected_capture "notes-dense" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-dense.png" "1280" "860" "" "0" "default" "show-notes"
+run_selected_capture "bookmarks-dense" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-dense.png" "1280" "860" "" "0" "default" "show-notes"
+run_selected_capture "notes-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/notes-constrained.png" "760" "520" "" "0" "default" "show-notes"
+run_selected_capture "bookmarks-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/bookmarks-constrained.png" "760" "520" "" "0" "default" "show-notes"
+run_selected_capture "command-palette-files" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-files.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "command-palette-commands" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-commands.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "command-palette-notes" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-notes.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "command-palette-no-results" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-no-results.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "command-palette-dense-files" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-dense-files.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "command-palette-dismissed" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/command-palette-dismissed.png" "1280" "860" "" "0" "default" "toggle-command-palette" "toggle-command-palette"
+run_selected_capture "dark-style" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/dark-style.png" "$WIDTH" "$HEIGHT" "" "0" "force-dark"
+run_selected_capture "high-contrast-style" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/high-contrast-style.png" "$WIDTH" "$HEIGHT" "" "0" "default"
+run_selected_capture "large-text-constrained" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/large-text-constrained.png" "760" "520" "" "0" "default"
+run_selected_capture "reduced-motion-command-palette" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/reduced-motion-command-palette.png" "1280" "860" "" "0" "default" "toggle-command-palette"
+run_selected_capture "transparency-readability" "$MARKDOWN_FIXTURE" "$ARTIFACT_DIR/screenshots/transparency-readability.png" "1280" "860" "" "0" "default" "set-preview-pane-visible=true"
+run_selected_capture "recovery-startup" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/recovery-startup.png" "1280" "860" "" "0" "default"
+
+if ((VISUAL_CASES_RUN == 0)); then
+    smoke_fail "no visual smoke cases matched filter: $VISUAL_CASE_FILTERS"
+fi
 
 {
     echo "screenshots=$ARTIFACT_DIR/screenshots"
@@ -1097,5 +1452,115 @@ run_capture "recovery-startup" "$TEXT_FIXTURE" "$ARTIFACT_DIR/screenshots/recove
     find "$ARTIFACT_DIR/screenshots" -maxdepth 1 -type f -name '*.png' -print | sort
     find "$ARTIFACT_DIR/assertions" -maxdepth 1 -type f -name '*-manifest.json' -print | sort
 } >"$ARTIFACT_DIR/summary.txt"
+
+/usr/bin/python3 - "$ARTIFACT_DIR" "$VISUAL_CASE_FILTERS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+case_filters = [item for item in sys.argv[2].split(",") if item]
+assertions = root / "assertions"
+screenshots = root / "screenshots"
+
+def rel(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+manifests = sorted(assertions.glob("*-manifest.json"))
+scenario_ids = [path.name.removesuffix("-manifest.json") for path in manifests]
+warning_files = sorted(assertions.glob("*-warnings.txt"))
+unexpected_warning_count = 0
+for path in warning_files:
+    if path.is_file():
+        unexpected_warning_count += len(
+            [line for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line]
+        )
+
+coverage = {
+    "focus_indication_cases": [
+        name
+        for name in scenario_ids
+        if name
+        in {
+            "main-search-minimap",
+            "modified-tab",
+            "destructive-close-dialog",
+            "file-health-properties",
+            "local-history-restore",
+            "normal-properties",
+            "compact-properties",
+            "constrained-properties",
+            "markdown-preview",
+            "constrained-preview",
+            "markdown-preview-side-by-side",
+            "constrained-preview-side-by-side",
+            "workspace-representative",
+            "workspace-dense-awkward",
+            "workspace-constrained",
+            "notes-few",
+            "bookmarks-few",
+            "notes-constrained",
+            "bookmarks-constrained",
+            "command-palette-files",
+            "command-palette-no-results",
+            "reduced-motion-command-palette",
+            "recovery-startup",
+        }
+    ],
+    "variant_cases": {
+        "dark": [name for name in scenario_ids if name == "dark-style"],
+        "high_contrast": [name for name in scenario_ids if name == "high-contrast-style"],
+        "large_text": [name for name in scenario_ids if name == "large-text-constrained"],
+        "reduced_motion": [name for name in scenario_ids if name == "reduced-motion-command-palette"],
+        "transparency_readability": [name for name in scenario_ids if name == "transparency-readability"],
+    },
+    "color_not_only_cases": [
+        name
+        for name in scenario_ids
+        if name
+        in {
+            "main-search-minimap",
+            "modified-tab",
+            "destructive-close-dialog",
+            "file-health-properties",
+            "local-history-restore",
+            "bookmarks-few",
+            "bookmarks-dense",
+            "recovery-startup",
+            "high-contrast-style",
+            "transparency-readability",
+        }
+    ],
+    "constrained_geometry_cases": [
+        name
+        for name in scenario_ids
+        if "constrained" in name or name in {"short-layout", "large-text-constrained"}
+    ],
+    "unsupported_variants": [],
+}
+
+payload = {
+    "schema_version": 1,
+    "status": "passed" if unexpected_warning_count == 0 else "failed",
+    "lane": "visual-smoke",
+    "case_filters": case_filters or ["all"],
+    "scenario_source": {
+        "manifest_count": len(manifests),
+        "manifests": [rel(path) for path in manifests],
+    },
+    "screenshots": [rel(path) for path in sorted(screenshots.glob("*.png"))],
+    "warnings": {
+        "status": "passed" if unexpected_warning_count == 0 else "found",
+        "unexpected_count": unexpected_warning_count,
+        "artifacts": [rel(path) for path in warning_files],
+    },
+    "visual_accessibility_coverage": coverage,
+    "environment_report": {"artifact": "environment.txt"},
+}
+(root / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 
 echo "PASS: visual smoke screenshots and artifacts captured under $ARTIFACT_DIR"

@@ -14,6 +14,7 @@ use crate::model::workspace::{
 use crate::services::file_peek::PeekRequestToken;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::workspace_watch::WorkspaceWatcher;
+use crate::ui::accessibility::{self, RowAccessibility};
 use crate::ui::sidebar::SidebarFileRowStateSnapshot;
 use gtk_lush_settle::Debounce;
 use gtk_lush_signals::SignalBag;
@@ -38,6 +39,7 @@ type FolderReorderToIndexCallback = Box<dyn Fn(&WorkspaceId, &WorkspaceFolderId,
 type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
+const ROW_EXPANDED_ACCESSIBILITY_HOOK: &str = "workspace-row-expanded-accessibility-hook";
 
 /// Cached position of a file tree item for O(1) model removal.
 /// Stores the parent directory (or `None` for configured top-level rows) and
@@ -63,6 +65,8 @@ pub struct PeekWidgets {
     pub body_stack: RefCell<Option<gtk4::Stack>>,
     /// Read-only buffer for the bounded text sample.
     pub text_buffer: RefCell<Option<gtk4::TextBuffer>>,
+    /// Read-only text view for the bounded text sample.
+    pub text_view: RefCell<Option<gtk4::TextView>>,
     /// Fallback headline for unsupported and error states.
     pub fallback_title_label: RefCell<Option<gtk4::Label>>,
     /// Explanatory fallback body copy.
@@ -93,6 +97,8 @@ pub struct RefreshRuntimeState {
     pub pending_paths: RefCell<HashSet<PathBuf>>,
     /// Whether the next refresh must rebuild the whole current section view.
     pub pending_full_reload: Cell<bool>,
+    /// Whether the current scan burst should announce manual-refresh completion.
+    pub manual_refresh_announcing: Cell<bool>,
     /// Last scan failure shown to the user so repeated auto-refresh attempts do
     /// not spam the status bar while a folder remains unreadable.
     pub last_reported_error: RefCell<Option<String>>,
@@ -293,14 +299,46 @@ impl ObjectImpl for LushtextWorkspaceSection {
         self.setup_header_double_click();
         self.obj().setup_peek();
 
-        self.add_folder_button.update_property(&[
-            gtk4::accessible::Property::Label("Add folder"),
-            gtk4::accessible::Property::Description("Add a folder to this workspace"),
-        ]);
-        self.collapse_button.update_property(&[
-            gtk4::accessible::Property::Label("Collapse Workspace"),
-            gtk4::accessible::Property::Description("Hide this workspace's folder list"),
-        ]);
+        accessibility::set_role(&*self.header_box, gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &*self.header_box,
+            "Workspace",
+            "Workspace header with folder actions and collapse control",
+        );
+        accessibility::set_labelled_description(
+            &*self.add_folder_button,
+            "Add folder",
+            "Add a folder to this workspace",
+        );
+        accessibility::set_labelled_description(
+            &*self.collapse_button,
+            "Collapse Workspace",
+            "Hide this workspace's folder list",
+        );
+        accessibility::set_expanded(&*self.collapse_button, Some(true));
+        accessibility::set_labelled_description(
+            &*self.refresh_button,
+            "Refresh Workspace Folders",
+            "Reload the files and folders in this workspace section",
+        );
+        accessibility::set_labelled_description(
+            &*self.drilldown_back_button,
+            "Back to workspace folders",
+            "Return from the focused folder view to the workspace folder list",
+        );
+        accessibility::set_labelled_description(
+            &*self.file_tree_view,
+            "Workspace file tree",
+            "Files and folders in this workspace",
+        );
+        accessibility::set_has_popup(&*self.file_tree_view, true);
+        accessibility::set_key_shortcuts(&*self.file_tree_view, "Menu, Shift+F10");
+        accessibility::set_role(&*self.empty_folder_set_label, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &*self.empty_folder_set_label,
+            "No folders in this workspace",
+            "Add a folder to show files in this workspace",
+        );
 
         // Signal closures keep weak section refs so GTK handlers do not keep a
         // disposed sidebar section alive through a strong reference cycle.
@@ -386,15 +424,19 @@ impl LushtextWorkspaceSection {
 
             let drag_handle = gtk4::Button::from_icon_name("list-drag-handle-symbolic");
             drag_handle.set_valign(gtk4::Align::Center);
+            drag_handle.set_focusable(false);
             drag_handle.set_tooltip_text(Some("Reorder Folder"));
             drag_handle.set_visible(false);
             drag_handle.add_css_class("flat");
             drag_handle.add_css_class("circular");
             drag_handle.add_css_class("workspace-folder-drag-handle");
-            drag_handle.update_property(&[
-                gtk4::accessible::Property::Label("Reorder Folder"),
-                gtk4::accessible::Property::Description("Drag to reorder this workspace folder"),
-            ]);
+            accessibility::set_labelled_description(
+                &drag_handle,
+                "Reorder Folder",
+                "Drag or use the folder context menu to reorder this workspace folder",
+            );
+            accessibility::set_hidden(&drag_handle, true);
+            accessibility::set_disabled(&drag_handle, true);
 
             let open_indicator = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             open_indicator.add_css_class("workspace-file-open-indicator");
@@ -419,6 +461,11 @@ impl LushtextWorkspaceSection {
             focus_btn.set_tooltip_text(Some("Focus Folder"));
             focus_btn.set_margin_end(6);
             focus_btn.set_visible(false);
+            accessibility::set_labelled_description(
+                &focus_btn,
+                "Focus Folder",
+                "Temporarily show this folder as the root of the workspace tree",
+            );
 
             let list_item_weak = list_item.downgrade();
             let overlay_weak = overlay.downgrade();
@@ -454,10 +501,13 @@ impl LushtextWorkspaceSection {
             let drop_target = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             drop_target.add_css_class("workspace-folder-drop-target");
             drop_target.set_can_target(false);
+            drop_target.set_focusable(false);
             drop_target.set_halign(gtk4::Align::Fill);
             drop_target.set_valign(gtk4::Align::Start);
             drop_target.set_height_request(2);
             drop_target.set_visible(false);
+            accessibility::set_hidden(&drop_target, true);
+            accessibility::set_disabled(&drop_target, true);
 
             let drop_shield = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             drop_shield.add_css_class("workspace-folder-dnd-shield");
@@ -467,14 +517,19 @@ impl LushtextWorkspaceSection {
             drop_shield.set_valign(gtk4::Align::Fill);
             drop_shield.set_hexpand(true);
             drop_shield.set_vexpand(true);
+            accessibility::set_hidden(&drop_shield, true);
+            accessibility::set_disabled(&drop_shield, true);
 
             let drop_indicator = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
             drop_indicator.add_css_class("workspace-folder-drop-indicator");
             drop_indicator.set_can_target(false);
+            drop_indicator.set_focusable(false);
             drop_indicator.set_halign(gtk4::Align::Fill);
             drop_indicator.set_valign(gtk4::Align::Center);
             drop_indicator.set_hexpand(true);
             drop_indicator.set_height_request(2);
+            accessibility::set_hidden(&drop_indicator, true);
+            accessibility::set_disabled(&drop_indicator, true);
             drop_target.append(&drop_indicator);
 
             overlay.set_child(Some(&expander));
@@ -540,17 +595,9 @@ impl LushtextWorkspaceSection {
 
             expander.set_list_row(Some(&tree_row));
             super::dnd::reset_reorder_row_for_bind(&overlay);
+            clear_expanded_accessibility_hook(&overlay);
 
-            let mut focus_btn_opt = None;
-            let mut current = overlay.first_child();
-            while let Some(child) = current {
-                if child.downcast_ref::<gtk4::Button>().is_some() {
-                    focus_btn_opt = child.downcast::<gtk4::Button>().ok();
-                    break;
-                }
-                current = child.next_sibling();
-            }
-            let focus_btn = focus_btn_opt.expect("focus_btn missing");
+            let focus_btn = focus_button_for_overlay(&overlay).expect("focus_btn missing");
 
             if let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() {
                 let content_box = expander
@@ -711,11 +758,28 @@ impl LushtextWorkspaceSection {
                 }
 
                 if let Some(section) = section_weak.upgrade() {
+                    apply_file_tree_row_accessibility(FileTreeRowAccessibilityTarget {
+                        overlay: &overlay,
+                        drag_handle: &drag_handle,
+                        focus_btn: &focus_btn,
+                        file_item: &file_item,
+                        tree_row: &tree_row,
+                        section: &section,
+                        position: list_item.position(),
+                        show_reorder_handle,
+                        show_focus,
+                    });
+                    install_expanded_accessibility_hook(&overlay, &tree_row, &file_item, &section);
                     super::sync_file_row_state_for_overlay(&section, &overlay);
                 } else {
+                    accessibility::clear_row_accessibility(&overlay);
+                    accessibility::set_expanded(&overlay, None);
                     super::reset_file_row_state_for_overlay(&overlay);
                 }
             } else {
+                clear_expanded_accessibility_hook(&overlay);
+                accessibility::clear_row_accessibility(&overlay);
+                accessibility::set_expanded(&overlay, None);
                 super::reset_file_row_state_for_overlay(&overlay);
             }
         });
@@ -753,23 +817,43 @@ impl LushtextWorkspaceSection {
                     label.set_use_markup(false);
                     drag_handle.set_visible(false);
                     drag_handle.set_sensitive(false);
+                    accessibility::set_hidden(&drag_handle, true);
+                    accessibility::set_disabled(&drag_handle, true);
                     content_box.set_margin_end(0);
                 }
 
                 super::reset_file_row_state_for_overlay(&overlay);
                 super::dnd::reset_reorder_row_for_unbind(&overlay);
+                clear_expanded_accessibility_hook(&overlay);
+                accessibility::clear_row_accessibility(&overlay);
+                accessibility::set_expanded(&overlay, None);
+                accessibility::set_disabled(&overlay, false);
 
-                if let Some(section) = section_weak.upgrade()
-                    && section
+                if let Some(focus_btn) = focus_button_for_overlay(&overlay) {
+                    accessibility::set_labelled_description(
+                        &focus_btn,
+                        "Focus Folder",
+                        "Temporarily show this folder as the root of the workspace tree",
+                    );
+                    accessibility::set_hidden(&focus_btn, true);
+                }
+
+                if let Some(section) = section_weak.upgrade() {
+                    let context_matches = section
                         .imp()
                         .context_expander
                         .borrow()
                         .as_ref()
-                        .is_some_and(|context_expander| context_expander == &expander)
-                {
-                    *section.imp().context_expander.borrow_mut() = None;
-                    *section.imp().context_path.borrow_mut() = None;
-                    *section.imp().context_workspace_folder_id.borrow_mut() = None;
+                        .is_some_and(|context_expander| context_expander == &expander);
+                    if context_matches {
+                        section.imp().context_expander.borrow_mut().take();
+                        section.imp().context_path.borrow_mut().take();
+                        section
+                            .imp()
+                            .context_workspace_folder_id
+                            .borrow_mut()
+                            .take();
+                    }
                 }
             }
 
@@ -842,6 +926,11 @@ impl LushtextWorkspaceSection {
         popover.set_parent(&*self.file_tree_view);
         popover.set_has_arrow(false);
         popover.set_halign(gtk4::Align::Start);
+        accessibility::set_labelled_description(
+            &popover,
+            "File tree context menu",
+            "Actions for the selected file or folder row",
+        );
         *self.context_file_menu_model.borrow_mut() = Some(file_menu.clone());
         *self.context_folder_menu_model.borrow_mut() = Some(folder_menu.clone());
         *self.context_menu.borrow_mut() = Some(popover);
@@ -854,10 +943,24 @@ impl LushtextWorkspaceSection {
         let focus_folder_action = gio::SimpleAction::new("focus-folder", None);
         let section_weak = obj.downgrade();
         focus_folder_action.connect_activate(move |_, _| {
-            if let Some(section) = section_weak.upgrade()
-                && let Some(path) = section.imp().context_path.borrow().clone()
-                && section.imp().context_is_dir.get()
+            let Some(section) = section_weak.upgrade() else {
+                return;
+            };
+            let path = section.imp().context_path.borrow().clone();
+            let is_dir = section.imp().context_is_dir.get();
+            if let Some(path) = path
+                && is_dir
             {
+                if let Some(popover) = section.imp().context_menu.borrow().as_ref() {
+                    popover.popdown();
+                }
+                section.imp().context_expander.borrow_mut().take();
+                section.imp().context_path.borrow_mut().take();
+                section
+                    .imp()
+                    .context_workspace_folder_id
+                    .borrow_mut()
+                    .take();
                 section.focus_folder(&path);
             }
         });
@@ -972,19 +1075,25 @@ impl LushtextWorkspaceSection {
 
         obj.insert_action_group("section", Some(&action_group));
 
+        let context_menu_wiring = FileContextMenuWiring {
+            file_menu,
+            folder_menu,
+            focus_folder_action,
+            local_history_action,
+            document_note_action,
+            folder_note_action,
+            move_folder_up_action,
+            move_folder_down_action,
+            remove_folder_action,
+        };
+
         // Attach the gesture to the stable list view; press-time picking
         // resolves the current recycled row before opening the menu.
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
 
         let section_weak = obj.downgrade();
-        let focus_folder_action_clone = focus_folder_action;
-        let local_history_action_clone = local_history_action;
-        let document_note_action_clone = document_note_action;
-        let folder_note_action_clone = folder_note_action;
-        let move_folder_up_action_clone = move_folder_up_action;
-        let move_folder_down_action_clone = move_folder_down_action;
-        let remove_folder_action_clone = remove_folder_action;
+        let pointer_wiring = context_menu_wiring.clone();
         gesture.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(section) = section_weak.upgrade() else {
                 return;
@@ -1005,55 +1114,41 @@ impl LushtextWorkspaceSection {
             let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() else {
                 return;
             };
-            let Some(path) = file_item.path() else {
-                return;
-            };
-
-            let imp = section.imp();
-            let workspace_folder_id = file_item.workspace_folder_id();
-            *imp.context_path.borrow_mut() = Some(path);
-            imp.context_is_dir.set(file_item.is_dir());
-            *imp.context_workspace_folder_id.borrow_mut() = workspace_folder_id.clone();
-            *imp.context_expander.borrow_mut() = Some(expander);
-
-            let is_workspace_folder = workspace_folder_id.is_some();
-            focus_folder_action_clone.set_enabled(
-                file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0,
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Pointer event coordinates are already bounded by GTK widget geometry before converting to i32"
+            )]
+            let pointing_to = gdk4::Rectangle::new(x as i32, y as i32, 1, 1);
+            show_file_context_menu_for_row(
+                &section,
+                &expander,
+                &tree_row,
+                &file_item,
+                &pointer_wiring,
+                pointing_to,
             );
-            // Avoid filesystem metadata checks on the right-click path; the
-            // window-level local-history workflow validates file size on
-            // activation and reports a warning if the file is too large.
-            let local_history_enabled = !file_item.is_dir() && !file_item.is_placeholder();
-            local_history_action_clone.set_enabled(local_history_enabled);
-            document_note_action_clone
-                .set_enabled(!file_item.is_dir() && !file_item.is_placeholder());
-            folder_note_action_clone.set_enabled(is_workspace_folder);
-            remove_folder_action_clone.set_enabled(is_workspace_folder);
-            let (can_move_up, can_move_down) = workspace_folder_id
-                .as_ref()
-                .map_or((false, false), |folder_id| {
-                    section.workspace_folder_move_availability(folder_id)
-                });
-            move_folder_up_action_clone.set_enabled(can_move_up);
-            move_folder_down_action_clone.set_enabled(can_move_down);
-
-            let popover = imp.context_menu.borrow().clone();
-            if let Some(popover) = popover {
-                popover.set_menu_model(Some(if is_workspace_folder {
-                    &folder_menu
-                } else {
-                    &file_menu
-                }));
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "Pointer event coordinates are already bounded by GTK widget geometry before converting to i32"
-                )]
-                popover.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
-                popover.popup();
-            }
         });
 
         self.file_tree_view.add_controller(gesture);
+
+        let key_controller = gtk4::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let section_weak = obj.downgrade();
+        let keyboard_wiring = context_menu_wiring;
+        key_controller.connect_key_pressed(move |_, key, _, state| {
+            if !file_tree_context_menu_key(key, state) {
+                return glib::Propagation::Proceed;
+            }
+            let Some(section) = section_weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            if show_file_context_menu_for_selection(&section, &keyboard_wiring) {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.file_tree_view.add_controller(key_controller);
     }
 
     /// Build right-click context menu for the workspace header.
@@ -1073,6 +1168,11 @@ impl LushtextWorkspaceSection {
         popover.set_parent(&*self.header_box);
         popover.set_has_arrow(false);
         popover.set_halign(gtk4::Align::Start);
+        accessibility::set_labelled_description(
+            &popover,
+            "Workspace context menu",
+            "Actions for this workspace section",
+        );
         *self.header_context_menu.borrow_mut() = Some(popover.clone());
 
         let action_group = gio::SimpleActionGroup::new();
@@ -1172,4 +1272,363 @@ fn find_ancestor_expander(widget: &gtk4::Widget) -> Option<gtk4::TreeExpander> {
         current = w.parent();
     }
     None
+}
+
+#[derive(Clone)]
+struct FileContextMenuWiring {
+    file_menu: gio::Menu,
+    folder_menu: gio::Menu,
+    focus_folder_action: gio::SimpleAction,
+    local_history_action: gio::SimpleAction,
+    document_note_action: gio::SimpleAction,
+    folder_note_action: gio::SimpleAction,
+    move_folder_up_action: gio::SimpleAction,
+    move_folder_down_action: gio::SimpleAction,
+    remove_folder_action: gio::SimpleAction,
+}
+
+fn file_tree_context_menu_key(key: gtk4::gdk::Key, state: gtk4::gdk::ModifierType) -> bool {
+    key == gtk4::gdk::Key::Menu
+        || (key == gtk4::gdk::Key::F10 && state.contains(gtk4::gdk::ModifierType::SHIFT_MASK))
+}
+
+fn show_file_context_menu_for_selection(
+    section: &super::LushtextWorkspaceSection,
+    wiring: &FileContextMenuWiring,
+) -> bool {
+    let Some(selection) = section
+        .imp()
+        .file_tree_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+    else {
+        return false;
+    };
+    if selection.selected() == gtk4::INVALID_LIST_POSITION {
+        return false;
+    }
+    let Some(tree_row) = selection
+        .selected_item()
+        .and_downcast::<gtk4::TreeListRow>()
+    else {
+        return false;
+    };
+    let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() else {
+        return false;
+    };
+    let Some((expander, pointing_to)) =
+        realized_expander_and_bounds_for_tree_row(section, &tree_row)
+    else {
+        section.imp().file_tree_view.scroll_to(
+            selection.selected(),
+            gtk4::ListScrollFlags::FOCUS,
+            None,
+        );
+        return false;
+    };
+
+    show_file_context_menu_for_row(
+        section,
+        &expander,
+        &tree_row,
+        &file_item,
+        wiring,
+        pointing_to,
+    )
+}
+
+fn realized_expander_and_bounds_for_tree_row(
+    section: &super::LushtextWorkspaceSection,
+    target_row: &gtk4::TreeListRow,
+) -> Option<(gtk4::TreeExpander, gdk4::Rectangle)> {
+    let list_view = section.imp().file_tree_view.clone();
+    let mut child = list_view.first_child();
+    while let Some(row_widget) = child {
+        let next = row_widget.next_sibling();
+        if let Some(overlay) = row_widget.first_child().and_downcast::<gtk4::Overlay>()
+            && let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>()
+            && expander.list_row().as_ref() == Some(target_row)
+            && let Some(bounds) = row_widget.compute_bounds(&list_view)
+        {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "Popover anchor geometry comes from GTK allocation data that already lives in i32 widget coordinates"
+            )]
+            let pointing_to = gdk4::Rectangle::new(
+                bounds.x().round() as i32,
+                bounds.y().round() as i32,
+                bounds.width().max(1.0).round() as i32,
+                bounds.height().max(1.0).round() as i32,
+            );
+            return Some((expander, pointing_to));
+        }
+        child = next;
+    }
+    None
+}
+
+fn show_file_context_menu_for_row(
+    section: &super::LushtextWorkspaceSection,
+    expander: &gtk4::TreeExpander,
+    tree_row: &gtk4::TreeListRow,
+    file_item: &FileTreeItem,
+    wiring: &FileContextMenuWiring,
+    pointing_to: gdk4::Rectangle,
+) -> bool {
+    let Some(path) = file_item.path() else {
+        return false;
+    };
+
+    let imp = section.imp();
+    let workspace_folder_id = file_item.workspace_folder_id();
+    *imp.context_path.borrow_mut() = Some(path);
+    imp.context_is_dir.set(file_item.is_dir());
+    *imp.context_workspace_folder_id.borrow_mut() = workspace_folder_id.clone();
+    *imp.context_expander.borrow_mut() = Some(expander.clone());
+
+    let is_workspace_folder = workspace_folder_id.is_some();
+    wiring
+        .focus_folder_action
+        .set_enabled(file_item.is_dir() && !file_item.is_placeholder() && tree_row.depth() > 0);
+    // Avoid filesystem metadata checks on the context-menu path; the
+    // window-level local-history workflow validates file size on activation
+    // and reports a warning if the file is too large.
+    let local_history_enabled = !file_item.is_dir() && !file_item.is_placeholder();
+    wiring
+        .local_history_action
+        .set_enabled(local_history_enabled);
+    wiring
+        .document_note_action
+        .set_enabled(!file_item.is_dir() && !file_item.is_placeholder());
+    wiring.folder_note_action.set_enabled(is_workspace_folder);
+    wiring.remove_folder_action.set_enabled(is_workspace_folder);
+    let (can_move_up, can_move_down) = workspace_folder_id
+        .as_ref()
+        .map_or((false, false), |folder_id| {
+            section.workspace_folder_move_availability(folder_id)
+        });
+    wiring.move_folder_up_action.set_enabled(can_move_up);
+    wiring.move_folder_down_action.set_enabled(can_move_down);
+
+    let popover = imp.context_menu.borrow().clone();
+    if let Some(popover) = popover {
+        let item_kind = if is_workspace_folder {
+            "Workspace folder"
+        } else if file_item.is_dir() {
+            "Folder"
+        } else {
+            "File"
+        };
+        let display_name = file_item.name();
+        accessibility::set_labelled_description(
+            &popover,
+            &format!("{item_kind} actions for {display_name}"),
+            "Context actions for the selected workspace file-tree row",
+        );
+        popover.set_menu_model(Some(if is_workspace_folder {
+            &wiring.folder_menu
+        } else {
+            &wiring.file_menu
+        }));
+        popover.set_pointing_to(Some(&pointing_to));
+        popover.popup();
+        return true;
+    }
+    false
+}
+
+fn focus_button_for_overlay(overlay: &gtk4::Overlay) -> Option<gtk4::Button> {
+    let mut current = overlay.first_child();
+    while let Some(child) = current {
+        if let Ok(button) = child.clone().downcast::<gtk4::Button>() {
+            return Some(button);
+        }
+        current = child.next_sibling();
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+struct FileTreeRowAccessibilityTarget<'a> {
+    overlay: &'a gtk4::Overlay,
+    drag_handle: &'a gtk4::Button,
+    focus_btn: &'a gtk4::Button,
+    file_item: &'a FileTreeItem,
+    tree_row: &'a gtk4::TreeListRow,
+    section: &'a super::LushtextWorkspaceSection,
+    position: u32,
+    show_reorder_handle: bool,
+    show_focus: bool,
+}
+
+fn apply_file_tree_row_accessibility(target: FileTreeRowAccessibilityTarget<'_>) {
+    let FileTreeRowAccessibilityTarget {
+        overlay,
+        drag_handle,
+        focus_btn,
+        file_item,
+        tree_row,
+        section,
+        position,
+        show_reorder_handle,
+        show_focus,
+    } = target;
+    accessibility::set_role(overlay, gtk4::AccessibleRole::ListItem);
+
+    let display_name = file_item.name();
+    let label = if file_item.is_placeholder() {
+        display_name.clone()
+    } else if file_item.is_dir() {
+        format!("Folder {display_name}")
+    } else {
+        format!("File {display_name}")
+    };
+    let description = file_tree_row_description(file_item, tree_row, section);
+    let selected = section
+        .imp()
+        .file_tree_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .is_some_and(|selection| selection.selected() == position);
+
+    let set_size = section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .map_or(0, ListModelExt::n_items);
+    let row_accessibility = if set_size > 0 && position != gtk4::INVALID_LIST_POSITION {
+        RowAccessibility::new(&label)
+            .description(&description)
+            .selected(selected)
+            .position((position + 1) as i32, set_size as i32)
+    } else {
+        RowAccessibility::new(&label)
+            .description(&description)
+            .selected(selected)
+    };
+    accessibility::apply_row_accessibility(overlay, row_accessibility);
+
+    let expanded = if file_item.is_dir() && !file_item.is_placeholder() {
+        Some(tree_row.is_expanded())
+    } else {
+        None
+    };
+    accessibility::set_expanded(overlay, expanded);
+    accessibility::set_disabled(overlay, file_item.is_placeholder());
+
+    let reorder_label = format!("Reorder workspace folder {display_name}");
+    accessibility::set_labelled_description(
+        drag_handle,
+        &reorder_label,
+        "Drag or use the folder context menu to reorder this workspace folder",
+    );
+    accessibility::set_hidden(drag_handle, !show_reorder_handle);
+    accessibility::set_disabled(drag_handle, !show_reorder_handle);
+
+    let focus_label = format!("Focus folder {display_name}");
+    accessibility::set_labelled_description(
+        focus_btn,
+        &focus_label,
+        "Temporarily show this folder as the root of the workspace tree",
+    );
+    accessibility::set_hidden(focus_btn, !show_focus);
+    accessibility::set_disabled(focus_btn, !show_focus);
+}
+
+fn install_expanded_accessibility_hook(
+    overlay: &gtk4::Overlay,
+    tree_row: &gtk4::TreeListRow,
+    file_item: &FileTreeItem,
+    section: &super::LushtextWorkspaceSection,
+) {
+    clear_expanded_accessibility_hook(overlay);
+
+    if !file_item.is_dir() || file_item.is_placeholder() {
+        return;
+    }
+
+    let overlay_weak = overlay.downgrade();
+    let section_weak = section.downgrade();
+    let file_item = file_item.clone();
+    let handler_id = tree_row.connect_notify_local(Some("expanded"), move |row, _| {
+        let Some(overlay) = overlay_weak.upgrade() else {
+            return;
+        };
+
+        accessibility::set_expanded(&overlay, Some(row.is_expanded()));
+        if let Some(section) = section_weak.upgrade() {
+            let description = file_tree_row_description(&file_item, row, &section);
+            accessibility::set_description(&overlay, &description);
+        }
+    });
+
+    let signals = SignalBag::new();
+    signals.track(tree_row, handler_id);
+    // SAFETY: the key is private to this row factory. The bag is stolen and
+    // cleared on both bind and unbind before the recycled overlay is reused.
+    unsafe {
+        overlay.set_data(ROW_EXPANDED_ACCESSIBILITY_HOOK, signals);
+    }
+}
+
+fn clear_expanded_accessibility_hook(overlay: &gtk4::Overlay) {
+    // SAFETY: mirrors set_data(ROW_EXPANDED_ACCESSIBILITY_HOOK) above; no
+    // external code reads this private row-local signal bag.
+    unsafe {
+        if let Some(signals) = overlay.steal_data::<SignalBag>(ROW_EXPANDED_ACCESSIBILITY_HOOK) {
+            signals.clear();
+        }
+    }
+}
+
+fn file_tree_row_description(
+    file_item: &FileTreeItem,
+    tree_row: &gtk4::TreeListRow,
+    section: &super::LushtextWorkspaceSection,
+) -> String {
+    if file_item.is_placeholder() {
+        return "Additional children are hidden by the sidebar scan limit".to_string();
+    }
+
+    let mut parts = Vec::new();
+    if file_item.is_dir() {
+        parts.push("Directory".to_string());
+    } else {
+        parts.push("File".to_string());
+    }
+
+    if let Some(path) = file_item.path() {
+        parts.push(path.display().to_string());
+    }
+
+    if file_item.workspace_folder_id().is_some() {
+        parts.push("Top-level workspace folder".to_string());
+    }
+
+    if tree_row.depth() > 0 {
+        parts.push(format!(
+            "Nested level {}",
+            tree_row.depth().saturating_add(1)
+        ));
+    }
+
+    if !section.imp().drilldown_stack.borrow().is_empty() {
+        parts.push("Focused folder view".to_string());
+    }
+
+    if file_item.is_empty() == Some(true) {
+        parts.push("Empty folder".to_string());
+    } else if file_item.is_dir() {
+        parts.push(
+            if tree_row.is_expanded() {
+                "Expanded"
+            } else {
+                "Collapsed"
+            }
+            .to_string(),
+        );
+    }
+
+    parts.join(". ")
 }

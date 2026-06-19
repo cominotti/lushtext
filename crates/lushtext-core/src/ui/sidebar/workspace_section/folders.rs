@@ -13,6 +13,7 @@ use gtk4::{gio, glib};
 
 use crate::model::workspace::{FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId};
 use crate::services;
+use crate::ui::accessibility;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 
 use super::LushtextWorkspaceSection;
@@ -322,6 +323,22 @@ impl LushtextWorkspaceSection {
             gtk4::accessible::Property::Label(label),
             gtk4::accessible::Property::Description(description),
         ]);
+        accessibility::set_expanded(&*imp.collapse_button, Some(!collapsed));
+        accessibility::set_hidden(&*imp.file_tree_view, !show_body || !has_tree_rows);
+        accessibility::set_hidden(
+            &*imp.empty_folder_set_label,
+            !show_body || has_tree_rows || in_drilldown,
+        );
+        let tree_value_text = if collapsed {
+            "Workspace folder tree collapsed"
+        } else if in_drilldown {
+            "Focused folder view"
+        } else if !has_tree_rows {
+            "No folders in this workspace"
+        } else {
+            "Workspace folder tree"
+        };
+        accessibility::set_value_text(&*imp.file_tree_view, tree_value_text);
         self.sync_workspace_folder_reorder_handles();
         self.sync_file_row_states();
     }

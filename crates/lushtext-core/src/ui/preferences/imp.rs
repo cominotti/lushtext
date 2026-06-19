@@ -10,6 +10,7 @@
 
 use crate::config::keys;
 use crate::services::{format_upgrade, json_store};
+use crate::ui::accessibility;
 use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::value::ToValue;
@@ -128,6 +129,8 @@ pub struct LushtextPreferences {
     pub data_last_scan_offers_convert: Cell<bool>,
     /// Whether a scan or conversion command is already running.
     pub data_operation_inflight: Cell<bool>,
+    /// Throttles repeated Data-page format scan/apply outcome announcements.
+    pub data_announcement_throttler: accessibility::AnnouncementThrottler,
 }
 
 impl Default for LushtextPreferences {
@@ -167,6 +170,7 @@ impl Default for LushtextPreferences {
             data_details_list: gtk4::ListBox::new(),
             data_last_scan_offers_convert: Cell::new(false),
             data_operation_inflight: Cell::new(false),
+            data_announcement_throttler: accessibility::AnnouncementThrottler::default(),
         }
     }
 }
@@ -282,22 +286,47 @@ impl LushtextPreferences {
     /// Their internal child owns the `SpinButton` role, so the row itself must
     /// avoid the weaker presentation role that hides the control grouping.
     fn apply_accessibility_metadata(&self) {
-        self.tab_width_row
-            .set_accessible_role(gtk4::AccessibleRole::Group);
-        self.focus_mode_target_columns_row
-            .set_accessible_role(gtk4::AccessibleRole::Group);
-        self.workspace_empty_folder_lookahead_cap_row
-            .set_accessible_role(gtk4::AccessibleRole::Group);
-        self.data_scan_button
-            .update_property(&[gtk4::accessible::Property::Label("Rescan app data formats")]);
-        self.data_current_indicator
-            .update_property(&[gtk4::accessible::Property::Label(
-                "App data format verified current",
-            )]);
-        self.data_convert_button
-            .update_property(&[gtk4::accessible::Property::Label(
-                "Convert supported older app data",
-            )]);
+        accessibility::set_role(&*self.tab_width_row, gtk4::AccessibleRole::Group);
+        accessibility::set_role(
+            &*self.focus_mode_target_columns_row,
+            gtk4::AccessibleRole::Group,
+        );
+        accessibility::set_role(
+            &*self.workspace_empty_folder_lookahead_cap_row,
+            gtk4::AccessibleRole::Group,
+        );
+        accessibility::set_labelled_description(
+            &*self.transparency_button,
+            "Background opacity",
+            "Adjust editor and Markdown preview document-surface opacity",
+        );
+        accessibility::set_has_popup(&*self.transparency_button, true);
+        accessibility::set_labelled_description(
+            &*self.data_status_row,
+            "App data format status",
+            "Latest scan result for persisted LushText app data",
+        );
+        accessibility::set_labelled_description(
+            &*self.data_scan_button,
+            "Rescan app data formats",
+            "Run a read-only scan of persisted LushText app data",
+        );
+        accessibility::set_label(
+            &*self.data_current_indicator,
+            "App data format verified current",
+        );
+        accessibility::set_labelled_description(
+            &*self.data_convert_button,
+            "Convert supported older app data",
+            "Update supported older LushText app data after a fresh scan",
+        );
+        accessibility::set_role(&self.data_details_list, gtk4::AccessibleRole::List);
+        accessibility::set_labelled_description(
+            &self.data_details_list,
+            "App data format details",
+            "Bounded list of app data files and planned format actions",
+        );
+        self.refresh_data_accessibility_state();
     }
 
     /// Build and wire the Preferences > Data page.
@@ -457,6 +486,8 @@ impl LushtextPreferences {
         });
         self.data_last_scan_offers_convert.set(offers_convert);
         self.render_data_details(plan, failure);
+        self.refresh_data_accessibility_state();
+        self.announce_data_plan_status(&status, failure);
     }
 
     /// Present an active Data-page operation before its background result lands.
@@ -465,6 +496,7 @@ impl LushtextPreferences {
         self.data_scan_button.set_sensitive(false);
         self.data_convert_button.set_sensitive(false);
         self.data_status_row.set_subtitle(subtitle);
+        self.refresh_data_accessibility_state();
     }
 
     /// Accept a completed scan after any visible verification dwell has elapsed.
@@ -472,6 +504,26 @@ impl LushtextPreferences {
         self.data_operation_inflight.set(false);
         self.data_scan_button.set_sensitive(true);
         self.render_data_plan(plan, None);
+    }
+
+    /// Announce the compact Data-page result row after a scan or apply attempt.
+    fn announce_data_plan_status(&self, status: &str, failure: Option<&str>) {
+        let lane = if failure.is_some() {
+            accessibility::AnnouncementLane::Alert
+        } else {
+            accessibility::AnnouncementLane::StatusUpdate
+        };
+        let key = if failure.is_some() {
+            "app-data-format-failed"
+        } else {
+            "app-data-format-scan"
+        };
+        self.data_announcement_throttler.announce_if_allowed(
+            &*self.data_status_row,
+            lane,
+            key,
+            &format!("App data format scan complete: {status}"),
+        );
     }
 
     /// Rebuild the bounded per-file detail list for the current Data page plan.
@@ -485,6 +537,11 @@ impl LushtextPreferences {
                 .title("Last Attempt Failed")
                 .subtitle(detail)
                 .build();
+            accessibility::apply_row_accessibility(
+                &row,
+                accessibility::RowAccessibility::new("Last app data update attempt failed")
+                    .description(detail),
+            );
             self.data_details_list.append(&row);
         }
 
@@ -493,38 +550,84 @@ impl LushtextPreferences {
                 .title("Current")
                 .subtitle("No app data files require a format update")
                 .build();
+            accessibility::apply_row_accessibility(
+                &row,
+                accessibility::RowAccessibility::new("App data format current")
+                    .description("No app data files require a format update"),
+            );
             self.data_details_list.append(&row);
             return;
         }
 
+        let mut position = 1i32;
+        let total_rows = data_details_row_count(plan, failure);
         for group in &plan.groups {
             for planned in group.actions.iter().take(DATA_DETAILS_MAX_ROWS_PER_GROUP) {
+                let title = format!(
+                    "{}: {}",
+                    group.metadata_kind.label(),
+                    planned.item.path.display()
+                );
+                let subtitle = action_summary(planned);
                 let row = libadwaita::ActionRow::builder()
-                    .title(format!(
-                        "{}: {}",
-                        group.metadata_kind.label(),
-                        planned.item.path.display()
-                    ))
-                    .subtitle(action_summary(planned))
+                    .title(&title)
+                    .subtitle(&subtitle)
                     .build();
+                accessibility::apply_row_accessibility(
+                    &row,
+                    accessibility::RowAccessibility::new(&title)
+                        .description(&subtitle)
+                        .position(position, total_rows),
+                );
                 self.data_details_list.append(&row);
+                position += 1;
             }
             let omitted = group
                 .actions
                 .len()
                 .saturating_sub(DATA_DETAILS_MAX_ROWS_PER_GROUP);
             if omitted > 0 {
+                let title = format!("{}: {} more item(s)", group.metadata_kind.label(), omitted);
+                let subtitle = "Additional matching app data is included in the action";
                 let row = libadwaita::ActionRow::builder()
-                    .title(format!(
-                        "{}: {} more item(s)",
-                        group.metadata_kind.label(),
-                        omitted
-                    ))
+                    .title(&title)
                     .subtitle("Additional matching app data is included in the action")
                     .build();
+                accessibility::apply_row_accessibility(
+                    &row,
+                    accessibility::RowAccessibility::new(&title)
+                        .description(subtitle)
+                        .position(position, total_rows),
+                );
                 self.data_details_list.append(&row);
+                position += 1;
             }
         }
+    }
+
+    /// Refresh dynamic accessibility state for the Preferences Data page.
+    fn refresh_data_accessibility_state(&self) {
+        let status = self
+            .data_status_row
+            .subtitle()
+            .unwrap_or_else(|| "Checking app data formats".into());
+        accessibility::set_value_text(&*self.data_status_row, status.as_str());
+        accessibility::set_busy(&*self.data_status_row, self.data_operation_inflight.get());
+        accessibility::set_busy(&*self.data_scan_button, self.data_operation_inflight.get());
+        accessibility::set_disabled(
+            &*self.data_scan_button,
+            !self.data_scan_button.is_sensitive(),
+        );
+        accessibility::set_disabled(
+            &*self.data_convert_button,
+            !self.data_convert_button.is_sensitive(),
+        );
+        accessibility::set_hidden(&*self.data_convert_row, !self.data_convert_row.is_visible());
+        accessibility::set_hidden(
+            &*self.data_current_indicator,
+            !self.data_current_indicator.is_visible(),
+        );
+        accessibility::set_value_text(&*self.transparency_button, &self.transparency_label.text());
     }
 
     /// Keep the workspace width preference aligned with the three named shell presets
@@ -630,6 +733,13 @@ impl LushtextPreferences {
             })
             .sync_create()
             .build();
+        let prefs_weak = self.obj().downgrade();
+        self.transparency_adjustment
+            .connect_value_changed(move |_| {
+                if let Some(prefs) = prefs_weak.upgrade() {
+                    prefs.imp().refresh_data_accessibility_state();
+                }
+            });
     }
 }
 
@@ -656,6 +766,23 @@ fn data_plan_status(plan: &format_upgrade::FormatPlan, failure: Option<&str>) ->
     } else {
         "Some app data needs preservation or recovery".to_string()
     }
+}
+
+/// Count the rows rendered into the Data-page details list for position metadata.
+fn data_details_row_count(plan: &format_upgrade::FormatPlan, failure: Option<&str>) -> i32 {
+    let failure_rows = i32::from(failure.is_some());
+    if plan.has_no_action() {
+        return failure_rows + 1;
+    }
+
+    let planned_rows = plan.groups.iter().fold(0usize, |count, group| {
+        let visible = group.actions.len().min(DATA_DETAILS_MAX_ROWS_PER_GROUP);
+        let omitted = usize::from(group.actions.len() > DATA_DETAILS_MAX_ROWS_PER_GROUP);
+        count + visible + omitted
+    });
+    i32::try_from(planned_rows)
+        .unwrap_or(i32::MAX - failure_rows)
+        .saturating_add(failure_rows)
 }
 
 /// Convert one planned item into the short subtitle shown in the details list.

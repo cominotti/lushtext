@@ -34,6 +34,7 @@ make performance-smoke # lightweight Criterion performance smoke
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
+make check-accessibility-policy # accessibility helper/proof guardrail for new UI-sensitive lines
 make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
 make check-gtk-lush-policy # validate GTK Lush family scaffolding/dependency direction
 make check-gtk-lush-adoption # run GTK Lush adoption lab, stock fixture, and matrix checks
@@ -75,6 +76,12 @@ scenario-helper flag marker, plus the reusable automation-client command,
 status, exit, result-field, and artifact-summary contracts. If
 `scripts/lushtext-automation.py` changes, also run
 `make automation-client-self-test`; `make check-policy` includes both checks.
+Accessibility-sensitive UI changes should pass
+`make check-accessibility-policy`; it is a fast diff-aware guard that catches
+new icon-only controls, custom row factories, transient surfaces, hover-only
+affordances, direct GTK accessible metadata calls that bypass
+`ui::accessibility`, and malformed AT-SPI smoke anchors. The target is included
+in `make check-policy`.
 Screenshot-reported or geometry-sensitive UI fixes should also run
 `make visual-geometry-smoke` when the intended invariant is same-session pixel
 stability across a layout action. Pixel-visible effects that have a named
@@ -389,6 +396,10 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
 - `make accessibility-smoke` keeps the accessibility bridge enabled and uses the
   AT-SPI path. Do not rely on the widget harness for this class of coverage
   because `scripts/run-widget-tests.sh` intentionally sets `NO_AT_BRIDGE=1`.
+- `make check-accessibility-policy` is the fast local guardrail for new
+  accessibility-sensitive UI lines. It does not replace widget tests or
+  AT-SPI smoke; it catches obvious helper, row-recycling, hover, transient, and
+  anchor-policy drift before heavier lanes run.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
   timing artifacts, including recovery fixtures for malformed metadata, pending
   migrations, duplicate sidecars, many local-history lineages, and first-dirty

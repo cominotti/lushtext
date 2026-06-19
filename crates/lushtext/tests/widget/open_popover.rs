@@ -13,6 +13,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
 use lushtext_core::services::recent_documents;
+use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::open_popover::LushtextOpenPopover;
 use lushtext_core::ui::window::LushtextWindow;
 use std::cell::{Cell, RefCell};
@@ -139,6 +140,12 @@ fn assert_header_open_precedes_new_tab(window: &LushtextWindow, context: &str) {
 }
 
 fn active_file_path(window: &LushtextWindow) -> Option<PathBuf> {
+    active_editor(window).and_then(|editor| editor.file_path())
+}
+
+fn active_editor(
+    window: &LushtextWindow,
+) -> Option<lushtext_core::ui::editor_page::LushtextEditorPage> {
     window
         .imp()
         .tab_view
@@ -148,7 +155,16 @@ fn active_file_path(window: &LushtextWindow) -> Option<PathBuf> {
                 .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
                 .ok()
         })
-        .and_then(|editor| editor.file_path())
+}
+
+fn active_editor_has_focus(
+    window: &LushtextWindow,
+    editor: &lushtext_core::ui::editor_page::LushtextEditorPage,
+) -> bool {
+    let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) else {
+        return false;
+    };
+    focus.as_ptr() == editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()
 }
 
 fn descendants(root: &impl IsA<gtk4::Widget>) -> Vec<gtk4::Widget> {
@@ -219,6 +235,16 @@ fn assert_has_path_tooltip(root: &impl IsA<gtk4::Widget>, path: &Path) {
         tooltips.iter().any(|tooltip| tooltip == &expected),
         "Open popover should expose full path tooltip {expected:?}; saw {tooltips:?}"
     );
+}
+
+/// Find the realized recent-row grid for a path tooltip.
+fn path_tooltip_grid(root: &impl IsA<gtk4::Widget>, path: &Path) -> gtk4::Grid {
+    let expected = path_tooltip(path);
+    descendants(root)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk4::Grid>().ok())
+        .find(|grid| grid.tooltip_text().as_deref() == Some(expected.as_str()))
+        .expect("recent row grid with path tooltip")
 }
 
 /// Assert that recycled rows no longer expose a previous row's path tooltip.
@@ -330,14 +356,37 @@ fn test_open_popover_empty_state_keeps_search_and_chooser_reachable() {
 
     assert_eq!(popover.visible_row_count_for_test(), 0);
     assert!(!popover.list_visible_for_test());
-    assert_eq!(
-        popover.search_entry_for_test().accessible_role(),
-        gtk4::AccessibleRole::SearchBox
-    );
-    assert_eq!(
-        popover.chooser_button_for_test().accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::SearchBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&popover.search_entry_for_test());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&popover.chooser_button_for_test());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::List)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .states(&[gtk4::AccessibleState::Hidden])
+        .assert_on(&popover.list_view_for_test());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&popover.empty_state_for_test());
 }
 
 #[test]
@@ -349,6 +398,14 @@ fn test_open_popover_one_representative_row_uses_file_title() {
 
     assert_eq!(popover.visible_titles_for_test(), vec!["main.rs"]);
     assert!(popover.list_visible_for_test());
+    assert!(!gtk4::test_accessible_has_state(
+        &popover.list_view_for_test(),
+        gtk4::AccessibleState::Hidden
+    ));
+    assert!(gtk4::test_accessible_has_state(
+        &popover.empty_state_for_test(),
+        gtk4::AccessibleState::Hidden
+    ));
 }
 
 #[test]
@@ -367,6 +424,24 @@ fn test_open_popover_recent_row_tooltip_shows_full_activation_path() {
     let expected = path_tooltip(&path);
     wait_until(Duration::from_secs(2), || has_tooltip(&popover, &expected));
     assert_has_path_tooltip(&popover, &path);
+    let row_grid = path_tooltip_grid(&popover, &path);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .relations(&[
+            gtk4::AccessibleRelation::PosInSet,
+            gtk4::AccessibleRelation::SetSize,
+        ])
+        .assert_on(&row_grid);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&find_remove_button(&popover));
     assert!(popover.list_visible_for_test());
 }
 
@@ -544,6 +619,22 @@ fn test_open_popover_search_filters_and_reports_no_matches_without_fake_rows() {
     assert_eq!(popover.visible_row_count_for_test(), 0);
     assert!(!popover.list_visible_for_test());
     assert_eq!(popover.empty_title_for_test(), "No Matching Documents");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&popover.empty_state_for_test());
+    assert!(gtk4::test_accessible_has_state(
+        &popover.list_view_for_test(),
+        gtk4::AccessibleState::Hidden
+    ));
+    assert!(gtk4::test_accessible_has_state(
+        &popover.recent_scroller_for_test(),
+        gtk4::AccessibleState::Hidden
+    ));
 }
 
 #[test]
@@ -643,14 +734,20 @@ fn test_open_popover_no_match_state_clears_recent_path_tooltips() {
     });
     assert_eq!(popover.empty_title_for_test(), "No Matching Documents");
     assert_lacks_path_tooltip(&popover, &path);
-    assert_eq!(
-        popover.search_entry_for_test().accessible_role(),
-        gtk4::AccessibleRole::SearchBox
-    );
-    assert_eq!(
-        popover.chooser_button_for_test().accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::SearchBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&popover.search_entry_for_test());
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&popover.chooser_button_for_test());
 }
 
 #[test]
@@ -865,6 +962,38 @@ fn test_open_popover_escape_dismisses_without_document_context() {
 
     wait_until(Duration::from_secs(2), || !open_popover_open(&window));
     assert_eq!(window.imp().tab_view.n_pages(), 0);
+}
+
+#[test]
+fn test_open_popover_escape_dismisses_and_restores_editor_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.set_recent_documents_for_test(vec![recent_entry("/tmp/example.txt", 10)]);
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window).expect("new tab should be active");
+    editor.source_view().grab_focus();
+    flush_events();
+    wait_until(Duration::from_secs(2), || {
+        active_editor_has_focus(&window, &editor)
+    });
+
+    open_recent_action(&window);
+    wait_until(Duration::from_secs(2), || {
+        open_popover_open(&window) && focus_is_inside_open_search(&window)
+    });
+
+    window
+        .imp()
+        .open_popover
+        .search_entry_for_test()
+        .emit_by_name::<()>("stop-search", &[]);
+    flush_events();
+
+    wait_until(Duration::from_secs(2), || !open_popover_open(&window));
+    wait_until(Duration::from_secs(2), || {
+        active_editor_has_focus(&window, &editor)
+    });
 }
 
 #[test]
@@ -1186,6 +1315,15 @@ fn test_open_popover_row_remove_keeps_popover_open_and_does_not_open_document() 
         Some(document_tooltip.as_str())
     );
     assert_has_path_tooltip(&popover, &path);
+    let row = path_tooltip_grid(&popover, &path);
+    assert!(gtk4::test_accessible_has_property(
+        &row,
+        gtk4::AccessibleProperty::Label
+    ));
+    assert!(gtk4::test_accessible_has_property(
+        &row,
+        gtk4::AccessibleProperty::Description
+    ));
     remove.emit_clicked();
     flush_events();
 

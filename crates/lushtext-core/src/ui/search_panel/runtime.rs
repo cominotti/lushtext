@@ -29,9 +29,10 @@ impl LushtextSearchPanel {
         let imp = self.imp();
 
         if let Some(old_cancel) = imp.runtime.cancel_token.take() {
+            let files_searched = imp.runtime.last_progress_count.get();
             old_cancel.store(true, Ordering::Relaxed);
             if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
-                cb(SearchProgressUpdate::Done { files_searched: 0 });
+                cb(SearchProgressUpdate::Cancelled { files_searched });
             }
         }
 
@@ -43,6 +44,7 @@ impl LushtextSearchPanel {
 
         if spec.query.is_empty() {
             imp.count_label.set_text("");
+            self.refresh_accessibility_state();
             return;
         }
 
@@ -50,6 +52,7 @@ impl LushtextSearchPanel {
         if folders.is_empty() {
             imp.count_label.set_text("No workspace folders");
             self.reveal_results_feedback();
+            self.refresh_accessibility_state();
             return;
         }
 
@@ -60,6 +63,10 @@ impl LushtextSearchPanel {
         imp.runtime.cancel_token.replace(Some(cancel.clone()));
         imp.runtime.searching.set(true);
         imp.runtime.result_capped.set(false);
+        self.refresh_accessibility_state();
+        if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
+            cb(SearchProgressUpdate::Started);
+        }
 
         let timer_cancel = cancel.clone();
         imp.error_label.set_visible(false);
@@ -117,12 +124,14 @@ impl LushtextSearchPanel {
                         imp.count_label
                             .set_text("10,000+ results (truncated) \u{2014} narrow your search");
                         imp.count_label.add_css_class("warning");
+                        panel.refresh_accessibility_state();
                     }
                     Ok(SearchEvent::Progress(_)) => {}
                     Ok(SearchEvent::Error(msg)) => {
                         imp.error_label.set_text(&msg);
                         imp.error_label.add_css_class("error");
                         imp.error_label.set_visible(true);
+                        panel.refresh_accessibility_state();
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => break,
                 }
@@ -141,6 +150,7 @@ impl LushtextSearchPanel {
             if worker_finished.load(Ordering::Relaxed) && !completion_notified {
                 completion_notified = true;
                 imp.runtime.searching.set(false);
+                panel.refresh_accessibility_state();
                 if files_visited > imp.runtime.last_progress_count.get() {
                     imp.runtime.last_progress_count.set(files_visited);
                 }
@@ -156,14 +166,17 @@ impl LushtextSearchPanel {
             if total > 0 && !imp.runtime.result_capped.get() {
                 imp.count_label
                     .set_text(&format!("{total} results in {files} files"));
+                panel.refresh_accessibility_state();
             } else if !completion_notified && imp.runtime.searching.get() && total == 0 {
                 imp.count_label.set_text("Searching\u{2026}");
+                panel.refresh_accessibility_state();
             }
 
             if done {
                 if !completion_notified {
                     completion_notified = true;
                     imp.runtime.searching.set(false);
+                    panel.refresh_accessibility_state();
                     let files_visited = progress_counter.load(Ordering::Relaxed);
                     if files_visited > imp.runtime.last_progress_count.get() {
                         imp.runtime.last_progress_count.set(files_visited);
@@ -177,6 +190,7 @@ impl LushtextSearchPanel {
                 if total == 0 {
                     imp.count_label.set_text("No results found");
                     panel.reveal_results_feedback();
+                    panel.refresh_accessibility_state();
                 }
                 panel.update_replace_button_sensitivity();
 
@@ -229,6 +243,7 @@ impl LushtextSearchPanel {
         imp.preview.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
         self.update_replace_button_sensitivity();
+        self.refresh_accessibility_state();
     }
 }
 

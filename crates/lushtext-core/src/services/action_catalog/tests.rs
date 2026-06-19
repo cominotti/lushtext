@@ -189,6 +189,7 @@ fn observed_action_audit_rejects_wrong_parameter_type_for_each_parameterized_act
         ("set-properties-visible", ActionValueType::Bool),
         ("set-minimap-visible", ActionValueType::Bool),
         ("set-search-panel-visible", ActionValueType::Bool),
+        ("set-search-panel-replace-query", ActionValueType::String),
         ("set-focus-mode", ActionValueType::Bool),
         ("set-preview-pane-visible", ActionValueType::Bool),
         ("set-preview-mode", ActionValueType::Bool),

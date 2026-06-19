@@ -8,6 +8,7 @@ use crate::model::palette::{
     SearchResultItem,
 };
 use crate::services::palette::{self, FileIndex};
+use crate::ui::accessibility::{self, RowAccessibility};
 use crate::ui::command_palette::item::PaletteItem;
 use glib::prelude::*;
 use gtk_lush_settle::Debounce;
@@ -154,6 +155,8 @@ pub struct LushtextCommandPalette {
     pub workspace_group_label: RefCell<String>,
     /// Guard used while programmatically syncing the mode dropdown.
     pub syncing_mode_selector: Cell<bool>,
+    /// Whether a background fuzzy search is currently pending.
+    pub searching: Cell<bool>,
     /// Callback invoked when the user activates a result (Enter or click).
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     /// Callback invoked when the palette should close (Escape key).
@@ -180,6 +183,7 @@ impl Default for LushtextCommandPalette {
             note_entries: RefCell::new(Arc::from(Vec::<PaletteNoteEntry>::new())),
             workspace_group_label: RefCell::new("All Workspaces".to_string()),
             syncing_mode_selector: Cell::new(false),
+            searching: Cell::new(false),
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
             search_debounce: Debounce::default(),
@@ -218,6 +222,12 @@ impl ObjectImpl for LushtextCommandPalette {
 
         let selection = gtk4::SingleSelection::new(Some(self.results_store.clone()));
         selection.set_autoselect(true);
+        let obj_weak = self.obj().downgrade();
+        selection.connect_selected_notify(move |_| {
+            if let Some(obj) = obj_weak.upgrade() {
+                obj.imp().refresh_accessibility_state();
+            }
+        });
         self.results_view.set_model(Some(&selection));
 
         self.setup_factory();
@@ -236,24 +246,30 @@ impl LushtextCommandPalette {
     /// Give the palette's compact controls durable accessible names for screen
     /// readers and AT-SPI smoke assertions.
     fn apply_accessibility_metadata(&self) {
-        self.search_entry.update_property(&[
-            gtk4::accessible::Property::Label("Command palette query"),
-            gtk4::accessible::Property::Description(
-                "Search open tabs, workspace files, notes, and commands",
-            ),
-        ]);
-        self.mode_dropdown.update_property(&[
-            gtk4::accessible::Property::Label("Command palette mode"),
-            gtk4::accessible::Property::Description("Choose which result category to search"),
-        ]);
-        self.results_view.update_property(&[
-            gtk4::accessible::Property::Label("Command palette results"),
-            gtk4::accessible::Property::Description("Matching files, notes, and commands"),
-        ]);
-        self.no_results_label
-            .update_property(&[gtk4::accessible::Property::Label(
-                "Command palette no results",
-            )]);
+        accessibility::set_labelled_description(
+            &*self.search_entry,
+            "Command palette query",
+            "Search open tabs, workspace files, notes, and commands",
+        );
+        accessibility::set_labelled_description(
+            &*self.mode_dropdown,
+            "Command palette mode",
+            "Choose which result category to search",
+        );
+        accessibility::set_value_text(&*self.mode_dropdown, self.mode.get().label());
+        accessibility::set_role(&*self.results_view, gtk4::AccessibleRole::List);
+        accessibility::set_labelled_description(
+            &*self.results_view,
+            "Command palette results",
+            "Matching files, notes, and commands",
+        );
+        accessibility::set_role(&*self.no_results_label, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &*self.no_results_label,
+            "Command palette no results",
+            "No matching files, notes, or commands",
+        );
+        self.refresh_accessibility_state();
     }
 
     fn setup_factory(&self) {
@@ -295,7 +311,8 @@ impl LushtextCommandPalette {
             list_item.set_child(Some(&row));
         });
 
-        factory.connect_bind(|_, list_item| {
+        let bind_obj_weak = self.obj().downgrade();
+        factory.connect_bind(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem");
@@ -339,6 +356,25 @@ impl LushtextCommandPalette {
                 section_separator.set_visible(false);
                 subtitle_label.set_visible(true);
                 subtitle_label.set_label(&item.subtitle());
+            }
+
+            let position = i32::try_from(list_item.position()).unwrap_or(i32::MAX - 1) + 1;
+            let set_size = bind_obj_weak.upgrade().map_or(position, |obj| {
+                i32::try_from(obj.imp().results_store.n_items()).unwrap_or(i32::MAX)
+            });
+            let selected = bind_obj_weak
+                .upgrade()
+                .and_then(|obj| obj.imp().selection_model())
+                .is_some_and(|selection| selection.selected() == list_item.position());
+            apply_palette_row_accessibility(&row, &item, selected, position, set_size);
+        });
+
+        factory.connect_unbind(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk4::ListItem>()
+                .expect("ListItem");
+            if let Some(row) = list_item.child().and_downcast::<gtk4::Box>() {
+                accessibility::clear_row_accessibility(&row);
             }
         });
 
@@ -474,6 +510,8 @@ impl LushtextCommandPalette {
     /// completion applies results only if its generation is still current.
     pub fn rebuild_results_owned(&self, query: String) {
         let generation = self.search_debounce.advance();
+        self.searching.set(true);
+        self.refresh_accessibility_state();
 
         let mode = self.mode.get();
         let index = Arc::clone(&self.file_index.borrow());
@@ -500,6 +538,7 @@ impl LushtextCommandPalette {
                 if !imp.search_debounce.is_current(generation) {
                     return; // superseded by a newer search
                 }
+                imp.searching.set(false);
 
                 let items: Vec<PaletteItem> = hits.into_iter().map(SearchHit::into_item).collect();
 
@@ -517,6 +556,7 @@ impl LushtextCommandPalette {
                 {
                     selection.set_selected(first_result);
                 }
+                imp.refresh_accessibility_state();
             },
         );
     }
@@ -536,6 +576,7 @@ impl LushtextCommandPalette {
         selection.set_selected(new_pos);
         self.results_view
             .scroll_to(new_pos, gtk4::ListScrollFlags::NONE, None);
+        self.refresh_accessibility_state();
     }
 
     /// Activate the currently selected actionable row.
@@ -572,6 +613,8 @@ impl LushtextCommandPalette {
         self.syncing_mode_selector.set(false);
         self.search_entry
             .set_placeholder_text(Some(mode.placeholder()));
+        accessibility::set_value_text(&*self.mode_dropdown, mode.label());
+        self.refresh_accessibility_state();
     }
 
     /// Find the first row that can actually be opened or executed.
@@ -626,6 +669,83 @@ impl LushtextCommandPalette {
             .model()
             .and_then(|m| m.downcast::<gtk4::SingleSelection>().ok())
     }
+
+    /// Project live palette search state into accessible states and values.
+    pub(super) fn refresh_accessibility_state(&self) {
+        let has_results = (0..self.results_store.n_items()).any(|position| {
+            self.results_store
+                .item(position)
+                .and_downcast_ref::<PaletteItem>()
+                .is_some_and(PaletteItem::is_activatable)
+        });
+        let no_results_visible =
+            self.no_results_label.is_visible() && !has_results && !self.searching.get();
+        let result_count = (0..self.results_store.n_items())
+            .filter(|position| {
+                self.results_store
+                    .item(*position)
+                    .and_downcast_ref::<PaletteItem>()
+                    .is_some_and(PaletteItem::is_activatable)
+            })
+            .count();
+
+        accessibility::set_busy(&*self.search_entry, self.searching.get());
+        accessibility::set_busy(&*self.results_view, self.searching.get());
+        accessibility::set_hidden(&*self.no_results_label, !no_results_visible);
+        accessibility::set_hidden(&*self.results_view, no_results_visible);
+
+        let selected_text = self
+            .selection_model()
+            .and_then(|selection| self.results_store.item(selection.selected()))
+            .and_downcast::<PaletteItem>()
+            .filter(PaletteItem::is_activatable)
+            .map(|item| format!("Selected {}", item.display_name()));
+        let value_text = if let Some(selected_text) = selected_text {
+            selected_text
+        } else if self.searching.get() {
+            "Searching command palette".to_string()
+        } else {
+            match result_count {
+                0 => "No command palette results".to_string(),
+                1 => "1 command palette result".to_string(),
+                count => format!("{count} command palette results"),
+            }
+        };
+        accessibility::set_value_text(&*self.results_view, &value_text);
+        accessibility::set_value_text(&*self.no_results_label, "No command palette results");
+    }
+}
+
+pub(super) fn apply_palette_row_accessibility(
+    row: &gtk4::Box,
+    item: &PaletteItem,
+    selected: bool,
+    position: i32,
+    set_size: i32,
+) {
+    let label = if item.is_header() {
+        format!("{} section", item.display_name())
+    } else if item.is_file() {
+        format!("Open file {}", item.display_name())
+    } else if item.is_note() {
+        format!("Open note {}", item.display_name())
+    } else {
+        format!("Run command {}", item.display_name())
+    };
+    let description = if item.is_header() {
+        "Command palette result group".to_string()
+    } else if let Some(path) = item.file_path() {
+        format!("{}; {}", item.subtitle(), path.display())
+    } else {
+        item.subtitle()
+    };
+    accessibility::apply_row_accessibility(
+        row,
+        RowAccessibility::new(&label)
+            .description(&description)
+            .selected(selected)
+            .position(position, set_size),
+    );
 }
 
 /// Assemble GTK-ready rows from service-owned palette policy.

@@ -7,8 +7,8 @@
 
 use std::cell::Cell;
 
+use crate::ui::accessibility::{self, AnnouncementThrottler};
 use gtk_lush_settle::SupersedingTimer;
-use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 
@@ -53,6 +53,8 @@ pub struct LushtextStatusBar {
     pub encoding_button: TemplateChild<gtk4::Button>,
     /// Superseding cleanup timer for delayed pulse-class removal.
     pub pulse_cleanup_timer: SupersedingTimer,
+    /// Throttles repeated screen-reader status announcements from this bar.
+    pub status_announcement_throttler: AnnouncementThrottler,
     /// Alternates otherwise equivalent pulse classes so rapid repeated messages
     /// restart GTK's CSS animation even when severity and text are unchanged.
     pub pulse_alt: Cell<bool>,
@@ -77,26 +79,31 @@ impl ObjectImpl for LushtextStatusBar {
     fn constructed(&self) {
         self.parent_constructed();
 
-        self.sidebar_toggle_button
-            .update_property(&[gtk4::accessible::Property::Label(
-                "Toggle workspace sidebar",
-            )]);
-        self.message_label.update_property(&[
-            gtk4::accessible::Property::Label("Status message"),
-            gtk4::accessible::Property::Description("Current editor status and feedback"),
-        ]);
-        self.metadata_box
-            .set_accessible_role(gtk4::AccessibleRole::Group);
-        self.metadata_box.update_property(&[
-            gtk4::accessible::Property::Label("Document metadata"),
-            gtk4::accessible::Property::Description(
-                "Line ending and text encoding controls for the active document",
-            ),
-        ]);
-        self.line_ending_button
-            .update_property(&[gtk4::accessible::Property::Label("Choose line endings")]);
-        self.encoding_button
-            .update_property(&[gtk4::accessible::Property::Label("Choose text encoding")]);
+        accessibility::set_label(&*self.sidebar_toggle_button, "Toggle workspace sidebar");
+        accessibility::set_pressed(&*self.sidebar_toggle_button, false);
+        accessibility::set_labelled_description(
+            &*self.message_label,
+            "Status message",
+            "Current editor status and feedback",
+        );
+        accessibility::set_role(&*self.metadata_box, gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &*self.metadata_box,
+            "Document metadata",
+            "Line ending and text encoding controls for the active document",
+        );
+        accessibility::set_labelled_description(
+            &*self.line_ending_button,
+            "Choose line endings",
+            "Current line endings for the active document",
+        );
+        accessibility::set_value_text(&*self.line_ending_button, "LF");
+        accessibility::set_labelled_description(
+            &*self.encoding_button,
+            "Choose text encoding",
+            "Current text encoding for the active document",
+        );
+        accessibility::set_value_text(&*self.encoding_button, "UTF-8");
     }
 }
 impl WidgetImpl for LushtextStatusBar {}

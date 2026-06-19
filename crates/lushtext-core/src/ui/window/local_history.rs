@@ -23,9 +23,9 @@ use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
     filesystem::metadata as fs_metadata, json_store, local_history_service, migration_ledger,
 };
-use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::{LushtextEditorPage, PendingWarningAction};
 use crate::ui::status_bar::MessageKind;
+use crate::ui::{accessibility, buffer_snapshot};
 
 use super::LushtextWindow;
 
@@ -343,15 +343,14 @@ impl LushtextWindow {
             .build();
 
         let sidebar = libadwaita::Sidebar::new();
-        sidebar.set_accessible_role(gtk4::AccessibleRole::List);
+        accessibility::set_role(&sidebar, gtk4::AccessibleRole::List);
         sidebar.set_mode(libadwaita::SidebarMode::Sidebar);
         sidebar.set_vexpand(true);
-        sidebar.update_property(&[
-            gtk4::accessible::Property::Label("Local history snapshots"),
-            gtk4::accessible::Property::Description(
-                "Choose a saved snapshot for the active document",
-            ),
-        ]);
+        accessibility::set_labelled_description(
+            &sidebar,
+            "Local history snapshots",
+            "Choose a saved snapshot for the active document",
+        );
 
         let preview_title = gtk4::Label::new(Some("Loading snapshot…"));
         preview_title.set_halign(gtk4::Align::Start);
@@ -371,6 +370,13 @@ impl LushtextWindow {
         preview_view.set_cursor_visible(false);
         preview_view.set_wrap_mode(gtk4::WrapMode::None);
         preview_view.add_css_class("monospace");
+        accessibility::set_labelled_description(
+            &preview_view,
+            "Snapshot text preview",
+            "Read-only text captured in the selected local-history snapshot",
+        );
+        accessibility::set_read_only(&preview_view, true);
+        accessibility::set_multi_line(&preview_view, true);
         // Dialog shell margins do not pad the document itself, so the preview
         // text view needs its own inner spacing to avoid rendering flush
         // against the scrolled frame.
@@ -382,6 +388,13 @@ impl LushtextWindow {
         let preview_stack = gtk4::Stack::new();
         preview_stack.set_hexpand(true);
         preview_stack.set_vexpand(true);
+        accessibility::set_role(&preview_stack, gtk4::AccessibleRole::Group);
+        accessibility::set_labelled_description(
+            &preview_stack,
+            "Local history preview",
+            "Read-only preview for the selected local-history snapshot",
+        );
+        set_local_history_preview_accessibility(&preview_stack, "Loading snapshot", true, false);
         preview_stack.add_named(&loading_preview_widget(), Some("loading"));
         preview_stack.add_named(&empty_snapshot_widget(), Some("empty"));
         preview_stack.add_named(&preview_error_widget("Preview unavailable"), Some("error"));
@@ -395,20 +408,30 @@ impl LushtextWindow {
 
         let restore_button = gtk4::Button::with_label("Restore");
         restore_button.add_css_class("suggested-action");
-        restore_button.set_sensitive(false);
-        restore_button.update_property(&[gtk4::accessible::Property::Label(
+        set_local_history_action_enabled(&restore_button, false);
+        accessibility::set_labelled_description(
+            &restore_button,
             "Restore selected snapshot",
-        )]);
+            "Replace the editor contents with the selected snapshot",
+        );
         let copy_button = gtk4::Button::with_label("Copy");
-        copy_button.set_sensitive(false);
-        copy_button.update_property(&[gtk4::accessible::Property::Label("Copy selected snapshot")]);
+        set_local_history_action_enabled(&copy_button, false);
+        accessibility::set_labelled_description(
+            &copy_button,
+            "Copy selected snapshot",
+            "Copy the selected snapshot text to the clipboard",
+        );
 
         let back_button = gtk4::Button::builder()
             .icon_name("go-previous-symbolic")
             .tooltip_text("Back to Snapshots")
             .visible(false)
             .build();
-        back_button.update_property(&[gtk4::accessible::Property::Label("Back to snapshots")]);
+        accessibility::set_labelled_description(
+            &back_button,
+            "Back to snapshots",
+            "Return to the local-history snapshot list",
+        );
 
         let split_view = libadwaita::NavigationSplitView::new();
         split_view.set_min_sidebar_width(LOCAL_HISTORY_VIEWER_MIN_SIDEBAR_WIDTH_SP);
@@ -493,8 +516,8 @@ impl LushtextWindow {
                 let Some(snapshot) = state.loaded_snapshot.borrow().clone() else {
                     return;
                 };
-                state.restore_button.set_sensitive(false);
-                state.copy_button.set_sensitive(false);
+                set_local_history_action_enabled(&state.restore_button, false);
+                set_local_history_action_enabled(&state.copy_button, false);
                 LushtextWindow::restore_local_history_snapshot(Rc::clone(&state), snapshot);
             }
         });
@@ -557,6 +580,12 @@ impl LushtextWindow {
             .build();
         status.set_hexpand(true);
         status.set_vexpand(true);
+        accessibility::set_role(&status, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &status,
+            "No local history yet",
+            "Saved snapshots will appear after this document is edited or saved",
+        );
         dialog.set_child(Some(&status));
         dialog
     }
@@ -588,8 +617,11 @@ impl LushtextWindow {
                 move |state, result| {
                     if let Err(error) = result {
                         tracing::error!("Failed to capture local-history safety snapshot: {error}");
-                        state.browser.restore_button.set_sensitive(true);
-                        state.browser.copy_button.set_sensitive(true);
+                        set_local_history_action_enabled(&state.browser.restore_button, true);
+                        set_local_history_action_enabled(
+                            &state.browser.copy_button,
+                            !state.restore_text.is_empty(),
+                        );
                         state.browser.window.publish_status_message(
                             "Local history restore could not be prepared safely",
                             MessageKind::Error,
@@ -656,8 +688,14 @@ impl LocalHistoryBrowserState {
             .set_label(&format_snapshot_meta(meta.origin, meta.byte_len));
         self.preview_buffer.set_text("");
         self.preview_stack.set_visible_child_name("loading");
-        self.restore_button.set_sensitive(false);
-        self.copy_button.set_sensitive(false);
+        set_local_history_preview_accessibility(
+            &self.preview_stack,
+            "Loading snapshot",
+            true,
+            false,
+        );
+        set_local_history_action_enabled(&self.restore_button, false);
+        set_local_history_action_enabled(&self.copy_button, false);
 
         if user_selected {
             // `show-content` is only visible while collapsed, but setting it
@@ -695,25 +733,52 @@ impl LocalHistoryBrowserState {
                         if snapshot.text.is_empty() {
                             state.preview_buffer.set_text("");
                             state.preview_stack.set_visible_child_name("empty");
-                            state.copy_button.set_sensitive(false);
+                            set_local_history_preview_accessibility(
+                                &state.preview_stack,
+                                "This snapshot was empty",
+                                false,
+                                false,
+                            );
+                            set_local_history_action_enabled(&state.copy_button, false);
                         } else {
                             state.preview_buffer.set_text(&snapshot.text);
                             state.preview_stack.set_visible_child_name("content");
-                            state.copy_button.set_sensitive(true);
+                            set_local_history_preview_accessibility(
+                                &state.preview_stack,
+                                &format!(
+                                    "Snapshot from {}",
+                                    format_history_time(snapshot.meta.captured_at_millis)
+                                ),
+                                false,
+                                false,
+                            );
+                            set_local_history_action_enabled(&state.copy_button, true);
                         }
                         state.loaded_snapshot.replace(Some(snapshot));
-                        state.restore_button.set_sensitive(true);
+                        set_local_history_action_enabled(&state.restore_button, true);
                     }
                     Ok(None) => {
                         state.preview_title.set_label("Snapshot missing");
                         state.preview_meta.set_label("");
                         state.preview_stack.set_visible_child_name("error");
+                        set_local_history_preview_accessibility(
+                            &state.preview_stack,
+                            "Snapshot missing",
+                            false,
+                            true,
+                        );
                     }
                     Err(error) => {
                         tracing::error!("Failed to load local-history preview: {error}");
                         state.preview_title.set_label("Preview unavailable");
                         state.preview_meta.set_label("");
                         state.preview_stack.set_visible_child_name("error");
+                        set_local_history_preview_accessibility(
+                            &state.preview_stack,
+                            "Preview unavailable",
+                            false,
+                            true,
+                        );
                     }
                 }
             },
@@ -906,33 +971,66 @@ fn build_history_preview_page(
     content
 }
 
+/// Keep GTK sensitivity and explicit accessible disabled state in sync.
+fn set_local_history_action_enabled(button: &gtk4::Button, enabled: bool) {
+    button.set_sensitive(enabled);
+    accessibility::set_disabled(button, !enabled);
+}
+
+/// Update the preview stack's workflow state after selection or preview loading.
+fn set_local_history_preview_accessibility(
+    stack: &gtk4::Stack,
+    value_text: &str,
+    busy: bool,
+    invalid: bool,
+) {
+    accessibility::set_value_text(stack, value_text);
+    accessibility::set_busy(stack, busy);
+    accessibility::set_invalid(stack, invalid);
+}
+
 fn loading_preview_widget() -> gtk4::Widget {
     let label = gtk4::Label::new(Some("Loading preview…"));
     label.set_hexpand(true);
     label.set_vexpand(true);
     label.set_halign(gtk4::Align::Center);
     label.set_valign(gtk4::Align::Center);
+    accessibility::set_role(&label, gtk4::AccessibleRole::Status);
+    accessibility::set_label(&label, "Loading preview");
     label.upcast()
 }
 
 fn empty_snapshot_widget() -> gtk4::Widget {
-    libadwaita::StatusPage::builder()
+    let status = libadwaita::StatusPage::builder()
         .icon_name("document-new-symbolic")
         .title("This snapshot was empty")
         .description(
             "No text had been saved at this point. For “Before edits” entries, this can mean the file was empty before the current unsaved changes began.",
         )
-        .build()
-        .upcast()
+        .build();
+    accessibility::set_role(&status, gtk4::AccessibleRole::Status);
+    accessibility::set_labelled_description(
+        &status,
+        "This snapshot was empty",
+        "No text had been saved at this point",
+    );
+    status.upcast()
 }
 
 fn preview_error_widget(title: &str) -> gtk4::Widget {
-    libadwaita::StatusPage::builder()
+    let status = libadwaita::StatusPage::builder()
         .icon_name("dialog-warning-symbolic")
         .title(title)
         .description("This snapshot could not be loaded right now.")
-        .build()
-        .upcast()
+        .build();
+    accessibility::set_role(&status, gtk4::AccessibleRole::Status);
+    accessibility::set_labelled_description(
+        &status,
+        title,
+        "This snapshot could not be loaded right now",
+    );
+    accessibility::set_invalid(&status, true);
+    status.upcast()
 }
 
 fn format_history_time(captured_at_millis: u64) -> String {

@@ -7,6 +7,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
 use lushtext_core::services::{json_store, workspace_manager};
+use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::sidebar::LushtextSidebar;
 use lushtext_core::ui::window::LushtextWindow;
 use std::time::Duration;
@@ -63,14 +64,21 @@ fn test_sidebar_selector_controls_expose_accessibility_roles() {
     ensure_gtk_init();
     let sidebar = LushtextSidebar::new();
 
-    assert_eq!(
-        sidebar.imp().workspace_filter_dropdown.accessible_role(),
-        gtk4::AccessibleRole::ComboBox
-    );
-    assert_eq!(
-        sidebar.imp().new_workspace_button.accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ComboBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*sidebar.imp().workspace_filter_dropdown);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*sidebar.imp().new_workspace_button);
 }
 
 #[test]

@@ -14,13 +14,14 @@ use crate::services::notifications::{
 use crate::services::{
     content_search, filesystem::metadata as fs_metadata, json_store, saved_searches, search_history,
 };
+use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_panel::SearchProgressUpdate;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
-use gtk4::{self, glib};
+use gtk4::{self, gio, glib};
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -93,8 +94,40 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             };
 
             match update {
-                SearchProgressUpdate::Done { .. } => {
+                SearchProgressUpdate::Started => {
+                    window.prepare_search_progress_tracking();
+                    window.announce_workflow_update(
+                        AnnouncementLane::DebouncedResults,
+                        "workspace-search-started",
+                        "Workspace search started",
+                    );
+                }
+                SearchProgressUpdate::Cancelled { files_searched } => {
+                    let was_visible = window.imp().search_progress.visible.get();
                     window.finish_search_progress_tracking();
+                    if was_visible {
+                        window.announce_workflow_update(
+                            AnnouncementLane::StatusUpdate,
+                            "workspace-search-cancelled",
+                            &format!("Workspace search cancelled after {files_searched} files"),
+                        );
+                    }
+                    window.update_search_navigation_actions();
+                }
+                SearchProgressUpdate::Done { files_searched } => {
+                    window.finish_search_progress_tracking();
+                    let matches = window.imp().search_panel.navigation_match_count();
+                    let files = window.imp().search_panel.result_file_count();
+                    let message = if matches == 0 {
+                        format!("Workspace search complete: no results in {files_searched} files")
+                    } else {
+                        format!("Workspace search complete: {matches} results in {files} files")
+                    };
+                    window.announce_workflow_update(
+                        AnnouncementLane::StatusUpdate,
+                        "workspace-search-complete",
+                        &message,
+                    );
                     window.update_search_navigation_actions();
                 }
                 SearchProgressUpdate::Progress { files_searched } => {
@@ -207,12 +240,24 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                             MessageKind::Warning
                         };
                         window.publish_status_message(&msg, kind);
+                        if matches!(kind, MessageKind::Info) {
+                            window.announce_workflow_update(
+                                AnnouncementLane::StatusUpdate,
+                                "replace-all-complete",
+                                &msg,
+                            );
+                        }
 
                         if backup.is_empty() {
                             imp.search_panel.clear_undo_backup();
                         } else {
                             imp.search_panel.set_persisted_undo_backup(&backup);
                             imp.search_panel.show_undo_button();
+                            window.announce_workflow_update(
+                                AnnouncementLane::StatusUpdate,
+                                "replace-all-undo-available",
+                                "Undo is available for the last Replace All",
+                            );
                         }
 
                         // Reload affected open tabs to show updated content.
@@ -247,9 +292,12 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                 }
 
                 if outcome.remaining_backup.is_empty() {
-                    window.publish_status_message(
-                        &format!("Reverted {} files", outcome.restored_count()),
-                        MessageKind::Info,
+                    let message = format!("Reverted {} files", outcome.restored_count());
+                    window.publish_status_message(&message, MessageKind::Info);
+                    window.announce_workflow_update(
+                        AnnouncementLane::StatusUpdate,
+                        "replace-all-undo-complete",
+                        &message,
                     );
                     window.imp().search_panel.clear_undo_backup();
                 } else {
@@ -372,6 +420,7 @@ impl LushtextWindow {
 
         imp.search_panel_revealer.set_reveal_child(true);
         imp.search_panel.open();
+        self.set_search_panel_actions_enabled(true);
         let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, true);
         self.update_search_navigation_actions();
     }
@@ -386,6 +435,7 @@ impl LushtextWindow {
         }
         imp.search_panel.close();
         imp.search_panel_revealer.set_reveal_child(false);
+        self.set_search_panel_actions_enabled(false);
         self.finish_search_progress_tracking();
         let _ = imp.settings.set_boolean(keys::SEARCH_PANEL_VISIBLE, false);
         self.update_search_navigation_actions();
@@ -408,6 +458,63 @@ impl LushtextWindow {
                 gtk4::prelude::GtkWindowExt::set_focus(self, gtk4::Widget::NONE);
             }
         }
+    }
+
+    /// Enable actions that require the visible workspace-search panel.
+    pub(super) fn set_search_panel_actions_enabled(&self, enabled: bool) {
+        for action_name in [
+            "set-search-panel-query",
+            "set-search-panel-replace-query",
+            "preview-search-panel-replacements",
+            "confirm-search-panel-replacements",
+            "undo-search-panel-replacements",
+        ] {
+            if let Some(action) = self.lookup_action(action_name)
+                && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+            {
+                simple.set_enabled(enabled);
+            }
+        }
+    }
+
+    /// Set workspace-search text through the visible search panel.
+    pub(super) fn set_search_panel_query(&self, query: &str) {
+        if !self.imp().search_panel_revealer.reveals_child() {
+            return;
+        }
+        self.imp().search_panel.set_query(query);
+    }
+
+    /// Set workspace-search replacement text through the visible search panel.
+    pub(super) fn set_search_panel_replace_query(&self, text: &str) {
+        if !self.imp().search_panel_revealer.reveals_child() {
+            return;
+        }
+        self.imp().search_panel.set_replace_query(text);
+    }
+
+    /// Build the Replace All preview through the visible search panel workflow.
+    pub(super) fn preview_search_panel_replacements(&self) {
+        if !self.imp().search_panel_revealer.reveals_child() {
+            return;
+        }
+        self.imp().search_panel.activate_replace_preview();
+    }
+
+    /// Confirm checked Replace All preview rows through the visible panel workflow.
+    pub(super) fn confirm_search_panel_replacements(&self) {
+        if !self.imp().search_panel_revealer.reveals_child() {
+            return;
+        }
+        self.imp().search_panel.activate_confirm_replacements();
+    }
+
+    /// Undo the last Replace All through the visible panel workflow.
+    pub(super) fn undo_search_panel_replacements(&self) {
+        if !self.imp().search_panel_revealer.reveals_child() {
+            return;
+        }
+        self.imp().search_panel.activate_undo_replacements();
     }
 
     pub(super) fn after_search_panel_transition<F: FnOnce(&LushtextWindow) + 'static>(

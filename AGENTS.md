@@ -21,13 +21,13 @@ A minimalist, fast text editor targeting Libadwaita. Looks similar to GNOME Text
 
 Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added or an existing rule is materially changed, update this section in the same change.
 
-- `build.md` — build, dependency, dev-run desktop identity, property-testing, test, and smoke command rules
-- `documentation.md` — documentation maintenance requirements
+- `build.md` — build, dependency, dev-run desktop identity, property-testing, test, accessibility-policy, and smoke command rules
+- `documentation.md` — documentation maintenance requirements, including accessibility guide sync rules
 - `git.md` — git workflow and commit conventions
 - `preexisting-blockers.md` — mandatory no-exceptions rule: fix pre-existing blockers in the same work stream
 - `rust.md` — Rust language, module-splitting, and state-grouping conventions
-- `ui.md` — UI, theming, state-extreme visibility checks, grouped-row dialog/detail readability, GSettings binding rules, Libadwaita template-validation caveats, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
-- `widget-wiring.md` — GTK widget composition, signal wiring, GTK Lush signal/settle helpers, declarative projection bindings, factory row projection refresh, state-extreme coverage, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
+- `ui.md` — UI, theming, accessibility metadata/keyboard parity, state-extreme visibility checks, grouped-row dialog/detail readability, GSettings binding rules, Libadwaita template-validation caveats, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
+- `widget-wiring.md` — GTK widget composition, signal wiring, GTK Lush signal/settle helpers, accessibility helper/row metadata wiring, declarative projection bindings, factory row projection refresh, state-extreme coverage, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
 
 ## Architecture
 
@@ -104,7 +104,7 @@ src/
     ├── editor_page/     # Per-tab editor adapter plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
-    ├── command_palette/ # Ctrl+P search: files + note records + commands
+    ├── command_palette/ # Ctrl+Shift+P search: files + note records + commands
     ├── open_popover/    # Ctrl+K searchable recent-document Open popover
     ├── properties_panel/ # Right-side document metadata + formatting controls
     ├── markdown_preview/ # Read-only Markdown preview (pulldown-cmark → TextTags + anchored GTK widgets)

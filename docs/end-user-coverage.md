@@ -23,7 +23,7 @@ in the cheapest lane that can prove it honestly.
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots, coarse pixel sanity, compositor behavior, and visual artifacts | No, local, scheduled, or release validation |
 | Crash recovery smoke | `make crash-recovery-smoke` | Real-process draft/session recovery across `SIGKILL` and relaunch, with recovery metadata and runtime artifacts | No, local, scheduled, or release validation |
 | Portal and sandbox smoke | `make portal-sandbox-smoke` | Confined Flatpak/Snap state, full-filesystem permission posture, portal/sandbox runtime diagnostics, and host support reporting | No, local, scheduled, or release validation |
-| Accessibility smoke | `make accessibility-smoke` | AT-SPI-enabled focus and accessible metadata checks outside the accessibility-disabled widget harness | No, local or scheduled |
+| Accessibility smoke | `make accessibility-smoke` | AT-SPI-enabled focus, accessible metadata, scenario manifests, editor text-interface evidence, and unsupported-host reporting outside the accessibility-disabled widget harness | No, local, scheduled, or release validation |
 | Performance smoke | `make performance-smoke` | Lightweight latency and throughput sanity checks distinct from full Criterion reports | No by default |
 | Full benchmarks | `make bench-report`, `make bench-report-full` | Reviewable Criterion benchmark reports for release and performance-sensitive work | No, release or manual |
 | Mutation testing | `make mutants-smoke`, `make mutants-diff`, `make mutants-full` | Test strength for deterministic model, service, and pure helper code | Diff in PR/scheduled lanes, full manual or scheduled |
@@ -44,15 +44,22 @@ Host-sensitive lanes should be available through stable Make targets even when
 they are not default PR gates:
 
 - `make visual-smoke` captures isolated headless Mutter screenshots for
-  search/minimap, normal/compact/constrained document properties, normal and
-  constrained Markdown preview, zero-folder/representative/dense/awkward/
+  search/minimap, modified-tab and destructive close states, file-health
+  properties, local-history restore state, normal/compact/constrained document
+  properties, normal and constrained Markdown preview, zero-folder/representative/dense/awkward/
   constrained workspace states, workspace-refresh readiness, short-layout
   chrome, no-notes, few/dense/constrained notes, few/dense/constrained
   bookmarks, command-palette files/commands/notes/no-results/dense-files/
-  dismissed states, dark style, and recovery startup diagnostics. Each capture
+  dismissed states, dark style, high contrast, large text, reduced motion,
+  transparency/readability, and recovery startup diagnostics. Each capture
   preserves logs, environment metadata, warning scans, PNG sanity checks,
   bounded per-capture manifests, AT-SPI excerpts when a dialog is under test,
-  and Automation1 snapshot assertions where a state contract exists.
+  and Automation1 snapshot assertions where a state contract exists. Use
+  `scripts/run-visual-smoke.sh --list-cases` and repeated `--case PATTERN`
+  filters for focused visual accessibility debugging. The root `summary.json`
+  records scenario sources, warning status, screenshots, and
+  `visual_accessibility_coverage` groups for focus, variants, color-not-only
+  cues, constrained geometry, and unsupported variants.
 - `make visual-geometry-smoke` runs `cargo gtk-proof run` for same-session
   before/after visual invariants under isolated headless Mutter. The Rust lane
   waits on Automation1 `visual-geometry-settled`, captures bounded
@@ -110,11 +117,17 @@ they are not default PR gates:
   unavailable. Portal diagnostics are evidence only; they do not imply a
   portals-only migration while the Flatpak keeps full filesystem access.
 - `make accessibility-smoke` keeps the accessibility bridge enabled, uses the
-  AT-SPI path, verifies stable shell/command-palette/notes-browser anchors plus
-  the command-palette focus target, and skips with an explicit host-runtime
-  reason when AT-SPI support is unavailable. It complements widget tests that
+  AT-SPI path, verifies stable anchors across shell/editor/search/Open
+  popover/command palette/workspace/properties/preferences/Markdown preview/
+  notes/local-history surfaces, and records focus plus text-interface evidence where the host
+  exposes it. The lane writes bounded per-scenario manifests, assertion JSONL,
+  warning status, screenshots, AT-SPI tree/focus excerpts, `summary.txt`, and
+  `summary.json`; unsupported AT-SPI or compositor hosts skip with an explicit
+  reason that does not count as coverage. It complements widget tests that
   intentionally set `NO_AT_BRIDGE=1`; action or D-Bus checks alone are not
-  counted as accessibility coverage.
+  counted as accessibility coverage. Pair this lane with
+  [`docs/accessibility.md`](accessibility.md) when reviewing user-facing
+  behavior or release readiness.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
   timing artifacts, including worker-side Replace preview generation and
   recovery fixtures for malformed metadata, pending migrations, duplicate
@@ -154,6 +167,32 @@ make bench-report
 If a host-dependent lane skips, record the exact missing dependency and the
 runner or manual environment that will cover it. A skip is useful evidence about
 host support, but it is not proof that the skipped behavior works.
+
+For releases that touch UI, shortcuts, accessible metadata, screen-reader
+behavior, visual styling, row factories, transient surfaces, search/list
+surfaces, or smoke tooling, add the accessibility release reference:
+
+- Preserve and review `make accessibility-smoke` artifacts, including
+  `build/smoke/accessibility/summary.json`, per-scenario manifests, assertion
+  JSONL, AT-SPI excerpts, focus artifacts, environment reports, and warning
+  scans.
+- Preserve visual accessibility evidence with `make visual-geometry-smoke`,
+  `make visual-smoke`, and `make check-visual-proof-policy` when focus
+  indication, primary control visibility, color-not-only state, large text,
+  contrast, reduced motion, transparency/readability, or constrained geometry
+  can be affected.
+- Run a manual Orca check in a normal GNOME session for the changed workflows,
+  especially editor text, caret or selection feedback, shell navigation,
+  command palette, Open popover, workspace search, workspace sidebar/file tree,
+  document properties, preferences, Markdown preview, notes/bookmarks, local
+  history, and destructive or close dialogs.
+- Treat skipped AT-SPI, compositor, visual, or screen-reader coverage as
+  unverified until another runner or manual environment covers the same
+  behavior. Record the exact environment and caveat in release notes or release
+  validation artifacts.
+- Keep the user-facing contract in [`docs/accessibility.md`](accessibility.md)
+  synchronized with any changed shortcut, accessible name, announcement
+  behavior, stable AT-SPI anchor, smoke scenario, or known platform caveat.
 
 ## Lane Boundaries
 

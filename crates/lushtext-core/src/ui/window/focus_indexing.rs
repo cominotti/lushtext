@@ -11,6 +11,7 @@ use gtk4::prelude::*;
 
 use crate::model::palette::{PaletteFileEntry, SearchMode};
 use crate::services::palette::FileIndex;
+use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::{BUFFER_MEMORY_BUDGET, LushtextWindow};
@@ -332,7 +333,13 @@ impl LushtextWindow {
                             if !window.imp().index_rebuild_debounce.is_current(token) {
                                 return;
                             }
+                            let indexed_files = index.len();
                             window.imp().command_palette.set_file_index(index);
+                            window.announce_workflow_update(
+                                AnnouncementLane::ProgressMilestone,
+                                "workspace-file-index-updated",
+                                &format!("Workspace file index updated with {indexed_files} files"),
+                            );
                         }
                     },
                 );

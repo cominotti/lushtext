@@ -37,7 +37,30 @@ without rebinding the row. Centralize the predicate used by `connect_bind()` and
 any explicit repair path, then run a cheap synchronization over realized rows
 after membership, filter-visibility, in-place refresh, or reorder changes. Reset
 stale overlay or drop-target state in the same pass so recycled rows cannot keep
-old affordances.
+old affordances. If the row's child composition itself changes because of a
+parent workflow mode, force a real factory/model rebind (for example clear the
+`GtkListView` model before restoring it) instead of setting the same model back
+and assuming GTK will re-run `connect_bind()`.
+
+## Accessibility Wiring
+
+New widget metadata should go through `crate::ui::accessibility` so labels,
+descriptions, roles, relations, states, row metadata, and announcements stay
+consistent across surfaces. Use the helper's announcement lanes for debounced
+results, progress milestones, repeated status updates, and high-priority alerts
+instead of announcing directly from each workflow.
+
+For `GtkSignalListItemFactory` rows, refresh item-specific accessible metadata
+with `RowAccessibility` during `connect_bind()` and clear it with
+`clear_row_accessibility()` during `connect_unbind()`. This is the accessibility
+equivalent of clearing stale tooltips, overlays, or signal/binding ownership:
+recycled rows must not keep a previous item's name, description, selection, or
+set-position metadata.
+
+Widget tests that need metadata proof but not a live accessibility bridge can
+use `ui::accessibility::test_audit::AccessibleAudit`. It complements, but does
+not replace, `make accessibility-smoke` for AT-SPI-visible focus, tree, and text
+behavior.
 
 ## Signal And Binding Lifetimes
 

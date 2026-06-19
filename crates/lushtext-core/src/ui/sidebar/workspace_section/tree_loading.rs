@@ -9,6 +9,8 @@
 use super::LushtextWorkspaceSection;
 use crate::services;
 use crate::services::file_tree::DirectoryEntry;
+use crate::services::notifications::NotificationSeverity;
+use crate::ui::accessibility;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -136,6 +138,7 @@ pub(super) fn populate_child_store(
         .entry(path.clone())
         .or_default()
         .push(Arc::clone(&cancel));
+    sync_child_scan_busy_state(section);
 
     let section_weak = section.downgrade();
     let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
@@ -229,6 +232,7 @@ pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Pat
     for token in cancelled {
         token.store(true, Ordering::Release);
     }
+    sync_child_scan_busy_state(section);
 }
 
 /// Clear all cached tree-loading state before reloading the workspace folders.
@@ -249,6 +253,7 @@ pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
     for token in cancelled {
         token.store(true, Ordering::Release);
     }
+    sync_child_scan_busy_state(section);
 }
 
 /// Drop the active scan token for `dir_path` if it still matches `token`.
@@ -260,6 +265,23 @@ fn finish_child_scan(section: &LushtextWorkspaceSection, dir_path: &Path, token:
     active_tokens.retain(|active| !Arc::ptr_eq(active, token));
     if active_tokens.is_empty() {
         tokens.remove(dir_path);
+    }
+    drop(tokens);
+    sync_child_scan_busy_state(section);
+}
+
+/// Mirror child directory scan activity into the tree's accessible busy state.
+fn sync_child_scan_busy_state(section: &LushtextWorkspaceSection) {
+    let busy = !section.imp().child_scan_tokens.borrow().is_empty();
+    accessibility::set_busy(&*section.imp().file_tree_view, busy);
+    if !busy
+        && section
+            .imp()
+            .refresh_runtime
+            .manual_refresh_announcing
+            .replace(false)
+    {
+        section.emit_message("Workspace folders refreshed", NotificationSeverity::Info);
     }
 }
 

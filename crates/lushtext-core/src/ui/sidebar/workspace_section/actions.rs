@@ -4,6 +4,7 @@
 
 use super::FileTreeItem;
 use crate::services::filesystem::{mutate as fs_mutate, write as fs_write};
+use crate::ui::accessibility;
 use glib::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -102,10 +103,16 @@ impl super::LushtextWorkspaceSection {
             .and_downcast::<gtk4::Box>()
             .expect("expander child is Box");
 
-        let icon = content_box
-            .first_child()
-            .and_downcast::<gtk4::Image>()
-            .expect("first child is Image");
+        let mut child = content_box.first_child();
+        let mut icon = None;
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if let Ok(image) = widget.downcast::<gtk4::Image>() {
+                icon = Some(image);
+                break;
+            }
+        }
+        let icon = icon.expect("row content contains Image");
 
         let label = icon
             .next_sibling()
@@ -120,13 +127,32 @@ impl super::LushtextWorkspaceSection {
         let entry = gtk4::Entry::new();
         entry.set_text(&name);
         entry.set_hexpand(true);
+        let is_new = imp.is_new_item.get();
+        let kind = if imp.context_is_dir.get() {
+            "folder"
+        } else {
+            "file"
+        };
+        let entry_label = if is_new {
+            format!("Name new {kind}")
+        } else {
+            format!("Rename {name}")
+        };
+        let entry_description = if is_new {
+            format!(
+                "Enter confirms the new {kind}. Escape cancels and removes the temporary {kind}."
+            )
+        } else {
+            "Enter confirms the new name. Escape cancels rename.".to_string()
+        };
+        accessibility::set_labelled_description(&entry, &entry_label, &entry_description);
+        accessibility::set_key_shortcuts(&entry, "Enter, Escape");
+        entry.set_tooltip_text(Some(&entry_description));
 
         label.set_visible(false);
         content_box.append(&entry);
         entry.grab_focus();
         entry.select_region(0, -1);
-
-        let is_new = self.imp().is_new_item.get();
 
         // Entry, key, and focus handlers use weak row widgets so the signal
         // closures cannot keep recycled or detached inline-rename rows alive.
@@ -385,6 +411,11 @@ impl super::LushtextWorkspaceSection {
             );
         });
 
+        accessibility::announce_with_lane(
+            self,
+            &format!("Delete {name}? This will permanently delete the {kind}."),
+            accessibility::AnnouncementLane::Alert,
+        );
         if let Some(root) = self.root() {
             dialog.present(Some(&root));
         }
@@ -419,6 +450,11 @@ impl super::LushtextWorkspaceSection {
             }
         });
 
+        accessibility::announce_with_lane(
+            self,
+            &format!("Remove {name} from workspace? Files on disk and folder notes will be kept."),
+            accessibility::AnnouncementLane::Alert,
+        );
         if let Some(root) = self.root() {
             dialog.present(Some(&root));
         }

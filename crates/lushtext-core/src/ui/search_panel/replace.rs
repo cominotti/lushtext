@@ -22,12 +22,18 @@ use super::LushtextSearchPanel;
 impl LushtextSearchPanel {
     /// Show the undo button (called after a successful replace).
     pub fn show_undo_button(&self) {
-        self.imp().undo_button.set_visible(true);
+        let imp = self.imp();
+        // Undo is time-sensitive recovery UI, so make the containing options
+        // row visible instead of leaving the newly-shown button collapsed.
+        imp.more_toggle.set_active(true);
+        imp.undo_button.set_visible(true);
+        self.refresh_accessibility_state();
     }
 
     /// Hide the undo button.
     pub fn hide_undo_button(&self) {
         self.imp().undo_button.set_visible(false);
+        self.refresh_accessibility_state();
     }
 
     /// Store undo backup and persist it as the current retryable journal.
@@ -48,6 +54,7 @@ impl LushtextSearchPanel {
             .undo_backup_generation
             .fetch_add(1, Ordering::AcqRel);
         self.imp().preview.undo_backup.replace(Some(backup.clone()));
+        self.refresh_accessibility_state();
         previous.wrapping_add(1)
     }
 
@@ -102,6 +109,7 @@ impl LushtextSearchPanel {
         self.imp().preview.undo_backup.replace(None);
         self.hide_undo_button();
         self.delete_undo_backup_on_disk(generation);
+        self.refresh_accessibility_state();
     }
 
     fn save_undo_backup_on_disk(&self, backup: ReplaceUndoBackup, generation: u32) {
@@ -160,8 +168,8 @@ impl LushtextSearchPanel {
     /// list to show before/after with checkboxes.
     pub fn enter_preview_mode(&self, replacement_text: &str) {
         let imp = self.imp();
-
-        if imp.runtime.total_matches.get() == 0 {
+        let search_matches = self.collect_search_matches();
+        if search_matches.is_empty() {
             return;
         }
 
@@ -173,14 +181,7 @@ impl LushtextSearchPanel {
         imp.preview.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Preparing Preview…");
         imp.replace_all_button.set_sensitive(false);
-
-        let search_matches = self.collect_search_matches();
-        if search_matches.is_empty() {
-            imp.preview.preview_pending.set(false);
-            imp.replace_all_button.set_label("Replace All");
-            self.update_replace_button_sensitivity();
-            return;
-        }
+        self.refresh_accessibility_state();
 
         let replacement_text = replacement_text.to_string();
         spawn_blocking_then(
@@ -214,6 +215,7 @@ impl LushtextSearchPanel {
                 imp.replace_all_button.set_sensitive(total > 0);
 
                 panel.refresh_results_display();
+                panel.refresh_accessibility_state();
             },
         );
     }
@@ -229,6 +231,7 @@ impl LushtextSearchPanel {
         imp.replace_all_button.set_label("Replace All");
         self.update_replace_button_sensitivity();
         self.refresh_results_display();
+        self.refresh_accessibility_state();
     }
 
     /// Update the "Replace All" / "Confirm Replace" button sensitivity.
@@ -244,6 +247,7 @@ impl LushtextSearchPanel {
             imp.replace_all_button
                 .set_sensitive(imp.runtime.total_matches.get() > 0);
         }
+        self.refresh_accessibility_state();
     }
 
     /// Cancel any pending or visible replace preview after search state changes.
@@ -262,6 +266,7 @@ impl LushtextSearchPanel {
         imp.preview.checked_indices.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
         self.refresh_results_display();
+        self.refresh_accessibility_state();
     }
 
     fn advance_preview_generation(&self) -> u32 {

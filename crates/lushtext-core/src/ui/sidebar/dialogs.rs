@@ -10,6 +10,7 @@ use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
 use super::LushtextSidebar;
 use crate::model::workspace::WorkspaceId;
+use crate::ui::accessibility::{self, AnnouncementLane};
 
 impl LushtextSidebar {
     /// Create a new empty workspace through a name-entry dialog.
@@ -194,6 +195,11 @@ impl LushtextSidebar {
             }
         });
 
+        accessibility::announce_with_lane(
+            self,
+            &format!("Remove {current_name}? The workspace will be removed from the sidebar."),
+            AnnouncementLane::Alert,
+        );
         dialog.present(Some(&root));
     }
 }

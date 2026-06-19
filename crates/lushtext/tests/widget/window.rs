@@ -32,6 +32,7 @@ use lushtext_core::model::encoding::{
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::palette::IndexedFile;
+use lushtext_core::model::recent_document::RecentDocumentEntry;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection,
@@ -55,6 +56,7 @@ use lushtext_core::ui::automation::{
     INTERFACE_VERSION, app_snapshot, current_idle_blocker, wait_for_idle_for_test,
     wait_for_ready_for_test,
 };
+use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
     EditorLoadState, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
 };
@@ -505,6 +507,22 @@ fn activate_u32_action(window: &LushtextWindow, name: &str, value: u32) {
     let parameter = value.to_variant();
     ActionGroupExt::activate_action(window, name, Some(&parameter));
     flush_events();
+}
+
+fn assert_workflow_announcement_recorded(window: &LushtextWindow, key: &str) {
+    assert!(
+        !window
+            .imp()
+            .status_bar
+            .imp()
+            .status_announcement_throttler
+            .should_announce_at(
+                AnnouncementLane::StatusUpdate,
+                &format!("workflow:{key}"),
+                Instant::now()
+            ),
+        "workflow announcement '{key}' should have been recorded"
+    );
 }
 
 fn action_value_type(signature: Option<&glib::VariantTy>) -> ActionValueType {
@@ -1286,6 +1304,30 @@ fn find_entry_row_by_title(widget: &gtk4::Widget, title: &str) -> Option<libadwa
     None
 }
 
+fn find_preferences_group(widget: &gtk4::Widget) -> Option<libadwaita::PreferencesGroup> {
+    if let Ok(group) = widget.clone().downcast::<libadwaita::PreferencesGroup>() {
+        return Some(group);
+    }
+
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_preferences_group(&child_widget) {
+            return Some(found);
+        }
+        child = child_widget.next_sibling();
+    }
+
+    None
+}
+
+fn status_bar_contains(window: &LushtextWindow, text: &str) -> bool {
+    window
+        .imp()
+        .notification_bus
+        .status_bar_view()
+        .is_some_and(|status| status.text.contains(text))
+}
+
 fn set_entry_row_text_and_flush(row: &libadwaita::EntryRow, text: &str) {
     row.set_text(text);
     wait_until(Duration::from_secs(2), || row.text().as_str() == text);
@@ -1451,6 +1493,27 @@ fn find_notes_preview_stack(widget: &gtk4::Widget) -> Option<gtk4::Stack> {
     let mut child = widget.first_child();
     while let Some(child_widget) = child {
         if let Some(found) = find_notes_preview_stack(&child_widget) {
+            return Some(found);
+        }
+        child = child_widget.next_sibling();
+    }
+
+    None
+}
+
+fn find_local_history_preview_stack(widget: &gtk4::Widget) -> Option<gtk4::Stack> {
+    if let Ok(stack) = widget.clone().downcast::<gtk4::Stack>()
+        && stack.child_by_name("loading").is_some()
+        && stack.child_by_name("empty").is_some()
+        && stack.child_by_name("error").is_some()
+        && stack.child_by_name("content").is_some()
+    {
+        return Some(stack);
+    }
+
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        if let Some(found) = find_local_history_preview_stack(&child_widget) {
             return Some(found);
         }
         child = child_widget.next_sibling();
@@ -2697,9 +2760,36 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
     });
     let dialog = visible_sheet_dialog(&window).expect("bookmark edit dialog");
     let child = dialog.child().expect("bookmark edit dialog child");
+    let fields_group = find_preferences_group(&child).expect("bookmark fields group");
     let label_row = find_entry_row_by_title(&child, "Label").expect("label row");
     let line_row = find_entry_row_by_title(&child, "Line").expect("line row");
+    let close_button = find_button_by_tooltip(&child, "Close").expect("close button");
+    let cancel_button = find_button_by_label(&child, "Cancel").expect("cancel button");
     let save_button = find_button_by_label(&child, "Save").expect("save button");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&fields_group);
+    for row in [&label_row, &line_row] {
+        AccessibleAudit::new()
+            .properties(&[
+                gtk4::AccessibleProperty::Label,
+                gtk4::AccessibleProperty::Description,
+            ])
+            .assert_on(row);
+    }
+    for button in [&close_button, &cancel_button, &save_button] {
+        AccessibleAudit::new()
+            .role(gtk4::AccessibleRole::Button)
+            .properties(&[
+                gtk4::AccessibleProperty::Label,
+                gtk4::AccessibleProperty::Description,
+            ])
+            .assert_on(button);
+    }
     assert_eq!(line_row.text(), "1");
 
     set_entry_row_text_and_flush(&line_row, "99");
@@ -2712,8 +2802,25 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
                     .is_some()
             })
     });
+    let out_of_range = find_label_by_text(
+        &child,
+        "Line 99 is outside this document. Use 1 through 4.",
+    )
+    .expect("out-of-range validation label");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .states(&[gtk4::AccessibleState::Invalid])
+        .assert_on(&out_of_range);
+    AccessibleAudit::new()
+        .states(&[gtk4::AccessibleState::Invalid])
+        .assert_on(&line_row);
 
     set_entry_row_text_and_flush(&line_row, "3");
+    assert!(
+        !gtk4::test_accessible_has_state(&line_row, gtk4::AccessibleState::Invalid),
+        "line row invalid state should clear after the user edits the line field"
+    );
     save_button.emit_clicked();
     wait_until(Duration::from_secs(20), || {
         visible_sheet_dialog(&window)
@@ -2722,9 +2829,23 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
                 find_label_by_text(&child, "Line 3 already has another bookmark.").is_some()
             })
     });
+    let occupied_line =
+        find_label_by_text(&child, "Line 3 already has another bookmark.").expect("occupied line label");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .states(&[gtk4::AccessibleState::Invalid])
+        .assert_on(&occupied_line);
+    AccessibleAudit::new()
+        .states(&[gtk4::AccessibleState::Invalid])
+        .assert_on(&line_row);
 
     set_entry_row_text_and_flush(&label_row, "Moved bookmark");
     set_entry_row_text_and_flush(&line_row, "4");
+    assert!(
+        !gtk4::test_accessible_has_state(&line_row, gtk4::AccessibleState::Invalid),
+        "line row invalid state should clear before a corrected save"
+    );
     save_button.emit_clicked();
     wait_until(Duration::from_secs(20), || {
         visible_sheet_dialog(&window).is_none()
@@ -2741,6 +2862,56 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
                 .iter()
                 .any(|bookmark| bookmark.id == second_id && bookmark.line == 2)
         })
+    });
+}
+
+#[test]
+fn test_bookmark_commands_report_saved_file_and_empty_bookmark_context() {
+    ensure_gtk_init();
+    seed_no_workspaces();
+    let window = test_window();
+    present_window(&window);
+
+    for name in [
+        "toggle-bookmark",
+        "edit-bookmark-label",
+        "next-bookmark",
+        "prev-bookmark",
+    ] {
+        assert!(
+            !action_enabled(&window, name),
+            "bookmark action '{name}' should be disabled without any editor tab"
+        );
+    }
+
+    window.new_tab();
+    flush_events();
+    activate_action(&window, "edit-bookmark-label");
+    wait_until(Duration::from_secs(2), || {
+        status_bar_contains(&window, "Bookmarks require a saved file")
+    });
+
+    let tempdir = tempfile::tempdir().expect("bookmark command tempdir");
+    let file_path = tempdir.path().join("bookmark-commands.rs");
+    fixture::write_text(&file_path, "one\ntwo\nthree\n");
+    window.open_document(&file_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    activate_action(&window, "edit-bookmark-label");
+    wait_until(Duration::from_secs(2), || {
+        status_bar_contains(&window, "Move the cursor to a bookmarked line first")
+    });
+
+    activate_action(&window, "next-bookmark");
+    wait_until(Duration::from_secs(2), || {
+        status_bar_contains(&window, "No bookmarks exist in the active file")
+    });
+
+    activate_action(&window, "prev-bookmark");
+    wait_until(Duration::from_secs(2), || {
+        status_bar_contains(&window, "No bookmarks exist in the active file")
     });
 }
 
@@ -3106,8 +3277,25 @@ fn test_toggle_properties_action_state_tracks_rendered_surface() {
             .state()
             .expect("expected operation to succeed")
             .get::<bool>()
-            .expect("expected operation to succeed")
+        .expect("expected operation to succeed")
     );
+}
+
+#[test]
+fn test_secondary_surface_toggles_sync_accessible_pressed_and_announcements() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    assert!(window.imp().status_bar.imp().sidebar_toggle_button.is_active());
+    assert!(!window.imp().document_properties_toggle_button.is_active());
+
+    activate_action(&window, "toggle-sidebar");
+    assert!(!window.imp().status_bar.imp().sidebar_toggle_button.is_active());
+    assert_workflow_announcement_recorded(&window, "workspace-sidebar-hidden");
+
+    activate_action(&window, "toggle-properties");
+    assert!(window.imp().document_properties_toggle_button.is_active());
+    assert_workflow_announcement_recorded(&window, "document-properties-shown");
 }
 
 #[test]
@@ -3279,29 +3467,45 @@ fn test_shell_controls_expose_accessibility_roles() {
     ensure_gtk_init();
     let window = test_window();
 
-    assert_eq!(
-        window.imp().new_tab_button.accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(
-        window.imp().open_menu_button.accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(
-        window
-            .imp()
-            .document_properties_toggle_button
-            .accessible_role(),
-        gtk4::AccessibleRole::ToggleButton
-    );
-    assert_eq!(
-        window.imp().primary_menu_button.accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(
-        window.imp().tab_bar.accessible_role(),
-        gtk4::AccessibleRole::TabList
-    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::KeyShortcuts,
+        ])
+        .assert_on(&*window.imp().new_tab_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::KeyShortcuts,
+            gtk4::AccessibleProperty::HasPopup,
+        ])
+        .assert_on(&*window.imp().open_menu_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ToggleButton)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::KeyShortcuts,
+        ])
+        .states(&[gtk4::AccessibleState::Pressed])
+        .assert_on(&*window.imp().document_properties_toggle_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::HasPopup,
+        ])
+        .assert_on(&*window.imp().primary_menu_button);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TabList)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*window.imp().tab_bar);
 }
 
 #[test]
@@ -3356,25 +3560,62 @@ fn test_local_history_browser_controls_expose_accessibility_roles() {
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog");
     let child = dialog.child().expect("local-history browser child");
     let sidebar = find_adw_sidebar(&child).expect("local-history sidebar");
+    wait_until(Duration::from_secs(5), || {
+        find_button_by_label(&child, "Copy").is_some_and(|button| button.is_sensitive())
+    });
+    let preview_stack =
+        find_local_history_preview_stack(&child).expect("local-history preview stack");
+    let mut text_views = Vec::new();
+    collect_text_views(&child, &mut text_views);
+    let preview_text_view = text_views
+        .into_iter()
+        .find(|text_view| !text_view.is_editable())
+        .expect("local-history preview text view");
     assert_back_button_follows_split_collapsed(&child, "Back to Snapshots");
-    assert_eq!(sidebar.accessible_role(), gtk4::AccessibleRole::List);
-    assert_eq!(
-        find_button_by_label(&child, "Restore")
-            .expect("restore button")
-            .accessible_role(),
-        gtk4::AccessibleRole::Button
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::List)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&sidebar);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&preview_stack);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+            gtk4::AccessibleProperty::MultiLine,
+        ])
+        .assert_on(&preview_text_view);
+
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    let copy_button = find_button_by_label(&child, "Copy").expect("copy button");
+    let back_button =
+        find_button_by_tooltip(&child, "Back to Snapshots").expect("local-history back button");
+    for button in [&restore_button, &copy_button, &back_button] {
+        AccessibleAudit::new()
+            .role(gtk4::AccessibleRole::Button)
+            .properties(&[
+                gtk4::AccessibleProperty::Label,
+                gtk4::AccessibleProperty::Description,
+            ])
+            .assert_on(button);
+    }
+    assert!(
+        !gtk4::test_accessible_has_state(&restore_button, gtk4::AccessibleState::Disabled),
+        "loaded local-history snapshots should expose Restore as enabled"
     );
-    assert_eq!(
-        find_button_by_label(&child, "Copy")
-            .expect("copy button")
-            .accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(
-        find_button_by_tooltip(&child, "Back to Snapshots")
-            .expect("local-history back button")
-            .accessible_role(),
-        gtk4::AccessibleRole::Button
+    assert!(
+        !gtk4::test_accessible_has_state(&copy_button, gtk4::AccessibleState::Disabled),
+        "non-empty local-history snapshots should expose Copy as enabled"
     );
 }
 
@@ -3402,25 +3643,52 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
     let child = dialog.child().expect("notes browser child");
     let search_entry = find_search_entry(&child).expect("notes browser search entry");
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let preview_stack = find_notes_preview_stack(&child).expect("notes browser preview stack");
     assert_back_button_follows_split_collapsed(&child, "Back to Notes");
-    assert_eq!(search_entry.accessible_role(), gtk4::AccessibleRole::SearchBox);
-    assert_eq!(sidebar.accessible_role(), gtk4::AccessibleRole::List);
-    assert_eq!(
-        find_button_by_label(&child, "Open")
-            .expect("notes browser open button")
-            .accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(
-        single_visible_close_button(&child).accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
-    assert_eq!(
-        find_button_by_tooltip(&child, "Back to Notes")
-            .expect("notes browser back button")
-            .accessible_role(),
-        gtk4::AccessibleRole::Button
-    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::SearchBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&search_entry);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::List)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&sidebar);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&preview_stack);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&find_button_by_label(&child, "Open").expect("notes browser open button"));
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&single_visible_close_button(&child));
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Button)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&find_button_by_tooltip(&child, "Back to Notes").expect("notes browser back button"));
 }
 
 #[test]
@@ -3689,6 +3957,7 @@ fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
 
     assert!(!action_enabled(&window, "set-search-query"));
     assert!(!action_enabled(&window, "select-tab"));
+    assert!(!action_enabled(&window, "set-open-popover-query"));
     assert!(!action_enabled(&window, "set-notes-browser-query"));
     assert!(!action_enabled(&window, "select-notes-browser-row"));
     assert!(!action_enabled(&window, "open-notes-browser-selection"));
@@ -3703,6 +3972,7 @@ fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
 
     assert!(action_enabled(&window, "set-search-query"));
     assert!(action_enabled(&window, "select-tab"));
+    assert!(!action_enabled(&window, "set-open-popover-query"));
     assert!(!action_enabled(&window, "set-notes-browser-query"));
     assert!(!action_enabled(&window, "select-notes-browser-row"));
     assert!(!action_enabled(&window, "open-notes-browser-selection"));
@@ -3730,14 +4000,66 @@ fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
     wait_until(Duration::from_secs(2), || !minimap_setting(&window));
     assert!(!action_state_bool(&window, "toggle-minimap"));
 
+    let recent_path = PathBuf::from("/tmp/lushtext-open-popover-filter-target.txt");
+    window.set_recent_documents_for_test(vec![RecentDocumentEntry::new(
+        recent_path,
+        None,
+        42,
+    )]);
+    activate_action(&window, "open-recent");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().open_popover.is_visible()
+    });
+    let open_query_action = window
+        .lookup_action("set-open-popover-query")
+        .expect("missing set-open-popover-query action");
+    assert_eq!(
+        open_query_action
+            .parameter_type()
+            .as_ref()
+            .map(|parameter_type| parameter_type.as_str()),
+        Some("s"),
+        "set-open-popover-query should take a string parameter"
+    );
+    assert!(action_enabled(&window, "set-open-popover-query"));
+    activate_string_action(&window, "set-open-popover-query", "filter-target");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().open_popover.visible_titles_for_test()
+            == vec!["lushtext-open-popover-filter-target.txt"]
+    });
+    window.imp().open_popover.popdown();
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().open_popover.is_visible()
+    });
+    assert!(!action_enabled(&window, "set-open-popover-query"));
+    editor.source_view().grab_focus();
+    wait_for_active_editor_focus(&window);
+
     activate_boolean_action(&window, "set-search-panel-visible", true);
     wait_until(Duration::from_secs(2), || {
         window.imp().search_panel_revealer.reveals_child()
+    });
+    let search_query_action = window
+        .lookup_action("set-search-panel-query")
+        .expect("missing set-search-panel-query action");
+    assert_eq!(
+        search_query_action
+            .parameter_type()
+            .as_ref()
+            .map(|parameter_type| parameter_type.as_str()),
+        Some("s"),
+        "set-search-panel-query should take a string parameter"
+    );
+    assert!(action_enabled(&window, "set-search-panel-query"));
+    activate_string_action(&window, "set-search-panel-query", "workspace needle");
+    wait_until(Duration::from_secs(2), || {
+        window.imp().search_panel.query() == "workspace needle"
     });
     activate_boolean_action(&window, "set-search-panel-visible", false);
     wait_until(Duration::from_secs(2), || {
         !window.imp().search_panel_revealer.reveals_child()
     });
+    assert!(!action_enabled(&window, "set-search-panel-query"));
     wait_for_active_editor_focus(&window);
 
     activate_boolean_action(&window, "set-focus-mode", true);
@@ -4579,6 +4901,41 @@ fn test_toggle_minimap_action_state_tracks_external_setting_changes() {
 }
 
 #[test]
+fn test_mode_toggles_record_state_specific_workflow_announcements() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+
+    activate_action(&window, "toggle-focus-mode");
+    wait_until(Duration::from_secs(2), || window.imp().focus_mode.active.get());
+    assert_workflow_announcement_recorded(&window, "focus-mode-on");
+
+    activate_action(&window, "toggle-focus-mode");
+    wait_until(Duration::from_secs(2), || !window.imp().focus_mode.active.get());
+    assert_workflow_announcement_recorded(&window, "focus-mode-off");
+
+    activate_action(&window, "toggle-preview-pane");
+    wait_until(Duration::from_secs(2), || window.imp().preview_visible.get());
+    assert_workflow_announcement_recorded(&window, "preview-pane-shown");
+
+    activate_boolean_action(&window, "set-preview-mode", true);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_mode.get() && !window.imp().preview_visible.get()
+    });
+    assert_workflow_announcement_recorded(&window, "preview-pane-hidden");
+    assert_workflow_announcement_recorded(&window, "preview-mode-on");
+
+    activate_boolean_action(&window, "set-preview-mode", false);
+    wait_until(Duration::from_secs(2), || !window.imp().preview_mode.get());
+    assert_workflow_announcement_recorded(&window, "preview-mode-off");
+
+    activate_action(&window, "toggle-minimap");
+    wait_until(Duration::from_secs(2), || minimap_setting(&window));
+    assert_workflow_announcement_recorded(&window, "minimap-shown");
+}
+
+#[test]
 fn test_shell_chrome_uses_explicit_opaque_classes_for_transparency_mode() {
     let window = test_window();
 
@@ -4793,6 +5150,18 @@ fn test_generic_progress_heartbeat_and_resolve_renders_do_not_pulse() {
     ));
     window.render_notifications();
     assert!(!status_message_area_has_any_pulse(&window));
+    assert!(
+        !window
+            .imp()
+            .status_bar
+            .imp()
+            .status_announcement_throttler
+            .has_recent_announcement_for_test(
+                AnnouncementLane::StatusUpdate,
+                "status:info:Searching 1 file\u{2026}"
+            ),
+        "progress heartbeats should not record routine info announcements"
+    );
 }
 
 #[test]
@@ -8019,6 +8388,13 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
         find_label_by_text(&child, "No local history yet").is_some(),
         "empty-state browser should explain why no snapshots are listed"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&find_status_page(&child).expect("empty local-history status page"));
 }
 
 #[test]
@@ -8065,18 +8441,44 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
         find_label_by_text(&child, "This snapshot was empty").is_some(),
         "empty snapshots should explain that they contained no text"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&find_status_page(&child).expect("empty snapshot status page"));
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(
+            &find_local_history_preview_stack(&child).expect("local-history preview stack"),
+        );
     assert!(
         find_label_by_text(&child, "Before edits · Empty file").is_some(),
         "empty snapshots should use semantic metadata instead of only 0 B"
     );
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    let copy_button = find_button_by_label(&child, "Copy").expect("copy button");
     assert!(
-        find_button_by_label(&child, "Restore").is_some_and(|button| button.is_sensitive()),
+        restore_button.is_sensitive(),
         "empty historical snapshots should still be restorable"
     );
     assert!(
-        find_button_by_label(&child, "Copy").is_some_and(|button| !button.is_sensitive()),
+        !gtk4::test_accessible_has_state(&restore_button, gtk4::AccessibleState::Disabled),
+        "Restore should not expose disabled state for a valid empty snapshot"
+    );
+    assert!(
+        !copy_button.is_sensitive(),
         "copy should be disabled when the snapshot has no text content"
     );
+    AccessibleAudit::new()
+        .states(&[gtk4::AccessibleState::Disabled])
+        .assert_on(&copy_button);
 }
 
 #[test]
@@ -10369,6 +10771,36 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     let stack = find_note_editor_stack(&extra).expect("note editor stack");
     assert_eq!(switcher.stack(), Some(stack.clone()));
     assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&stack);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&switcher);
+    let (edit_surface, render_surface) = note_editor_text_views(&extra);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::MultiLine,
+        ])
+        .assert_on(&edit_surface);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+            gtk4::AccessibleProperty::MultiLine,
+        ])
+        .assert_on(&render_surface);
     assert_note_save_response_visible(&dialog);
     wait_for_note_save_response_sensitive(&dialog, false);
 
@@ -10994,6 +11426,22 @@ fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
     assert!(preview_text.contains("raw before"));
     assert!(preview_text.contains(">  3 | raw target"));
     assert!(preview_text.contains("raw after"));
+    let raw_text_view = find_notes_preview_stack(&child)
+        .and_then(|stack| stack.visible_child())
+        .and_then(|child| {
+            let mut text_views = Vec::new();
+            collect_text_views(&child, &mut text_views);
+            text_views.into_iter().find(|text_view| !text_view.is_editable())
+        })
+        .expect("raw bookmark preview text view");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ReadOnly,
+            gtk4::AccessibleProperty::MultiLine,
+        ])
+        .assert_on(&raw_text_view);
 }
 
 #[test]
@@ -11697,6 +12145,13 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
         find_label_by_text(&child, "No notes yet").is_some(),
         "empty Browse Notes should present an explicit empty state"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&find_status_page(&child).expect("empty notes status page"));
     single_visible_close_button(&child).emit_clicked();
     flush_events();
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
@@ -11965,6 +12420,13 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         find_label_by_text(&child, "No notes match that search").is_some(),
         "empty filtered notes state should remain explicit"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .assert_on(
+            &find_label_by_text(&child, "No notes match that search")
+                .expect("notes no-match status"),
+        );
 }
 
 #[test]
@@ -12008,6 +12470,16 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
         .is_some(),
         "large note sets should explain that the sidebar result set is capped"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .assert_on(
+            &find_label_by_text(
+                &child,
+                "Showing first 500 matches. Refine search to narrow results.",
+            )
+            .expect("notes result-limit status"),
+        );
 }
 
 #[test]

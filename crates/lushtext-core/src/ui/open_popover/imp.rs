@@ -4,6 +4,7 @@
 
 use crate::model::recent_document::RecentDocumentRow;
 use crate::services::recent_documents;
+use crate::ui::accessibility::{self, RowAccessibility};
 use crate::ui::open_popover::item::OpenPopoverItem;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -321,28 +322,33 @@ impl LushtextOpenPopover {
     }
 
     fn apply_accessibility_metadata(&self) {
-        self.search_entry.update_property(&[
-            gtk4::accessible::Property::Label("Recent documents search"),
-            gtk4::accessible::Property::Description("Filter recently opened documents"),
-        ]);
-        self.chooser_button.update_property(&[
-            gtk4::accessible::Property::Label("Open another file"),
-            gtk4::accessible::Property::Description("Open the normal file chooser"),
-        ]);
-        self.list_view
-            .set_accessible_role(gtk4::AccessibleRole::List);
-        self.list_view.update_property(&[
-            gtk4::accessible::Property::Label("Recent documents"),
-            gtk4::accessible::Property::Description("Recently opened files"),
-        ]);
-        self.recent_scroller.update_property(&[
-            gtk4::accessible::Property::Label("Scrollable recent documents"),
-            gtk4::accessible::Property::Description(
-                "Shows recent documents within a capped scrolling region",
-            ),
-        ]);
-        self.empty_state
-            .update_property(&[gtk4::accessible::Property::Label("No recent documents")]);
+        accessibility::set_labelled_description(
+            &*self.search_entry,
+            "Recent documents search",
+            "Filter recently opened documents",
+        );
+        accessibility::set_labelled_description(
+            &*self.chooser_button,
+            "Open another file",
+            "Open the normal file chooser",
+        );
+        accessibility::set_role(&*self.list_view, gtk4::AccessibleRole::List);
+        accessibility::set_labelled_description(
+            &*self.list_view,
+            "Recent documents",
+            "Recently opened files",
+        );
+        accessibility::set_labelled_description(
+            &*self.recent_scroller,
+            "Scrollable recent documents",
+            "Shows recent documents within a capped scrolling region",
+        );
+        accessibility::set_role(&*self.empty_state, gtk4::AccessibleRole::Status);
+        accessibility::set_labelled_description(
+            &*self.empty_state,
+            "No recent documents",
+            "No recently opened documents are available",
+        );
     }
 
     /// Build the recycled `ListView` row factory and wire row focus, keys, removal, and path tooltips.
@@ -396,8 +402,7 @@ impl LushtextOpenPopover {
             });
             row.grid.add_controller(row_keys);
 
-            row.remove
-                .update_property(&[gtk4::accessible::Property::Label("Remove recent document")]);
+            accessibility::set_label(&row.remove, "Remove recent document");
             let list_item_weak = list_item.downgrade();
             let obj_weak = obj_weak.clone();
             row.remove.connect_clicked(move |_| {
@@ -416,7 +421,8 @@ impl LushtextOpenPopover {
             list_item.set_child(Some(&row.grid));
         });
 
-        factory.connect_bind(|_, list_item| {
+        let bind_obj_weak = self.obj().downgrade();
+        factory.connect_bind(move |_, list_item| {
             // bind runs whenever GTK reuses a ListItem for a new OpenPopoverItem.
             // Refresh every item-specific row property here, including tooltips.
             let list_item = list_item
@@ -442,6 +448,10 @@ impl LushtextOpenPopover {
                 .child_at(2, 1)
                 .and_downcast::<gtk4::Inscription>()
                 .expect("recent row age");
+            let remove = grid
+                .child_at(3, 0)
+                .and_downcast::<gtk4::Button>()
+                .expect("recent row remove button");
 
             let path_tooltip = item.path().display().to_string();
             set_recent_row_non_action_tooltip(&grid, Some(&path_tooltip));
@@ -454,10 +464,28 @@ impl LushtextOpenPopover {
                 }
                 _ => age.set_visible(false),
             }
-            grid.update_property(&[gtk4::accessible::Property::Label(&format!(
-                "Open recent document {}",
-                item.title()
-            ))]);
+            let row_label = format!("Open recent document {}", item.title());
+            let row_description = match item.age_label() {
+                Some(age) if !age.is_empty() => format!("{}. {}", item.subtitle(), age),
+                _ => item.subtitle(),
+            };
+            let position = i32::try_from(list_item.position()).unwrap_or(i32::MAX - 1) + 1;
+            let set_size = bind_obj_weak.upgrade().map_or(position, |obj| {
+                i32::try_from(obj.imp().rows_store.n_items()).unwrap_or(i32::MAX)
+            });
+            accessibility::apply_row_accessibility(
+                &grid,
+                RowAccessibility::new(&row_label)
+                    .description(&row_description)
+                    .position(position, set_size),
+            );
+
+            let bounded_path = accessibility::bounded_announcement_text(&path_tooltip, 160);
+            accessibility::set_labelled_description(
+                &remove,
+                &format!("Remove {} from recent documents", item.title()),
+                &format!("Keeps the file on disk at {bounded_path}"),
+            );
         });
 
         factory.connect_unbind(|_, list_item| {
@@ -468,6 +496,11 @@ impl LushtextOpenPopover {
                 .expect("ListItem");
             if let Some(grid) = list_item.child().and_downcast::<gtk4::Grid>() {
                 set_recent_row_non_action_tooltip(&grid, None);
+                accessibility::clear_row_accessibility(&grid);
+                if let Some(remove) = grid.child_at(3, 0).and_downcast::<gtk4::Button>() {
+                    accessibility::set_label(&remove, "Remove recent document");
+                    accessibility::reset_property(&remove, gtk4::AccessibleProperty::Description);
+                }
             }
         });
 
@@ -586,6 +619,12 @@ impl LushtextOpenPopover {
         self.search_entry.grab_focus();
     }
 
+    /// Programmatically update the same search entry users type into.
+    pub fn set_search_text(&self, query: &str) {
+        self.search_entry.set_text(query);
+        self.search_entry.grab_focus();
+    }
+
     fn refresh_filter(&self) {
         let query = self.search_entry.text().to_string();
         let rows = recent_documents::search_rows(&self.source_rows.borrow(), &query);
@@ -597,19 +636,40 @@ impl LushtextOpenPopover {
         if items.is_empty() {
             if query.trim().is_empty() {
                 self.empty_title.set_label("No Recent Documents");
-                self.empty_state
-                    .update_property(&[gtk4::accessible::Property::Label("No recent documents")]);
+                accessibility::set_labelled_description(
+                    &*self.empty_state,
+                    "No recent documents",
+                    "No recently opened documents are available",
+                );
             } else {
                 self.empty_title.set_label("No Matching Documents");
-                self.empty_state
-                    .update_property(&[gtk4::accessible::Property::Label(
-                        "No matching recent documents",
-                    )]);
+                accessibility::set_labelled_description(
+                    &*self.empty_state,
+                    "No matching recent documents",
+                    "No recent documents match the current filter",
+                );
             }
             self.stack.set_visible_child(&*self.empty_state);
         } else {
             self.stack.set_visible_child(&*self.recent_scroller);
         }
+        self.refresh_accessibility_state(query.as_str(), items.len());
+    }
+
+    fn refresh_accessibility_state(&self, query: &str, visible_count: usize) {
+        let list_visible = visible_count > 0;
+        accessibility::set_hidden(&*self.list_view, !list_visible);
+        accessibility::set_hidden(&*self.recent_scroller, !list_visible);
+        accessibility::set_hidden(&*self.empty_state, list_visible);
+
+        let value_text = match visible_count {
+            0 if query.trim().is_empty() => "No recent documents".to_string(),
+            0 => "No matching recent documents".to_string(),
+            1 => "1 recent document".to_string(),
+            count => format!("{count} recent documents"),
+        };
+        accessibility::set_value_text(&*self.list_view, &value_text);
+        accessibility::set_value_text(&*self.empty_state, &value_text);
     }
 
     fn activate_first(&self) {

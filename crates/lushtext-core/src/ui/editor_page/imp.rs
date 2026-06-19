@@ -724,6 +724,7 @@ impl ObjectImpl for LushtextEditorPage {
         self.obj().setup_focus_mode_text_origin_guide();
         self.obj().setup_focus_mode_presentation();
         self.obj().apply_invisible_characters_mode();
+        self.obj().refresh_accessibility_metadata();
     }
 }
 

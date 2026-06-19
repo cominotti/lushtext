@@ -9,6 +9,7 @@
 mod imp;
 
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use crate::ui::accessibility::{self, AnnouncementLane};
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
@@ -81,16 +82,14 @@ impl LushtextInfoBar {
             parent.queue_resize();
         }
 
-        let announcement = format!("{}: {}", notification.title, notification.body);
-        imp.alert_box.update_property(&[
-            gtk4::accessible::Property::Label(&announcement),
-            gtk4::accessible::Property::Description(&notification.body),
-        ]);
-        let priority = match notification.style {
-            InlineNotificationStyle::Error => gtk4::AccessibleAnnouncementPriority::High,
-            InlineNotificationStyle::Warning => gtk4::AccessibleAnnouncementPriority::Medium,
-        };
-        imp.alert_box.announce(&announcement, priority);
+        let announcement = inline_alert_announcement_text(notification);
+        accessibility::set_labelled_description(&*imp.alert_box, &announcement, &notification.body);
+        imp.alert_announcement_throttler.announce_if_allowed(
+            &*imp.alert_box,
+            inline_alert_announcement_lane(notification.style),
+            &inline_alert_announcement_key(notification),
+            &announcement,
+        );
     }
 
     fn hide_alert(&self) {
@@ -130,4 +129,33 @@ impl Default for LushtextInfoBar {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn inline_alert_announcement_text(notification: &InlineActionNotification) -> String {
+    format!("{}: {}", notification.title, notification.body)
+}
+
+// The key is semantic rather than time-based so repeated renders of the same
+// warning do not chatter, while changed alert content is still announced.
+fn inline_alert_announcement_key(notification: &InlineActionNotification) -> String {
+    format!(
+        "inline-alert:{:?}:{}:{}",
+        notification.style, notification.title, notification.body
+    )
+}
+
+// Failed loads need immediate alert treatment; recovery warnings share the
+// status-update lane so repeated rendering remains calm.
+fn inline_alert_announcement_lane(style: InlineNotificationStyle) -> AnnouncementLane {
+    match style {
+        InlineNotificationStyle::Error => AnnouncementLane::Alert,
+        InlineNotificationStyle::Warning => AnnouncementLane::StatusUpdate,
+    }
+}
+
+/// Return the stable throttling key used for an inline alert.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn inline_alert_announcement_key_for_test(notification: &InlineActionNotification) -> String {
+    inline_alert_announcement_key(notification)
 }

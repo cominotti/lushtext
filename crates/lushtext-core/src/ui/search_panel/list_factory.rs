@@ -17,6 +17,7 @@ use gtk4::{self, gio, glib};
 
 use super::imp;
 use super::item::SearchResultItem;
+use crate::ui::accessibility::{self, RowAccessibility};
 
 impl imp::LushtextSearchPanel {
     /// Set up the `GtkTreeListModel` and `ListView` factory for grouped results.
@@ -53,7 +54,8 @@ impl imp::LushtextSearchPanel {
         self.results_list.set_model(Some(&selection));
 
         let factory = gtk4::SignalListItemFactory::new();
-        factory.connect_setup(|_, list_item| {
+        let setup_panel_weak = self.obj().downgrade();
+        factory.connect_setup(move |_, list_item| {
             let list_item = list_item
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem");
@@ -66,6 +68,35 @@ impl imp::LushtextSearchPanel {
             content_box.set_margin_end(24);
             content_box.set_margin_top(2);
             content_box.set_margin_bottom(2);
+
+            let preview_checkbox = gtk4::CheckButton::new();
+            preview_checkbox.add_css_class("preview-check");
+            preview_checkbox.set_visible(false);
+            accessibility::set_hidden(&preview_checkbox, true);
+
+            let panel_weak = setup_panel_weak.clone();
+            preview_checkbox.connect_toggled(move |checkbox| {
+                accessibility::set_pressed(checkbox, checkbox.is_active());
+                let Some(panel) = panel_weak.upgrade() else {
+                    return;
+                };
+                let Some(idx) = preview_index_for_checkbox(&panel, checkbox) else {
+                    return;
+                };
+                let imp = panel.imp();
+                let mut indices = imp.preview.checked_indices.borrow_mut();
+                if checkbox.is_active() {
+                    indices.insert(idx);
+                } else {
+                    indices.remove(&idx);
+                }
+                let checked = indices.len();
+                let total = imp.preview.preview_replacements.borrow().len();
+                drop(indices);
+                imp.replace_all_button
+                    .set_label(&format!("Replace {checked} of {total}"));
+                imp.replace_all_button.set_sensitive(checked > 0);
+            });
 
             let file_label = gtk4::Label::new(None);
             file_label.set_hexpand(true);
@@ -89,6 +120,7 @@ impl imp::LushtextSearchPanel {
             line_content_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             line_content_label.add_css_class("monospace");
 
+            content_box.append(&preview_checkbox);
             content_box.append(&file_label);
             content_box.append(&count_badge);
             content_box.append(&line_num_label);
@@ -129,10 +161,17 @@ impl imp::LushtextSearchPanel {
                 return;
             };
 
-            remove_preview_checkbox(&content_box);
-
-            let file_label = content_box
+            let preview_checkbox = content_box
                 .first_child()
+                .and_then(|w| w.downcast::<gtk4::CheckButton>().ok());
+            if let Some(ref checkbox) = preview_checkbox {
+                checkbox.set_visible(false);
+                accessibility::set_hidden(checkbox, true);
+            }
+
+            let file_label = preview_checkbox
+                .as_ref()
+                .and_then(gtk4::prelude::WidgetExt::next_sibling)
                 .and_then(|w| w.downcast::<gtk4::Label>().ok());
             let count_badge = file_label
                 .as_ref()
@@ -148,6 +187,7 @@ impl imp::LushtextSearchPanel {
                 .and_then(|w| w.downcast::<gtk4::Label>().ok());
 
             if result_item.is_file_item() {
+                apply_result_row_accessibility(&expander, &result_item, Some(row.is_expanded()));
                 if let Some(ref label) = file_label {
                     label.set_text(&result_item.display_path());
                     label.set_visible(true);
@@ -177,6 +217,7 @@ impl imp::LushtextSearchPanel {
                     label.set_visible(false);
                 }
             } else {
+                apply_result_row_accessibility(&expander, &result_item, None);
                 let in_preview = bind_panel_weak
                     .upgrade()
                     .is_some_and(|p| p.imp().preview.preview_mode.get());
@@ -207,6 +248,7 @@ impl imp::LushtextSearchPanel {
 
                         if let Some(idx) = match_idx {
                             let r = &replacements[idx];
+                            let replacement_line_number = r.line_number;
                             let original = &r.original_line;
                             let replaced = &r.replaced_line;
                             let start = r.match_range.start.min(original.len());
@@ -221,30 +263,19 @@ impl imp::LushtextSearchPanel {
                                 label.set_visible(true);
                             }
 
-                            let checkbox = gtk4::CheckButton::new();
-                            checkbox.set_active(is_checked);
-                            checkbox.add_css_class("preview-check");
-                            content_box.prepend(&checkbox);
-
-                            let panel_weak = panel.downgrade();
-                            checkbox.connect_toggled(move |cb| {
-                                let Some(panel) = panel_weak.upgrade() else {
-                                    return;
-                                };
-                                let imp = panel.imp();
-                                let mut indices = imp.preview.checked_indices.borrow_mut();
-                                if cb.is_active() {
-                                    indices.insert(idx);
-                                } else {
-                                    indices.remove(&idx);
-                                }
-                                let checked = indices.len();
-                                let total = imp.preview.preview_replacements.borrow().len();
-                                drop(indices);
-                                imp.replace_all_button
-                                    .set_label(&format!("Replace {checked} of {total}"));
-                                imp.replace_all_button.set_sensitive(checked > 0);
-                            });
+                            if let Some(ref checkbox) = preview_checkbox {
+                                accessibility::set_labelled_description(
+                                    checkbox,
+                                    &format!(
+                                        "Include replacement at line {replacement_line_number}"
+                                    ),
+                                    "Toggle whether this replacement is applied",
+                                );
+                                accessibility::set_pressed(checkbox, is_checked);
+                                accessibility::set_hidden(checkbox, false);
+                                checkbox.set_active(is_checked);
+                                checkbox.set_visible(true);
+                            }
                         } else {
                             drop(replacements);
                             if let Some(ref label) = line_content_label {
@@ -293,6 +324,23 @@ impl imp::LushtextSearchPanel {
                     bindings.clear();
                 }
             }
+            if let Some(expander) = list_item
+                .child()
+                .and_then(|w| w.downcast::<gtk4::TreeExpander>().ok())
+            {
+                accessibility::clear_row_accessibility(&expander);
+                accessibility::set_expanded(&expander, None);
+                if let Some(content_box) = expander
+                    .child()
+                    .and_then(|w| w.downcast::<gtk4::Box>().ok())
+                    && let Some(checkbox) = content_box
+                        .first_child()
+                        .and_then(|w| w.downcast::<gtk4::CheckButton>().ok())
+                {
+                    checkbox.set_visible(false);
+                    accessibility::set_hidden(&checkbox, true);
+                }
+            }
         });
 
         self.results_list.set_factory(Some(&factory));
@@ -326,6 +374,38 @@ impl imp::LushtextSearchPanel {
     }
 }
 
+pub(super) fn apply_result_row_accessibility(
+    row_widget: &gtk4::TreeExpander,
+    result_item: &SearchResultItem,
+    expanded: Option<bool>,
+) {
+    if result_item.is_file_item() {
+        let label = format!("Search results in {}", result_item.display_path());
+        let matches = result_item.match_count();
+        let description = match matches {
+            0 => "No matches loaded yet".to_string(),
+            1 => "1 match in this file".to_string(),
+            _ => format!("{matches} matches in this file"),
+        };
+        accessibility::apply_row_accessibility(
+            row_widget,
+            RowAccessibility::new(&label).description(&description),
+        );
+        accessibility::set_expanded(row_widget, expanded);
+        return;
+    }
+
+    let line_content = result_item.line_content();
+    let bounded_line = accessibility::bounded_announcement_text(&line_content, 120);
+    let label = format!("Line {} search match", result_item.line_number());
+    let description = format!("{}: {}", result_item.file_path(), bounded_line);
+    accessibility::apply_row_accessibility(
+        row_widget,
+        RowAccessibility::new(&label).description(&description),
+    );
+    accessibility::set_expanded(row_widget, None);
+}
+
 /// Build Pango markup highlighting the matched substring with bold.
 /// Falls back to plain escaped text when the range is invalid.
 fn render_match_markup(content: &str, start: usize, end: usize) -> String {
@@ -342,13 +422,38 @@ fn render_match_markup(content: &str, start: usize, end: usize) -> String {
     )
 }
 
-/// Remove any dynamically added preview checkbox from a content box.
-fn remove_preview_checkbox(content_box: &gtk4::Box) {
-    if let Some(first) = content_box.first_child()
-        && first.downcast_ref::<gtk4::CheckButton>().is_some()
-    {
-        content_box.remove(&first);
+/// Resolve the replacement preview index for the row that owns a stable checkbox slot.
+fn preview_index_for_checkbox(
+    panel: &super::LushtextSearchPanel,
+    checkbox: &gtk4::CheckButton,
+) -> Option<usize> {
+    let expander = checkbox
+        .parent()
+        .and_then(|w| w.parent())
+        .and_then(|w| w.downcast::<gtk4::TreeExpander>().ok())?;
+    let row = expander.list_row()?;
+    let result_item = row.item().and_downcast::<SearchResultItem>()?;
+    if !result_item.is_match_item() {
+        return None;
     }
+
+    let imp = panel.imp();
+    if !imp.preview.preview_mode.get() {
+        return None;
+    }
+
+    let file_path = result_item.file_path();
+    let line_number = result_item.line_number();
+    let original_match_start = result_item.original_match_start() as usize;
+    imp.preview
+        .preview_replacements
+        .borrow()
+        .iter()
+        .position(|replacement| {
+            replacement.path.display().to_string() == file_path
+                && replacement.line_number == u64::from(line_number)
+                && replacement.match_range.start == original_match_start
+        })
 }
 
 /// Build markup for a preview row: original line dimmed/struck through and the

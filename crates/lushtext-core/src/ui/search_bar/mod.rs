@@ -16,6 +16,8 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use sourceview5::prelude::*;
 
+use crate::ui::accessibility;
+
 glib::wrapper! {
     /// Public GTK widget wrapper for the editor find/replace bar.
     ///
@@ -58,8 +60,11 @@ impl LushtextSearchBar {
         let label = &self.imp().match_label;
         if total <= 0 || current <= 0 {
             label.set_label("");
+            accessibility::set_value_text(&**label, "No current search match");
         } else {
-            label.set_label(&format!("{current} of {total}"));
+            let count = format!("{current} of {total}");
+            label.set_label(&count);
+            accessibility::set_value_text(&**label, &count);
         }
     }
 
@@ -178,6 +183,7 @@ impl LushtextSearchBar {
         // Clear UI state.
         self.set_match_count(0, 0);
         self.search_entry().remove_css_class("error");
+        accessibility::set_invalid(self.search_entry(), false);
         self.emit_search_state_changed();
     }
 
@@ -292,11 +298,37 @@ impl LushtextSearchBar {
         // Error styling: red tint when text is entered but no matches found.
         // total == -1 means scanning is still in progress — don't show error yet.
         let entry = self.search_entry();
-        if !search_text.is_empty() && total == 0 {
+        let no_matches = !search_text.is_empty() && total == 0;
+        if no_matches {
             entry.add_css_class("error");
         } else {
             entry.remove_css_class("error");
         }
+        accessibility::set_invalid(entry, no_matches);
+        self.announce_match_count(search_text.as_str(), current, total);
+    }
+
+    fn announce_match_count(&self, search_text: &str, current: i32, total: i32) {
+        if search_text.is_empty() || total < 0 {
+            return;
+        }
+
+        let message = if total == 0 {
+            "No matches in active document".to_string()
+        } else if total == 1 {
+            "1 match in active document".to_string()
+        } else if current > 0 {
+            format!("{total} matches in active document; current match {current}")
+        } else {
+            format!("{total} matches in active document")
+        };
+
+        self.imp().match_announcement_throttler.announce_if_allowed(
+            &*self.imp().match_label,
+            accessibility::AnnouncementLane::DebouncedResults,
+            "editor-search-results",
+            &message,
+        );
     }
 
     pub(crate) fn emit_search_state_changed(&self) {

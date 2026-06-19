@@ -12,6 +12,7 @@ use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
 use crate::model::recent_document::RecentDocumentEntry;
 use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
+use crate::ui::accessibility;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
@@ -818,6 +819,13 @@ impl ObjectImpl for LushtextWindow {
         self.sidebar.connect_message(move |text, severity| {
             if let Some(window) = window_weak.upgrade() {
                 window.publish_status_message(text, severity);
+                if matches!(severity, MessageKind::Info) {
+                    window.announce_workflow_update(
+                        accessibility::AnnouncementLane::StatusUpdate,
+                        &format!("sidebar:{text}"),
+                        text,
+                    );
+                }
             }
         });
 
@@ -994,40 +1002,43 @@ impl LushtextWindow {
     /// mostly symbolic. Assistive technology reads these labels through GTK's
     /// accessibility layer, and the smoke lane uses them as durable anchors.
     fn apply_accessibility_metadata(&self) {
-        self.new_tab_button
-            .update_property(&[gtk4::accessible::Property::Label("New file")]);
-        self.open_menu_button.update_property(&[
-            gtk4::accessible::Property::Label("Open recent documents"),
-            gtk4::accessible::Property::Description(
-                "Search recent documents or open the file chooser",
-            ),
-        ]);
-        self.document_properties_toggle_button.update_property(&[
-            gtk4::accessible::Property::Label("Toggle document properties"),
-            gtk4::accessible::Property::Description(
-                "Show or hide metadata and formatting controls for the active document",
-            ),
-        ]);
-        self.primary_menu_button
-            .update_property(&[gtk4::accessible::Property::Label("Main menu")]);
-        self.notes_menu_button
-            .update_property(&[gtk4::accessible::Property::Label("Notes menu")]);
-        self.tab_bar
-            .set_accessible_role(gtk4::AccessibleRole::TabList);
-        self.tab_bar.update_property(&[
-            gtk4::accessible::Property::Label("Open document tabs"),
-            gtk4::accessible::Property::Description("Switch between open documents"),
-        ]);
-        self.tab_view.update_property(&[
-            gtk4::accessible::Property::Label("Editor tab content"),
-            gtk4::accessible::Property::Description("Content for the selected document tab"),
-        ]);
-        self.focus_mode_affordance.update_property(&[
-            gtk4::accessible::Property::Label("Focus mode controls"),
-            gtk4::accessible::Property::Description("Shows that focus mode is active"),
-        ]);
-        self.leave_focus_mode_button
-            .update_property(&[gtk4::accessible::Property::Label("Leave focus mode")]);
+        accessibility::set_label(&*self.new_tab_button, "New file");
+        accessibility::set_key_shortcuts(&*self.new_tab_button, "<Control>n");
+        accessibility::set_labelled_description(
+            &*self.open_menu_button,
+            "Open recent documents",
+            "Search recent documents or open the file chooser",
+        );
+        accessibility::set_key_shortcuts(&*self.open_menu_button, "<Control>k");
+        accessibility::set_has_popup(&*self.open_menu_button, true);
+        accessibility::set_labelled_description(
+            &*self.document_properties_toggle_button,
+            "Toggle document properties",
+            "Show or hide metadata and formatting controls for the active document",
+        );
+        accessibility::set_key_shortcuts(&*self.document_properties_toggle_button, "F9");
+        accessibility::set_pressed(&*self.document_properties_toggle_button, false);
+        accessibility::set_label(&*self.primary_menu_button, "Main menu");
+        accessibility::set_has_popup(&*self.primary_menu_button, true);
+        accessibility::set_label(&*self.notes_menu_button, "Notes menu");
+        accessibility::set_has_popup(&*self.notes_menu_button, true);
+        accessibility::set_role(&*self.tab_bar, gtk4::AccessibleRole::TabList);
+        accessibility::set_labelled_description(
+            &*self.tab_bar,
+            "Open document tabs",
+            "Switch between open documents",
+        );
+        accessibility::set_labelled_description(
+            &*self.tab_view,
+            "Editor tab content",
+            "Content for the selected document tab",
+        );
+        accessibility::set_labelled_description(
+            &*self.focus_mode_affordance,
+            "Focus mode controls",
+            "Shows that focus mode is active",
+        );
+        accessibility::set_label(&*self.leave_focus_mode_button, "Leave focus mode");
     }
 }
 

@@ -135,6 +135,7 @@ impl LushtextSearchPanel {
     pub(super) fn refresh_results_display(&self) {
         let imp = self.imp();
         if let Some(model) = imp.results_list.model() {
+            imp.results_list.set_model(None::<&gtk4::SelectionModel>);
             imp.results_list.set_model(Some(&model));
         }
     }

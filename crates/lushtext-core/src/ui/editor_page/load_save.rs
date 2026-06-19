@@ -55,6 +55,7 @@ impl LushtextEditorPage {
         self.imp().canonical_file_path.borrow_mut().take();
         self.imp().file_size.set(None);
         self.imp().load_state.set(EditorLoadState::Loading);
+        self.refresh_accessibility_metadata();
 
         self.imp()
             .cancel_token
@@ -129,6 +130,7 @@ impl LushtextEditorPage {
                     );
                 }
                 self.refresh_minimap();
+                self.refresh_accessibility_metadata();
                 self.imp().load.load_failed_callback.borrow_mut().take();
                 if let Some(callback) = self.imp().load.load_completed_callback.take() {
                     callback();
@@ -149,6 +151,7 @@ impl LushtextEditorPage {
                     primary_button: Some("_Retry".to_string()),
                     secondary_button: None,
                 });
+                self.refresh_accessibility_metadata();
                 if let Some(callback) = self.imp().load.load_failed_callback.take() {
                     callback(error_text);
                 }
@@ -173,6 +176,7 @@ impl LushtextEditorPage {
         self.seed_local_history_from_loaded_content(content);
         self.notify_estimated_memory_changed();
         self.refresh_minimap();
+        self.refresh_accessibility_metadata();
     }
 
     /// Cancel any in-progress file load. Safe to call even if no load is active.
@@ -263,6 +267,7 @@ impl LushtextEditorPage {
             self.reapply_language();
         }
         self.schedule_minimap_refresh();
+        self.refresh_accessibility_metadata();
     }
 
     /// Set a provisional path before an async load result is available.
@@ -275,6 +280,7 @@ impl LushtextEditorPage {
             self.reapply_language();
         }
         self.schedule_minimap_refresh();
+        self.refresh_accessibility_metadata();
     }
 
     /// Clear a provisional file identity after the first load fails.
@@ -288,6 +294,7 @@ impl LushtextEditorPage {
         self.imp().load_state.set(EditorLoadState::Failed);
         self.buffer().set_language(None::<&sourceview5::Language>);
         self.schedule_minimap_refresh();
+        self.refresh_accessibility_metadata();
     }
 
     /// Detect and apply syntax language from the current file path.
@@ -331,6 +338,7 @@ impl LushtextEditorPage {
         };
         view.set_editable(false);
         view.set_cursor_visible(false);
+        self.refresh_accessibility_metadata();
 
         if self.live_buffer_requires_chunked_snapshot() {
             let editor = self.clone();
@@ -520,11 +528,13 @@ impl LushtextEditorPage {
                         editor.clear_modified_line_marks();
                         editor.refresh_minimap();
                         editor.complete_local_history_after_save_success(clean_text);
+                        editor.refresh_accessibility_metadata();
                         callback(Ok(()));
                     }
                     Err(error) => {
                         editor.buffer().set_modified(was_modified_before_save);
                         editor.complete_local_history_after_save_failure();
+                        editor.refresh_accessibility_metadata();
                         callback(Err(error));
                     }
                 }

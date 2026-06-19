@@ -8,7 +8,7 @@
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
-use gtk4::prelude::*;
+use gtk4::{gio, prelude::*};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -30,6 +30,14 @@ impl LushtextWindow {
                 // The header MenuButton can show the popover directly, bypassing
                 // the window action that normally rebuilds the hidden row model.
                 window.rebuild_open_popover_rows();
+                window.set_open_popover_actions_enabled(true);
+            }
+        });
+
+        let window_weak = self.downgrade();
+        self.imp().open_popover.connect_closed(move |_| {
+            if let Some(window) = window_weak.upgrade() {
+                window.set_open_popover_actions_enabled(false);
             }
         });
 
@@ -76,6 +84,23 @@ impl LushtextWindow {
         self.rebuild_open_popover_rows();
         self.imp().open_popover.prepare_to_show();
         self.imp().open_menu_button.popup();
+    }
+
+    /// Enable actions that require the visible Open popover.
+    pub(super) fn set_open_popover_actions_enabled(&self, enabled: bool) {
+        if let Some(action) = self.lookup_action("set-open-popover-query")
+            && let Some(simple) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            simple.set_enabled(enabled);
+        }
+    }
+
+    /// Set the visible Open-popover filter text through the popover search entry.
+    pub(super) fn set_open_popover_query(&self, query: &str) {
+        if !self.imp().open_popover.is_visible() {
+            return;
+        }
+        self.imp().open_popover.set_search_text(query);
     }
 
     /// Load recent-document persistence without blocking startup.

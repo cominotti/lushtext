@@ -394,6 +394,43 @@ mod tests {
     }
 
     #[test]
+    fn surface_snapshot_serializes_accessibility_readiness_without_content() {
+        let surfaces = AutomationSurfaceSnapshot {
+            workspace_sidebar_visible: true,
+            workspace_sidebar_requested: true,
+            document_properties_visible: false,
+            document_properties_requested: false,
+            compact_surface: Some("workspace-sidebar".to_string()),
+            command_palette_visible: false,
+            search_panel_visible: true,
+            open_popover_visible: false,
+            preview_pane_visible: false,
+            preview_mode: false,
+            focus_mode: false,
+            minimap_requested: true,
+            status_bar_visible: true,
+            active_transient_surface: Some("workspace-search".to_string()),
+            accessibility_ready: false,
+            accessibility_blocker: Some(READINESS_BLOCKER_WORKSPACE_SEARCH.to_string()),
+        };
+
+        let value = serde_json::to_value(surfaces).expect("surface snapshot should serialize");
+        let fields = value
+            .as_object()
+            .expect("surface snapshot should serialize as an object");
+
+        assert_eq!(fields["accessibility_ready"], false);
+        assert_eq!(
+            fields["accessibility_blocker"],
+            READINESS_BLOCKER_WORKSPACE_SEARCH
+        );
+        assert_eq!(fields["active_transient_surface"], "workspace-search");
+        assert!(!fields.contains_key("document_text"));
+        assert!(!fields.contains_key("note_body"));
+        assert!(!fields.contains_key("search_results"));
+    }
+
+    #[test]
     fn workflow_events_snapshot_serializes_stable_contract() {
         let snapshot = AutomationWorkflowEventsSnapshot {
             last_sequence: 7,
@@ -530,6 +567,12 @@ mod tests {
                 "idle",
                 "Every tracked",
                 READINESS_BLOCKER_SAVE,
+            ),
+            (
+                AutomationReadinessPredicate::AccessibilitySettled,
+                "accessibility-settled",
+                "Accessibility tree",
+                READINESS_BLOCKER_PREVIEW_ANIMATION,
             ),
         ];
 
@@ -1008,6 +1051,28 @@ const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_REPLACE_PREVIEW,
     READINESS_BLOCKER_MINIMAP_REFRESH,
 ];
+/// Workflow blockers that can leave AT-SPI metadata, focus, or announcements stale.
+///
+/// This predicate intentionally overlaps with `idle`, but gives accessibility
+/// smoke a product-named synchronization point that can evolve without changing
+/// the compatibility semantics of the legacy idle wait.
+const ACCESSIBILITY_SETTLED_BLOCKERS: &[&str] = &[
+    READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_SESSION_RESTORE,
+    READINESS_BLOCKER_FILE_LOAD,
+    READINESS_BLOCKER_DRAFT_AUTOSAVE,
+    READINESS_BLOCKER_CLOSE_SAFETY,
+    READINESS_BLOCKER_SAVE,
+    READINESS_BLOCKER_PREVIEW_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PERSIST,
+    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
+    READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_EDITOR_SEARCH,
+    READINESS_BLOCKER_REPLACE_PREVIEW,
+    READINESS_BLOCKER_MINIMAP_REFRESH,
+];
 
 /// Named readiness predicates exposed through the automation D-Bus surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1032,6 +1097,8 @@ pub enum AutomationReadinessPredicate {
     VisualGeometrySettled,
     /// Every app-owned blocker known to Automation1 has settled.
     Idle,
+    /// Accessibility tree metadata, focus targets, and announcement-sensitive work settled.
+    AccessibilitySettled,
 }
 
 impl AutomationReadinessPredicate {
@@ -1039,7 +1106,7 @@ impl AutomationReadinessPredicate {
     ///
     /// Keep this order append-only so generated docs, D-Bus artifacts, and smoke
     /// outputs diff predictably across releases.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::AppStartup,
         Self::WindowActionsExported,
         Self::FileOpenComplete,
@@ -1050,6 +1117,7 @@ impl AutomationReadinessPredicate {
         Self::RecoveryRestoreComplete,
         Self::VisualGeometrySettled,
         Self::Idle,
+        Self::AccessibilitySettled,
     ];
 
     /// Parse the D-Bus predicate name.
@@ -1075,6 +1143,7 @@ impl AutomationReadinessPredicate {
             Self::RecoveryRestoreComplete => "recovery-restore-complete",
             Self::VisualGeometrySettled => "visual-geometry-settled",
             Self::Idle => "idle",
+            Self::AccessibilitySettled => "accessibility-settled",
         }
     }
 
@@ -1114,6 +1183,9 @@ impl AutomationReadinessPredicate {
                 "GTK layout, adaptive shell state, minimap projection, and visual scenario blockers are settled for screenshot capture."
             }
             Self::Idle => "Every tracked app-owned readiness blocker is settled.",
+            Self::AccessibilitySettled => {
+                "Accessibility tree metadata, focus targets, row rebinding, search or preview rendering, and announcement-sensitive work are settled."
+            }
         }
     }
 
@@ -1131,6 +1203,7 @@ impl AutomationReadinessPredicate {
             Self::RecoveryRestoreComplete => RECOVERY_RESTORE_COMPLETE_BLOCKERS,
             Self::VisualGeometrySettled => VISUAL_GEOMETRY_SETTLED_BLOCKERS,
             Self::Idle => IDLE_BLOCKERS,
+            Self::AccessibilitySettled => ACCESSIBILITY_SETTLED_BLOCKERS,
         }
     }
 
@@ -1427,6 +1500,10 @@ pub struct AutomationSurfaceSnapshot {
     pub status_bar_visible: bool,
     /// Topmost transient surface known to the shell.
     pub active_transient_surface: Option<String>,
+    /// Whether accessibility-specific readiness is currently satisfied.
+    pub accessibility_ready: bool,
+    /// First accessibility readiness blocker, if any.
+    pub accessibility_blocker: Option<String>,
 }
 
 /// Visual geometry state for named, screenshot-relevant surfaces.

@@ -42,6 +42,24 @@ def non_negative_int(value: str) -> int:
     return parsed
 
 
+def bounded_float(value: str, *, minimum: float, maximum: float, label: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{label} must be a number") from exc
+    if not minimum <= parsed <= maximum:
+        raise argparse.ArgumentTypeError(f"{label} must be between {minimum} and {maximum}")
+    return parsed
+
+
+def text_scale_value(value: str) -> float:
+    return bounded_float(value, minimum=0.5, maximum=3.0, label="text scale")
+
+
+def opacity_value(value: str) -> float:
+    return bounded_float(value, minimum=0.0, maximum=1.0, label="tab content opacity")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -63,6 +81,12 @@ def parse_args() -> argparse.Namespace:
         "--enable-atspi",
         action="store_true",
         help="Start the private AT-SPI registry even when no search text is set.",
+    )
+    parser.add_argument(
+        "--app-action",
+        action="append",
+        default=[],
+        help="Application action to activate before capture; may be repeated.",
     )
     parser.add_argument(
         "--window-action",
@@ -103,10 +127,47 @@ def parse_args() -> argparse.Namespace:
         help="Text that must appear in a bounded AT-SPI tree before capture; may be repeated.",
     )
     parser.add_argument(
+        "--step",
+        action="append",
+        default=[],
+        metavar="KIND:VALUE",
+        help=(
+            "Ordered scenario step. KIND is app-action, window-action, "
+            "window-string-action, window-bool-action, wait-window-action, "
+            "wait-predicate, wait-atspi-text, atspi-set-editor-text, "
+            "or atspi-click-button."
+        ),
+    )
+    parser.add_argument(
         "--color-scheme",
         choices=("default", "force-light", "force-dark"),
         default="default",
         help="LushText color-scheme GSettings value to apply before launch.",
+    )
+    parser.add_argument(
+        "--high-contrast",
+        action="store_true",
+        help="Enable GNOME high-contrast accessibility preference before launch.",
+    )
+    parser.add_argument(
+        "--show-status-shapes",
+        action="store_true",
+        help="Enable GNOME status-shape accessibility preference before launch.",
+    )
+    parser.add_argument(
+        "--reduced-motion",
+        action="store_true",
+        help="Enable GNOME reduced-motion preference and disable interface animations before launch.",
+    )
+    parser.add_argument(
+        "--text-scale",
+        type=text_scale_value,
+        help="Set org.gnome.desktop.interface text-scaling-factor before launch.",
+    )
+    parser.add_argument(
+        "--tab-content-opacity",
+        type=opacity_value,
+        help="Set LushText editor/preview document-surface opacity before launch.",
     )
     parser.add_argument(
         "--capture-artifact-dir",
@@ -211,6 +272,18 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
         cli.append("--keep-artifacts")
     if args.color_scheme != "default":
         cli.extend(["--color-scheme", args.color_scheme])
+    if args.high_contrast:
+        cli.append("--high-contrast")
+    if args.show_status_shapes:
+        cli.append("--show-status-shapes")
+    if args.reduced_motion:
+        cli.append("--reduced-motion")
+    if args.text_scale is not None:
+        cli.extend(["--text-scale", str(args.text_scale)])
+    if args.tab_content_opacity is not None:
+        cli.extend(["--tab-content-opacity", str(args.tab_content_opacity)])
+    for action in args.app_action:
+        cli.extend(["--app-action", action])
     for action in args.window_action:
         cli.extend(["--window-action", action])
     for action in args.window_string_action:
@@ -223,6 +296,8 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
         cli.extend(["--wait-window-action", action])
     for text in args.wait_atspi_text:
         cli.extend(["--wait-atspi-text", text])
+    for step in args.step:
+        cli.extend(["--step", step])
     if args.capture_artifact_dir is not None:
         cli.extend(["--capture-artifact-dir", str(args.capture_artifact_dir)])
     if args.atspi_tree_output is not None:
@@ -434,6 +509,21 @@ def setup_atspi(artifact_dir: Path) -> tuple[str, subprocess.Popen]:
     return atspi_address, registry
 
 
+def set_gsettings_value(
+    artifact_dir: Path,
+    schema: str,
+    key: str,
+    value: str,
+    *,
+    reason: str,
+) -> None:
+    """Apply one isolated GSettings value and record it for smoke artifacts."""
+
+    subprocess.run(["gsettings", "set", schema, key, value], check=True)
+    with (artifact_dir / "interface-settings.txt").open("a", encoding="utf-8") as handle:
+        handle.write(f"{schema} {key}={value} reason={reason}\n")
+
+
 def wait_for_atspi_registry(atspi_address: str) -> None:
     env = os.environ.copy()
     env["DBUS_SESSION_BUS_ADDRESS"] = atspi_address
@@ -487,15 +577,66 @@ def internal_run(args: argparse.Namespace) -> int:
                 check=True,
             )
         if args.color_scheme != "default":
-            subprocess.run(
-                [
-                    "gsettings",
-                    "set",
-                    "dev.cominotti.lushtext",
-                    "color-scheme",
-                    args.color_scheme,
-                ],
-                check=True,
+            set_gsettings_value(
+                artifact_dir,
+                "dev.cominotti.lushtext",
+                "color-scheme",
+                args.color_scheme,
+                reason="requested color scheme variant",
+            )
+        if args.high_contrast:
+            set_gsettings_value(
+                artifact_dir,
+                "org.gnome.desktop.a11y.interface",
+                "high-contrast",
+                "true",
+                reason="visual accessibility high contrast variant",
+            )
+            set_gsettings_value(
+                artifact_dir,
+                "org.gnome.desktop.a11y.interface",
+                "show-status-shapes",
+                "true",
+                reason="high contrast should avoid color-only status",
+            )
+        if args.show_status_shapes:
+            set_gsettings_value(
+                artifact_dir,
+                "org.gnome.desktop.a11y.interface",
+                "show-status-shapes",
+                "true",
+                reason="visual accessibility color-not-only variant",
+            )
+        if args.reduced_motion:
+            set_gsettings_value(
+                artifact_dir,
+                "org.gnome.desktop.a11y.interface",
+                "reduced-motion",
+                "reduce",
+                reason="visual accessibility reduced motion variant",
+            )
+            set_gsettings_value(
+                artifact_dir,
+                "org.gnome.desktop.interface",
+                "enable-animations",
+                "false",
+                reason="reduced motion should avoid animation-dependent behavior",
+            )
+        if args.text_scale is not None:
+            set_gsettings_value(
+                artifact_dir,
+                "org.gnome.desktop.interface",
+                "text-scaling-factor",
+                str(args.text_scale),
+                reason="visual accessibility large text variant",
+            )
+        if args.tab_content_opacity is not None:
+            set_gsettings_value(
+                artifact_dir,
+                "dev.cominotti.lushtext",
+                "tab-content-opacity",
+                str(args.tab_content_opacity),
+                reason="document surface opacity readability variant",
             )
 
         env = os.environ.copy()
@@ -560,6 +701,26 @@ def wait_for_window_actions(bus) -> None:
     raise RuntimeError(f"LushText did not export window actions: {last_error}")
 
 
+def wait_for_app_actions(bus) -> None:
+    deadline = time.monotonic() + 15
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            bus_call(
+                bus,
+                APP_ID,
+                APP_OBJECT_PATH,
+                "org.gtk.Actions",
+                "List",
+                reply="(as)",
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.1)
+    raise RuntimeError(f"LushText did not export app actions: {last_error}")
+
+
 def wait_for_automation_object(bus) -> None:
     deadline = time.monotonic() + 15
     last_error: Exception | None = None
@@ -605,6 +766,50 @@ def wait_for_ready(bus, artifact_dir: Path, predicate: str, timeout_msec: int) -
         waits.write(f"predicate={predicate} ok={ok} status={status} detail={detail}\n")
     if not ok:
         raise RuntimeError(f"Automation1 WaitForReady({predicate}) failed: {status}: {detail}")
+
+
+def run_ordered_step(bus, artifact_dir: Path, app_env: dict[str, str], step: str) -> None:
+    kind, separator, value = step.partition(":")
+    if not separator or not kind or not value:
+        raise RuntimeError("--step requires KIND:VALUE.")
+
+    if kind == "app-action":
+        activate_app_action(bus, value)
+        print(f"Activated app action: {value}", flush=True)
+        wait_for_ready(bus, artifact_dir, "idle", 5000)
+    elif kind == "window-action":
+        activate_window_action(bus, value)
+        print(f"Activated window action: {value}", flush=True)
+        wait_for_ready(bus, artifact_dir, "idle", 5000)
+    elif kind == "window-string-action":
+        action_name, action_separator, action_value = value.partition("=")
+        if not action_separator or not action_name:
+            raise RuntimeError("--step window-string-action requires ACTION=TEXT.")
+        activate_window_action(bus, action_name, action_value)
+        print(f"Activated window action: {action_name}({action_value!r})", flush=True)
+        wait_for_ready(bus, artifact_dir, "idle", 5000)
+    elif kind == "window-bool-action":
+        action_name, action_separator, action_value = value.partition("=")
+        if not action_separator or not action_name:
+            raise RuntimeError("--step window-bool-action requires ACTION=true|false.")
+        bool_value = parse_bool_parameter(action_value)
+        activate_window_action(bus, action_name, bool_parameter=bool_value)
+        print(f"Activated window action: {action_name}({bool_value})", flush=True)
+        wait_for_ready(bus, artifact_dir, "idle", 5000)
+    elif kind == "wait-window-action":
+        wait_for_window_action_enabled(bus, artifact_dir, value)
+    elif kind == "wait-predicate":
+        wait_for_ready(bus, artifact_dir, value, 5000)
+    elif kind == "wait-atspi-text":
+        wait_for_atspi_text(artifact_dir, app_env, value)
+    elif kind == "atspi-set-editor-text":
+        set_atspi_editor_text(artifact_dir, app_env, value)
+        wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
+    elif kind == "atspi-click-button":
+        click_atspi_button(artifact_dir, app_env, value)
+        wait_for_ready(bus, artifact_dir, "accessibility-settled", 5000)
+    else:
+        raise RuntimeError(f"unknown --step kind: {kind}")
 
 
 def snapshot_json(bus) -> dict:
@@ -666,6 +871,19 @@ def activate_window_action(
     )
 
 
+def activate_app_action(bus, action_name: str) -> None:
+    from gi.repository import GLib
+
+    bus_call(
+        bus,
+        APP_ID,
+        APP_OBJECT_PATH,
+        "org.gtk.Actions",
+        "Activate",
+        GLib.Variant("(sava{sv})", (action_name, [], {})),
+    )
+
+
 def window_action_enabled(bus, action_name: str) -> bool:
     from gi.repository import GLib
 
@@ -720,6 +938,82 @@ def set_search_text(args: argparse.Namespace, artifact_dir: Path, env: dict[str,
         print(f"AT-SPI set-text stderr: {result.stderr.strip()}")
     if result.returncode != 0:
         raise RuntimeError("AT-SPI could not set the LushText search entry text.")
+
+
+def click_atspi_button(artifact_dir: Path, env: dict[str, str], name_regex: str) -> None:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", name_regex).strip("-") or "button"
+    result = subprocess.run(
+        [
+            str(SYSTEM_PYTHON),
+            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-click-button.py"),
+            "--application-regex",
+            "^lushtext$",
+            "--name-regex",
+            name_regex,
+            "--max-depth",
+            "30",
+            "--timeout",
+            "10",
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=15,
+    )
+    (artifact_dir / f"atspi-click-button-{slug}.stdout").write_text(
+        result.stdout,
+        encoding="utf-8",
+    )
+    (artifact_dir / f"atspi-click-button-{slug}.stderr").write_text(
+        result.stderr,
+        encoding="utf-8",
+    )
+    print(f"AT-SPI click-button status: {result.returncode} name_regex={name_regex!r}")
+    if result.stdout.strip():
+        print(f"AT-SPI click-button stdout: {result.stdout.strip()}")
+    if result.stderr.strip():
+        print(f"AT-SPI click-button stderr: {result.stderr.strip()}")
+    if result.returncode != 0:
+        raise RuntimeError(f"AT-SPI could not click button matching {name_regex!r}.")
+
+
+def set_atspi_editor_text(artifact_dir: Path, env: dict[str, str], text: str) -> None:
+    slug = "editor-text"
+    result = subprocess.run(
+        [
+            str(SYSTEM_PYTHON),
+            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-set-text.py"),
+            "--application-regex",
+            "^lushtext$",
+            "--name-regex",
+            "^Editor for ",
+            "--role-regex",
+            "^text$",
+            "--text",
+            text,
+            "--timeout",
+            "10",
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=15,
+    )
+    (artifact_dir / f"atspi-set-text-{slug}.stdout").write_text(
+        result.stdout,
+        encoding="utf-8",
+    )
+    (artifact_dir / f"atspi-set-text-{slug}.stderr").write_text(
+        result.stderr,
+        encoding="utf-8",
+    )
+    print(f"AT-SPI set-editor-text status: {result.returncode}")
+    if result.stdout.strip():
+        print(f"AT-SPI set-editor-text stdout: {result.stdout.strip()}")
+    if result.stderr.strip():
+        print(f"AT-SPI set-editor-text stderr: {result.stderr.strip()}")
+    if result.returncode != 0:
+        raise RuntimeError("AT-SPI could not set the active editor text.")
 
 
 def dump_atspi_tree(args: argparse.Namespace, artifact_dir: Path, env: dict[str, str]) -> None:
@@ -920,6 +1214,7 @@ def mutter_child(args: argparse.Namespace) -> int:
 
     try:
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        wait_for_app_actions(bus)
         wait_for_window_actions(bus)
         wait_for_automation_object(bus)
         wait_for_ready(bus, artifact_dir, "file-open-complete", 5000)
@@ -938,6 +1233,10 @@ def mutter_child(args: argparse.Namespace) -> int:
                     == args.expected_search_matches,
                     5000,
                 )
+        for action_name in args.app_action:
+            activate_app_action(bus, action_name)
+            print(f"Activated app action: {action_name}", flush=True)
+            wait_for_ready(bus, artifact_dir, "idle", 5000)
         for action_name in args.window_action:
             activate_window_action(bus, action_name)
             print(f"Activated window action: {action_name}", flush=True)
@@ -959,6 +1258,8 @@ def mutter_child(args: argparse.Namespace) -> int:
             activate_window_action(bus, action_name, bool_parameter=bool_value)
             print(f"Activated window action: {action_name}({bool_value})", flush=True)
             wait_for_ready(bus, artifact_dir, "idle", 5000)
+        for step in args.step:
+            run_ordered_step(bus, artifact_dir, app_env, step)
         for predicate in args.wait_predicate:
             wait_for_ready(bus, artifact_dir, predicate, 5000)
         wait_for_ready(bus, artifact_dir, "idle", 5000)

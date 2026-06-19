@@ -16,7 +16,10 @@ use lushtext_core::model::workspace::{
 };
 use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::services::palette::FileIndex;
-use lushtext_core::ui::command_palette::LushtextCommandPalette;
+use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
+use lushtext_core::ui::command_palette::{
+    LushtextCommandPalette, apply_palette_row_accessibility_for_test,
+};
 use lushtext_core::ui::command_palette::item::PaletteItem;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -397,6 +400,47 @@ fn test_command_palette_tab_syncs_mode_dropdown() {
     );
     assert_eq!(palette.mode(), SearchMode::Files);
     assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Files.position());
+}
+
+#[test]
+fn test_command_palette_keyboard_mode_cycle_then_escape_restores_editor_focus() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window).expect("active editor");
+    editor.source_view().grab_focus();
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(&window));
+
+    activate_action(&window, "toggle-command-palette");
+    let palette = window.imp().command_palette.clone();
+    assert!(window.imp().palette_revealer.reveals_child());
+
+    assert_eq!(
+        emit_key(
+            palette.imp().search_entry.upcast_ref::<gtk4::Widget>(),
+            gtk4::gdk::Key::Tab,
+        ),
+        glib::Propagation::Stop,
+    );
+    assert_eq!(
+        emit_key(
+            palette.imp().search_entry.upcast_ref::<gtk4::Widget>(),
+            gtk4::gdk::Key::Tab,
+        ),
+        glib::Propagation::Stop,
+    );
+    assert_eq!(palette.mode(), SearchMode::Notes);
+    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Notes.position());
+
+    // Escape arrives as SearchEntry's stop-search signal, so this keeps the
+    // test on GTK's keyboard path while avoiding compositor-level key injection.
+    palette.imp().search_entry.emit_stop_search();
+    flush_events();
+
+    assert!(!window.imp().palette_revealer.reveals_child());
+    assert!(active_editor_has_focus(&window));
+    assert!(window.imp().saved_focus.borrow().is_none());
 }
 
 #[test]
@@ -1226,6 +1270,18 @@ fn test_command_palette_no_results_label_on_no_match() {
         palette.imp().no_results_label.property::<bool>("visible"),
         "no_results_label should be visible when search has no matches"
     );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*palette.imp().no_results_label);
+    assert!(gtk4::test_accessible_has_state(
+        &*palette.imp().results_view,
+        gtk4::AccessibleState::Hidden
+    ));
 }
 
 #[test]
@@ -1656,18 +1712,92 @@ fn test_palette_controls_expose_accessibility_roles() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
 
-    assert_eq!(
-        palette.imp().search_entry.accessible_role(),
-        gtk4::AccessibleRole::SearchBox
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::SearchBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*palette.imp().search_entry);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::ComboBox)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*palette.imp().mode_dropdown);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::List)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .assert_on(&*palette.imp().results_view);
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Status)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+            gtk4::AccessibleProperty::ValueText,
+        ])
+        .states(&[gtk4::AccessibleState::Hidden])
+        .assert_on(&*palette.imp().no_results_label);
+}
+
+#[test]
+fn test_palette_accessibility_tracks_busy_and_selected_result_value() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    palette.imp().searching.set(true);
+    palette.refresh_accessibility_state_for_test();
+    assert!(gtk4::test_accessible_has_state(
+        &*palette.imp().search_entry,
+        gtk4::AccessibleState::Busy
+    ));
+    assert!(gtk4::test_accessible_has_state(
+        &*palette.imp().results_view,
+        gtk4::AccessibleState::Busy
+    ));
+
+    palette.imp().searching.set(false);
+    palette.open();
+    spin_until(|| palette.result_count() > 0);
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*palette.imp().results_view);
+}
+
+#[test]
+fn test_palette_row_accessibility_metadata_is_positioned_selected_and_clearable() {
+    ensure_gtk_init();
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    let item = PaletteItem::new_file_raw(
+        "main.rs".to_string(),
+        "src/main.rs".to_string(),
+        PathBuf::from("/workspace/src/main.rs"),
     );
-    assert_eq!(
-        palette.imp().mode_dropdown.accessible_role(),
-        gtk4::AccessibleRole::ComboBox
-    );
-    assert_eq!(
-        palette.imp().results_view.accessible_role(),
-        gtk4::AccessibleRole::List
-    );
+
+    apply_palette_row_accessibility_for_test(&row, &item, true, 2, 4);
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .states(&[gtk4::AccessibleState::Selected])
+        .relations(&[
+            gtk4::AccessibleRelation::PosInSet,
+            gtk4::AccessibleRelation::SetSize,
+        ])
+        .assert_on(&row);
+
+    accessibility::clear_row_accessibility(&row);
+    assert!(!gtk4::test_accessible_has_property(
+        &row,
+        gtk4::AccessibleProperty::Label
+    ));
 }
 
 #[test]

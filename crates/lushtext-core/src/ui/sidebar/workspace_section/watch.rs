@@ -39,6 +39,12 @@ impl LushtextWorkspaceSection {
         let targets = self.current_watch_targets();
 
         if targets.is_empty() {
+            self.imp()
+                .watch_runtime
+                .last_reported_error
+                .borrow_mut()
+                .take();
+            self.sync_file_tree_error_state();
             return;
         }
 
@@ -75,6 +81,7 @@ impl LushtextWorkspaceSection {
                             .last_reported_error
                             .borrow_mut()
                             .take();
+                        section.sync_file_tree_error_state();
                         *section.imp().watch_runtime.watcher.borrow_mut() = Some(watcher);
                         section.install_watch_poll_source();
                     }
@@ -138,6 +145,8 @@ impl LushtextWorkspaceSection {
             return;
         }
         *last_error = Some(message.to_string());
+        drop(last_error);
+        self.sync_file_tree_error_state();
         self.emit_message(message, NotificationSeverity::Warning);
     }
 

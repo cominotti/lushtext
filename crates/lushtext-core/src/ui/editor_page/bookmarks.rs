@@ -79,7 +79,7 @@ pub(super) fn setup_bookmark_projection(editor: &LushtextEditorPage) {
             })
             .map_or_else(
                 || "Bookmark".to_string(),
-                |bookmark| bookmark.display_label(),
+                |bookmark| bookmark_gutter_tooltip(&bookmark),
             )
     });
 
@@ -346,6 +346,20 @@ pub(super) fn emit_bookmarks_changed(editor: &LushtextEditorPage) {
         callback();
     }
     editor.schedule_minimap_refresh();
+}
+
+/// Return the user-facing tooltip for one bookmark gutter marker.
+///
+/// GtkSourceView exposes source marks as compact gutter icons, so the tooltip is
+/// the only text metadata attached to that pointer target. Include both the
+/// optional label and the current line so the icon is meaningful on its own.
+#[must_use]
+fn bookmark_gutter_tooltip(bookmark: &BookmarkRecord) -> String {
+    let line = bookmark.line.saturating_add(1);
+    match bookmark.label.as_deref() {
+        Some(label) => format!("Bookmark {label} at line {line}"),
+        None => format!("Bookmark at line {line}"),
+    }
 }
 
 /// Register a callback for bookmark gutter activation.

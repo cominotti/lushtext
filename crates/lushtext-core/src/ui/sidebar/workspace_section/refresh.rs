@@ -46,6 +46,11 @@ impl LushtextWorkspaceSection {
     /// Queue a whole-section refresh from the header button.
     pub(super) fn request_manual_refresh(&self) {
         self.clear_refresh_error();
+        self.imp()
+            .refresh_runtime
+            .manual_refresh_announcing
+            .set(true);
+        self.emit_message("Refreshing workspace folders", NotificationSeverity::Info);
         self.schedule_refresh(true, Vec::new());
     }
 
@@ -117,6 +122,8 @@ impl LushtextWorkspaceSection {
             return;
         }
         *last_error = Some(message.to_string());
+        drop(last_error);
+        self.sync_file_tree_error_state();
         self.emit_message(message, NotificationSeverity::Warning);
     }
 
@@ -126,6 +133,7 @@ impl LushtextWorkspaceSection {
             .last_reported_error
             .borrow_mut()
             .take();
+        self.sync_file_tree_error_state();
     }
 
     fn take_pending_refresh_paths(&self) -> HashSet<PathBuf> {

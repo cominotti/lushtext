@@ -16,6 +16,7 @@ use crate::config::keys;
 use crate::services::editorconfig;
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
+use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 use crate::ui::sidebar::SidebarFileRowStateSnapshot;
 use crate::ui::status_bar::MessageKind;
@@ -62,6 +63,18 @@ impl OpenDocumentIntent {
 }
 
 impl LushtextWindow {
+    /// Speak a bounded workflow milestone through the shared status-bar target.
+    pub(super) fn announce_workflow_update(
+        &self,
+        lane: AnnouncementLane,
+        key: &str,
+        message: &str,
+    ) -> bool {
+        self.imp()
+            .status_bar
+            .announce_workflow_update(lane, key, message)
+    }
+
     /// Report an activation input that GTK could not expose as a local path.
     pub fn report_unsupported_open_file(&self, file: &gio::File) {
         let uri = file.uri();
@@ -147,6 +160,14 @@ impl LushtextWindow {
                 window.refresh_sidebar_file_row_states();
                 window.refresh_open_popover_rows();
                 window.refresh_status_bar();
+                if record_recent {
+                    let title = editor.title();
+                    window.announce_workflow_update(
+                        AnnouncementLane::StatusUpdate,
+                        &format!("document-load:{title}"),
+                        &format!("Loaded {title}"),
+                    );
+                }
             }
         }));
 
@@ -315,6 +336,11 @@ impl LushtextWindow {
                     window.dismiss_editor_notifications(&editor);
                 }
                 window.publish_status_message("File saved", MessageKind::Info);
+                window.announce_workflow_update(
+                    AnnouncementLane::StatusUpdate,
+                    "document-save",
+                    "File saved",
+                );
                 window.refresh_status_bar();
             }
             Err(crate::ui::editor_page::SaveError::LossyEncoding { preview, .. }) => {

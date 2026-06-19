@@ -8,6 +8,7 @@
 //! existing meanings while the implementation avoids app-owned paned animation.
 
 use crate::config::keys;
+use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
@@ -60,6 +61,19 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                 if new_visible {
                     window.refresh_preview();
                 }
+                window.announce_workflow_update(
+                    AnnouncementLane::StatusUpdate,
+                    if new_visible {
+                        "preview-pane-shown"
+                    } else {
+                        "preview-pane-hidden"
+                    },
+                    if new_visible {
+                        "Markdown preview pane shown"
+                    } else {
+                        "Markdown preview pane hidden"
+                    },
+                );
             }
         });
     }
@@ -91,6 +105,19 @@ pub fn setup_preview_actions(window: &LushtextWindow) {
                 if new_mode {
                     window.refresh_preview();
                 }
+                window.announce_workflow_update(
+                    AnnouncementLane::StatusUpdate,
+                    if new_mode {
+                        "preview-mode-on"
+                    } else {
+                        "preview-mode-off"
+                    },
+                    if new_mode {
+                        "Preview mode on"
+                    } else {
+                        "Preview mode off"
+                    },
+                );
             }
         });
     }
@@ -159,6 +186,9 @@ impl LushtextWindow {
             }
         }
 
+        if let Some(editor) = self.active_editor_for_preview() {
+            editor.set_preview_only_accessibility(preview_only);
+        }
         self.queue_preview_layout_settle();
     }
 

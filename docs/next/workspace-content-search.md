@@ -8,7 +8,7 @@ file contents across all workspace folders at ripgrep-like speed, with streaming
 results, match highlighting, and click-to-open-at-line. Triggered via `Ctrl+Shift+F`.
 
 ## Current State
-- Command palette (`Ctrl+P`) supports fuzzy file name search using nucleo (SIMD-accelerated)
+- Command palette (`Ctrl+Shift+P`) supports fuzzy file name search using nucleo (SIMD-accelerated)
 - `FileIndex` scans workspace folders and maintains an in-memory file list
 - No file content search exists — users must alt-tab to a terminal and use grep/ripgrep
 - The in-editor search bar (`Ctrl+F`) only searches the current buffer
