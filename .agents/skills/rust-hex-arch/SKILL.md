@@ -134,6 +134,18 @@ Recommend a named struct, enum, or newtype when code shows:
 - several related booleans that define one mode
 - `String`/`PathBuf`/`usize` values whose role is ambiguous across signatures
 - repeated `HashMap<K, V>` or `Vec<(A, B)>` shaping with implicit semantics
+- cross-boundary error enums named only for a generic action or mechanism
+  (`LoadError`, `SaveError`, `ValidationError`, `AtomicWriteError`) instead of
+  the workflow/domain the caller is handling
+
+### Name Numeric Policy Where It Lives
+
+Recommend named typed constants or small policy values when numeric literals
+encode behavior: file-size budgets, retry counts, debounce/timeout windows, UI
+geometry, schema/protocol limits, search caps, or persistence thresholds. Keep
+the constant near the owning workflow or domain. Do not recommend a generic
+constants module, and do not force constants for `0`/`1`, indexes, simple
+identity arithmetic, or narrow fixture data.
 
 ### Move Invariants Toward the Domain
 

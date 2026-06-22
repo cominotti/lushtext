@@ -149,7 +149,7 @@ impl super::LushtextWindow {
         old_canonical_path: Option<&Path>,
         old_draft_id: Option<&str>,
         path: &Path,
-        save_result: Result<(), crate::ui::editor_page::SaveError>,
+        save_result: Result<(), crate::ui::editor_page::EditorSaveError>,
     ) {
         let path_display = path.display().to_string();
         match save_result {
@@ -200,7 +200,7 @@ impl super::LushtextWindow {
                 self.refresh_command_palette_sources();
                 self.refresh_status_bar();
             }
-            Err(crate::ui::editor_page::SaveError::LossyEncoding { preview, .. }) => {
+            Err(crate::ui::editor_page::EditorSaveError::LossyEncoding { preview, .. }) => {
                 let window = self.clone();
                 let editor = editor.clone();
                 let editor_for_dialog = editor.clone();
@@ -226,7 +226,7 @@ impl super::LushtextWindow {
                     });
                 });
             }
-            Err(crate::ui::editor_page::SaveError::DurabilityUnconfirmed {
+            Err(crate::ui::editor_page::EditorSaveError::DurabilityUnconfirmed {
                 path: written,
                 source,
             }) => {
@@ -518,7 +518,10 @@ impl super::LushtextWindow {
                     // so warn rather than claim the save was lost — and still keep
                     // the tab open so the user can re-save to confirm.
                     any_failed.set(true);
-                    if let crate::ui::editor_page::SaveError::DurabilityUnconfirmed { .. } = e {
+                    if let crate::ui::editor_page::EditorSaveError::DurabilityUnconfirmed {
+                        ..
+                    } = e
+                    {
                         tracing::warn!("Save during close not yet durable: {e}");
                         window.publish_status_message(
                             "Saved during close, but durability is unconfirmed — save again",

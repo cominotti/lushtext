@@ -22,7 +22,7 @@ Thresholds are in `services/file_limits.rs` as a `FileSizeCheck` enum:
 - `DISABLE_UNDO_HISTORY = 50_000_000` (50 MB) — disable undo
 - `REFUSE_TO_OPEN = 500_000_000` (500 MB) — refuse
 
-**Current implementation** uses `services::filesystem::read::bytes` + `simdutf8` for SIMD UTF-8 validation on all file sizes. Error handling uses `LoadError` thiserror enum with `Cancelled`, `InvalidUtf8`, and `Io` variants. Load cancellation via `Arc<AtomicBool>`.
+**Current implementation** uses `services::filesystem::read::bytes` + `simdutf8` for SIMD UTF-8 validation on all file sizes. Error handling uses the `EditorLoadError` thiserror enum with `Cancelled`, `Metadata`, `Read`, and `TooLarge` variants. Load cancellation uses `Arc<AtomicBool>`.
 
 The key insight: `services::filesystem::metadata` performs a lightweight stat-style query, while a full read allocates the file into memory. Checking size first prevents the allocation entirely for files that exceed the threshold.
 
@@ -97,19 +97,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 // In the spawn_blocking_then work closure:
 if cancel_token.load(Ordering::Relaxed) {
-    return Err(LoadError::Cancelled);
+    return Err(EditorLoadError::Cancelled);
 }
 
 let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
 
 if cancel_token.load(Ordering::Relaxed) {
-    return Err(LoadError::Cancelled);
+    return Err(EditorLoadError::Cancelled);
 }
 
 let content = match simdutf8::basic::from_utf8(&bytes) {
     // SAFETY: simdutf8 just confirmed these bytes are valid UTF-8
     Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
-    Err(_) => return Err(LoadError::InvalidUtf8(file_path)),
+    Err(_) => {
+        return Err(EditorLoadError::Read {
+            path: file_path,
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8"),
+        });
+    }
 };
 ```
 

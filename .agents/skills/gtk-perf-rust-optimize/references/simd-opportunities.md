@@ -25,7 +25,12 @@ let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
 let content = match simdutf8::basic::from_utf8(&bytes) {
     // SAFETY: simdutf8 just confirmed these bytes are valid UTF-8
     Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
-    Err(_) => return Err(LoadError::InvalidUtf8(file_path)),
+    Err(_) => {
+        return Err(EditorLoadError::Read {
+            path: file_path,
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8"),
+        });
+    }
 };
 ```
 

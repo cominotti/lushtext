@@ -2116,7 +2116,7 @@ mod tests {
         assert_eq!(MINIMAP_REFRESH_DEBOUNCE, Duration::from_millis(80));
         assert_eq!(MINIMAP_LONG_LINE_WARNING_THRESHOLD, 120);
         assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_000);
-        assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2_097_152);
+        assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2 * 1024 * 1024);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_000);
         assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2.0);
         assert_eq!(MINIMAP_TOP_CONTENT_MARGIN, 5);

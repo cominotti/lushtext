@@ -140,7 +140,7 @@ impl LossyEncodingPreview {
 /// Errors that can occur when loading a file for editing.
 /// Each variant carries context (path, size) for user-facing error messages.
 #[derive(Debug, thiserror::Error)]
-pub enum LoadError {
+pub enum EditorLoadError {
     #[error("load cancelled")]
     Cancelled,
     #[error("Cannot stat {path}: {source}")]
@@ -159,9 +159,13 @@ pub enum LoadError {
     TooLarge { path: PathBuf, size_mb: u64 },
 }
 
-/// Errors that can occur when saving a file.
+/// Editor-facing save failures that drive distinct recovery paths.
+///
+/// Variants separate blocked writes, in-flight saves, lossy conversion,
+/// normalization policy, and unconfirmed durability so the UI can keep the
+/// right recovery surface visible.
 #[derive(Debug, thiserror::Error)]
-pub enum SaveError {
+pub enum EditorSaveError {
     #[error("No file path set")]
     NoPath,
     #[error("Save already in progress")]
@@ -203,7 +207,7 @@ pub enum SaveError {
 ///
 /// Returns an error if the file cannot be statted or read, exceeds the
 /// supported size limit, or the load is cancelled.
-pub fn load_text_file(path: &Path, cancel: &AtomicBool) -> Result<LoadResult, LoadError> {
+pub fn load_text_file(path: &Path, cancel: &AtomicBool) -> Result<LoadResult, EditorLoadError> {
     load_text_file_with_encoding(path, cancel, None)
 }
 
@@ -219,14 +223,14 @@ pub fn load_text_file_with_encoding(
     path: &Path,
     cancel: &AtomicBool,
     reopen_as: Option<DocumentEncoding>,
-) -> Result<LoadResult, LoadError> {
+) -> Result<LoadResult, EditorLoadError> {
     if cancel.load(Ordering::Acquire) {
-        return Err(LoadError::Cancelled);
+        return Err(EditorLoadError::Cancelled);
     }
 
     delay_load_for_test();
 
-    let facts = fs_metadata::file_facts(path).map_err(|source| LoadError::Metadata {
+    let facts = fs_metadata::file_facts(path).map_err(|source| EditorLoadError::Metadata {
         path: path.to_path_buf(),
         source,
     })?;
@@ -236,22 +240,22 @@ pub fn load_text_file_with_encoding(
     let mtime = facts.modified_at_secs;
 
     if size_check == FileSizeCheck::TooLarge {
-        return Err(LoadError::TooLarge {
+        return Err(EditorLoadError::TooLarge {
             path: path.to_path_buf(),
             size_mb: size / 1_000_000,
         });
     }
 
     if cancel.load(Ordering::Acquire) {
-        return Err(LoadError::Cancelled);
+        return Err(EditorLoadError::Cancelled);
     }
 
-    let bytes = fs_read::bytes(path).map_err(|source| LoadError::Read {
+    let bytes = fs_read::bytes(path).map_err(|source| EditorLoadError::Read {
         path: path.to_path_buf(),
         source,
     })?;
     if cancel.load(Ordering::Acquire) {
-        return Err(LoadError::Cancelled);
+        return Err(EditorLoadError::Cancelled);
     }
 
     let decoded = decode_document(&bytes, reopen_as);
@@ -310,7 +314,10 @@ pub fn classify_bytes_for_fuzzing(
 /// # Errors
 ///
 /// Returns the same write or normalization errors as `write_document_to_path`.
-pub fn write_snapshot_to_path(path: &Path, text: &str) -> Result<(u64, Option<u64>), SaveError> {
+pub fn write_snapshot_to_path(
+    path: &Path,
+    text: &str,
+) -> Result<(u64, Option<u64>), EditorSaveError> {
     write_document_to_path(path, text, DocumentEncoding::Utf8, LineEnding::Lf, false)
 }
 
@@ -332,7 +339,7 @@ pub fn write_document_to_path(
     encoding: DocumentEncoding,
     line_ending: LineEnding,
     allow_lossy: bool,
-) -> Result<(u64, Option<u64>), SaveError> {
+) -> Result<(u64, Option<u64>), EditorSaveError> {
     let normalized = normalize_line_endings(text, line_ending)?;
     let bytes = encode_text(&normalized, encoding, allow_lossy)?;
     let bytes_written = bytes.len() as u64;
@@ -694,9 +701,9 @@ fn build_file_health(
 }
 
 /// Normalize text to the selected save-time line ending.
-fn normalize_line_endings(text: &str, line_ending: LineEnding) -> Result<String, SaveError> {
+fn normalize_line_endings(text: &str, line_ending: LineEnding) -> Result<String, EditorSaveError> {
     let Some(separator) = line_ending.separator() else {
-        return Err(SaveError::MixedLineEndings);
+        return Err(EditorSaveError::MixedLineEndings);
     };
 
     let mut normalized = String::with_capacity(text.len() + text.len() / 16);
@@ -746,9 +753,9 @@ fn encode_text(
     text: &str,
     encoding: DocumentEncoding,
     allow_lossy: bool,
-) -> Result<Vec<u8>, SaveError> {
+) -> Result<Vec<u8>, EditorSaveError> {
     if !allow_lossy && let Some(preview) = analyze_lossy_encoding(text, encoding) {
-        return Err(SaveError::LossyEncoding {
+        return Err(EditorSaveError::LossyEncoding {
             encoding,
             issue_count: preview.total_issue_count,
             preview,
@@ -784,9 +791,9 @@ fn encode_text(
 /// the previous bytes intact (`WriteTemp`); a post-rename directory-sync failure
 /// means the new bytes are on disk but not yet crash-durable
 /// (`DurabilityUnconfirmed`).
-fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
+fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), EditorSaveError> {
     let identity =
-        fs_write::resolve_target_identity(path).map_err(|source| SaveError::WriteTemp {
+        fs_write::resolve_target_identity(path).map_err(|source| EditorSaveError::WriteTemp {
             path: path.to_path_buf(),
             source,
         })?;
@@ -803,16 +810,18 @@ fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
 /// means the bytes are already on disk but not yet crash-durable, which must be
 /// reported distinctly (`DurabilityUnconfirmed`) so a directory-sync hiccup is
 /// not mistaken for a lost save.
-fn save_error_from_durable(error: fs_write::DurableWriteError, path: &Path) -> SaveError {
+fn save_error_from_durable(error: fs_write::DurableWriteError, path: &Path) -> EditorSaveError {
     match error {
-        fs_write::DurableWriteError::BeforeRename(source) => SaveError::WriteTemp {
+        fs_write::DurableWriteError::BeforeRename(source) => EditorSaveError::WriteTemp {
             path: path.to_path_buf(),
             source,
         },
-        fs_write::DurableWriteError::AfterRename(source) => SaveError::DurabilityUnconfirmed {
-            path: path.to_path_buf(),
-            source,
-        },
+        fs_write::DurableWriteError::AfterRename(source) => {
+            EditorSaveError::DurabilityUnconfirmed {
+                path: path.to_path_buf(),
+                source,
+            }
+        }
     }
 }
 
@@ -1152,7 +1161,7 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let result = load_text_file(file.path(), &cancel);
 
-        assert_matches!(result, Err(LoadError::Cancelled));
+        assert_matches!(result, Err(EditorLoadError::Cancelled));
     }
 
     #[test]
@@ -1165,7 +1174,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let result = load_text_file(file.path(), &cancel);
 
-        assert_matches!(result, Err(LoadError::TooLarge { size_mb: 501, .. }));
+        assert_matches!(result, Err(EditorLoadError::TooLarge { size_mb: 501, .. }));
     }
 
     #[test]
@@ -1325,7 +1334,7 @@ mod tests {
             false,
         );
 
-        assert_matches!(result, Err(SaveError::WriteTemp { .. }));
+        assert_matches!(result, Err(EditorSaveError::WriteTemp { .. }));
         assert!(
             fixture::is_symlink(&link),
             "failed save must leave the symlink untouched"
@@ -1386,7 +1395,7 @@ mod tests {
             false,
         );
 
-        assert_matches!(result, Err(SaveError::MixedLineEndings));
+        assert_matches!(result, Err(EditorSaveError::MixedLineEndings));
     }
 
     #[test]
@@ -1463,7 +1472,7 @@ mod tests {
             false,
         );
 
-        assert_matches!(result, Err(SaveError::LossyEncoding { .. }));
+        assert_matches!(result, Err(EditorSaveError::LossyEncoding { .. }));
         assert!(
             !fs_metadata::exists(&path),
             "the file should not be written when lossy conversion is blocked"
@@ -1478,13 +1487,13 @@ mod tests {
             fs_write::DurableWriteError::BeforeRename(std::io::Error::other("temp failed")),
             path,
         );
-        assert_matches!(before, SaveError::WriteTemp { .. });
+        assert_matches!(before, EditorSaveError::WriteTemp { .. });
 
         let after = save_error_from_durable(
             fs_write::DurableWriteError::AfterRename(std::io::Error::other("dir sync failed")),
             path,
         );
-        assert_matches!(after, SaveError::DurabilityUnconfirmed { .. });
+        assert_matches!(after, EditorSaveError::DurabilityUnconfirmed { .. });
     }
 
     #[cfg(unix)]

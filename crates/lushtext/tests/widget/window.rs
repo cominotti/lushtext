@@ -58,7 +58,7 @@ use lushtext_core::ui::automation::{
 };
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
-    EditorLoadState, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, SaveError,
+    EditorLoadState, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, EditorSaveError,
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
@@ -7801,7 +7801,7 @@ fn test_complete_save_as_failure_keeps_existing_editor_identity() {
         None,
         Some(old_draft_id.as_str()),
         &path,
-        Err(SaveError::WriteTemp {
+        Err(EditorSaveError::WriteTemp {
             path: path.clone(),
             source: std::io::Error::other("boom"),
         }),

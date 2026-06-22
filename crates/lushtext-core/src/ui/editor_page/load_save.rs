@@ -23,10 +23,10 @@ use crate::services::notifications::{InlineActionNotification, InlineNotificatio
 use crate::services::{editor_io, filesystem::metadata as fs_metadata};
 use crate::ui::buffer_snapshot;
 
-use super::{EditorLoadState, LushtextEditorPage, SaveError};
-use editor_io::LoadError;
+use super::{EditorLoadState, EditorSaveError, LushtextEditorPage};
+use editor_io::EditorLoadError;
 
-type SaveCallback = Box<dyn FnOnce(Result<(), SaveError>)>;
+type SaveCallback = Box<dyn FnOnce(Result<(), EditorSaveError>)>;
 
 /// Temporary view flags captured while chunked snapshotting makes the editor read-only.
 #[derive(Clone, Copy)]
@@ -83,7 +83,7 @@ impl LushtextEditorPage {
     fn apply_load_result_if_current(
         &self,
         load_generation: u64,
-        result: Result<editor_io::LoadResult, LoadError>,
+        result: Result<editor_io::LoadResult, EditorLoadError>,
         error_state: EditorLoadState,
     ) -> bool {
         if self.imp().load_generation.get() != load_generation {
@@ -139,7 +139,7 @@ impl LushtextEditorPage {
                     callback();
                 }
             }
-            Err(LoadError::Cancelled) => {}
+            Err(EditorLoadError::Cancelled) => {}
             Err(error) => {
                 tracing::error!("{error}");
                 let error_text = error.to_string();
@@ -244,7 +244,7 @@ impl LushtextEditorPage {
     pub fn apply_load_result_for_test(
         &self,
         load_generation: u64,
-        result: Result<editor_io::LoadResult, LoadError>,
+        result: Result<editor_io::LoadResult, EditorLoadError>,
     ) -> bool {
         self.apply_load_result_if_current(load_generation, result, EditorLoadState::Failed)
     }
@@ -309,23 +309,23 @@ impl LushtextEditorPage {
     }
 
     /// Save the file asynchronously on a background thread.
-    pub fn save_file_async<F: FnOnce(Result<(), SaveError>) + 'static>(&self, callback: F) {
+    pub fn save_file_async<F: FnOnce(Result<(), EditorSaveError>) + 'static>(&self, callback: F) {
         let Some(path) = self.imp().file_path.borrow().clone() else {
-            callback(Err(SaveError::NoPath));
+            callback(Err(EditorSaveError::NoPath));
             return;
         };
         self.save_file_async_to_path(path, callback);
     }
 
     /// Save the current buffer to an explicit path without mutating the tracked path first.
-    pub(crate) fn save_file_async_to_path<F: FnOnce(Result<(), SaveError>) + 'static>(
+    pub(crate) fn save_file_async_to_path<F: FnOnce(Result<(), EditorSaveError>) + 'static>(
         &self,
         path: PathBuf,
         callback: F,
     ) {
         let callback: SaveCallback = Box::new(callback);
         if self.imp().save.inflight.get() {
-            callback(Err(SaveError::SaveInProgress));
+            callback(Err(EditorSaveError::SaveInProgress));
             return;
         }
 
@@ -461,7 +461,7 @@ impl LushtextEditorPage {
                     }
                 }
 
-                Ok::<_, SaveError>((
+                Ok::<_, EditorSaveError>((
                     size,
                     mtime,
                     canonical_path,

@@ -738,7 +738,7 @@ fn test_save_file_no_path_returns_error() {
     let page = LushtextEditorPage::new();
     // save_file_async calls callback synchronously when no path is set
     let result: std::rc::Rc<
-        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::SaveError>>>,
+        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::EditorSaveError>>>,
     > = std::rc::Rc::new(std::cell::RefCell::new(None));
     let result_clone = result.clone();
     page.save_file_async(move |r| {
@@ -747,7 +747,7 @@ fn test_save_file_no_path_returns_error() {
     let result = result.borrow_mut().take().expect("expected operation to succeed");
     assert_matches!(
         result,
-        Err(lushtext_core::ui::editor_page::SaveError::NoPath)
+        Err(lushtext_core::ui::editor_page::EditorSaveError::NoPath)
     );
 }
 
@@ -978,7 +978,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     ));
 
     let duplicate_result: std::rc::Rc<
-        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::SaveError>>>,
+        std::cell::RefCell<Option<Result<(), lushtext_core::ui::editor_page::EditorSaveError>>>,
     > = std::rc::Rc::new(std::cell::RefCell::new(None));
     let duplicate_result_clone = duplicate_result.clone();
     page.save_file_async(move |r| {
@@ -991,7 +991,7 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
         .expect("duplicate save should finish synchronously");
     assert_matches!(
         duplicate_result,
-        Err(lushtext_core::ui::editor_page::SaveError::SaveInProgress)
+        Err(lushtext_core::ui::editor_page::EditorSaveError::SaveInProgress)
     );
 
     wait_until(std::time::Duration::from_secs(2), || first_done.get());

@@ -39,12 +39,16 @@ The standard `spawn_blocking_then` pattern. Use for any I/O that needs to update
 let path = path.to_path_buf();
 gtk_lush_tasks::spawn_blocking_then(
     self.clone(),
-    move || -> Result<String, LoadError> {
-        let bytes = filesystem::read::bytes(&path).map_err(|e| LoadError::Io(e.to_string()))?;
+    move || -> Result<String, EditorLoadError> {
+        let bytes = filesystem::read::bytes(&path)
+            .map_err(|source| EditorLoadError::Read { path: path.clone(), source })?;
         match simdutf8::basic::from_utf8(&bytes) {
             // SAFETY: simdutf8 just confirmed valid UTF-8
             Ok(_) => Ok(unsafe { String::from_utf8_unchecked(bytes) }),
-            Err(_) => Err(LoadError::InvalidUtf8(path)),
+            Err(_) => Err(EditorLoadError::Read {
+                path,
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8"),
+            }),
         }
     },
     |editor, result| {

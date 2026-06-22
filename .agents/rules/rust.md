@@ -167,8 +167,9 @@ persistence caller must inherit and must not silently drop:
   document modified); `DurableWriteError::AfterRename` means the new bytes are on
   disk but the directory `fsync` did not complete (surface a distinct
   "durability unconfirmed" warning, never a generic lost-save). The editor maps
-  these to `SaveError::WriteTemp` and `SaveError::DurabilityUnconfirmed`. Never
-  swallow an `fsync` error into a silent success.
+  these to `EditorSaveError::WriteTemp` and
+  `EditorSaveError::DurabilityUnconfirmed`. Never swallow an `fsync` error into
+  a silent success.
 
 Never set `autoexpand = true` on `GtkTreeListModel`.
 
@@ -177,6 +178,26 @@ When save-time policy rewrites buffer text (for example EditorConfig
 buffer must agree before the buffer is marked clean. Either mirror the saved
 text back into the buffer after a successful write or keep the buffer modified;
 do not show a clean tab whose visible text differs from disk.
+
+## Error and Literal Ownership
+
+Cross-boundary error types must name the workflow or domain they report for:
+prefer `EditorLoadError`, `EditorSaveError`, `WorkspaceWatchError`,
+`DraftReadError`, or `ProofValidationError` over bare names such as
+`Error`, `LoadError`, `SaveError`, `ValidationError`, or mechanism-only names
+when the type is public, `pub(crate)`, re-exported, service-facing, UI-facing,
+or shared across crates. Private helper errors can stay short only when the
+owning module and function already make the failing workflow obvious.
+
+Numeric literals that define user-visible behavior, persistence limits,
+file-size thresholds, retry budgets, debounce/timeout windows, UI geometry,
+schema or protocol limits, or resource caps belong in named typed constants or
+small policy values near the workflow, service, model, UI module, or tool that
+owns the decision. Do not create a generic constants dump just because two
+numbers match; share a constant only when the same policy is intentionally
+shared. Inline literals remain fine for `0`/`1`, indexes, simple arithmetic
+identities, obvious counters, narrow fixture data, and tests that do not mirror
+production policy.
 
 ## Mutable State on GObject Structs
 
@@ -189,8 +210,8 @@ do not show a clean tab whose visible text differs from disk.
 - Prefer `#[expect(lint, reason = "...")]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically. The reason must name the local GTK, generated-code, test, benchmark, or ownership invariant.
 - Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
 - The workspace Clippy table is curated lint-by-lint after cleanup. Broad groups such as `clippy::restriction`, `clippy::pedantic`, `clippy::nursery`, and `clippy::cargo` are advisory discovery inputs only; do not enable them wholesale as blocking policy.
-- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, and `wildcard_imports` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents.
-- `make lint-advisory` runs broad Clippy, selected design-smell Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
+- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `decimal_literal_representation`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, and `wildcard_imports` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents.
+- `make lint-advisory` runs broad Clippy, selected design-smell Clippy, selected numeric Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
 - No `clippy.toml` is currently checked in because this review found no globally safe disallowed method/type ban that applies across backend, fixture, generated, test, and build-support paths without broad suppressions. Add `clippy.toml` only when a future globally safe ban can include reason and replacement metadata. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
 
 ## Modern Rust Idioms

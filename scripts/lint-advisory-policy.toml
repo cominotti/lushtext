@@ -20,6 +20,12 @@ max_count = 0
 rationale = "Promoted into the blocking lint table after replacing unchecked duration subtraction."
 
 [[rules]]
+code = "clippy::decimal_literal_representation"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Promoted into the blocking lint table after replacing opaque power-of-two decimal boundaries with semantic expressions or explicit bit masks."
+
+[[rules]]
 code = "clippy::case_sensitive_file_extension_comparisons"
 classification = "blocking_candidate"
 max_count = 0
@@ -177,10 +183,102 @@ classification = "accepted_advisory"
 rationale = "Single drawing-math micro-optimizations stay advisory unless a measured hot path requires them."
 
 [[rules]]
+code = "clippy::default_numeric_fallback"
+classification = "accepted_advisory"
+rationale = "The lint is useful for review but too noisy across GTK geometry, generated widget tests, and simple identity/count literals to block wholesale."
+
+[[rules]]
+code = "clippy::float_arithmetic"
+classification = "accepted_advisory"
+rationale = "GTK allocation, viewport, and rendering math intentionally crosses floating-point APIs; review suspicious cases in context."
+
+[[rules]]
+code = "clippy::integer_division"
+classification = "accepted_advisory"
+rationale = "Many findings are intentional truncating ratios for byte budgets, line positions, and UI geometry; unclear cases should be named locally rather than blanket-denied."
+
+[[rules]]
+code = "clippy::large_digit_groups"
+classification = "must_stay_zero"
+rationale = "Large numeric groups should either use normal separators or a named policy constant before entering the tree."
+
+[[rules]]
+code = "clippy::decimal_bitwise_operands"
+classification = "must_stay_zero"
+rationale = "Bitwise operands should be visually bit-oriented, usually hexadecimal or binary, instead of opaque decimal masks."
+
+[[rules]]
+code = "clippy::lossy_float_literal"
+classification = "must_stay_zero"
+rationale = "Float literals that already lose precision should be corrected or explained before merge."
+
+[[rules]]
+code = "clippy::unused_rounding"
+classification = "must_stay_zero"
+rationale = "Rounding syntax that has no effect is misleading policy documentation and should stay absent."
+
+[[rules]]
+code = "clippy::mixed_case_hex_literals"
+classification = "must_stay_zero"
+rationale = "Mixed-case hexadecimal masks are readability noise and should be normalized immediately."
+
+[[rules]]
+code = "clippy::zero_prefixed_literal"
+classification = "must_stay_zero"
+rationale = "Zero-prefixed decimals look like legacy octal and should be replaced with ordinary decimal or an explicit radix."
+
+[[rules]]
+code = "clippy::unusual_byte_groupings"
+classification = "must_stay_zero"
+rationale = "Byte-oriented masks should use conventional grouping so protocol and bitfield constants remain scannable."
+
+[[rules]]
+code = "clippy::inconsistent_digit_grouping"
+classification = "must_stay_zero"
+rationale = "Inconsistent separator grouping makes large numeric policy hard to audit and should not accumulate."
+
+[[rules]]
 code = "clippy::format_collect"
 classification = "generated_code_noise"
 path_globs = ["<generated>/**"]
 rationale = "Widget registry code is generated and normalized separately from hand-written lint policy."
+
+[[rules]]
+code = "clippy::format_collect"
+classification = "accepted_advisory"
+path_globs = ["crates/cargo-gtk-proof/src/policy.rs"]
+rationale = "Proof policy reports build small human-readable summaries where iterator string assembly is clearer than a separate formatter type."
+
+[[rules]]
+code = "clippy::assigning_clones"
+classification = "accepted_advisory"
+rationale = "Existing assignments are reviewed state updates where clone_from would add little clarity and may obscure ownership flow."
+
+[[rules]]
+code = "clippy::elidable_lifetime_names"
+classification = "accepted_advisory"
+rationale = "Explicit lifetimes can document catalog and model borrow relationships; shorten them during local cleanup when clarity improves."
+
+[[rules]]
+code = "clippy::filter_map_next"
+classification = "generated_code_noise"
+path_globs = ["<generated>/**"]
+rationale = "Generated widget registry code is not hand-edited; source tests can use find_map during normal cleanup."
+
+[[rules]]
+code = "clippy::future_not_send"
+classification = "accepted_advisory"
+rationale = "GTK and D-Bus automation futures intentionally stay on the main context; Send-ness is reviewed when work crosses thread boundaries."
+
+[[rules]]
+code = "clippy::significant_drop_in_scrutinee"
+classification = "accepted_advisory"
+rationale = "Current legacy-format upgrade code is reviewed for drop scope during refactors, but the broad pedantic lint is not a blocking policy."
+
+[[rules]]
+code = "clippy::single_option_map"
+classification = "accepted_advisory"
+rationale = "Small adapter helpers may keep Option mapping shape when it preserves workflow symmetry or reads better with surrounding code."
 
 [[rules]]
 code = "clippy::duration_suboptimal_units"
@@ -220,8 +318,8 @@ rationale = "Current stderr findings are test skip diagnostics; production diagn
 [[rules]]
 code = "clippy::multiple_crate_versions"
 classification = "resolved_policy_exception"
-max_count = 8
-rationale = "cargo-deny denies duplicate versions by default and carries narrow skip-tree exceptions for foundational transitive crates."
+max_count = 12
+rationale = "cargo-deny denies duplicate versions by default and carries narrow skip-tree exceptions for foundational transitive crates; the current Rust 1.96 workspace graph reports twelve advisory duplicate-version entries."
 
 [[rules]]
 code = "unreachable_pub"

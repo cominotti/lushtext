@@ -24,9 +24,10 @@ const GENERATED_PATH_FOLDER: &str = "/workspace/property-folder";
 const MAX_SESSION_POSITION: u32 = 20_000;
 /// Maximum timestamp used by draft manifest properties.
 ///
-/// Draft timestamps are seconds since epoch in production; this cap keeps
-/// generated JSON compact while still covering optional/non-zero values.
-const MAX_DRAFT_TIMESTAMP: u64 = 4_294_967_295;
+/// Draft timestamps are seconds since epoch in production. The 32-bit ceiling
+/// keeps generated JSON compact while covering a recognizable upper-bound
+/// timestamp instead of an arbitrary small fixture value.
+const MAX_DRAFT_TIMESTAMP: u64 = 0xFFFF_FFFF;
 
 proptest! {
     #![proptest_config(support::property_config())]

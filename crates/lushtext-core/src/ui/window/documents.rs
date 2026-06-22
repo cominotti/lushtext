@@ -343,13 +343,16 @@ impl LushtextWindow {
                 );
                 window.refresh_status_bar();
             }
-            Err(crate::ui::editor_page::SaveError::LossyEncoding { preview, .. }) => {
+            Err(crate::ui::editor_page::EditorSaveError::LossyEncoding { preview, .. }) => {
                 let window_for_retry = window.clone();
                 window.confirm_lossy_save(&editor_for_retry, &preview, move || {
                     window_for_retry.save_current();
                 });
             }
-            Err(crate::ui::editor_page::SaveError::DurabilityUnconfirmed { path, source }) => {
+            Err(crate::ui::editor_page::EditorSaveError::DurabilityUnconfirmed {
+                path,
+                source,
+            }) => {
                 // The bytes are already at the destination, but the directory
                 // fsync that proves the rename durable failed. Keep the document
                 // modified (the Err path does this) and tell the user the change

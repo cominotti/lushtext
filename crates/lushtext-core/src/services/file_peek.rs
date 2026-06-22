@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn sample_byte_limit_matches_expected_budget() {
-        assert_eq!(PEEK_SAMPLE_BYTE_LIMIT, 16_384);
+        assert_eq!(PEEK_SAMPLE_BYTE_LIMIT, 16 * 1024);
     }
 
     #[test]

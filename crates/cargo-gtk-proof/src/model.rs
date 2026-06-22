@@ -13,14 +13,20 @@ use gtk_lush_proof_spine::ProofStatus;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Current proof artifact schema version accepted by the validator.
+///
+/// Version 1 is the only Rust-owned same-session proof format this tool trusts;
+/// newer versions fail closed until their validation rules are added here.
 pub(crate) const SUPPORTED_SCHEMA_VERSION: u64 = 1;
 
+/// Successful proof-artifact validation result used by policy/reporting code.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct ValidationOutcome {
     pub(crate) kind: DocumentKind,
     pub(crate) schema_version: u64,
 }
 
+/// Proof artifact family inferred from the JSON shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DocumentKind {
     VisualScenario,
@@ -59,12 +65,17 @@ impl fmt::Display for DocumentKind {
     }
 }
 
+/// Failure returned when a proof artifact cannot be trusted by policy checks.
+///
+/// The status is machine-readable for proof reporting, while `detail` keeps the
+/// human-readable reason close to the rejected schema field.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct ValidationError {
+pub(crate) struct ProofValidationError {
     pub(crate) status: ProofStatus,
     pub(crate) detail: String,
 }
 
+/// Compact scenario summary returned to proof reports and CLI output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct ScenarioOverview {
     pub(crate) scenario_id: String,
@@ -78,6 +89,7 @@ pub(crate) struct ScenarioOverview {
     pub(crate) animation_enabled: bool,
 }
 
+/// One concrete case produced from a visual scenario matrix.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ExpandedCaseOverview {
     pub(crate) schema_version: u64,
@@ -97,16 +109,19 @@ pub(crate) struct ExpandedCaseOverview {
 }
 
 impl ExpandedCaseOverview {
+    /// Return the fixture kind used by this case, defaulting legacy cases.
     pub(crate) fn fixture_kind(&self) -> &str {
         self.fixture_kind.as_deref().unwrap_or("plain-lines")
     }
 
+    /// Return the original scenario type from the embedded manifest payload.
     pub(crate) fn scenario_type(&self) -> Option<&str> {
         self.manifest.get("scenario_type").and_then(Value::as_str)
     }
 }
 
 impl ScenarioOverview {
+    /// Count expanded cases whose stable id contains the caller's filter text.
     pub(crate) fn filtered_case_count(&self, filter: &str) -> usize {
         self.case_ids
             .iter()
@@ -115,7 +130,7 @@ impl ScenarioOverview {
     }
 }
 
-impl ValidationError {
+impl ProofValidationError {
     fn unsupported(version: u64) -> Self {
         Self {
             status: ProofStatus::UnsupportedSchemaVersion,
@@ -131,7 +146,11 @@ impl ValidationError {
     }
 }
 
-pub(crate) fn validate_document(value: &Value) -> Result<ValidationOutcome, ValidationError> {
+/// Validate one proof artifact before policy or reporting code trusts it.
+///
+/// This is pure JSON validation: it performs no I/O, accepts only the supported
+/// schema version, and fails closed for malformed or future-version artifacts.
+pub(crate) fn validate_document(value: &Value) -> Result<ValidationOutcome, ProofValidationError> {
     let kind = detect_document_kind(value);
     let schema_version = match schema_version(value) {
         Ok(schema_version) => schema_version,
@@ -139,7 +158,7 @@ pub(crate) fn validate_document(value: &Value) -> Result<ValidationOutcome, Vali
         Err(error) => return Err(error),
     };
     if schema_version != SUPPORTED_SCHEMA_VERSION {
-        return Err(ValidationError::unsupported(schema_version));
+        return Err(ProofValidationError::unsupported(schema_version));
     }
 
     match kind {
@@ -193,23 +212,28 @@ impl DocumentKind {
     }
 }
 
-pub(crate) fn visual_scenario_overview(value: &Value) -> Result<ScenarioOverview, ValidationError> {
+/// Build the compact reporting summary for a validated visual scenario manifest.
+pub(crate) fn visual_scenario_overview(
+    value: &Value,
+) -> Result<ScenarioOverview, ProofValidationError> {
     validate_visual_scenario(value)?;
     let manifest =
         validate_deserializes::<VisualScenarioManifest>(value, DocumentKind::VisualScenario)?;
     Ok(manifest.overview())
 }
 
+/// Expand a visual scenario matrix into concrete proof cases for reporting.
 pub(crate) fn expanded_visual_cases(
     value: &Value,
-) -> Result<Vec<ExpandedCaseOverview>, ValidationError> {
+) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
     validate_visual_scenario(value)?;
     let manifest =
         validate_deserializes::<VisualScenarioManifest>(value, DocumentKind::VisualScenario)?;
     manifest.expanded_cases(value)
 }
 
-fn schema_version(value: &Value) -> Result<u64, ValidationError> {
+/// Read the supported schema version field from either modern or legacy shape.
+fn schema_version(value: &Value) -> Result<u64, ProofValidationError> {
     value
         .get("schema_version")
         .and_then(Value::as_u64)
@@ -219,9 +243,10 @@ fn schema_version(value: &Value) -> Result<u64, ValidationError> {
                 .and_then(|version| version.get("schema_version"))
                 .and_then(Value::as_u64)
         })
-        .ok_or_else(|| ValidationError::malformed("missing schema_version"))
+        .ok_or_else(|| ProofValidationError::malformed("missing schema_version"))
 }
 
+/// Infer the proof artifact family from stable marker fields.
 fn detect_document_kind(value: &Value) -> DocumentKind {
     if value.get("scenario_id").is_some() && value.get("matrix").is_some() {
         DocumentKind::VisualScenario
@@ -271,52 +296,57 @@ fn detect_document_kind(value: &Value) -> DocumentKind {
     }
 }
 
-fn validate_visual_scenario(value: &Value) -> Result<(), ValidationError> {
+/// Validate manifest-level invariants for a visual scenario descriptor.
+fn validate_visual_scenario(value: &Value) -> Result<(), ProofValidationError> {
     let manifest =
         validate_deserializes::<VisualScenarioManifest>(value, DocumentKind::VisualScenario)?;
     if manifest.scenario_id.trim().is_empty() {
-        return Err(ValidationError::malformed("scenario_id must not be empty"));
+        return Err(ProofValidationError::malformed(
+            "scenario_id must not be empty",
+        ));
     }
     if manifest.scenario_type.trim().is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "scenario_type must not be empty",
         ));
     }
     if manifest.matrix.sizes.is_empty() {
-        return Err(ValidationError::malformed("matrix.sizes must not be empty"));
+        return Err(ProofValidationError::malformed(
+            "matrix.sizes must not be empty",
+        ));
     }
     if manifest.matrix.color_schemes.is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "matrix.color_schemes must not be empty",
         ));
     }
     if manifest.protected_regions.is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "protected_regions must not be empty",
         ));
     }
     match manifest.scenario_type.as_str() {
         "minimap-sidebar" => {
             if manifest.matrix.word_wrap.is_empty() {
-                return Err(ValidationError::malformed(
+                return Err(ProofValidationError::malformed(
                     "minimap-sidebar matrix.word_wrap must not be empty",
                 ));
             }
             if manifest.matrix.directions.is_empty() {
-                return Err(ValidationError::malformed(
+                return Err(ProofValidationError::malformed(
                     "minimap-sidebar matrix.directions must not be empty",
                 ));
             }
         }
         "command-palette-overlay" | "open-popover" => {}
         other => {
-            return Err(ValidationError::malformed(format!(
+            return Err(ProofValidationError::malformed(format!(
                 "unsupported scenario_type {other}"
             )));
         }
     }
     if !manifest.pixel_anchors.is_empty() && manifest.invariant_id.is_none() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "pixel_anchors require invariant_id",
         ));
     }
@@ -326,14 +356,15 @@ fn validate_visual_scenario(value: &Value) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn validate_artifact_envelope(value: &Value) -> Result<(), ValidationError> {
+/// Validate the generic artifact envelope used by smoke command outputs.
+fn validate_artifact_envelope(value: &Value) -> Result<(), ProofValidationError> {
     let envelope =
         validate_deserializes::<ArtifactEnvelopeShape>(value, DocumentKind::ArtifactEnvelope)?;
     if envelope.command.trim().is_empty() {
-        return Err(ValidationError::malformed("command must not be empty"));
+        return Err(ProofValidationError::malformed("command must not be empty"));
     }
     if envelope.detail.trim().is_empty() {
-        return Err(ValidationError::malformed("detail must not be empty"));
+        return Err(ProofValidationError::malformed("detail must not be empty"));
     }
     if envelope.command == "artifact-summary" {
         let data = validate_deserializes::<AutomationArtifactSummaryData>(
@@ -341,7 +372,7 @@ fn validate_artifact_envelope(value: &Value) -> Result<(), ValidationError> {
             DocumentKind::ArtifactEnvelope,
         )?;
         if data.status.is_none() && data.visual_geometry_cases.is_empty() {
-            return Err(ValidationError::malformed(
+            return Err(ProofValidationError::malformed(
                 "artifact-summary data requires status or visual_geometry_cases",
             ));
         }
@@ -349,41 +380,47 @@ fn validate_artifact_envelope(value: &Value) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Validate status and identity requirements for one case summary artifact.
 fn validate_case_summary(
     value: &Value,
     kind: DocumentKind,
-) -> Result<CaseSummary, ValidationError> {
+) -> Result<CaseSummary, ProofValidationError> {
     let summary = validate_deserializes::<CaseSummary>(value, kind)?;
     if summary.status.trim().is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "case summary status must not be empty",
         ));
     }
     if summary.case_id.is_none() && summary.scenario_id.is_none() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "case summary requires case_id or scenario_id",
         ));
     }
     Ok(summary)
 }
 
+/// Validate the comparison report shape before pixel policy reads it.
 fn validate_comparison_report(
     value: &Value,
     kind: DocumentKind,
-) -> Result<ComparisonReport, ValidationError> {
+) -> Result<ComparisonReport, ProofValidationError> {
     let report = validate_deserializes::<ComparisonReport>(value, kind)?;
     if report.status.trim().is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "comparison report status must not be empty",
         ));
     }
     Ok(report)
 }
 
-fn validate_animation_report(value: &Value, kind: DocumentKind) -> Result<(), ValidationError> {
+/// Validate animation-report fields that control streamed geometry evidence.
+fn validate_animation_report(
+    value: &Value,
+    kind: DocumentKind,
+) -> Result<(), ProofValidationError> {
     let report = validate_deserializes::<AnimationReport>(value, kind)?;
     if report.status.trim().is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "animation report status must not be empty",
         ));
     }
@@ -393,59 +430,67 @@ fn validate_animation_report(value: &Value, kind: DocumentKind) -> Result<(), Va
         .is_some_and(|capture_mode| capture_mode == "stream")
         && report.max_sample_skew_ms.is_none()
     {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "stream animation report requires max_sample_skew_ms",
         ));
     }
     Ok(())
 }
 
-fn validate_warning_scan(value: &Value, kind: DocumentKind) -> Result<(), ValidationError> {
+/// Validate the warning-scan report used to gate GTK warning regressions.
+fn validate_warning_scan(value: &Value, kind: DocumentKind) -> Result<(), ProofValidationError> {
     let report = validate_deserializes::<WarningScanReport>(value, kind)?;
     if report.status.trim().is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "warning scan status must not be empty",
         ));
     }
     Ok(())
 }
 
-fn validate_parity_report(value: &Value, kind: DocumentKind) -> Result<(), ValidationError> {
+/// Validate parity-report fields comparing Rust and compatibility engines.
+fn validate_parity_report(value: &Value, kind: DocumentKind) -> Result<(), ProofValidationError> {
     let report = validate_deserializes::<ParityReport>(value, kind)?;
     if report.status.trim().is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "parity report status must not be empty",
         ));
     }
     if report.compared == Some(0) {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "parity report compared count must be positive",
         ));
     }
     if report.rust_status.is_none() && report.rust_engine.is_none() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "parity report requires rust_status or rust_engine",
         ));
     }
     Ok(())
 }
 
-fn validate_environment_report(value: &Value, kind: DocumentKind) -> Result<(), ValidationError> {
+/// Validate environment-report status before attaching it to proof output.
+fn validate_environment_report(
+    value: &Value,
+    kind: DocumentKind,
+) -> Result<(), ProofValidationError> {
     let report = validate_deserializes::<EnvironmentReport>(value, kind)?;
     if report.status.trim().is_empty() {
-        return Err(ValidationError::malformed(
+        return Err(ProofValidationError::malformed(
             "environment report status must not be empty",
         ));
     }
     Ok(())
 }
 
-fn validate_deserializes<T>(value: &Value, kind: DocumentKind) -> Result<T, ValidationError>
+/// Deserialize a known document kind and convert serde failures into proof errors.
+fn validate_deserializes<T>(value: &Value, kind: DocumentKind) -> Result<T, ProofValidationError>
 where
     T: for<'de> Deserialize<'de>,
 {
-    serde_json::from_value(value.clone())
-        .map_err(|error| ValidationError::malformed(format!("{kind} malformed field: {error}")))
+    serde_json::from_value(value.clone()).map_err(|error| {
+        ProofValidationError::malformed(format!("{kind} malformed field: {error}"))
+    })
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -491,16 +536,18 @@ impl VisualScenarioManifest {
         }
     }
 
+    /// Expand cases just far enough to report their stable identifiers.
     fn expanded_case_ids(&self) -> Vec<String> {
         self.expanded_cases(&Value::Null)
             .map(|cases| cases.into_iter().map(|case| case.case_id).collect())
             .unwrap_or_default()
     }
 
+    /// Dispatch matrix expansion based on the scenario contract.
     fn expanded_cases(
         &self,
         manifest_value: &Value,
-    ) -> Result<Vec<ExpandedCaseOverview>, ValidationError> {
+    ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         match self.scenario_type.as_str() {
             "minimap-sidebar" => self.minimap_sidebar_cases(manifest_value),
             "command-palette-overlay" => self.command_palette_cases(manifest_value),
@@ -509,10 +556,11 @@ impl VisualScenarioManifest {
         }
     }
 
+    /// Expand minimap/sidebar scenarios across viewport, fixture, wrap, and direction axes.
     fn minimap_sidebar_cases(
         &self,
         manifest_value: &Value,
-    ) -> Result<Vec<ExpandedCaseOverview>, ValidationError> {
+    ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         let viewport_positions = default_when_empty(&self.matrix.viewport_positions, "top");
         let fixture_kinds = default_when_empty(&self.matrix.fixture_kinds, "plain-lines");
         let mut cases = Vec::new();
@@ -555,7 +603,7 @@ impl VisualScenarioManifest {
                                     case_id: case_id.clone(),
                                     manifest: manifest_value.clone(),
                                     size: serde_json::to_value(size).map_err(|error| {
-                                        ValidationError::malformed(format!(
+                                        ProofValidationError::malformed(format!(
                                             "case size serialization failed: {error}"
                                         ))
                                     })?,
@@ -575,10 +623,11 @@ impl VisualScenarioManifest {
         Ok(cases)
     }
 
+    /// Expand command-palette overlay scenarios across size and color axes.
     fn command_palette_cases(
         &self,
         manifest_value: &Value,
-    ) -> Result<Vec<ExpandedCaseOverview>, ValidationError> {
+    ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         let mut cases = Vec::new();
         for size in &self.matrix.sizes {
             for color_scheme in &self.matrix.color_schemes {
@@ -588,7 +637,7 @@ impl VisualScenarioManifest {
                     case_id: case_id.clone(),
                     manifest: manifest_value.clone(),
                     size: serde_json::to_value(size).map_err(|error| {
-                        ValidationError::malformed(format!(
+                        ProofValidationError::malformed(format!(
                             "case size serialization failed: {error}"
                         ))
                     })?,
@@ -604,10 +653,11 @@ impl VisualScenarioManifest {
         Ok(cases)
     }
 
+    /// Expand open-popover scenarios, defaulting omitted fixtures to the dense case.
     fn open_popover_cases(
         &self,
         manifest_value: &Value,
-    ) -> Result<Vec<ExpandedCaseOverview>, ValidationError> {
+    ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         let fixture_kinds = default_when_empty(&self.matrix.fixture_kinds, "dense");
         let mut cases = Vec::new();
         for size in &self.matrix.sizes {
@@ -622,7 +672,7 @@ impl VisualScenarioManifest {
                         case_id: case_id.clone(),
                         manifest: manifest_value.clone(),
                         size: serde_json::to_value(size).map_err(|error| {
-                            ValidationError::malformed(format!(
+                            ProofValidationError::malformed(format!(
                                 "case size serialization failed: {error}"
                             ))
                         })?,
@@ -837,22 +887,23 @@ struct AnimationSampling {
 }
 
 impl AnimationSampling {
-    fn validate(&self, manifest: &VisualScenarioManifest) -> Result<(), ValidationError> {
+    /// Validate animation sampling fields against the anchors available in the manifest.
+    fn validate(&self, manifest: &VisualScenarioManifest) -> Result<(), ProofValidationError> {
         if !self.enabled {
             return Ok(());
         }
         if manifest.pixel_anchors.is_empty() {
-            return Err(ValidationError::malformed(
+            return Err(ProofValidationError::malformed(
                 "animation_sampling requires pixel_anchors",
             ));
         }
         if self.invariant_id.as_deref().unwrap_or_default().is_empty() {
-            return Err(ValidationError::malformed(
+            return Err(ProofValidationError::malformed(
                 "animation_sampling requires invariant_id",
             ));
         }
         if self.sample_count == Some(0) {
-            return Err(ValidationError::malformed(
+            return Err(ProofValidationError::malformed(
                 "animation_sampling sample_count must be positive",
             ));
         }

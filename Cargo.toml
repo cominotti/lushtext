@@ -180,6 +180,7 @@ significant_drop_tightening   = "deny"
 
 # --- Clarity ---
 unreadable_literal            = "deny"
+decimal_literal_representation = "deny"
 separated_literal_suffix      = "deny"
 case_sensitive_file_extension_comparisons = "deny"
 wildcard_imports              = "deny"

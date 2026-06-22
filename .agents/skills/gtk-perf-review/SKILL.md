@@ -38,6 +38,10 @@ This means:
 - **Prefer simple, idiomatic Rust over clever micro-optimizations.** `format!()` is fine. `.to_string()` is fine. `.clone()` is fine when the alternative adds complexity.
 - **Sophisticated patterns need clear abstractions.** If SIMD code is recommended, the wrapper must be self-documenting. If an async pattern is complex, the helper function must have a clear name and purpose.
 - **File I/O goes through `services::filesystem`.** Flag raw filesystem access outside the approved backend/fixture modules, prefer cheap status helpers for presence/kind probes, and judge whether the boundary call belongs on a background thread or needs scale guards.
+- **Performance numbers are policy when they affect behavior.** Byte budgets,
+  debounce windows, retry counts, UI geometry thresholds, and search caps should
+  be named near their owning workflow. Do not flag harmless `0`/`1`, indexes, or
+  narrow fixture literals as performance issues.
 
 ### What We Do NOT Flag
 

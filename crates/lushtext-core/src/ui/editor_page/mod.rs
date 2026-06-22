@@ -32,7 +32,7 @@ use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
-pub use crate::services::editor_io::SaveError;
+pub use crate::services::editor_io::EditorSaveError;
 pub use bookmarks::{
     BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
 };

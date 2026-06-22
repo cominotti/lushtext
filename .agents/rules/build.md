@@ -111,9 +111,10 @@ an otherwise-valid smoke can fail before exercising the app if the runtime
 directory path is too deep.
 
 Run `make lint-advisory` after Rust/Clippy toolchain updates or lint-policy
-reviews. It runs broad advisory Clippy groups plus selected rustc probes,
-summarizes findings by lint code, and fails if a new category appears without a
-checked-in classification in `scripts/lint-advisory-policy.toml`.
+reviews. It runs broad advisory Clippy groups plus selected design, numeric,
+and rustc probes, summarizes findings by lint code, and fails if a new category
+appears without a checked-in classification in
+`scripts/lint-advisory-policy.toml`.
 
 Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
 

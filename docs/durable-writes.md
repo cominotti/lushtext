@@ -92,14 +92,15 @@ which side of the rename failed:
 
 - **`BeforeRename`** — the temp write, flush, metadata copy, final temp sync, or the rename
   itself failed. The destination still holds its previous bytes; nothing was
-  committed. The editor maps this to `SaveError::WriteTemp`, reports the save as
-  failed, and keeps the document modified so the user still has an unsaved-work
-  signal.
+  committed. The editor maps this to `EditorSaveError::WriteTemp`, reports the
+  save as failed, and keeps the document modified so the user still has an
+  unsaved-work signal.
 - **`AfterRename`** — the rename landed (the new bytes *are* the destination) but
   the parent-directory `fsync` failed. The change is visible yet not proven
-  crash-durable. The editor maps this to `SaveError::DurabilityUnconfirmed`,
-  surfaces a distinct durability **warning** (not a generic "save failed"), and
-  keeps the document modified so re-saving can re-attempt the directory flush.
+  crash-durable. The editor maps this to
+  `EditorSaveError::DurabilityUnconfirmed`, surfaces a distinct durability
+  **warning** (not a generic "save failed"), and keeps the document modified so
+  re-saving can re-attempt the directory flush.
 
 This distinction is why a transient directory-sync hiccup is never reported to
 the user as lost data.

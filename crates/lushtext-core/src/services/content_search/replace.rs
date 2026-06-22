@@ -238,7 +238,7 @@ pub fn apply_replacements(
                     file_replaced,
                 );
             }
-            Err(AtomicWriteError::BeforeRename(e)) => {
+            Err(ReplaceWriteError::BeforeRename(e)) => {
                 errors.push(format!("Failed to write {}: {e}", path.display()));
                 backup.remove(&path);
                 if let Some(data_dir) = journal_data_dir
@@ -251,7 +251,7 @@ pub fn apply_replacements(
                 }
                 continue;
             }
-            Err(AtomicWriteError::AfterRename(e)) => {
+            Err(ReplaceWriteError::AfterRename(e)) => {
                 errors.push(format!(
                     "Replaced {}, but durability sync failed: {e}",
                     path.display()
@@ -538,14 +538,14 @@ pub fn undo_replacements(backup: &ReplaceUndoBackup) -> UndoReplaceOutcome {
 
 /// Distinguishes write failures before and after the destination rename.
 #[derive(Debug)]
-enum AtomicWriteError {
+enum ReplaceWriteError {
     /// The final path should still contain its previous bytes.
     BeforeRename(anyhow::Error),
     /// The rename already succeeded, but making the directory entry durable failed.
     AfterRename(anyhow::Error),
 }
 
-impl std::fmt::Display for AtomicWriteError {
+impl std::fmt::Display for ReplaceWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BeforeRename(error) | Self::AfterRename(error) => error.fmt(f),
@@ -553,7 +553,7 @@ impl std::fmt::Display for AtomicWriteError {
     }
 }
 
-impl std::error::Error for AtomicWriteError {}
+impl std::error::Error for ReplaceWriteError {}
 
 /// Atomically write bytes to a file through the shared durable-write helper.
 ///
@@ -561,10 +561,10 @@ impl std::error::Error for AtomicWriteError {}
 /// metadata preservation (mode bits, ownership, ACLs, xattrs) and the same
 /// before/after-rename failure classification as in-editor saves, instead of
 /// re-implementing the contract here.
-fn atomic_write(path: &Path, content: &[u8]) -> Result<(), AtomicWriteError> {
+fn atomic_write(path: &Path, content: &[u8]) -> Result<(), ReplaceWriteError> {
     let write_path = fs_write::resolve_target_identity(path)
         .map_err(|source| {
-            AtomicWriteError::BeforeRename(anyhow::anyhow!(
+            ReplaceWriteError::BeforeRename(anyhow::anyhow!(
                 "Failed to resolve write target {}: {source}",
                 path.display()
             ))
@@ -572,11 +572,11 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<(), AtomicWriteError> {
         .into_path_buf();
     fs_write::atomic_replace(&write_path, WriteLabel::REPLACE, content).map_err(|error| match error
     {
-        fs_write::DurableWriteError::BeforeRename(source) => AtomicWriteError::BeforeRename(
+        fs_write::DurableWriteError::BeforeRename(source) => ReplaceWriteError::BeforeRename(
             anyhow::anyhow!("Failed to write {}: {source}", path.display()),
         ),
         fs_write::DurableWriteError::AfterRename(source) => {
-            AtomicWriteError::AfterRename(anyhow::anyhow!(
+            ReplaceWriteError::AfterRename(anyhow::anyhow!(
                 "Failed to sync parent directory for {}: {source}",
                 path.display()
             ))
@@ -1010,7 +1010,7 @@ mod tests {
 
     #[test]
     fn atomic_write_error_display_includes_inner_error() {
-        let error = AtomicWriteError::AfterRename(anyhow::anyhow!("directory sync failed"));
+        let error = ReplaceWriteError::AfterRename(anyhow::anyhow!("directory sync failed"));
 
         assert_eq!(error.to_string(), "directory sync failed");
     }

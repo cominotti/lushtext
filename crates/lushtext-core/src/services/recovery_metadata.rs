@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn default_metadata_cap_is_sixteen_mib() {
-        assert_eq!(DEFAULT_MAX_METADATA_BYTES, 16_777_216);
+        assert_eq!(DEFAULT_MAX_METADATA_BYTES, 16 * 1024 * 1024);
     }
 
     #[test]

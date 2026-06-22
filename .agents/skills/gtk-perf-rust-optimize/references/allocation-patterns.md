@@ -23,7 +23,12 @@ The code uses `services::filesystem::read::bytes` + `simdutf8::basic::from_utf8`
 let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
 let content = match simdutf8::basic::from_utf8(&bytes) {
     Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
-    Err(_) => return Err(LoadError::InvalidUtf8(file_path)),
+    Err(_) => {
+        return Err(EditorLoadError::Read {
+            path: file_path,
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8"),
+        });
+    }
 };
 ```
 
@@ -48,21 +53,23 @@ For a 50MB file, peak memory during save is ~3x file_size (GtkTextBuffer + GStri
 
 ## 3. Error Enum Pattern {#3-error-enum}
 
-**Status: IMPLEMENTED** — `editor_page/mod.rs` uses a `thiserror`-derived `LoadError` enum.
+**Status: IMPLEMENTED** — `services/editor_io.rs` uses a `thiserror`-derived `EditorLoadError` enum.
 
 ```rust
 #[derive(Debug, thiserror::Error)]
-pub enum LoadError {
+pub enum EditorLoadError {
     #[error("load cancelled")]
     Cancelled,
-    #[error("file is not valid UTF-8: {0}")]
-    InvalidUtf8(std::path::PathBuf),
-    #[error("{0}")]
-    Io(String),
+    #[error("Cannot stat {path}: {source}")]
+    Metadata { path: PathBuf, source: std::io::Error },
+    #[error("Failed to read {path}: {source}")]
+    Read { path: PathBuf, source: std::io::Error },
+    #[error("{path} is too large to edit ({size_mb} MB). Consider a pager like `less`.")]
+    TooLarge { path: PathBuf, size_mb: u64 },
 }
 ```
 
-**Why this matters for correctness**: `LoadError::Cancelled` enables exhaustive pattern matching. No fragile string comparisons. The error variants document what can go wrong.
+**Why this matters for correctness**: `EditorLoadError::Cancelled` enables exhaustive pattern matching. No fragile string comparisons. The error variants document what can go wrong.
 
 New service functions should follow this pattern when they have distinct failure modes.
 

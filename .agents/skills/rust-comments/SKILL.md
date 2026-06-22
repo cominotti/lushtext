@@ -90,6 +90,10 @@ Always comment these situations:
 - Why this specific value — cite measurements, benchmarks, or heuristics
 - What happens if the value is too high or too low
 - Hardware/environment assumptions (e.g., "comfortable on 8GB machines")
+- Numeric constants should own real policy near the workflow that uses them:
+  timeouts, debounce delays, byte caps, UI geometry, retry counts, protocol
+  limits, and schema limits. Do not ask for a constant that only restates an
+  obvious `0`/`1`, index, simple arithmetic identity, or narrow fixture datum.
 
 ### Configuration Files (TOML, XML, Meson, Makefile)
 
