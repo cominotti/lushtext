@@ -134,9 +134,10 @@ Recommend a named struct, enum, or newtype when code shows:
 - several related booleans that define one mode
 - `String`/`PathBuf`/`usize` values whose role is ambiguous across signatures
 - repeated `HashMap<K, V>` or `Vec<(A, B)>` shaping with implicit semantics
-- cross-boundary error enums named only for a generic action or mechanism
-  (`LoadError`, `SaveError`, `ValidationError`, `AtomicWriteError`) instead of
-  the workflow/domain the caller is handling
+- cross-boundary error enums named only for a generic action or mechanism; prefer
+  workflow/domain names such as `EditorLoadError`, `EditorSaveError`,
+  `ProofValidationError`, or `ReplaceWriteError` over `LoadError`, `SaveError`,
+  `ValidationError`, or `AtomicWriteError`
 
 ### Name Numeric Policy Where It Lives
 
