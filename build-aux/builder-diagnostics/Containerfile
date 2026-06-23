@@ -25,6 +25,7 @@ RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps
         appstream-devel \
         at-spi2-core \
         at-spi2-core-devel \
+        bison \
         blueprint-compiler \
         cairo-devel \
         clang \
@@ -33,6 +34,7 @@ RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps
         dbus-daemon \
         desktop-file-utils \
         findutils \
+        flex \
         fontconfig-devel \
         fribidi-devel \
         gcc \
