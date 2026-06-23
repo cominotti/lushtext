@@ -27,6 +27,30 @@ lint rule is unclassified, reports an error, a promoted must-stay-clean rule
 regresses, or an accepted advisory finding exceeds its documented file/count
 ceiling.
 
+## Runtime Builder Diagnostics
+
+For focused GtkBuilder diagnostics after GTK, Libadwaita, GResource, and
+LushText composite widget types are initialized, run a selected widget test with
+builder debug output enabled:
+
+```sh
+GTK_DEBUG=builder,builder-objects \
+  scripts/run-widget-tests.sh --headless -- <test> --exact --nocapture
+```
+
+This is a manual recipe, not a blocking check. Some host GTK builds print
+`GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG`; treat
+that as an unsupported-host limitation for this diagnostic channel, not as a
+template defect. Standalone `gtk4-builder-tool validate` is useful for
+GTK-loadable generated templates, but it cannot load every LushText template
+because Libadwaita template parents and app composite widget types are not
+registered in the standalone context.
+
+The `evaluate-gnome-50-ui-spikes` probe used this lane to remove deprecated
+implicit `<child>` builder syntax from selected templates. Promoting the lane to
+an advisory or blocking target needs a separate proposal with a debug-enabled
+GTK runtime, an explicit surface coverage map, and diagnostic classification.
+
 ## Compile Warning Policy
 
 Unknown `blueprint-compiler compile` warnings fail `make check-blueprint`.
@@ -45,7 +69,7 @@ uses GTK's existing shortcuts window until a separate UI redesign replaces it.
 | `translate_display_string` | Partially classified | `info-bar.blp` x2, `search-panel.blp` x4, `status-bar.blp` x3, `window.blp` x2 | Static user-facing strings that were safe to translate are fixed. Remaining findings are runtime-populated empty alert labels, symbolic search toggles or `.gitignore`, technical status tokens, and the LushText brand title. |
 | `adjustment_prop_order` | Classified | `preferences.blp` x4 | The source is normalized to lower, upper, then value, but blueprint-compiler 0.20.4 still warns when increment properties are present. Removing increments would change control behavior. |
 | `avoid_all_caps` | Classified | `status-bar.blp` x2 | `LF` and `UTF-8` are compact technical status labels, not prose labels. |
-| `scrollable_parent` | Classified | `editor-page.blp` x2, `window.blp` x7 | Current findings involve custom composite templates and layout-owned children. Changes require widget or visual proof because scroll ownership affects geometry. |
+| `scrollable_parent` | Classified | `editor-page.blp` x2, `window.blp` x8 | Current findings involve custom composite templates and layout-owned children. Changes require widget or visual proof because scroll ownership affects geometry. |
 | `use_adw_bin` | Classified | `info-bar.blp` x1, `search-panel.blp` x1, `status-bar.blp` x1, `window.blp` x1 | Single-child boxes carry CSS classes, Rust template-child bindings, animation state, or layout semantics. Container swaps require generated-UI and visual proof. |
 
 ## Visual Proof

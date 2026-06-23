@@ -45,12 +45,12 @@ template $LushtextEditorPage: Box {
     reveal-child: false;
     transition-type: slide_up;
 
-    Box {
+    child: Box {
       orientation: vertical;
 
       Separator {}
 
       $LushtextSearchBar search_bar {}
-    }
+    };
   }
 }

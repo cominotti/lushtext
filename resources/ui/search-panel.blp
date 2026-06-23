@@ -92,7 +92,7 @@ template $LushtextSearchPanel: Box {
     transition-duration: 150;
     reveal-child: false;
 
-    Box options_box {
+    child: Box options_box {
       orientation: vertical;
       spacing: 6;
       margin-start: 6;
@@ -135,7 +135,7 @@ template $LushtextSearchPanel: Box {
           visible: false;
         }
       }
-    }
+    };
   }
 
   Revealer results_feedback_revealer {
@@ -143,7 +143,7 @@ template $LushtextSearchPanel: Box {
     transition-duration: 250;
     reveal-child: false;
 
-    Box results_feedback_box {
+    child: Box results_feedback_box {
       orientation: vertical;
 
       Separator results_header_separator {
@@ -155,20 +155,20 @@ template $LushtextSearchPanel: Box {
         transition-duration: 250;
         reveal-child: false;
 
-        Box results_body_box {
+        child: Box results_body_box {
           orientation: vertical;
 
           ScrolledWindow results_scroll {
             propagate-natural-height: true;
             min-content-height: 100;
 
-            ListView results_list {}
+            child: ListView results_list {};
           }
 
           Separator results_footer_separator {
             orientation: horizontal;
           }
-        }
+        };
       }
 
       Box footer_box {
@@ -184,6 +184,6 @@ template $LushtextSearchPanel: Box {
           xalign: 0.0;
         }
       }
-    }
+    };
   }
 }

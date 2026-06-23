@@ -253,17 +253,12 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:child",
+          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:property/0:object:GtkBox/1:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:child/0:object:GtkBox/1:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:child/0:object:GtkBox/2:child",
+          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:property/0:object:GtkBox/2:child",
           "type": ""
         }
       ],
@@ -309,17 +304,17 @@
         {
           "class": "GtkBox",
           "id": "",
-          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:child/0:object:GtkBox"
+          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:property/0:object:GtkBox"
         },
         {
           "class": "GtkSeparator",
           "id": "",
-          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:child/0:object:GtkBox/1:child/0:object:GtkSeparator"
+          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:property/0:object:GtkBox/1:child/0:object:GtkSeparator"
         },
         {
           "class": "LushtextSearchBar",
           "id": "search_bar",
-          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:child/0:object:GtkBox/2:child/0:object:LushtextSearchBar#search_bar"
+          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:property/0:object:GtkBox/2:child/0:object:LushtextSearchBar#search_bar"
         }
       ],
       "properties": [
@@ -417,7 +412,7 @@
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:child/0:object:GtkBox/0:property",
+          "path": "0:template:LushtextEditorPage/4:child/0:object:GtkRevealer#search_revealer/2:property/0:object:GtkBox/0:property",
           "translatable": "",
           "value": "1"
         }
@@ -862,11 +857,6 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextMarkdownPreview/1:child/0:object:GtkScrolledWindow#scrolled_window/2:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
           "path": "0:template:LushtextMarkdownPreview/2:child",
           "type": ""
         }
@@ -883,7 +873,7 @@
         {
           "class": "GtkTextView",
           "id": "text_view",
-          "path": "0:template:LushtextMarkdownPreview/1:child/0:object:GtkScrolledWindow#scrolled_window/2:child/0:object:GtkTextView#text_view"
+          "path": "0:template:LushtextMarkdownPreview/1:child/0:object:GtkScrolledWindow#scrolled_window/2:property/0:object:GtkTextView#text_view"
         },
         {
           "class": "AdwStatusPage",
@@ -916,7 +906,7 @@
         {
           "context": "",
           "name": "wrap-mode",
-          "path": "0:template:LushtextMarkdownPreview/1:child/0:object:GtkScrolledWindow#scrolled_window/2:child/0:object:GtkTextView#text_view/2:property",
+          "path": "0:template:LushtextMarkdownPreview/1:child/0:object:GtkScrolledWindow#scrolled_window/2:property/0:object:GtkTextView#text_view/2:property",
           "translatable": "",
           "value": "2"
         },
@@ -960,7 +950,7 @@
       "style_classes": [
         {
           "name": "tab-content-preview-surface",
-          "path": "0:template:LushtextMarkdownPreview/1:child/0:object:GtkScrolledWindow#scrolled_window/2:child/0:object:GtkTextView#text_view/7:style/0:class"
+          "path": "0:template:LushtextMarkdownPreview/1:child/0:object:GtkScrolledWindow#scrolled_window/2:property/0:object:GtkTextView#text_view/7:style/0:class"
         },
         {
           "name": "preview-placeholder-opaque",
@@ -1228,7 +1218,7 @@
         {
           "context": "",
           "name": "icon-name",
-          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child/0:object:GtkImage/0:property",
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child/0:object:GtkImage/1:property",
           "translatable": "",
           "value": "document-open-recent-symbolic"
         },
@@ -1304,7 +1294,7 @@
         },
         {
           "name": "dim-label",
-          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child/0:object:GtkImage/2:style/0:class"
+          "path": "0:template:LushtextOpenPopover/4:property/0:object:GtkBox/3:child/0:object:GtkStack#stack/2:child/0:object:GtkBox#empty_state/6:child/0:object:GtkImage/3:style/0:class"
         },
         {
           "name": "dim-label",
@@ -1337,7 +1327,15 @@
       ]
     },
     "preferences.ui": {
-      "accessibility": [],
+      "accessibility": [
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/1:child/0:object:AdwActionRow#data_status_row/3:child/0:object:GtkImage#data_current_indicator/5:accessibility",
+          "translatable": "yes",
+          "value": "Data format verified"
+        }
+      ],
       "child_roles": [
         {
           "internal-child": "",
@@ -2175,6 +2173,13 @@
         },
         {
           "context": "",
+          "name": "label",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/1:child/0:object:AdwActionRow#data_status_row/3:child/0:object:GtkImage#data_current_indicator/5:accessibility/0:property",
+          "translatable": "yes",
+          "value": "Data format verified"
+        },
+        {
+          "context": "",
           "name": "icon-name",
           "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/1:child/0:object:AdwActionRow#data_status_row/4:child/0:object:GtkButton#data_scan_button/0:property",
           "translatable": "",
@@ -2528,6 +2533,12 @@
           "context": "",
           "name": "tooltip-text",
           "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/1:child/0:object:AdwActionRow#data_status_row/3:child/0:object:GtkImage#data_current_indicator/1:property",
+          "value": "Data format verified"
+        },
+        {
+          "context": "",
+          "name": "label",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/2:child/0:object:AdwPreferencesGroup/1:child/0:object:AdwActionRow#data_status_row/3:child/0:object:GtkImage#data_current_indicator/5:accessibility/0:property",
           "value": "Data format verified"
         },
         {
@@ -2961,11 +2972,6 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
           "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/3:child",
           "type": "overlay"
         },
@@ -3006,27 +3012,12 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
           "path": "0:template:LushtextSearchBar/9:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
           "path": "0:template:LushtextSearchBar/10:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:child",
           "type": ""
         }
       ],
@@ -3128,7 +3119,7 @@
         {
           "class": "GtkSearchEntry",
           "id": "search_entry",
-          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:child/0:object:GtkSearchEntry#search_entry"
+          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:property/0:object:GtkSearchEntry#search_entry"
         },
         {
           "class": "GtkLabel",
@@ -3173,7 +3164,7 @@
         {
           "class": "GtkEntry",
           "id": "replace_entry",
-          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:child/0:object:GtkEntry#replace_entry"
+          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:property/0:object:GtkEntry#replace_entry"
         },
         {
           "class": "GtkRevealer",
@@ -3183,7 +3174,7 @@
         {
           "class": "GtkButton",
           "id": "replace_button",
-          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:child/0:object:GtkButton#replace_button"
+          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:property/0:object:GtkButton#replace_button"
         },
         {
           "class": "GtkRevealer",
@@ -3193,7 +3184,7 @@
         {
           "class": "GtkButton",
           "id": "replace_all_button",
-          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:child/0:object:GtkButton#replace_all_button"
+          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:property/0:object:GtkButton#replace_all_button"
         }
       ],
       "properties": [
@@ -3221,14 +3212,14 @@
         {
           "context": "",
           "name": "hexpand",
-          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:child/0:object:GtkSearchEntry#search_entry/0:property",
+          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:property/0:object:GtkSearchEntry#search_entry/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:child/0:object:GtkSearchEntry#search_entry/1:property",
+          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:property/0:object:GtkSearchEntry#search_entry/1:property",
           "translatable": "yes",
           "value": "Find\u2026"
         },
@@ -3403,21 +3394,21 @@
         {
           "context": "",
           "name": "hexpand",
-          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:child/0:object:GtkEntry#replace_entry/0:property",
+          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:property/0:object:GtkEntry#replace_entry/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "margin-top",
-          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:child/0:object:GtkEntry#replace_entry/1:property",
+          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:property/0:object:GtkEntry#replace_entry/1:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:child/0:object:GtkEntry#replace_entry/2:property",
+          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:property/0:object:GtkEntry#replace_entry/2:property",
           "translatable": "yes",
           "value": "Replace\u2026"
         },
@@ -3445,14 +3436,14 @@
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:child/0:object:GtkButton#replace_button/0:property",
+          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:property/0:object:GtkButton#replace_button/0:property",
           "translatable": "yes",
           "value": "_Replace"
         },
         {
           "context": "",
           "name": "margin-top",
-          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:child/0:object:GtkButton#replace_button/2:property",
+          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:property/0:object:GtkButton#replace_button/2:property",
           "translatable": "",
           "value": "6"
         },
@@ -3480,14 +3471,14 @@
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:child/0:object:GtkButton#replace_all_button/0:property",
+          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:property/0:object:GtkButton#replace_all_button/0:property",
           "translatable": "yes",
           "value": "Replace _All"
         },
         {
           "context": "",
           "name": "margin-top",
-          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:child/0:object:GtkButton#replace_all_button/2:property",
+          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:property/0:object:GtkButton#replace_all_button/2:property",
           "translatable": "",
           "value": "6"
         }
@@ -3542,7 +3533,7 @@
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:child/0:object:GtkSearchEntry#search_entry/1:property",
+          "path": "0:template:LushtextSearchBar/3:child/0:object:GtkOverlay/2:property/0:object:GtkSearchEntry#search_entry/1:property",
           "value": "Find\u2026"
         },
         {
@@ -3578,19 +3569,19 @@
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:child/0:object:GtkEntry#replace_entry/2:property",
+          "path": "0:template:LushtextSearchBar/8:child/0:object:GtkRevealer#replace_entry_revealer/5:property/0:object:GtkEntry#replace_entry/2:property",
           "value": "Replace\u2026"
         },
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:child/0:object:GtkButton#replace_button/0:property",
+          "path": "0:template:LushtextSearchBar/9:child/0:object:GtkRevealer#replace_button_revealer/4:property/0:object:GtkButton#replace_button/0:property",
           "value": "_Replace"
         },
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:child/0:object:GtkButton#replace_all_button/0:property",
+          "path": "0:template:LushtextSearchBar/10:child/0:object:GtkRevealer#replace_all_revealer/4:property/0:object:GtkButton#replace_all_button/0:property",
           "value": "Replace _All"
         }
       ]
@@ -3660,42 +3651,37 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child",
           "type": ""
         },
         {
@@ -3705,47 +3691,32 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/1:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/1:child",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/1:child",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/2:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/2:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child",
           "type": ""
         }
       ],
@@ -3816,42 +3787,42 @@
         {
           "class": "GtkBox",
           "id": "options_box",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box"
         },
         {
           "class": "GtkBox",
           "id": "filter_row",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row"
         },
         {
           "class": "GtkToggleButton",
           "id": "gitignore_toggle",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle"
         },
         {
           "class": "GtkEntry",
           "id": "glob_entry",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry"
         },
         {
           "class": "GtkBox",
           "id": "replace_row",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row"
         },
         {
           "class": "GtkEntry",
           "id": "replace_entry",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry"
         },
         {
           "class": "GtkButton",
           "id": "replace_all_button",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button"
         },
         {
           "class": "GtkButton",
           "id": "undo_button",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button"
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button"
         },
         {
           "class": "GtkRevealer",
@@ -3861,47 +3832,47 @@
         {
           "class": "GtkBox",
           "id": "results_feedback_box",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box"
         },
         {
           "class": "GtkSeparator",
           "id": "results_header_separator",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/1:child/0:object:GtkSeparator#results_header_separator"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/1:child/0:object:GtkSeparator#results_header_separator"
         },
         {
           "class": "GtkRevealer",
           "id": "results_body_revealer",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer"
         },
         {
           "class": "GtkBox",
           "id": "results_body_box",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box"
         },
         {
           "class": "GtkScrolledWindow",
           "id": "results_scroll",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll"
         },
         {
           "class": "GtkListView",
           "id": "results_list",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/2:child/0:object:GtkListView#results_list"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/2:property/0:object:GtkListView#results_list"
         },
         {
           "class": "GtkSeparator",
           "id": "results_footer_separator",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/2:child/0:object:GtkSeparator#results_footer_separator"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/2:child/0:object:GtkSeparator#results_footer_separator"
         },
         {
           "class": "GtkBox",
           "id": "footer_box",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box"
         },
         {
           "class": "GtkLabel",
           "id": "count_label",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child/0:object:GtkLabel#count_label"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child/0:object:GtkLabel#count_label"
         }
       ],
       "properties": [
@@ -4139,119 +4110,119 @@
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/0:property",
           "translatable": "",
           "value": "1"
         },
         {
           "context": "",
           "name": "margin-start",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/2:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/2:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "margin-end",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/3:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/3:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "margin-top",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/4:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/4:property",
           "translatable": "",
           "value": "0"
         },
         {
           "context": "",
           "name": "margin-bottom",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/5:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/5:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/0:property",
           "translatable": "",
           "value": "0"
         },
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/0:property",
           "translatable": "",
           "value": ".gitignore"
         },
         {
           "context": "",
           "name": "tooltip-text",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/1:property",
           "translatable": "yes",
           "value": "Respect .gitignore patterns"
         },
         {
           "context": "",
           "name": "hexpand",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/1:property",
           "translatable": "yes",
           "value": "File filter (e.g., *.rs, *.toml)"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/0:property",
           "translatable": "",
           "value": "0"
         },
         {
           "context": "",
           "name": "hexpand",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry/1:property",
           "translatable": "yes",
           "value": "Replace with"
         },
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button/0:property",
           "translatable": "yes",
           "value": "Replace All"
         },
         {
           "context": "",
           "name": "sensitive",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button/1:property",
           "translatable": "",
           "value": "false"
         },
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/0:property",
           "translatable": "yes",
           "value": "Undo replacements"
         },
         {
           "context": "",
           "name": "visible",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/1:property",
           "translatable": "",
           "value": "false"
         },
@@ -4279,112 +4250,112 @@
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/0:property",
           "translatable": "",
           "value": "1"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/1:child/0:object:GtkSeparator#results_header_separator/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/1:child/0:object:GtkSeparator#results_header_separator/0:property",
           "translatable": "",
           "value": "0"
         },
         {
           "context": "",
           "name": "transition-type",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/0:property",
           "translatable": "",
           "value": "4"
         },
         {
           "context": "",
           "name": "transition-duration",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/1:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/1:property",
           "translatable": "",
           "value": "250"
         },
         {
           "context": "",
           "name": "reveal-child",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/2:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/2:property",
           "translatable": "",
           "value": "false"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/0:property",
           "translatable": "",
           "value": "1"
         },
         {
           "context": "",
           "name": "propagate-natural-height",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "min-content-height",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/1:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/1:property",
           "translatable": "",
           "value": "100"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:child/0:object:GtkBox#results_body_box/2:child/0:object:GtkSeparator#results_footer_separator/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/2:child/0:object:GtkSeparator#results_footer_separator/0:property",
           "translatable": "",
           "value": "0"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/0:property",
           "translatable": "",
           "value": "0"
         },
         {
           "context": "",
           "name": "margin-start",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/2:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/2:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "margin-end",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/3:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/3:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "margin-top",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/4:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/4:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "margin-bottom",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/5:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/5:property",
           "translatable": "",
           "value": "6"
         },
         {
           "context": "",
           "name": "hexpand",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child/0:object:GtkLabel#count_label/0:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child/0:object:GtkLabel#count_label/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "xalign",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:child/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child/0:object:GtkLabel#count_label/1:property",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/3:child/0:object:GtkBox#footer_box/6:child/0:object:GtkLabel#count_label/1:property",
           "translatable": "",
           "value": "0"
         }
@@ -4469,31 +4440,31 @@
         {
           "context": "",
           "name": "tooltip-text",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/2:child/0:object:GtkToggleButton#gitignore_toggle/1:property",
           "value": "Respect .gitignore patterns"
         },
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/6:child/0:object:GtkBox#filter_row/3:child/0:object:GtkEntry#glob_entry/1:property",
           "value": "File filter (e.g., *.rs, *.toml)"
         },
         {
           "context": "",
           "name": "placeholder-text",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry/1:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/2:child/0:object:GtkEntry#replace_entry/1:property",
           "value": "Replace with"
         },
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/3:child/0:object:GtkButton#replace_all_button/0:property",
           "value": "Replace All"
         },
         {
           "context": "",
           "name": "label",
-          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:child/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/0:property",
+          "path": "0:template:LushtextSearchPanel/5:child/0:object:GtkRevealer#options_revealer/3:property/0:object:GtkBox#options_box/7:child/0:object:GtkBox#replace_row/4:child/0:object:GtkButton#undo_button/0:property",
           "value": "Undo replacements"
         }
       ]
@@ -5161,16 +5132,6 @@
           "internal-child": "",
           "path": "0:template:LushtextSidebar/4:child",
           "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child/0:object:GtkScrolledWindow#outer_scrolled_window/3:child",
-          "type": ""
         }
       ],
       "layout_properties": [],
@@ -5205,12 +5166,12 @@
         {
           "class": "GtkScrolledWindow",
           "id": "outer_scrolled_window",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child/0:object:GtkScrolledWindow#outer_scrolled_window"
+          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:property/0:object:GtkScrolledWindow#outer_scrolled_window"
         },
         {
           "class": "GtkBox",
           "id": "sections_box",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child/0:object:GtkScrolledWindow#outer_scrolled_window/3:child/0:object:GtkBox#sections_box"
+          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:property/0:object:GtkScrolledWindow#outer_scrolled_window/3:property/0:object:GtkBox#sections_box"
         }
       ],
       "properties": [
@@ -5322,28 +5283,28 @@
         {
           "context": "",
           "name": "vexpand",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child/0:object:GtkScrolledWindow#outer_scrolled_window/0:property",
+          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:property/0:object:GtkScrolledWindow#outer_scrolled_window/0:property",
           "translatable": "",
           "value": "true"
         },
         {
           "context": "",
           "name": "propagate-natural-width",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child/0:object:GtkScrolledWindow#outer_scrolled_window/1:property",
+          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:property/0:object:GtkScrolledWindow#outer_scrolled_window/1:property",
           "translatable": "",
           "value": "false"
         },
         {
           "context": "",
           "name": "hscrollbar-policy",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child/0:object:GtkScrolledWindow#outer_scrolled_window/2:property",
+          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:property/0:object:GtkScrolledWindow#outer_scrolled_window/2:property",
           "translatable": "",
           "value": "2"
         },
         {
           "context": "",
           "name": "orientation",
-          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:child/0:object:GtkScrolledWindow#outer_scrolled_window/3:child/0:object:GtkBox#sections_box/0:property",
+          "path": "0:template:LushtextSidebar/4:child/0:object:GtkRevealer#workspace_list_revealer/3:property/0:object:GtkScrolledWindow#outer_scrolled_window/3:property/0:object:GtkBox#sections_box/0:property",
           "translatable": "",
           "value": "1"
         }
@@ -6035,11 +5996,6 @@
         {
           "internal-child": "",
           "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/2:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/2:child/0:object:GtkRevealer#search_panel_revealer/3:child",
           "type": ""
         },
         {
@@ -6757,7 +6713,7 @@
         {
           "class": "LushtextSearchPanel",
           "id": "search_panel",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/2:child/0:object:GtkRevealer#search_panel_revealer/3:child/0:object:LushtextSearchPanel#search_panel"
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/3:child/0:object:GtkOverlay#window_overlay/3:property/0:object:GtkLushClipBin#window_content_clipper/2:property/0:object:AdwOverlaySplitView#workspace_split_view/2:property/0:object:AdwMultiLayoutView#properties_layout_view/3:child/0:object:GtkBox#content_box/2:child/0:object:GtkRevealer#search_panel_revealer/3:property/0:object:LushtextSearchPanel#search_panel"
         },
         {
           "class": "LushtextPropertiesPanel",
@@ -6853,14 +6809,14 @@
         {
           "context": "",
           "name": "icon-name",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/2:child/0:object:GtkImage/0:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/1:child/0:object:GtkStackPage/1:property/0:object:GtkBox/2:child/0:object:GtkImage/1:property",
           "translatable": "",
           "value": "pan-down-symbolic"
         },
         {
           "context": "",
           "name": "icon-name",
-          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkImage/0:property",
+          "path": "0:template:LushtextWindow/4:property/0:object:GtkBox/1:child/0:object:AdwHeaderBar#header_bar/1:child/0:object:GtkMenuButton#open_menu_button/3:property/0:object:GtkStack#open_button_stack/2:child/0:object:GtkStackPage/1:property/0:object:GtkImage/1:property",
           "translatable": "",
           "value": "folder-symbolic"
         },
@@ -7409,11 +7365,6 @@
         },
         {
           "internal-child": "",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/4:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
           "path": "0:template:LushtextWorkspaceSection/5:child",
           "type": ""
         }
@@ -7475,7 +7426,7 @@
         {
           "class": "GtkListView",
           "id": "file_tree_view",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/4:child/0:object:GtkListView#file_tree_view"
+          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/4:property/0:object:GtkListView#file_tree_view"
         },
         {
           "class": "GtkLabel",
@@ -7839,7 +7790,7 @@
         },
         {
           "name": "navigation-sidebar",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/4:child/0:object:GtkListView#file_tree_view/0:style/0:class"
+          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/4:property/0:object:GtkListView#file_tree_view/0:style/0:class"
         },
         {
           "name": "dim-label",

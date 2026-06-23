@@ -43,14 +43,14 @@ template $LushtextSidebar: Box {
     transition-duration: 250;
     // Scrollable area for all workspace sections. Natural width propagation
     // stays disabled so long file names cannot widen the sidebar split.
-    ScrolledWindow outer_scrolled_window {
+    child: ScrolledWindow outer_scrolled_window {
       vexpand: true;
       propagate-natural-width: false;
       hscrollbar-policy: never;
       // Workspace sections are appended programmatically.
-      Box sections_box {
+      child: Box sections_box {
         orientation: vertical;
-      }
-    }
+      };
+    };
   }
 }

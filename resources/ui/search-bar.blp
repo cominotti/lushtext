@@ -21,10 +21,10 @@ template $LushtextSearchBar: Grid {
       row: "0";
     }
 
-    SearchEntry search_entry {
+    child: SearchEntry search_entry {
       hexpand: true;
       placeholder-text: _("Find…");
-    }
+    };
 
     [overlay]
     Label match_label {
@@ -132,12 +132,12 @@ template $LushtextSearchBar: Grid {
       row: "1";
     }
 
-    Entry replace_entry {
+    child: Entry replace_entry {
       hexpand: true;
       margin-top: 6;
       placeholder-text: _("Replace…");
       primary-icon-name: "edit-find-replace-symbolic";
-    }
+    };
   }
 
   Revealer replace_button_revealer {
@@ -150,11 +150,11 @@ template $LushtextSearchBar: Grid {
       row: "1";
     }
 
-    Button replace_button {
+    child: Button replace_button {
       label: _("_Replace");
       use-underline: true;
       margin-top: 6;
-    }
+    };
   }
 
   Revealer replace_all_revealer {
@@ -168,10 +168,10 @@ template $LushtextSearchBar: Grid {
       column-span: "3";
     }
 
-    Button replace_all_button {
+    child: Button replace_all_button {
       label: _("Replace _All");
       use-underline: true;
       margin-top: 6;
-    }
+    };
   }
 }

@@ -55,7 +55,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
       <object class="GtkRevealer" id="search_revealer">
         <property name="reveal-child">false</property>
         <property name="transition-type">4</property>
-        <child>
+        <property name="child">
           <object class="GtkBox">
             <property name="orientation">1</property>
             <child>
@@ -65,7 +65,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
               <object class="LushtextSearchBar" id="search_bar"></object>
             </child>
           </object>
-        </child>
+        </property>
       </object>
     </child>
   </template>

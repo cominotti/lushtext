@@ -45,6 +45,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                             </child>
                             <child>
                               <object class="GtkImage">
+                                <property name="accessible-role">43</property>
                                 <property name="icon-name">pan-down-symbolic</property>
                               </object>
                             </child>
@@ -57,6 +58,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         <property name="name">narrow</property>
                         <property name="child">
                           <object class="GtkImage">
+                            <property name="accessible-role">43</property>
                             <property name="icon-name">folder-symbolic</property>
                           </object>
                         </property>
@@ -265,9 +267,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <property name="transition-type">4</property>
                                 <property name="transition-duration">250</property>
                                 <property name="reveal-child">false</property>
-                                <child>
+                                <property name="child">
                                   <object class="LushtextSearchPanel" id="search_panel"></object>
-                                </child>
+                                </property>
                               </object>
                             </child>
                           </object>

@@ -57,6 +57,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <property name="margin-end">6</property>
                 <child>
                   <object class="GtkImage">
+                    <property name="accessible-role">43</property>
                     <property name="icon-name">document-open-recent-symbolic</property>
                     <property name="pixel-size">96</property>
                     <style>

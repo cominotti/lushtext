@@ -263,6 +263,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <style>
                       <class name="data-current-indicator"/>
                     </style>
+                    <accessibility>
+                      <property name="label" translatable="yes">Data format verified</property>
+                    </accessibility>
                   </object>
                 </child>
                 <child type="suffix">

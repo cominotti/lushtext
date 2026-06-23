@@ -25,6 +25,7 @@ _build/
 # visible because it contains checked-in local smoke evidence fixtures.
 /build/blueprint-validation/
 /build/blueprint-visual-diff/
+/build/gnome-50-ui-spikes/
 /build/gtk-proof/
 /build/gtk-lush-adoption/
 /build/proof-corpus/

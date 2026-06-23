@@ -98,11 +98,11 @@ template $LushtextWorkspaceSection: Box {
     vscrollbar-policy: never;
     hscrollbar-policy: never;
 
-    ListView file_tree_view {
+    child: ListView file_tree_view {
       styles [
         "navigation-sidebar",
       ]
-    }
+    };
   }
 
   Label empty_folder_set_label {

@@ -16,6 +16,22 @@ without destabilizing the editor shell.
 
 ## 4. AdwSidebar / AdwViewSwitcherSidebar
 
+### 2026-06-23 Spike Outcome
+
+The `evaluate-gnome-50-ui-spikes` spike supersedes the earlier assumption that
+Notes and Local History still needed a migration. Both surfaces already use
+`AdwSidebar` and are covered by current specs and widget tests.
+
+The primary workspace file tree remains rejected for the Adwaita sidebar family.
+It still needs `GtkListView`, `GtkTreeListModel`, and `GtkTreeExpander` for real
+hierarchy, file operations, file peek, async scanning, deep-folder focus,
+watcher reconciliation, workspace scope, and constrained-width clipping.
+
+The only viable `AdwViewSwitcherSidebar` follow-up is a separate Document
+Activity or Inspector proposal, if LushText wants stable `AdwViewStack` pages
+such as Document, Health, Notes, History, and Encoding. Document properties,
+file health, and encoding controls should not move into a sidebar in this spike.
+
 ### Current Fit
 
 `AdwSidebar`, `AdwSidebarSection`, and `AdwSidebarItem` are useful for
@@ -40,43 +56,23 @@ than simplify it.
 
 ### Concrete Proposal
 
-Do **not** rewrite the workspace file tree around `AdwSidebar` now.
+Do **not** rewrite the workspace file tree around `AdwSidebar`.
 
-Instead, use the new Adwaita sidebar family for shallow browse rails where the
-data is naturally sectioned and activation-oriented:
-
-1. Replace the unified Notes browser's hand-built `GtkListBox` rail with
-   `AdwSidebar` sections for bookmarks, folder notes, and document notes.
-2. Preserve the current Notes browser contract: dialog sizing, Markdown preview,
-   search behavior, Open action, compact `AdwNavigationSplitView` handoff, and
-   all existing note activation flows.
-3. Add regression coverage for each sidebar section, search/filter results,
-   empty filtered state, compact collapse handoff, activation, and selected-item
-   persistence after preview changes.
-4. Replace the Local History snapshot browser's hand-built `GtkListBox` rail
-   with an `AdwSidebar` rail while preserving preview loading, Copy, Restore,
-   safety snapshots, compact handoff, and large-file availability gating.
-5. Follow-up only: evaluate a stable `AdwViewStack`-backed Document
-   Activity/Inspector surface using `AdwViewSwitcherSidebar` for pages such as
-   Document, Health, Notes, History, and Encoding.
-
-Prefer `AdwSidebar` for the Notes and Local History work because both surfaces
-need dynamic model rows rather than stable pages in an `AdwViewStack`. Reserve
-`AdwViewSwitcherSidebar` for the follow-up inspector idea, where the destination
-pages would be stable and page-like.
+Do **not** change the existing Notes or Local History browser rail in this
+follow-up; those surfaces already use `AdwSidebar` for dynamic, sectioned
+records. Keep `AdwViewSwitcherSidebar` reserved for a future stable-page
+Inspector concept where destinations are modeled as `AdwViewStack` pages rather
+than changing record rows.
 
 ### Acceptance Criteria
 
-- The Notes browser uses `AdwSidebar` for note rows and preserves keyboard
-  navigation and activation without custom focus workarounds.
-- The Local History browser uses `AdwSidebar` for snapshot rows and preserves
-  asynchronous preview loading plus Copy and Restore behavior.
-- Compact dialog layouts keep the current navigation split handoff intact.
-- Widget tests cover selecting every Notes and Local History section/item,
-  search/filter behavior, compact-width allocation, and active item state after
-  page changes.
-- The change does not regress existing bookmark, document-note, folder-note,
-  or local-history flows.
+- Existing Notes and Local History `AdwSidebar` coverage remains green.
+- The workspace file tree keeps its `GtkTreeListModel` rail and existing
+  no-horizontal-scrollbar behavior.
+- Any future Inspector proposal names stable `AdwViewStack` pages before
+  adopting `AdwViewSwitcherSidebar`.
+- No document-properties, file-health, encoding, or workspace-sidebar product
+  behavior changes land as part of this spike.
 
 ### Risks
 

@@ -103,7 +103,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         <property name="transition-type">5</property>
         <property name="transition-duration">150</property>
         <property name="reveal-child">false</property>
-        <child>
+        <property name="child">
           <object class="GtkBox" id="options_box">
             <property name="orientation">1</property>
             <property name="spacing">6</property>
@@ -155,7 +155,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
               </object>
             </child>
           </object>
-        </child>
+        </property>
       </object>
     </child>
     <child>
@@ -163,7 +163,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         <property name="transition-type">4</property>
         <property name="transition-duration">250</property>
         <property name="reveal-child">false</property>
-        <child>
+        <property name="child">
           <object class="GtkBox" id="results_feedback_box">
             <property name="orientation">1</property>
             <child>
@@ -176,16 +176,16 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <property name="transition-type">4</property>
                 <property name="transition-duration">250</property>
                 <property name="reveal-child">false</property>
-                <child>
+                <property name="child">
                   <object class="GtkBox" id="results_body_box">
                     <property name="orientation">1</property>
                     <child>
                       <object class="GtkScrolledWindow" id="results_scroll">
                         <property name="propagate-natural-height">true</property>
                         <property name="min-content-height">100</property>
-                        <child>
+                        <property name="child">
                           <object class="GtkListView" id="results_list"></object>
-                        </child>
+                        </property>
                       </object>
                     </child>
                     <child>
@@ -194,7 +194,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                       </object>
                     </child>
                   </object>
-                </child>
+                </property>
               </object>
             </child>
             <child>
@@ -214,7 +214,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
               </object>
             </child>
           </object>
-        </child>
+        </property>
       </object>
     </child>
   </template>

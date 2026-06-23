@@ -19,12 +19,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
           <property name="column">0</property>
           <property name="row">0</property>
         </layout>
-        <child>
+        <property name="child">
           <object class="GtkSearchEntry" id="search_entry">
             <property name="hexpand">true</property>
             <property name="placeholder-text" translatable="yes">Find…</property>
           </object>
-        </child>
+        </property>
         <child type="overlay">
           <object class="GtkLabel" id="match_label">
             <property name="halign">2</property>
@@ -123,14 +123,14 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
           <property name="column">0</property>
           <property name="row">1</property>
         </layout>
-        <child>
+        <property name="child">
           <object class="GtkEntry" id="replace_entry">
             <property name="hexpand">true</property>
             <property name="margin-top">6</property>
             <property name="placeholder-text" translatable="yes">Replace…</property>
             <property name="primary-icon-name">edit-find-replace-symbolic</property>
           </object>
-        </child>
+        </property>
       </object>
     </child>
     <child>
@@ -142,13 +142,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
           <property name="column">1</property>
           <property name="row">1</property>
         </layout>
-        <child>
+        <property name="child">
           <object class="GtkButton" id="replace_button">
             <property name="label" translatable="yes">_Replace</property>
             <property name="use-underline">true</property>
             <property name="margin-top">6</property>
           </object>
-        </child>
+        </property>
       </object>
     </child>
     <child>
@@ -161,13 +161,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
           <property name="row">1</property>
           <property name="column-span">3</property>
         </layout>
-        <child>
+        <property name="child">
           <object class="GtkButton" id="replace_all_button">
             <property name="label" translatable="yes">Replace _All</property>
             <property name="use-underline">true</property>
             <property name="margin-top">6</property>
           </object>
-        </child>
+        </property>
       </object>
     </child>
   </template>

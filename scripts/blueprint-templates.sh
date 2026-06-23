@@ -289,7 +289,7 @@ accepted_policy = {
             "classified: composite-template children are owned by editor geometry, not standalone scroll containers",
         ),
         "resources/ui/window.blp": (
-            7,
+            8,
             "classified: shell children own layout, overlay, and secondary-surface geometry",
         ),
     },

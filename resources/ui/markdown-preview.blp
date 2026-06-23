@@ -8,7 +8,7 @@ template $LushtextMarkdownPreview: Box {
     vexpand: true;
     hexpand: true;
 
-    TextView text_view {
+    child: TextView text_view {
       editable: false;
       cursor-visible: false;
       wrap-mode: word;
@@ -20,7 +20,7 @@ template $LushtextMarkdownPreview: Box {
       styles [
         "tab-content-preview-surface",
       ]
-    }
+    };
   }
 
   Adw.StatusPage placeholder {

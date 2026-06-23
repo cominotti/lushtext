@@ -46,18 +46,18 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         <property name="reveal-child">true</property>
         <property name="transition-type">1</property>
         <property name="transition-duration">250</property>
-        <child>
+        <property name="child">
           <object class="GtkScrolledWindow" id="outer_scrolled_window">
             <property name="vexpand">true</property>
             <property name="propagate-natural-width">false</property>
             <property name="hscrollbar-policy">2</property>
-            <child>
+            <property name="child">
               <object class="GtkBox" id="sections_box">
                 <property name="orientation">1</property>
               </object>
-            </child>
+            </property>
           </object>
-        </child>
+        </property>
       </object>
     </child>
   </template>

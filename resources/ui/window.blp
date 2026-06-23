@@ -39,6 +39,7 @@ template $LushtextWindow: Adw.ApplicationWindow {
               }
 
               Image {
+                accessible-role: presentation;
                 icon-name: "pan-down-symbolic";
               }
             };
@@ -48,6 +49,7 @@ template $LushtextWindow: Adw.ApplicationWindow {
             name: "narrow";
 
             child: Image {
+              accessible-role: presentation;
               icon-name: "folder-symbolic";
             };
           }
@@ -237,7 +239,7 @@ template $LushtextWindow: Adw.ApplicationWindow {
                 transition-duration: 250;
                 reveal-child: false;
 
-                $LushtextSearchPanel search_panel {}
+                child: $LushtextSearchPanel search_panel {};
               }
             }
 
