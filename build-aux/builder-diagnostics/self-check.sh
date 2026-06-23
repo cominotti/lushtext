@@ -39,20 +39,21 @@ if ! command -v gtk4-builder-tool >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! GTK_DEBUG=help gtk4-builder-tool validate "$PROBE_UI" \
+GTK_DEBUG=help gtk4-builder-tool validate "$PROBE_UI" \
     >"$ARTIFACT_DIR/gtk-debug-help.stdout" \
-    2>"$ARTIFACT_DIR/gtk-debug-help.stderr"; then
-    echo "GTK_DEBUG=help probe failed" >&2
-    exit 1
-fi
+    2>"$ARTIFACT_DIR/gtk-debug-help.stderr" || status=$?
+echo "gtk_debug_help_status=${status:-0}" >>"$ARTIFACT_DIR/runtime.txt"
 
 if grep -q "GTK_DEBUG set but ignored" "$ARTIFACT_DIR/gtk-debug-help.stderr"; then
     echo "GTK debug channels are unavailable in this runtime" >&2
     exit 1
 fi
 
-if ! grep -Eq '(^|[[:space:]])builder(-objects)?([[:space:]]|$)' "$ARTIFACT_DIR/gtk-debug-help.stdout"; then
+if ! grep -Eq '(^|[[:space:]])builder(-objects)?([[:space:]]|$)' \
+    "$ARTIFACT_DIR/gtk-debug-help.stdout" "$ARTIFACT_DIR/gtk-debug-help.stderr"; then
     echo "GTK_DEBUG=help did not list builder diagnostics" >&2
+    sed -n '1,120p' "$ARTIFACT_DIR/gtk-debug-help.stdout" >&2
+    sed -n '1,120p' "$ARTIFACT_DIR/gtk-debug-help.stderr" >&2
     exit 1
 fi
 

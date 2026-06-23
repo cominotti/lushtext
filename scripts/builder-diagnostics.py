@@ -203,7 +203,7 @@ def debug_capability(artifact_dir: Path) -> dict[str, Any]:
     combined = read_text(result.stdout) + read_text(result.stderr)
     ignored = "GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG" in combined
     lists_builder = bool(re.search(r"(^|\s)builder(-objects)?(\s|$)", combined))
-    supported = result.status == 0 and lists_builder and not ignored
+    supported = lists_builder and not ignored
     status = "supported" if supported else "unsupported_runtime"
     reason = "GTK_DEBUG help lists builder diagnostics" if supported else "GTK debug channels unavailable"
     return {

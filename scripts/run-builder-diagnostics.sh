@@ -112,13 +112,11 @@ host_debug_supported() {
   <object class="GtkBox" id="root"/>
 </interface>
 EOF
-    if ! GTK_DEBUG=help gtk4-builder-tool validate "$tmp/probe.ui" >"$tmp/out" 2>"$tmp/err"; then
-        return 1
-    fi
+    GTK_DEBUG=help gtk4-builder-tool validate "$tmp/probe.ui" >"$tmp/out" 2>"$tmp/err" || true
     if grep -q "GTK_DEBUG set but ignored" "$tmp/err"; then
         return 1
     fi
-    grep -Eq '(^|[[:space:]])builder(-objects)?([[:space:]]|$)' "$tmp/out"
+    grep -Eq '(^|[[:space:]])builder(-objects)?([[:space:]]|$)' "$tmp/out" "$tmp/err"
 }
 
 container_path_for_repo_path() {
