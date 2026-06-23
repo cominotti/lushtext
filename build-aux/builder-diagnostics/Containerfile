@@ -43,6 +43,7 @@ RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps
         gettext \
         git \
         glib2-devel \
+        glslc \
         gobject-introspection-devel \
         graphene-devel \
         gstreamer1 \
@@ -88,6 +89,12 @@ RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps
 
 RUN git clone --depth 1 --branch "${GTK_REF}" https://gitlab.gnome.org/GNOME/gtk.git /tmp/gtk \
     && meson setup /tmp/gtk-build /tmp/gtk --prefix "${PREFIX}" --buildtype=debugoptimized \
+        -Dintrospection=enabled \
+        -Dmedia-gstreamer=disabled \
+        -Dbuild-demos=false \
+        -Dbuild-tests=false \
+        -Dbuild-testsuite=false \
+        -Dbuild-examples=false \
     && meson install -C /tmp/gtk-build \
     && rm -rf /tmp/gtk /tmp/gtk-build
 
