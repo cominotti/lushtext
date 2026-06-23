@@ -47,6 +47,6 @@
 - [x] 7.3 Run `make check-blueprint`.
 - [x] 7.4 Run `make check-end-user-smoke-workflow`.
 - [x] 7.5 Run `make builder-diagnostics-smoke` locally through the strongest available provider and review the generated summary.
-- [ ] 7.6 Run or dispatch the CI builder diagnostics lane against the prebuilt debug runtime image and verify artifacts upload.
+- [x] 7.6 Run or dispatch the CI builder diagnostics lane against the prebuilt debug runtime image and verify artifacts upload.
 - [x] 7.7 Run `make check-agent-docs` if agent guidance or rules are changed.
 - [x] 7.8 Run `git diff --check`.
