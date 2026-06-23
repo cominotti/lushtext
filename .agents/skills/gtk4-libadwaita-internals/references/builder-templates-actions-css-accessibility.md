@@ -67,6 +67,30 @@ Upstream warnings in `gtkwidget.c` cover:
 
 These are especially easy to miss in large template files because the app may still render partially while silently dropping the invalid metadata.
 
+## Runtime Builder Diagnostics
+
+Standalone `gtk4-builder-tool validate` is a useful probe for GTK-only
+templates, but it does not initialize Libadwaita template parents or
+application composite widget types. Failures such as invalid `Adw*` types,
+missing `AdwPreferencesDialog` parents, or missing app-owned classes can be
+expected standalone limitations rather than template defects.
+
+When validating those templates, run an initialized LushText widget or smoke
+harness with builder debug enabled:
+
+```sh
+GTK_DEBUG=builder,builder-objects \
+  scripts/run-widget-tests.sh --headless -- <test> --exact --nocapture
+```
+
+Classify every emitted line before treating it as actionable. In particular,
+`GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG` means
+the host GTK build does not expose that debug channel; it is not evidence that
+the app template is clean or broken. If runtime diagnostics report deprecated
+implicit child syntax, fix the Blueprint source by setting the appropriate
+explicit property, for example `child: ...` for single-child `GtkRevealer`,
+`GtkScrolledWindow`, or `GtkOverlay` templates.
+
 ## Actions And Focus
 
 Many GTK and Libadwaita widgets define built-in actions.

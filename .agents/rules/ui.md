@@ -67,7 +67,12 @@ LushtextWindow (AdwApplicationWindow)
 - `AdwTabView` + `AdwTabBar` for document tabs
 - `AdwPreferencesDialog` with `AdwComboRow`, `AdwSwitchRow`, `AdwSpinRow`
 - `AdwStatusPage` for empty states
-- `AdwSidebar` for shallow, sectioned dialog browse rails such as Notes and Local History where each item activates or previews one record
+- `AdwSidebar` for shallow, sectioned dialog browse rails such as Notes and
+  Local History where each item activates or previews one record
+- `AdwViewSwitcherSidebar` only for a small, stable set of page-like
+  destinations already modeled as an `AdwViewStack`. Reject it for dynamic
+  records, file trees, notes/history rows, search results, and any surface that
+  cannot name stable pages before implementation.
 - `AdwAboutDialog` for the about dialog
 - `AdwWindowTitle` for header title/subtitle
 - `AdwMultiLayoutView` + `AdwLayoutSlot` for adaptive secondary surfaces that need the same child in multiple presentations
@@ -252,7 +257,17 @@ add a new one before calling the work complete.
   Use `scripts/compare-blueprint-visuals.sh --baseline-ref <ref>` for this
   reusable proof path; its screenshots and raw logs stay under ignored `build/`
   artifact directories.
-- `gtk4-builder-tool validate` is useful for GTK-only templates, but it does not load Libadwaita widget types such as `AdwWrapBox` by itself. When a touched template contains Libadwaita-only types, record the expected standalone limitation and validate the template through the widget harness, which initializes Libadwaita before constructing widgets.
+- `gtk4-builder-tool validate` is useful for GTK-only templates, but it does
+  not load Libadwaita widget types such as `AdwWrapBox` by itself. When a
+  touched template contains Libadwaita-only types, record the expected
+  standalone limitation and validate the template through the widget harness,
+  which initializes Libadwaita before constructing widgets.
+- Runtime builder diagnostics can be probed with
+  `GTK_DEBUG=builder,builder-objects scripts/run-widget-tests.sh --headless -- <test> --exact --nocapture`.
+  Treat `GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG`
+  as an unsupported-host limitation, not as an app template defect. Fix
+  actionable builder diagnostics in Blueprint source, such as implicit
+  `<child>` warnings by setting explicit `child:` properties.
 
 ## Status Bar
 
