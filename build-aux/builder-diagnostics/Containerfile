@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Reusable GTK debug runtime for LushText builder diagnostics.
+#
+# This image is built and published outside the diagnostics smoke lane. The
+# smoke lane consumes a pinned tag or digest so CI can run builder diagnostics
+# without rebuilding GTK on every invocation.
+
+FROM registry.fedoraproject.org/fedora:44
+
+ARG GTK_REF=4.22.4
+ARG LIBADWAITA_REF=1.9.1
+ARG GTKSOURCEVIEW_REF=5.20.0
+ARG BLUEPRINT_COMPILER_REF=v0.20.4
+ARG PREFIX=/opt/lushtext-gtk-debug
+
+ENV LUSHTEXT_GTK_DEBUG_PREFIX="${PREFIX}"
+ENV PATH="${PREFIX}/bin:${PATH}"
+ENV PKG_CONFIG_PATH="${PREFIX}/lib64/pkgconfig:${PREFIX}/lib/pkgconfig:${PREFIX}/share/pkgconfig"
+ENV LD_LIBRARY_PATH="${PREFIX}/lib64:${PREFIX}/lib"
+ENV GI_TYPELIB_PATH="${PREFIX}/lib64/girepository-1.0:${PREFIX}/lib/girepository-1.0"
+ENV XDG_DATA_DIRS="${PREFIX}/share:/usr/local/share:/usr/share"
+
+RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False install -y \
+        appstream-devel \
+        at-spi2-core \
+        at-spi2-core-devel \
+        blueprint-compiler \
+        cairo-devel \
+        clang \
+        colord-devel \
+        cups-devel \
+        dbus-daemon \
+        desktop-file-utils \
+        findutils \
+        fontconfig-devel \
+        fribidi-devel \
+        gcc \
+        gcc-c++ \
+        gdk-pixbuf2-devel \
+        gettext \
+        git \
+        glib2-devel \
+        gobject-introspection-devel \
+        graphene-devel \
+        gstreamer1 \
+        gtk4-devel \
+        harfbuzz-devel \
+        iso-codes-devel \
+        json-glib-devel \
+        libX11-devel \
+        libXcursor-devel \
+        libXdamage-devel \
+        libXext-devel \
+        libXfixes-devel \
+        libXi-devel \
+        libXinerama-devel \
+        libXrandr-devel \
+        libcloudproviders-devel \
+        libdisplay-info-devel \
+        libepoxy-devel \
+        libjpeg-turbo-devel \
+        libpng-devel \
+        librsvg2-devel \
+        libtiff-devel \
+        libxkbcommon-devel \
+        mesa-libEGL-devel \
+        mesa-libGL-devel \
+        meson \
+        mutter \
+        ninja-build \
+        pango-devel \
+        pipewire \
+        pipewire-utils \
+        pkgconf-pkg-config \
+        python3 \
+        python3-gobject \
+        sassc \
+        sysprof-devel \
+        vala \
+        vulkan-headers \
+        wayland-devel \
+        wayland-protocols-devel \
+        wireplumber \
+    && dnf clean all
+
+RUN git clone --depth 1 --branch "${GTK_REF}" https://gitlab.gnome.org/GNOME/gtk.git /tmp/gtk \
+    && meson setup /tmp/gtk-build /tmp/gtk --prefix "${PREFIX}" --buildtype=debugoptimized \
+    && meson install -C /tmp/gtk-build \
+    && rm -rf /tmp/gtk /tmp/gtk-build
+
+RUN git clone --depth 1 --branch "${LIBADWAITA_REF}" https://gitlab.gnome.org/GNOME/libadwaita.git /tmp/libadwaita \
+    && meson setup /tmp/libadwaita-build /tmp/libadwaita --prefix "${PREFIX}" --buildtype=debugoptimized \
+    && meson install -C /tmp/libadwaita-build \
+    && rm -rf /tmp/libadwaita /tmp/libadwaita-build
+
+RUN git clone --depth 1 --branch "${GTKSOURCEVIEW_REF}" https://gitlab.gnome.org/GNOME/gtksourceview.git /tmp/gtksourceview \
+    && meson setup /tmp/gtksourceview-build /tmp/gtksourceview --prefix "${PREFIX}" --buildtype=debugoptimized \
+    && meson install -C /tmp/gtksourceview-build \
+    && rm -rf /tmp/gtksourceview /tmp/gtksourceview-build
+
+COPY build-aux/builder-diagnostics/self-check.sh /usr/local/bin/lushtext-builder-diagnostics-self-check
+RUN chmod +x /usr/local/bin/lushtext-builder-diagnostics-self-check \
+    && LUSHTEXT_BUILDER_DIAGNOSTICS_RUNTIME_REFS="gtk=${GTK_REF};libadwaita=${LIBADWAITA_REF};gtksourceview=${GTKSOURCEVIEW_REF};blueprint=${BLUEPRINT_COMPILER_REF}" \
+       lushtext-builder-diagnostics-self-check /opt/lushtext-builder-diagnostics-self-check
+
+WORKDIR /workspace

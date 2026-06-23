@@ -1,0 +1,147 @@
+{
+  "schema_version": "builder-diagnostics-coverage/v1",
+  "runtime_probes": [
+    {
+      "id": "window-no-context",
+      "test": "window::test_split_view_defaults_restore_on_window",
+      "state": "no-context startup",
+      "templates": [
+        "resources/ui/window.ui",
+        "resources/ui/sidebar.ui",
+        "resources/ui/workspace-section.ui",
+        "resources/ui/status-bar.ui",
+        "resources/ui/properties-panel.ui"
+      ]
+    },
+    {
+      "id": "editor-page-template",
+      "test": "editor_page::test_new",
+      "state": "template-only construction",
+      "templates": [
+        "resources/ui/editor-page.ui",
+        "resources/ui/info-bar.ui",
+        "resources/ui/search-bar.ui"
+      ]
+    },
+    {
+      "id": "command-palette-empty",
+      "test": "command_palette::test_command_palette_new",
+      "state": "no-context startup",
+      "templates": [
+        "resources/ui/command-palette.ui"
+      ]
+    },
+    {
+      "id": "open-popover-empty",
+      "test": "open_popover::test_open_popover_empty_state_keeps_search_and_chooser_reachable",
+      "state": "no-context startup",
+      "templates": [
+        "resources/ui/open-popover.ui"
+      ]
+    },
+    {
+      "id": "preferences-template",
+      "test": "preferences::test_new",
+      "state": "template-only construction",
+      "templates": [
+        "resources/ui/preferences.ui"
+      ]
+    },
+    {
+      "id": "search-panel-template",
+      "test": "search_panel::test_search_panel_construction",
+      "state": "template-only construction",
+      "templates": [
+        "resources/ui/search-panel.ui"
+      ]
+    },
+    {
+      "id": "markdown-preview-template",
+      "test": "markdown_preview::test_new",
+      "state": "template-only construction",
+      "templates": [
+        "resources/ui/markdown-preview.ui"
+      ]
+    },
+    {
+      "id": "shortcuts-no-context",
+      "test": "window::test_help_overlay_action_presents_shortcuts_window_without_context",
+      "state": "no-context startup",
+      "templates": [
+        "resources/ui/shortcuts.ui"
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "path": "resources/ui/command-palette.ui",
+      "source": "resources/ui/command-palette.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/editor-page.ui",
+      "source": "resources/ui/editor-page.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/info-bar.ui",
+      "source": "resources/ui/info-bar.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/markdown-preview.ui",
+      "source": "resources/ui/markdown-preview.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/open-popover.ui",
+      "source": "resources/ui/open-popover.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/preferences.ui",
+      "source": "resources/ui/preferences.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/properties-panel.ui",
+      "source": "resources/ui/properties-panel.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/search-bar.ui",
+      "source": "resources/ui/search-bar.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/search-panel.ui",
+      "source": "resources/ui/search-panel.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/shortcuts.ui",
+      "source": "resources/ui/shortcuts.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/sidebar.ui",
+      "source": "resources/ui/sidebar.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/status-bar.ui",
+      "source": "resources/ui/status-bar.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/window.ui",
+      "source": "resources/ui/window.blp",
+      "coverage": "runtime"
+    },
+    {
+      "path": "resources/ui/workspace-section.ui",
+      "source": "resources/ui/workspace-section.blp",
+      "coverage": "runtime"
+    }
+  ]
+}

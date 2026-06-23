@@ -29,6 +29,10 @@ EXPECTED_LANES: dict[str, tuple[str, str]] = {
         "make automation-smoke SMOKE_ARTIFACT_DIR=build/smoke",
         "build/smoke/automation",
     ),
+    "builder-diagnostics": (
+        "make builder-diagnostics-smoke SMOKE_ARTIFACT_DIR=build/smoke LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER=host LUSHTEXT_BUILDER_DIAGNOSTICS_REQUIRED=1",
+        "build/smoke/builder-diagnostics",
+    ),
     "visual-geometry": (
         "make visual-geometry-smoke SMOKE_ARTIFACT_DIR=build/smoke",
         "build/smoke/visual-geometry",

@@ -24,30 +24,41 @@ jobs:
     # They preserve artifacts so failures can be understood without immediate
     # local portal, compositor, or AT-SPI reproduction.
     container:
-      image: registry.fedoraproject.org/fedora:44
+      image: ${{ matrix.container_image }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - lane: automation
+            container_image: registry.fedoraproject.org/fedora:44
             command: make automation-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/automation
+          - lane: builder-diagnostics
+            container_image: ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-50-debug
+            command: make builder-diagnostics-smoke SMOKE_ARTIFACT_DIR=build/smoke LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER=host LUSHTEXT_BUILDER_DIAGNOSTICS_REQUIRED=1
+            artifact_path: build/smoke/builder-diagnostics
           - lane: visual-geometry
+            container_image: registry.fedoraproject.org/fedora:44
             command: make visual-geometry-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/visual-geometry
           - lane: visual
+            container_image: registry.fedoraproject.org/fedora:44
             command: make visual-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/visual
           - lane: crash-recovery
+            container_image: registry.fedoraproject.org/fedora:44
             command: make crash-recovery-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/crash-recovery
           - lane: portal-sandbox
+            container_image: registry.fedoraproject.org/fedora:44
             command: make portal-sandbox-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/portal-sandbox
           - lane: accessibility
+            container_image: registry.fedoraproject.org/fedora:44
             command: make accessibility-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/accessibility
           - lane: performance
+            container_image: registry.fedoraproject.org/fedora:44
             command: make performance-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/performance
 

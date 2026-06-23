@@ -29,27 +29,44 @@ ceiling.
 
 ## Runtime Builder Diagnostics
 
-For focused GtkBuilder diagnostics after GTK, Libadwaita, GResource, and
-LushText composite widget types are initialized, run a selected widget test with
-builder debug output enabled:
+For automated GtkBuilder diagnostics after GTK, Libadwaita, GResource, and
+LushText composite widget types are initialized, use the dedicated smoke lane:
 
 ```sh
-GTK_DEBUG=builder,builder-objects \
-  scripts/run-widget-tests.sh --headless -- <test> --exact --nocapture
+make builder-diagnostics-smoke
 ```
 
-This is a manual recipe, not a blocking check. Some host GTK builds print
-`GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG`; treat
-that as an unsupported-host limitation for this diagnostic channel, not as a
-template defect. Standalone `gtk4-builder-tool validate` is useful for
-GTK-loadable generated templates, but it cannot load every LushText template
-because Libadwaita template parents and app composite widget types are not
-registered in the standalone context.
+The target writes raw logs, command lines, runtime metadata, standalone
+`gtk4-builder-tool` results, runtime probe results, `coverage.json`,
+`findings.json`, `summary.json`, and `summary.md` under
+`build/smoke/builder-diagnostics` by default. It scopes
+`GTK_DEBUG=builder,builder-objects` to the diagnostics process only.
 
-The `evaluate-gnome-50-ui-spikes` probe used this lane to remove deprecated
-implicit `<child>` builder syntax from selected templates. Promoting the lane to
-an advisory or blocking target needs a separate proposal with a debug-enabled
-GTK runtime, an explicit surface coverage map, and diagnostic classification.
+Provider modes:
+
+```sh
+LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER=auto make builder-diagnostics-smoke
+LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER=host make builder-diagnostics-smoke
+LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER=container make builder-diagnostics-smoke
+```
+
+`auto` prefers a host GTK build that proves `GTK_DEBUG` support, then falls
+back to the reusable debug GTK container image when `podman` or `docker` is
+available. CI uses the pinned prebuilt image
+`ghcr.io/cominotti/lushtext-builder-diagnostics-runtime:gnome-50-debug`; that
+image is built by `.github/workflows/builder-diagnostics-runtime.yml`, not by
+the diagnostics lane itself. Override the image or runner with
+`LUSHTEXT_BUILDER_DIAGNOSTICS_IMAGE` and
+`LUSHTEXT_BUILDER_DIAGNOSTICS_CONTAINER`.
+
+Some host GTK builds print `GTK_DEBUG set but ignored because gtk isn't built
+with G_ENABLE_DEBUG`; treat that as an unsupported-runtime limitation for this
+diagnostic channel, not as a template defect. Standalone
+`gtk4-builder-tool validate` remains useful for GTK-loadable generated
+templates, but it cannot load every LushText template because Libadwaita
+template parents and app composite widget types are not registered in the
+standalone context. The automated lane records those as known standalone-tool
+limitations, then relies on initialized runtime probes for actionable evidence.
 
 ## Compile Warning Policy
 

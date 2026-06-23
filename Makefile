@@ -24,6 +24,7 @@
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make test-workspace-row-states - Focused idempotent workspace file-row state widget tests
 #   make automation-smoke - Real-process D-Bus automation smoke under headless Mutter
+#   make builder-diagnostics-smoke - GtkBuilder diagnostics under debug-enabled GTK
 #   make command-palette-notes-smoke - Focused Notes command-palette smoke with all note kinds
 #   make visual-smoke - Real-session screenshot smoke under headless Mutter
 #   make visual-geometry-smoke - Rust same-session visual invariant proof
@@ -72,7 +73,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -290,6 +291,13 @@ automation-smoke: build-debug
 	@echo "Running D-Bus automation smoke lane..."
 	./scripts/run-automation-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/automation"
 
+# Runtime GtkBuilder diagnostics under a debug-enabled GTK runtime. The script
+# owns provider selection: host if debug channels are available, otherwise the
+# configured reusable container image when a container runner exists.
+builder-diagnostics-smoke: build-debug
+	@echo "Running GtkBuilder diagnostics smoke lane..."
+	./scripts/run-builder-diagnostics.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/builder-diagnostics"
+
 # Focused visual smoke for the command palette Notes category. The fixture covers
 # Bookmarks, Folder Notes, Document Notes, and Open Tabs in one isolated session.
 command-palette-notes-smoke: build-debug
@@ -340,7 +348,7 @@ performance-smoke:
 
 # Run all host-supported end-user smoke lanes. Individual scripts own their
 # dependency checks, artifact paths, and skip messages.
-end-user-smoke: automation-smoke visual-geometry-smoke visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
+end-user-smoke: automation-smoke builder-diagnostics-smoke visual-geometry-smoke visual-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke
 
 # Small mutation pass for checking cargo-mutants tooling and timeout behavior.
 mutants-smoke:
@@ -732,6 +740,7 @@ help:
 	@echo "  test-widget-headless Widget tests with the CI headless setup"
 	@echo "  test-workspace-row-states Focused workspace file-row state widget tests"
 	@echo "  automation-smoke Real-process D-Bus automation smoke under headless Mutter"
+	@echo "  builder-diagnostics-smoke GtkBuilder diagnostics under debug-enabled GTK"
 	@echo "  command-palette-notes-smoke Focused Notes palette smoke with all note kinds"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
 	@echo "  check-accessibility-policy Enforce accessibility helper, matrix, and current-tree guardrails"

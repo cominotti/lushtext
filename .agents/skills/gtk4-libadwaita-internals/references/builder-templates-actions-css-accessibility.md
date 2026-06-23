@@ -75,20 +75,22 @@ application composite widget types. Failures such as invalid `Adw*` types,
 missing `AdwPreferencesDialog` parents, or missing app-owned classes can be
 expected standalone limitations rather than template defects.
 
-When validating those templates, run an initialized LushText widget or smoke
-harness with builder debug enabled:
+When validating those templates, prefer the automated LushText diagnostics lane:
 
 ```sh
-GTK_DEBUG=builder,builder-objects \
-  scripts/run-widget-tests.sh --headless -- <test> --exact --nocapture
+make builder-diagnostics-smoke
 ```
 
-Classify every emitted line before treating it as actionable. In particular,
-`GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG` means
-the host GTK build does not expose that debug channel; it is not evidence that
-the app template is clean or broken. If runtime diagnostics report deprecated
-implicit child syntax, fix the Blueprint source by setting the appropriate
-explicit property, for example `child: ...` for single-child `GtkRevealer`,
+It runs standalone validation, manifest-backed runtime widget probes, and a
+classifier under `GTK_DEBUG=builder,builder-objects`, preserving raw logs and
+coverage summaries under `build/smoke/builder-diagnostics`. Use focused ad hoc
+widget commands only when narrowing a specific finding after the automated lane
+has identified the affected template or surface. In particular, `GTK_DEBUG set
+but ignored because gtk isn't built with G_ENABLE_DEBUG` means the current GTK
+runtime does not expose that debug channel; it is not evidence that the app
+template is clean or broken. If runtime diagnostics report deprecated implicit
+child syntax, fix the Blueprint source by setting the appropriate explicit
+property, for example `child: ...` for single-child `GtkRevealer`,
 `GtkScrolledWindow`, or `GtkOverlay` templates.
 
 ## Actions And Focus

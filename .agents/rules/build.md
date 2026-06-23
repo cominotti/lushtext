@@ -25,6 +25,7 @@ make fuzz-operation-smoke # bounded structured-operation fuzz smoke
 make test-widget-headless # CI-style mutter/dbus widget run
 make test-workspace-row-states # focused workspace file-row state widget run
 make visual-geometry-smoke # same-session visual invariant screenshots and geometry snapshots
+make builder-diagnostics-smoke # GtkBuilder diagnostics under debug-enabled GTK
 make visual-smoke # real-session screenshot smoke with artifacts
 make command-palette-notes-smoke # focused Notes palette screenshot with all note kinds
 make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with artifacts
@@ -109,6 +110,16 @@ short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than
 under long artifact paths. Mutter/Wayland socket paths are length-limited, and
 an otherwise-valid smoke can fail before exercising the app if the runtime
 directory path is too deep.
+
+Use `make builder-diagnostics-smoke` for runtime GtkBuilder diagnostics. The
+target scopes `GTK_DEBUG=builder,builder-objects`, validates standalone
+templates where possible, runs manifest-backed widget probes under headless
+Mutter, and preserves `coverage.json`, `findings.json`, and summaries under
+`build/smoke/builder-diagnostics`. Local runs may use `auto`, `host`, or
+`container` provider modes through `LUSHTEXT_BUILDER_DIAGNOSTICS_PROVIDER`;
+scheduled CI uses the reusable debug GTK image published by
+`.github/workflows/builder-diagnostics-runtime.yml`. A local unsupported host
+skip is evidence about the host only, not template coverage.
 
 Run `make lint-advisory` after Rust/Clippy toolchain updates or lint-policy
 reviews. It runs broad advisory Clippy groups plus selected design, numeric,

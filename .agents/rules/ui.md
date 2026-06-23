@@ -262,12 +262,14 @@ add a new one before calling the work complete.
   touched template contains Libadwaita-only types, record the expected
   standalone limitation and validate the template through the widget harness,
   which initializes Libadwaita before constructing widgets.
-- Runtime builder diagnostics can be probed with
-  `GTK_DEBUG=builder,builder-objects scripts/run-widget-tests.sh --headless -- <test> --exact --nocapture`.
-  Treat `GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG`
-  as an unsupported-host limitation, not as an app template defect. Fix
-  actionable builder diagnostics in Blueprint source, such as implicit
-  `<child>` warnings by setting explicit `child:` properties.
+- Runtime builder diagnostics belong in `make builder-diagnostics-smoke`.
+  The lane scopes `GTK_DEBUG=builder,builder-objects`, uses a debug-capable GTK
+  host or reusable debug-runtime container, records explicit template coverage,
+  and classifies standalone-tool limitations before failing on actionable
+  findings. Treat `GTK_DEBUG set but ignored because gtk isn't built with
+  G_ENABLE_DEBUG` as an unsupported-runtime limitation, not as an app template
+  defect. Fix actionable builder diagnostics in Blueprint source, such as
+  implicit `<child>` warnings by setting explicit `child:` properties.
 
 ## Status Bar
 

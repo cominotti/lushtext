@@ -26,6 +26,7 @@ a user-facing workflow unverified.
 | Visual proof policy | `make check-visual-proof-policy` | Rust-backed local worktree guard that requires a passed, unfiltered visual geometry summary matching the current visual-sensitive diff and required invariant IDs | Yes, through `make check-policy` |
 | Automation client self-test | `make automation-client-self-test` | Reusable D-Bus client parser, typed action-parameter rendering, result envelope, exit statuses, and smoke artifact summary reader without a live app | Yes, through `make check-policy` |
 | Automation smoke | `make automation-smoke` | Real-process D-Bus introspection, action catalog, snapshots, reusable client commands, action-state sync, readiness waits, warning scans, and parameterized action activation under isolated Mutter | No, local, scheduled, or release validation |
+| Builder diagnostics smoke | `make builder-diagnostics-smoke` | Runtime GtkBuilder diagnostics with `GTK_DEBUG=builder,builder-objects`, standalone template validation, explicit template coverage, classifier output, and reusable debug GTK runtime metadata | No, local, scheduled, or release validation |
 | Visual geometry smoke | `make visual-geometry-smoke` | Rust-backed same-session before/after screenshot invariants, protected-region zero-difference comparisons, screenshot-derived pixel anchors, animation-stream evidence, bounded geometry snapshots, warning scans, and schema-valid artifacts | No, local, scheduled, or release validation |
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots, coarse pixel sanity, compositor behavior, and visual artifacts | No, local, scheduled, or release validation |
 | Crash recovery smoke | `make crash-recovery-smoke` | Real-process draft/session recovery across `SIGKILL` and relaunch, with recovery metadata and runtime artifacts | No, local, scheduled, or release validation |
@@ -106,6 +107,17 @@ they are not default PR gates:
   activates a parameterized GTK action, scans runtime logs for unexpected
   GTK/GDK/Libadwaita/GIO/D-Bus/portal/AT-SPI or filesystem warnings, and
   preserves D-Bus/log/assertion artifacts.
+- `make builder-diagnostics-smoke` runs GtkBuilder diagnostics with
+  `GTK_DEBUG=builder,builder-objects`, standalone `gtk4-builder-tool`
+  validation, and runtime widget probes that initialize GTK, Libadwaita,
+  GResources, and LushText composite types. It writes raw logs, command lines,
+  runtime-provider metadata, `coverage.json`, `findings.json`, `summary.json`,
+  and `summary.md` under `build/smoke/builder-diagnostics`. A local host whose
+  GTK build does not expose debug channels skips with an explicit unsupported
+  runtime result unless required-runtime mode is set; that skip is not template
+  coverage. Scheduled CI uses the reusable debug GTK image instead of building
+  GTK during the diagnostics job, and fails if that image stops honoring the
+  builder debug channel.
 - `make automation-client-self-test` proves the reusable
   `scripts/lushtext-automation.py` parser, typed action-parameter rendering,
   result statuses, and artifact-summary reader without launching LushText. Use
@@ -147,9 +159,9 @@ they are not default PR gates:
 
 GitHub Actions mirrors that split: `.github/workflows/ci.yml` owns the bounded
 pull-request lanes, `.github/workflows/end-user-smoke.yml` runs automation,
-visual-geometry, visual, crash-recovery, portal/sandbox, accessibility,
-performance-smoke, and full benchmark-report artifact lanes on a schedule or
-manual dispatch, and
+builder-diagnostics, visual-geometry, visual, crash-recovery, portal/sandbox,
+accessibility, performance-smoke, and full benchmark-report artifact lanes on a
+schedule or manual dispatch, and
 `.github/workflows/release-benchmark.yml` attaches a full benchmark report to
 tagged release validation.
 
@@ -165,6 +177,7 @@ make test-widget-headless
 make test-prop
 make fuzz-corpus-replay
 make automation-smoke
+make builder-diagnostics-smoke
 make visual-geometry-smoke
 make visual-smoke
 make crash-recovery-smoke

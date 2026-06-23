@@ -1,0 +1,54 @@
+name: Builder Diagnostics Runtime
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 1 * *"
+
+concurrency:
+  group: builder-diagnostics-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/cominotti/lushtext-builder-diagnostics-runtime
+
+jobs:
+  build-runtime:
+    name: Build GTK Debug Runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and publish runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build-aux/builder-diagnostics/Containerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:gnome-50-debug
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=LushText reusable GTK debug runtime for builder diagnostics
+          build-args: |
+            GTK_REF=4.22.4
+            LIBADWAITA_REF=1.9.1
+            GTKSOURCEVIEW_REF=5.20.0
+            BLUEPRINT_COMPILER_REF=v0.20.4
