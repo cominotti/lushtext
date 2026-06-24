@@ -27,7 +27,7 @@
 
 - [x] 5.1 Run the local builder diagnostics target with a debug-enabled runtime and preserve the summary, findings, coverage, and raw logs.
 - [x] 5.2 Verify the local diagnostics result reports zero actionable findings, zero unclassified findings, and no `shortcuts-no-context` future-gate candidate.
-- [ ] 5.3 Run or dispatch the CI builder diagnostics lane for the pushed commit and inspect the uploaded artifact for the same clean shortcut probe result.
+- [x] 5.3 Run or dispatch the CI builder diagnostics lane for the pushed commit and inspect the uploaded artifact for the same clean shortcut probe result.
 - [x] 5.4 If the `AdwDialogHost` allocation warning persists after the migration, classify it with fresh probe/toolkit evidence before changing any classifier policy.
 
 ## 6. Validation
