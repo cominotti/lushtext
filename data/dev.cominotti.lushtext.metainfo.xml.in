@@ -65,6 +65,31 @@
   </screenshots>
 
   <releases>
+    <release version="0.5.1" date="2026-06-24">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Folger Shakespeare Library, "Shakespeare's Sonnets - Sonnet 60", final rhyming couplet.</p>
+        <p>Selection: Complete final couplet.</p>
+        <p>Complete couplet:</p>
+        <p>&gt; And yet to times in hope my verse shall stand,</p>
+        <p>&gt; Praising thy worth, despite his cruel hand.</p>
+        <p>William Shakespeare, "Sonnet 60"</p>
+        <p>## What's Changed</p>
+        <p>LushText now opens Keyboard Shortcuts as a Libadwaita shortcuts dialog owned by the main window. The shortcut list itself is unchanged, but the help surface now follows the current GNOME and Libadwaita dialog model and repeated activations reuse the existing dialog instead of creating duplicate help windows.</p>
+        <p>Several GTK templates received small compatibility and accessibility polish. Decorative empty-state icons are quieter for assistive technologies, the Data page's verified indicator has a clear accessible label, and generated UI templates now avoid the old accepted Blueprint warning around `GtkShortcutsWindow`.</p>
+        <p>Maintainers get a stronger UI diagnostics path. This release adds a builder-diagnostics smoke lane, a reusable debug GTK runtime workflow, stricter Blueprint warning policy, refreshed template-contract evidence, and refreshed dependency and Flatpak vendoring surfaces so future UI template changes are easier to verify before they reach users.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for end users after upgrading. There is no data migration, settings reset, or workspace rebuild required for this release.</p>
+        <p>Maintainers do not need to change the release process for this patch. The new builder-diagnostics runtime is a scheduled/manual diagnostics aid and does not change normal app installation.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>No user-facing behavior is deprecated in this release.</p>
+        <p>The new builder-diagnostics lane depends on a debug-enabled GTK runtime image when host GTK cannot expose builder diagnostics. If that image or GHCR access is unavailable, diagnostics may report an unsupported runtime, but LushText itself and the normal release build are unaffected.</p>
+        <p>## Bug Fixes</p>
+        <p>Keyboard Shortcuts no longer depends on the deprecated GTK shortcuts window template family. This fixes the help surface for newer GNOME and Libadwaita environments while keeping the existing `win.show-help-overlay` action path intact.</p>
+        <p>Repeated Keyboard Shortcuts activation now focuses or presents the existing dialog owned by the window instead of risking duplicate help surfaces.</p>
+        <p>Template accessibility fixes make the Open popover empty state and the Preferences data-status indicator cleaner for screen readers.</p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-06-19">
       <description>
         <p>## Poetic Opening</p>
