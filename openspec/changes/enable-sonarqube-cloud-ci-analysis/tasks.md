@@ -28,11 +28,11 @@
 
 ## 4. First Scan Triage
 
-- [ ] 4.1 Run or trigger the first trusted SonarQube Cloud analysis and confirm the `cominotti_lushtext` project records an analysis.
-- [ ] 4.2 Fetch the unresolved issue list and quality gate state for the analyzed ref.
-- [ ] 4.3 Fix each actionable finding in code or configuration.
-- [ ] 4.4 For any false-positive or intentional-pattern finding, add a narrow documented suppression or record the accepted/false-positive state in SonarQube Cloud.
-- [ ] 4.5 Re-run analysis or verification until SonarQube Cloud reports an OK gate and zero unreviewed unresolved issues for the target ref.
+- [x] 4.1 Run or trigger the first trusted SonarQube Cloud analysis and confirm the `cominotti_lushtext` project records an analysis.
+- [x] 4.2 Fetch the unresolved issue list and quality gate state for the analyzed ref.
+- [x] 4.3 Fix each actionable finding in code or configuration.
+- [x] 4.4 For any false-positive or intentional-pattern finding, add a narrow documented suppression or record the accepted/false-positive state in SonarQube Cloud.
+- [x] 4.5 Re-run analysis or verification until SonarQube Cloud records the target ref with zero unreviewed unresolved issues and no real quality gate `ERROR`.
 
 ## 5. Validation and Documentation
 
@@ -41,5 +41,5 @@
 - [x] 5.3 Run `make check-workflow-timeouts` after workflow changes.
 - [x] 5.4 Run `make check-agent-docs` if agent guidance, Makefile target lists, or policy docs change.
 - [x] 5.5 Run `shellcheck scripts/sonar-local.sh` if available, or document why shellcheck was unavailable. (`shellcheck` was unavailable; `bash -n scripts/sonar-local.sh` passed.)
-- [ ] 5.6 Run `make sonar-local` against the analyzed branch after SonarQube Cloud has data.
-- [ ] 5.7 Verify GitHub Actions reports the Sonar job as success, skipped with an explicit no-secret reason, or failed for a real quality issue.
+- [x] 5.6 Run `make sonar-local` against the analyzed branch after SonarQube Cloud has data.
+- [x] 5.7 Verify GitHub Actions reports the Sonar job as success, skipped with an explicit no-secret reason, or failed for a real quality issue.
