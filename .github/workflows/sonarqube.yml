@@ -34,6 +34,12 @@ jobs:
           echo "SonarQube Cloud analysis skipped because SONAR_TOKEN is unavailable."
           echo "This is expected for fork pull requests and other untrusted contexts."
 
+      - name: Install checkout prerequisites
+        if: env.SONAR_TOKEN != ''
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            git
+
       - name: Checkout
         if: env.SONAR_TOKEN != ''
         uses: actions/checkout@v6
