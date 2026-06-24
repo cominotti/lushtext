@@ -1,4 +1,4 @@
 interface:
   display_name: "Publish Release"
-  short_description: "Ship GitHub and Cominotti Flatpak releases"
-  default_prompt: "Use $publish-release to prepare and publish a LushText release to GitHub and the Cominotti Flatpak repository, with Flathub as an optional handoff."
+  short_description: "Ship releases with all workflows green"
+  default_prompt: "Use $publish-release to prepare, publish, monitor, and repair a LushText release until all GitHub Actions workflows are green, including GitHub, Cominotti Flatpak, benchmark report, and optional Flathub handoff."

@@ -39,6 +39,18 @@ If the tag pushed but the release workflow failed:
 - If source code or release metadata is wrong, publish a new patch release rather than moving the public tag.
 - Only delete or replace a pushed tag with explicit maintainer approval and a clear downstream-impact note.
 
+## GitHub Actions Problems
+
+Any GitHub Actions run for the release commit, release tag, or recovery commit with conclusion other than `success` is a release blocker. This includes `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, and required workflow runs that are skipped or expected but missing.
+
+Recovery:
+
+- Inspect the failed or cancelled run's jobs, steps, and logs before summarizing the release state.
+- Fix the underlying cause, not only the symptom.
+- If the public tag is already pushed and the fix belongs to release tooling or workflow configuration, keep the tag immutable, commit the workflow/tooling fix on `main`, and dispatch the repaired workflow with the public tag as input when the workflow supports it.
+- If the tagged source or release metadata itself is wrong, publish a new patch release rather than moving the public tag.
+- Repeat the exact-SHA and tag-branch workflow sweep until every relevant run completes with conclusion `success`, or report that the release is not fully green and name the external blocker that prevents repair.
+
 ## GitHub Release Problems
 
 If the GitHub Release already exists:

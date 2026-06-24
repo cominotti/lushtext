@@ -121,14 +121,35 @@ The helper should:
 - create a signed `vX.Y.Z` tag;
 - push `main` and the tag to `origin`.
 
-## Monitor Publication
+## Monitor All Remote Workflows
 
-After the tag push, monitor the release workflow:
+After the tag push, identify the exact release commit and monitor every GitHub Actions run created for both the pushed `main` commit and the pushed release tag. Do not watch only `release.yml`.
 
 ```bash
-gh run list --workflow release.yml --limit 5
+VERSION=vX.Y.Z
+RELEASE_SHA="$(git rev-list -n 1 "$VERSION")"
+git ls-remote origin "refs/heads/main" "refs/tags/$VERSION"
+gh run list --commit "$RELEASE_SHA" --limit 50 \
+  --json databaseId,name,displayTitle,event,headBranch,headSha,status,conclusion,url
+gh run list --branch "$VERSION" --limit 50 \
+  --json databaseId,name,displayTitle,event,headBranch,headSha,status,conclusion,url
+```
+
+Required release-critical runs include the tag-triggered `Release` workflow and the tag-triggered `Release Benchmark Report` workflow. Push-triggered workflows for the release commit, such as CI, Flatpak, Snap, and Release Dry Run, are also part of the green release surface whenever GitHub starts them. Recovery commits or manual recovery dispatches become part of the same surface and must also finish green.
+
+Watch every discovered run until it is completed:
+
+```bash
 gh run watch <run-id> --exit-status
 ```
+
+Then re-query by exact commit, tag branch, and any recovery commit SHA. A release is not green unless every relevant run has `status=completed` and `conclusion=success`. Treat `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, `skipped` for a required workflow, or an expected missing release workflow as blockers.
+
+If any workflow is not successful, read its logs, fix the underlying issue, and rerun. If the public tag already exists and the fix is only in release tooling or workflow configuration, keep the tag immutable and dispatch the repaired workflow from the recovery ref while still checking out or otherwise resolving the public release tag. Repeat the workflow sweep after each fix until the surface is fully green or an external maintainer-controlled blocker prevents repair.
+
+Do not answer "CI is green" or "release complete" from local validation, a successful push, or a single successful workflow. Always name the exact SHA, workflow names, run IDs, and conclusions you checked.
+
+## GitHub Release Notes
 
 If the GitHub Release exists, replace generated notes with the authored notes:
 
@@ -193,7 +214,7 @@ Report:
 
 - release commit SHA and tag;
 - GitHub Release URL or exact blocker;
-- release workflow result;
+- every GitHub Actions workflow run checked by exact release SHA, tag branch, and recovery SHA if applicable, with run ID and conclusion;
 - Cominotti Flatpak repository artifact/deploy result or exact skipped/manual action;
 - optional Flathub PR URL or exact skipped/manual action;
 - any AppStream, Flatpak, or packaging caveats;
