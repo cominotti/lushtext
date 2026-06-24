@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Compile-time application constants.
+//! Compile-time constants shared by the GTK shell, services, and resources.
+//!
+//! Runtime preferences still live in GSettings; this module only centralizes
+//! identifiers that must match installed metadata, resource paths, and schema
+//! keys.
 
 pub const APP_ID: &str = "dev.cominotti.lushtext";
 pub const RESOURCE_BASE_PATH: &str = "/dev/cominotti/lushtext";

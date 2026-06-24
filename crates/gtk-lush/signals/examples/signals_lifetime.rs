@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Standalone GTK app demonstrating scoped signal and property-binding cleanup.
+//!
+//! The example mirrors the lifecycle pattern used by LushText custom widgets:
+//! track handlers while the widget is alive, then clear them on close/dispose.
+
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Button, Label, Orientation, Switch, gio, glib};
 use gtk_lush_signals::{BindingBag, SignalBag};

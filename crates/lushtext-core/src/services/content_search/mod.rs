@@ -11,7 +11,7 @@ mod search;
 #[cfg(feature = "property-tests")]
 pub use replace::apply_replacements_to_text_for_property_test;
 pub use replace::{
-    MAX_REPLACE_FILE_BYTES, MAX_REPLACE_UNDO_BYTES, ReplaceUndoBackup, ReplaceUndoEntry,
-    UndoReplaceOutcome, apply_replacements, undo_replacements,
+    ApplyReplacementsOutcome, MAX_REPLACE_FILE_BYTES, MAX_REPLACE_UNDO_BYTES, ReplaceUndoBackup,
+    ReplaceUndoEntry, UndoReplaceOutcome, apply_replacements, undo_replacements,
 };
 pub use search::search;

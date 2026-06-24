@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::model::document_note::DocumentNoteDocument;
 use crate::model::note::RichNoteBody;
+use crate::model::note::RichNoteMergeDecision;
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
@@ -220,23 +221,20 @@ fn merge_document_note_documents(
     mut target: DocumentNoteDocument,
     target_identity: DocumentSidecarIdentity,
 ) -> Result<DocumentNoteDocument> {
-    let source_newer = source.note.updated_at_secs > target.note.updated_at_secs;
-    let target_newer = target.note.updated_at_secs > source.note.updated_at_secs;
-    if source_newer {
-        return Ok(DocumentNoteDocument {
+    match source.note.merge_decision_against(&target.note) {
+        RichNoteMergeDecision::UseSelf => Ok(DocumentNoteDocument {
             identity: target_identity,
             note: source.note,
-        });
+        }),
+        RichNoteMergeDecision::UseOther => {
+            target.identity = target_identity;
+            Ok(target)
+        }
+        RichNoteMergeDecision::Conflict => Err(anyhow::anyhow!(
+            "ambiguous document note sidecar conflict for {}; both copies were preserved",
+            target_identity.display_path.display()
+        )),
     }
-    if target_newer || source.note == target.note {
-        target.identity = target_identity;
-        return Ok(target);
-    }
-
-    Err(anyhow::anyhow!(
-        "ambiguous document note sidecar conflict for {}; both copies were preserved",
-        target_identity.display_path.display()
-    ))
 }
 
 fn remove_obsolete_sidecar(path: &Path) -> Result<()> {

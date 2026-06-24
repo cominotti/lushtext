@@ -75,6 +75,34 @@ impl LushtextWindow {
             .announce_workflow_update(lane, key, message)
     }
 
+    /// Apply sidebar rename effects across tabs, sidecars, search indexes, and status.
+    pub(super) fn handle_sidebar_file_renamed(&self, old_path: &Path, new_path: &Path) {
+        self.update_tab_path(old_path, new_path);
+        self.migrate_note_sidecars_after_rename(old_path, new_path);
+        self.migrate_local_history_after_rename(old_path, new_path);
+        self.imp()
+            .command_palette
+            .update_index_file_renamed(old_path, new_path);
+        let name = new_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.publish_status_message(&format!("Renamed to {name}"), MessageKind::Info);
+    }
+
+    /// Apply sidebar deletion effects across open tabs, palette index, and status.
+    pub(super) fn handle_sidebar_file_deleted(&self, path: &Path) {
+        self.close_tab_for_path(path);
+        self.imp().command_palette.update_index_file_deleted(path);
+        self.publish_status_message("Deleted", MessageKind::Info);
+    }
+
+    /// Apply sidebar creation effects by opening the new file and indexing it.
+    pub(super) fn handle_sidebar_file_created(&self, path: &Path) {
+        self.open_document(path);
+        self.imp().command_palette.update_index_file_created(path);
+    }
+
     /// Report an activation input that GTK could not expose as a local path.
     pub fn report_unsupported_open_file(&self, file: &gio::File) {
         let uri = file.uri();
@@ -955,6 +983,8 @@ impl LushtextWindow {
     pub fn close_tab_for_path(&self, path: &Path) {
         let tab_view = &self.imp().tab_view;
         self.begin_tab_projection_refresh_batch();
+        // Closing pages from the end preserves earlier page indexes while
+        // directory deletes may remove many matching tabs in one pass.
         for i in (0..tab_view.n_pages()).rev() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {

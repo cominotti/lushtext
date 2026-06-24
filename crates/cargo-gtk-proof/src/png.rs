@@ -17,11 +17,13 @@ use flate2::write::ZlibEncoder;
 use serde::Serialize;
 use serde_json::Value;
 
+/// PNG magic bytes required before any chunk parsing begins.
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-// The Rust live runner is authoritative, and corpus replay still needs to
-// reject oversized or hostile artifacts before decoding them in CI.
+/// Maximum compressed artifact size accepted before decoding in CI.
 const MAX_COMPRESSED_PNG_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum decoded RGBA buffer size so hostile PNGs cannot exhaust memory.
 const MAX_DECODED_PNG_BYTES: usize = 64 * 1024 * 1024;
+/// Pixel cap matching the largest visual-proof screenshots the runner should accept.
 const MAX_PNG_PIXELS: usize = 4096 * 4096;
 
 type PngResult<T> = Result<T, String>;
@@ -773,6 +775,9 @@ fn minimap_content_count(
     y: usize,
     min_pixels: usize,
 ) -> PngResult<usize> {
+    // Native minimap viewport chrome forms a longer solid run than syntax
+    // content; eight pixels filters that chrome without hiding narrow text
+    // strokes from the content-count proof.
     let chrome_run_threshold = 8;
     if native_minimap_viewport_edge_count(image, rect, y)? >= chrome_run_threshold {
         return Ok(0);

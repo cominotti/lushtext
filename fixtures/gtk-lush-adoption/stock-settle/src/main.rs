@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Stock gtk-rs fixture used to compare GTK Lush settle adoption.
+//!
+//! The app intentionally implements the same debounce, settle, and cleanup
+//! workflow with ordinary gtk-rs code so adoption tests have a plain baseline.
+
 use std::time::Duration;
 
 use gtk4::prelude::*;

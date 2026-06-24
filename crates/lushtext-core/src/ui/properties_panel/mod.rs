@@ -6,6 +6,7 @@
 //! document inspection details, formatting-source explanation, and file-health
 //! findings out of the bottom bar while still staying tied to the active editor.
 
+// Private GObject implementation for the template-backed properties panel.
 mod imp;
 
 use crate::config::keys;
@@ -20,6 +21,12 @@ use libadwaita::prelude::ActionRowExt;
 use libadwaita::prelude::PreferencesGroupExt;
 
 glib::wrapper! {
+    // Exposes the private ObjectSubclass as the public GTK widget used by the
+    // adaptive window shell.
+    /// Public document-properties panel shown as a side pane or bottom sheet.
+    ///
+    /// The wrapper exposes refresh methods for the active editor while the
+    /// private implementation owns template rows and formatting controls.
     pub struct LushtextPropertiesPanel(ObjectSubclass<imp::LushtextPropertiesPanel>)
         @extends gtk4::Box, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;

@@ -10,11 +10,13 @@
     <key name="tab-width" type="u">
       <default>4</default>
       <summary>Tab Width</summary>
+      <description>Number of columns represented by one tab stop in editor views</description>
       <range min="1" max="12"/>
     </key>
     <key name="insert-spaces-instead-of-tabs" type="b">
       <default>true</default>
       <summary>Insert Spaces Instead of Tabs</summary>
+      <description>Insert spaces when the user presses Tab instead of inserting tab characters</description>
     </key>
     <key name="use-editorconfig" type="b">
       <default>true</default>
@@ -24,10 +26,12 @@
     <key name="show-line-numbers" type="b">
       <default>true</default>
       <summary>Show Line Numbers</summary>
+      <description>Show line numbers in the source view gutter for editor tabs</description>
     </key>
     <key name="highlight-current-line" type="b">
       <default>true</default>
       <summary>Highlight Current Line</summary>
+      <description>Highlight the line containing the cursor in editor tabs</description>
     </key>
     <key name="show-minimap" type="b">
       <default>false</default>
@@ -75,6 +79,7 @@
     <key name="use-system-font" type="b">
       <default>true</default>
       <summary>Use System Monospace Font</summary>
+      <description>Use the desktop monospace font instead of the custom editor font setting</description>
     </key>
     <key name="custom-font" type="s">
       <default>'Monospace 11'</default>
@@ -102,14 +107,17 @@
     <key name="window-width" type="i">
       <default>1200</default>
       <summary>Window Width</summary>
+      <description>Last saved non-maximized window width in pixels</description>
     </key>
     <key name="window-height" type="i">
       <default>800</default>
       <summary>Window Height</summary>
+      <description>Last saved non-maximized window height in pixels</description>
     </key>
     <key name="window-maximized" type="b">
       <default>false</default>
       <summary>Window Maximized</summary>
+      <description>Whether the main window was maximized when its state was last saved</description>
     </key>
     <key name="split-view-layout-migrated" type="b">
       <default>false</default>

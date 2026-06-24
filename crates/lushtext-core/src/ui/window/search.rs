@@ -218,7 +218,8 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             move |window, result| {
                 let imp = window.imp();
                 match result {
-                    Ok((replace_result, backup)) => {
+                    Ok(outcome) => {
+                        let (replace_result, backup) = outcome.into_parts();
                         let mut msg = format!(
                             "Replaced {} of {} matches in {} files",
                             replace_result.replaced_count,
@@ -334,7 +335,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
         // Don't grab focus on startup — let session restore handle focus.
     }
 
-    // --- Load search history from disk (AC #7, #8) ---
+    // --- Load search history from disk ---
     let data_dir = json_store::data_dir();
     let data_dir_saved = data_dir.clone();
     spawn_blocking_then(

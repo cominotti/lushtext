@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Minimal background-task dispatch example for GTK Lush task freshness.
+//!
+//! It demonstrates how a blocking worker result returns to the main loop and is
+//! accepted only when its freshness token still matches the current request.
+
 use std::cell::Cell;
 use std::rc::Rc;
 

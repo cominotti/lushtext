@@ -909,24 +909,10 @@ impl LushtextWindow {
     /// Browse notes across the current workspace scope.
     pub(super) fn show_notes_dialog(&self) {
         let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope = workspaces_file.current_scope();
+        let scope_snapshot = workspaces_file.current_scope_snapshot();
         let all_workspaces = workspaces_file.workspaces;
-        // Snapshot the current scope before background I/O; the sidebar can
-        // change while notes are being listed.
-        let visible_workspaces: Vec<WorkspaceConfig> = match &scope {
-            WorkspaceScope::All => all_workspaces.clone(),
-            WorkspaceScope::Workspace(workspace_id) => all_workspaces
-                .iter()
-                .filter(|workspace| &workspace.id == workspace_id)
-                .cloned()
-                .collect(),
-        };
-        let scope_folders: Vec<PathBuf> = visible_workspaces
-            .iter()
-            .flat_map(WorkspaceConfig::folder_paths)
-            .collect();
         let open_editor_snapshots =
-            self.open_editor_note_snapshots(&scope_folders, &all_workspaces);
+            self.open_editor_note_snapshots(scope_snapshot.folder_paths(), &all_workspaces);
 
         spawn_blocking_then(
             self.clone(),
@@ -934,9 +920,7 @@ impl LushtextWindow {
                 let data_dir = json_store::data_dir();
                 let load = palette_service::load_note_entries_for_scope(
                     &data_dir,
-                    &visible_workspaces,
-                    &scope,
-                    &scope_folders,
+                    &scope_snapshot,
                     open_editor_snapshots,
                 )?;
                 Ok::<_, anyhow::Error>(NotesBrowserLoadResult {
@@ -1502,22 +1486,10 @@ impl LushtextWindow {
         }
 
         let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope = workspaces_file.current_scope();
+        let scope_snapshot = workspaces_file.current_scope_snapshot();
         let all_workspaces = workspaces_file.workspaces;
-        let visible_workspaces: Vec<WorkspaceConfig> = match &scope {
-            WorkspaceScope::All => all_workspaces.clone(),
-            WorkspaceScope::Workspace(workspace_id) => all_workspaces
-                .iter()
-                .filter(|workspace| &workspace.id == workspace_id)
-                .cloned()
-                .collect(),
-        };
-        let scope_folders: Vec<PathBuf> = visible_workspaces
-            .iter()
-            .flat_map(WorkspaceConfig::folder_paths)
-            .collect();
         let open_editor_snapshots =
-            self.open_editor_note_snapshots(&scope_folders, &all_workspaces);
+            self.open_editor_note_snapshots(scope_snapshot.folder_paths(), &all_workspaces);
 
         let window_weak = self.downgrade();
         spawn_blocking_then(
@@ -1526,9 +1498,7 @@ impl LushtextWindow {
                 let data_dir = json_store::data_dir();
                 palette_service::load_note_entries_for_scope(
                     &data_dir,
-                    &visible_workspaces,
-                    &scope,
-                    &scope_folders,
+                    &scope_snapshot,
                     open_editor_snapshots,
                 )
             },

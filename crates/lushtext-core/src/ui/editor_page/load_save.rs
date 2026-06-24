@@ -436,13 +436,15 @@ impl LushtextEditorPage {
                 let formatted_text =
                     editor_io::apply_save_formatting_overrides(&text, formatting_overrides);
                 let should_update_buffer = formatted_text != text;
-                let (size, mtime) = editor_io::write_document_to_path(
+                let write_result = editor_io::write_document_to_path(
                     &path,
                     &formatted_text,
                     metadata.save_encoding,
                     metadata.save_line_ending,
                     allow_lossy,
                 )?;
+                let size = write_result.bytes_written;
+                let mtime = write_result.modified_at_secs;
                 let canonical_path = fs_metadata::canonical_path(&path).ok();
 
                 if history_availability.allows_browsing() {

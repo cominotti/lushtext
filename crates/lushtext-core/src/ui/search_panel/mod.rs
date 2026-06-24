@@ -321,12 +321,12 @@ impl LushtextSearchPanel {
         let imp = self.imp();
         SearchQuerySpec::new(
             imp.search_entry.text().to_string(),
-            crate::model::content_search::ContentSearchOptions::new(
-                imp.case_toggle.is_active(),
-                imp.regex_toggle.is_active(),
-                imp.word_toggle.is_active(),
-                imp.gitignore_toggle.is_active(),
-                {
+            crate::model::content_search::ContentSearchOptions {
+                case_sensitive: imp.case_toggle.is_active(),
+                regex: imp.regex_toggle.is_active(),
+                whole_word: imp.word_toggle.is_active(),
+                gitignore: imp.gitignore_toggle.is_active(),
+                glob: {
                     let text = imp.glob_entry.text();
                     if text.is_empty() {
                         None
@@ -334,7 +334,7 @@ impl LushtextSearchPanel {
                         Some(text.to_string())
                     }
                 },
-            ),
+            },
         )
     }
 

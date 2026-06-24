@@ -11,6 +11,10 @@ use std::cell::RefCell;
 
 use crate::ui::accessibility;
 
+/// Private template implementation for the document properties panel.
+///
+/// Binds the static properties-panel rows to instance data, while dynamic
+/// file-health rows remain ordinary Rust-owned children.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/properties-panel.ui")]
 pub struct LushtextPropertiesPanel {
@@ -61,6 +65,8 @@ impl Default for LushtextPropertiesPanel {
 }
 
 #[glib::object_subclass]
+// Register the Rust implementation as a `GtkBox` subclass so the public
+// wrapper can participate in templates and Libadwaita layout containers.
 impl ObjectSubclass for LushtextPropertiesPanel {
     const NAME: &'static str = "LushtextPropertiesPanel";
     type Type = super::LushtextPropertiesPanel;

@@ -97,7 +97,7 @@ pub fn add_or_update(
     last_opened_secs: u64,
 ) {
     let new_entry = RecentDocumentEntry::new(path, canonical_path, last_opened_secs);
-    entries.retain(|entry| !same_identity(entry, &new_entry));
+    entries.retain(|entry| !entry.shares_identity_with(&new_entry));
     entries.insert(0, new_entry);
     entries.sort_by(sort_newest_first);
     entries.truncate(MAX_RECENTS);
@@ -142,7 +142,7 @@ pub fn merge_loaded_entries(
     for entry in loaded {
         if current
             .iter()
-            .any(|current_entry| same_identity(current_entry, &entry))
+            .any(|current_entry| current_entry.shares_identity_with(&entry))
         {
             continue;
         }
@@ -299,13 +299,13 @@ fn dedupe_sort_prune_existing(
         pruned = true;
     }
 
-    let mut retained = Vec::new();
+    let mut retained: Vec<RecentDocumentEntry> = Vec::new();
     for entry in entries {
         match fs_metadata::path_status(&entry.path) {
             Ok(PathStatus::File) => {
                 if retained
                     .iter()
-                    .any(|retained_entry| same_identity(retained_entry, &entry))
+                    .any(|retained_entry| retained_entry.shares_identity_with(&entry))
                 {
                     // Entries are sorted newest-first; skipping later duplicates
                     // preserves the freshest spelling and timestamp for a path.
@@ -364,18 +364,6 @@ fn sort_newest_first(left: &RecentDocumentEntry, right: &RecentDocumentEntry) ->
         .last_opened_secs
         .cmp(&left.last_opened_secs)
         .then_with(|| left.path.cmp(&right.path))
-}
-
-fn same_identity(left: &RecentDocumentEntry, right: &RecentDocumentEntry) -> bool {
-    left.path == right.path
-        || left
-            .canonical_path
-            .as_ref()
-            .is_some_and(|path| path == &right.path || right.canonical_path.as_ref() == Some(path))
-        || right
-            .canonical_path
-            .as_ref()
-            .is_some_and(|path| path == &left.path)
 }
 
 fn best_score<'a>(query: &str, haystacks: impl IntoIterator<Item = &'a str>) -> Option<u8> {

@@ -20,6 +20,7 @@ mod minimap;
 mod monitor;
 mod overscroll;
 mod search;
+mod style_scheme;
 
 use crate::model::bookmark::BookmarkRecord;
 use crate::model::encoding::{

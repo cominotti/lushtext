@@ -26,21 +26,29 @@ type WorkspaceCallback = Box<dyn Fn(WorkspaceId)>;
 type FolderNotePathCallback = Box<dyn Fn(WorkspaceId, PathBuf)>;
 type WorkspaceScopeCallback = Box<dyn Fn(WorkspaceScope)>;
 
-// CompositeTemplate loads the UI layout from a compiled XML file.
-// GObject methods always take &self; RefCell/Cell provide interior mutability.
+/// Private template implementation for the multi-workspace sidebar.
+///
+/// Owns the fixed selector row, scrollable workspace-section list, persistence
+/// state, and callback glue that forwards row actions to the window.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/sidebar.ui")]
 pub struct LushtextSidebar {
+    /// Outer scroller containing the workspace section list.
     #[template_child]
     pub outer_scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
+    /// Vertical box that hosts live workspace section widgets.
     #[template_child]
     pub sections_box: TemplateChild<gtk4::Box>,
+    /// Fixed top row containing workspace scope and add-workspace controls.
     #[template_child]
     pub new_workspace_box: TemplateChild<gtk4::Box>,
+    /// Dropdown selecting all workspaces or one concrete workspace.
     #[template_child]
     pub workspace_filter_dropdown: TemplateChild<gtk4::DropDown>,
+    /// Revealer used for workspace-list filter transitions.
     #[template_child]
     pub workspace_list_revealer: TemplateChild<gtk4::Revealer>,
+    /// Button that creates a new workspace from a selected folder.
     #[template_child]
     pub new_workspace_button: TemplateChild<gtk4::Button>,
 
@@ -68,8 +76,11 @@ pub struct LushtextSidebar {
     pub local_history_callback: RefCell<Option<FileCallback>>,
     /// Callback for file-row document-note requests, forwarded to the window.
     pub document_note_callback: RefCell<Option<FileCallback>>,
+    /// Callback for sidebar file renames so the window can update open tabs.
     pub rename_callback: RefCell<Option<RenameCallback>>,
+    /// Callback for sidebar file deletion so the window can close affected tabs.
     pub delete_callback: RefCell<Option<FileCallback>>,
+    /// Callback for sidebar-created files so the window can open the new tab.
     pub create_callback: RefCell<Option<FileCallback>>,
     /// Callback forwarding workspace-section status messages to the window.
     pub message_callback: RefCell<Option<MessageCallback>>,
@@ -134,6 +145,8 @@ impl ObjectSubclass for LushtextSidebar {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
+        // The sidebar template embeds workspace-section custom widgets, so the
+        // type must be registered before GTK binds the XML template.
         LushtextWorkspaceSection::ensure_type();
         klass.bind_template();
     }

@@ -2528,8 +2528,15 @@ fn test_descendant_file_context_menu_keeps_file_actions_under_workspace_folder()
     assert!(!labels.iter().any(|label| label == "Remove from Workspace"));
     assert!(!labels.iter().any(|label| label == "Move Up"));
     assert!(!labels.iter().any(|label| label == "Move Down"));
-    assert!(section.imp().context_workspace_folder_id.borrow().is_none());
-    assert_eq!(section.imp().context_path.borrow().as_ref(), Some(&file));
+    assert!(
+        section
+            .context_target_workspace_folder_id_for_test()
+            .is_none()
+    );
+    assert_eq!(
+        section.context_target_path_for_test().as_deref(),
+        Some(file.as_path())
+    );
 
     let activated = Rc::new(RefCell::new(None::<PathBuf>));
     let activated_clone = Rc::clone(&activated);
@@ -2620,8 +2627,15 @@ fn test_file_tree_context_menu_opens_from_keyboard_for_selected_row() {
     assert!(labels.iter().any(|label| label == "Focus Folder"));
     assert!(labels.iter().any(|label| label == "Rename"));
     assert!(labels.iter().any(|label| label == "Delete"));
-    assert_eq!(section.imp().context_path.borrow().as_ref(), Some(&nested));
-    assert!(section.imp().context_workspace_folder_id.borrow().is_none());
+    assert_eq!(
+        section.context_target_path_for_test().as_deref(),
+        Some(nested.as_path())
+    );
+    assert!(
+        section
+            .context_target_workspace_folder_id_for_test()
+            .is_none()
+    );
 
     section
         .activate_action("section.focus-folder", None)
@@ -2683,7 +2697,9 @@ fn test_file_tree_keyboard_context_menu_exposes_workspace_folder_reorder() {
     assert!(labels.iter().any(|label| label == "Move Down"));
     assert!(labels.iter().any(|label| label == "Remove from Workspace"));
     assert_eq!(
-        section.imp().context_workspace_folder_id.borrow().as_ref(),
+        section
+            .context_target_workspace_folder_id_for_test()
+            .as_ref(),
         Some(&second_id)
     );
 
@@ -2855,8 +2871,15 @@ fn test_descendant_focus_folder_does_not_mutate_workspace_folder_membership() {
     assert!(labels.iter().any(|label| label == "Delete"));
     assert!(!labels.iter().any(|label| label == "Open Folder Note…"));
     assert!(!labels.iter().any(|label| label == "Remove from Workspace"));
-    assert!(section.imp().context_workspace_folder_id.borrow().is_none());
-    assert_eq!(section.imp().context_path.borrow().as_ref(), Some(&nested));
+    assert!(
+        section
+            .context_target_workspace_folder_id_for_test()
+            .is_none()
+    );
+    assert_eq!(
+        section.context_target_path_for_test().as_deref(),
+        Some(nested.as_path())
+    );
     section.focus_folder(&nested);
     flush_events();
 
@@ -2897,8 +2920,7 @@ fn test_workspace_section_local_history_action_emits_requested_path() {
         });
     }
 
-    *section.imp().context_path.borrow_mut() = Some(path.clone());
-    section.imp().context_is_dir.set(false);
+    section.set_context_target_for_test(&path, false, None);
     section
         .activate_action("section.local-history", None)
         .expect("local-history widget action should exist");

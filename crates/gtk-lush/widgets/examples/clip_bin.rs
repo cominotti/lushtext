@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Standalone `ClipBin` example for shrink-safe widget composition.
+//!
+//! The fixture demonstrates the one-child clipping container used by LushText to
+//! keep flexible editor chrome from forcing surrounding surfaces out of view.
+
 use gtk_lush_widgets::ClipBin;
 use gtk4::prelude::*;
 

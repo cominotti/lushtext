@@ -17,22 +17,45 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{artifacts, automation, capture, host, model, png, process, read_json_value};
+use crate::{
+    artifacts, automation, capture,
+    geometry::{
+        Insets, VisualBox, app_pixel_anchor_geometry, pixel_anchor_box, png_rect_with_message,
+        safe_name as safe_anchor_name, selected_surface_rows as select_surface_rows, surface_box,
+        visual_geometry,
+    },
+    host, model, png, process, read_json_value,
+};
 
+/// Application id used for isolated settings and process discovery.
 const APP_ID: &str = "dev.cominotti.lushtext";
+/// Time allowed for PipeWire to publish its socket before the run is considered environmental.
 const PIPEWIRE_READY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Upper bound for the hidden Mutter child so broken launches cannot hang CI indefinitely.
 const MUTTER_CHILD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Initial app settle period before first readiness checks start.
 const APP_LAUNCH_SETTLE: Duration = Duration::from_millis(750);
+/// Grace period for auxiliary services to flush logs after each case.
 const PROCESS_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Number of matching final geometry samples required before accepting a settled state.
 const FINAL_GEOMETRY_SAMPLE_COUNT: usize = 3;
+/// Delay between final geometry samples; short enough for fast tests, long enough to catch animation tails.
 const FINAL_GEOMETRY_SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
+/// Total wait budget for final geometry convergence before a case fails.
 const FINAL_GEOMETRY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default invariant that proves native minimap anchors during sidebar animation.
 const DEFAULT_ANIMATION_INVARIANT_ID: &str = "native-minimap-animation-highlight-anchors";
+/// Frame count high enough to catch intermediate animation geometry at 60 Hz.
 const DEFAULT_ANIMATION_STREAM_FRAME_COUNT: u32 = 48;
+/// Capture timeout sized for one sidebar animation plus recorder startup overhead.
 const DEFAULT_ANIMATION_STREAM_TIMEOUT: Duration = Duration::from_millis(1_400);
+/// Geometry sample cadence near one display frame for animation proof matching.
 const DEFAULT_ANIMATION_SAMPLE_INTERVAL: Duration = Duration::from_millis(16);
+/// Maximum tolerated wall-clock mismatch between a PNG frame and its geometry sample.
 const DEFAULT_ANIMATION_MAX_SAMPLE_SKEW_MS: u64 = 80;
+/// Delay before stopping capture so Mutter has time to attach the stream.
 const ANIMATION_RECORDING_ATTACH_DELAY: Duration = Duration::from_millis(30);
+/// Stop timeout for the recorder process so stalled capture cleanup cannot hang the proof run.
 const ANIMATION_RECORDING_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Result of a top-level per-case Rust session launch.
@@ -186,6 +209,8 @@ fn run_internal_session_with_programs(
         Ok(())
     })();
 
+    // Tear children down in reverse launch order so session services outlive
+    // the clients that may still be flushing diagnostics through them.
     for child in children.iter_mut().rev() {
         let _ = child.terminate(PROCESS_CLEANUP_TIMEOUT);
     }
@@ -964,14 +989,6 @@ struct AnimationAnchorSpec {
     source: Value,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Insets {
-    left: i64,
-    top: i64,
-    right: i64,
-    bottom: i64,
-}
-
 #[derive(Clone, Debug)]
 struct GeometrySample {
     elapsed_ms: u64,
@@ -1137,12 +1154,7 @@ fn parse_animation_anchor_spec(value: &Value) -> Result<AnimationAnchorSpec, Str
 }
 
 fn parse_insets(value: &Value) -> Option<Insets> {
-    Some(Insets {
-        left: value.get("left").and_then(Value::as_i64).unwrap_or(0),
-        top: value.get("top").and_then(Value::as_i64).unwrap_or(0),
-        right: value.get("right").and_then(Value::as_i64).unwrap_or(0),
-        bottom: value.get("bottom").and_then(Value::as_i64).unwrap_or(0),
-    })
+    Some(Insets::from_value(value))
 }
 
 fn detect_animation_baseline(
@@ -1601,181 +1613,32 @@ fn rect_for_anchor_search(
 }
 
 fn selected_surface_rows(snapshot: &Value) -> Vec<Value> {
-    [
-        "workspace-sidebar",
-        "editor-viewport",
-        "minimap-shell",
-        "minimap-source-map",
-        "minimap-marker-strip",
-    ]
-    .iter()
-    .map(|name| {
-        optional_surface(snapshot, name).map_or_else(
-            || {
-                serde_json::json!({
-                    "name": name,
-                    "visible": false,
-                    "absence_reason": "missing-from-snapshot",
-                })
-            },
-            |row| {
-                serde_json::json!({
-                    "name": row.get("name"),
-                    "visible": row.get("visible"),
-                    "rect": row.get("rect"),
-                    "allocation": row.get("allocation"),
-                    "absence_reason": row.get("absence_reason"),
-                })
-            },
-        )
-    })
-    .collect()
-}
-
-fn app_pixel_anchor_geometry(
-    before_snapshot: &Value,
-    after_snapshot: &Value,
-    pixel_anchor_name: &str,
-) -> Option<Value> {
-    let before = optional_pixel_anchor(before_snapshot, pixel_anchor_name);
-    let after = optional_pixel_anchor(after_snapshot, pixel_anchor_name);
-    if before.is_none() && after.is_none() {
-        return None;
-    }
-    let before_row = before.and_then(app_anchor_row);
-    let after_row = after.and_then(app_anchor_row);
-    Some(serde_json::json!({
-        "snapshot_anchor_name": pixel_anchor_name,
-        "before": before.map_or_else(|| serde_json::json!({
-            "visible": false,
-            "absence_reason": "missing-from-snapshot",
-        }), app_anchor_summary),
-        "after": after.map_or_else(|| serde_json::json!({
-            "visible": false,
-            "absence_reason": "missing-from-snapshot",
-        }), app_anchor_summary),
-        "before_row_y": before_row,
-        "after_row_y": after_row,
-        "screen_y_delta": before_row.zip(after_row).map(|(before, after)| (after - before).abs()),
-    }))
-}
-
-fn app_anchor_row(row: &Value) -> Option<i64> {
-    if row.get("visible").and_then(Value::as_bool) != Some(true) {
-        return None;
-    }
-    row.get("rect")?.get("y")?.as_i64()
-}
-
-fn app_anchor_summary(row: &Value) -> Value {
-    serde_json::json!({
-        "name": row.get("name"),
-        "surface": row.get("surface"),
-        "visible": row.get("visible"),
-        "rect": row.get("rect"),
-        "absence_reason": row.get("absence_reason"),
-    })
-}
-
-fn optional_surface<'a>(snapshot: &'a Value, name: &str) -> Option<&'a Value> {
-    visual_geometry(snapshot)?
-        .get("surfaces")?
-        .as_array()?
-        .iter()
-        .find(|row| row.get("name").and_then(Value::as_str) == Some(name))
-}
-
-fn optional_pixel_anchor<'a>(snapshot: &'a Value, name: &str) -> Option<&'a Value> {
-    visual_geometry(snapshot)?
-        .get("pixel_anchors")?
-        .as_array()?
-        .iter()
-        .find(|row| row.get("name").and_then(Value::as_str) == Some(name))
-}
-
-fn visual_geometry(snapshot: &Value) -> Option<&Value> {
-    snapshot.pointer("/window/visual_geometry")
-}
-
-fn surface_box(snapshot: &Value, name: &str) -> Result<VisualBox, String> {
-    let row = optional_surface(snapshot, name)
-        .ok_or_else(|| format!("visual surface not found: {name}"))?;
-    if row.get("visible").and_then(Value::as_bool) != Some(true) {
-        return Err(format!("surface {name} is not visible"));
-    }
-    VisualBox::from_value(row.get("rect").unwrap_or(&Value::Null))
-        .ok_or_else(|| format!("surface {name} has malformed rect"))
-}
-
-fn pixel_anchor_box(snapshot: &Value, name: &str) -> Result<VisualBox, String> {
-    let row = optional_pixel_anchor(snapshot, name)
-        .ok_or_else(|| format!("visual pixel anchor not found: {name}"))?;
-    if row.get("visible").and_then(Value::as_bool) != Some(true) {
-        return Err(format!("pixel anchor {name} is not visible"));
-    }
-    VisualBox::from_value(row.get("rect").unwrap_or(&Value::Null))
-        .ok_or_else(|| format!("pixel anchor {name} has malformed rect"))
+    select_surface_rows(
+        snapshot,
+        &[
+            "workspace-sidebar",
+            "editor-viewport",
+            "minimap-shell",
+            "minimap-source-map",
+            "minimap-marker-strip",
+        ],
+    )
 }
 
 fn inset_box(rect: VisualBox, insets: Insets) -> Result<VisualBox, String> {
-    let width = rect.width - insets.left - insets.right;
-    let height = rect.height - insets.top - insets.bottom;
-    if width <= 0 || height <= 0 {
-        return Err("crop insets leave an empty animation anchor rectangle".to_string());
-    }
-    Ok(VisualBox {
-        x: rect.x + insets.left,
-        y: rect.y + insets.top,
-        width,
-        height,
-    })
+    crate::geometry::inset_box(
+        rect,
+        insets,
+        "crop insets leave an empty animation anchor rectangle",
+    )
 }
 
 fn png_rect(rect: VisualBox) -> Result<png::Rect, String> {
-    if rect.width <= 0 || rect.height <= 0 {
-        return Err("animation anchor crop rectangle is empty".to_string());
-    }
-    Ok(png::Rect::new(
-        i32::try_from(rect.x).map_err(|error| error.to_string())?,
-        i32::try_from(rect.y).map_err(|error| error.to_string())?,
-        usize::try_from(rect.width).map_err(|error| error.to_string())?,
-        usize::try_from(rect.height).map_err(|error| error.to_string())?,
-    ))
-}
-
-fn safe_anchor_name(name: &str) -> String {
-    let mut output = String::new();
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-') {
-            output.push(character);
-        } else if !output.ends_with('-') {
-            output.push('-');
-        }
-    }
-    output.trim_matches('-').to_string()
+    png_rect_with_message(rect, "animation anchor crop rectangle is empty")
 }
 
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct VisualBox {
-    x: i64,
-    y: i64,
-    width: i64,
-    height: i64,
-}
-
-impl VisualBox {
-    fn from_value(value: &Value) -> Option<Self> {
-        Some(Self {
-            x: value.get("x")?.as_i64()?,
-            y: value.get("y")?.as_i64()?,
-            width: value.get("width")?.as_i64()?,
-            height: value.get("height")?.as_i64()?,
-        })
-    }
 }
 
 fn action_row(row: &automation::AutomationArtifactRow) -> serde_json::Value {

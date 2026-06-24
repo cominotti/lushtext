@@ -338,7 +338,7 @@ fn seed_dense_workspace_sections(count: usize) -> tempfile::TempDir {
     folders_dir
 }
 
-// --- Window integration: tab path updates (moved from old sidebar.rs) ---
+// --- Window integration: tab path updates ---
 
 #[test]
 fn test_update_tab_path_exact_match() {

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Minimal proof-harness runner used as executable documentation for adopters.
+//!
+//! The example proves the child-test environment, headless-runner handoff, and
+//! registered-test contract without depending on the LushText application.
+
 use std::process::ExitCode;
 use std::time::Duration;
 

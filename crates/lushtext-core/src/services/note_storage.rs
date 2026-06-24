@@ -76,9 +76,24 @@ pub fn rebase_identity_paths(
     old_path: &Path,
     new_path: &Path,
 ) -> Option<(PathBuf, PathBuf)> {
-    if identity.display_path == old_path || identity.display_path.starts_with(old_path) {
-        let suffix = identity
-            .display_path
+    rebase_display_and_canonical_paths(
+        &identity.display_path,
+        &identity.canonical_path,
+        old_path,
+        new_path,
+    )
+}
+
+/// Rebase paired display/canonical paths after an in-app rename.
+#[must_use]
+pub fn rebase_display_and_canonical_paths(
+    display_path: &Path,
+    canonical_path: &Path,
+    old_path: &Path,
+    new_path: &Path,
+) -> Option<(PathBuf, PathBuf)> {
+    if display_path == old_path || display_path.starts_with(old_path) {
+        let suffix = display_path
             .strip_prefix(old_path)
             .ok()
             .map(PathBuf::from)
@@ -93,9 +108,8 @@ pub fn rebase_identity_paths(
         return Some((display_path, canonical_path));
     }
 
-    if identity.canonical_path == old_path || identity.canonical_path.starts_with(old_path) {
-        let suffix = identity
-            .canonical_path
+    if canonical_path == old_path || canonical_path.starts_with(old_path) {
+        let suffix = canonical_path
             .strip_prefix(old_path)
             .ok()
             .map(PathBuf::from)

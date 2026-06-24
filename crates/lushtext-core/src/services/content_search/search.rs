@@ -95,11 +95,14 @@ pub fn search(
         }
     };
 
+    // Cap per-folder walker parallelism so broad workspace searches remain
+    // cooperative with GTK and other app-owned background work.
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     // Shared counters across walker threads and ordered workspace folders.
     let match_count = Arc::new(AtomicUsize::new(0));
     let files_visited = Arc::new(AtomicUsize::new(0));
     let visited_files = Arc::new(Mutex::new(HashSet::new()));
+    let file_identity_mode = FileIdentityMode::for_workspace_folders(workspace_folders);
 
     for folder in workspace_folders {
         if cancel.load(Ordering::Relaxed) {
@@ -168,7 +171,7 @@ pub fn search(
                 }
 
                 let path = entry.into_path();
-                if !claim_file_identity(&path, &visited_files) {
+                if !claim_file_identity(&path, &visited_files, file_identity_mode) {
                     return WalkState::Continue;
                 }
 
@@ -234,6 +237,28 @@ pub fn search(
     let _ = tx.send(SearchEvent::Done);
 }
 
+/// Search dedupe strategy for visited files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileIdentityMode {
+    /// A single walker root cannot revisit the same regular file through a
+    /// configured parent/child overlap, so the walked path is enough.
+    WalkedPath,
+    /// Multiple roots may overlap, so canonical identity prevents duplicate
+    /// results through parent and descendant workspace folders.
+    CanonicalPath,
+}
+
+impl FileIdentityMode {
+    /// Use canonical dedupe only when multiple configured roots may overlap.
+    fn for_workspace_folders(workspace_folders: &[&Path]) -> Self {
+        if workspace_folders.len() > 1 {
+            Self::CanonicalPath
+        } else {
+            Self::WalkedPath
+        }
+    }
+}
+
 /// Find the first byte range that matched within one line.
 ///
 /// The line has already matched, so falling back to `0..0` should be rare and
@@ -245,14 +270,23 @@ fn find_match_range(matcher: &grep_regex::RegexMatcher, line: &[u8]) -> std::ops
     }
 }
 
-/// Claim one file by canonical identity before searching it.
+/// Claim one file by identity before searching it.
 ///
 /// Overlapping workspace folders can reach the same file through a parent and a
 /// descendant tree. Canonicalizing before the lock keeps slow filesystem work
-/// outside the shared critical section, while the path fallback keeps unusual
-/// but readable files searchable when identity lookup fails.
-fn claim_file_identity(path: &Path, visited_files: &Mutex<HashSet<PathBuf>>) -> bool {
-    let identity = fs_metadata::canonical_path(path).unwrap_or_else(|_| path.to_path_buf());
+/// outside the shared critical section and is reserved for multi-root searches;
+/// a single walker root can use the path reported by `ignore`.
+fn claim_file_identity(
+    path: &Path,
+    visited_files: &Mutex<HashSet<PathBuf>>,
+    mode: FileIdentityMode,
+) -> bool {
+    let identity = match mode {
+        FileIdentityMode::WalkedPath => path.to_path_buf(),
+        FileIdentityMode::CanonicalPath => {
+            fs_metadata::canonical_path(path).unwrap_or_else(|_| path.to_path_buf())
+        }
+    };
     visited_files
         .lock()
         .is_ok_and(|mut visited| visited.insert(identity))
@@ -299,6 +333,20 @@ mod tests {
     /// Check that the last event is Done.
     fn assert_ends_with_done(events: &[SearchEvent]) {
         assert_matches!(events.last(), Some(SearchEvent::Done));
+    }
+
+    #[test]
+    fn file_identity_mode_uses_canonical_paths_only_for_multiple_roots() {
+        let root = Path::new("/tmp/workspace");
+
+        assert_eq!(
+            FileIdentityMode::for_workspace_folders(&[root]),
+            FileIdentityMode::WalkedPath
+        );
+        assert_eq!(
+            FileIdentityMode::for_workspace_folders(&[root, Path::new("/tmp/workspace/src")]),
+            FileIdentityMode::CanonicalPath
+        );
     }
 
     #[test]

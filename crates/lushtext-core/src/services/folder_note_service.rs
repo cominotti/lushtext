@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::model::folder_note::{FolderNoteDocument, FolderNoteIdentity};
-use crate::model::note::RichNoteBody;
+use crate::model::note::{RichNoteBody, RichNoteMergeDecision};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
@@ -295,23 +295,20 @@ fn merge_folder_note_documents(
     mut target: FolderNoteDocument,
     target_identity: FolderNoteIdentity,
 ) -> Result<FolderNoteDocument> {
-    let source_newer = source.note.updated_at_secs > target.note.updated_at_secs;
-    let target_newer = target.note.updated_at_secs > source.note.updated_at_secs;
-    if source_newer {
-        return Ok(FolderNoteDocument {
+    match source.note.merge_decision_against(&target.note) {
+        RichNoteMergeDecision::UseSelf => Ok(FolderNoteDocument {
             identity: target_identity,
             note: source.note,
-        });
+        }),
+        RichNoteMergeDecision::UseOther => {
+            target.identity = target_identity;
+            Ok(target)
+        }
+        RichNoteMergeDecision::Conflict => Err(anyhow::anyhow!(
+            "ambiguous folder note sidecar conflict for {}; both copies were preserved",
+            target_identity.display_folder.display()
+        )),
     }
-    if target_newer || source.note == target.note {
-        target.identity = target_identity;
-        return Ok(target);
-    }
-
-    Err(anyhow::anyhow!(
-        "ambiguous folder note sidecar conflict for {}; both copies were preserved",
-        target_identity.display_folder.display()
-    ))
 }
 
 fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
@@ -382,42 +379,12 @@ fn rebase_folder_note_identity(
     old_folder: &Path,
     new_folder: &Path,
 ) -> Option<(PathBuf, PathBuf)> {
-    if identity.display_folder == old_folder || identity.display_folder.starts_with(old_folder) {
-        let suffix = identity
-            .display_folder
-            .strip_prefix(old_folder)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_folder = if suffix.as_os_str().is_empty() {
-            new_folder.to_path_buf()
-        } else {
-            new_folder.join(suffix)
-        };
-        let canonical_folder =
-            fs_metadata::canonical_path(&display_folder).unwrap_or_else(|_| display_folder.clone());
-        return Some((display_folder, canonical_folder));
-    }
-
-    if identity.canonical_folder == old_folder || identity.canonical_folder.starts_with(old_folder)
-    {
-        let suffix = identity
-            .canonical_folder
-            .strip_prefix(old_folder)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let display_folder = if suffix.as_os_str().is_empty() {
-            new_folder.to_path_buf()
-        } else {
-            new_folder.join(suffix)
-        };
-        let canonical_folder =
-            fs_metadata::canonical_path(&display_folder).unwrap_or_else(|_| display_folder.clone());
-        return Some((display_folder, canonical_folder));
-    }
-
-    None
+    note_storage::rebase_display_and_canonical_paths(
+        &identity.display_folder,
+        &identity.canonical_folder,
+        old_folder,
+        new_folder,
+    )
 }
 
 #[cfg(test)]

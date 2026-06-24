@@ -317,8 +317,17 @@ pub fn classify_bytes_for_fuzzing(
 pub fn write_snapshot_to_path(
     path: &Path,
     text: &str,
-) -> Result<(u64, Option<u64>), EditorSaveError> {
+) -> Result<EditorWriteResult, EditorSaveError> {
     write_document_to_path(path, text, DocumentEncoding::Utf8, LineEnding::Lf, false)
+}
+
+/// Outcome of a successful editor document write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorWriteResult {
+    /// Number of bytes written after line-ending normalization and transcoding.
+    pub bytes_written: u64,
+    /// File modification timestamp observed after the durable write, when available.
+    pub modified_at_secs: Option<u64>,
 }
 
 /// Atomically write a document using the chosen save encoding and line endings.
@@ -339,7 +348,7 @@ pub fn write_document_to_path(
     encoding: DocumentEncoding,
     line_ending: LineEnding,
     allow_lossy: bool,
-) -> Result<(u64, Option<u64>), EditorSaveError> {
+) -> Result<EditorWriteResult, EditorSaveError> {
     let normalized = normalize_line_endings(text, line_ending)?;
     let bytes = encode_text(&normalized, encoding, allow_lossy)?;
     let bytes_written = bytes.len() as u64;
@@ -347,7 +356,10 @@ pub fn write_document_to_path(
     let mtime = fs_metadata::file_facts(path)
         .ok()
         .and_then(|facts| facts.modified_at_secs);
-    Ok((bytes_written, mtime))
+    Ok(EditorWriteResult {
+        bytes_written,
+        modified_at_secs: mtime,
+    })
 }
 
 /// Apply EditorConfig save-only text rewrites before encoding and line-ending normalization.
@@ -1279,7 +1291,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
 
-        let (size, mtime) = write_document_to_path(
+        let write_result = write_document_to_path(
             &path,
             "saved\ntext",
             DocumentEncoding::Utf8,
@@ -1288,8 +1300,11 @@ mod tests {
         )
         .expect("expected operation to succeed");
 
-        assert_eq!(size, 11);
-        assert!(mtime.is_some(), "mtime should be populated after write");
+        assert_eq!(write_result.bytes_written, 11);
+        assert!(
+            write_result.modified_at_secs.is_some(),
+            "mtime should be populated after write"
+        );
         assert_eq!(fixture::read_text(&path), "saved\r\ntext");
     }
 

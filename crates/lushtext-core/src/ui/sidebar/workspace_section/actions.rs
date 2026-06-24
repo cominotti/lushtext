@@ -20,12 +20,13 @@ impl super::LushtextWorkspaceSection {
     /// the UI, especially when `create_unique` retries on name collisions.
     pub(crate) fn create_new_item(&self, is_dir: bool) {
         let imp = self.imp();
-        let context_path = imp.context_path.borrow().clone();
-        let Some(context_path) = context_path else {
+        let target = imp.context_target.borrow().clone();
+        let Some(target) = target else {
             return;
         };
+        let context_path = target.path;
 
-        let target_dir = if imp.context_is_dir.get() {
+        let target_dir = if target.is_dir {
             context_path.clone()
         } else {
             match context_path.parent() {
@@ -35,7 +36,7 @@ impl super::LushtextWorkspaceSection {
         };
 
         let base = if is_dir { "New Folder" } else { "New File" };
-        let context_is_dir = imp.context_is_dir.get();
+        let context_is_dir = target.is_dir;
         let base_owned = base.to_string();
         let target_dir_for_bg = target_dir.clone();
 
@@ -93,10 +94,10 @@ impl super::LushtextWorkspaceSection {
     /// Start inline rename for the right-clicked item.
     pub(crate) fn begin_rename(&self) {
         let imp = self.imp();
-        let path = imp.context_path.borrow().clone();
-        let Some(path) = path else { return };
-        let expander = imp.context_expander.borrow().clone();
-        let Some(expander) = expander else { return };
+        let target = imp.context_target.borrow().clone();
+        let Some(target) = target else { return };
+        let path = target.path;
+        let expander = target.expander;
 
         let content_box = expander
             .child()
@@ -128,11 +129,7 @@ impl super::LushtextWorkspaceSection {
         entry.set_text(&name);
         entry.set_hexpand(true);
         let is_new = imp.is_new_item.get();
-        let kind = if imp.context_is_dir.get() {
-            "folder"
-        } else {
-            "file"
-        };
+        let kind = if target.is_dir { "folder" } else { "file" };
         let entry_label = if is_new {
             format!("Name new {kind}")
         } else {
@@ -255,7 +252,12 @@ impl super::LushtextWorkspaceSection {
 
         let new_path = old_path.with_file_name(new_name);
         let new_name_owned = new_name.to_string();
-        let is_dir = self.imp().context_is_dir.get();
+        let is_dir = self
+            .imp()
+            .context_target
+            .borrow()
+            .as_ref()
+            .is_some_and(|target| target.is_dir);
 
         // Restore the row immediately so focus-out cannot start a second rename
         // while the filesystem rename runs.
@@ -274,8 +276,8 @@ impl super::LushtextWorkspaceSection {
                 let imp = section.imp();
                 match result {
                     Ok(()) => {
-                        if let Some(ref expander) = *imp.context_expander.borrow()
-                            && let Some(tree_row) = expander.list_row()
+                        if let Some(ref target) = *imp.context_target.borrow()
+                            && let Some(tree_row) = target.expander.list_row()
                             && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
                         {
                             if is_dir {
@@ -342,9 +344,14 @@ impl super::LushtextWorkspaceSection {
         self.imp().is_new_item.set(false);
 
         // Fire-and-forget deletion of the temp item on a background thread.
-        // Uses context_is_dir instead of stat to avoid a synchronous syscall.
+        // Uses the captured context target instead of stat to avoid a synchronous syscall.
         let path = temp_path.to_path_buf();
-        let is_dir = self.imp().context_is_dir.get();
+        let is_dir = self
+            .imp()
+            .context_target
+            .borrow()
+            .as_ref()
+            .is_some_and(|target| target.is_dir);
         std::thread::spawn(move || {
             if is_dir {
                 let _ = fs_mutate::remove_dir_if_exists(&path);
@@ -358,9 +365,10 @@ impl super::LushtextWorkspaceSection {
 
     pub(crate) fn show_delete_confirmation(&self) {
         let imp = self.imp();
-        let path = imp.context_path.borrow().clone();
-        let Some(path) = path else { return };
-        let is_dir = imp.context_is_dir.get();
+        let target = imp.context_target.borrow().clone();
+        let Some(target) = target else { return };
+        let path = target.path;
+        let is_dir = target.is_dir;
 
         let name = super::super::file_tree_item::display_name_for_path(&path);
 
@@ -423,10 +431,12 @@ impl super::LushtextWorkspaceSection {
 
     pub(crate) fn show_remove_folder_confirmation(&self) {
         let imp = self.imp();
-        let path = imp.context_path.borrow().clone();
-        let Some(path) = path else { return };
-        let folder_id = imp.context_workspace_folder_id.borrow().clone();
-        let Some(folder_id) = folder_id else { return };
+        let target = imp.context_target.borrow().clone();
+        let Some(target) = target else { return };
+        let path = target.path;
+        let Some(folder_id) = target.workspace_folder_id else {
+            return;
+        };
 
         let name = super::super::file_tree_item::display_name_for_path(&path);
 

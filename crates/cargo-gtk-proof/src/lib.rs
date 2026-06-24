@@ -20,6 +20,7 @@ use serde_json::Value;
 mod artifacts;
 mod automation;
 mod capture;
+mod geometry;
 mod host;
 mod live;
 mod model;

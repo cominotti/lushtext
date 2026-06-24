@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Standalone render-hold overlay example for animated GTK transitions.
+//!
+//! The example exercises capture, warmup, and reveal ordering so adopters can
+//! see how the widget holds a rendered frame while live content catches up.
+
 use std::rc::Rc;
 use std::time::Duration;
 

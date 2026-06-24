@@ -45,6 +45,19 @@ impl RecentDocumentEntry {
     pub fn matches_path(&self, path: &Path) -> bool {
         self.path == path || self.canonical_path.as_deref() == Some(path)
     }
+
+    /// Return true when two recent rows refer to the same filesystem identity.
+    #[must_use]
+    pub fn shares_identity_with(&self, other: &Self) -> bool {
+        self.path == other.path
+            || self.canonical_path.as_ref().is_some_and(|path| {
+                path == &other.path || other.canonical_path.as_ref() == Some(path)
+            })
+            || other
+                .canonical_path
+                .as_ref()
+                .is_some_and(|path| path == &self.path)
+    }
 }
 
 /// UI-ready row derived from recent persistence.
@@ -139,6 +152,21 @@ mod tests {
         assert!(entry.matches_path(Path::new("/tmp/link.txt")));
         assert!(entry.matches_path(Path::new("/real/file.txt")));
         assert!(!entry.matches_path(Path::new("/other.txt")));
+    }
+
+    #[test]
+    fn identity_matches_another_entry_by_display_or_canonical_path() {
+        let display = RecentDocumentEntry::new(PathBuf::from("/tmp/link.txt"), None, 1);
+        let canonical = RecentDocumentEntry::new(
+            PathBuf::from("/tmp/other-link.txt"),
+            Some(PathBuf::from("/tmp/link.txt")),
+            2,
+        );
+        let unrelated = RecentDocumentEntry::new(PathBuf::from("/elsewhere.txt"), None, 3);
+
+        assert!(display.shares_identity_with(&canonical));
+        assert!(canonical.shares_identity_with(&display));
+        assert!(!display.shares_identity_with(&unrelated));
     }
 
     #[test]

@@ -39,6 +39,8 @@ type ReplaceCallback = Box<dyn Fn(Vec<Replacement>)>;
 type UndoCallback = Box<dyn Fn(ReplaceUndoBackup)>;
 type MessageCallback = Box<dyn Fn(&str)>;
 
+/// Delay text-entry searches long enough to batch normal typing without making
+/// the workspace search panel feel sluggish.
 const SEARCH_INPUT_DEBOUNCE_MS: u64 = 300;
 
 /// Runtime state for one in-flight search and its grouped GTK result models.
@@ -128,6 +130,10 @@ pub struct SearchPreviewState {
 pub struct SearchNavigationState {
     /// Flat navigation index in match arrival order.
     pub match_positions: RefCell<Vec<SearchMatchLocation>>,
+    /// Visible tree rows for each navigation target, captured when rows are appended.
+    pub match_rows: RefCell<Vec<Option<gtk4::TreeListRow>>>,
+    /// File-header rows keyed by absolute file path for direct child-row lookup.
+    pub file_rows: RefCell<HashMap<PathBuf, gtk4::TreeListRow>>,
     /// Current position in `match_positions` for wraparound navigation.
     pub current_match_index: Cell<Option<usize>>,
 }
@@ -151,51 +157,77 @@ pub struct SearchCallbacks {
     pub message_callback: RefCell<Option<MessageCallback>>,
 }
 
+/// Private template implementation for the workspace search panel.
+///
+/// Owns the template controls plus Rust state for streaming search, saved-search
+/// dropdowns, replace preview, undo, and window callbacks.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/search-panel.ui")]
 pub struct LushtextSearchPanel {
+    /// Search input that drives debounced workspace search.
     #[template_child]
     pub search_entry: TemplateChild<gtk4::SearchEntry>,
+    /// Hierarchical results list backed by a TreeListModel.
     #[template_child]
     pub results_list: TemplateChild<gtk4::ListView>,
+    /// Revealer for empty, progress, and error feedback.
     #[template_child]
     pub results_feedback_revealer: TemplateChild<gtk4::Revealer>,
+    /// Revealer for the actual grouped results body.
     #[template_child]
     pub results_body_revealer: TemplateChild<gtk4::Revealer>,
+    /// Scrolled container whose height is clamped by the window layout.
     #[template_child]
     pub results_scroll: TemplateChild<gtk4::ScrolledWindow>,
+    /// Summary label for match counts and capped-result warnings.
     #[template_child]
     pub count_label: TemplateChild<gtk4::Label>,
+    /// Error label shown when search or replace cannot proceed.
     #[template_child]
     pub error_label: TemplateChild<gtk4::Label>,
+    /// Toggle for case-sensitive search.
     #[template_child]
     pub case_toggle: TemplateChild<gtk4::ToggleButton>,
+    /// Toggle for regex search mode.
     #[template_child]
     pub regex_toggle: TemplateChild<gtk4::ToggleButton>,
+    /// Toggle for whole-word matching.
     #[template_child]
     pub word_toggle: TemplateChild<gtk4::ToggleButton>,
+    /// Toggle that reveals advanced search options.
     #[template_child]
     pub more_toggle: TemplateChild<gtk4::ToggleButton>,
+    /// Revealer containing glob and gitignore options.
     #[template_child]
     pub options_revealer: TemplateChild<gtk4::Revealer>,
+    /// Toggle controlling whether gitignore rules are honored.
     #[template_child]
     pub gitignore_toggle: TemplateChild<gtk4::ToggleButton>,
+    /// Glob filter entry for workspace search.
     #[template_child]
     pub glob_entry: TemplateChild<gtk4::Entry>,
+    /// Replacement text entry used by Replace All preview.
     #[template_child]
     pub replace_entry: TemplateChild<gtk4::Entry>,
+    /// Button that starts the checked Replace All operation.
     #[template_child]
     pub replace_all_button: TemplateChild<gtk4::Button>,
+    /// Button that restores the latest Replace All undo backup.
     #[template_child]
     pub undo_button: TemplateChild<gtk4::Button>,
+    /// Button that saves the current search.
     #[template_child]
     pub save_button: TemplateChild<gtk4::Button>,
+    /// Button that hides the search panel.
     #[template_child]
     pub close_button: TemplateChild<gtk4::Button>,
+    /// Separator between result summary chrome and result rows.
     #[template_child]
     pub results_header_separator: TemplateChild<gtk4::Separator>,
+    /// Separator above the replace/undo footer.
     #[template_child]
     pub results_footer_separator: TemplateChild<gtk4::Separator>,
+    /// Footer containing replace, undo, and saved-search controls.
     #[template_child]
     pub footer_box: TemplateChild<gtk4::Box>,
 
@@ -305,6 +337,8 @@ impl Default for LushtextSearchPanel {
 }
 
 #[glib::object_subclass]
+// Register the search panel as a GtkBox subclass so the window can mount it as
+// ordinary chrome while this implementation owns its template children.
 impl ObjectSubclass for LushtextSearchPanel {
     const NAME: &'static str = "LushtextSearchPanel";
     type Type = super::LushtextSearchPanel;
@@ -382,10 +416,9 @@ impl LushtextSearchPanel {
             .bind(keys::SEARCH_WHOLE_WORD, &*self.word_toggle, "active")
             .build();
 
-        // Immediate re-search when any toggle changes (no debounce — UX-DR12).
-        // Connected AFTER bind() so the initial GSettings restore doesn't trigger
-        // a search. The `constructed_complete` guard prevents the restore-time
-        // notify from reaching start_search.
+        // Immediate re-search when a user flips a toggle. Connect after
+        // GSettings binding and keep a restore guard so startup/history replay
+        // notifications do not accidentally launch a workspace search.
         for toggle in [&*self.case_toggle, &*self.regex_toggle, &*self.word_toggle] {
             let panel_weak = self.obj().downgrade();
             toggle.connect_notify_local(Some("active"), move |_, _| {
@@ -580,7 +613,7 @@ impl LushtextSearchPanel {
             };
             let imp = panel.imp();
 
-            // Dismiss history dropdown when user types (AC #6).
+            // Dismiss the history dropdown when the user edits the query.
             if imp.history_popover.is_visible() {
                 imp.history_popover.popdown();
             }

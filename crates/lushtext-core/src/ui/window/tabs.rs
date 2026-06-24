@@ -31,6 +31,64 @@ struct TabLayoutEntry {
 }
 
 impl LushtextWindow {
+    /// Handle AdwTabView's close request for one tab page.
+    pub(super) fn handle_tab_close_request(
+        window: Option<&Self>,
+        tab_view: &libadwaita::TabView,
+        page: &libadwaita::TabPage,
+    ) -> glib::Propagation {
+        if let Some(window) = window
+            && window.consume_preconfirmed_tab_close(page)
+        {
+            tab_view.close_page_finish(page, true);
+            return glib::Propagation::Stop;
+        }
+
+        let child = page.child();
+        let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+            tab_view.close_page_finish(page, true);
+            return glib::Propagation::Stop;
+        };
+        if !editor.is_modified() {
+            tab_view.close_page_finish(page, true);
+            return glib::Propagation::Stop;
+        }
+        let Some(window) = window else {
+            tab_view.close_page_finish(page, false);
+            return glib::Propagation::Stop;
+        };
+        let tab_view = tab_view.clone();
+        let page = page.clone();
+        let page_for_finish = page.clone();
+        window.confirm_close_tab(&page, editor, move |confirmed| {
+            tab_view.close_page_finish(&page_for_finish, confirmed);
+        });
+        glib::Propagation::Stop
+    }
+
+    /// Clean up all window bookkeeping after AdwTabView detaches a page.
+    pub(super) fn handle_tab_detached(&self, page: &libadwaita::TabPage) {
+        self.forget_tab_page(page);
+        if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+            if let Some(ref path) = editor.file_path() {
+                let mut paths = self.imp().open_paths.borrow_mut();
+                paths.remove(path.as_path());
+                paths.remove(&super::documents::open_path_key(path));
+                if let Some(canonical_path) = editor.canonical_file_path() {
+                    paths.remove(&canonical_path);
+                }
+            }
+            self.dismiss_editor_notifications(editor);
+            self.untrack_editor_memory(editor);
+            editor.cancel_load();
+            editor.stop_file_monitor();
+        }
+        if !self.tab_projection_refresh_deferred() {
+            self.refresh_tab_model_projections();
+        }
+        self.save_session_debounced();
+    }
+
     /// Install the native Adwaita tab context menu and its actions.
     ///
     /// The menu model lives on `AdwTabView` itself so right-click handling stays

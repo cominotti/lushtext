@@ -279,7 +279,6 @@ fn manifest_remove_by_path_leaves_others_intact() {
 #[test]
 fn delete_nonexistent_draft_is_ok() {
     let ctx = TestContext::new();
-    // Should not error even without the drafts directory existing
     draft_service::delete_draft_file(ctx.data_dir(), "does_not_exist")
         .expect("expected operation to succeed");
 }

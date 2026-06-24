@@ -172,6 +172,11 @@ pub(super) fn directory_traversal_open_flags() -> rustix::fs::OFlags {
 }
 
 #[cfg(unix)]
+/// Visit raw Unix directory entries without materializing platform-specific
+/// traversal details above the filesystem boundary.
+///
+/// Returning `false` from the visitor stops traversal early, which lets bounded
+/// scanners enforce caps without reading the rest of a large directory.
 pub(in crate::services) fn visit_directory_entries<F>(path: &Path, mut visit: F) -> io::Result<()>
 where
     F: FnMut(RawDirectoryEntry) -> bool,
@@ -327,6 +332,10 @@ pub(in crate::services) fn sync_dir_descriptor(_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
+/// Create a new temp file with exclusive semantics and caller-selected Unix mode.
+///
+/// Durable writes use this instead of `File::create` so temp files never follow
+/// or overwrite an existing path while preserving the target's intended mode.
 pub(in crate::services) fn create_temp_file(path: &Path, mode: Option<u32>) -> io::Result<File> {
     let fd = rustix::fs::openat(
         rustix::fs::CWD,
@@ -342,6 +351,7 @@ pub(in crate::services) fn create_temp_file(path: &Path, mode: Option<u32>) -> i
 }
 
 #[cfg(not(unix))]
+/// Create a new temp file on non-Unix platforms using the closest standard API.
 pub(in crate::services) fn create_temp_file(path: &Path, _mode: Option<u32>) -> io::Result<File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
@@ -381,6 +391,11 @@ pub(in crate::services) fn best_effort_chown(file: &File, uid: u32, gid: u32) {
 }
 
 #[cfg(target_os = "linux")]
+/// Copy Linux extended attributes when possible without making them part of
+/// the durability contract.
+///
+/// Missing permissions or unsupported xattrs are ignored so preserving optional
+/// metadata never turns a content-safe write into a user-visible failure.
 pub(in crate::services) fn copy_xattrs_best_effort(source: &Path, dest: &File) {
     let Ok(names) = xattr_names(source) else {
         return;

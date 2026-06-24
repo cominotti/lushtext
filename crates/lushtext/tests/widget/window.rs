@@ -4668,8 +4668,15 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
     present_window(&window);
 
     activate_action(&window, "toggle-focus-mode");
-    window.imp().leave_focus_mode_button.grab_focus();
-    flush_events();
+    let leave_button = window.imp().leave_focus_mode_button.get();
+    assert!(
+        leave_button.grab_focus(),
+        "leave-focus-mode button should be focusable while the affordance is revealed"
+    );
+    wait_until(Duration::from_secs(5), || {
+        gtk4::prelude::GtkWindowExt::focus(&window)
+            .is_some_and(|focus| focus.as_ptr() == leave_button.upcast_ref::<gtk4::Widget>().as_ptr())
+    });
     flush_after_delay(Duration::from_millis(1900));
 
     assert!(window.imp().focus_mode_revealer.reveals_child());
@@ -10835,8 +10842,7 @@ fn test_sidebar_context_menus_include_note_entry_points() {
         "workspace header context menu should expose folder notes"
     );
 
-    *section.imp().context_path.borrow_mut() = Some(left_folder.join("alpha.rs"));
-    section.imp().context_is_dir.set(false);
+    section.set_context_target_for_test(&left_folder.join("alpha.rs"), false, None);
     section
         .activate_action("section.document-note", None)
         .expect("document-note widget action should exist");

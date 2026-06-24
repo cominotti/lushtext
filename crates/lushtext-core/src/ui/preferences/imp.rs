@@ -9,61 +9,40 @@
 //! setting into the percentage label shown in its row suffix.
 
 use crate::config::keys;
-use crate::services::{format_upgrade, json_store};
 use crate::ui::accessibility;
 use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::value::ToValue;
-use gtk_lush_tasks::spawn_blocking_then_weak;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
 use std::cell::Cell;
-use std::time::{Duration, Instant};
 
-/// Maximum rows rendered per metadata group before showing an omitted-count row.
-const DATA_DETAILS_MAX_ROWS_PER_GROUP: usize = 32;
-/// Minimum time a successful fast scan remains visibly "checking" in Preferences.
+/// Private template implementation for the Preferences dialog.
 ///
-/// One second is long enough for users to perceive that Refresh did work while
-/// staying short enough that genuinely slow scans are not delayed further.
-const DATA_SCAN_MINIMUM_VISIBLE_DURATION: Duration = Duration::from_secs(1);
-
-/// Background conversion result returned to the Preferences Data page on the GTK main thread.
-enum DataConvertWorkerResult {
-    NoConvert(format_upgrade::FormatPlan),
-    Applied {
-        plan: format_upgrade::FormatPlan,
-        result: Result<format_upgrade::FormatApplyOutcome, String>,
-    },
-}
-
-/// Presentation policy for a Data page scan result.
-#[derive(Clone, Copy)]
-enum DataScanPresentation {
-    /// Initial and post-convert scans should reveal actionable state as soon as it is ready.
-    Immediate,
-    /// Manual Refresh keeps the checking state visible long enough to prove the click did work.
-    VisibleDwell,
-}
-
-// CompositeTemplate loads preferences.ui from the compiled GResource; each
-// #[template_child] field is bound to the widget with the matching template ID.
+/// Owns the Adwaita preference rows and the Rust-only state needed for
+/// background Data-page scans, announcements, and GSettings projections.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/preferences.ui")]
 pub struct LushtextPreferences {
+    /// Combo row selecting the base GtkSourceView style scheme.
     #[template_child]
     pub style_scheme_row: TemplateChild<libadwaita::ComboRow>,
+    /// Combo row selecting the workspace sidebar width preset.
     #[template_child]
     pub workspace_sidebar_width_row: TemplateChild<libadwaita::ComboRow>,
+    /// Switch row that toggles between system and custom editor fonts.
     #[template_child]
     pub use_system_font_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Row containing the custom font chooser button.
     #[template_child]
     pub custom_font_row: TemplateChild<libadwaita::ActionRow>,
+    /// Font picker used when custom editor fonts are enabled.
     #[template_child]
     pub font_button: TemplateChild<gtk4::FontDialogButton>,
+    /// Row that hosts the tab-content opacity popover control.
     #[template_child]
     pub transparency_row: TemplateChild<libadwaita::ActionRow>,
+    /// Menu button opening the tab-content opacity slider.
     #[template_child]
     pub transparency_button: TemplateChild<gtk4::MenuButton>,
     /// Percentage suffix for the tab-content opacity slider.
@@ -72,32 +51,46 @@ pub struct LushtextPreferences {
     /// Slider adjustment for the persisted opacity value and visible percentage projection.
     #[template_child]
     pub transparency_adjustment: TemplateChild<gtk4::Adjustment>,
+    /// Spin row for the preferred Focus Mode text column width.
     #[template_child]
     pub focus_mode_target_columns_row: TemplateChild<libadwaita::SpinRow>,
+    /// Switch row toggling Focus Mode typewriter scrolling.
     #[template_child]
     pub focus_mode_typewriter_scrolling_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Switch row enabling EditorConfig formatting overrides.
     #[template_child]
     pub editorconfig_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Switch row controlling editor word wrap.
     #[template_child]
     pub word_wrap_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Spin row controlling editor tab width.
     #[template_child]
     pub tab_width_row: TemplateChild<libadwaita::SpinRow>,
+    /// Switch row controlling whether Tab inserts spaces.
     #[template_child]
     pub insert_spaces_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Switch row toggling source line numbers.
     #[template_child]
     pub show_line_numbers_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Switch row toggling current-line highlighting.
     #[template_child]
     pub highlight_line_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Preferences group containing minimap-related settings.
     #[template_child]
     pub minimap_group: TemplateChild<libadwaita::PreferencesGroup>,
+    /// Switch row toggling the editor minimap.
     #[template_child]
     pub show_minimap_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Switch row toggling long-line markers inside the minimap.
     #[template_child]
     pub minimap_long_line_markers_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Switch row toggling bookmark gutter presentation.
     #[template_child]
     pub bookmark_gutter_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Switch row controlling workspace auto-collapse while focusing folders.
     #[template_child]
     pub workspace_auto_collapse_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Spin row controlling bounded empty-folder lookahead.
     #[template_child]
     pub workspace_empty_folder_lookahead_cap_row: TemplateChild<libadwaita::SpinRow>,
     /// Status row summarizing the latest app-data format scan.
@@ -122,6 +115,7 @@ pub struct LushtextPreferences {
     #[template_child]
     pub data_details_group: TemplateChild<libadwaita::PreferencesGroup>,
 
+    /// Application settings used by every preferences row binding.
     pub settings: gio::Settings,
     /// Scroll-contained list of metadata details for the Data page.
     pub data_details_list: gtk4::ListBox,
@@ -326,7 +320,7 @@ impl LushtextPreferences {
             "App data format details",
             "Bounded list of app data files and planned format actions",
         );
-        self.refresh_data_accessibility_state();
+        self.obj().refresh_data_accessibility_state();
     }
 
     /// Build and wire the Preferences > Data page.
@@ -350,284 +344,18 @@ impl LushtextPreferences {
         // changing UI state.
         self.data_scan_button.connect_clicked(move |_| {
             if let Some(prefs) = prefs_weak.upgrade() {
-                prefs
-                    .imp()
-                    .run_data_scan(DataScanPresentation::VisibleDwell);
+                prefs.run_data_scan_visible_dwell();
             }
         });
 
         let prefs_weak = self.obj().downgrade();
         self.data_convert_button.connect_clicked(move |_| {
             if let Some(prefs) = prefs_weak.upgrade() {
-                prefs.imp().run_data_convert();
+                prefs.run_data_convert();
             }
         });
 
-        self.run_data_scan(DataScanPresentation::Immediate);
-    }
-
-    /// Run a Data-page scan on a background thread.
-    fn run_data_scan(&self, presentation: DataScanPresentation) {
-        if self.data_operation_inflight.replace(true) {
-            return;
-        }
-        self.show_data_operation_in_progress("Verifying app data formats");
-
-        let prefs = self.obj().clone();
-        let scan_started_at = Instant::now();
-        let minimum_visible_duration = match presentation {
-            DataScanPresentation::Immediate => Duration::ZERO,
-            DataScanPresentation::VisibleDwell => DATA_SCAN_MINIMUM_VISIBLE_DURATION,
-        };
-        spawn_blocking_then_weak(
-            &prefs,
-            || {
-                let data_dir = json_store::data_dir();
-                let inventory = format_upgrade::scan(&data_dir);
-                format_upgrade::build_plan(&inventory)
-            },
-            move |prefs, plan| {
-                let imp = prefs.imp();
-                let remaining = minimum_visible_duration.saturating_sub(scan_started_at.elapsed());
-                if remaining.is_zero() {
-                    imp.complete_data_scan(&plan);
-                } else {
-                    let prefs_weak = prefs.downgrade();
-                    // GLib timeout callbacks run on the GTK main loop; the
-                    // weak dialog reference prevents a delayed fast-scan result
-                    // from keeping a closed Preferences dialog alive.
-                    glib::timeout_add_local_once(remaining, move || {
-                        if let Some(prefs) = prefs_weak.upgrade() {
-                            prefs.imp().complete_data_scan(&plan);
-                        }
-                    });
-                }
-            },
-        );
-    }
-
-    /// Run a supported conversion from the Data page.
-    fn run_data_convert(&self) {
-        if self.data_operation_inflight.replace(true) {
-            return;
-        }
-        if !self.data_last_scan_offers_convert.get() {
-            self.data_operation_inflight.set(false);
-            return;
-        }
-
-        self.show_data_operation_in_progress("Updating supported older app data");
-
-        let prefs = self.obj().clone();
-        spawn_blocking_then_weak(
-            &prefs,
-            move || {
-                let data_dir = json_store::data_dir();
-                let inventory = format_upgrade::scan(&data_dir);
-                let plan = format_upgrade::build_plan(&inventory);
-                if !plan.offers_convert() {
-                    return DataConvertWorkerResult::NoConvert(plan);
-                }
-                let result =
-                    format_upgrade::apply_plan(&data_dir, &plan).map_err(|error| error.to_string());
-                DataConvertWorkerResult::Applied { plan, result }
-            },
-            |prefs, result| {
-                let imp = prefs.imp();
-                imp.data_operation_inflight.set(false);
-                imp.data_scan_button.set_sensitive(true);
-                match result {
-                    DataConvertWorkerResult::NoConvert(plan) => {
-                        let detail = if plan.has_no_action() {
-                            None
-                        } else {
-                            Some("No supported conversion is available for the current scan")
-                        };
-                        imp.render_data_plan(&plan, detail);
-                    }
-                    DataConvertWorkerResult::Applied {
-                        result: Ok(outcome),
-                        ..
-                    } if outcome.is_success() => imp.run_data_scan(DataScanPresentation::Immediate),
-                    DataConvertWorkerResult::Applied {
-                        plan,
-                        result: Ok(outcome),
-                    } => {
-                        let detail = outcome.failures.first().map(|failure| {
-                            format!("{}: {}", failure.path.display(), failure.detail)
-                        });
-                        imp.render_data_plan(&plan, detail.as_deref());
-                    }
-                    DataConvertWorkerResult::Applied {
-                        plan,
-                        result: Err(detail),
-                    } => {
-                        imp.render_data_plan(&plan, Some(&detail));
-                    }
-                }
-            },
-        );
-    }
-
-    /// Render one scanned format plan into Data page status, details, and action state.
-    fn render_data_plan(&self, plan: &format_upgrade::FormatPlan, failure: Option<&str>) {
-        let status = data_plan_status(plan, failure);
-        let offers_convert = plan.offers_convert();
-        let verified_current = failure.is_none() && plan.has_no_action();
-        self.data_status_row.set_subtitle(&status);
-        self.data_current_indicator.set_visible(verified_current);
-        self.data_actions_group.set_visible(offers_convert);
-        self.data_convert_row.set_visible(offers_convert);
-        self.data_convert_button.set_sensitive(offers_convert);
-        self.data_convert_button.set_label(if failure.is_some() {
-            "Retry"
-        } else {
-            "Convert"
-        });
-        self.data_last_scan_offers_convert.set(offers_convert);
-        self.render_data_details(plan, failure);
-        self.refresh_data_accessibility_state();
-        self.announce_data_plan_status(&status, failure);
-    }
-
-    /// Present an active Data-page operation before its background result lands.
-    fn show_data_operation_in_progress(&self, subtitle: &str) {
-        self.data_current_indicator.set_visible(false);
-        self.data_scan_button.set_sensitive(false);
-        self.data_convert_button.set_sensitive(false);
-        self.data_status_row.set_subtitle(subtitle);
-        self.refresh_data_accessibility_state();
-    }
-
-    /// Accept a completed scan after any visible verification dwell has elapsed.
-    fn complete_data_scan(&self, plan: &format_upgrade::FormatPlan) {
-        self.data_operation_inflight.set(false);
-        self.data_scan_button.set_sensitive(true);
-        self.render_data_plan(plan, None);
-    }
-
-    /// Announce the compact Data-page result row after a scan or apply attempt.
-    fn announce_data_plan_status(&self, status: &str, failure: Option<&str>) {
-        let lane = if failure.is_some() {
-            accessibility::AnnouncementLane::Alert
-        } else {
-            accessibility::AnnouncementLane::StatusUpdate
-        };
-        let key = if failure.is_some() {
-            "app-data-format-failed"
-        } else {
-            "app-data-format-scan"
-        };
-        self.data_announcement_throttler.announce_if_allowed(
-            &*self.data_status_row,
-            lane,
-            key,
-            &format!("App data format scan complete: {status}"),
-        );
-    }
-
-    /// Rebuild the bounded per-file detail list for the current Data page plan.
-    fn render_data_details(&self, plan: &format_upgrade::FormatPlan, failure: Option<&str>) {
-        while let Some(child) = self.data_details_list.first_child() {
-            self.data_details_list.remove(&child);
-        }
-
-        if let Some(detail) = failure {
-            let row = libadwaita::ActionRow::builder()
-                .title("Last Attempt Failed")
-                .subtitle(detail)
-                .build();
-            accessibility::apply_row_accessibility(
-                &row,
-                accessibility::RowAccessibility::new("Last app data update attempt failed")
-                    .description(detail),
-            );
-            self.data_details_list.append(&row);
-        }
-
-        if plan.has_no_action() {
-            let row = libadwaita::ActionRow::builder()
-                .title("Current")
-                .subtitle("No app data files require a format update")
-                .build();
-            accessibility::apply_row_accessibility(
-                &row,
-                accessibility::RowAccessibility::new("App data format current")
-                    .description("No app data files require a format update"),
-            );
-            self.data_details_list.append(&row);
-            return;
-        }
-
-        let mut position = 1i32;
-        let total_rows = data_details_row_count(plan, failure);
-        for group in &plan.groups {
-            for planned in group.actions.iter().take(DATA_DETAILS_MAX_ROWS_PER_GROUP) {
-                let title = format!(
-                    "{}: {}",
-                    group.metadata_kind.label(),
-                    planned.item.path.display()
-                );
-                let subtitle = action_summary(planned);
-                let row = libadwaita::ActionRow::builder()
-                    .title(&title)
-                    .subtitle(&subtitle)
-                    .build();
-                accessibility::apply_row_accessibility(
-                    &row,
-                    accessibility::RowAccessibility::new(&title)
-                        .description(&subtitle)
-                        .position(position, total_rows),
-                );
-                self.data_details_list.append(&row);
-                position += 1;
-            }
-            let omitted = group
-                .actions
-                .len()
-                .saturating_sub(DATA_DETAILS_MAX_ROWS_PER_GROUP);
-            if omitted > 0 {
-                let title = format!("{}: {} more item(s)", group.metadata_kind.label(), omitted);
-                let subtitle = "Additional matching app data is included in the action";
-                let row = libadwaita::ActionRow::builder()
-                    .title(&title)
-                    .subtitle("Additional matching app data is included in the action")
-                    .build();
-                accessibility::apply_row_accessibility(
-                    &row,
-                    accessibility::RowAccessibility::new(&title)
-                        .description(subtitle)
-                        .position(position, total_rows),
-                );
-                self.data_details_list.append(&row);
-                position += 1;
-            }
-        }
-    }
-
-    /// Refresh dynamic accessibility state for the Preferences Data page.
-    fn refresh_data_accessibility_state(&self) {
-        let status = self
-            .data_status_row
-            .subtitle()
-            .unwrap_or_else(|| "Checking app data formats".into());
-        accessibility::set_value_text(&*self.data_status_row, status.as_str());
-        accessibility::set_busy(&*self.data_status_row, self.data_operation_inflight.get());
-        accessibility::set_busy(&*self.data_scan_button, self.data_operation_inflight.get());
-        accessibility::set_disabled(
-            &*self.data_scan_button,
-            !self.data_scan_button.is_sensitive(),
-        );
-        accessibility::set_disabled(
-            &*self.data_convert_button,
-            !self.data_convert_button.is_sensitive(),
-        );
-        accessibility::set_hidden(&*self.data_convert_row, !self.data_convert_row.is_visible());
-        accessibility::set_hidden(
-            &*self.data_current_indicator,
-            !self.data_current_indicator.is_visible(),
-        );
-        accessibility::set_value_text(&*self.transparency_button, &self.transparency_label.text());
+        self.obj().run_data_scan_immediate();
     }
 
     /// Keep the workspace width preference aligned with the three named shell presets
@@ -737,7 +465,7 @@ impl LushtextPreferences {
         self.transparency_adjustment
             .connect_value_changed(move |_| {
                 if let Some(prefs) = prefs_weak.upgrade() {
-                    prefs.imp().refresh_data_accessibility_state();
+                    prefs.refresh_data_accessibility_state();
                 }
             });
     }
@@ -750,54 +478,4 @@ impl PreferencesDialogImpl for LushtextPreferences {}
 /// Format one stored opacity value as a whole-percent label for the row suffix.
 fn transparency_label_text(opacity: f64) -> String {
     format!("{:>3.0}%", (opacity.clamp(0.0, 1.0) * 100.0).floor())
-}
-
-/// Summarize a scan/apply result in the compact Data page status row.
-fn data_plan_status(plan: &format_upgrade::FormatPlan, failure: Option<&str>) -> String {
-    if let Some(detail) = failure {
-        return format!("Data update failed: {detail}");
-    }
-    if plan.has_no_action() {
-        "Data format is current".to_string()
-    } else if plan.has_future_version_blocker() {
-        "Some app data was created by a newer LushText".to_string()
-    } else if plan.offers_convert() {
-        "Supported older app data can be updated".to_string()
-    } else {
-        "Some app data needs preservation or recovery".to_string()
-    }
-}
-
-/// Count the rows rendered into the Data-page details list for position metadata.
-fn data_details_row_count(plan: &format_upgrade::FormatPlan, failure: Option<&str>) -> i32 {
-    let failure_rows = i32::from(failure.is_some());
-    if plan.has_no_action() {
-        return failure_rows + 1;
-    }
-
-    let planned_rows = plan.groups.iter().fold(0usize, |count, group| {
-        let visible = group.actions.len().min(DATA_DETAILS_MAX_ROWS_PER_GROUP);
-        let omitted = usize::from(group.actions.len() > DATA_DETAILS_MAX_ROWS_PER_GROUP);
-        count + visible + omitted
-    });
-    i32::try_from(planned_rows)
-        .unwrap_or(i32::MAX - failure_rows)
-        .saturating_add(failure_rows)
-}
-
-/// Convert one planned item into the short subtitle shown in the details list.
-fn action_summary(planned: &format_upgrade::FormatPlannedItem) -> String {
-    match &planned.action {
-        format_upgrade::FormatPlanAction::NoAction => "No action required".to_string(),
-        format_upgrade::FormatPlanAction::ConvertToLatest {
-            from_version,
-            to_version,
-        } => format!("Convert from v{from_version} to v{to_version}"),
-        format_upgrade::FormatPlanAction::StartFreshOnly => {
-            "No converter is available; Start Fresh preserves this data first".to_string()
-        }
-        format_upgrade::FormatPlanAction::ReportOnly => {
-            "Recovery metadata will preserve or report this issue".to_string()
-        }
-    }
 }

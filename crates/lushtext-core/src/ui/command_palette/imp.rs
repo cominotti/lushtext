@@ -431,6 +431,8 @@ impl LushtextCommandPalette {
 
     fn setup_key_controller(&self) {
         let key_controller = gtk4::EventControllerKey::new();
+        // Capture phase lets palette navigation consume Return/Escape/arrow
+        // keys before embedded list widgets can turn them into unrelated focus moves.
         key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
         let obj_weak = self.obj().downgrade();

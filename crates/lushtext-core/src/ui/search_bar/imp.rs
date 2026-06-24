@@ -233,7 +233,6 @@ impl LushtextSearchBar {
     /// Handlers delegate to wrapper-type methods that check for an active
     /// SearchContext, so they safely no-op when no search session is attached.
     fn wire_ui_signals(&self) {
-        // Nav buttons
         let bar_weak = self.obj().downgrade();
         self.prev_button.connect_clicked(move |_| {
             if let Some(bar) = bar_weak.upgrade() {
@@ -247,7 +246,6 @@ impl LushtextSearchBar {
             }
         });
 
-        // Replace buttons
         let bar_weak = self.obj().downgrade();
         self.replace_button.connect_clicked(move |_| {
             if let Some(bar) = bar_weak.upgrade() {

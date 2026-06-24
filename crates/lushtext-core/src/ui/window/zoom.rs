@@ -11,9 +11,13 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 
+/// Lowest readable zoom exposed by the UI; below 50% labels become hard to hit.
 const ZOOM_MIN: u32 = 50;
+/// Highest zoom before editor chrome and sidebar rows become impractically large.
 const ZOOM_MAX: u32 = 400;
+/// Menu button increment that is coarse enough for quick changes but not jumpy.
 const ZOOM_STEP: u32 = 10;
+/// Neutral percentage matching the configured monospace font size.
 const ZOOM_DEFAULT: u32 = 100;
 
 /// Build the [−] [100%] [+] widget and insert it into the hamburger menu

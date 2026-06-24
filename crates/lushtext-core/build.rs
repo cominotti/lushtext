@@ -16,7 +16,8 @@ fn main() {
     let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data");
     let resource_xml = format!("{resource_dir}/dev.cominotti.lushtext.gresource.xml");
 
-    // Only compile resources if the XML exists (skip during early scaffold)
+    // Local development checkouts compile resources here; packaged builds or
+    // partial source exports may omit the XML because Meson owns that step.
     if build_fs::exists(Path::new(&resource_xml)) {
         glib_build_tools::compile_resources(
             &[resource_dir, data_dir],

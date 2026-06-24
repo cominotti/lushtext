@@ -18,6 +18,10 @@ use gtk4::prelude::*;
 glib::wrapper! {
     // glib::wrapper! exposes the private ObjectSubclass as the public GTK
     // widget type used in templates and by other UI adapters.
+    /// Public inline alert widget rendered above an editor tab.
+    ///
+    /// The wrapper keeps callers on the GTK-facing API while the private
+    /// implementation owns template children and reveal/style state.
     pub struct LushtextInfoBar(ObjectSubclass<imp::LushtextInfoBar>)
         @extends gtk4::Box, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;

@@ -20,14 +20,23 @@ use serde::Serialize;
 
 use crate::{artifacts, model, process};
 
+/// Timeout for one still-frame GStreamer capture; longer values hide broken PipeWire sessions.
 const GST_CAPTURE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Timeout for bounded frame streams so animation proof artifacts cannot run forever.
 const GST_FRAME_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
+/// Mutter ScreenCast bus name used by GNOME's private screenshot pipeline.
 const SCREENCAST_BUS_NAME: &str = "org.gnome.Mutter.ScreenCast";
+/// Root object path for creating Mutter ScreenCast sessions.
 const SCREENCAST_ROOT_PATH: &str = "/org/gnome/Mutter/ScreenCast";
+/// Interface that starts ScreenCast sessions.
 const SCREENCAST_INTERFACE: &str = "org.gnome.Mutter.ScreenCast";
+/// Interface that starts, records, and stops one ScreenCast session.
 const SCREENCAST_SESSION_INTERFACE: &str = "org.gnome.Mutter.ScreenCast.Session";
+/// Interface used to discover the PipeWire node for a ScreenCast stream.
 const SCREENCAST_STREAM_INTERFACE: &str = "org.gnome.Mutter.ScreenCast.Stream";
+/// Monitor name used by headless Mutter in the proof environment.
 const SCREENCAST_MONITOR_NAME: &str = "Meta-0";
+/// Wait budget for Mutter to publish the PipeWire stream signal after capture starts.
 const PIPEWIRE_SIGNAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Result of running one GStreamer capture helper.

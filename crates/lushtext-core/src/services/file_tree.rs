@@ -106,6 +106,8 @@ pub fn scan_directory_bounded(
     lookahead_cap: usize,
     cancel: Option<&AtomicBool>,
 ) -> DirectoryScan {
+    // Keep only the best bounded rows while scanning so enormous directories do
+    // not require materializing every entry before sorting.
     let mut heap = BinaryHeap::with_capacity(max_entries.saturating_add(1).min(256));
     let mut truncated = false;
     let mut dirs_checked = 0;

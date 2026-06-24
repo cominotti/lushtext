@@ -16,7 +16,7 @@ use crate::model::palette::{
     PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot,
     PaletteOpenTabSource,
 };
-use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
+use crate::model::workspace::{WorkspaceConfig, WorkspaceScopeSnapshot};
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{bookmark_service, document_note_service, folder_note_service};
 
@@ -39,11 +39,11 @@ pub struct PaletteNoteSourceLoad {
 /// workspace folder identity cannot be resolved.
 pub fn load_note_entries_for_scope(
     data_dir: &Path,
-    visible_workspaces: &[WorkspaceConfig],
-    scope: &WorkspaceScope,
-    scope_folders: &[PathBuf],
+    scope_snapshot: &WorkspaceScopeSnapshot,
     open_editor_snapshots: Vec<PaletteOpenEditorNoteSnapshot>,
 ) -> Result<PaletteNoteSourceLoad> {
+    let visible_workspaces = scope_snapshot.visible_workspaces();
+    let scope_folders = scope_snapshot.folder_paths();
     let folder_notes = if visible_workspaces.is_empty() {
         folder_note_service::FolderNoteListing {
             notes: Vec::new(),
@@ -53,7 +53,7 @@ pub fn load_note_entries_for_scope(
         folder_note_service::list_folder_notes_for_scope_recovering(
             data_dir,
             visible_workspaces,
-            scope,
+            scope_snapshot.scope(),
         )?
     };
     let bookmark_listing = if scope_folders.is_empty() {
@@ -621,7 +621,7 @@ pub fn bookmark_display_label(label: Option<&str>, line: u32) -> String {
 mod tests {
     use super::*;
     use crate::model::bookmark::BookmarkRecord;
-    use crate::model::workspace::{WorkspaceFolder, WorkspaceId};
+    use crate::model::workspace::{WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile};
     use crate::services::filesystem::fixture;
     use tempfile::TempDir;
 
@@ -1036,13 +1036,15 @@ mod tests {
             )],
         )
         .expect("save bookmark sidecar");
-        let workspaces = vec![workspace("ws", "Core", vec![root.clone()])];
+        let workspaces_file = WorkspacesFile {
+            current_scope: WorkspaceScope::All,
+            workspaces: vec![workspace("ws", "Core", vec![root])],
+        };
+        let scope_snapshot = workspaces_file.current_scope_snapshot();
 
         let load = load_note_entries_for_scope(
             dir.path(),
-            &workspaces,
-            &WorkspaceScope::All,
-            &[root],
+            &scope_snapshot,
             vec![PaletteOpenEditorNoteSnapshot {
                 path: file,
                 bookmarks: vec![BookmarkRecord::new(3, Some("Live bookmark".to_string()))],

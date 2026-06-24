@@ -12,7 +12,6 @@ use lushtext_core::ui::markdown_preview::{
     LushtextMarkdownPreview, MarkdownPreviewRenderContext,
 };
 use sourceview5::prelude::*;
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -1189,26 +1188,17 @@ fn test_render_markdown_renders_local_image_block() {
         Some(repo_root.join("samples/markdown-test.md")),
         Vec::new(),
     );
-    let inserted_paintable = Rc::new(Cell::new(false));
-    let inserted_paintable_clone = inserted_paintable.clone();
-    preview
-        .text_view()
-        .buffer()
-        .connect_insert_paintable(move |_, _, _| {
-            inserted_paintable_clone.set(true);
-        });
-
     preview.render_markdown_with_context(
         "![File-relative preview card sample](assets/preview-secondary.svg)",
         &context,
     );
     wait_until(Duration::from_secs(2), || {
-        inserted_paintable.get()
+        !widgets_with_css_class::<gtk4::Picture>(&preview, "markdown-preview-image").is_empty()
     });
 
     assert!(
-        inserted_paintable.get(),
-        "Expected the preview buffer to insert a paintable for a resolved local image"
+        !widgets_with_css_class::<gtk4::Picture>(&preview, "markdown-preview-image").is_empty(),
+        "Expected the resolved local image to render as a preview picture"
     );
     assert!(
         widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback")

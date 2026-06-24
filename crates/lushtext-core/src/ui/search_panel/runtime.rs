@@ -56,6 +56,9 @@ impl LushtextSearchPanel {
             return;
         }
 
+        // A bounded channel gives the worker backpressure when GTK is busy
+        // rendering results, instead of letting a huge search allocate
+        // unbounded match rows before the main loop can catch up.
         let (tx, rx) = crossbeam_channel::bounded(1024);
         let cancel = Arc::new(AtomicBool::new(false));
         let progress_counter = Arc::new(AtomicUsize::new(0));
@@ -90,6 +93,8 @@ impl LushtextSearchPanel {
 
         let panel_weak = self.downgrade();
         let mut completion_notified = false;
+        // Poll at UI cadence instead of waking GTK for every worker event; the
+        // per-tick cap below keeps input and redraws responsive on noisy searches.
         glib::timeout_add_local(Duration::from_millis(50), move || {
             let Some(panel) = panel_weak.upgrade() else {
                 return glib::ControlFlow::Break;
@@ -104,6 +109,10 @@ impl LushtextSearchPanel {
             let mut items_this_tick = 0;
             let workspace_folders = imp.runtime.workspace_folders.borrow().clone();
 
+            // Keep each GTK tick bounded so a large streaming search cannot
+            // monopolize the main loop while thousands of matches arrive. The
+            // 250-event cap drains bursts quickly without starving input and
+            // frame work on slower machines.
             const MAX_EVENTS_PER_TICK: usize = 250;
 
             loop {
@@ -226,6 +235,8 @@ impl LushtextSearchPanel {
         imp.runtime.total_files.set(0);
         imp.runtime.result_capped.set(false);
         imp.navigation.match_positions.borrow_mut().clear();
+        imp.navigation.match_rows.borrow_mut().clear();
+        imp.navigation.file_rows.borrow_mut().clear();
         imp.navigation.current_match_index.set(None);
         imp.runtime.last_progress_count.set(0);
         imp.count_label.set_text("");
@@ -306,28 +317,35 @@ fn append_match_result(
         original_match_start,
         original_match_end,
     );
+    let child_position = child_store.n_items();
     child_store.append(&match_item);
 
     file_item.set_match_count(file_item.match_count() + 1);
 
+    let mut file_row = None;
     if is_new_file {
         imp.runtime.root_store.append(&file_item);
         imp.runtime
             .total_files
             .set(imp.runtime.total_files.get() + 1);
 
-        if let Some(model) = imp.results_list.model() {
-            for i in (0..model.n_items()).rev() {
-                if let Some(obj) = model.item(i)
-                    && let Some(row) = obj.downcast_ref::<gtk4::TreeListRow>()
-                    && let Some(item) = row.item().and_downcast::<SearchResultItem>()
-                    && item.file_path() == path.display().to_string()
-                {
-                    row.set_expanded(true);
-                    break;
-                }
-            }
+        // The new file row is appended after every existing visible root and
+        // expanded child. Expand that final row directly instead of walking the
+        // flattened model for each new file in a broad search result stream.
+        if let Some(model) = imp.results_list.model()
+            && let Some(index) = model.n_items().checked_sub(1)
+            && let Some(obj) = model.item(index)
+            && let Some(row) = obj.downcast_ref::<gtk4::TreeListRow>()
+        {
+            row.set_expanded(true);
+            imp.navigation
+                .file_rows
+                .borrow_mut()
+                .insert(path.clone(), row.clone());
+            file_row = Some(row.clone());
         }
+    } else {
+        file_row = imp.navigation.file_rows.borrow().get(&path).cloned();
     }
 
     if imp.runtime.total_matches.get() == 0 {
@@ -340,6 +358,13 @@ fn append_match_result(
         .match_positions
         .borrow_mut()
         .push(SearchMatchLocation::new(path, line_number));
+    let match_row = file_row.and_then(|row| {
+        if !row.is_expanded() {
+            row.set_expanded(true);
+        }
+        row.child_row(child_position)
+    });
+    imp.navigation.match_rows.borrow_mut().push(match_row);
 }
 
 /// Persist the latest successful query into the recent-history file.

@@ -10,6 +10,7 @@
 //! without replacing the surrounding text-buffer renderer.
 
 use glib::translate::IntoGlib;
+use gtk_lush_signals::SignalBag;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib, pango};
 use libadwaita::prelude::*;
@@ -194,13 +195,20 @@ pub(super) fn alert_title(kind: BlockQuoteKind) -> &'static str {
     }
 }
 
+/// Private template implementation for the Markdown preview widget.
+///
+/// Owns the preview text view, placeholder, and render-time anchor state so
+/// rerenders can clean up embedded GTK children deterministically.
 #[derive(CompositeTemplate, Default)]
 #[template(resource = "/dev/cominotti/lushtext/ui/markdown-preview.ui")]
 pub struct LushtextMarkdownPreview {
+    /// Read-only text surface receiving rendered Markdown tags and anchors.
     #[template_child]
     pub text_view: TemplateChild<gtk4::TextView>,
+    /// Scroller that provides preview viewport geometry.
     #[template_child]
     pub scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
+    /// Placeholder shown for non-Markdown files or empty preview states.
     #[template_child]
     pub placeholder: TemplateChild<libadwaita::StatusPage>,
 
@@ -248,9 +256,13 @@ pub struct LushtextMarkdownPreview {
     /// the preview's own idle and timed child-anchor repairs have run.
     pub(super) code_block_refresh_completion_callbacks:
         RefCell<Vec<CodeBlockRefreshCompletionCallback>>,
+    /// Global theme/settings handlers that must disconnect when the preview is disposed.
+    pub global_signals: SignalBag,
 }
 
 #[glib::object_subclass]
+// Register the preview as a GtkBox subclass so anchored child widgets and
+// deferred layout repairs stay owned by one template-backed widget instance.
 impl ObjectSubclass for LushtextMarkdownPreview {
     const NAME: &'static str = "LushtextMarkdownPreview";
     type Type = super::LushtextMarkdownPreview;
@@ -298,11 +310,13 @@ impl ObjectImpl for LushtextMarkdownPreview {
 
         // Re-create tags when the dark/light mode changes so colors stay correct.
         let obj_weak = self.obj().downgrade();
-        libadwaita::StyleManager::default().connect_dark_notify(move |sm| {
+        let style_manager = libadwaita::StyleManager::default();
+        let handler_id = style_manager.connect_dark_notify(move |sm| {
             if let Some(obj) = obj_weak.upgrade() {
                 create_or_update_tags(&obj.imp().text_view.buffer(), sm.is_dark());
             }
         });
+        self.global_signals.track(&style_manager, handler_id);
 
         // Code blocks are embedded as child-anchor widgets, so they need to
         // follow the final text-view column width rather than the outer box.
@@ -325,6 +339,7 @@ impl ObjectImpl for LushtextMarkdownPreview {
     }
 
     fn dispose(&self) {
+        self.global_signals.clear();
         if let Some(source_id) = self.code_block_idle_source_id.take() {
             source_id.remove();
         }

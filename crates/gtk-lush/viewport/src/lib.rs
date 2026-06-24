@@ -177,6 +177,9 @@ impl ViewportObserver {
     {
         let on_bounds_changed = Rc::new(on_bounds_changed);
         let on_value_changed = Rc::new(on_value_changed);
+        // Each axis owns two adjustment signal registrations. Keeping the IDs
+        // in one observer lets callers drop the observer to disconnect all
+        // viewport callbacks at once.
         let mut registrations = Vec::with_capacity(4);
 
         for (adjustment, axis) in [

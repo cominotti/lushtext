@@ -68,6 +68,17 @@ pub struct RichNoteBody {
     pub updated_at_secs: u64,
 }
 
+/// Merge decision between two persisted note bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RichNoteMergeDecision {
+    /// The caller's note is newer and should replace the target body.
+    UseSelf,
+    /// The target note is newer, or both note bodies are identical.
+    UseOther,
+    /// Both notes changed at the same timestamp and differ in content.
+    Conflict,
+}
+
 impl RichNoteBody {
     /// Create one persisted note body from user-authored text.
     #[must_use]
@@ -104,6 +115,22 @@ impl RichNoteBody {
     #[must_use]
     pub fn preview_line(&self) -> String {
         note_preview_line(&self.text)
+    }
+
+    /// Decide which note body should survive a sidecar migration merge.
+    ///
+    /// Document and folder notes share the same conflict policy: the newer
+    /// body wins, identical bodies at the same timestamp are safe to coalesce,
+    /// and different bodies with the same timestamp stay preserved as a conflict.
+    #[must_use]
+    pub fn merge_decision_against(&self, other: &Self) -> RichNoteMergeDecision {
+        if self.updated_at_secs > other.updated_at_secs {
+            RichNoteMergeDecision::UseSelf
+        } else if other.updated_at_secs > self.updated_at_secs || self == other {
+            RichNoteMergeDecision::UseOther
+        } else {
+            RichNoteMergeDecision::Conflict
+        }
     }
 }
 
@@ -161,6 +188,63 @@ mod tests {
         assert_eq!(empty.preview_line(), "");
         assert!(!note.is_empty());
         assert_eq!(note.preview_line(), "# heading");
+    }
+
+    #[test]
+    fn rich_note_merge_decision_prefers_newer_body() {
+        let older = RichNoteBody {
+            text: "older".to_string(),
+            created_at_secs: 1,
+            updated_at_secs: 2,
+        };
+        let newer = RichNoteBody {
+            text: "newer".to_string(),
+            created_at_secs: 1,
+            updated_at_secs: 3,
+        };
+
+        assert_eq!(
+            newer.merge_decision_against(&older),
+            RichNoteMergeDecision::UseSelf
+        );
+        assert_eq!(
+            older.merge_decision_against(&newer),
+            RichNoteMergeDecision::UseOther
+        );
+    }
+
+    #[test]
+    fn rich_note_merge_decision_accepts_identical_timestamp_ties() {
+        let left = RichNoteBody {
+            text: "same".to_string(),
+            created_at_secs: 1,
+            updated_at_secs: 2,
+        };
+        let right = left.clone();
+
+        assert_eq!(
+            left.merge_decision_against(&right),
+            RichNoteMergeDecision::UseOther
+        );
+    }
+
+    #[test]
+    fn rich_note_merge_decision_reports_ambiguous_timestamp_ties() {
+        let left = RichNoteBody {
+            text: "left".to_string(),
+            created_at_secs: 1,
+            updated_at_secs: 2,
+        };
+        let right = RichNoteBody {
+            text: "right".to_string(),
+            created_at_secs: 1,
+            updated_at_secs: 2,
+        };
+
+        assert_eq!(
+            left.merge_decision_against(&right),
+            RichNoteMergeDecision::Conflict
+        );
     }
 
     #[test]

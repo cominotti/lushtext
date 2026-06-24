@@ -757,17 +757,14 @@ fn test_save_file_writes_content() {
     let page = LushtextEditorPage::new();
     let buffer = page.buffer();
 
-    // Manually set the file path (simulating load_file_async without the async part)
     let tmp = tempfile::NamedTempFile::new().expect("expected operation to succeed");
     let path = tmp.path().to_path_buf();
 
-    // Set path via the internal RefCell (load_file_async sets this synchronously)
     page.imp().file_path.replace(Some(path.clone()));
 
-    // Set buffer content
     buffer.set_text("saved content");
 
-    // Save and verify — spin main loop to process the background thread callback
+    // Spin the main loop until the background save callback runs.
     let done = std::rc::Rc::new(std::cell::Cell::new(false));
     let done_clone = done.clone();
     page.save_file_async(move |r| {

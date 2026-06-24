@@ -60,11 +60,8 @@ pub fn save(data_dir: &Path, entries: &[SearchHistoryEntry]) -> anyhow::Result<(
 /// If an identical entry (same query + all toggle states + glob) already exists,
 /// it is moved to the front instead of being duplicated.
 pub fn add_entry(entries: &mut Vec<SearchHistoryEntry>, entry: SearchHistoryEntry) {
-    // Remove duplicate if present (same query + all settings).
     entries.retain(|e| e != &entry);
-    // Prepend the new entry.
     entries.insert(0, entry);
-    // Cap at MAX_HISTORY.
     entries.truncate(MAX_HISTORY);
 }
 

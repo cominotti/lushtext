@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::read_json_value;
 
+/// Paths whose changes require a fresh Rust visual proof because they affect rendering or proof logic.
 const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
     "crates/cargo-gtk-proof/src/",
     "crates/lushtext-core/src/ui/",
@@ -24,6 +25,7 @@ const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
     "resources/style/",
     "scripts/visual-geometry-scenarios/",
 ];
+/// Single files outside broad prefixes that still affect visual proof trust.
 const VISUAL_SENSITIVE_EXACT: &[&str] = &[
     "crates/lushtext-core/src/model/automation.rs",
     "scripts/check-visual-proof-policy.py",
@@ -32,12 +34,14 @@ const VISUAL_SENSITIVE_EXACT: &[&str] = &[
     "scripts/visual-geometry-smoke.py",
     "scripts/visual_geometry_png.py",
 ];
+/// File suffixes that change visual layout even when they appear outside known prefixes.
 const VISUAL_SENSITIVE_SUFFIXES: &[&str] = &[".blp", ".css", ".ui"];
 
-// These invariant identifiers are shared with the Python visual runner and the
-// generated summaries; changing them would invalidate existing smoke evidence.
+/// Invariant id shared with the Python visual runner and generated summaries.
 const NATIVE_MINIMAP_HIGHLIGHT_INVARIANT: &str = "native-minimap-highlight-anchors";
+/// Animation invariant id shared with existing smoke evidence.
 const NATIVE_MINIMAP_ANIMATION_INVARIANT: &str = "native-minimap-animation-highlight-anchors";
+/// Required animation cases that prove both compact and intermediate sidebar layouts.
 const WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS: &[&str] = &[
     "minimap-sidebar-workspace-animation--compact-overlay--force-light--wrap-true--hide",
     "minimap-sidebar-workspace-animation--compact-overlay--force-light--wrap-true--show",
@@ -276,6 +280,10 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
     Ok(())
 }
 
+/// Evaluate whether the current proof artifacts satisfy the visual-proof policy.
+///
+/// Visual-sensitive diffs require a current Rust-engine proof unless the caller
+/// explicitly relaxes that requirement for diagnostic-only runs.
 pub(crate) fn check_policy(
     artifact_dir: &Path,
     base_ref: Option<&str>,

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Fake automation provider for the GTK Lush proof-spine contracts.
+//!
+//! The example keeps readiness, snapshot, event, and artifact providers small
+//! enough to copy while still exercising the adoption-facing trait surface.
+
 use gtk_lush_proof_spine::{
     ArtifactEnvelope, ArtifactSummaryProvider, ReadinessPredicate, ReadinessProvider,
     ReadinessResult, SnapshotEnvelope, SnapshotProvider, SurfaceSummary, WorkflowEvent,

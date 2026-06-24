@@ -87,7 +87,8 @@ proptest! {
         let expected_files = originals.len();
         let cancel = AtomicBool::new(false);
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .map_err(|error| TestCaseError::fail(format!("replace failed: {error}")))?;
+            .map_err(|error| TestCaseError::fail(format!("replace failed: {error}")))?
+            .into_parts();
 
         prop_assert_eq!(result.files_affected, expected_files);
         prop_assert_eq!(result.replaced_count, expected_files);

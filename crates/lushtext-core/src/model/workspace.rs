@@ -247,6 +247,37 @@ pub struct WorkspacesFile {
     pub workspaces: Vec<WorkspaceConfig>,
 }
 
+/// Normalized read model for one workspace-scoped operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceScopeSnapshot {
+    /// Scope after applying missing-workspace fallback rules.
+    scope: WorkspaceScope,
+    /// Workspaces covered by the normalized scope.
+    visible_workspaces: Vec<WorkspaceConfig>,
+    /// Folder paths covered by `visible_workspaces`, in workspace/folder order.
+    folder_paths: Vec<PathBuf>,
+}
+
+impl WorkspaceScopeSnapshot {
+    /// Borrow the normalized scope represented by this snapshot.
+    #[must_use]
+    pub fn scope(&self) -> &WorkspaceScope {
+        &self.scope
+    }
+
+    /// Borrow the workspaces covered by this snapshot.
+    #[must_use]
+    pub fn visible_workspaces(&self) -> &[WorkspaceConfig] {
+        &self.visible_workspaces
+    }
+
+    /// Borrow the folder paths covered by this snapshot.
+    #[must_use]
+    pub fn folder_paths(&self) -> &[PathBuf] {
+        &self.folder_paths
+    }
+}
+
 impl WorkspacesFile {
     /// Add a new workspace with one initial folder and select it immediately.
     pub fn add_workspace(&mut self, name: &str, folder_path: PathBuf) -> WorkspaceId {
@@ -317,6 +348,36 @@ impl WorkspacesFile {
     #[must_use]
     pub fn current_scope(&self) -> WorkspaceScope {
         self.normalized_scope(self.current_scope.clone())
+    }
+
+    /// Snapshot the current workspace scope as one coherent read model.
+    #[must_use]
+    pub fn current_scope_snapshot(&self) -> WorkspaceScopeSnapshot {
+        self.scope_snapshot_for(&self.current_scope())
+    }
+
+    /// Snapshot an arbitrary scope after applying missing-workspace fallback rules.
+    #[must_use]
+    pub fn scope_snapshot_for(&self, scope: &WorkspaceScope) -> WorkspaceScopeSnapshot {
+        let scope = self.normalized_scope(scope.clone());
+        let visible_workspaces = match &scope {
+            WorkspaceScope::All => self.workspaces.clone(),
+            WorkspaceScope::Workspace(workspace_id) => self
+                .workspaces
+                .iter()
+                .filter(|workspace| &workspace.id == workspace_id)
+                .cloned()
+                .collect(),
+        };
+        let folder_paths = visible_workspaces
+            .iter()
+            .flat_map(WorkspaceConfig::folder_paths)
+            .collect();
+        WorkspaceScopeSnapshot {
+            scope,
+            visible_workspaces,
+            folder_paths,
+        }
     }
 
     /// Collect every persisted workspace folder in workspace and folder order.
@@ -509,6 +570,21 @@ mod tests {
             folders,
             vec![PathBuf::from("/tmp/first"), PathBuf::from("/tmp/second")]
         );
+    }
+
+    #[test]
+    fn current_scope_snapshot_groups_scope_workspaces_and_folders() {
+        let mut file = WorkspacesFile::default();
+        let first = file.add_workspace("first", "/tmp/first".into());
+        let _second = file.add_workspace("second", "/tmp/second".into());
+        file.set_current_scope(WorkspaceScope::workspace(first));
+
+        let snapshot = file.current_scope_snapshot();
+
+        assert_eq!(snapshot.scope(), &file.current_scope());
+        assert_eq!(snapshot.visible_workspaces().len(), 1);
+        assert_eq!(snapshot.visible_workspaces()[0].name, "first");
+        assert_eq!(snapshot.folder_paths(), &[PathBuf::from("/tmp/first")]);
     }
 
     #[test]

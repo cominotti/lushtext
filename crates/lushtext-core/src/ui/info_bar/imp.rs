@@ -36,6 +36,10 @@ fn wrap_button_label(button: &gtk4::Button) {
     label.set_justify(gtk4::Justification::Center);
 }
 
+/// Private template implementation for the editor inline alert bar.
+///
+/// Binds the alert controls from `info-bar.ui` while the callbacks below stay
+/// Rust-owned so editor pages can swap them per alert.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/info-bar.ui")]
 pub struct LushtextInfoBar {

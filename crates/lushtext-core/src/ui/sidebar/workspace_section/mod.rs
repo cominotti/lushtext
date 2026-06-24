@@ -9,6 +9,9 @@ mod actions;
 mod dnd;
 mod folders;
 mod icon_presentation;
+// gtk-rs custom widgets keep their public wrapper in `mod.rs` and the private
+// ObjectSubclass/template state in `imp.rs`, matching GLib's split between the
+// reference-counted object API and per-instance implementation data.
 mod imp;
 mod peek;
 mod refresh;
@@ -19,6 +22,8 @@ mod watch;
 #[cfg(feature = "test-utils")]
 use std::collections::HashSet;
 use std::path::Path;
+#[cfg(feature = "test-utils")]
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use glib::Object;
@@ -181,6 +186,44 @@ impl LushtextWorkspaceSection {
             open_identities,
             active_identities,
         )));
+    }
+
+    /// Test helper for reading the row currently targeted by the file context menu.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn context_target_path_for_test(&self) -> Option<PathBuf> {
+        self.imp()
+            .context_target
+            .borrow()
+            .as_ref()
+            .map(|target| target.path.clone())
+    }
+
+    /// Test helper for reading the targeted workspace-folder id, when present.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn context_target_workspace_folder_id_for_test(&self) -> Option<WorkspaceFolderId> {
+        self.imp()
+            .context_target
+            .borrow()
+            .as_ref()
+            .and_then(|target| target.workspace_folder_id.clone())
+    }
+
+    /// Test helper for action tests that do not need a realized row expander.
+    #[cfg(feature = "test-utils")]
+    pub fn set_context_target_for_test(
+        &self,
+        path: &Path,
+        is_dir: bool,
+        workspace_folder_id: Option<WorkspaceFolderId>,
+    ) {
+        *self.imp().context_target.borrow_mut() = Some(imp::FileContextTarget {
+            path: path.to_path_buf(),
+            is_dir,
+            workspace_folder_id,
+            expander: gtk4::TreeExpander::new(),
+        });
     }
 
     /// Store the parent-sidebar callback invoked when a file row is activated.

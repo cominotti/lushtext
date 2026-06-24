@@ -61,6 +61,23 @@ impl ReplaceUndoEntry {
 /// In-memory Replace All undo backup keyed by absolute file path.
 pub type ReplaceUndoBackup = HashMap<PathBuf, ReplaceUndoEntry>;
 
+/// Result of applying Replace All plus the undo payload needed by the caller.
+#[derive(Debug)]
+pub struct ApplyReplacementsOutcome {
+    /// User-facing replacement counts, skips, and recoverable errors.
+    pub result: ReplaceResult,
+    /// Per-file before/after bytes retained for the active undo window.
+    pub undo_backup: ReplaceUndoBackup,
+}
+
+impl ApplyReplacementsOutcome {
+    /// Split the outcome into its two public payloads for callers that need both.
+    #[must_use]
+    pub fn into_parts(self) -> (ReplaceResult, ReplaceUndoBackup) {
+        (self.result, self.undo_backup)
+    }
+}
+
 /// Outcome of one undo attempt across a Replace All backup.
 ///
 /// `remaining_backup` contains only entries that were not restored, letting the
@@ -115,7 +132,7 @@ pub fn apply_replacements(
     skip_paths: &HashSet<PathBuf>,
     cancel: &AtomicBool,
     journal_data_dir: Option<&Path>,
-) -> anyhow::Result<(ReplaceResult, ReplaceUndoBackup)> {
+) -> anyhow::Result<ApplyReplacementsOutcome> {
     let mut by_file: BTreeMap<PathBuf, Vec<&Replacement>> = BTreeMap::new();
     for r in replacements {
         by_file.entry(r.path.clone()).or_default().push(r);
@@ -303,7 +320,10 @@ pub fn apply_replacements(
         ));
     }
 
-    Ok((result, backup))
+    Ok(ApplyReplacementsOutcome {
+        result,
+        undo_backup: backup,
+    })
 }
 
 fn effective_max_replace_undo_bytes() -> u64 {
@@ -662,7 +682,8 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("expected operation to succeed");
+            .expect("expected operation to succeed")
+            .into_parts();
 
         assert_eq!(result.replaced_count, 2);
         assert_eq!(result.files_affected, 2);
@@ -704,7 +725,8 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("expected operation to succeed");
+            .expect("expected operation to succeed")
+            .into_parts();
 
         assert_eq!(backup[&file].original_bytes, original.as_bytes());
         assert_eq!(
@@ -735,7 +757,8 @@ mod tests {
             &cancel,
             Some(journal_dir.path()),
         )
-        .expect("expected operation to succeed");
+        .expect("expected operation to succeed")
+        .into_parts();
 
         let persisted =
             search_backup::load(journal_dir.path()).expect("expected operation to succeed");
@@ -778,7 +801,7 @@ mod tests {
             .expect("replace should succeed");
         worker.join().expect("replace worker should join");
 
-        assert_eq!(result.0.files_affected, 1);
+        assert_eq!(result.result.files_affected, 1);
         assert_eq!(fixture::read_text(&file), "replaced\n");
     }
 
@@ -791,7 +814,8 @@ mod tests {
         let replacements = vec![make_replacement(&file, 1, "needle", "replaced", 0..6)];
         let cancel = AtomicBool::new(false);
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("oversized files should be reported as skipped, not fatal");
+            .expect("oversized files should be reported as skipped, not fatal")
+            .into_parts();
 
         assert_eq!(result.replaced_count, 0);
         assert_eq!(result.files_affected, 0);
@@ -813,7 +837,8 @@ mod tests {
         let cancel = AtomicBool::new(false);
 
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("exact file-size cap should still be replaceable");
+            .expect("exact file-size cap should still be replaceable")
+            .into_parts();
 
         assert_eq!(result.files_affected, 1);
         assert_eq!(result.replaced_count, 1);
@@ -843,7 +868,8 @@ mod tests {
         ];
         let cancel = AtomicBool::new(false);
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("undo cap should skip later files without failing prior writes");
+            .expect("undo cap should skip later files without failing prior writes")
+            .into_parts();
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
 
         assert_eq!(result.files_affected, 1);
@@ -867,7 +893,8 @@ mod tests {
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(exact_payload)));
         let cancel = AtomicBool::new(false);
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("exact undo cap should still be replaceable");
+            .expect("exact undo cap should still be replaceable")
+            .into_parts();
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
 
         assert_eq!(result.files_affected, 1);
@@ -986,7 +1013,8 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("successful files should keep the Replace All operation successful");
+            .expect("successful files should keep the Replace All operation successful")
+            .into_parts();
 
         assert_eq!(result.replaced_count, 1);
         assert_eq!(result.files_affected, 1);
@@ -1056,7 +1084,8 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("expected operation to succeed");
+            .expect("expected operation to succeed")
+            .into_parts();
 
         assert!(fixture::read_text(&file).contains("haystack"));
 
@@ -1102,7 +1131,8 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (_, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("expected operation to succeed");
+            .expect("expected operation to succeed")
+            .into_parts();
         fixture::write_text(&file, "let user_edit = 42;\n");
 
         let outcome = undo_replacements(&backup);
@@ -1235,7 +1265,8 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (result, _) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("expected operation to succeed");
+            .expect("expected operation to succeed")
+            .into_parts();
         assert_eq!(result.replaced_count, 2);
 
         let content = fixture::read_text(&file);
@@ -1344,7 +1375,8 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let (result, backup) = apply_replacements(&replacements, &skip, &cancel, None)
-            .expect("expected operation to succeed");
+            .expect("expected operation to succeed")
+            .into_parts();
 
         assert_eq!(result.replaced_count, 1, "only a.rs should be replaced");
         assert_eq!(result.files_affected, 1);
@@ -1419,7 +1451,8 @@ mod tests {
         )];
         let cancel = AtomicBool::new(false);
         let (_result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
-            .expect("replace should succeed");
+            .expect("replace should succeed")
+            .into_parts();
 
         let mode_after_replace = fixture::mode(&file) & 0o777;
         assert_eq!(

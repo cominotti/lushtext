@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Standalone GTK app demonstrating the settle timers used by LushText widgets.
+//!
+//! It shows debounce, burst settle, and superseding cleanup behavior in one
+//! manually launchable surface plus an opt-in smoke mode for adoption checks.
+
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Button, Entry, Label, Orientation, glib};
 use gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer};

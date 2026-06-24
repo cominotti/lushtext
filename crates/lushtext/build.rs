@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Build-time registry generator for the custom widget-test harness.
+//!
+//! Widget tests live as ordinary Rust files, but the harness runs them through
+//! a generated registry so each test can be launched in a controlled GTK
+//! process with shared setup.
+
 use std::env;
 use std::path::{Path, PathBuf};
 

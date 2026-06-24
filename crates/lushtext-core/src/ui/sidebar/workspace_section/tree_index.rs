@@ -480,6 +480,7 @@ impl LushtextWorkspaceSection {
 
 fn remove_matching_items(store: &gio::ListStore, target_path: &Path) -> bool {
     let mut removed_any = false;
+    // Remove from the tail so each deletion cannot shift an unvisited row's index.
     for index in (0..store.n_items()).rev() {
         if let Some(item) = store.item(index).and_downcast::<FileTreeItem>()
             && item.path().as_deref() == Some(target_path)

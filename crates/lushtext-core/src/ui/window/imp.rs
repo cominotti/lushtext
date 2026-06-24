@@ -312,74 +312,108 @@ impl Default for TabManagementState {
     }
 }
 
-// `CompositeTemplate` loads `window.ui` from the compiled GResource, and each
-// `TemplateChild` below is bound by the matching template ID.
+/// Private template implementation for the main application window.
+///
+/// Owns the mounted window surfaces, adaptive split views, tab view, transient
+/// controls, and long-lived workflow state that coordinates editor tabs with
+/// the sidebar, search, preview, and status bar.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
+    /// Top header bar that hosts primary window controls.
     #[template_child]
     pub header_bar: TemplateChild<libadwaita::HeaderBar>,
+    /// Window title widget updated from the active document/workspace state.
     #[template_child]
     pub title_widget: TemplateChild<libadwaita::WindowTitle>,
+    /// Header button that opens a new editor tab.
     #[template_child]
     pub new_tab_button: TemplateChild<gtk4::Button>,
+    /// Menu button that hosts the recent Open popover.
     #[template_child]
     pub open_menu_button: TemplateChild<gtk4::MenuButton>,
+    /// Stack that swaps open-button presentation for adaptive states.
     #[template_child]
     pub open_button_stack: TemplateChild<gtk4::Stack>,
+    /// Searchable recent-document popover mounted from the header.
     #[template_child]
     pub open_popover: TemplateChild<LushtextOpenPopover>,
+    /// Header toggle controlling document properties visibility.
     #[template_child]
     pub document_properties_toggle_button: TemplateChild<gtk4::ToggleButton>,
+    /// Adwaita tab bar bound to the editor TabView.
     #[template_child]
     pub tab_bar: TemplateChild<libadwaita::TabBar>,
+    /// Overlay used for transient surfaces above the main shell.
     #[template_child]
     pub window_overlay: TemplateChild<gtk4::Overlay>,
+    /// Adaptive left workspace split view.
     #[template_child]
     pub workspace_split_view: TemplateChild<libadwaita::OverlaySplitView>,
+    /// Layout view that switches document properties between side and bottom slots.
     #[template_child]
     pub properties_layout_view: TemplateChild<libadwaita::MultiLayoutView>,
+    /// Compact document-properties bottom sheet.
     #[template_child]
     pub properties_bottom_sheet: TemplateChild<libadwaita::BottomSheet>,
+    /// Wide-layout document-properties split view.
     #[template_child]
     pub properties_split_view: TemplateChild<libadwaita::OverlaySplitView>,
+    /// Shared tab model for all editor and preview pages.
     #[template_child]
     pub tab_view: TemplateChild<libadwaita::TabView>,
+    /// Stack that swaps editor content with window empty states.
     #[template_child]
     pub content_stack: TemplateChild<gtk4::Stack>,
+    /// Workspace sidebar widget mounted in the left split.
     #[template_child]
     pub sidebar: TemplateChild<LushtextSidebar>,
+    /// Document metadata and formatting panel.
     #[template_child]
     pub properties_panel: TemplateChild<LushtextPropertiesPanel>,
+    /// Bottom status bar with messages and document metadata.
     #[template_child]
     pub status_bar: TemplateChild<LushtextStatusBar>,
+    /// Revealer for the command palette overlay.
     #[template_child]
     pub palette_revealer: TemplateChild<gtk4::Revealer>,
+    /// Command palette widget for commands, files, and notes.
     #[template_child]
     pub command_palette: TemplateChild<LushtextCommandPalette>,
+    /// Revealer that presents Focus Mode chrome.
     #[template_child]
     pub focus_mode_revealer: TemplateChild<gtk4::Revealer>,
+    /// Focus Mode affordance container.
     #[template_child]
     pub focus_mode_affordance: TemplateChild<gtk4::Box>,
+    /// Button that exits Focus Mode.
     #[template_child]
     pub leave_focus_mode_button: TemplateChild<gtk4::Button>,
     /// Dedicated secondary menu for bookmark and note workflows.
     #[template_child]
     pub notes_menu_button: TemplateChild<gtk4::MenuButton>,
+    /// Primary application menu button.
     #[template_child]
     pub primary_menu_button: TemplateChild<gtk4::MenuButton>,
+    /// Layout view that switches Markdown preview between side and compact slots.
     #[template_child]
     pub preview_layout_view: TemplateChild<libadwaita::MultiLayoutView>,
+    /// Wide-layout Markdown preview split view.
     #[template_child]
     pub preview_split_view: TemplateChild<libadwaita::OverlaySplitView>,
+    /// Box containing the active editor stack and inline chrome.
     #[template_child]
     pub editor_box: TemplateChild<gtk4::Box>,
+    /// Read-only Markdown preview paired with the active editor.
     #[template_child]
     pub markdown_preview: TemplateChild<LushtextMarkdownPreview>,
+    /// Central shell containing editor, preview, and search panel surfaces.
     #[template_child]
     pub content_box: TemplateChild<gtk4::Box>,
+    /// Revealer for the workspace-wide search panel.
     #[template_child]
     pub search_panel_revealer: TemplateChild<gtk4::Revealer>,
+    /// Workspace-wide search and replace panel.
     #[template_child]
     pub search_panel: TemplateChild<LushtextSearchPanel>,
 
@@ -783,35 +817,21 @@ impl ObjectImpl for LushtextWindow {
         self.sidebar
             .connect_file_renamed(move |old_path, new_path| {
                 if let Some(window) = window_weak.upgrade() {
-                    window.update_tab_path(old_path, new_path);
-                    window.migrate_note_sidecars_after_rename(old_path, new_path);
-                    window.migrate_local_history_after_rename(old_path, new_path);
-                    window
-                        .imp()
-                        .command_palette
-                        .update_index_file_renamed(old_path, new_path);
-                    let name = new_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    window.publish_status_message(&format!("Renamed to {name}"), MessageKind::Info);
+                    window.handle_sidebar_file_renamed(old_path, new_path);
                 }
             });
 
         let window_weak = obj.downgrade();
         self.sidebar.connect_file_deleted(move |path| {
             if let Some(window) = window_weak.upgrade() {
-                window.close_tab_for_path(path);
-                window.imp().command_palette.update_index_file_deleted(path);
-                window.publish_status_message("Deleted", MessageKind::Info);
+                window.handle_sidebar_file_deleted(path);
             }
         });
 
         let window_weak = obj.downgrade();
         self.sidebar.connect_file_created(move |path| {
             if let Some(window) = window_weak.upgrade() {
-                window.open_document(path);
-                window.imp().command_palette.update_index_file_created(path);
+                window.handle_sidebar_file_created(path);
             }
         });
 
@@ -927,57 +947,14 @@ impl ObjectImpl for LushtextWindow {
 
         let window_weak = obj.downgrade();
         self.tab_view.connect_close_page(move |tab_view, page| {
-            if let Some(window) = window_weak.upgrade()
-                && window.consume_preconfirmed_tab_close(page)
-            {
-                tab_view.close_page_finish(page, true);
-                return glib::Propagation::Stop;
-            }
-
-            let child = page.child();
-            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
-                tab_view.close_page_finish(page, true);
-                return glib::Propagation::Stop;
-            };
-            if !editor.is_modified() {
-                tab_view.close_page_finish(page, true);
-                return glib::Propagation::Stop;
-            }
-            let Some(window) = window_weak.upgrade() else {
-                tab_view.close_page_finish(page, false);
-                return glib::Propagation::Stop;
-            };
-            let tab_view = tab_view.clone();
-            let page = page.clone();
-            let page_for_finish = page.clone();
-            window.confirm_close_tab(&page, editor, move |confirmed| {
-                tab_view.close_page_finish(&page_for_finish, confirmed);
-            });
-            glib::Propagation::Stop
+            let window = window_weak.upgrade();
+            super::LushtextWindow::handle_tab_close_request(window.as_ref(), tab_view, page)
         });
 
         let window_weak = obj.downgrade();
         self.tab_view.connect_page_detached(move |_, page, _| {
             if let Some(window) = window_weak.upgrade() {
-                window.forget_tab_page(page);
-                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                    if let Some(ref path) = editor.file_path() {
-                        let mut paths = window.imp().open_paths.borrow_mut();
-                        paths.remove(path.as_path());
-                        paths.remove(&super::documents::open_path_key(path));
-                        if let Some(canonical_path) = editor.canonical_file_path() {
-                            paths.remove(&canonical_path);
-                        }
-                    }
-                    window.dismiss_editor_notifications(editor);
-                    window.untrack_editor_memory(editor);
-                    editor.cancel_load();
-                    editor.stop_file_monitor();
-                }
-                if !window.tab_projection_refresh_deferred() {
-                    window.refresh_tab_model_projections();
-                }
-                window.save_session_debounced();
+                window.handle_tab_detached(page);
             }
         });
 

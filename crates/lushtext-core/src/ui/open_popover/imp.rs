@@ -28,7 +28,9 @@ type DismissCallback = Box<dyn Fn()>;
 /// tests that assert parity with GNOME Text Editor's source layout pinned to
 /// the same constants.
 struct RecentRowWidgets {
+    /// Stable grid parent returned to the list-factory row.
     grid: gtk4::Grid,
+    /// Stack showing the optional open-document marker in the leading gutter.
     #[cfg_attr(
         not(feature = "test-utils"),
         expect(
@@ -37,6 +39,7 @@ struct RecentRowWidgets {
         )
     )]
     marker_stack: gtk4::Stack,
+    /// Primary filename text reused by recycled rows as their item changes.
     #[cfg_attr(
         not(feature = "test-utils"),
         expect(
@@ -45,6 +48,7 @@ struct RecentRowWidgets {
         )
     )]
     title: gtk4::Inscription,
+    /// Secondary path text reused by recycled rows as their item changes.
     #[cfg_attr(
         not(feature = "test-utils"),
         expect(
@@ -53,6 +57,7 @@ struct RecentRowWidgets {
         )
     )]
     subtitle: gtk4::Inscription,
+    /// Relative-age text kept separate so layout snapshots can verify GNOME parity.
     #[cfg_attr(
         not(feature = "test-utils"),
         expect(
@@ -61,6 +66,7 @@ struct RecentRowWidgets {
         )
     )]
     age: gtk4::Inscription,
+    /// Remove button wired by the factory after the row receives its item.
     remove: gtk4::Button,
 }
 
@@ -629,6 +635,8 @@ impl LushtextOpenPopover {
         let query = self.search_entry.text().to_string();
         let rows = recent_documents::search_rows(&self.source_rows.borrow(), &query);
         let items: Vec<OpenPopoverItem> = rows.into_iter().map(OpenPopoverItem::from_row).collect();
+        // `splice` swaps the visible model in one notification burst, avoiding
+        // transient empty rows while the popover is open and filtered.
         self.rows_store.splice(0, self.rows_store.n_items(), &items);
         // Filtering rebuilds visible row positions, so any synthetic keynav
         // position from the old model would be stale.

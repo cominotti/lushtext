@@ -813,7 +813,6 @@ mod tests {
     #[test]
     fn delete_draft_file_missing_is_noop() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        // Should not error
         delete_draft_file(dir.path(), "nonexistent").expect("expected operation to succeed");
     }
 

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Standalone viewport observer example for scrollable GTK widgets.
+//!
+//! It demonstrates adjustment-change reporting and rest-state recording without
+//! bringing in LushText's editor, making the adoption contract easy to inspect.
+
 use std::rc::Rc;
 
 use gtk_lush_viewport::{RestState, ViewportAxis, ViewportObserver};

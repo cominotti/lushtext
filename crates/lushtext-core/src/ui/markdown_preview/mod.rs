@@ -17,6 +17,7 @@
 //! mode so an Edit/Render stack measures the same text surface before and
 //! after the first user-visible render.
 
+// Private GObject implementation for the template-backed preview surface.
 mod imp;
 mod inline_footnotes;
 
@@ -30,7 +31,7 @@ use sourceview5::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::services::filesystem::{PathStatus, metadata as fs_metadata};
+use crate::services::filesystem::{PathStatus, metadata as fs_metadata, read as fs_read};
 use crate::ui::accessibility;
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 use gtk_lush_tasks::spawn_blocking_then;
@@ -130,6 +131,27 @@ const CODE_BLOCK_VERTICAL_PADDING: i32 = 8;
 /// supplies the active GtkSourceView background after the user-selected scheme
 /// is known. A slightly higher priority keeps the two layers from fighting.
 const CODE_BLOCK_BACKGROUND_CSS_PRIORITY: u32 = gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION + 2;
+/// Maximum source image bytes the preview will decode for one Markdown image.
+///
+/// A 32 MiB source still covers normal screenshots and exported diagrams, but
+/// it prevents accidental camera originals or generated art from dominating a
+/// background worker and its post-decode pixel copy.
+const MAX_PREVIEW_IMAGE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum source pixels accepted before the preview falls back to a compact notice.
+///
+/// 64 megapixels is intentionally above ordinary desktop images while below
+/// the point where RGB/RGBA decode buffers can spike into hundreds of MiB.
+const MAX_PREVIEW_IMAGE_SOURCE_PIXELS: i64 = 64_000_000;
+/// Maximum literal text bytes highlighted inside one native code-block widget.
+///
+/// GtkSourceView highlighting is excellent for excerpts, but 64 KiB keeps a
+/// single fenced block from monopolizing a render turn when preview refreshes.
+const MAX_PREVIEW_CODE_BLOCK_BYTES: usize = 64 * 1024;
+/// Maximum table cells materialized as GTK labels in a single render turn.
+///
+/// One thousand labels leaves room for realistic reference tables while keeping
+/// pathological CSV-like Markdown from allocating a giant widget tree at once.
+const MAX_PREVIEW_TABLE_CELLS: usize = 1_000;
 
 /// Extra render context supplied by the window when previewing a real Markdown file.
 ///
@@ -155,6 +177,12 @@ impl MarkdownPreviewRenderContext {
 }
 
 glib::wrapper! {
+    // Exposes the private preview implementation as a regular GTK widget for
+    // editor tabs, note dialogs, and widget tests.
+    /// Public Markdown preview widget used by editor tabs and note surfaces.
+    ///
+    /// The wrapper exposes render and navigation methods; the private
+    /// implementation owns GtkTextView tags, anchors, and launch state.
     pub struct LushtextMarkdownPreview(ObjectSubclass<imp::LushtextMarkdownPreview>)
         @extends gtk4::Box, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;
@@ -246,11 +274,11 @@ struct CodeBlockTheme {
 impl CodeBlockTheme {
     /// Resolve the current editor palette once so many code blocks stay cheap.
     fn from_settings(settings: &gtk4::gio::Settings) -> Self {
-        let style_scheme = crate::active_sourceview_scheme(settings);
-        let palette = crate::resolve_tab_content_palette(settings);
+        let style_scheme = crate::ui::theme::active_sourceview_scheme(settings);
+        let palette = crate::ui::theme::resolve_tab_content_palette(settings);
         Self {
             style_scheme,
-            background_css: crate::css_rgba_with_alpha(&palette.text_bg, 1.0),
+            background_css: crate::ui::theme::css_rgba_with_alpha(&palette.text_bg, 1.0),
         }
     }
 }
@@ -349,11 +377,26 @@ enum ResolvedImageTarget {
     Fallback { title: &'static str, body: String },
 }
 
+/// Decoded image pixels that can safely cross back from a worker thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedImage {
+    /// Image width after preview-size bounding.
+    width: i32,
+    /// Image height after preview-size bounding.
+    height: i32,
+    /// Number of bytes between rows.
+    stride: usize,
+    /// Whether the pixels include an alpha channel.
+    has_alpha: bool,
+    /// Owned RGB/RGBA bytes copied out of the background pixbuf decode.
+    pixels: Vec<u8>,
+}
+
 /// Result of checking workspace-relative image candidates on a background thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OrderedImageCandidateResult {
-    /// The first decodable candidate in workspace-folder order.
-    Loadable(PathBuf),
+    /// The first decodable candidate in workspace-folder order, already scaled.
+    Loadable { path: PathBuf, image: DecodedImage },
     /// At least one candidate existed, but none could be decoded as an image.
     Unloadable { path: PathBuf, error: String },
     /// None of the candidate paths were present as decodable files.
@@ -395,6 +438,8 @@ struct BufferedCodeBlock {
     kind: CodeBlockKind<'static>,
     /// Literal code text emitted between code-block start and end tags.
     text: String,
+    /// Total source bytes observed, even after preview storage stops.
+    source_bytes: usize,
 }
 
 impl BufferedCodeBlock {
@@ -403,16 +448,39 @@ impl BufferedCodeBlock {
         Self {
             kind: kind.into_static(),
             text: String::new(),
+            source_bytes: 0,
         }
     }
 
     /// Fold one event inside the code block into literal text.
     fn push_event(&mut self, event: Event<'_>) {
         match event {
-            Event::Text(text) | Event::Code(text) => self.text.push_str(&text),
-            Event::SoftBreak | Event::HardBreak => self.text.push('\n'),
+            Event::Text(text) | Event::Code(text) => self.push_literal(&text),
+            Event::SoftBreak | Event::HardBreak => self.push_literal("\n"),
             _ => {}
         }
+    }
+
+    /// Add one literal chunk while keeping the preview-owned buffer bounded.
+    fn push_literal(&mut self, text: &str) {
+        self.source_bytes = self.source_bytes.saturating_add(text.len());
+        let remaining = MAX_PREVIEW_CODE_BLOCK_BYTES.saturating_sub(self.text.len());
+        if remaining == 0 {
+            return;
+        }
+
+        let end = text
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= remaining)
+            .last()
+            .unwrap_or(0);
+        let end = if text.len() <= remaining {
+            text.len()
+        } else {
+            end
+        };
+        self.text.push_str(&text[..end]);
     }
 
     /// Return the first info-string word from a fenced block, if present.
@@ -424,6 +492,16 @@ impl BufferedCodeBlock {
                 .filter(|hint| !hint.is_empty()),
             CodeBlockKind::Indented => None,
         }
+    }
+
+    /// Whether this block is too large for a syntax-highlighted GTK subtree.
+    fn exceeds_preview_widget_budget(&self) -> bool {
+        self.source_byte_len() > MAX_PREVIEW_CODE_BLOCK_BYTES
+    }
+
+    /// Total source bytes represented by this buffered block.
+    fn source_byte_len(&self) -> usize {
+        self.source_bytes.max(self.text.len())
     }
 }
 
@@ -458,6 +536,8 @@ struct BufferedTable {
     alignments: Vec<Alignment>,
     /// Header and body rows in source order.
     rows: Vec<BufferedTableRow>,
+    /// Total source cells observed, even after row buffering stops.
+    observed_cells: usize,
 }
 
 impl BufferedTable {
@@ -475,6 +555,17 @@ impl BufferedTable {
     /// separator after the header section instead of between every row.
     fn header_row_count(&self) -> usize {
         self.rows.iter().take_while(|row| row.is_header).count()
+    }
+
+    /// Number of GTK label cells needed to render the table at full fidelity.
+    fn cell_count(&self) -> usize {
+        self.observed_cells
+            .max(self.rows.len().saturating_mul(self.column_count()))
+    }
+
+    /// Whether this table would create too many child widgets in one render.
+    fn exceeds_preview_widget_budget(&self) -> bool {
+        self.cell_count() > MAX_PREVIEW_TABLE_CELLS
     }
 }
 
@@ -510,6 +601,10 @@ struct BufferedTableBuilder {
     current_row: Option<BufferedTableRow>,
     /// The cell currently receiving inline content.
     current_cell: Option<TableCellMarkupBuilder>,
+    /// Source table cells seen so far.
+    observed_cells: usize,
+    /// Whether the table exceeded the preview widget budget while buffering.
+    over_budget: bool,
 }
 
 impl BufferedTableBuilder {
@@ -527,6 +622,10 @@ impl BufferedTableBuilder {
     fn push_event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::TableHead) => {
+                if self.over_budget {
+                    self.current_row = None;
+                    return;
+                }
                 self.in_header = true;
                 self.current_row = Some(BufferedTableRow {
                     is_header: true,
@@ -534,28 +633,45 @@ impl BufferedTableBuilder {
                 });
             }
             Event::End(TagEnd::TableHead) => {
-                if let Some(row) = self.current_row.take() {
+                if !self.over_budget
+                    && let Some(row) = self.current_row.take()
+                {
                     self.rows.push(row);
                 }
                 self.in_header = false;
             }
             Event::Start(Tag::TableRow) => {
+                if self.over_budget {
+                    self.current_row = None;
+                    return;
+                }
                 self.current_row = Some(BufferedTableRow {
                     is_header: self.in_header,
                     cells: Vec::new(),
                 });
             }
             Event::End(TagEnd::TableRow) => {
-                if let Some(row) = self.current_row.take() {
+                if !self.over_budget
+                    && let Some(row) = self.current_row.take()
+                {
                     self.rows.push(row);
                 }
             }
             Event::Start(Tag::TableCell) => {
-                self.current_cell = Some(TableCellMarkupBuilder::new(self.render_context.clone()));
+                self.observed_cells = self.observed_cells.saturating_add(1);
+                if self.observed_cells > MAX_PREVIEW_TABLE_CELLS {
+                    self.over_budget = true;
+                    self.current_cell = None;
+                    self.current_row = None;
+                } else {
+                    self.current_cell =
+                        Some(TableCellMarkupBuilder::new(self.render_context.clone()));
+                }
             }
             Event::End(TagEnd::TableCell) => {
-                if let (Some(row), Some(cell)) =
-                    (self.current_row.as_mut(), self.current_cell.take())
+                if !self.over_budget
+                    && let (Some(row), Some(cell)) =
+                        (self.current_row.as_mut(), self.current_cell.take())
                 {
                     row.cells.push(BufferedTableCell {
                         markup: cell.finish(),
@@ -563,7 +679,9 @@ impl BufferedTableBuilder {
                 }
             }
             other => {
-                if let Some(cell) = &mut self.current_cell {
+                if !self.over_budget
+                    && let Some(cell) = &mut self.current_cell
+                {
                     cell.push_event(other);
                 }
             }
@@ -574,19 +692,23 @@ impl BufferedTableBuilder {
     fn finish(mut self) -> BufferedTable {
         // pulldown-cmark should close rows before the table ends, but the
         // fallback keeps malformed edge cases from silently dropping content.
-        if let Some(cell) = self.current_cell.take()
+        if !self.over_budget
+            && let Some(cell) = self.current_cell.take()
             && let Some(row) = &mut self.current_row
         {
             row.cells.push(BufferedTableCell {
                 markup: cell.finish(),
             });
         }
-        if let Some(row) = self.current_row.take() {
+        if !self.over_budget
+            && let Some(row) = self.current_row.take()
+        {
             self.rows.push(row);
         }
         BufferedTable {
             alignments: self.alignments,
             rows: self.rows,
+            observed_cells: self.observed_cells,
         }
     }
 }
@@ -1506,11 +1628,11 @@ impl LushtextMarkdownPreview {
         iter: &mut gtk4::TextIter,
         table: &BufferedTable,
     ) {
-        let grid = build_table_grid(self, table);
+        let widget = build_table_widget(self, table);
         self.insert_embedded_widget(
             buffer,
             iter,
-            grid.upcast_ref::<gtk4::Widget>(),
+            widget.upcast_ref::<gtk4::Widget>(),
             EmbeddedBlockLayout::default(),
         );
     }
@@ -1540,15 +1662,22 @@ impl LushtextMarkdownPreview {
     ) {
         match resolve_image_target(&image.destination, context) {
             ResolvedImageTarget::LocalFile(path) => {
-                self.insert_local_image_or_fallback(
+                self.insert_async_image_placeholder(
                     buffer,
                     iter,
-                    &path,
+                    &image.destination,
+                    vec![path],
                     EmbeddedBlockLayout::default(),
                 );
             }
             ResolvedImageTarget::OrderedCandidates(paths) => {
-                self.insert_ordered_image_placeholder(buffer, iter, image, paths);
+                self.insert_async_image_placeholder(
+                    buffer,
+                    iter,
+                    &image.destination,
+                    paths,
+                    EmbeddedBlockLayout::default(),
+                );
             }
             ResolvedImageTarget::Fallback { title, body } => {
                 let widget = build_image_fallback_widget(title, &body);
@@ -1562,52 +1691,20 @@ impl LushtextMarkdownPreview {
         }
     }
 
-    /// Insert one image path or a precise decode fallback at the current buffer position.
-    fn insert_local_image_or_fallback(
+    /// Insert a placeholder while local image decode runs off the GTK thread.
+    fn insert_async_image_placeholder(
         &self,
         buffer: &gtk4::TextBuffer,
         iter: &mut gtk4::TextIter,
-        path: &Path,
+        raw_target: &str,
+        paths: Vec<PathBuf>,
         layout: EmbeddedBlockLayout,
     ) {
-        match build_image_paintable(path) {
-            Ok(paintable) => buffer.insert_paintable(iter, &paintable),
-            Err(error) => {
-                let widget = build_image_fallback_widget(
-                    "Image could not be loaded",
-                    &format!("{}\n{error}", path.display()),
-                );
-                self.insert_embedded_widget(
-                    buffer,
-                    iter,
-                    widget.upcast_ref::<gtk4::Widget>(),
-                    layout,
-                );
-            }
-        }
-    }
-
-    /// Insert a placeholder while relative candidates are checked off the GTK thread.
-    fn insert_ordered_image_placeholder(
-        &self,
-        buffer: &gtk4::TextBuffer,
-        iter: &mut gtk4::TextIter,
-        image: &BufferedImage,
-        paths: Vec<PathBuf>,
-    ) {
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        container.append(&build_image_fallback_widget(
-            "Loading image",
-            &image.destination,
-        ));
-        self.insert_embedded_widget(
-            buffer,
-            iter,
-            container.upcast_ref::<gtk4::Widget>(),
-            EmbeddedBlockLayout::default(),
-        );
+        container.append(&build_image_fallback_widget("Loading image", raw_target));
+        self.insert_embedded_widget(buffer, iter, container.upcast_ref::<gtk4::Widget>(), layout);
 
-        let raw_target = image.destination.clone();
+        let raw_target = raw_target.to_string();
         let container_weak = container.downgrade();
         spawn_blocking_then(
             self.clone(),
@@ -1628,25 +1725,9 @@ impl LushtextMarkdownPreview {
     ) {
         clear_box_children(container);
         match result {
-            OrderedImageCandidateResult::Loadable(path) => match build_image_paintable(&path) {
-                Ok(paintable) => {
-                    let picture = gtk4::Picture::for_paintable(&paintable);
-                    picture.add_css_class("markdown-preview-image");
-                    accessibility::set_role(&picture, gtk4::AccessibleRole::Img);
-                    accessibility::set_labelled_description(
-                        &picture,
-                        "Markdown image",
-                        &format!("Rendered image {}", path.display()),
-                    );
-                    container.append(&picture);
-                }
-                Err(error) => {
-                    container.append(&build_image_fallback_widget(
-                        "Image could not be loaded",
-                        &format!("{}\n{error}", path.display()),
-                    ));
-                }
-            },
+            OrderedImageCandidateResult::Loadable { path, image } => {
+                container.append(&build_decoded_image_widget(&path, image));
+            }
             OrderedImageCandidateResult::Unloadable { path, error } => {
                 container.append(&build_image_fallback_widget(
                     "Image could not be loaded",
@@ -1787,6 +1868,80 @@ impl LushtextMarkdownPreview {
     pub(crate) fn refresh_embedded_code_block_layouts(&self) {
         self.queue_code_block_width_refresh();
     }
+}
+
+impl DecodedImage {
+    /// Decode and scale one local image on a worker thread.
+    fn from_path(path: &Path) -> Result<Self, String> {
+        let facts = fs_metadata::file_facts(path).map_err(|error| error.to_string())?;
+        if facts.byte_size > MAX_PREVIEW_IMAGE_SOURCE_BYTES {
+            return Err(format!(
+                "image is too large for preview ({} bytes, limit {} bytes)",
+                facts.byte_size, MAX_PREVIEW_IMAGE_SOURCE_BYTES
+            ));
+        }
+
+        let bytes = fs_read::bytes(path).map_err(|error| error.to_string())?;
+        let pixbuf = decode_preview_pixbuf_from_bytes(&bytes)?;
+        let (display_width, display_height) = bounded_image_size(pixbuf.width(), pixbuf.height());
+        let pixbuf = if display_width != pixbuf.width() || display_height != pixbuf.height() {
+            pixbuf
+                .scale_simple(
+                    display_width,
+                    display_height,
+                    gtk4::gdk_pixbuf::InterpType::Bilinear,
+                )
+                .ok_or_else(|| "failed to scale image for preview".to_string())?
+        } else {
+            pixbuf
+        };
+        let channels = pixbuf.n_channels();
+        if channels != 3 && channels != 4 {
+            return Err(format!("unsupported image channel count: {channels}"));
+        }
+        let stride = usize::try_from(pixbuf.rowstride())
+            .map_err(|_| "invalid image rowstride".to_string())?;
+
+        Ok(Self {
+            width: pixbuf.width(),
+            height: pixbuf.height(),
+            stride,
+            has_alpha: channels == 4,
+            pixels: pixbuf.read_pixel_bytes().as_ref().to_vec(),
+        })
+    }
+}
+
+/// Decode one preview image from already-boundary-read bytes.
+fn decode_preview_pixbuf_from_bytes(bytes: &[u8]) -> Result<gtk4::gdk_pixbuf::Pixbuf, String> {
+    let loader = gtk4::gdk_pixbuf::PixbufLoader::new();
+    let source_too_large = std::rc::Rc::new(std::cell::Cell::new(false));
+    let source_too_large_for_signal = source_too_large.clone();
+    loader.connect_size_prepared(move |loader, width, height| {
+        let source_pixels = i64::from(width).saturating_mul(i64::from(height));
+        if source_pixels > MAX_PREVIEW_IMAGE_SOURCE_PIXELS {
+            source_too_large_for_signal.set(true);
+            // The loader still needs a legal target size before `close()`, but
+            // the result will be rejected; 1x1 avoids allocating the source.
+            loader.set_size(1, 1);
+            return;
+        }
+
+        let (display_width, display_height) = bounded_image_size(width, height);
+        loader.set_size(display_width, display_height);
+    });
+    loader.write(bytes).map_err(|error| error.to_string())?;
+    loader.close().map_err(|error| error.to_string())?;
+
+    if source_too_large.get() {
+        return Err(format!(
+            "image dimensions exceed preview limit ({MAX_PREVIEW_IMAGE_SOURCE_PIXELS} pixels)"
+        ));
+    }
+
+    loader
+        .pixbuf()
+        .ok_or_else(|| "image loader did not produce a pixbuf".to_string())
 }
 
 impl Default for LushtextMarkdownPreview {
@@ -2211,6 +2366,18 @@ fn footnote_number(
 
 /// Build one native source-view widget for a buffered Markdown code block.
 fn build_code_block_widget(code_block: &BufferedCodeBlock, theme: &CodeBlockTheme) -> gtk4::Widget {
+    if code_block.exceeds_preview_widget_budget() {
+        return build_preview_limit_fallback_widget(
+            "Code block not rendered",
+            &format!(
+                "This code block is {} bytes; the preview renders highlighted code blocks up to {} bytes.",
+                code_block.source_byte_len(),
+                MAX_PREVIEW_CODE_BLOCK_BYTES
+            ),
+            "markdown-code-block-fallback",
+        );
+    }
+
     let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     container.set_margin_top(8);
     container.set_margin_bottom(8);
@@ -2318,8 +2485,20 @@ fn code_block_background_css(background: &str) -> String {
     )
 }
 
-/// Build the anchored `GtkGrid` used for one rendered Markdown table.
-fn build_table_grid(preview: &LushtextMarkdownPreview, table: &BufferedTable) -> gtk4::Grid {
+/// Build the anchored widget used for one rendered Markdown table.
+fn build_table_widget(preview: &LushtextMarkdownPreview, table: &BufferedTable) -> gtk4::Widget {
+    if table.exceeds_preview_widget_budget() {
+        return build_preview_limit_fallback_widget(
+            "Table not rendered",
+            &format!(
+                "This table has {} cells; the preview renders tables up to {} cells.",
+                table.cell_count(),
+                MAX_PREVIEW_TABLE_CELLS
+            ),
+            "markdown-table-fallback",
+        );
+    }
+
     let grid = gtk4::Grid::builder()
         .column_spacing(8)
         .row_spacing(6)
@@ -2380,7 +2559,7 @@ fn build_table_grid(preview: &LushtextMarkdownPreview, table: &BufferedTable) ->
         }
     }
 
-    grid
+    grid.upcast()
 }
 
 /// Build one `GtkLabel` cell for the anchored Markdown table grid.
@@ -2436,22 +2615,24 @@ fn build_table_cell_label(
     label
 }
 
-/// Build one scaled paintable for insertion into the text buffer.
-fn build_image_paintable(path: &Path) -> Result<gdk::Paintable, glib::Error> {
-    let file = gio::File::for_path(path);
-    let texture = gdk::Texture::from_file(&file)?;
-    let (display_width, display_height) = bounded_image_size(texture.width(), texture.height());
-    let snapshot = gtk4::Snapshot::new();
-    snapshot.append_texture(
-        &texture,
-        &gtk4::graphene::Rect::new(0.0, 0.0, display_width as f32, display_height as f32),
+/// Build one GTK picture from bytes decoded on a worker thread.
+fn build_decoded_image_widget(path: &Path, image: DecodedImage) -> gtk4::Widget {
+    let format = if image.has_alpha {
+        gdk::MemoryFormat::R8g8b8a8
+    } else {
+        gdk::MemoryFormat::R8g8b8
+    };
+    let bytes = glib::Bytes::from_owned(image.pixels);
+    let texture = gdk::MemoryTexture::new(image.width, image.height, format, &bytes, image.stride);
+    let picture = gtk4::Picture::for_paintable(&texture);
+    picture.add_css_class("markdown-preview-image");
+    accessibility::set_role(&picture, gtk4::AccessibleRole::Img);
+    accessibility::set_labelled_description(
+        &picture,
+        "Markdown image",
+        &format!("Rendered image {}", path.display()),
     );
-    snapshot
-        .to_paintable(Some(&gtk4::graphene::Size::new(
-            display_width as f32,
-            display_height as f32,
-        )))
-        .ok_or_else(|| glib::Error::new(gio::IOErrorEnum::Failed, "failed to snapshot image"))
+    picture.upcast()
 }
 
 /// Remove every current child from a GTK box before replacing async image content.
@@ -2470,10 +2651,10 @@ fn first_loadable_ordered_image(
     for path in paths {
         match fs_metadata::path_status(&path) {
             Ok(PathStatus::Missing) => continue,
-            Ok(PathStatus::File) | Err(_) => match gtk4::gdk_pixbuf::Pixbuf::from_file(&path) {
-                Ok(_) => return OrderedImageCandidateResult::Loadable(path),
+            Ok(PathStatus::File) | Err(_) => match DecodedImage::from_path(&path) {
+                Ok(image) => return OrderedImageCandidateResult::Loadable { path, image },
                 Err(error) if first_unloadable.is_none() => {
-                    first_unloadable = Some((path, error.to_string()));
+                    first_unloadable = Some((path, error));
                 }
                 Err(_) => {}
             },
@@ -2488,6 +2669,44 @@ fn first_loadable_ordered_image(
         OrderedImageCandidateResult::Missing { raw_target },
         |(path, error)| OrderedImageCandidateResult::Unloadable { path, error },
     )
+}
+
+/// Build one compact fallback for Markdown structures that exceed preview budgets.
+fn build_preview_limit_fallback_widget(title: &str, body: &str, css_class: &str) -> gtk4::Widget {
+    let container = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    container.set_margin_top(8);
+    container.set_margin_bottom(8);
+    container.set_margin_start(10);
+    container.set_margin_end(10);
+    container.set_halign(gtk4::Align::Start);
+    container.set_width_request(280);
+    container.add_css_class("card");
+    container.add_css_class("markdown-preview-limit-fallback");
+    container.add_css_class(css_class);
+    accessibility::set_role(&container, gtk4::AccessibleRole::Group);
+    accessibility::set_labelled_description(&container, title, body);
+
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    let title_label = gtk4::Label::new(Some(title));
+    title_label.set_xalign(0.0);
+    title_label.set_wrap(true);
+    title_label.add_css_class("heading");
+
+    let body_label = gtk4::Label::new(Some(body));
+    body_label.set_xalign(0.0);
+    body_label.set_wrap(true);
+    body_label.set_selectable(false);
+    body_label.add_css_class("dim-label");
+
+    content.append(&title_label);
+    content.append(&body_label);
+    container.append(&content);
+    container.upcast()
 }
 
 /// Build one fallback block for unsupported or unresolved Markdown images.
@@ -2889,17 +3108,22 @@ mod tests {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"##,
         );
 
-        assert_eq!(
-            first_loadable_ordered_image(
-                "images/logo.svg".to_string(),
-                vec![
-                    missing_folder.join("images/logo.svg"),
-                    invalid_folder.join("images/logo.svg"),
-                    folder_b.join("images/logo.svg"),
-                ],
-            ),
-            OrderedImageCandidateResult::Loadable(folder_b.join("images/logo.svg"))
+        let result = first_loadable_ordered_image(
+            "images/logo.svg".to_string(),
+            vec![
+                missing_folder.join("images/logo.svg"),
+                invalid_folder.join("images/logo.svg"),
+                folder_b.join("images/logo.svg"),
+            ],
         );
+        match result {
+            OrderedImageCandidateResult::Loadable { path, image } => {
+                assert_eq!(path, folder_b.join("images/logo.svg"));
+                assert_eq!((image.width, image.height), (72, 72));
+                assert!(!image.pixels.is_empty());
+            }
+            other => panic!("expected a decoded workspace image, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2936,6 +3160,77 @@ mod tests {
         assert_eq!(bounded_image_size(1280, 640), (640, 320));
         assert_eq!(bounded_image_size(16, 16), (72, 72));
         assert_eq!(bounded_image_size(0, 0), (320, 180));
+    }
+
+    #[test]
+    fn test_code_block_preview_budget_flags_large_blocks() {
+        let mut code_block = BufferedCodeBlock::new(CodeBlockKind::Indented);
+        code_block.text = "x".repeat(MAX_PREVIEW_CODE_BLOCK_BYTES);
+        assert!(!code_block.exceeds_preview_widget_budget());
+
+        code_block.text.push('x');
+        assert!(code_block.exceeds_preview_widget_budget());
+    }
+
+    #[test]
+    fn test_code_block_buffer_stops_storing_after_preview_budget() {
+        let mut code_block = BufferedCodeBlock::new(CodeBlockKind::Indented);
+        code_block.push_event(Event::Text(
+            "x".repeat(MAX_PREVIEW_CODE_BLOCK_BYTES + 512).into(),
+        ));
+
+        assert_eq!(code_block.text.len(), MAX_PREVIEW_CODE_BLOCK_BYTES);
+        assert_eq!(
+            code_block.source_byte_len(),
+            MAX_PREVIEW_CODE_BLOCK_BYTES + 512
+        );
+        assert!(code_block.exceeds_preview_widget_budget());
+    }
+
+    #[test]
+    fn test_table_preview_budget_counts_materialized_cells() {
+        let column_count = 10;
+        let row_count = (MAX_PREVIEW_TABLE_CELLS / column_count) + 1;
+        let table = BufferedTable {
+            alignments: vec![Alignment::Left; column_count],
+            rows: (0..row_count)
+                .map(|_| BufferedTableRow {
+                    is_header: false,
+                    cells: (0..column_count)
+                        .map(|_| BufferedTableCell {
+                            markup: "cell".to_string(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            observed_cells: row_count * column_count,
+        };
+
+        assert_eq!(table.cell_count(), row_count * column_count);
+        assert!(table.exceeds_preview_widget_budget());
+    }
+
+    #[test]
+    fn test_table_builder_stops_buffering_after_preview_budget() {
+        let mut builder = BufferedTableBuilder::new(
+            vec![Alignment::Left],
+            MarkdownPreviewRenderContext::default(),
+        );
+        for index in 0..=MAX_PREVIEW_TABLE_CELLS {
+            builder.push_event(Event::Start(Tag::TableRow));
+            builder.push_event(Event::Start(Tag::TableCell));
+            builder.push_event(Event::Text(format!("cell {index}").into()));
+            builder.push_event(Event::End(TagEnd::TableCell));
+            builder.push_event(Event::End(TagEnd::TableRow));
+        }
+
+        let table = builder.finish();
+        assert_eq!(table.cell_count(), MAX_PREVIEW_TABLE_CELLS + 1);
+        assert!(table.exceeds_preview_widget_budget());
+        assert!(
+            table.rows.len() <= MAX_PREVIEW_TABLE_CELLS,
+            "oversized tables should stop retaining per-row markup once the fallback is inevitable"
+        );
     }
 
     #[test]

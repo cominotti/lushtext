@@ -499,11 +499,9 @@ fn test_search_panel_clamp_results_height_sets_max_content_height() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
 
-    // Default: no max-content-height or fixed height request.
     assert_eq!(panel.imp().results_scroll.max_content_height(), -1);
     assert_eq!(panel.imp().results_scroll.height_request(), -1);
 
-    // Clamp to 300px.
     panel.clamp_results_height(300);
     assert_eq!(panel.imp().results_scroll.min_content_height(), 300);
     assert_eq!(panel.imp().results_scroll.max_content_height(), 300);
@@ -602,7 +600,7 @@ fn test_toggle_search_panel_close_hides_revealer() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.3: Match range on SearchResultItem
+// Match range on SearchResultItem
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -625,14 +623,13 @@ fn test_search_result_item_match_range_stored_and_returned() {
 #[test]
 fn test_search_result_item_match_range_defaults_to_zero() {
     ensure_gtk_init();
-    // File items should have default (0, 0) match range.
     let item = SearchResultItem::new_file("/path/test.rs", "test.rs", 3);
     assert_eq!(item.match_start(), 0);
     assert_eq!(item.match_end(), 0);
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.3: Toggle buttons on search panel
+// Toggle buttons on search panel
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -640,18 +637,16 @@ fn test_search_panel_has_toggle_template_children() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let imp = panel.imp();
-    // All toggle buttons should be accessible as template children.
     assert!(!imp.case_toggle.is_active());
     assert!(!imp.regex_toggle.is_active());
     assert!(!imp.word_toggle.is_active());
-    assert!(imp.more_toggle.is_sensitive()); // Enabled in Story 1.4
+    assert!(imp.more_toggle.is_sensitive());
 }
 
 #[test]
 fn test_search_panel_toggle_initial_state_all_off() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    // GSettings defaults are all false — toggles should be inactive.
     assert!(!panel.imp().case_toggle.is_active());
     assert!(!panel.imp().regex_toggle.is_active());
     assert!(!panel.imp().word_toggle.is_active());
@@ -660,25 +655,20 @@ fn test_search_panel_toggle_initial_state_all_off() {
 #[test]
 fn test_search_panel_gsettings_keys_exist_with_defaults() {
     ensure_gtk_init();
-    // The panel construction binds GSettings — if keys are missing, it panics.
-    // This test verifies construction succeeds (keys exist) and defaults are correct.
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    // All toggles should be off (matching GSettings defaults of false).
     assert!(!panel.imp().case_toggle.is_active());
     assert!(!panel.imp().regex_toggle.is_active());
     assert!(!panel.imp().word_toggle.is_active());
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.4: Options panel, gitignore toggle, glob filter
+// Options panel, gitignore toggle, glob filter
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_more_toggle_is_sensitive() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    // more_toggle was a placeholder in Story 1.3 (sensitive=false).
-    // Story 1.4 enables it.
     assert!(panel.imp().more_toggle.is_sensitive());
 }
 
@@ -709,10 +699,7 @@ fn test_glob_entry_exists_and_starts_empty() {
 fn test_gsettings_search_panel_options_expanded_default() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    // GSettings default for search-panel-options-expanded is false.
-    // The more_toggle should be inactive (not expanded).
     assert!(!panel.imp().more_toggle.is_active());
-    // The options revealer should be hidden.
     assert!(!panel.imp().options_revealer.reveals_child());
 }
 
@@ -732,13 +719,12 @@ fn test_clear_results_removes_warning_class() {
     panel.imp().count_label.add_css_class("warning");
     assert!(panel.imp().count_label.has_css_class("warning"));
 
-    // Clear results should remove the warning class.
     panel.start_search(&search_spec(""));
     assert!(!panel.imp().count_label.has_css_class("warning"));
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.5: SearchEvent::Progress variant
+// SearchEvent::Progress variant
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -750,14 +736,13 @@ fn test_search_event_progress_variant() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.5: Match navigation state
+// Match navigation state
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_navigate_next_match_empty_is_noop() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    // With no matches, navigate_next_match should not panic or change state.
     panel.navigate_next_match();
     assert!(panel.imp().navigation.current_match_index.get().is_none());
 }
@@ -810,7 +795,7 @@ fn test_current_match_index_resets_on_clear() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.5: F4/Shift+F4 actions and shortcuts
+// F4/Shift+F4 actions and shortcuts
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -833,7 +818,6 @@ fn test_shift_f4_shortcut_bound_search_prev_match() {
 fn test_search_navigation_actions_start_disabled() {
     ensure_gtk_init();
     let window = test_window();
-    // No tabs, no search panel visible, no results → actions should be disabled.
     let next = window.lookup_action("search-next-match").expect("expected operation to succeed");
     assert!(
         !next.is_enabled(),
@@ -848,7 +832,7 @@ fn test_search_navigation_actions_start_disabled() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.5: Status bar notification rendering
+// Status bar notification rendering
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -923,7 +907,7 @@ fn test_connect_search_progress_callback_stored() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 2.1: Replace UI widgets exist
+// Replace UI widgets exist
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1256,7 +1240,7 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 2.1: Model types
+// Model types
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1402,7 +1386,7 @@ fn test_search_navigation_actions_enabled_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 3.1: Search History
+// Search History
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1410,7 +1394,6 @@ fn test_history_popover_and_list_exist_on_fresh_panel() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let imp = panel.imp();
-    // Programmatic widgets should be constructed and parented.
     assert!(!imp.history_popover.is_visible());
     assert_eq!(
         imp.history_list.selection_mode(),
@@ -1469,11 +1452,9 @@ fn test_restore_from_history_sets_glob_entry() {
 fn test_restore_from_history_with_glob_none_clears_glob_entry() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    // First set a glob value.
     panel.imp().glob_entry.set_text("*.md");
     assert_eq!(panel.imp().glob_entry.text().as_str(), "*.md");
 
-    // Restore with glob: None should clear it.
     let entry = make_history_entry("test", false, false, false, true, None);
     panel.restore_from_history(&entry);
     assert!(panel.imp().glob_entry.text().is_empty());
@@ -1491,7 +1472,7 @@ fn test_search_history_entry_serialization_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Story 3.2: Saved Searches & Panel State Persistence
+// Saved Searches & Panel State Persistence
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1625,7 +1606,6 @@ fn test_search_panel_revealer_uses_slide_up_transition() {
 fn test_search_panel_count_label_uses_default_body_text() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
-    // Count label should use default body text (no caption/heading class).
     assert!(!panel.imp().count_label.has_css_class("caption"));
     assert!(!panel.imp().count_label.has_css_class("heading"));
 }

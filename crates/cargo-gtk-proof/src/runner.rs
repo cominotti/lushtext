@@ -17,7 +17,13 @@ use gtk_lush_proof_spine::{ArtifactEnvelope, ProofStatus};
 use serde_json::{Value, json};
 
 use crate::{
-    artifacts, host, live, model, png, policy, process, read_json_value, warnings, write_envelope,
+    artifacts,
+    geometry::{
+        Insets, VisualBox, app_pixel_anchor_geometry as shared_app_pixel_anchor_geometry,
+        pixel_anchor_box, png_rect, png_rect_from_value, row_offset, safe_name, scroll_anchor,
+        selected_surface_rows as select_surface_rows, surface_box, visual_geometry,
+    },
+    host, live, model, png, policy, process, read_json_value, warnings, write_envelope,
 };
 
 /// Theme and font metrics can place the 600px source cap a few pixels around
@@ -871,7 +877,7 @@ fn evaluate_pixel_anchors(
     let mut status = "passed";
     let mut reports = Vec::new();
     let mut app_vs_rendered_disagreements = Vec::new();
-    let mut detections: HashMap<String, (Option<i32>, Option<i32>)> = HashMap::new();
+    let mut detections: HashMap<String, PixelAnchorDetectionPair> = HashMap::new();
     for spec in anchor_specs {
         let name = required_str(spec, "name")?;
         let detector = required_str(spec, "detector")?;
@@ -952,7 +958,10 @@ fn evaluate_pixel_anchors(
         }
         detections.insert(
             name.to_string(),
-            (before_detection.row_y, after_detection.row_y),
+            PixelAnchorDetectionPair {
+                before_row_y: before_detection.row_y,
+                after_row_y: after_detection.row_y,
+            },
         );
         reports.push(json!({
             "name": name,
@@ -988,7 +997,7 @@ fn evaluate_pixel_anchors(
 /// Enforce declared relationships between screenshot-derived anchor rows.
 fn evaluate_relative_pixel_anchors(
     case: &Value,
-    detections: &HashMap<String, (Option<i32>, Option<i32>)>,
+    detections: &HashMap<String, PixelAnchorDetectionPair>,
     status: &mut &'static str,
 ) -> Vec<Value> {
     let Some(specs) = case
@@ -1002,8 +1011,8 @@ fn evaluate_relative_pixel_anchors(
         .map(|spec| {
             let first = spec.get("from").and_then(Value::as_str).unwrap_or_default();
             let second = spec.get("to").and_then(Value::as_str).unwrap_or_default();
-            let (before_first, after_first) = detections.get(first).copied().unwrap_or_default();
-            let (before_second, after_second) = detections.get(second).copied().unwrap_or_default();
+            let first_detection = detections.get(first).copied().unwrap_or_default();
+            let second_detection = detections.get(second).copied().unwrap_or_default();
             let mut row = json!({
                 "from": first,
                 "to": second,
@@ -1014,8 +1023,12 @@ fn evaluate_relative_pixel_anchors(
                 Some(before_second),
                 Some(after_first),
                 Some(after_second),
-            ) = (before_first, before_second, after_first, after_second)
-            {
+            ) = (
+                first_detection.before_row_y,
+                second_detection.before_row_y,
+                first_detection.after_row_y,
+                second_detection.after_row_y,
+            ) {
                 let before_delta = before_first - before_second;
                 let after_delta = after_first - after_second;
                 let delta_change = after_delta - before_delta;
@@ -1049,6 +1062,15 @@ fn evaluate_relative_pixel_anchors(
             row
         })
         .collect()
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+/// Detected row positions for one pixel anchor before and after an action.
+struct PixelAnchorDetectionPair {
+    /// Anchor row detected in the before screenshot crop.
+    before_row_y: Option<i32>,
+    /// Anchor row detected in the after screenshot crop.
+    after_row_y: Option<i32>,
 }
 
 /// Check app geometry relationships that are allowed to change during a case.
@@ -1388,38 +1410,19 @@ fn final_geometry_summary(before_snapshot: &Value, after_snapshot: &Value) -> Va
 
 /// Select stable surface rows from large Automation1 snapshots for summaries.
 fn selected_surface_rows(snapshot: &Value) -> Vec<Value> {
-    [
-        "workspace-sidebar",
-        "workspace-sidebar-transition",
-        "editor-viewport",
-        "source-view",
-        "minimap-shell",
-        "minimap-source-map",
-        "minimap-native-viewport",
-        "minimap-marker-strip",
-    ]
-    .iter()
-    .map(|name| {
-        optional_surface(snapshot, name).map_or_else(
-            || {
-                json!({
-                    "name": name,
-                    "visible": false,
-                    "absence_reason": "missing-from-snapshot",
-                })
-            },
-            |row| {
-                json!({
-                    "name": row.get("name"),
-                    "visible": row.get("visible"),
-                    "rect": row.get("rect"),
-                    "allocation": row.get("allocation"),
-                    "absence_reason": row.get("absence_reason"),
-                })
-            },
-        )
-    })
-    .collect()
+    select_surface_rows(
+        snapshot,
+        &[
+            "workspace-sidebar",
+            "workspace-sidebar-transition",
+            "editor-viewport",
+            "source-view",
+            "minimap-shell",
+            "minimap-source-map",
+            "minimap-native-viewport",
+            "minimap-marker-strip",
+        ],
+    )
 }
 
 /// Convert an anchor search declaration into the exact rendered crop rectangle.
@@ -1444,27 +1447,7 @@ fn app_pixel_anchor_geometry(
     pixel_anchor_name: &str,
 ) -> Option<Value> {
     let app_anchor_name = app_pixel_anchor_alias(pixel_anchor_name);
-    let before = optional_pixel_anchor(before_snapshot, app_anchor_name);
-    let after = optional_pixel_anchor(after_snapshot, app_anchor_name);
-    if before.is_none() && after.is_none() {
-        return None;
-    }
-    let before_row = before.and_then(app_anchor_row);
-    let after_row = after.and_then(app_anchor_row);
-    Some(json!({
-        "snapshot_anchor_name": app_anchor_name,
-        "before": before.map_or_else(|| json!({
-            "visible": false,
-            "absence_reason": "missing-from-snapshot",
-        }), app_anchor_summary),
-        "after": after.map_or_else(|| json!({
-            "visible": false,
-            "absence_reason": "missing-from-snapshot",
-        }), app_anchor_summary),
-        "before_row_y": before_row,
-        "after_row_y": after_row,
-        "screen_y_delta": before_row.zip(after_row).map(|(before, after)| (after - before).abs()),
-    }))
+    shared_app_pixel_anchor_geometry(before_snapshot, after_snapshot, app_anchor_name)
 }
 
 fn app_pixel_anchor_alias(name: &str) -> &str {
@@ -1474,107 +1457,12 @@ fn app_pixel_anchor_alias(name: &str) -> &str {
     }
 }
 
-fn app_anchor_row(row: &Value) -> Option<i64> {
-    if row.get("visible").and_then(Value::as_bool) != Some(true) {
-        return None;
-    }
-    row.get("rect")?.get("y")?.as_i64()
-}
-
-fn app_anchor_summary(row: &Value) -> Value {
-    json!({
-        "name": row.get("name"),
-        "surface": row.get("surface"),
-        "visible": row.get("visible"),
-        "rect": row.get("rect"),
-        "absence_reason": row.get("absence_reason"),
-    })
-}
-
-fn visual_geometry(snapshot: &Value) -> Option<&Value> {
-    snapshot.pointer("/window/visual_geometry")
-}
-
-fn optional_surface<'a>(snapshot: &'a Value, name: &str) -> Option<&'a Value> {
-    visual_geometry(snapshot)?
-        .get("surfaces")?
-        .as_array()?
-        .iter()
-        .find(|row| row.get("name").and_then(Value::as_str) == Some(name))
-}
-
-fn optional_pixel_anchor<'a>(snapshot: &'a Value, name: &str) -> Option<&'a Value> {
-    visual_geometry(snapshot)?
-        .get("pixel_anchors")?
-        .as_array()?
-        .iter()
-        .find(|row| row.get("name").and_then(Value::as_str) == Some(name))
-}
-
-fn scroll_anchor<'a>(snapshot: &'a Value, name: &str) -> Option<&'a Value> {
-    visual_geometry(snapshot)?
-        .get("scroll_anchors")?
-        .as_array()?
-        .iter()
-        .find(|row| row.get("name").and_then(Value::as_str) == Some(name))
-}
-
-fn surface_box(snapshot: &Value, name: &str) -> Result<VisualBox, String> {
-    let row = optional_surface(snapshot, name)
-        .ok_or_else(|| format!("visual surface not found: {name}"))?;
-    if row.get("visible").and_then(Value::as_bool) != Some(true) {
-        return Err(format!("surface {name} is not visible"));
-    }
-    VisualBox::from_value(row.get("rect").unwrap_or(&Value::Null))
-        .ok_or_else(|| format!("surface {name} has malformed rect"))
-}
-
-fn pixel_anchor_box(snapshot: &Value, name: &str) -> Result<VisualBox, String> {
-    let row = optional_pixel_anchor(snapshot, name)
-        .ok_or_else(|| format!("visual pixel anchor not found: {name}"))?;
-    if row.get("visible").and_then(Value::as_bool) != Some(true) {
-        return Err(format!("pixel anchor {name} is not visible"));
-    }
-    VisualBox::from_value(row.get("rect").unwrap_or(&Value::Null))
-        .ok_or_else(|| format!("pixel anchor {name} has malformed rect"))
-}
-
 fn inset_box(rect: VisualBox, insets: &Value) -> Result<VisualBox, String> {
-    let left = insets.get("left").and_then(Value::as_i64).unwrap_or(0);
-    let top = insets.get("top").and_then(Value::as_i64).unwrap_or(0);
-    let right = insets.get("right").and_then(Value::as_i64).unwrap_or(0);
-    let bottom = insets.get("bottom").and_then(Value::as_i64).unwrap_or(0);
-    let width = rect.width - left - right;
-    let height = rect.height - top - bottom;
-    if width <= 0 || height <= 0 {
-        return Err("crop insets leave an empty rectangle".to_string());
-    }
-    Ok(VisualBox {
-        x: rect.x + left,
-        y: rect.y + top,
-        width,
-        height,
-    })
-}
-
-fn png_rect(rect: VisualBox) -> Result<png::Rect, String> {
-    if rect.width <= 0 || rect.height <= 0 {
-        return Err("PNG crop rectangle is empty".to_string());
-    }
-    Ok(png::Rect::new(
-        i32::try_from(rect.x).map_err(|error| error.to_string())?,
-        i32::try_from(rect.y).map_err(|error| error.to_string())?,
-        usize::try_from(rect.width).map_err(|error| error.to_string())?,
-        usize::try_from(rect.height).map_err(|error| error.to_string())?,
-    ))
-}
-
-fn png_rect_from_value(value: &Value) -> Result<png::Rect, String> {
-    png_rect(VisualBox::from_value(value).ok_or_else(|| "mask rectangle is malformed".to_string())?)
-}
-
-fn row_offset(row_y: Option<i32>, rect: png::Rect) -> Option<i32> {
-    row_y.map(|row_y| row_y - rect.y)
+    crate::geometry::inset_box(
+        rect,
+        Insets::from_value(insets),
+        "crop insets leave an empty rectangle",
+    )
 }
 
 fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
@@ -1582,37 +1470,6 @@ fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
         .get(field)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("visual scenario row is missing {field}"))
-}
-
-fn safe_name(name: &str) -> String {
-    let mut output = String::new();
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-') {
-            output.push(character);
-        } else if !output.ends_with('-') {
-            output.push('-');
-        }
-    }
-    output.trim_matches('-').to_string()
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
-struct VisualBox {
-    x: i64,
-    y: i64,
-    width: i64,
-    height: i64,
-}
-
-impl VisualBox {
-    fn from_value(value: &Value) -> Option<Self> {
-        Some(Self {
-            x: value.get("x")?.as_i64()?,
-            y: value.get("y")?.as_i64()?,
-            width: value.get("width")?.as_i64()?,
-            height: value.get("height")?.as_i64()?,
-        })
-    }
 }
 
 fn run_live_process_sessions(

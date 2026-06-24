@@ -145,33 +145,41 @@ impl LushtextSearchPanel {
     fn select_match_in_results(&self, match_index: usize) {
         let imp = self.imp();
         let positions = imp.navigation.match_positions.borrow();
-        let Some(target) = positions.get(match_index) else {
+        let Some(target) = positions.get(match_index).cloned() else {
             return;
         };
         let target_path_str = target.path.display().to_string();
         let target_line = target.line_number;
         drop(positions);
 
+        let rows = imp.navigation.match_rows.borrow();
+        let Some(Some(row)) = rows.get(match_index).cloned() else {
+            return;
+        };
+        drop(rows);
+
         let Some(model) = imp.results_list.model() else {
             return;
         };
 
-        for i in 0..model.n_items() {
-            if let Some(obj) = model.item(i)
-                && let Some(row) = obj.downcast_ref::<gtk4::TreeListRow>()
-                && let Some(item) = row.item().and_downcast::<SearchResultItem>()
-                && item.is_match_item()
-                && item.line_number() == target_line
-                && item.file_path() == target_path_str
-            {
-                if let Some(selection) = model.downcast_ref::<gtk4::SingleSelection>() {
-                    selection.set_selected(i);
-                }
-                self.imp()
-                    .results_list
-                    .scroll_to(i, gtk4::ListScrollFlags::FOCUS, None);
-                break;
+        if let Some(parent) = row.parent() {
+            parent.set_expanded(true);
+        }
+
+        let position = row.position();
+        if let Some(obj) = model.item(position)
+            && let Some(visible_row) = obj.downcast_ref::<gtk4::TreeListRow>()
+            && let Some(item) = visible_row.item().and_downcast::<SearchResultItem>()
+            && item.is_match_item()
+            && item.line_number() == target_line
+            && item.file_path() == target_path_str
+        {
+            if let Some(selection) = model.downcast_ref::<gtk4::SingleSelection>() {
+                selection.set_selected(position);
             }
+            self.imp()
+                .results_list
+                .scroll_to(position, gtk4::ListScrollFlags::FOCUS, None);
         }
     }
 }

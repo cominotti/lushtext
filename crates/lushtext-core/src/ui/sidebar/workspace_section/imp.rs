@@ -39,14 +39,43 @@ type FolderReorderToIndexCallback = Box<dyn Fn(&WorkspaceId, &WorkspaceFolderId,
 type MessageCallback = Box<dyn Fn(&str, NotificationSeverity)>;
 type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
+/// Action name used by row expansion accessibility hooks installed per section.
 const ROW_EXPANDED_ACCESSIBILITY_HOOK: &str = "workspace-row-expanded-accessibility-hook";
+
+/// Row currently targeted by the file-tree context menu.
+#[derive(Clone)]
+pub(super) struct FileContextTarget {
+    /// Path selected when the context menu was opened.
+    pub path: PathBuf,
+    /// Whether the selected row represents a directory.
+    pub is_dir: bool,
+    /// Stable id when the selected row is a configured workspace folder.
+    pub workspace_folder_id: Option<WorkspaceFolderId>,
+    /// Row expander used to swap the visible label for inline rename.
+    pub expander: gtk4::TreeExpander,
+}
+
+impl FileContextTarget {
+    /// Capture the context target from a bound tree row and its model item.
+    #[must_use]
+    fn from_item(expander: &gtk4::TreeExpander, file_item: &FileTreeItem) -> Option<Self> {
+        Some(Self {
+            path: file_item.path()?,
+            is_dir: file_item.is_dir(),
+            workspace_folder_id: file_item.workspace_folder_id(),
+            expander: expander.clone(),
+        })
+    }
+}
 
 /// Cached position of a file tree item for O(1) model removal.
 /// Stores the parent directory (or `None` for configured top-level rows) and
 /// the index within the parent's `ListStore`.
 #[derive(Debug, Clone)]
 pub struct ItemLocation {
+    /// Parent directory store containing the item; `None` means top-level folder row.
     pub parent_dir: Option<PathBuf>,
+    /// Current index within that parent `ListStore` for direct removal.
     pub index: usize,
 }
 
@@ -121,9 +150,10 @@ pub struct WatchRuntimeState {
     pub last_reported_error: RefCell<Option<String>>,
 }
 
-// CompositeTemplate loads this widget's XML from the compiled GResource.
-// Each TemplateChild is bound by init_template() before constructed() runs.
-// GObject methods always take &self; Cell/RefCell provide interior mutability.
+/// Private template implementation for one workspace section.
+///
+/// Owns the section header, drill-down chrome, virtualized file tree, context
+/// menu state, and callbacks for mutating one workspace's folder set.
 #[derive(Default, CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/workspace-section.ui")]
 pub struct LushtextWorkspaceSection {
@@ -188,16 +218,8 @@ pub struct LushtextWorkspaceSection {
     pub header_context_menu: RefCell<Option<gtk4::Popover>>,
     /// Vertical action list inside the workspace-header context popover.
     pub header_context_menu_box: RefCell<Option<gtk4::Box>>,
-    /// Path of the item under the right-click context menu. Set on gesture
-    /// press, read by action handlers (rename, delete, new file).
-    pub context_path: RefCell<Option<PathBuf>>,
-    /// Whether the context-menu target is a directory.
-    pub context_is_dir: Cell<bool>,
-    /// Stable folder id when the context target is a persisted top-level folder row.
-    pub context_workspace_folder_id: RefCell<Option<WorkspaceFolderId>>,
-    /// The TreeExpander widget for the context-menu target row. Needed to
-    /// swap the label for an inline rename entry.
-    pub context_expander: RefCell<Option<gtk4::TreeExpander>>,
+    /// Row targeted by the file context menu and later action handlers.
+    pub(super) context_target: RefCell<Option<FileContextTarget>>,
     /// True while a New File/Folder flow is active. Distinguishes
     /// rename-after-create from user-initiated rename.
     pub is_new_item: Cell<bool>,
@@ -370,7 +392,6 @@ impl ObjectImpl for LushtextWorkspaceSection {
             }
         });
 
-        // Wire drilldown back button
         let obj_weak = self.obj().downgrade();
         self.drilldown_back_button.connect_clicked(move |_| {
             if let Some(section) = obj_weak.upgrade() {
@@ -699,8 +720,8 @@ impl LushtextWorkspaceSection {
                             });
                         let signals = SignalBag::new();
                         signals.track(&tree_row, handler_id);
-                        // SAFETY: this private signal bag is cleared and
-                        // cleared in unbind; no external code reads it.
+                        // SAFETY: this private signal bag is stored on this
+                        // row and cleared in unbind; no external code reads it.
                         unsafe {
                             tree_row.set_data("workspace-watch-expanded-hook", signals);
                         }
@@ -729,9 +750,8 @@ impl LushtextWorkspaceSection {
                     file_item.set_pending_rename(false);
                     if let Some(section) = section_weak.upgrade() {
                         let imp = section.imp();
-                        *imp.context_path.borrow_mut() = file_item.path();
-                        imp.context_is_dir.set(file_item.is_dir());
-                        *imp.context_expander.borrow_mut() = Some(expander.clone());
+                        *imp.context_target.borrow_mut() =
+                            FileContextTarget::from_item(&expander, &file_item);
                         let sw = section.downgrade();
                         glib::idle_add_local_once(move || {
                             if let Some(s) = sw.upgrade() {
@@ -846,18 +866,12 @@ impl LushtextWorkspaceSection {
                 if let Some(section) = section_weak.upgrade() {
                     let context_matches = section
                         .imp()
-                        .context_expander
+                        .context_target
                         .borrow()
                         .as_ref()
-                        .is_some_and(|context_expander| context_expander == &expander);
+                        .is_some_and(|target| target.expander == expander);
                     if context_matches {
-                        section.imp().context_expander.borrow_mut().take();
-                        section.imp().context_path.borrow_mut().take();
-                        section
-                            .imp()
-                            .context_workspace_folder_id
-                            .borrow_mut()
-                            .take();
+                        section.imp().context_target.borrow_mut().take();
                     }
                 }
             }
@@ -920,20 +934,13 @@ impl LushtextWorkspaceSection {
             let Some(section) = section_weak.upgrade() else {
                 return;
             };
-            let path = section.imp().context_path.borrow().clone();
-            let is_dir = section.imp().context_is_dir.get();
-            if let Some(path) = path
-                && is_dir
+            let target = section.imp().context_target.borrow().clone();
+            if let Some(target) = target
+                && target.is_dir
             {
                 popdown_context_popovers(&section);
-                section.imp().context_expander.borrow_mut().take();
-                section.imp().context_path.borrow_mut().take();
-                section
-                    .imp()
-                    .context_workspace_folder_id
-                    .borrow_mut()
-                    .take();
-                section.focus_folder(&path);
+                section.imp().context_target.borrow_mut().take();
+                section.focus_folder(&target.path);
             }
         });
         action_group.add_action(&focus_folder_action);
@@ -942,11 +949,11 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         local_history_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade()
-                && let Some(path) = section.imp().context_path.borrow().clone()
-                && !section.imp().context_is_dir.get()
+                && let Some(target) = section.imp().context_target.borrow().clone()
+                && !target.is_dir
             {
                 popdown_context_popovers(&section);
-                section.notify_local_history_requested(&path);
+                section.notify_local_history_requested(&target.path);
             }
         });
         action_group.add_action(&local_history_action);
@@ -955,11 +962,11 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         document_note_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade()
-                && let Some(path) = section.imp().context_path.borrow().clone()
-                && !section.imp().context_is_dir.get()
+                && let Some(target) = section.imp().context_target.borrow().clone()
+                && !target.is_dir
             {
                 popdown_context_popovers(&section);
-                section.notify_document_note_requested(&path);
+                section.notify_document_note_requested(&target.path);
             }
         });
         action_group.add_action(&document_note_action);
@@ -968,11 +975,11 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         folder_note_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade()
-                && let Some(path) = section.imp().context_path.borrow().clone()
-                && section.imp().context_workspace_folder_id.borrow().is_some()
+                && let Some(target) = section.imp().context_target.borrow().clone()
+                && target.workspace_folder_id.is_some()
             {
                 popdown_context_popovers(&section);
-                section.notify_folder_note_for_folder_requested(&path);
+                section.notify_folder_note_for_folder_requested(&target.path);
             }
         });
         action_group.add_action(&folder_note_action);
@@ -981,7 +988,8 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         move_folder_up_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade()
-                && let Some(folder_id) = section.imp().context_workspace_folder_id.borrow().clone()
+                && let Some(target) = section.imp().context_target.borrow().clone()
+                && let Some(folder_id) = target.workspace_folder_id
             {
                 popdown_context_popovers(&section);
                 section
@@ -994,7 +1002,8 @@ impl LushtextWorkspaceSection {
         let section_weak = obj.downgrade();
         move_folder_down_action.connect_activate(move |_, _| {
             if let Some(section) = section_weak.upgrade()
-                && let Some(folder_id) = section.imp().context_workspace_folder_id.borrow().clone()
+                && let Some(target) = section.imp().context_target.borrow().clone()
+                && let Some(folder_id) = target.workspace_folder_id
             {
                 popdown_context_popovers(&section);
                 section.notify_reorder_folder_requested(
@@ -1279,20 +1288,32 @@ fn find_ancestor_expander(widget: &gtk4::Widget) -> Option<gtk4::TreeExpander> {
 
 #[derive(Clone)]
 pub(super) struct FileContextMenuWiring {
+    /// Reveals a deeply nested directory as the focused tree root.
     focus_folder_action: gio::SimpleAction,
+    /// Opens the local-history workflow for the targeted file.
     local_history_action: gio::SimpleAction,
+    /// Opens the document-note workflow for the targeted file.
     document_note_action: gio::SimpleAction,
+    /// Opens the folder-note workflow for the targeted folder.
     folder_note_action: gio::SimpleAction,
+    /// Moves a configured top-level folder one position earlier.
     move_folder_up_action: gio::SimpleAction,
+    /// Moves a configured top-level folder one position later.
     move_folder_down_action: gio::SimpleAction,
+    /// Removes a configured top-level folder from its workspace.
     remove_folder_action: gio::SimpleAction,
 }
 
+/// Static description of one item in the file-navigation context menu.
 #[derive(Clone, Copy)]
 struct PopoverMenuActionSpec {
+    /// Stable item id used for accessible naming and section lookup.
     id: &'static str,
+    /// Visible menu item label.
     label: &'static str,
+    /// Detailed action name activated by the menu item.
     action: &'static str,
+    /// Accessible description for assistive technologies.
     description: &'static str,
 }
 
@@ -1579,10 +1600,12 @@ fn show_file_context_menu_for_row(
 
     let imp = section.imp();
     let workspace_folder_id = file_item.workspace_folder_id();
-    *imp.context_path.borrow_mut() = Some(path);
-    imp.context_is_dir.set(file_item.is_dir());
-    *imp.context_workspace_folder_id.borrow_mut() = workspace_folder_id.clone();
-    *imp.context_expander.borrow_mut() = Some(expander.clone());
+    *imp.context_target.borrow_mut() = Some(FileContextTarget {
+        path,
+        is_dir: file_item.is_dir(),
+        workspace_folder_id: workspace_folder_id.clone(),
+        expander: expander.clone(),
+    });
 
     let is_workspace_folder = workspace_folder_id.is_some();
     wiring

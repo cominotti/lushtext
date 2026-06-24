@@ -196,26 +196,38 @@ todo                          = "deny"
 unimplemented                 = "deny"
 
 [workspace.lints.rust]
-# Edition 2024 defaults we want to keep enforced
+# Edition 2024 defaults that remain enforced across the workspace.
 unsafe_op_in_unsafe_fn  = "deny"
 tail_expr_drop_order    = "deny"
 
 # --- Compilation speed profiles ---
 
 [profile.dev]
+# Line tables preserve usable backtraces while avoiding full debug-info bloat
+# during frequent GTK/widget proof builds.
 debug = "line-tables-only"
+# Dev builds favor short link times; optimized dependencies carry most hot code.
 lto = "off"
 
 [profile.dev.package."*"]
+# Third-party crates are optimized in dev so GTK, regex/search, and image tests
+# exercise realistic performance without optimizing the local edit loop.
 opt-level = 2
 
 [profile.dev.build-override]
+# Build scripts are tiny and run often, so optimizing them avoids repeated setup
+# overhead while leaving the application crate quick to rebuild.
 opt-level = 3
 
 [profile.release]
+# Full release optimization plus thin LTO balances shipped editor performance
+# with practical link times on local and Flatpak builders.
 opt-level = 3
 lto = "thin"
+# Installed binaries do not need symbol tables; crash diagnostics use separate
+# local/debug builds.
 strip = true
+# Single codegen unit gives LLVM maximum whole-crate visibility for releases.
 codegen-units = 1
 
 [profile.bench]

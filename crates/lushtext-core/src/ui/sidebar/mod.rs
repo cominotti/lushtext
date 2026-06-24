@@ -9,6 +9,7 @@
 mod callbacks;
 mod dialogs;
 pub mod file_tree_item;
+// Private GObject implementation for the template-backed sidebar shell.
 mod imp;
 pub mod workspace_section;
 mod workspaces;
@@ -225,6 +226,12 @@ impl WorkspaceSidebarWidthPreset {
 }
 
 glib::wrapper! {
+    // Exposes the private sidebar implementation as the public widget mounted
+    // by the main window.
+    /// Public multi-workspace sidebar mounted by the main window shell.
+    ///
+    /// The wrapper exposes workspace, file-tree, and callback operations; the
+    /// private implementation owns template children, stores, and persistence.
     pub struct LushtextSidebar(ObjectSubclass<imp::LushtextSidebar>)
         @extends gtk4::Box, gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget, gtk4::Orientable;

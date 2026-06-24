@@ -917,7 +917,8 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                         black_box(&cancel),
                         Some(dir.path()),
                     )
-                    .expect("expected operation to succeed");
+                    .expect("expected operation to succeed")
+                    .into_parts();
                     black_box((result.replaced_count, backup.len(), dir));
                 },
                 BatchSize::SmallInput,
@@ -935,7 +936,8 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                         &cancel,
                         Some(dir.path()),
                     )
-                    .expect("expected operation to succeed");
+                    .expect("expected operation to succeed")
+                    .into_parts();
                     (dir, backup)
                 },
                 |(dir, backup)| {
@@ -958,7 +960,8 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                     black_box(&cancel),
                     Some(dir.path()),
                 )
-                .expect("expected operation to succeed");
+                .expect("expected operation to succeed")
+                .into_parts();
                 black_box((result.replaced_count, backup.len(), dir));
             },
             BatchSize::SmallInput,
@@ -976,7 +979,8 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                     black_box(&cancel),
                     Some(dir.path()),
                 )
-                .expect("expected operation to succeed");
+                .expect("expected operation to succeed")
+                .into_parts();
                 black_box((result.skipped_paths.len(), backup.len(), dir));
             },
             BatchSize::SmallInput,
