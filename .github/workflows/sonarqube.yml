@@ -59,6 +59,7 @@ jobs:
             git \
             gnupg2 \
             gnupg2-dirmngr \
+            jq \
             unzip
 
       - name: Install Rust toolchain
