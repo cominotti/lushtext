@@ -576,6 +576,13 @@ fn wait_for_shortcuts_dialog(window: &LushtextWindow) -> libadwaita::ShortcutsDi
     dialogs[0].clone()
 }
 
+fn settle_shortcuts_dialog_parent() {
+    // The builder-diagnostics runtime enables extra GTK/Adwaita geometry
+    // checks. Let the parent window finish its first allocation burst before
+    // presenting the private AdwDialogHost used by AdwShortcutsDialog.
+    flush_after_delay(Duration::from_millis(250));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EditorPrintState {
     text: String,
@@ -3421,6 +3428,7 @@ fn test_help_overlay_action_presents_shortcuts_dialog_without_context() {
     let window = test_window();
     present_window(&window);
 
+    settle_shortcuts_dialog_parent();
     activate_action(&window, "show-help-overlay");
     let shortcuts = wait_for_shortcuts_dialog(&window);
 
@@ -3442,6 +3450,7 @@ fn test_help_overlay_action_reuses_dialog_and_preserves_document_state() {
     editor.buffer().set_text("shortcut help keeps buffer");
     let before_state = editor_print_state(&editor);
 
+    settle_shortcuts_dialog_parent();
     activate_action(&window, "show-help-overlay");
     let first_dialog = wait_for_shortcuts_dialog(&window);
     activate_action(&window, "show-help-overlay");
@@ -3459,6 +3468,7 @@ fn test_help_overlay_dialog_handles_dense_shortcuts_and_constrained_geometry() {
     let window = test_window_with_restored_size(640, 420);
     present_window(&window);
 
+    settle_shortcuts_dialog_parent();
     activate_action(&window, "show-help-overlay");
     let shortcuts = wait_for_shortcuts_dialog(&window);
     let shortcuts_ui = include_str!(concat!(
