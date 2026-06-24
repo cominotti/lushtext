@@ -2,6 +2,9 @@
 /target/
 /mutants.out*/
 
+# SonarQube Cloud scanner cache and local API reports
+/.sonar/
+
 # IDE
 .idea/
 *.iml

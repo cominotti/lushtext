@@ -59,6 +59,7 @@
 #   make automation-client-self-test - Validate the reusable D-Bus automation CLI helper
 #   make check-agent-docs - validate agent rules/skills guidance
 #   make lint-advisory - grouped advisory lint discovery for Rust policy reviews
+#   make sonar-local - Fail on SonarQube Cloud quality gate or unresolved issues (API-only)
 #   make pre-commit  - repo pre-commit gate (fmt + all-feature clippy + policy audits)
 #   make flatpak-deps - Install Flatpak runtime/SDK deps into the user installation
 #   make flatpak-install - Build and install Flatpak into the user installation
@@ -75,7 +76,7 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory sonar-local check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -543,6 +544,11 @@ lint-advisory:
 	@echo "Running advisory lint discovery..."
 	./scripts/lint-advisory.py
 
+# Fetch uploaded SonarQube Cloud quality gate status and unresolved issues.
+# This is API-only; CI owns scanner uploads for the Rust project.
+sonar-local:
+	@./scripts/sonar-local.sh
+
 # Repo pre-commit gate
 pre-commit: check-fmt check-clippy check-policy
 
@@ -795,6 +801,7 @@ help:
 	@echo "  check-flatpak-permissions Verify Flatpak keeps intentional full filesystem access"
 	@echo "  lint-blueprint Advisory grouped Blueprint lint triage"
 	@echo "  lint-advisory Grouped advisory Rust lint discovery"
+	@echo "  sonar-local Fail on SonarQube Cloud quality gate or unresolved issues"
 	@echo "  install-git-hooks Configure this repo to use .githooks/"
 	@echo ""
 	@echo "Benchmark targets:"
@@ -858,4 +865,9 @@ help:
 	@echo "  COMINOTTI_FLATPAK_PUBLIC_KEY Public GPG key file for Cominotti Flatpak metadata"
 	@echo "  COMINOTTI_FLATPAK_GPG_KEY GPG signing key ID for Cominotti Flatpak publication"
 	@echo "  COMINOTTI_FLATPAK_PAGES_MAX_FILE_BYTES Cloudflare Pages per-asset byte limit"
+	@echo "  SONAR_TOKEN             Optional token for private SonarQube Cloud access"
+	@echo "  SONAR_HOST_URL          Sonar host URL (default: https://sonarcloud.io)"
+	@echo "  SONAR_PROJECT_KEY       Sonar project key (default: cominotti_lushtext)"
+	@echo "  SONAR_BRANCH            Branch for quality gate/issues (default: current git branch)"
+	@echo "  SONAR_PAGE_SIZE         Sonar issues page size (default: 500)"
 	@echo "  COMINOTTI_FLATPAK_PAGES_MAX_FILES Cloudflare Pages file-count limit"

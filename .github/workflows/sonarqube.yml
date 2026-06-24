@@ -1,0 +1,85 @@
+name: SonarQube Cloud
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: sonarqube-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SONAR_USER_HOME: ${{ github.workspace }}/.sonar
+
+jobs:
+  sonarqube:
+    name: SonarQube Cloud Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    steps:
+      - name: Explain skipped SonarQube Cloud analysis
+        if: env.SONAR_TOKEN == ''
+        run: |
+          echo "SonarQube Cloud analysis skipped because SONAR_TOKEN is unavailable."
+          echo "This is expected for fork pull requests and other untrusted contexts."
+
+      - name: Checkout
+        if: env.SONAR_TOKEN != ''
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        if: env.SONAR_TOKEN != ''
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            blueprint-compiler \
+            gcc \
+            gettext \
+            git \
+            gnupg2 \
+            gnupg2-dirmngr
+
+      - name: Install Rust toolchain
+        if: env.SONAR_TOKEN != ''
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy
+
+      - name: Cache Rust dependencies
+        if: env.SONAR_TOKEN != ''
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-sonarqube
+
+      - name: Cache SonarQube scanner packages
+        if: env.SONAR_TOKEN != ''
+        uses: actions/cache@v4
+        with:
+          path: .sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: SonarQube Cloud scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v8.2.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
