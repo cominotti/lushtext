@@ -870,4 +870,7 @@ help:
 	@echo "  SONAR_PROJECT_KEY       Sonar project key (default: cominotti_lushtext)"
 	@echo "  SONAR_BRANCH            Branch for quality gate/issues (default: current git branch)"
 	@echo "  SONAR_PAGE_SIZE         Sonar issues page size (default: 500)"
+	@echo "  SONAR_EXPECTED_REVISION Optional commit SHA sonar-local waits to see analyzed"
+	@echo "  SONAR_WAIT_SECONDS      Seconds to wait for expected Sonar revision (default: 0)"
+	@echo "  SONAR_POLL_INTERVAL     Seconds between Sonar revision polls (default: 5)"
 	@echo "  COMINOTTI_FLATPAK_PAGES_MAX_FILES Cloudflare Pages file-count limit"

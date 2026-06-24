@@ -13,7 +13,7 @@
 - [x] 2.3 Install Fedora Rust/GTK scanner prerequisites, including Cargo, Clippy, GTK4, Libadwaita, GtkSourceView, compiler, gettext, git, `gpg`, and `dirmngr`.
 - [x] 2.4 Use the current official `SonarSource/sonarqube-scan-action` release or pinned SHA, not the deprecated SonarCloud action.
 - [x] 2.5 Pass `SONAR_TOKEN` from GitHub secrets and skip scanner upload with an explicit notice when the secret is unavailable.
-- [x] 2.6 Enable bounded quality-gate waiting for the scanner so quality gate `ERROR` fails the Sonar job without hiding core lint/test diagnostics.
+- [x] 2.6 Enable bounded post-scan Sonar verification so uploaded-analysis issues or a real quality gate `ERROR` fail the Sonar job without hiding core lint/test diagnostics.
 - [x] 2.7 Preserve the existing blocking Clippy lint command unchanged in the normal lint lane.
 - [x] 2.8 Update workflow path filters or timeout policy inputs if a dedicated Sonar workflow is added.
 

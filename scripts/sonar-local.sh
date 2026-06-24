@@ -14,6 +14,9 @@
 #   SONAR_PROJECT_KEY (default: cominotti_lushtext)
 #   SONAR_BRANCH      (default: current git branch)
 #   SONAR_PAGE_SIZE   (default: 500)
+#   SONAR_EXPECTED_REVISION (optional: wait for this commit SHA to be analyzed)
+#   SONAR_WAIT_SECONDS      (default: 0; max wait for expected revision)
+#   SONAR_POLL_INTERVAL     (default: 5; seconds between expected-revision polls)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,6 +26,9 @@ SONAR_HOST_URL="${SONAR_HOST_URL:-https://sonarcloud.io}"
 SONAR_PROJECT_KEY="${SONAR_PROJECT_KEY:-cominotti_lushtext}"
 SONAR_BRANCH="${SONAR_BRANCH:-}"
 SONAR_PAGE_SIZE="${SONAR_PAGE_SIZE:-500}"
+SONAR_EXPECTED_REVISION="${SONAR_EXPECTED_REVISION:-}"
+SONAR_WAIT_SECONDS="${SONAR_WAIT_SECONDS:-0}"
+SONAR_POLL_INTERVAL="${SONAR_POLL_INTERVAL:-5}"
 
 REPORT_DIR=".sonar/reports"
 QUALITY_GATE_JSON="$REPORT_DIR/quality-gate.json"
@@ -104,6 +110,53 @@ sonar_branch_exists() {
 	fi
 
 	jq -e --arg branch "$branch" 'any(.branches[]?; .name == $branch)' "$BRANCHES_JSON" >/dev/null
+}
+
+branch_analysis_revision() {
+	local branch="$1"
+
+	if [[ -n "$branch" ]]; then
+		jq -r --arg branch "$branch" '
+			.branches[]?
+			| select(.name == $branch)
+			| .commit.sha // ""
+		' "$BRANCHES_JSON"
+		return
+	fi
+
+	jq -r '
+		.branches[]?
+		| select(.isMain == true)
+		| .commit.sha // ""
+	' "$BRANCHES_JSON"
+}
+
+wait_for_expected_revision() {
+	local branch="$1"
+	local deadline
+	local revision
+
+	if [[ -z "$SONAR_EXPECTED_REVISION" ]]; then
+		return 0
+	fi
+
+	info "Waiting for Sonar analysis revision ${SONAR_EXPECTED_REVISION}"
+	deadline=$((SECONDS + SONAR_WAIT_SECONDS))
+	while :; do
+		fetch_project_analyses
+		fetch_branches
+		revision="$(branch_analysis_revision "$branch")"
+		if [[ "$revision" == "$SONAR_EXPECTED_REVISION" ]]; then
+			echo "Sonar analysis revision: $revision"
+			return 0
+		fi
+
+		if (( SONAR_WAIT_SECONDS <= 0 || SECONDS >= deadline )); then
+			fail "Sonar analysis for ${branch:-main} is at revision ${revision:-<none>}, expected ${SONAR_EXPECTED_REVISION}"
+		fi
+
+		sleep "$SONAR_POLL_INTERVAL"
+	done
 }
 
 check_quality_gate() {
@@ -238,6 +291,12 @@ main() {
 	if ! [[ "$SONAR_PAGE_SIZE" =~ ^[1-9][0-9]*$ ]]; then
 		fail "SONAR_PAGE_SIZE must be a positive integer"
 	fi
+	if ! [[ "$SONAR_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+		fail "SONAR_WAIT_SECONDS must be a non-negative integer"
+	fi
+	if ! [[ "$SONAR_POLL_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+		fail "SONAR_POLL_INTERVAL must be a positive integer"
+	fi
 
 	mkdir -p "$REPORT_DIR"
 	rm -f "$QUALITY_GATE_JSON" "$ISSUES_JSON" "$BRANCHES_JSON" "$ANALYSES_JSON"
@@ -258,6 +317,9 @@ main() {
 
 	info "Checking Sonar branch list"
 	fetch_branches
+
+	wait_for_expected_revision "$branch"
+
 	if [[ -n "$branch" ]] && ! sonar_branch_exists "$branch"; then
 		if [[ "$branch" == "main" ]]; then
 			fail "Sonar branch ${branch} was not found for project ${SONAR_PROJECT_KEY}"

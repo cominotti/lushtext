@@ -48,6 +48,8 @@ The scanner job must account for the action's container/self-hosted prerequisite
 
 Alternative considered: manually download and invoke SonarScanner CLI. Keep this as fallback if the action cannot operate cleanly in the Fedora job, but prefer the official action for maintenance and alignment with SonarQube Cloud docs.
 
+Implementation note from the first trusted scan: the scanner successfully uploads LushText analysis, but SonarQube Cloud currently reports the project quality gate as not computed through the public quality-gate API while the scanner's built-in quality-gate wait exits as failed. CI therefore lets the scanner upload and then runs the repository's API verifier, which waits for the pushed commit SHA to appear in SonarQube Cloud and fails on real unresolved issues or a real quality-gate `ERROR` when Sonar exposes one.
+
 ### 4. Let Sonar run Clippy automatically for the initial scan
 
 The first implementation should let the Sonar Rust analyzer run Clippy automatically. This avoids duplicate Clippy issue import and keeps the scanner config small. The repository's existing `cargo clippy --workspace --all-targets --all-features -- -D warnings` remains the blocking Rust lint gate.
@@ -71,5 +73,5 @@ Unlike `invowk`, the script documentation must say it verifies uploaded CI-based
 - [Risk] `SONAR_TOKEN` is missing or unavailable on fork pull requests -> Mitigation: gate the scanner step/job so trusted pushes and same-repository PRs run analysis, while fork PRs skip with an explicit notice instead of failing for secret absence.
 - [Risk] Sonar's automatic Clippy invocation fails because GTK development dependencies are missing -> Mitigation: run analysis in the Fedora environment and install the same GTK/Rust prerequisites used by existing CI lint lanes.
 - [Risk] First real scan reports many issues -> Mitigation: keep initial suppressions empty, triage every reported issue, then either fix or add narrow documented ignores in the same work stream.
-- [Risk] Quality-gate waiting increases CI duration or flakes on SonarCloud processing delays -> Mitigation: use a bounded timeout and keep the job isolated from the core Rust lint/test diagnostics.
+- [Risk] Quality-gate waiting increases CI duration or flakes on SonarCloud processing delays -> Mitigation: keep the job isolated from the core Rust lint/test diagnostics, and use the bounded `make sonar-local` verifier to wait for the uploaded revision and check issues/gate state after scanner upload.
 - [Risk] Broad source scope analyzes generated or archived files -> Mitigation: maintain explicit exclusions and verify the first scan's component list before declaring the setup complete.
