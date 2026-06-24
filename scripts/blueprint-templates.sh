@@ -112,39 +112,13 @@ if not warning_positions:
 
 warning_positions.append(len(clean))
 rel_path = blp_file.resolve().relative_to(root).as_posix()
-allowed_messages = {
-    "Gtk.ShortcutsWindow is deprecated",
-    "Gtk.ShortcutsSection is deprecated",
-    "Gtk.ShortcutsGroup is deprecated",
-    "Gtk.ShortcutsShortcut is deprecated",
-}
-accepted: dict[str, int] = {}
-unknown_blocks: list[str] = []
-
+print(f"error: unclassified blueprint-compiler warnings in {rel_path}", file=sys.stderr)
+print("Known warning policy currently accepts no Blueprint compiler warnings.", file=sys.stderr)
 for start, end in zip(warning_positions, warning_positions[1:]):
     block = clean[start:end].strip()
-    first_line = block.splitlines()[0]
-    message = first_line.removeprefix("warning: ").strip()
-    is_known_shortcuts_warning = (
-        rel_path == "resources/ui/shortcuts.blp"
-        and message in allowed_messages
-        and "This widget will be removed in GTK 5" in block
-    )
-    if is_known_shortcuts_warning:
-        accepted[message] = accepted.get(message, 0) + 1
-    else:
-        unknown_blocks.append(block)
-
-if unknown_blocks:
-    print(f"error: unclassified blueprint-compiler warnings in {rel_path}", file=sys.stderr)
-    print("Known warning policy accepts only GtkShortcuts* deprecations in resources/ui/shortcuts.blp.", file=sys.stderr)
-    for block in unknown_blocks:
-        print("", file=sys.stderr)
-        print(block, file=sys.stderr)
-    raise SystemExit(1)
-
-summary = ", ".join(f"{message} x{count}" for message, count in sorted(accepted.items()))
-print(f"Accepted known Blueprint warnings in {rel_path}: {summary}")
+    print("", file=sys.stderr)
+    print(block, file=sys.stderr)
+raise SystemExit(1)
 PY
 }
 

@@ -6,6 +6,8 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::value::ToValue;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
+use libadwaita::ShortcutsDialog;
+use libadwaita::prelude::{AdwApplicationWindowExt, AdwDialogExt};
 
 use crate::config::{self, keys};
 use crate::ui::accessibility::{self, AnnouncementLane};
@@ -364,15 +366,14 @@ impl LushtextWindow {
         }
     }
 
-    /// Present the shipped keyboard-shortcuts window through the normal action path.
+    /// Present the shipped keyboard-shortcuts dialog through the normal action path.
     ///
-    /// GTK keeps `GtkShortcutsWindow` as a top-level transient window rather
-    /// than a child widget. Looking up an existing transient first makes
-    /// repeated menu, palette, or D-Bus activation focus the same surface
-    /// instead of leaking duplicate help windows.
+    /// Libadwaita dialogs live in the owning window's dialog model. Looking up
+    /// the existing dialog first makes repeated menu, palette, or D-Bus
+    /// activation focus the same surface instead of leaking duplicates.
     fn show_help_overlay(&self) {
-        if let Some(shortcuts) = self.existing_shortcuts_window() {
-            shortcuts.present();
+        if let Some(shortcuts) = self.existing_shortcuts_dialog() {
+            shortcuts.present(Some(self));
             return;
         }
 
@@ -381,27 +382,18 @@ impl LushtextWindow {
             config::RESOURCE_BASE_PATH
         ));
         let shortcuts = builder
-            .object::<gtk4::Window>("help_overlay")
-            .expect("shortcuts.ui should define GtkShortcutsWindow#help_overlay");
-        shortcuts.set_transient_for(Some(self));
-        shortcuts.set_destroy_with_parent(true);
-        if let Some(application) = self.application() {
-            shortcuts.set_application(Some(&application));
-        }
-        shortcuts.present();
+            .object::<ShortcutsDialog>("shortcuts_dialog")
+            .expect("shortcuts.ui should define AdwShortcutsDialog#shortcuts_dialog");
+        shortcuts.present(Some(self));
     }
 
-    fn existing_shortcuts_window(&self) -> Option<gtk4::Window> {
-        let this_window: gtk4::Window = self.clone().upcast();
-        self.application()?
-            .windows()
-            .into_iter()
-            .filter(|window| window.type_().name() == "GtkShortcutsWindow")
-            .find(|shortcuts| {
-                shortcuts
-                    .transient_for()
-                    .is_some_and(|parent| parent == this_window)
-            })
+    fn existing_shortcuts_dialog(&self) -> Option<ShortcutsDialog> {
+        let dialogs = self.dialogs();
+        (0..dialogs.n_items()).find_map(|index| {
+            dialogs
+                .item(index)
+                .and_then(|dialog| dialog.downcast::<ShortcutsDialog>().ok())
+        })
     }
 
     /// Select an existing tab by its visible zero-based index for automation

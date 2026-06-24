@@ -1499,7 +1499,7 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
         "Keyboard Shortcuts",
         ActionValueType::None,
         ActionValueType::None,
-        "Always enabled; opens the shipped keyboard-shortcuts help window.",
+        "Always enabled; opens the shipped keyboard-shortcuts help dialog.",
         "window/actions",
         &[
             ActionSurface::PrimaryMenu,

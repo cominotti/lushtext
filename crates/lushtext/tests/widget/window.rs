@@ -557,31 +557,23 @@ where
         .collect()
 }
 
-fn shortcuts_windows_for(window: &LushtextWindow) -> Vec<gtk4::Window> {
-    let parent_window: gtk4::Window = window.clone().upcast();
-    window
-        .application()
-        .expect("window should have an application")
-        .windows()
-        .into_iter()
-        .filter(|window| window.type_().name() == "GtkShortcutsWindow")
-        .filter(|shortcuts| {
-            shortcuts
-                .transient_for()
-                .is_some_and(|transient| transient == parent_window)
-        })
+fn shortcuts_dialogs_for(window: &LushtextWindow) -> Vec<libadwaita::ShortcutsDialog> {
+    let dialogs = window.dialogs();
+    (0..dialogs.n_items())
+        .filter_map(|index| dialogs.item(index))
+        .filter_map(|dialog| dialog.downcast::<libadwaita::ShortcutsDialog>().ok())
         .collect()
 }
 
-fn wait_for_shortcuts_window(window: &LushtextWindow) -> gtk4::Window {
+fn wait_for_shortcuts_dialog(window: &LushtextWindow) -> libadwaita::ShortcutsDialog {
     wait_until(Duration::from_secs(2), || {
-        shortcuts_windows_for(window)
+        shortcuts_dialogs_for(window)
             .first()
             .is_some_and(|shortcuts| shortcuts.width() > 0 && shortcuts.height() > 0)
     });
-    let windows = shortcuts_windows_for(window);
-    assert_eq!(windows.len(), 1);
-    windows[0].clone()
+    let dialogs = shortcuts_dialogs_for(window);
+    assert_eq!(dialogs.len(), 1);
+    dialogs[0].clone()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3372,6 +3364,10 @@ fn test_browse_notes_shortcut_is_registered_and_documented() {
     ));
     assert!(shortcuts_ui.contains("Browse Notes"));
     assert!(shortcuts_ui.contains("&lt;Control&gt;&lt;Alt&gt;a"));
+    assert!(!shortcuts_ui.contains("GtkShortcutsWindow"));
+    assert!(!shortcuts_ui.contains("GtkShortcutsSection"));
+    assert!(!shortcuts_ui.contains("GtkShortcutsGroup"));
+    assert!(!shortcuts_ui.contains("GtkShortcutsShortcut"));
 }
 
 #[test]
@@ -3420,21 +3416,24 @@ fn test_fullscreen_actions_follow_fullscreened_state() {
 }
 
 #[test]
-fn test_help_overlay_action_presents_shortcuts_window_without_context() {
+fn test_help_overlay_action_presents_shortcuts_dialog_without_context() {
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
 
     activate_action(&window, "show-help-overlay");
-    let shortcuts = wait_for_shortcuts_window(&window);
+    let shortcuts = wait_for_shortcuts_dialog(&window);
 
-    assert_eq!(shortcuts.transient_for(), Some(window.clone().upcast()));
+    let visible_shortcuts = window
+        .visible_dialog()
+        .and_then(|dialog| dialog.downcast::<libadwaita::ShortcutsDialog>().ok());
+    assert_eq!(visible_shortcuts, Some(shortcuts.clone()));
     assert!(action_enabled(&window, "show-help-overlay"));
     shortcuts.close();
 }
 
 #[test]
-fn test_help_overlay_action_reuses_window_and_preserves_document_state() {
+fn test_help_overlay_action_reuses_dialog_and_preserves_document_state() {
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
@@ -3444,27 +3443,30 @@ fn test_help_overlay_action_reuses_window_and_preserves_document_state() {
     let before_state = editor_print_state(&editor);
 
     activate_action(&window, "show-help-overlay");
-    let first_window = wait_for_shortcuts_window(&window);
+    let first_dialog = wait_for_shortcuts_dialog(&window);
     activate_action(&window, "show-help-overlay");
-    let second_window = wait_for_shortcuts_window(&window);
+    let second_dialog = wait_for_shortcuts_dialog(&window);
 
-    assert_eq!(first_window, second_window);
+    assert_eq!(first_dialog, second_dialog);
     assert_tab_count(&window, 1);
     assert_eq!(editor_print_state(&active_editor(&window)), before_state);
-    second_window.close();
+    second_dialog.close();
 }
 
 #[test]
-fn test_help_overlay_window_handles_dense_shortcuts_and_constrained_geometry() {
+fn test_help_overlay_dialog_handles_dense_shortcuts_and_constrained_geometry() {
     ensure_gtk_init();
     let window = test_window_with_restored_size(640, 420);
     present_window(&window);
 
     activate_action(&window, "show-help-overlay");
-    let shortcuts = wait_for_shortcuts_window(&window);
-    let shortcut_count = descendants(&shortcuts)
-        .into_iter()
-        .filter(|widget| widget.type_().name() == "GtkShortcutsShortcut")
+    let shortcuts = wait_for_shortcuts_dialog(&window);
+    let shortcuts_ui = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../resources/ui/shortcuts.ui"
+    ));
+    let shortcut_count = shortcuts_ui
+        .match_indices("AdwShortcutsItem")
         .count();
 
     assert!(shortcut_count >= 20);
@@ -3476,7 +3478,7 @@ fn test_help_overlay_window_handles_dense_shortcuts_and_constrained_geometry() {
     shortcuts.close();
     flush_events();
     wait_until(Duration::from_secs(2), || {
-        shortcuts_windows_for(&window).is_empty()
+        shortcuts_dialogs_for(&window).is_empty()
     });
 }
 

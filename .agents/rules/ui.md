@@ -245,11 +245,11 @@ add a new one before calling the work complete.
   Blueprint drift checks prove generated XML/source fidelity; they do not
   replace widget allocation assertions or same-session visual invariant proof
   when a template edit changes screenshot-visible geometry.
-- Blueprint compile warnings are blocking unless they match the documented
-  `resources/ui/shortcuts.blp` GTK shortcuts deprecation policy. Blueprint lint
-  is a curated advisory gate; use `make lint-blueprint` to keep promoted
-  diagnostics clean, bound accepted findings by rule and file, and classify
-  geometry-sensitive suggestions before changing layout.
+- Blueprint compile warnings are blocking unless a spec-backed policy explicitly
+  classifies the warning family. Blueprint lint is a curated advisory gate; use
+  `make lint-blueprint` to keep promoted diagnostics clean, bound accepted
+  findings by rule and file, and classify geometry-sensitive suggestions before
+  changing layout.
 - For UI source-format migrations, preserve a pre-change baseline and compare it
   to the migrated checkout through the same headless Mutter state matrix with
   shared fixtures. Pixel diffs must be zero, or every nonzero difference must be

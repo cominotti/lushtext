@@ -71,11 +71,8 @@ limitations, then relies on initialized runtime probes for actionable evidence.
 ## Compile Warning Policy
 
 Unknown `blueprint-compiler compile` warnings fail `make check-blueprint`.
-
-The only known warning class accepted today is the GTK 5 deprecation warning for
-`Gtk.ShortcutsWindow`, `Gtk.ShortcutsSection`, `Gtk.ShortcutsGroup`, and
-`Gtk.ShortcutsShortcut` in `resources/ui/shortcuts.blp`. That dialog intentionally
-uses GTK's existing shortcuts window until a separate UI redesign replaces it.
+There are no accepted known warning classes today; new warning families must be
+fixed or classified by a spec before publication.
 
 ## Advisory Lint Policy
 

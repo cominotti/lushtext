@@ -284,11 +284,11 @@ seed is appropriate.
   `resources/ui/*.ui` files stay committed because all runtime, Meson, Flatpak,
   and Snap resource builds consume GtkBuilder XML. `blueprint-compiler` is a
   contributor and CI validation tool only, not an end-user runtime dependency.
-  Unknown compile warnings are blocking; only the documented GTK shortcuts
-  deprecations in `resources/ui/shortcuts.blp` are accepted. Run
-  `make lint-blueprint` for curated advisory lint triage; promoted diagnostics
-  must stay clean and accepted findings are bounded by documented rule/file
-  ceilings before any broader lint rule becomes blocking.
+  Unknown compile warnings are blocking; no Blueprint compiler warnings are
+  currently accepted without an explicit spec-backed classification. Run `make
+  lint-blueprint` for curated advisory lint triage; promoted diagnostics must
+  stay clean and accepted findings are bounded by documented rule/file ceilings
+  before any broader lint rule becomes blocking.
 
 ## GSettings Schemas
 

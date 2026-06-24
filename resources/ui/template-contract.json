@@ -4474,137 +4474,132 @@
       "child_roles": [
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/1:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/1:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/2:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/3:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/3:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/4:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/4:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/5:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/5:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/6:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/6:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/7:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/7:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/8:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/8:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/9:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/9:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/10:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/10:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/11:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/11:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/12:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/12:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/13:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/1:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/1:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/2:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/3:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/3:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/4:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/4:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/1:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/1:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/2:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/2:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/3:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/3:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/4:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/4:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/5:child",
           "type": ""
         },
         {
           "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/5:child",
-          "type": ""
-        },
-        {
-          "internal-child": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/6:child",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/6:child",
           "type": ""
         }
       ],
@@ -4613,333 +4608,328 @@
       "menus": [],
       "objects": [
         {
-          "class": "GtkShortcutsWindow",
-          "id": "help_overlay",
-          "path": "0:object:GtkShortcutsWindow#help_overlay"
+          "class": "AdwShortcutsDialog",
+          "id": "shortcuts_dialog",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog"
         },
         {
-          "class": "GtkShortcutsSection",
+          "class": "AdwShortcutsSection",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection"
         },
         {
-          "class": "GtkShortcutsGroup",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/6:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/7:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/7:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/8:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/8:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/9:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/9:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/10:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/10:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/11:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/11:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/12:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/12:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/13:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsSection",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection"
         },
         {
-          "class": "GtkShortcutsGroup",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsSection",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection"
         },
         {
-          "class": "GtkShortcutsGroup",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem"
         },
         {
-          "class": "GtkShortcutsShortcut",
+          "class": "AdwShortcutsItem",
           "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut"
-        },
-        {
-          "class": "GtkShortcutsShortcut",
-          "id": "",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut"
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/6:child/0:object:AdwShortcutsItem"
         }
       ],
       "properties": [
         {
           "context": "",
-          "name": "modal",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/0:property",
-          "translatable": "",
-          "value": "true"
+          "name": "title",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/0:property",
+          "translatable": "yes",
+          "value": "Keyboard Shortcuts"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/0:property",
           "translatable": "yes",
           "value": "General"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "New File"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Open File"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Open Recent Documents"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Save"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Save As"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/6:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Local History"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/7:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/7:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Close Tab"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/8:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/8:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Print"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/9:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/9:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Command Palette"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/10:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/10:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Toggle Minimap"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/11:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/11:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Document Properties"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/12:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/12:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Fullscreen"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/13:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Focus Mode"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/0:property",
           "translatable": "yes",
           "value": "Search"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Find"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Find and Replace"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Next Match"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Previous Match"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/0:property",
           "translatable": "yes",
           "value": "Notes"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Toggle Bookmark"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Edit Bookmark Label"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Next Bookmark"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Previous Bookmark"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Browse Bookmarks"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/6:child/0:object:AdwShortcutsItem/0:property",
           "translatable": "yes",
           "value": "Browse Notes"
         }
@@ -4950,157 +4940,163 @@
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/0:property",
+          "value": "Keyboard Shortcuts"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/0:property",
           "value": "General"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem/0:property",
           "value": "New File"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem/0:property",
           "value": "Open File"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem/0:property",
           "value": "Open Recent Documents"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem/0:property",
           "value": "Save"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem/0:property",
           "value": "Save As"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/6:child/0:object:AdwShortcutsItem/0:property",
           "value": "Local History"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/7:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/7:child/0:object:AdwShortcutsItem/0:property",
           "value": "Close Tab"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/8:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/8:child/0:object:AdwShortcutsItem/0:property",
           "value": "Print"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/9:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/9:child/0:object:AdwShortcutsItem/0:property",
           "value": "Command Palette"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/10:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/10:child/0:object:AdwShortcutsItem/0:property",
           "value": "Toggle Minimap"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/11:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/11:child/0:object:AdwShortcutsItem/0:property",
           "value": "Document Properties"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/12:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/12:child/0:object:AdwShortcutsItem/0:property",
           "value": "Fullscreen"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/1:child/0:object:GtkShortcutsGroup/13:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/1:child/0:object:AdwShortcutsSection/13:child/0:object:AdwShortcutsItem/0:property",
           "value": "Focus Mode"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/0:property",
           "value": "Search"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem/0:property",
           "value": "Find"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem/0:property",
           "value": "Find and Replace"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem/0:property",
           "value": "Next Match"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/2:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/2:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem/0:property",
           "value": "Previous Match"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/0:property",
           "value": "Notes"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/1:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/1:child/0:object:AdwShortcutsItem/0:property",
           "value": "Toggle Bookmark"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/2:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/2:child/0:object:AdwShortcutsItem/0:property",
           "value": "Edit Bookmark Label"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/3:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/3:child/0:object:AdwShortcutsItem/0:property",
           "value": "Next Bookmark"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/4:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/4:child/0:object:AdwShortcutsItem/0:property",
           "value": "Previous Bookmark"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/5:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/5:child/0:object:AdwShortcutsItem/0:property",
           "value": "Browse Bookmarks"
         },
         {
           "context": "",
           "name": "title",
-          "path": "0:object:GtkShortcutsWindow#help_overlay/1:child/0:object:GtkShortcutsSection/3:child/0:object:GtkShortcutsGroup/6:child/0:object:GtkShortcutsShortcut/0:property",
+          "path": "0:object:AdwShortcutsDialog#shortcuts_dialog/3:child/0:object:AdwShortcutsSection/6:child/0:object:AdwShortcutsItem/0:property",
           "value": "Browse Notes"
         }
       ]

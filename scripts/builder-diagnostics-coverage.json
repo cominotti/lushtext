@@ -65,7 +65,7 @@
     },
     {
       "id": "shortcuts-no-context",
-      "test": "window::test_help_overlay_action_presents_shortcuts_window_without_context",
+      "test": "window::test_help_overlay_action_presents_shortcuts_dialog_without_context",
       "state": "no-context startup",
       "templates": [
         "resources/ui/shortcuts.ui"
