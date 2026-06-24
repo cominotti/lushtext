@@ -72,6 +72,13 @@ SUSPICIOUS_PATTERNS = [
     re.compile(r"WARNING|CRITICAL|ERROR|GtkBuilder|builder|buildable|template", re.IGNORECASE),
 ]
 
+ADW_SHORTCUTS_DIALOG_HOST_PATTERN = re.compile(
+    r"^\(process:[0-9]+\): Gtk-WARNING \*\*: .*"
+    r"Allocating size to AdwDialogHost 0x[0-9a-f]+ "
+    r"without calling gtk_widget_measure\(\)\. "
+    r"How does the code know the size to allocate\?$"
+)
+
 
 @dataclass
 class CommandResult:
@@ -363,6 +370,11 @@ def classify_line(line: str, *, source: str) -> str | None:
     if not stripped:
         return None
     if any(pattern.search(stripped) for pattern in BENIGN_PATTERNS):
+        return "benign_noise"
+    if (
+        source.endswith("runtime/shortcuts-no-context.stderr")
+        and ADW_SHORTCUTS_DIALOG_HOST_PATTERN.search(stripped)
+    ):
         return "benign_noise"
     if "GTK_DEBUG set but ignored because gtk isn't built with G_ENABLE_DEBUG" in stripped:
         return "unsupported_runtime"

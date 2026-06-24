@@ -68,6 +68,15 @@ template parents and app composite widget types are not registered in the
 standalone context. The automated lane records those as known standalone-tool
 limitations, then relies on initialized runtime probes for actionable evidence.
 
+The `shortcuts-no-context` runtime probe also accepts one narrow
+Libadwaita-private geometry diagnostic from GTK 4.22/Libadwaita 1.9 debug
+runtimes:
+`Allocating size to AdwDialogHost ... without calling gtk_widget_measure()`.
+That warning remained after the shortcut template moved to `AdwShortcutsDialog`
+and is classified only for the Keyboard Shortcuts probe. The same warning from
+another runtime probe remains a future-gate candidate until it has fresh surface
+evidence.
+
 ## Compile Warning Policy
 
 Unknown `blueprint-compiler compile` warnings fail `make check-blueprint`.

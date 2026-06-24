@@ -270,6 +270,11 @@ add a new one before calling the work complete.
   G_ENABLE_DEBUG` as an unsupported-runtime limitation, not as an app template
   defect. Fix actionable builder diagnostics in Blueprint source, such as
   implicit `<child>` warnings by setting explicit `child:` properties.
+- The only accepted runtime `AdwDialogHost` allocation diagnostic is the exact
+  GTK 4.22/Libadwaita 1.9 warning emitted by the `shortcuts-no-context`
+  Keyboard Shortcuts probe after the app has migrated to `AdwShortcutsDialog`.
+  Do not generalize that classifier to other probes or surfaces without fresh
+  toolkit and artifact evidence.
 
 ## Status Bar
 

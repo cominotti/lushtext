@@ -83,10 +83,12 @@ document-state, dense, and constrained-geometry coverage should remain.
 
 The implementation should re-run the local builder diagnostics target after the
 template and tests migrate. The CI diagnostics artifact should then be checked
-for `future_gate_candidate == 0` and for the absence of the prior
-`shortcuts-no-context` `AdwDialogHost` warning. If the warning persists after the
-deprecated window is gone, the next step is a fresh triage of probe timing or
-Libadwaita-private geometry behavior before changing classifier policy.
+for `future_gate_candidate == 0`. If the `shortcuts-no-context` `AdwDialogHost`
+warning persists after the deprecated window is gone, the next step is fresh
+triage of probe timing and Libadwaita-private geometry behavior before changing
+classifier policy. The resulting classifier must stay scoped to the exact
+shortcut probe and diagnostic text so other `AdwDialogHost` geometry warnings
+still surface as future-gate candidates.
 
 ## Risks / Trade-offs
 
