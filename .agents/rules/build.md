@@ -151,6 +151,28 @@ These patterns are replicated from invowk-rust and must be maintained:
 4. **.config/nextest.toml** — configure nextest parallelism for non-widget tests here.
 5. **`rust-version`** — keep `rust-version = "1.96.0"` in `[workspace.package]` and inherited by every package so `cargo check` surfaces MSRV violations early. `rust-toolchain.toml` pins the local toolchain to the same version. GTK Lush crates also have the dedicated `make gtk-lush-msrv` lane so their independently adoptable surface cannot drift ahead of the workspace floor.
 
+## SonarQube Cloud Scope
+
+`sonar-project.properties` is a maintained CI contract, not a one-time scanner
+bootstrap file. Any change that adds, removes, renames, or materially changes a
+source-bearing directory, workflow family, script family, build/packaging
+surface, generated-output directory, local cache/artifact root, or intentional
+Sonar suppression must review and update `sonar.sources`,
+`sonar.exclusions`, and any `sonar.issue.ignore.multicriteria` entry in the
+same change.
+
+Keep `sonar.sources` explicit and code-focused: Rust crates, scripts,
+workflows, packaging/build inputs, resources, and root build/configuration files
+that Sonar should analyze. Do not let broad repo-root scanning pull in docs,
+agent guidance, archived OpenSpec changes, local worktrees, proof/smoke
+artifacts, generated vendoring data, or build output merely because those files
+are tracked or present locally.
+
+When the first scan after a scope or suppression change reports new issues,
+triage them before marking the Sonar work complete: fix actionable findings,
+or add a documented rule-and-resource-scoped suppression with a project-specific
+rationale. Blanket ignores without a concrete first-scan finding are not allowed.
+
 ## Adding Dependencies
 
 1. Add to `[workspace.dependencies]` in root `Cargo.toml`.

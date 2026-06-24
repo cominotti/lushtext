@@ -280,15 +280,11 @@ main() {
 	check_quality_gate "$branch"
 	local gate_status=$?
 	set -e
+	local gate_unavailable=0
 	if (( gate_status == 2 )); then
-		if [[ "${branch:-main}" == "main" ]]; then
-			fail "Sonar quality gate has no data for main"
-		fi
-		write_no_data_reports "$branch" "No SonarQube Cloud quality gate exists for this branch yet"
-		echo "Unresolved Sonar issues: 0 (no branch quality gate available)"
-		echo "Quality gate JSON report: $QUALITY_GATE_JSON"
-		echo "Issues JSON report: $ISSUES_JSON"
-		return 0
+		gate_unavailable=1
+		write_no_data_reports "$branch" "No SonarQube Cloud quality gate status is available for this branch"
+		echo "Sonar quality gate: no data available for branch ${branch:-main}; continuing with unresolved issue verification"
 	elif (( gate_status != 0 )); then
 		return "$gate_status"
 	fi
@@ -305,6 +301,10 @@ main() {
 
 	if (( issue_count > 0 )); then
 		fail "Sonar has ${issue_count} unresolved issue(s); fix them or mark them accepted/false-positive in SonarQube Cloud"
+	fi
+
+	if (( gate_unavailable != 0 )); then
+		echo "Sonar quality gate status was unavailable, but uploaded analysis exists and no unresolved issues were reported."
 	fi
 }
 
