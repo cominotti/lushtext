@@ -21,7 +21,9 @@ jobs:
     # Same container as ci.yml — see comment there for rationale.
     container:
       image: registry.fedoraproject.org/fedora:44
-    timeout-minutes: 30
+    # Full Criterion release reports can exceed 30 minutes once the workspace
+    # search benchmarks run; keep this aligned with the end-user benchmark lane.
+    timeout-minutes: 90
     permissions:
       contents: write
 
