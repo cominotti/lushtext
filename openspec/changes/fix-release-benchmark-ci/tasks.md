@@ -30,6 +30,6 @@
 
 - [x] 5.1 Run local validation for workflow policy, agent docs, benchmark script behavior, and the repo pre-commit lane.
 - [x] 5.2 Run the bounded release benchmark report locally or in CI and confirm it completes within 30 minutes.
-- [ ] 5.3 Dispatch the repaired release benchmark workflow for `v0.5.1` without rewriting the public tag.
+- [x] 5.3 Dispatch the repaired release benchmark workflow for `v0.5.1` without rewriting the public tag.
 - [ ] 5.4 Verify the `lushtext_0.5.1_bench-report.md` release asset exists after the successful replacement run.
 - [ ] 5.5 Verify all GitHub Actions workflows for the repair commit and release recovery surface complete successfully or are explicitly superseded according to the new guidance.

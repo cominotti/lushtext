@@ -60,6 +60,7 @@ jobs:
           RECOVERY_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch origin "$RECOVERY_SHA"
           git checkout "$RECOVERY_SHA" -- scripts/bench-report.sh crates/lushtext-core/benches/benchmarks.rs
 
