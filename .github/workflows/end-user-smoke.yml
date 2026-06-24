@@ -20,7 +20,7 @@ jobs:
   smoke-lanes:
     name: Smoke (${{ matrix.lane }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     # Host-sensitive smoke lanes are scheduled/manual instead of PR-required.
     # They preserve artifacts so failures can be understood without immediate
     # local portal, compositor, or AT-SPI reproduction.
@@ -111,13 +111,41 @@ jobs:
           retention-days: 7
 
   benchmark-report:
-    name: Full Benchmark Report
+    name: Benchmark Report (${{ matrix.scope }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    # Full Criterion reports are intentionally outside pull-request CI. This
-    # scheduled/manual job complements the tag-triggered release benchmark lane.
+    timeout-minutes: 30
+    # Deeper Criterion reports stay scheduled/manual and are split by scope so
+    # no individual diagnostic job can run beyond the repository time budget.
     container:
       image: registry.fedoraproject.org/fedora:44
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scope: release-safe
+            mode: short
+            report_scope: release
+            filters: "file_index_incremental content_search_smoke json_persistence replace_preview_generation recovery_performance"
+          - scope: diagnostic-palette-index
+            mode: full
+            report_scope: diagnostic
+            filters: "fuzzy_score file_index_search file_index_incremental search_all"
+          - scope: diagnostic-file-tree
+            mode: full
+            report_scope: diagnostic
+            filters: "file_index_rebuild scan_directory tree_population"
+          - scope: diagnostic-editor-io
+            mode: full
+            report_scope: diagnostic
+            filters: "utf8_validation editor_file_io file_size_classify"
+          - scope: diagnostic-replace-recovery
+            mode: full
+            report_scope: diagnostic
+            filters: "json_persistence draft_restore replace_preview_generation replace_undo_workflows recovery_performance"
+          - scope: diagnostic-content-search
+            mode: full
+            report_scope: diagnostic
+            filters: "content_search content_search_smoke"
 
     steps:
       - uses: actions/checkout@v6
@@ -138,16 +166,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-end-user-bench-report
+          shared-key: fedora-44-end-user-bench-report-${{ matrix.scope }}
 
-      - name: Run full benchmark report
-        run: make bench-report-full BENCH_REPORT_OUT_DIR=build/benchmark-report
+      - name: Run benchmark report
+        env:
+          BENCH_REPORT_MODE: ${{ matrix.mode }}
+          BENCH_REPORT_SCOPE: ${{ matrix.report_scope }}
+          BENCH_REPORT_FILTERS: ${{ matrix.filters }}
+          BENCH_REPORT_OUT_DIR: build/benchmark-report/${{ matrix.scope }}
+        run: |
+          set -euo pipefail
+          args=(--mode "$BENCH_REPORT_MODE" --scope "$BENCH_REPORT_SCOPE" --out-dir "$BENCH_REPORT_OUT_DIR")
+          for filter in $BENCH_REPORT_FILTERS; do
+            args+=(--filter "$filter")
+          done
+          ./scripts/bench-report.sh "${args[@]}"
 
       - name: Upload benchmark report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-report-full
-          path: build/benchmark-report/*.md
+          name: benchmark-report-${{ matrix.scope }}
+          path: build/benchmark-report/${{ matrix.scope }}/*.md
           if-no-files-found: warn
           retention-days: 14

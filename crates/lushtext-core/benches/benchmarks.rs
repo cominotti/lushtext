@@ -10,7 +10,7 @@ use gtk4::gio;
 use gtk4::prelude::ListModelExt;
 use std::collections::{HashSet, VecDeque};
 use std::hint::black_box;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -53,6 +53,52 @@ use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
+
+/// Bounded channel capacity used by production content search.
+///
+/// Keeping the benchmark at the same 1024-event capacity exercises the same
+/// backpressure contract as the GTK search panel without letting Criterion
+/// block forever when a fixture emits more matches than the receiver can hold.
+const CONTENT_SEARCH_BENCH_CHANNEL_CAPACITY: usize = 1024;
+
+/// Run streaming content search while draining events concurrently.
+///
+/// `content_search::search` is a synchronous producer that intentionally sends
+/// through a bounded channel. Benchmarks must drain that channel at the same
+/// time, matching the UI worker/receiver shape; draining only after `search`
+/// returns can deadlock before Criterion finishes warmup.
+fn run_content_search_benchmark(
+    query: &str,
+    workspace_folders: &[&Path],
+    options: &ContentSearchOptions,
+) -> usize {
+    let (tx, rx) = crossbeam_channel::bounded(CONTENT_SEARCH_BENCH_CHANNEL_CAPACITY);
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // Move the receiver to a short-lived drain thread so the producer keeps the
+    // same bounded backpressure contract as production instead of using an
+    // unbounded benchmark-only channel.
+    let drain = std::thread::spawn(move || {
+        rx.iter().fold(0usize, |count, event| {
+            black_box(event);
+            count + 1
+        })
+    });
+
+    content_search::search(
+        black_box(query),
+        black_box(workspace_folders),
+        black_box(options),
+        tx,
+        cancel,
+        None,
+        None,
+    );
+
+    drain
+        .join()
+        .expect("content-search benchmark event drain should not panic")
+}
 
 /// Build a synthetic in-memory file index with realistic file names.
 fn make_synthetic_index(n: usize) -> FileIndex {
@@ -535,7 +581,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_rebuild");
     group.sample_size(20);
 
-    for file_count in [50, 500, 5_000, 10_000, 100_000] {
+    for file_count in [50, 500, 1_000, 5_000, 10_000, 100_000] {
         group.bench_function(BenchmarkId::from_parameter(file_count), |b| {
             b.iter_batched(
                 || make_temp_dir_tree(file_count),
@@ -1365,19 +1411,11 @@ fn bench_content_search(c: &mut Criterion) {
     // 1. Literal search across 10k files.
     group.bench_function("literal_10k_files", |b| {
         b.iter(|| {
-            let (tx, rx) = crossbeam_channel::bounded(1024);
-            let cancel = Arc::new(AtomicBool::new(false));
-            content_search::search(
-                black_box("TODO"),
-                black_box(&[search_root]),
+            black_box(run_content_search_benchmark(
+                "TODO",
+                &[search_root],
                 &ContentSearchOptions::default(),
-                tx,
-                cancel,
-                None,
-                None,
-            );
-            // Drain to avoid backpressure stalls.
-            for _ in &rx {}
+            ));
         });
     });
 
@@ -1388,18 +1426,11 @@ fn bench_content_search(c: &mut Criterion) {
             ..Default::default()
         };
         b.iter(|| {
-            let (tx, rx) = crossbeam_channel::bounded(1024);
-            let cancel = Arc::new(AtomicBool::new(false));
-            content_search::search(
-                black_box(r"fn\s+\w+"),
-                black_box(&[search_root]),
+            black_box(run_content_search_benchmark(
+                r"fn\s+\w+",
+                &[search_root],
                 &opts,
-                tx,
-                cancel,
-                None,
-                None,
-            );
-            for _ in &rx {}
+            ));
         });
     });
 
@@ -1422,18 +1453,11 @@ fn bench_content_search(c: &mut Criterion) {
     // 3. Large file search (100k lines).
     group.bench_function("large_file_100k_lines", |b| {
         b.iter(|| {
-            let (tx, rx) = crossbeam_channel::bounded(1024);
-            let cancel = Arc::new(AtomicBool::new(false));
-            content_search::search(
-                black_box("TODO"),
-                black_box(&[large_root]),
+            black_box(run_content_search_benchmark(
+                "TODO",
+                &[large_root],
                 &ContentSearchOptions::default(),
-                tx,
-                cancel,
-                None,
-                None,
-            );
-            for _ in &rx {}
+            ));
         });
     });
 
@@ -1460,18 +1484,11 @@ fn bench_content_search(c: &mut Criterion) {
     // 4. Gitignore-filtered search.
     group.bench_function("gitignore_10k_files", |b| {
         b.iter(|| {
-            let (tx, rx) = crossbeam_channel::bounded(1024);
-            let cancel = Arc::new(AtomicBool::new(false));
-            content_search::search(
-                black_box("needle"),
-                black_box(&[gitignore_root]),
+            black_box(run_content_search_benchmark(
+                "needle",
+                &[gitignore_root],
                 &ContentSearchOptions::default(),
-                tx,
-                cancel,
-                None,
-                None,
-            );
-            for _ in &rx {}
+            ));
         });
     });
 
@@ -1496,18 +1513,11 @@ fn bench_content_search_smoke(c: &mut Criterion) {
 
     group.bench_function("literal_200_files", |b| {
         b.iter(|| {
-            let (tx, rx) = crossbeam_channel::bounded(1024);
-            let cancel = Arc::new(AtomicBool::new(false));
-            content_search::search(
-                black_box("TODO"),
-                black_box(&[search_root]),
+            black_box(run_content_search_benchmark(
+                "TODO",
+                &[search_root],
                 &ContentSearchOptions::default(),
-                tx,
-                cancel,
-                None,
-                None,
-            );
-            for _ in &rx {}
+            ));
         });
     });
 
@@ -1527,18 +1537,11 @@ fn bench_content_search_smoke(c: &mut Criterion) {
 
     group.bench_function("medium_file_10k_lines", |b| {
         b.iter(|| {
-            let (tx, rx) = crossbeam_channel::bounded(1024);
-            let cancel = Arc::new(AtomicBool::new(false));
-            content_search::search(
-                black_box("TODO"),
-                black_box(&[large_root]),
+            black_box(run_content_search_benchmark(
+                "TODO",
+                &[large_root],
                 &ContentSearchOptions::default(),
-                tx,
-                cancel,
-                None,
-                None,
-            );
-            for _ in &rx {}
+            ));
         });
     });
 

@@ -26,6 +26,7 @@ jobs:
   mutation-ci-mode:
     name: Mutation CI Mode
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Report mutation CI mode
         run: |
@@ -41,7 +42,7 @@ jobs:
     name: PR Mutation Diff
     if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -134,16 +135,16 @@ jobs:
         run: cargo nextest run --workspace
 
   full-mutants:
-    name: Full Mutation Scope ${{ matrix.shard }}/4
+    name: Full Mutation Scope ${{ matrix.shard }}/12
     if: ${{ vars.LUSHTEXT_ENABLE_MUTATION_CI == 'true' && github.event_name != 'pull_request' }}
     needs: full-baseline
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -178,13 +179,13 @@ jobs:
         run: |
           MUTANTS_BASELINE_SKIP=1 \
           MUTANTS_IN_PLACE=1 \
-          MUTANTS_SHARD="${{ matrix.shard }}/4" \
+          MUTANTS_SHARD="${{ matrix.shard }}/12" \
           ./scripts/run-mutants.sh ci-full
 
       - name: Upload mutation output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-mutants-out-${{ matrix.shard }}-of-4
+          name: full-mutants-out-${{ matrix.shard }}-of-12
           path: mutants.out
           if-no-files-found: ignore

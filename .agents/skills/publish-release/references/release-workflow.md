@@ -135,7 +135,7 @@ gh run list --branch "$VERSION" --limit 50 \
   --json databaseId,name,displayTitle,event,headBranch,headSha,status,conclusion,url
 ```
 
-Required release-critical runs include the tag-triggered `Release` workflow and the tag-triggered `Release Benchmark Report` workflow. Push-triggered workflows for the release commit, such as CI, Flatpak, Snap, and Release Dry Run, are also part of the green release surface whenever GitHub starts them. Recovery commits or manual recovery dispatches become part of the same surface and must also finish green.
+Required release-critical runs include the tag-triggered `Release` workflow and the tag-triggered `Release Benchmark Report` workflow. Push-triggered workflows for the release commit, such as CI, Flatpak, Snap, and Release Dry Run, are also part of the green release surface whenever GitHub starts them. Recovery commits or manual recovery dispatches become part of the same surface and must also finish green. No release or recovery job may raise `timeout-minutes` above 30; timeout recovery must narrow scope, fix the harness, split the workflow, or dispatch a bounded replacement run.
 
 Watch every discovered run until it is completed:
 
@@ -143,9 +143,9 @@ Watch every discovered run until it is completed:
 gh run watch <run-id> --exit-status
 ```
 
-Then re-query by exact commit, tag branch, and any recovery commit SHA. A release is not green unless every relevant run has `status=completed` and `conclusion=success`. Treat `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, `skipped` for a required workflow, or an expected missing release workflow as blockers.
+Then re-query by exact commit, tag branch, and any recovery commit SHA. A release is not green unless every current workflow responsibility has `status=completed` and `conclusion=success`, either from the original run or from an explicit successful replacement run for the same responsibility. Treat `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, `skipped` for a required workflow, or an expected missing release workflow as blockers until they are fixed and rerun or superseded.
 
-If any workflow is not successful, read its logs, fix the underlying issue, and rerun. If the public tag already exists and the fix is only in release tooling or workflow configuration, keep the tag immutable and dispatch the repaired workflow from the recovery ref while still checking out or otherwise resolving the public release tag. Repeat the workflow sweep after each fix until the surface is fully green or an external maintainer-controlled blocker prevents repair.
+If any workflow is not successful, read its logs, fix the underlying issue, and rerun. If the public tag already exists and the fix is only in release tooling or workflow configuration, keep the tag immutable and dispatch the repaired workflow from the recovery ref while still checking out or otherwise resolving the public release tag. Repeat the workflow sweep after each fix until the surface is fully green or an external maintainer-controlled blocker prevents repair. When a replacement run supersedes a failed, cancelled, or timed-out run, keep both run IDs in the final report.
 
 Do not answer "CI is green" or "release complete" from local validation, a successful push, or a single successful workflow. Always name the exact SHA, workflow names, run IDs, and conclusions you checked.
 
@@ -215,6 +215,7 @@ Report:
 - release commit SHA and tag;
 - GitHub Release URL or exact blocker;
 - every GitHub Actions workflow run checked by exact release SHA, tag branch, and recovery SHA if applicable, with run ID and conclusion;
+- any failed, cancelled, timed-out, skipped-required, or missing release workflow responsibility, plus the successful replacement run ID that superseded it when recovery succeeded;
 - Cominotti Flatpak repository artifact/deploy result or exact skipped/manual action;
 - optional Flathub PR URL or exact skipped/manual action;
 - any AppStream, Flatpak, or packaging caveats;

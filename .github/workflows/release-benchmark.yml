@@ -21,9 +21,9 @@ jobs:
     # Same container as ci.yml — see comment there for rationale.
     container:
       image: registry.fedoraproject.org/fedora:44
-    # Full Criterion release reports can run far past the normal CI budget on
-    # hosted runners; release publication must not silently drop the report.
-    timeout-minutes: 180
+    # Release publication uses a bounded report scope. Recovery must adjust
+    # benchmark scope or tooling, never raise this hard CI budget.
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -54,6 +54,15 @@ jobs:
           ref: ${{ steps.tag.outputs.name }}
           fetch-depth: 0
 
+      - name: Restore recovery benchmark tooling
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RECOVERY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$RECOVERY_SHA"
+          git checkout "$RECOVERY_SHA" -- scripts/bench-report.sh crates/lushtext-core/benches/benchmarks.rs
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.0
 
@@ -64,9 +73,14 @@ jobs:
       - name: Run benchmarks and generate report
         env:
           BENCH_REPORT_OUT_DIR: bench-output
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
         run: |
+          set -euo pipefail
           mkdir -p "$BENCH_REPORT_OUT_DIR"
-          ./scripts/bench-report.sh --mode full --out-dir "$BENCH_REPORT_OUT_DIR"
+          release_commit="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          BENCH_REPORT_RELEASE_TAG="$RELEASE_TAG" \
+          BENCH_REPORT_RELEASE_COMMIT="$release_commit" \
+            ./scripts/bench-report.sh --mode short --scope release --out-dir "$BENCH_REPORT_OUT_DIR"
 
       - name: Upload report as release asset
         env:

@@ -44,6 +44,7 @@
 #   make lint-blueprint - Advisory grouped lint triage for Blueprint templates
 #   make check-flatpak-permissions - Ensure Flatpak keeps full filesystem access
 #   make check-end-user-smoke-workflow - Ensure scheduled smoke lanes match docs
+#   make check-workflow-timeouts - Enforce the 30-minute GitHub Actions job budget
 #   make check-accessibility-policy - Enforce accessibility helper, matrix, and current-tree guardrails
 #   make check-visual-proof-policy - Require visual geometry proof for local visual-sensitive changes
 #   make check-gtk-lush-policy - Verify GTK Lush family scaffolding and constitution rails
@@ -74,7 +75,7 @@
 #   make help        - Show available targets
 
 .PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory check check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -378,12 +379,12 @@ bench:
 # Run benchmarks and generate markdown report (short sampling)
 bench-report:
 	@echo "Running benchmarks and generating report..."
-	./scripts/bench-report.sh --mode short --out-dir $(BENCH_REPORT_OUT_DIR)
+	./scripts/bench-report.sh --mode short --scope release --out-dir $(BENCH_REPORT_OUT_DIR)
 
 # Run benchmarks with full sampling and generate report
 bench-report-full:
 	@echo "Running full benchmarks and generating report..."
-	./scripts/bench-report.sh --mode full --out-dir $(BENCH_REPORT_OUT_DIR)
+	./scripts/bench-report.sh --mode full --scope diagnostic --out-dir $(BENCH_REPORT_OUT_DIR)
 
 # Save current benchmarks as baseline for comparison
 bench-baseline:
@@ -442,6 +443,12 @@ check-flatpak-permissions:
 check-end-user-smoke-workflow:
 	@echo "Checking end-user smoke workflow matrix..."
 	./scripts/check-end-user-smoke-workflow.py
+
+# Enforce the repository-wide CI job budget. Missing job timeouts are violations
+# because GitHub's implicit default is much higher than LushText's hard limit.
+check-workflow-timeouts:
+	@echo "Checking GitHub Actions job timeouts..."
+	./scripts/check-workflow-timeouts.py --self-test
 
 # Guard new UI-sensitive lines against bypassing accessibility helper and proof conventions.
 check-accessibility-policy:
@@ -529,7 +536,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test
+check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test
 
 # Advisory lint discovery; fails if a finding category has no checked-in policy.
 lint-advisory:
@@ -743,6 +750,7 @@ help:
 	@echo "  builder-diagnostics-smoke GtkBuilder diagnostics under debug-enabled GTK"
 	@echo "  command-palette-notes-smoke Focused Notes palette smoke with all note kinds"
 	@echo "  check-end-user-smoke-workflow Verify scheduled/manual smoke matrix lanes"
+	@echo "  check-workflow-timeouts Enforce the 30-minute GitHub Actions job budget"
 	@echo "  check-accessibility-policy Enforce accessibility helper, matrix, and current-tree guardrails"
 	@echo "  check-visual-proof-policy Require visual geometry proof for local visual-sensitive changes"
 	@echo "  check-gtk-lush-policy Verify GTK Lush family scaffolding and dependency direction"

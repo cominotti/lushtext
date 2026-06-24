@@ -889,6 +889,58 @@ mod tests {
     }
 
     #[test]
+    fn bounded_channel_many_matches_completes_with_concurrent_drain() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let workspace_folder = dir.path().to_path_buf();
+
+        for i in 0..64 {
+            fixture::write_text(
+                &workspace_folder.join(format!("many_matches_{i}.txt")),
+                &"needle\n".repeat(32),
+            );
+        }
+
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let search_root = workspace_folder;
+
+        let handle = std::thread::spawn(move || {
+            search(
+                "needle",
+                &[search_root.as_path()],
+                &ContentSearchOptions::default(),
+                tx,
+                cancel,
+                None,
+                None,
+            );
+        });
+
+        // This mirrors the Criterion harness: the receiver must keep draining
+        // while the synchronous producer is active. Moving this drain after
+        // `join()` would fill the bounded channel and never reach `Done`.
+        let mut match_count = 0;
+        loop {
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("bounded search should keep producing events while drained");
+            match event {
+                SearchEvent::Match(_) => match_count += 1,
+                SearchEvent::Done => break,
+                SearchEvent::Progress(_) => {}
+                SearchEvent::Error(message) => panic!("search should not emit an error: {message}"),
+                SearchEvent::ResultCap => panic!("fixture should stay below the result cap"),
+            }
+        }
+
+        assert!(
+            match_count > 16,
+            "fixture should exceed channel capacity to exercise backpressure"
+        );
+        handle.join().expect("expected operation to succeed");
+    }
+
+    #[test]
     fn invalid_regex_returns_error() {
         let dir = tempdir().expect("expected operation to succeed");
         fixture::write_text(&dir.path().join("a.rs"), "content\n");

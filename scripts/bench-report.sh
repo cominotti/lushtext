@@ -3,25 +3,36 @@
 
 # Generate a markdown benchmark report from Criterion results.
 #
-# Usage: scripts/bench-report.sh [--mode short|full] [--out-dir <dir>] [--baseline <name>]
+# Usage: scripts/bench-report.sh [--mode short|full] [--scope release|diagnostic] [--filter <name>] [--out-dir <dir>] [--baseline <name>]
 #
 # Prerequisites: cargo, jq
 
 set -euo pipefail
 
 MODE="short"
+SCOPE=""
 OUT_DIR="docs/benchmarks"
 BASELINE=""
 CRITERION_DIR="target/criterion"
+FILTERS=()
+RELEASE_FILTERS=(
+    file_index_incremental
+    content_search_smoke
+    json_persistence
+    replace_preview_generation
+    recovery_performance
+)
 
 usage() {
     cat <<'EOF'
-Usage: scripts/bench-report.sh [--mode short|full] [--out-dir <dir>] [--baseline <name>]
+Usage: scripts/bench-report.sh [--mode short|full] [--scope release|diagnostic] [--filter <name>] [--out-dir <dir>] [--baseline <name>]
 
 Runs Criterion benchmarks and generates a markdown report.
 
 Options:
   --mode      short (default) or full — controls Criterion sample size
+  --scope     release (bounded release-safe report) or diagnostic (deeper analysis)
+  --filter    Criterion benchmark group/name filter; may be passed multiple times
   --out-dir   output directory for markdown reports (default: docs/benchmarks)
   --baseline  name of a saved baseline for comparison (e.g., "main")
   -h, --help  show this help text
@@ -33,6 +44,12 @@ while [[ $# -gt 0 ]]; do
         --mode)
             [[ $# -lt 2 ]] && { echo "Error: --mode requires a value." >&2; exit 1; }
             MODE="$2"; shift 2 ;;
+        --scope)
+            [[ $# -lt 2 ]] && { echo "Error: --scope requires a value." >&2; exit 1; }
+            SCOPE="$2"; shift 2 ;;
+        --filter)
+            [[ $# -lt 2 ]] && { echo "Error: --filter requires a value." >&2; exit 1; }
+            FILTERS+=("$2"); shift 2 ;;
         --out-dir)
             [[ $# -lt 2 ]] && { echo "Error: --out-dir requires a value." >&2; exit 1; }
             OUT_DIR="$2"; shift 2 ;;
@@ -47,6 +64,28 @@ done
 if [[ "$MODE" != "short" && "$MODE" != "full" ]]; then
     echo "Error: invalid --mode '$MODE'. Expected 'short' or 'full'." >&2
     exit 1
+fi
+
+if [[ -z "$SCOPE" ]]; then
+    if [[ "$MODE" == "short" ]]; then
+        SCOPE="release"
+    else
+        SCOPE="diagnostic"
+    fi
+fi
+
+if [[ "$SCOPE" != "release" && "$SCOPE" != "diagnostic" ]]; then
+    echo "Error: invalid --scope '$SCOPE'. Expected 'release' or 'diagnostic'." >&2
+    exit 1
+fi
+
+if [[ "$SCOPE" == "release" && "$MODE" != "short" ]]; then
+    echo "Error: --scope release requires --mode short; release reports must stay bounded." >&2
+    exit 1
+fi
+
+if [[ "$SCOPE" == "release" && "${#FILTERS[@]}" -eq 0 ]]; then
+    FILTERS=("${RELEASE_FILTERS[@]}")
 fi
 
 # Check prerequisites
@@ -76,13 +115,37 @@ clean_previous_results() {
 
 # ─── Step 1: Run benchmarks ────────────────────────────────────────────
 
-echo "Running Criterion benchmarks (mode: $MODE)..."
+join_by() {
+    local separator="$1"
+    shift
+    local joined=""
+    local item
+    for item in "$@"; do
+        if [[ -n "$joined" ]]; then
+            joined+="$separator"
+        fi
+        joined+="$item"
+    done
+    printf '%s\n' "$joined"
+}
+
+if [[ "${#FILTERS[@]}" -eq 0 ]]; then
+    filters_display="all registered Criterion benchmarks"
+else
+    filters_display="$(join_by ", " "${FILTERS[@]}")"
+fi
+
+echo "Running Criterion benchmarks (mode: $MODE, scope: $SCOPE, filters: $filters_display)..."
 
 bench_args=(-p lushtext-core --bench benchmarks)
 criterion_args=()
 
 if [[ "$MODE" == "short" ]]; then
-    criterion_args+=(--sample-size 30)
+    if [[ "$SCOPE" == "release" ]]; then
+        criterion_args+=(--sample-size 10 --warm-up-time 1 --measurement-time 2)
+    else
+        criterion_args+=(--sample-size 30)
+    fi
 fi
 
 if [[ -n "$BASELINE" ]]; then
@@ -90,7 +153,13 @@ if [[ -n "$BASELINE" ]]; then
 fi
 
 clean_previous_results
-cargo bench "${bench_args[@]}" -- "${criterion_args[@]}"
+if [[ "${#FILTERS[@]}" -eq 0 ]]; then
+    cargo bench "${bench_args[@]}" -- "${criterion_args[@]}"
+else
+    for filter in "${FILTERS[@]}"; do
+        cargo bench "${bench_args[@]}" -- "$filter" "${criterion_args[@]}"
+    done
+fi
 
 # ─── Step 2: Parse Criterion JSON output ───────────────────────────────
 
@@ -153,7 +222,7 @@ format_ns_triple() {
         else if (ns >= 1e3) return sprintf("%.3f us", ns / 1e3)
         else                return sprintf("%.1f ns", ns)
     }
-    BEGIN { printf "%s\t%s\t%s", fmt(a), fmt(b), fmt(c) }'
+    BEGIN { printf "%s\t%s\t%s\n", fmt(a), fmt(b), fmt(c) }'
 }
 
 generated_at_utc="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
@@ -167,6 +236,20 @@ has_baseline="no"
 if [[ -n "$BASELINE" ]]; then
     has_baseline="yes ($BASELINE)"
 fi
+if [[ "${#criterion_args[@]}" -eq 0 ]]; then
+    criterion_args_display="default Criterion settings"
+else
+    criterion_args_display="$(join_by " " "${criterion_args[@]}")"
+fi
+if [[ "$SCOPE" == "release" ]]; then
+    report_scope="release-safe bounded report"
+    fixture_scope="curated release filters: $filters_display"
+else
+    report_scope="deep diagnostic report"
+    fixture_scope="diagnostic filters: $filters_display"
+fi
+release_tag="${BENCH_REPORT_RELEASE_TAG:-n/a}"
+release_commit="${BENCH_REPORT_RELEASE_COMMIT:-n/a}"
 
 {
     echo "# LushText Benchmark Report"
@@ -178,7 +261,13 @@ fi
     echo "| Field | Value |"
     echo "|---|---|"
     echo "| Mode | \`$MODE\` |"
+    echo "| Report Scope | \`$report_scope\` |"
+    echo "| Criterion Filters | \`$filters_display\` |"
+    echo "| Fixture Scope | \`$fixture_scope\` |"
+    echo "| Criterion Args | \`$criterion_args_display\` |"
     echo "| Baseline Comparison | \`$has_baseline\` |"
+    echo "| Release Tag | \`$release_tag\` |"
+    echo "| Release Source Commit | \`$release_commit\` |"
     echo "| Branch | \`$git_branch\` |"
     echo "| Commit | \`$git_commit\` |"
     echo "| Platform | \`$platform\` |"

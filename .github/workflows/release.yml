@@ -110,6 +110,7 @@ jobs:
     name: Release Flatpak Build
     needs: metadata
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
@@ -130,6 +131,7 @@ jobs:
     needs: metadata
     if: needs.metadata.outputs.dry-run != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
@@ -197,6 +199,7 @@ jobs:
     needs: [metadata, cominotti-flatpak]
     if: needs.metadata.outputs.dry-run != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       deployments: write

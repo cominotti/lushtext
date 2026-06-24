@@ -65,6 +65,9 @@ jobs:
       - name: Filesystem boundary policy
         run: make check-filesystem-boundary
 
+      - name: Workflow timeout policy
+        run: make check-workflow-timeouts
+
       - name: Blueprint template drift and contract
         run: make check-blueprint
 
