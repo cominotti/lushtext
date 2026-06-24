@@ -52,7 +52,8 @@ jobs:
             gettext \
             git \
             gnupg2 \
-            gnupg2-dirmngr
+            gnupg2-dirmngr \
+            unzip
 
       - name: Install Rust toolchain
         if: env.SONAR_TOKEN != ''
