@@ -87,6 +87,10 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
 
       - name: Verify SonarQube Cloud results
         if: env.SONAR_TOKEN != ''

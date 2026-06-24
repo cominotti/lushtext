@@ -32,7 +32,7 @@
 - [x] 4.2 Fetch the unresolved issue list and quality gate state for the analyzed ref.
 - [x] 4.3 Fix each actionable finding in code or configuration.
 - [x] 4.4 For any false-positive or intentional-pattern finding, add a narrow documented suppression or record the accepted/false-positive state in SonarQube Cloud.
-- [x] 4.5 Re-run analysis or verification until SonarQube Cloud records the target ref with zero unreviewed unresolved issues and no real quality gate `ERROR`.
+- [x] 4.5 Re-run analysis or verification until SonarQube Cloud reports an `OK` gate and zero unreviewed unresolved issues for the target ref.
 
 ## 5. Validation and Documentation
 

@@ -62,10 +62,10 @@ The project SHALL provide a local/API verification command that reports SonarQub
 - **THEN** the local/API verification command exits unsuccessfully
 - **AND** it prints the issue severity, rule, location, and message in a reviewable summary
 
-#### Scenario: Local check accepts uploaded analysis while quality gate is unavailable
-- **WHEN** the local/API verification command runs for a branch with uploaded analysis, no computed SonarQube Cloud quality gate status, and zero unresolved issues
-- **THEN** the command exits successfully
-- **AND** it records the unavailable quality-gate state in the JSON report
+#### Scenario: Local check fails when quality gate is unavailable
+- **WHEN** the local/API verification command runs for a branch with uploaded analysis and no computed SonarQube Cloud quality gate status
+- **THEN** the command exits unsuccessfully
+- **AND** it reports that the quality gate has not been computed
 
 #### Scenario: Main branch missing analysis is a blocker
 - **WHEN** the local/API verification command runs for `main` after enablement and SonarQube Cloud has no analysis data for `main`

@@ -181,8 +181,7 @@ check_quality_gate() {
 		echo "Sonar quality gate: OK"
 		;;
 	NONE | "")
-		echo "Sonar quality gate: no data available"
-		return 2
+		fail "Sonar quality gate has not been computed for ${branch:-main}"
 		;;
 	ERROR)
 		failing_summary="$(
@@ -338,18 +337,7 @@ main() {
 	fi
 
 	info "Checking Sonar quality gate"
-	set +e
 	check_quality_gate "$branch"
-	local gate_status=$?
-	set -e
-	local gate_unavailable=0
-	if (( gate_status == 2 )); then
-		gate_unavailable=1
-		write_no_data_reports "$branch" "No SonarQube Cloud quality gate status is available for this branch"
-		echo "Sonar quality gate: no data available for branch ${branch:-main}; continuing with unresolved issue verification"
-	elif (( gate_status != 0 )); then
-		return "$gate_status"
-	fi
 
 	info "Fetching unresolved Sonar issues"
 	fetch_unresolved_issues "$branch"
@@ -363,10 +351,6 @@ main() {
 
 	if (( issue_count > 0 )); then
 		fail "Sonar has ${issue_count} unresolved issue(s); fix them or mark them accepted/false-positive in SonarQube Cloud"
-	fi
-
-	if (( gate_unavailable != 0 )); then
-		echo "Sonar quality gate status was unavailable, but uploaded analysis exists and no unresolved issues were reported."
 	fi
 }
 
