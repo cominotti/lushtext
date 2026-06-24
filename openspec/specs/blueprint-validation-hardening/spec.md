@@ -25,11 +25,13 @@ Generated validation, screenshot, pixel-diff, and smoke-proof artifacts for Blue
 
 The Blueprint compile gate SHALL keep generated `.ui` drift and template-contract checks blocking, while allowing only documented known compiler warnings.
 
-#### Scenario: Known shortcuts deprecation warnings are accepted narrowly
+#### Scenario: Deprecated GtkShortcuts warnings fail the gate
 
-- **WHEN** the compile gate processes `resources/ui/shortcuts.blp`
-- **THEN** warnings for the documented deprecated `GtkShortcuts*` widgets are accepted
-- **AND** the acceptance is limited to the documented warning family and file
+- **WHEN** the compile gate processes any Blueprint template
+- **THEN** warnings for deprecated `GtkShortcuts*` widgets are not accepted as
+  known-good output
+- **AND** `resources/ui/shortcuts.blp` uses the maintained Libadwaita shortcuts
+  dialog widgets instead of the deprecated GTK shortcuts widget family
 
 #### Scenario: Unknown compile warnings fail the gate
 

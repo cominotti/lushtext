@@ -161,11 +161,11 @@ automation contracts as other visible commands.
 - **AND** the action catalog no longer marks the command as
   `visible-unregistered-gap` or `unsupported-gap`
 
-#### Scenario: Action opens shipped shortcut window
+#### Scenario: Action opens shipped shortcut dialog
 - **WHEN** the user or an automation client activates `win.show-help-overlay`
-- **THEN** LushText presents the shipped shortcut help window from
+- **THEN** LushText presents the shipped Libadwaita shortcut help dialog from
   `resources/ui/shortcuts.ui`
-- **AND** the shortcut window is associated with the active LushText window
+- **AND** the shortcut dialog is associated with the active LushText window
 - **AND** activating the action does not modify document contents, tab state,
   workspace state, or persistent settings
 
@@ -173,22 +173,22 @@ automation contracts as other visible commands.
 - **WHEN** LushText has no file-backed active document or starts in an
   empty/no-context state
 - **THEN** the Keyboard Shortcuts action remains available
-- **AND** the shortcut window opens without requiring an editor, workspace,
+- **AND** the shortcut dialog opens without requiring an editor, workspace,
   note, bookmark, or search context
 
-#### Scenario: Shortcut window remains usable with many shortcuts
-- **WHEN** the shortcut help window contains several groups or more shortcuts
+#### Scenario: Shortcut dialog remains usable with many shortcuts
+- **WHEN** the shortcut help dialog contains several groups or more shortcuts
   than fit vertically
-- **THEN** the shortcut content scrolls within the help window or
-  toolkit-provided shortcut surface
-- **AND** the window title/header, close affordance, and essential actions
+- **THEN** the shortcut content scrolls within the toolkit-provided shortcut
+  surface
+- **AND** the dialog title/header, close affordance, and essential actions
   remain reachable
 - **AND** no fake shortcut rows are inserted to satisfy tests
 
-#### Scenario: Shortcut window remains usable in constrained geometry
+#### Scenario: Shortcut dialog remains usable in constrained geometry
 - **WHEN** the Keyboard Shortcuts action is activated while the main window or
   virtual monitor is narrow or short
-- **THEN** the shortcut help window remains bounded to the visible monitor area
+- **THEN** the shortcut help dialog remains bounded to the visible monitor area
 - **AND** text, section labels, and close controls do not overlap incoherently or
   disappear behind unrelated app chrome
 
