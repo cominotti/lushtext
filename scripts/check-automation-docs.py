@@ -114,7 +114,15 @@ def enum_value(argument: str) -> str:
 
 
 def array_enum_values(argument: str) -> list[str]:
-    return [enum_value(match) for match in re.findall(r"[A-Za-z]+::([A-Za-z0-9_]+)", argument)]
+    values: list[str] = []
+    body = argument.strip().removeprefix("&").strip()
+    if body.startswith("[") and body.endswith("]"):
+        body = body[1:-1]
+    for item in body.split(","):
+        token = item.strip()
+        if token:
+            values.append(enum_value(token))
+    return values
 
 
 def action_scope_prefix(argument: str) -> str:

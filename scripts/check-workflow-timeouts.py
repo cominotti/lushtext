@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPO_ROOT / ".github/workflows"
 MAX_JOB_TIMEOUT_MINUTES = 30
 JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
-TIMEOUT_RE = re.compile(r"^    timeout-minutes:\s*(.+?)\s*$")
+TIMEOUT_PREFIX = "    timeout-minutes:"
 
 
 @dataclass(frozen=True)
@@ -92,14 +92,13 @@ def parse_workflow_jobs(path: Path) -> list[WorkflowJob]:
         if current_job is None:
             continue
 
-        timeout_match = TIMEOUT_RE.match(line)
-        if timeout_match:
+        if line.startswith(TIMEOUT_PREFIX):
             current_job = WorkflowJob(
                 path=current_job.path,
                 job_id=current_job.job_id,
                 line_number=current_job.line_number,
                 timeout_line=line_number,
-                timeout_value=strip_inline_comment(timeout_match.group(1)),
+                timeout_value=strip_inline_comment(line.removeprefix(TIMEOUT_PREFIX)),
             )
 
     flush_current()
