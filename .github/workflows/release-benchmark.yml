@@ -77,6 +77,7 @@ jobs:
           RELEASE_TAG: ${{ steps.tag.outputs.name }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           mkdir -p "$BENCH_REPORT_OUT_DIR"
           release_commit="$(git rev-parse "$RELEASE_TAG^{commit}")"
           BENCH_REPORT_RELEASE_TAG="$RELEASE_TAG" \
