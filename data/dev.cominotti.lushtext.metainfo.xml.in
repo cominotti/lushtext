@@ -65,6 +65,40 @@
   </screenshots>
 
   <releases>
+    <release version="0.5.2" date="2026-07-05">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Folger Shakespeare Library, "Shakespeare's Sonnets - Sonnet 53", final rhyming couplet.</p>
+        <p>Selection: Complete final couplet.</p>
+        <p>Complete couplet:</p>
+        <p>&gt; In all external grace you have some part,</p>
+        <p>&gt; But you like none, none you, for constant heart.</p>
+        <p>William Shakespeare, "Sonnet 53"</p>
+        <p>## What's Changed</p>
+        <p>LushText now preserves editor glyphs more carefully on the active line. The editor font path was reworked so square brackets and other top-ink details stay visible with GTK 4.22 and GtkSourceView 5.20, while system fonts, custom fonts, zoom, source schemes, dark mode, and tab-content opacity continue to work together.</p>
+        <p>Markdown preview is more resilient and more bounded. Local images resolve relative to the document or active workspace folders and decode away from the GTK thread, code blocks stay within a clear preview budget, and Markdown tables avoid creating runaway widget trees. Large images, very large code blocks, oversized tables, missing images, and remote images now get clear fallback blocks instead of silently stressing the UI.</p>
+        <p>Workspace search is more cooperative on large result streams. Search now uses bounded backpressure, drains worker events in UI-sized batches, avoids unnecessary canonicalization for single-root searches, and keeps result-row navigation indexed so next/previous match movement stays responsive.</p>
+        <p>Preferences &gt; Data has a clearer app-data format workflow. The Data page now owns its scan and conversion projection, keeps background operations off the GTK thread, shows bounded per-file details, and exposes better accessibility state for status, scan, convert, and background-opacity controls.</p>
+        <p>Maintainers get a stronger release and quality gate. This release adds SonarQube Cloud analysis with quality-gate verification, enforces the 30-minute GitHub Actions job budget, bounds the release benchmark report, and hardens release recovery so benchmark tooling can be restored without moving public tags.</p>
+        <p>The Rust dependency set was refreshed for the latest `anyhow` advisory fix, and Flatpak vendored sources were regenerated to match the updated lockfile.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for end users after upgrading. There is no settings reset, workspace rebuild, or app-data migration required for this release.</p>
+        <p>Downstream packagers should build from the release commit or regenerate vendored Cargo sources from the matching `Cargo.lock`, because `anyhow` was updated to `1.0.103`.</p>
+        <p>Maintainers who expect SonarQube Cloud analysis on private or trusted branches should keep `SONAR_TOKEN` configured. Untrusted contexts without that token will skip the analysis step by design.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>No user-facing feature is deprecated in this release.</p>
+        <p>Markdown preview still does not fetch remote images. Local preview images, code blocks, and tables now have explicit size budgets; content beyond those limits is reported inline instead of being fully rendered.</p>
+        <p>Tab-content opacity can create small derived GtkSourceView style-scheme files in LushText's app data directory. If those files cannot be written, LushText falls back to the base source scheme and keeps the editor usable.</p>
+        <p>## Bug Fixes</p>
+        <p>Fixed active-line glyph clipping in the editor, especially visible with bracket caps in Adwaita Mono on newer GTK/GtkSourceView stacks.</p>
+        <p>Fixed Markdown preview memory and responsiveness risks around large local images, oversized code blocks, and large tables.</p>
+        <p>Fixed search result navigation so jumping between matches can expand and focus the indexed row directly instead of scanning the flattened result model each time.</p>
+        <p>Fixed large workspace search responsiveness by bounding result delivery and processing a capped number of events per GTK tick.</p>
+        <p>Fixed release benchmark publication scope so the tag-triggered benchmark report stays within the release-safe CI budget.</p>
+        <p>Fixed SonarQube workflow regex and verification issues found during the first quality-gate rollout.</p>
+        <p>Updated `anyhow` to `1.0.103` and refreshed Flatpak cargo sources for the associated RustSec advisory.</p>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-06-24">
       <description>
         <p>## Poetic Opening</p>
