@@ -46,6 +46,10 @@ jobs:
             container_image: registry.fedoraproject.org/fedora:44
             command: make visual-smoke SMOKE_ARTIFACT_DIR=build/smoke
             artifact_path: build/smoke/visual
+          - lane: editor-glyph-live
+            container_image: registry.fedoraproject.org/fedora:44
+            command: make editor-glyph-live-smoke SMOKE_ARTIFACT_DIR=build/smoke
+            artifact_path: build/smoke/editor-glyph-live
           - lane: crash-recovery
             container_image: registry.fedoraproject.org/fedora:44
             command: make crash-recovery-smoke SMOKE_ARTIFACT_DIR=build/smoke
@@ -90,6 +94,16 @@ jobs:
             python3-gobject \
             python3-pyatspi \
             at-spi2-core
+
+      - name: Install editor glyph smoke dependencies
+        if: ${{ matrix.lane == 'editor-glyph-live' }}
+        run: |
+          # The live glyph lane types through Xvfb/X11 and inspects PNG crops.
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
+            ImageMagick \
+            xdotool \
+            xorg-x11-server-Xvfb \
+            xorg-x11-apps
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.0

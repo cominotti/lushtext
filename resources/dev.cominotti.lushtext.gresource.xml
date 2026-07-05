@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
+  <!-- Keep style schemes under the main app prefix so theme.rs resolves
+       resource:///dev/cominotti/lushtext/gtksourceview/styles, and keep
+       build.rs rerun inputs aligned with these child files. -->
   <gresource prefix="/dev/cominotti/lushtext">
     <!-- UI templates -->
     <file compressed="true" preprocess="xml-stripblanks">ui/window.ui</file>
@@ -27,7 +30,7 @@
     <file alias="icons/64x64/apps/dev.cominotti.lushtext.png">../data/icons/hicolor/64x64/apps/dev.cominotti.lushtext.png</file>
     <file alias="icons/128x128/apps/dev.cominotti.lushtext.png">../data/icons/hicolor/128x128/apps/dev.cominotti.lushtext.png</file>
   </gresource>
-  <gresource prefix="/dev/cominotti/lushtext/gtksourceview">
+  <gresource prefix="/dev/cominotti/lushtext">
     <file compressed="true">gtksourceview/styles/Adwaita.xml</file>
     <file compressed="true">gtksourceview/styles/Adwaita-dark.xml</file>
   </gresource>

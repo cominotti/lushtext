@@ -15,6 +15,13 @@ fn main() {
     let resource_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../resources");
     let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data");
     let resource_xml = format!("{resource_dir}/dev.cominotti.lushtext.gresource.xml");
+    println!("cargo:rerun-if-changed={resource_xml}");
+    // Cargo only knows about the manifest unless child resources are listed.
+    // Keep bundled style-scheme edits visible to `make run` without requiring
+    // a manual `cargo clean`.
+    for style_file in ["Adwaita.xml", "Adwaita-dark.xml"] {
+        println!("cargo:rerun-if-changed={resource_dir}/gtksourceview/styles/{style_file}");
+    }
 
     // Local development checkouts compile resources here; packaged builds or
     // partial source exports may omit the XML because Meson owns that step.

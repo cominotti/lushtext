@@ -28,7 +28,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                   <object class="GtkSourceView" id="source_view">
                     <property name="auto-indent">true</property>
                     <property name="smart-backspace">true</property>
-                    <property name="monospace">true</property>
+                    <property name="monospace">false</property>
                     <property name="top-margin">6</property>
                     <property name="bottom-margin">6</property>
                     <property name="left-margin">12</property>

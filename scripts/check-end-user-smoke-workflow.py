@@ -23,6 +23,10 @@ PYTHON_ORACLE_COMMAND = (
     '"$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir '
     'scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"'
 )
+EDITOR_GLYPH_COMMAND = (
+    './scripts/editor-glyph-live-smoke.py --artifact-dir '
+    '"$(SMOKE_ARTIFACT_DIR)/editor-glyph-live" --binary "$(PWD)/target/debug/lushtext"'
+)
 
 EXPECTED_LANES: dict[str, tuple[str, str]] = {
     "automation": (
@@ -40,6 +44,10 @@ EXPECTED_LANES: dict[str, tuple[str, str]] = {
     "visual": (
         "make visual-smoke SMOKE_ARTIFACT_DIR=build/smoke",
         "build/smoke/visual",
+    ),
+    "editor-glyph-live": (
+        "make editor-glyph-live-smoke SMOKE_ARTIFACT_DIR=build/smoke",
+        "build/smoke/editor-glyph-live",
     ),
     "crash-recovery": (
         "make crash-recovery-smoke SMOKE_ARTIFACT_DIR=build/smoke",
@@ -118,13 +126,15 @@ def check_workflow(workflow: str) -> list[str]:
 
 
 def check_makefile(makefile: str) -> list[str]:
-    """Return drift findings for local visual-geometry smoke entry points."""
+    """Return drift findings for local smoke entry points mirrored in CI."""
     findings: list[str] = []
     required_terms = [
         "visual-geometry-smoke: build-debug",
         RUST_VISUAL_GEOMETRY_COMMAND,
         "visual-geometry-oracle-smoke: build-debug",
         PYTHON_ORACLE_COMMAND,
+        "editor-glyph-live-smoke: build-debug",
+        EDITOR_GLYPH_COMMAND,
     ]
     findings.extend(
         f"Makefile is missing required term `{term}`"
@@ -137,6 +147,9 @@ def check_makefile(makefile: str) -> list[str]:
     )[0]
     if "scripts/visual-geometry-smoke.py" in default_target:
         findings.append("visual-geometry-smoke default must not call the Python oracle script")
+    end_user_target = makefile.split("end-user-smoke:", 1)[-1].split("\n", 1)[0]
+    if "editor-glyph-live-smoke" not in end_user_target:
+        findings.append("end-user-smoke must include editor-glyph-live-smoke")
     return findings
 
 

@@ -12,6 +12,13 @@ use sourceview5::prelude::*;
 
 use crate::config;
 
+/// Main-editor line-height multiplier that leaves room for active-line top ink.
+///
+/// `1.18` is the smallest value found by the live bracket smoke to preserve
+/// Adwaita Mono square-bracket caps on GTK 4.22 / GtkSourceView 5.20 without
+/// making ordinary editor rows look loose.
+const EDITOR_GLYPH_LINE_HEIGHT: f64 = 1.18;
+
 /// Resolved editor-surface colors used by tab-content transparency styling.
 #[derive(Clone, Debug)]
 pub(crate) struct TabContentPalette {
@@ -76,8 +83,10 @@ pub(crate) fn load_css() {
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    // Font customization provider — targets .monospace widgets (all GtkSourceViews).
-    // USER priority (higher than APPLICATION) so custom font overrides the base stylesheet.
+    // Font customization provider — targets the main editor surface always,
+    // and GTK's `.monospace` class only when a custom font or zoom setting
+    // needs an override. The editor keeps GtkTextView `monospace` disabled to
+    // avoid active-line glyph clipping in GTK 4.22 / GtkSourceView 5.20.
     let font_provider = gtk4::CssProvider::new();
     gtk4::style_context_add_provider_for_display(
         &display,
@@ -86,6 +95,8 @@ pub(crate) fn load_css() {
     );
     let settings = gio::Settings::new(config::APP_ID);
     apply_font_css(&font_provider, &settings);
+    // GSettings updates are GObject signals; these closures rebuild the small
+    // display-wide CSS string whenever editor font preferences change.
     for key in [
         config::keys::USE_SYSTEM_FONT,
         config::keys::CUSTOM_FONT,
@@ -94,6 +105,19 @@ pub(crate) fn load_css() {
         let p = font_provider.clone();
         let s = settings.clone();
         settings.connect_changed(Some(key), move |_, _| apply_font_css(&p, &s));
+    }
+    if let Some(iface) = desktop_interface_settings() {
+        let p = font_provider;
+        let s = settings.clone();
+        let iface_keepalive = iface.clone();
+        iface.connect_changed(Some("monospace-font-name"), move |_, _| {
+            // Keep the desktop Settings object alive for the app lifetime; the
+            // font provider is display-wide, so this signal is global too.
+            let _keepalive = &iface_keepalive;
+            if s.boolean(config::keys::USE_SYSTEM_FONT) {
+                apply_font_css(&p, &s);
+            }
+        });
     }
 
     // Tab-content transparency uses one display-wide provider because the
@@ -125,28 +149,24 @@ pub(crate) fn load_css() {
     }
 }
 
+/// Rebuild display-wide font CSS from GSettings on the GTK main thread.
+///
+/// The main editor always receives glyph-safe line height, while auxiliary
+/// `.monospace` widgets only receive user font overrides when custom font or
+/// zoom settings require CSS beyond GTK's defaults.
 fn apply_font_css(provider: &gtk4::CssProvider, settings: &gio::Settings) {
     let zoom = settings.uint(config::keys::ZOOM_LEVEL).clamp(50, 400);
     let use_system = settings.boolean(config::keys::USE_SYSTEM_FONT);
-
-    // System font at 100% — no CSS override needed, let GTK defaults apply.
-    if use_system && zoom == 100 {
-        provider.load_from_string("");
-        return;
-    }
 
     // Resolve the base font: system monospace from GNOME desktop settings,
     // or the user's custom font from our own GSettings.
     // Guard against non-GNOME desktops where the schema may not exist
     // (gio::Settings::new aborts if the schema is missing).
     let desc = if use_system {
-        let source = gio::SettingsSchemaSource::default().expect("schema source");
-        if source.lookup("org.gnome.desktop.interface", true).is_some() {
-            let iface = gio::Settings::new("org.gnome.desktop.interface");
-            pango::FontDescription::from_string(&iface.string("monospace-font-name"))
-        } else {
-            pango::FontDescription::from_string("Monospace 11")
-        }
+        desktop_interface_settings().map_or_else(
+            || pango::FontDescription::from_string("Monospace 11"),
+            |iface| pango::FontDescription::from_string(&iface.string("monospace-font-name")),
+        )
     } else {
         pango::FontDescription::from_string(&settings.string(config::keys::CUSTOM_FONT))
     };
@@ -159,8 +179,30 @@ fn apply_font_css(provider: &gtk4::CssProvider, settings: &gio::Settings) {
     };
     let zoomed_pt = base_pt * f64::from(zoom) / 100.0;
 
-    let css = format!(".monospace {{ font-family: \"{family}\"; font-size: {zoomed_pt:.1}pt; }}");
+    // GTK TextView styling involves both the outer `textview` node and its
+    // inner `text` node; target both so font and line-height stay together
+    // across GTK theme inheritance and SourceView CSS.
+    let editor_css = format!(
+        "textview.tab-content-editor-surface, textview.tab-content-editor-surface text {{ font-family: \"{family}\"; font-size: {zoomed_pt:.1}pt; line-height: {EDITOR_GLYPH_LINE_HEIGHT:.2}; }}"
+    );
+    let css = if use_system && zoom == 100 {
+        editor_css
+    } else {
+        format!(
+            ".monospace {{ font-family: \"{family}\"; font-size: {zoomed_pt:.1}pt; }}\n{editor_css}"
+        )
+    };
     provider.load_from_string(&css);
+}
+
+/// Return GNOME's interface settings when the schema exists on this desktop.
+fn desktop_interface_settings() -> Option<gio::Settings> {
+    let source = gio::SettingsSchemaSource::default()?;
+    if source.lookup("org.gnome.desktop.interface", true).is_some() {
+        Some(gio::Settings::new("org.gnome.desktop.interface"))
+    } else {
+        None
+    }
 }
 
 /// Resolve the active GtkSourceView style scheme after light or dark selection.

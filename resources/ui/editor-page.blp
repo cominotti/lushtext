@@ -21,7 +21,11 @@ template $LushtextEditorPage: Box {
         child: $GtkSourceView source_view {
           auto-indent: "true";
           smart-backspace: "true";
-          monospace: "true";
+          // LushText applies editor font settings through the surface class
+          // below. Keeping GtkTextView's built-in monospace mode disabled
+          // avoids active-line top-ink clipping with GTK 4.22/GtkSourceView
+          // 5.20 while preserving the user's selected monospace family.
+          monospace: "false";
           top-margin: "6";
           bottom-margin: "6";
           left-margin: "12";
