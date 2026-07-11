@@ -324,7 +324,10 @@ policy.
 The crash-recovery lane also uses Automation1 after relaunch: it waits for
 `recovery-restore-complete`, writes `relaunch-automation-snapshot.json`, and
 asserts restored file-backed and untitled tabs plus draft metadata and recovery
-diagnostic evidence before accepting the relaunch screenshot. Its
+diagnostic evidence before accepting the relaunch screenshot. The fixture also
+distinguishes an accepted generation from a newer pre-debounce edit terminated
+by `SIGKILL`, and crosses the 64 MiB aggregate eager cap so one valid draft must
+settle through lazy restore. Its
 `scenario-manifest.json` indexes the before/after metadata, relaunch snapshot,
 AT-SPI recovery tree, warning scan, screenshot, and skip/failure reason.
 

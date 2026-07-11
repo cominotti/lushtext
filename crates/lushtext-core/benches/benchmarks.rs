@@ -159,10 +159,15 @@ fn make_flat_dir(entry_count: usize) -> TempDir {
     dir
 }
 
+/// Mirror bounded breadth-first sidebar model population and batching costs.
 fn populate_tree_store(entries: Vec<DirectoryEntry>, truncated: bool) -> gio::ListStore {
+    // Match the production directory safety cap used by the sidebar fixture.
     const MAX_DIR_ENTRIES: usize = 10_000;
+    // Match the production append batch so relayout costs stay representative.
     const CHILD_APPEND_BATCH_SIZE: usize = 256;
 
+    // ListStore is GObject's observable model; GTK list widgets react to its
+    // items-changed notifications without rebuilding the model.
     let store = gio::ListStore::new::<FileTreeItem>();
     let mut pending = VecDeque::from(entries);
 
@@ -174,6 +179,7 @@ fn populate_tree_store(entries: Vec<DirectoryEntry>, truncated: bool) -> gio::Li
             };
             batch.push(FileTreeItem::new(entry.path, entry.is_dir, entry.is_empty));
         }
+        // One splice emits one items-changed signal instead of relayout per row.
         store.splice(store.n_items(), 0, &batch);
     }
 
@@ -242,7 +248,7 @@ fn make_draft_fixtures(
             manifest.upsert(DraftEntry {
                 draft_id,
                 original_path: Some(path.clone()),
-                original_mtime_secs: Some(1000),
+                original_mtime_secs: editor_io::mtime_secs(path),
                 saved_at_secs: 2000,
             });
         }
@@ -262,6 +268,43 @@ fn make_draft_fixtures(
         active_tab_index: Some(0),
     };
     (dir, session)
+}
+
+/// Create untitled draft bodies at policy-scale sizes without large `String`s.
+fn make_policy_sized_draft_fixtures(sizes: &[u64]) -> TempDir {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let drafts_dir = draft_service::drafts_dir(dir.path());
+    fixture::create_dir_all(&drafts_dir);
+    let mut manifest = DraftManifest::default();
+    let mut tabs = Vec::with_capacity(sizes.len());
+    for (index, size) in sizes.iter().copied().enumerate() {
+        let draft_id = format!("policy-sized-{index}");
+        fixture::write_repeated_bytes(&drafts_dir.join(format!("{draft_id}.draft")), b"x", size);
+        manifest.upsert(DraftEntry {
+            draft_id: draft_id.clone(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1,
+        });
+        tabs.push(SessionTab {
+            path: None,
+            draft_id: Some(draft_id),
+            cursor_line: 0,
+            cursor_col: 0,
+            scroll_line: 0,
+            pinned: false,
+        });
+    }
+    draft_service::save_manifest(dir.path(), &manifest).expect("save policy manifest");
+    session_service::save(
+        dir.path(),
+        &SessionData {
+            tabs,
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("save policy session");
+    dir
 }
 
 /// Build a `SessionData` with the given number of tabs.
@@ -1166,94 +1209,211 @@ fn bench_file_size_classify(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark startup draft preload and conservative orphan cleanup.
+///
+/// Batched fixtures exclude setup from cleanup timing, while the scale group
+/// isolates bounded inspection and linear exact-fingerprint merging.
 fn bench_draft_restore(c: &mut Criterion) {
-    let mut group = c.benchmark_group("draft_restore");
-    group.sample_size(30);
+    {
+        let mut group = c.benchmark_group("draft_restore");
+        group.sample_size(30);
 
-    // Benchmark the full startup preload pipeline:
-    // load manifest + load session + resolve draft restore state.
-    // This mirrors the background work in load_session_and_drafts.
-    for &(label, n_tabs, n_drafts, draft_kb) in &[
-        ("5_tabs_1_draft_1kb", 5, 1, 1),
-        ("10_tabs_5_drafts_1kb", 10, 5, 1),
-        ("20_tabs_10_drafts_10kb", 20, 10, 10),
-        ("50_tabs_20_drafts_10kb", 50, 20, 10),
-    ] {
-        group.bench_function(BenchmarkId::new("startup_preload", label), |b| {
-            b.iter_batched(
-                || make_draft_fixtures(n_tabs, n_drafts, draft_kb * 1024),
-                |(dir, _session)| {
-                    let restore = draft_service::load_restore_state(black_box(dir.path()));
-                    (
-                        restore.manifest,
-                        restore.session,
-                        restore.preloaded_drafts,
-                        dir,
-                    )
-                },
-                BatchSize::SmallInput,
-            );
-        });
-    }
+        // Benchmark the full startup preload pipeline:
+        // load manifest + load session + resolve draft restore state.
+        // This mirrors the background work in load_session_and_drafts.
+        for &(label, n_tabs, n_drafts, draft_kb) in &[
+            ("5_tabs_1_draft_1kb", 5, 1, 1),
+            ("10_tabs_5_drafts_1kb", 10, 5, 1),
+            ("20_tabs_10_drafts_10kb", 20, 10, 10),
+            ("50_tabs_20_drafts_10kb", 50, 20, 10),
+        ] {
+            group.bench_function(BenchmarkId::new("startup_preload", label), |b| {
+                b.iter_batched(
+                    || make_draft_fixtures(n_tabs, n_drafts, draft_kb * 1024),
+                    |(dir, _session)| {
+                        let restore = draft_service::load_restore_state(black_box(dir.path()));
+                        (
+                            restore.manifest,
+                            restore.session,
+                            restore.preloaded_drafts,
+                            dir,
+                        )
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
 
-    // Benchmark orphan cleanup in isolation.
-    for &(label, n_valid, n_orphan_entries, n_orphan_files) in &[
-        ("clean_5", 5, 0, 0),
-        ("5_orphan_entries", 5, 5, 0),
-        ("5_orphan_files", 5, 0, 5),
-        ("mixed_20", 10, 5, 5),
-    ] {
-        group.bench_function(BenchmarkId::new("cleanup_orphans", label), |b| {
-            b.iter_batched(
-                || {
-                    let dir = TempDir::new().expect("expected operation to succeed");
-                    let mut manifest = DraftManifest::default();
+        for &(label, n_valid, n_orphan_entries, n_orphan_files) in &[
+            ("clean_5", 5, 0, 0),
+            ("5_orphan_entries", 5, 5, 0),
+            ("5_orphan_files", 5, 0, 5),
+            ("mixed_20", 10, 5, 5),
+            ("mixed_1000", 500, 250, 250),
+            ("mixed_at_cap", 1535, 512, 512),
+        ] {
+            group.bench_function(BenchmarkId::new("orphan_cleanup", label), |b| {
+                b.iter_batched(
+                    || {
+                        let dir = TempDir::new().expect("expected operation to succeed");
+                        let mut manifest = DraftManifest::default();
 
-                    // Valid entries (with draft files).
-                    for i in 0..n_valid {
-                        let id = format!("valid-{i}");
-                        draft_service::write_draft(dir.path(), &id, "content")
+                        for i in 0..n_valid {
+                            let id = format!("valid-{i}");
+                            draft_service::write_draft(dir.path(), &id, "content")
+                                .expect("expected operation to succeed");
+                            manifest.upsert(DraftEntry {
+                                draft_id: id,
+                                original_path: None,
+                                original_mtime_secs: None,
+                                saved_at_secs: 1000,
+                            });
+                        }
+                        for i in 0..n_orphan_entries {
+                            manifest.upsert(DraftEntry {
+                                draft_id: format!("orphan-entry-{i}"),
+                                original_path: None,
+                                original_mtime_secs: None,
+                                saved_at_secs: 1000,
+                            });
+                        }
+                        fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
+                        for i in 0..n_orphan_files {
+                            draft_service::write_draft(
+                                dir.path(),
+                                &format!("orphan-file-{i}"),
+                                "stale",
+                            )
                             .expect("expected operation to succeed");
-                        manifest.upsert(DraftEntry {
-                            draft_id: id,
-                            original_path: None,
-                            original_mtime_secs: None,
-                            saved_at_secs: 1000,
-                        });
-                    }
-                    // Orphan manifest entries (no draft files).
-                    for i in 0..n_orphan_entries {
-                        manifest.upsert(DraftEntry {
-                            draft_id: format!("orphan-entry-{i}"),
-                            original_path: None,
-                            original_mtime_secs: None,
-                            saved_at_secs: 1000,
-                        });
-                    }
-                    // Create the drafts directory for orphan files.
-                    fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
-                    // Orphan draft files (no manifest entries).
-                    for i in 0..n_orphan_files {
-                        draft_service::write_draft(
-                            dir.path(),
-                            &format!("orphan-file-{i}"),
-                            "stale",
+                        }
+                        draft_service::save_manifest(dir.path(), &manifest)
+                            .expect("expected operation to succeed");
+
+                        (dir, manifest)
+                    },
+                    |(dir, manifest)| {
+                        let plan = draft_service::inspect_orphan_cleanup(
+                            black_box(dir.path()),
+                            black_box(&manifest),
                         )
                         .expect("expected operation to succeed");
-                    }
+                        let outcome = draft_service::execute_orphan_cleanup(
+                            black_box(dir.path()),
+                            black_box(plan),
+                        );
+                        black_box((dir, manifest, outcome))
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
 
-                    (dir, manifest)
-                },
-                |(dir, mut manifest)| {
-                    let _ = draft_service::cleanup_orphans(black_box(dir.path()), &mut manifest);
-                    (dir, manifest)
-                },
-                BatchSize::SmallInput,
-            );
-        });
+        group.finish();
     }
 
-    group.finish();
+    {
+        let mut group = c.benchmark_group("draft_restore_policy_sizes");
+        group.sample_size(10);
+        for &(label, size) in &[
+            ("1_mib", 1024 * 1024),
+            ("10_mib", 10 * 1024 * 1024),
+            ("50_mib", 50 * 1024 * 1024),
+            ("exact_64_mib", draft_service::MAX_AUTOMATIC_DRAFT_BYTES),
+        ] {
+            let dir = make_policy_sized_draft_fixtures(&[size]);
+            group.throughput(criterion::Throughput::Bytes(size));
+            group.bench_function(BenchmarkId::new("bounded_read", label), |b| {
+                b.iter(|| {
+                    draft_service::read_draft(black_box(dir.path()), "policy-sized-0")
+                        .expect("read policy-sized draft")
+                });
+            });
+        }
+
+        let over_half = draft_service::MAX_EAGER_DRAFT_PRELOAD_BYTES / 2 + 1;
+        // Each body fits alone, but the pair exceeds the aggregate budget by
+        // two bytes and forces the second body through lazy admission.
+        let dir = make_policy_sized_draft_fixtures(&[over_half, over_half]);
+        group.throughput(criterion::Throughput::Bytes(over_half));
+        group.bench_function("aggregate_cap_lazy_transition", |b| {
+            b.iter(|| draft_service::load_restore_state(black_box(dir.path())));
+        });
+        group.finish();
+    }
+
+    let mut scale = c.benchmark_group("draft_cleanup_scale");
+    // Large-manifest fixture cloning is expensive, so ten samples bound suite
+    // time while still exposing order-of-growth regressions.
+    scale.sample_size(10);
+    for manifest_size in [2_048usize, 10_000, 100_000] {
+        scale.bench_with_input(
+            BenchmarkId::new("inspect_manifest_page", manifest_size),
+            &manifest_size,
+            |b, &size| {
+                let dir = TempDir::new().expect("expected operation to succeed");
+                let manifest = DraftManifest {
+                    drafts: (0..size)
+                        .map(|index| DraftEntry {
+                            draft_id: format!("manifest-{index}"),
+                            original_path: None,
+                            original_mtime_secs: None,
+                            saved_at_secs: 1000,
+                        })
+                        .collect(),
+                };
+                b.iter(|| {
+                    draft_service::inspect_orphan_cleanup(
+                        black_box(dir.path()),
+                        black_box(&manifest),
+                    )
+                });
+            },
+        );
+
+        // Cover no-op, single-removal, and one full cleanup-page merge costs.
+        for committed_count in [0usize, 1, manifest_size.min(2_048)] {
+            scale.bench_function(
+                BenchmarkId::new(
+                    "merge_committed_fingerprints",
+                    format!("{manifest_size}_entries_{committed_count}_committed"),
+                ),
+                |b| {
+                    let entries = (0..manifest_size)
+                        .map(|index| DraftEntry {
+                            draft_id: format!("merge-{index}"),
+                            original_path: None,
+                            original_mtime_secs: None,
+                            saved_at_secs: 1000,
+                        })
+                        .collect::<Vec<_>>();
+                    let committed = entries
+                        .iter()
+                        .take(committed_count)
+                        .map(|entry| {
+                            (
+                                entry.draft_id.clone(),
+                                draft_service::DraftEntryFingerprint::from_entry(entry),
+                            )
+                        })
+                        .collect();
+                    b.iter_batched(
+                        || DraftManifest {
+                            drafts: entries.clone(),
+                        },
+                        |mut manifest| {
+                            draft_service::merge_committed_orphan_removals(
+                                black_box(&mut manifest),
+                                black_box(&committed),
+                            );
+                            black_box(manifest)
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+    }
+    scale.finish();
 }
 
 fn bench_recovery_performance(c: &mut Criterion) {

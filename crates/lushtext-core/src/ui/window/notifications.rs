@@ -114,8 +114,20 @@ impl LushtextWindow {
         }
     }
 
+    /// Resolve this editor's info bar without dismissing its other surfaces.
+    pub(super) fn resolve_editor_inline_notification(&self, editor: &LushtextEditorPage) {
+        let owner = NotificationOwner::Editor(editor.notification_owner_id());
+        let surface = NotificationSurface::EditorInfoBar(editor.notification_owner_id());
+        if self.imp().notification_bus.resolve(owner, surface) {
+            self.render_notifications();
+        }
+    }
+
+    /// Start the window-owned expiry sweep on GTK's local main loop.
     pub(super) fn start_notification_sweep_timer(&self) {
         let window_weak = self.downgrade();
+        // The weak reference keeps this recurring source from retaining a
+        // destroyed window; `Break` removes it when upgrade fails.
         let source_id = glib::timeout_add_local(Duration::from_secs(1), move || {
             let Some(window) = window_weak.upgrade() else {
                 return glib::ControlFlow::Break;

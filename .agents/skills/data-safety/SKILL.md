@@ -39,6 +39,14 @@ Automatic guidance must not create or encourage responsiveness regressions.
 - For draft autosave, clear `draft_dirty` only after the matching snapshot and
   background write are accepted for the same editor generation. Failed draft
   file or manifest writes must leave the editor retryable.
+- Keep multi-tab draft passes backpressured to one complete body at a time, and
+  enforce the automatic-recovery limit inside the read itself rather than only
+  through an earlier metadata probe. Aggregate-preload skips must retain compact
+  lazy markers until slow session loads can enter the serialized restore queue.
+- For draft orphan cleanup, separate bounded inspection from mutation, reload
+  the latest trusted manifest, and merge only committed exact fingerprints.
+  Body deletion must hold the stable target guard and recheck the inspected
+  inode so an atomic autosave replacement survives the body/manifest gap.
 - For Replace All undo, visible in-memory undo state can update immediately,
   but disk save/delete work must be generation-guarded so delayed persistence
   cannot resurrect stale backups or clear a newer one.

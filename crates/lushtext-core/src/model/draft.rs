@@ -31,6 +31,7 @@ pub struct DraftEntry {
 /// Loaded at startup and kept in memory; written atomically on each update.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftManifest {
+    /// Persisted entries keyed logically by draft ID; `upsert` replaces generations.
     pub drafts: Vec<DraftEntry>,
 }
 
@@ -48,6 +49,11 @@ pub enum PreloadedDraftRestore {
     SkipStaleFile,
     /// The draft remains on disk but is too large to apply automatically.
     SkipOversized,
+    /// The draft is individually eligible but did not fit the eager startup budget.
+    ///
+    /// The window recreates the tab first, then admits this body through its
+    /// serialized lazy-read queue so several large recovery bodies cannot pile up.
+    LazyAggregateBudget,
 }
 
 /// Result of validating a file-backed draft against its current backing file.

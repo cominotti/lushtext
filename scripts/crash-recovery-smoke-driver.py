@@ -38,7 +38,9 @@ WIDTH = 1280
 HEIGHT = 860
 FILE_BACKED_MARKER = "CRASH_SMOKE_FILE_BACKED_DRAFT_RESTORED"
 UNTITLED_MARKER = "CRASH_SMOKE_UNTITLED_DRAFT_RESTORED"
+RETRYABLE_UNTITLED_MARKER = "CRASH_SMOKE_NEWER_UNACCEPTED_GENERATION"
 BOOKMARK_WARNING = "Some bookmark data could not be loaded"
+LAZY_DRAFT_FIXTURE_BYTES = 32 * 1024 * 1024 + 1
 
 
 OWNED_ARTIFACT_NAMES = {
@@ -456,7 +458,16 @@ def internal_run(args: argparse.Namespace) -> int:
             terminate_process(process)
 
 
-def bus_call(bus, dest: str, path: str, iface: str, method: str, params=None, reply: str | None = None):
+def bus_call(
+    bus,
+    dest: str,
+    path: str,
+    iface: str,
+    method: str,
+    params=None,
+    reply: str | None = None,
+    timeout_msec: int = 10000,
+):
     from gi.repository import Gio, GLib
 
     return bus.call_sync(
@@ -467,13 +478,13 @@ def bus_call(bus, dest: str, path: str, iface: str, method: str, params=None, re
         params,
         GLib.VariantType.new(reply) if reply else None,
         Gio.DBusCallFlags.NONE,
-        10000,
+        timeout_msec,
         None,
     )
 
 
 def wait_for_window_actions(bus) -> None:
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 60
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
@@ -493,7 +504,7 @@ def wait_for_window_actions(bus) -> None:
 
 
 def wait_for_automation_object(bus) -> None:
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 60
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
@@ -512,7 +523,7 @@ def wait_for_automation_object(bus) -> None:
     raise RuntimeError(f"LushText did not export Automation1: {last_error}")
 
 
-def automation_call(bus, method: str, params=None, reply: str = "(s)"):
+def automation_call(bus, method: str, params=None, reply: str = "(s)", timeout_msec: int = 10000):
     return bus_call(
         bus,
         APP_ID,
@@ -521,6 +532,7 @@ def automation_call(bus, method: str, params=None, reply: str = "(s)"):
         method,
         params,
         reply,
+        timeout_msec,
     )
 
 
@@ -532,6 +544,7 @@ def wait_for_ready(bus, artifact_dir: Path, predicate: str, timeout_msec: int) -
         "WaitForReady",
         GLib.Variant("(su)", (predicate, timeout_msec)),
         "(bss)",
+        max(10000, timeout_msec + 5000),
     ).unpack()
     with (artifact_dir / "assertions/automation-waits.txt").open("a", encoding="utf-8") as waits:
         waits.write(f"predicate={predicate} ok={ok} status={status} detail={detail}\n")
@@ -785,18 +798,67 @@ def wait_for_relaunch_metadata(data_dir: Path, file_backed: Path) -> None:
     raise RuntimeError(f"Timed out waiting for relaunched session metadata: {last_state}")
 
 
-def wait_for_visible_untitled(artifact_dir: Path, app_env: dict[str, str]) -> str:
-    deadline = time.monotonic() + 15
-    last_listing = ""
-    while time.monotonic() < deadline:
-        last_listing = list_editable_text(artifact_dir, app_env, "relaunch")
-        if UNTITLED_MARKER in last_listing:
-            return last_listing
-        time.sleep(0.4)
-    raise RuntimeError(
-        "Timed out waiting for visible restored untitled draft content. "
-        f"Last editable listing:\n{last_listing}"
+def expand_accepted_drafts_for_lazy_restore(data_dir: Path, artifact_dir: Path) -> None:
+    """Grow two accepted bodies past the aggregate cap without changing identity."""
+    manifest = public_json_data(load_json(data_dir / "drafts/manifest.json"))
+    entries = manifest.get("drafts", [])
+    selected = [
+        entry
+        for entry in entries
+        if isinstance(entry.get("draft_id"), str)
+        and (entry.get("original_path") is None or isinstance(entry.get("original_path"), str))
+    ][:2]
+    if len(selected) != 2:
+        raise RuntimeError(f"expected two accepted drafts for lazy fixture, found: {entries!r}")
+    rows = []
+    padding = b" " * (1024 * 1024)
+    for entry in selected:
+        draft_id = entry["draft_id"]
+        path = data_dir / "drafts" / f"{draft_id}.draft"
+        original_size = path.stat().st_size
+        if original_size > LAZY_DRAFT_FIXTURE_BYTES:
+            raise RuntimeError(f"accepted draft already exceeds lazy fixture size: {path}")
+        remaining = LAZY_DRAFT_FIXTURE_BYTES - original_size
+        with path.open("ab") as stream:
+            while remaining:
+                chunk = padding[: min(remaining, len(padding))]
+                stream.write(chunk)
+                remaining -= len(chunk)
+        rows.append(
+            {
+                "draft_id": draft_id,
+                "original_path": entry.get("original_path"),
+                "bytes": path.stat().st_size,
+            }
+        )
+    total = sum(row["bytes"] for row in rows)
+    if total <= 64 * 1024 * 1024 or any(row["bytes"] > 64 * 1024 * 1024 for row in rows):
+        raise RuntimeError(f"lazy aggregate fixture violated recovery budgets: {rows!r}")
+    (artifact_dir / "assertions/lazy-aggregate-fixture.json").write_text(
+        json.dumps({"total_bytes": total, "drafts": rows}, indent=2) + "\n",
+        encoding="utf-8",
     )
+
+
+def assert_accepted_untitled_draft_body(data_dir: Path) -> str:
+    """Verify the accepted body without asking AT-SPI to marshal 32 MiB of text."""
+    manifest = public_json_data(load_json(data_dir / "drafts/manifest.json"))
+    entry = next(
+        (draft for draft in manifest.get("drafts", []) if draft.get("original_path") is None),
+        None,
+    )
+    if entry is None:
+        raise RuntimeError("manifest no longer contains the accepted untitled draft")
+    draft_id = entry.get("draft_id")
+    if not isinstance(draft_id, str) or not draft_id:
+        raise RuntimeError(f"invalid untitled draft id in manifest entry: {entry!r}")
+    path = data_dir / "drafts" / f"{draft_id}.draft"
+    prefix = path.open("rb").read(4096).decode("utf-8", errors="replace")
+    if UNTITLED_MARKER not in prefix:
+        raise RuntimeError(f"accepted untitled draft did not contain {UNTITLED_MARKER}")
+    if RETRYABLE_UNTITLED_MARKER in prefix:
+        raise RuntimeError("retryable pre-debounce generation replaced the accepted draft body")
+    return prefix
 
 
 def assert_file_backed_draft_body(data_dir: Path, file_backed: Path) -> None:
@@ -815,25 +877,21 @@ def assert_file_backed_draft_body(data_dir: Path, file_backed: Path) -> None:
     if not isinstance(draft_id, str) or not draft_id:
         raise RuntimeError(f"invalid file-backed draft id in manifest entry: {entry!r}")
     draft_path = data_dir / "drafts" / f"{draft_id}.draft"
-    draft_body = draft_path.read_text(encoding="utf-8", errors="replace")
+    draft_body = draft_path.open("rb").read(4096).decode("utf-8", errors="replace")
     if FILE_BACKED_MARKER not in draft_body:
         raise RuntimeError(f"file-backed draft body did not contain {FILE_BACKED_MARKER}")
 
 
 def wait_for_sidecar_recovery_evidence(data_dir: Path, artifact_dir: Path, app_env: dict[str, str]) -> None:
-    deadline = time.monotonic() + 10
-    last_tree = ""
+    del artifact_dir, app_env
+    deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         quarantine_dir = data_dir / "recovery-quarantine"
         quarantine_files = list(quarantine_dir.rglob("*")) if quarantine_dir.exists() else []
-        last_tree = dump_atspi_tree(artifact_dir, app_env, "relaunch-bookmarks")
-        if quarantine_files or BOOKMARK_WARNING in last_tree:
+        if quarantine_files:
             return
-        time.sleep(0.5)
-    raise RuntimeError(
-        "Timed out waiting for corrupt bookmark sidecar recovery evidence. "
-        f"Last AT-SPI tree excerpt:\n{last_tree[-2000:]}"
-    )
+        time.sleep(0.25)
+    raise RuntimeError("Timed out waiting for persisted bookmark quarantine evidence")
 
 
 def assert_relaunch_automation_snapshot(
@@ -857,6 +915,8 @@ def assert_relaunch_automation_snapshot(
         raise RuntimeError(f"Restored file tab did not report draft metadata: {file_tab!r}")
     if not untitled_tab.get("draft_present"):
         raise RuntimeError(f"Restored untitled tab did not report draft metadata: {untitled_tab!r}")
+    if not untitled_tab.get("modified"):
+        raise RuntimeError(f"Lazy restored untitled tab was not applied as modified: {untitled_tab!r}")
     if window.get("active_tab_index") != untitled_tab.get("index"):
         raise RuntimeError(
             "Automation snapshot did not preserve the restored active untitled tab: "
@@ -1240,6 +1300,12 @@ def mutter_child(args: argparse.Namespace) -> int:
         )
         wait_for_recovery_metadata(data_dir, file_backed)
         snapshot_metadata(data_dir, artifact_dir / "metadata/before-crash")
+        set_editor_text(
+            artifact_dir,
+            app_env,
+            "untitled-newer-unaccepted",
+            f"{RETRYABLE_UNTITLED_MARKER}\nThis edit is killed before the 750ms acceptance window.\n",
+        )
         os.kill(first_app.pid, signal.SIGKILL)
         first_app.wait(timeout=5)
         (artifact_dir / "assertions/sigkill.txt").write_text(
@@ -1251,16 +1317,18 @@ def mutter_child(args: argparse.Namespace) -> int:
     finally:
         terminate_process(first_app)
 
+    expand_accepted_drafts_for_lazy_restore(data_dir, artifact_dir)
+
     relaunch = launch_app(args, artifact_dir, "after-relaunch", [])
     try:
         wait_for_window_actions(bus)
         wait_for_automation_object(bus)
-        wait_for_ready(bus, artifact_dir, "recovery-restore-complete", 15000)
+        wait_for_ready(bus, artifact_dir, "recovery-restore-complete", 60000)
         wait_for_relaunch_metadata(data_dir, file_backed)
-        visible_listing = wait_for_visible_untitled(artifact_dir, app_env)
+        accepted_untitled_prefix = assert_accepted_untitled_draft_body(data_dir)
         assert_file_backed_draft_body(data_dir, file_backed)
         (artifact_dir / "assertions/relaunch-visible-content.txt").write_text(
-            visible_listing,
+            accepted_untitled_prefix,
             encoding="utf-8",
         )
 

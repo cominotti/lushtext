@@ -42,6 +42,10 @@ type FileLoadedCallback = Box<dyn Fn()>;
 type NotesChangedCallback = Box<dyn Fn()>;
 type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
 
+// GTK callbacks receive shared `&self` references because several widget-tree
+// owners may reference one object. State groups use `Cell` for Copy values and
+// `RefCell` for runtime-checked mutation of owned values.
+
 /// Coalesced end-of-document overscroll updates for one editor tab.
 ///
 /// `LushtextEditorPage` is a `GtkBox` subclass, and GTK4 never invokes the
@@ -100,6 +104,11 @@ pub struct DraftState {
     pub draft_id: RefCell<Option<String>>,
     /// Whether this tab is currently showing draft-restored content.
     pub draft_restored: Cell<bool>,
+    /// Whether automatic recovery is paused after a snapshot exceeded policy.
+    ///
+    /// The warning stays set until a later matching generation is accepted by
+    /// both the body writer and manifest commit.
+    pub automatic_recovery_limited: Cell<bool>,
 }
 
 /// Save lifecycle state for one editor tab.
@@ -314,6 +323,8 @@ pub struct LocalHistoryState {
 /// `&self` because multiple parts of the widget tree hold references
 /// simultaneously; `Cell` and `RefCell` provide the required interior
 /// mutability.
+// `CompositeTemplate` loads the compiled XML resource; `TemplateChild` fields
+// are populated automatically from matching widget IDs during initialization.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/editor-page.ui")]
 pub struct LushtextEditorPage {

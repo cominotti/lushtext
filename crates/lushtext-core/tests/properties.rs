@@ -7,6 +7,8 @@
 //! generated inputs and leaves GTK widgets, compositor behavior, and live
 //! session flows to the existing widget harness.
 
+#[path = "properties/draft_orphan_cleanup.rs"]
+mod draft_orphan_cleanup;
 #[path = "properties/durable_write_metadata.rs"]
 mod durable_write_metadata;
 #[path = "properties/editor_formatting.rs"]

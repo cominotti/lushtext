@@ -73,6 +73,8 @@ impl LushtextEditorPage {
     /// Panics if the template wiring ever swaps the editor buffer away from
     /// the expected `sourceview5::Buffer` type.
     pub fn buffer(&self) -> sourceview5::Buffer {
+        // GtkSourceView exposes the generic GtkTextBuffer API. This checked
+        // GObject cast confirms source-specific behavior is available.
         self.source_view()
             .buffer()
             .downcast::<sourceview5::Buffer>()
@@ -411,6 +413,23 @@ impl LushtextEditorPage {
 
     pub fn set_draft_restored(&self, restored: bool) {
         self.imp().draft.draft_restored.set(restored);
+    }
+
+    /// Whether automatic crash recovery is currently behind this dirty buffer.
+    #[must_use]
+    pub(crate) fn automatic_recovery_limited(&self) -> bool {
+        self.imp().draft.automatic_recovery_limited.get()
+    }
+
+    /// Track the document-scoped automatic-recovery limit warning state.
+    pub(crate) fn set_automatic_recovery_limited(&self, limited: bool) {
+        self.imp().draft.automatic_recovery_limited.set(limited);
+    }
+
+    /// Current file-load generation used to reject stale lazy draft completions.
+    #[must_use]
+    pub(crate) fn load_generation(&self) -> u64 {
+        self.imp().load_generation.get()
     }
 
     /// Apply EditorConfig formatting overrides and update the view.

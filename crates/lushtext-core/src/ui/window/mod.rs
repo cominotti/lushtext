@@ -37,10 +37,15 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 
+pub use drafts::DraftFlushError;
+
 #[cfg(feature = "test-utils")]
 pub use documents::set_canonical_refresh_delay_for_test;
 #[cfg(feature = "test-utils")]
-pub use drafts::set_first_dirty_autosave_delay_for_test;
+pub use drafts::{
+    set_automatic_draft_limit_for_test, set_first_dirty_autosave_delay_for_test,
+    set_lazy_draft_read_delay_for_test,
+};
 #[cfg(feature = "test-utils")]
 pub use encoding::set_lossy_encoding_analysis_delay_for_test;
 #[cfg(feature = "test-utils")]
@@ -173,6 +178,8 @@ impl LushtextWindow {
         {
             let sm = style_manager.clone();
             let s = settings.clone();
+            // GTK signals are observer callbacks; every radio toggle emits, so
+            // persist only when this button becomes active.
             light_btn.connect_toggled(move |btn| {
                 if btn.is_active() {
                     sm.set_color_scheme(libadwaita::ColorScheme::ForceLight);
@@ -206,6 +213,8 @@ impl LushtextWindow {
             tracing::error!("setup_theme_selector: primary_menu_button has no popover");
             return;
         };
+        // MenuButton exposes the generic popover base. The runtime-checked
+        // GObject cast unlocks PopoverMenu APIs only for the expected template.
         let Ok(popover_menu) = popover.downcast::<gtk4::PopoverMenu>() else {
             tracing::error!("setup_theme_selector: popover is not a PopoverMenu");
             return;

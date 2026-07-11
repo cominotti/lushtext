@@ -171,6 +171,13 @@ persistence caller must inherit and must not silently drop:
   `EditorSaveError::DurabilityUnconfirmed`. Never swallow an `fsync` error into
   a silent success.
 
+Draft orphan-body cleanup has an additional cross-operation identity contract.
+Inspection records the candidate inode; execution reloads the latest trusted
+manifest, acquires the same stable `TargetWriteGuard` used by atomic replacement,
+then rechecks inode before deletion. Manifest serialization alone is insufficient:
+an autosave may finish replacing the body before it acquires the manifest lock.
+Never delete a planned orphan body using only its path or draft ID.
+
 Never set `autoexpand = true` on `GtkTreeListModel`.
 
 When save-time policy rewrites buffer text (for example EditorConfig

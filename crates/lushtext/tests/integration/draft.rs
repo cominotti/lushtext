@@ -9,7 +9,6 @@ use super::common::TestContext;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::services::draft_service;
 use lushtext_core::services::filesystem::fixture;
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 // --- Draft ID generation ---
@@ -125,7 +124,7 @@ fn manifest_upsert_updates_existing() {
 fn cleanup_removes_manifest_entries_without_draft_files() {
     let ctx = TestContext::new();
 
-    let mut manifest = DraftManifest {
+    let manifest = DraftManifest {
         drafts: vec![DraftEntry {
             draft_id: "ghost".into(),
             original_path: Some(PathBuf::from("/gone.rs")),
@@ -134,29 +133,37 @@ fn cleanup_removes_manifest_entries_without_draft_files() {
         }],
     };
 
-    // Create the drafts directory but NOT the draft file
-    fixture::create_dir_all(&draft_service::drafts_dir(ctx.data_dir()));
+    draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
+        .expect("inspection should succeed");
 
-    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
-        .expect("expected operation to succeed");
-    assert_eq!(cleaned, 1);
-    assert!(manifest.drafts.is_empty());
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    assert_eq!(outcome.confirmed_cleaned_count(), 1);
+    assert_eq!(outcome.committed_manifest_removals.len(), 1);
+    assert!(
+        draft_service::load_manifest(ctx.data_dir())
+            .expect("load cleaned manifest")
+            .drafts
+            .is_empty()
+    );
 }
 
 #[test]
 fn cleanup_removes_draft_files_without_manifest_entries() {
     let ctx = TestContext::new();
 
-    // Write a draft file with no manifest entry
     draft_service::write_draft(ctx.data_dir(), "orphan", "stale content")
         .expect("expected operation to succeed");
-    let mut manifest = DraftManifest::default();
+    let manifest = DraftManifest::default();
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
+        .expect("inspection should succeed");
 
-    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
-        .expect("expected operation to succeed");
-    assert_eq!(cleaned, 1);
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
 
-    // File should be gone
+    assert_eq!(outcome.confirmed_cleaned_count(), 1);
+    assert_eq!(outcome.deleted_files.len(), 1);
+
     assert_eq!(
         draft_service::read_draft(ctx.data_dir(), "orphan").expect("expected operation to succeed"),
         None
@@ -167,10 +174,9 @@ fn cleanup_removes_draft_files_without_manifest_entries() {
 fn cleanup_preserves_valid_drafts() {
     let ctx = TestContext::new();
 
-    // Write draft file AND manifest entry
     draft_service::write_draft(ctx.data_dir(), "valid", "content")
         .expect("expected operation to succeed");
-    let mut manifest = DraftManifest {
+    let manifest = DraftManifest {
         drafts: vec![DraftEntry {
             draft_id: "valid".into(),
             original_path: Some(PathBuf::from("/a.rs")),
@@ -179,10 +185,20 @@ fn cleanup_preserves_valid_drafts() {
         }],
     };
 
-    let cleaned = draft_service::cleanup_orphans(ctx.data_dir(), &mut manifest)
-        .expect("expected operation to succeed");
-    assert_eq!(cleaned, 0);
-    assert_eq!(manifest.drafts.len(), 1);
+    draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
+        .expect("inspection should succeed");
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    assert_eq!(outcome.confirmed_cleaned_count(), 0);
+    assert_eq!(
+        outcome
+            .latest_persisted_manifest
+            .expect("trusted latest manifest")
+            .drafts
+            .len(),
+        1
+    );
     assert_eq!(
         draft_service::read_draft(ctx.data_dir(), "valid").expect("expected operation to succeed"),
         Some("content".into())
@@ -283,99 +299,236 @@ fn delete_nonexistent_draft_is_ok() {
         .expect("expected operation to succeed");
 }
 
-// --- Merge-back pattern for deferred orphan cleanup ---
-// These tests validate the logic used by schedule_orphan_cleanup:
-// run cleanup_orphans on a snapshot, compute removed IDs, apply removals
-// to the live manifest. Entries added concurrently must survive.
+// --- Revalidation and partial outcomes ---
 
 #[test]
-fn cleanup_merge_back_preserves_concurrent_additions() {
+fn cleanup_preserves_body_when_manifest_entry_appears_after_inspection() {
     let ctx = TestContext::new();
-
-    // Initial manifest: one valid entry + one orphan (no draft file).
-    let valid_entry = DraftEntry {
-        draft_id: "valid".into(),
-        original_path: Some(PathBuf::from("/a.rs")),
-        original_mtime_secs: None,
-        saved_at_secs: 1000,
-    };
-    let orphan_entry = DraftEntry {
+    draft_service::write_draft(ctx.data_dir(), "orphan", "new recovery body")
+        .expect("write orphan candidate");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
+        .expect("inspection should succeed");
+    let new_entry = DraftEntry {
         draft_id: "orphan".into(),
-        original_path: Some(PathBuf::from("/gone.rs")),
-        original_mtime_secs: None,
-        saved_at_secs: 1000,
-    };
-    draft_service::write_draft(ctx.data_dir(), "valid", "content")
-        .expect("expected operation to succeed");
-    // Don't create file for "orphan" — it will be cleaned up.
-
-    // Snapshot (simulating the clone before background work).
-    let mut snapshot = DraftManifest {
-        drafts: vec![valid_entry.clone(), orphan_entry.clone()],
-    };
-    // Run cleanup on the snapshot (simulating background thread).
-    draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot)
-        .expect("expected operation to succeed");
-
-    let ids_after: HashSet<&str> = snapshot
-        .drafts
-        .iter()
-        .map(|e| e.draft_id.as_str())
-        .collect();
-    let removed: Vec<String> = [&valid_entry, &orphan_entry]
-        .into_iter()
-        .map(|entry| entry.draft_id.clone())
-        .filter(|id| !ids_after.contains(id.as_str()))
-        .collect();
-
-    assert_eq!(removed, vec!["orphan".to_string()]);
-
-    // Simulate a concurrent addition to the live manifest (e.g., autosave
-    // added a new entry while cleanup was running in the background).
-    let concurrent_entry = DraftEntry {
-        draft_id: "new_during_cleanup".into(),
         original_path: Some(PathBuf::from("/new.rs")),
         original_mtime_secs: None,
         saved_at_secs: 2000,
     };
-    let mut live_manifest = DraftManifest {
-        drafts: vec![valid_entry, orphan_entry, concurrent_entry],
-    };
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: vec![new_entry.clone()],
+        },
+    )
+    .expect("commit concurrent manifest entry");
 
-    // Apply removals to the live manifest (simulating the main-thread callback).
-    live_manifest
-        .drafts
-        .retain(|e| !removed.contains(&e.draft_id));
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
 
-    // The concurrent addition must survive.
-    assert_eq!(live_manifest.drafts.len(), 2);
-    assert!(live_manifest.find_by_id("valid").is_some());
-    assert!(live_manifest.find_by_id("new_during_cleanup").is_some());
-    assert!(live_manifest.find_by_id("orphan").is_none());
+    assert!(outcome.deleted_files.is_empty());
+    assert_eq!(
+        draft_service::read_draft(ctx.data_dir(), "orphan").expect("read retained body"),
+        Some("new recovery body".to_string())
+    );
+    assert_eq!(
+        draft_service::load_manifest(ctx.data_dir())
+            .expect("load latest manifest")
+            .drafts,
+        vec![new_entry]
+    );
 }
 
 #[test]
-fn cleanup_merge_back_empty_removal_is_noop() {
-    // When cleanup removes nothing, the live manifest is untouched.
+fn cleanup_preserves_new_orphan_body_generation_written_after_inspection() {
     let ctx = TestContext::new();
+    draft_service::write_draft(ctx.data_dir(), "orphan", "old body").expect("write inspected body");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
+        .expect("inspect old body generation");
+    draft_service::write_draft(ctx.data_dir(), "orphan", "new body")
+        .expect("replace body atomically");
 
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    assert!(outcome.deleted_files.is_empty());
+    assert!(outcome.retained.iter().any(|retained| {
+        retained.draft_id.as_deref() == Some("orphan")
+            && retained.reason
+                == draft_service::DraftOrphanCleanupRetentionReason::BodyGenerationChanged
+    }));
+    assert_eq!(
+        draft_service::read_draft(ctx.data_dir(), "orphan").expect("read newer body"),
+        Some("new body".to_string())
+    );
+}
+
+#[test]
+fn cleanup_preserves_manifest_when_body_reappears_after_inspection() {
+    let ctx = TestContext::new();
     let entry = DraftEntry {
-        draft_id: "good".into(),
-        original_path: Some(PathBuf::from("/a.rs")),
+        draft_id: "reappeared".into(),
+        original_path: None,
         original_mtime_secs: None,
         saved_at_secs: 1000,
     };
-    draft_service::write_draft(ctx.data_dir(), "good", "content")
-        .expect("expected operation to succeed");
-
-    let mut snapshot = DraftManifest {
-        drafts: vec![entry],
+    let manifest = DraftManifest {
+        drafts: vec![entry.clone()],
     };
-    draft_service::cleanup_orphans(ctx.data_dir(), &mut snapshot)
-        .expect("expected operation to succeed");
+    draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
+        .expect("inspection should find missing body");
+    draft_service::write_draft(ctx.data_dir(), "reappeared", "new body")
+        .expect("write concurrent body");
 
-    assert_eq!(snapshot.drafts.len(), 1);
-    assert!(snapshot.find_by_id("good").is_some());
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    assert!(outcome.committed_manifest_removals.is_empty());
+    assert_eq!(
+        draft_service::load_manifest(ctx.data_dir())
+            .expect("load retained manifest")
+            .drafts,
+        vec![entry]
+    );
+}
+
+#[test]
+fn cleanup_preserves_newer_same_id_generation() {
+    let ctx = TestContext::new();
+    let old = DraftEntry {
+        draft_id: "same".into(),
+        original_path: Some(PathBuf::from("/old.rs")),
+        original_mtime_secs: Some(1),
+        saved_at_secs: 1,
+    };
+    let newer = DraftEntry {
+        draft_id: "same".into(),
+        original_path: Some(PathBuf::from("/new.rs")),
+        original_mtime_secs: Some(2),
+        saved_at_secs: 2,
+    };
+    let old_manifest = DraftManifest { drafts: vec![old] };
+    draft_service::save_manifest(ctx.data_dir(), &old_manifest).expect("seed old manifest");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &old_manifest)
+        .expect("inspect old generation");
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: vec![newer.clone()],
+        },
+    )
+    .expect("commit newer generation");
+
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    assert!(outcome.committed_manifest_removals.is_empty());
+    assert_eq!(
+        draft_service::load_manifest(ctx.data_dir())
+            .expect("load newer manifest")
+            .drafts,
+        vec![newer]
+    );
+}
+
+#[test]
+fn cleanup_reports_already_absent_body_without_counting_deletion() {
+    let ctx = TestContext::new();
+    draft_service::write_draft(ctx.data_dir(), "vanished", "body").expect("write body");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
+        .expect("inspect body");
+    fixture::remove_file(&draft_service::drafts_dir(ctx.data_dir()).join("vanished.draft"));
+
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    assert_eq!(outcome.already_absent_files.len(), 1);
+    assert_eq!(outcome.confirmed_cleaned_count(), 0);
+}
+
+#[test]
+fn cleanup_reports_partial_success_without_counting_retained_body() {
+    let ctx = TestContext::new();
+    draft_service::write_draft(ctx.data_dir(), "deleted", "body").expect("write first body");
+    draft_service::write_draft(ctx.data_dir(), "changed", "body").expect("write second body");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
+        .expect("inspect both bodies");
+    let changed_path = draft_service::drafts_dir(ctx.data_dir()).join("changed.draft");
+    fixture::remove_file(&changed_path);
+    fixture::create_dir_all(&changed_path);
+
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    assert_eq!(outcome.deleted_files.len(), 1);
+    assert_eq!(outcome.confirmed_cleaned_count(), 1);
+    assert!(outcome.retained.iter().any(|retained| {
+        retained.draft_id.as_deref() == Some("changed")
+            && retained.reason
+                == draft_service::DraftOrphanCleanupRetentionReason::BodyNotRegularFile
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_reports_delete_failure_and_preserves_body() {
+    let ctx = TestContext::new();
+    draft_service::write_draft(ctx.data_dir(), "blocked", "body").expect("write body");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
+        .expect("inspect body");
+    let drafts = draft_service::drafts_dir(ctx.data_dir());
+    // Remove directory write permission to force deletion failure; restore
+    // owner access immediately after execution so fixture cleanup remains safe.
+    fixture::set_mode(&drafts, 0o555);
+
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    fixture::set_mode(&drafts, 0o700);
+    assert!(outcome.deleted_files.is_empty());
+    assert!(
+        outcome
+            .failures
+            .iter()
+            .any(|failure| matches!(failure, draft_service::DraftOrphanCleanupFailure::Delete(_)))
+    );
+    assert!(
+        draft_service::read_draft(ctx.data_dir(), "blocked")
+            .expect("read retained body")
+            .is_some()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_reports_manifest_write_failure_without_committing_removal() {
+    let ctx = TestContext::new();
+    let entry = DraftEntry {
+        draft_id: "ghost".into(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1,
+    };
+    let manifest = DraftManifest {
+        drafts: vec![entry.clone()],
+    };
+    draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
+    let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
+        .expect("inspect missing body");
+    let drafts = draft_service::drafts_dir(ctx.data_dir());
+    // Keep the manifest readable but block atomic replacement, then restore
+    // owner access immediately after the failure is captured.
+    fixture::set_mode(&drafts, 0o555);
+
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+
+    fixture::set_mode(&drafts, 0o700);
+    assert!(outcome.committed_manifest_removals.is_empty());
+    assert!(outcome.failures.iter().any(|failure| matches!(
+        failure,
+        draft_service::DraftOrphanCleanupFailure::Manifest(
+            draft_service::DraftOrphanCleanupManifestError::Write { .. }
+        )
+    )));
+    assert_eq!(
+        draft_service::load_manifest(ctx.data_dir())
+            .expect("load unmodified manifest")
+            .drafts,
+        vec![entry]
+    );
 }
 
 // --- Batch draft preload (used by load_session_and_drafts) ---

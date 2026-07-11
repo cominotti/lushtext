@@ -683,7 +683,7 @@ fn window_readiness_blocker(
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.drafts.autosave_inflight.get(),
+        window.draft_workflow_blocks_readiness(),
         READINESS_BLOCKER_DRAFT_AUTOSAVE,
     ) {
         return Some(blocker);

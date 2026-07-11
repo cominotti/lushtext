@@ -6,6 +6,7 @@
 //! split-view persistence, and the callback glue that binds the sidebar,
 //! command palette, session restore, and notifications into one shell.
 
+use super::drafts::LazyDraftRestoreCandidate;
 use super::notes::ActiveNotesBrowser;
 use crate::config::{self, keys};
 use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
@@ -13,6 +14,7 @@ use crate::model::recent_document::RecentDocumentEntry;
 use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
 use crate::ui::accessibility;
+use crate::ui::buffer_snapshot::BufferSnapshotCancellation;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
@@ -29,7 +31,7 @@ use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::AdwApplicationWindowExt;
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 /// Tiny non-zero floor used only before the first real split-view sync.
@@ -242,10 +244,24 @@ pub struct DraftState {
     pub autosave_inflight: Cell<bool>,
     /// Whether another autosave pass is needed after the in-flight batch finishes.
     pub autosave_pending: Cell<bool>,
+    /// Cancellation token for the current autosave buffer copy, if any.
+    pub(crate) autosave_snapshot_cancellation: RefCell<Option<BufferSnapshotCancellation>>,
+    /// Cancellation token for the current close-time buffer copy, if any.
+    pub(crate) close_snapshot_cancellation: RefCell<Option<BufferSnapshotCancellation>>,
     /// Draft IDs explicitly discarded during an in-progress close flow.
     /// These must not be re-written by `flush_dirty_drafts()` right before the
     /// window is destroyed.
     pub close_discard_ids: RefCell<HashSet<String>>,
+    /// Serialized startup reads skipped only by the aggregate eager budget.
+    pub(super) lazy_restore_queue: RefCell<VecDeque<LazyDraftRestoreCandidate>>,
+    /// Whether one lazy draft body is currently crossing the worker boundary.
+    pub(super) lazy_restore_inflight: Cell<bool>,
+    /// Number of complete autosave bodies currently held across a worker handoff.
+    #[cfg(feature = "test-utils")]
+    pub retained_complete_bodies: Cell<usize>,
+    /// Peak complete-body count observed by the current test process.
+    #[cfg(feature = "test-utils")]
+    pub max_retained_complete_bodies: Cell<usize>,
 }
 
 /// Startup data-flow gate state owned by the window shell.
@@ -288,6 +304,7 @@ pub struct TabManagementState {
     /// Shared `GMenu` model reused for the Adwaita tab context menu.
     pub context_menu: gio::Menu,
     /// The tab page whose context menu is currently being prepared or shown.
+    /// A weak handle prevents menu state from retaining a detached tab.
     pub target_page: RefCell<Option<glib::WeakRef<libadwaita::TabPage>>>,
     /// Pages already confirmed through the combined bulk-close dialog.
     ///
@@ -317,6 +334,8 @@ impl Default for TabManagementState {
 /// Owns the mounted window surfaces, adaptive split views, tab view, transient
 /// controls, and long-lived workflow state that coordinates editor tabs with
 /// the sidebar, search, preview, and status bar.
+// `CompositeTemplate` loads the compiled window resource; `TemplateChild`
+// fields are populated from matching IDs during GObject initialization.
 #[derive(CompositeTemplate)]
 #[template(resource = "/dev/cominotti/lushtext/ui/window.ui")]
 pub struct LushtextWindow {
@@ -964,6 +983,14 @@ impl ObjectImpl for LushtextWindow {
     fn dispose(&self) {
         if let Some(source_id) = self.drafts.autosave_source_id.take() {
             source_id.remove();
+        }
+        // Chunked snapshots have later GTK slices queued. Cancel before the
+        // window's workflow state is torn down so none can resume after dispose.
+        if let Some(cancellation) = self.drafts.autosave_snapshot_cancellation.take() {
+            cancellation.cancel();
+        }
+        if let Some(cancellation) = self.drafts.close_snapshot_cancellation.take() {
+            cancellation.cancel();
         }
         if let Some(source_id) = self.notification_sweep_source_id.take() {
             source_id.remove();

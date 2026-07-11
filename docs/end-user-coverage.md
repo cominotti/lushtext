@@ -127,7 +127,8 @@ they are not default PR gates:
   state, creates file-backed and untitled draft/session recovery data through
   GTK, sends `SIGKILL`, relaunches with the same data directory, waits for
   Automation1 `recovery-restore-complete`, asserts restored tabs, draft
-  metadata, and recovery diagnostics from the relaunch snapshot, and preserves
+  metadata, accepted-versus-retryable generations, aggregate-cap lazy restore,
+  and recovery diagnostics from the relaunch snapshot, and preserves
   before/after metadata summaries, logs, assertions, a bounded scenario
   manifest, and a relaunch screenshot.
 - `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,

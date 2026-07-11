@@ -21,6 +21,15 @@ Important files and directories:
   scroll position, and pinned state.
 - `drafts/manifest.json` maps draft IDs to file-backed or untitled draft files.
 - `drafts/*.draft` stores unsaved buffer text as plain UTF-8.
+
+Draft autosave and close safety keep at most one complete recovery body in the
+pipeline at a time. A generation becomes protected only after its body and the
+shared manifest update are durably accepted; snapshot, body, and manifest
+failures leave the editor retryable. Automatic recovery accepts at most 64 MiB
+of UTF-8 per draft. Startup eagerly admits at most 64 MiB across all bodies, then
+serializes individually eligible aggregate-cap skips through lazy reads with
+draft identity, file freshness, editor lifetime, dirty-generation, and
+load-generation checks.
 - `bookmarks/`, `document-notes/`, and `folder-notes/` store per-identity
   JSON sidecars; older `workspace-notes/` sidecars remain legacy-compatible
   folder-note data.

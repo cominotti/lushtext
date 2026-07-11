@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Draft persistence service — save and restore unsaved buffer content.
+//! Draft persistence, startup recovery, and conservative orphan cleanup.
 //!
-//! All functions perform blocking I/O and must be called from a background
-//! thread via `spawn_blocking_then`. Drafts are stored as plain UTF-8 text
-//! files in `$XDG_DATA_HOME/lushtext/drafts/`, with a JSON manifest mapping
-//! draft IDs to original file paths and metadata.
+//! Filesystem-facing operations perform blocking I/O and must run through
+//! `spawn_blocking_then`. Cleanup evidence types and merge helpers are GTK-free;
+//! inspection reads persisted state but mutates nothing. Draft bodies are plain
+//! UTF-8 files beside a JSON manifest under `$XDG_DATA_HOME/lushtext/drafts/`.
 
 use crate::model::draft::{
     DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
@@ -21,8 +21,9 @@ use crate::services::recovery_metadata::{
 use crate::services::{
     editor_io,
     filesystem::{
-        DirectoryScanPolicy, WriteLabel, metadata as fs_metadata, mutate as fs_mutate,
-        read as fs_read, tree as fs_tree, write as fs_write,
+        DirectoryScanPolicy, FileKind, MutationOutcome, PathStatus, WriteLabel,
+        metadata as fs_metadata, mutate as fs_mutate, read as fs_read, tree as fs_tree,
+        write as fs_write,
     },
     session_service,
 };
@@ -31,13 +32,21 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+/// Groups manifest and bodies in one app-owned directory for bounded cleanup scans.
 const DRAFTS_DIR: &str = "drafts";
+/// Envelope-backed manifest filename stored beside draft bodies.
 const MANIFEST_FILE: &str = "manifest.json";
-/// Maximum eager draft body bytes loaded during startup restore.
+/// Largest UTF-8 draft body that LushText can automatically write and restore.
 ///
-/// Draft files remain on disk when this cap is reached; the limit only protects
-/// startup memory before normal editor buffer accounting is active.
-pub const MAX_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
+/// Sixty-four MiB keeps one recovery body bounded on ordinary desktop systems.
+/// Capture and read paths must share this policy so the app never promises a
+/// draft that startup would later refuse to restore.
+pub const MAX_AUTOMATIC_DRAFT_BYTES: u64 = 64 * 1024 * 1024;
+/// Total draft-body bytes admitted eagerly during one startup restore.
+///
+/// This separate sixty-four MiB budget protects startup peak memory. Drafts
+/// skipped only by this aggregate cap remain eligible for serialized lazy reads.
+pub const MAX_EAGER_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum draft files inspected while rebuilding a missing or corrupt manifest.
 ///
 /// Repair runs during startup restore, so it must be bounded. The cap is large
@@ -46,9 +55,14 @@ pub const MAX_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_REPAIR_DRAFT_SCAN: usize = 2048;
 /// Maximum draft files inspected while cleaning orphan draft bodies after restore.
 ///
-/// Cleanup is deferred and repeatable, so a bounded pass is better than letting a
-/// damaged drafts directory allocate every entry in one worker task.
+/// Matches the 2,048-entry repair bound so deferred cleanup uses the same
+/// bounded metadata and allocation budget.
 pub const MAX_ORPHAN_CLEANUP_DRAFT_SCAN: usize = 2048;
+
+mod cleanup_types;
+#[cfg(test)]
+use cleanup_types::saturating_confirmed_cleanup_count;
+pub use cleanup_types::*;
 
 /// Draft, session, and diagnostics loaded for startup restore.
 #[derive(Debug)]
@@ -76,10 +90,14 @@ pub enum DraftReadError {
     Read { path: PathBuf, detail: String },
 }
 
+/// Admission result under the per-draft and aggregate startup byte budgets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DraftPreloadDecision {
+    /// Read now and charge the body's size to the eager budget.
     Read,
+    /// Preserve on disk because the body exceeds automatic recovery policy.
     SkipOversized,
+    /// Defer because only the aggregate eager budget is exhausted.
     SkipBudget,
 }
 
@@ -158,6 +176,7 @@ pub fn save_manifest(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
     save_manifest_locked(data_dir, manifest)
 }
 
+/// Persist while the caller holds the process-wide manifest write lock.
 fn save_manifest_locked(data_dir: &Path, manifest: &DraftManifest) -> Result<()> {
     let path = manifest_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
@@ -198,7 +217,13 @@ where
 /// This intentionally preserves file-backed session tabs even when their paths
 /// are temporarily unavailable, so startup does not turn a transient mount
 /// outage into permanent session loss on the next save.
+#[must_use]
 pub fn load_restore_state(data_dir: &Path) -> RestoreState {
+    load_restore_state_with_eager_limit(data_dir, MAX_EAGER_DRAFT_PRELOAD_BYTES)
+}
+
+/// Build startup state while charging bodies against a caller-supplied eager budget.
+fn load_restore_state_with_eager_limit(data_dir: &Path, eager_limit: u64) -> RestoreState {
     let session_load = session_service::load_recovering(data_dir);
     let session = session_load.value;
     let mut diagnostics = session_load.diagnostics;
@@ -225,7 +250,7 @@ pub fn load_restore_state(data_dir: &Path) -> RestoreState {
             continue;
         };
         if entry.original_path.is_some() {
-            match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes) {
+            match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes, eager_limit) {
                 DraftPreloadDecision::Read => {}
                 DraftPreloadDecision::SkipOversized => {
                     tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
@@ -234,6 +259,7 @@ pub fn load_restore_state(data_dir: &Path) -> RestoreState {
                 }
                 DraftPreloadDecision::SkipBudget => {
                     tracing::warn!("Skipped eager preload for large draft {draft_id}");
+                    preloaded.insert(draft_id, PreloadedDraftRestore::LazyAggregateBudget);
                     continue;
                 }
             }
@@ -261,7 +287,7 @@ pub fn load_restore_state(data_dir: &Path) -> RestoreState {
             continue;
         }
 
-        match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes) {
+        match draft_preload_decision(data_dir, &draft_id, &mut preloaded_bytes, eager_limit) {
             DraftPreloadDecision::Read => {}
             DraftPreloadDecision::SkipOversized => {
                 tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
@@ -270,6 +296,7 @@ pub fn load_restore_state(data_dir: &Path) -> RestoreState {
             }
             DraftPreloadDecision::SkipBudget => {
                 tracing::warn!("Skipped eager preload for large draft {draft_id}");
+                preloaded.insert(draft_id, PreloadedDraftRestore::LazyAggregateBudget);
                 continue;
             }
         }
@@ -493,20 +520,24 @@ fn apply_manifest_repair_to_missing_load(
     }
 }
 
+/// Classify one body and charge its size only after eager admission succeeds.
 fn draft_preload_decision(
     data_dir: &Path,
     draft_id: &str,
     preloaded_bytes: &mut u64,
+    eager_limit: u64,
 ) -> DraftPreloadDecision {
     let path = drafts_dir(data_dir).join(format!("{draft_id}.draft"));
+    // Metadata is an eager-admission hint. Probe failures fall through so the
+    // bounded reader can still recover a body while enforcing the hard cap.
     let Ok(facts) = fs_metadata::file_facts(&path) else {
         return DraftPreloadDecision::Read;
     };
     let size = facts.byte_size;
-    if size > MAX_DRAFT_PRELOAD_BYTES {
+    if size > MAX_AUTOMATIC_DRAFT_BYTES {
         return DraftPreloadDecision::SkipOversized;
     }
-    if preloaded_bytes.saturating_add(size) > MAX_DRAFT_PRELOAD_BYTES {
+    if preloaded_bytes.saturating_add(size) > eager_limit {
         return DraftPreloadDecision::SkipBudget;
     }
     *preloaded_bytes = preloaded_bytes.saturating_add(size);
@@ -518,7 +549,7 @@ fn oversized_draft_size(data_dir: &Path, draft_id: &str) -> Option<u64> {
     fs_metadata::file_facts(&path)
         .ok()
         .map(|facts| facts.byte_size)
-        .filter(|size| *size > MAX_DRAFT_PRELOAD_BYTES)
+        .filter(|size| *size > MAX_AUTOMATIC_DRAFT_BYTES)
 }
 
 /// Resolve whether a file-backed draft is still safe to restore.
@@ -551,6 +582,30 @@ pub fn resolve_file_draft_restore(
         return Ok(FileDraftRestoreResolution::SkipOversized);
     }
 
+    match read_draft(data_dir, &entry.draft_id)? {
+        Some(content) => Ok(FileDraftRestoreResolution::Restore { content }),
+        None => Ok(FileDraftRestoreResolution::MissingDraft),
+    }
+}
+
+/// Resolve any manifest entry through the same bounded automatic-read policy.
+///
+/// File-backed entries retain mtime conflict checks; untitled entries need only
+/// the shared size bound and durable body read. This is blocking service I/O.
+///
+/// # Errors
+///
+/// Returns an error when an eligible body cannot be read as bounded UTF-8 text.
+pub fn resolve_draft_restore(
+    data_dir: &Path,
+    entry: &DraftEntry,
+) -> Result<FileDraftRestoreResolution> {
+    if entry.original_path.is_some() {
+        return resolve_file_draft_restore(data_dir, entry);
+    }
+    if oversized_draft_size(data_dir, &entry.draft_id).is_some() {
+        return Ok(FileDraftRestoreResolution::SkipOversized);
+    }
     match read_draft(data_dir, &entry.draft_id)? {
         Some(content) => Ok(FileDraftRestoreResolution::Restore { content }),
         None => Ok(FileDraftRestoreResolution::MissingDraft),
@@ -627,15 +682,34 @@ pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
         return Err(DraftReadError::Oversized {
             path,
             size,
-            max: MAX_DRAFT_PRELOAD_BYTES,
+            max: MAX_AUTOMATIC_DRAFT_BYTES,
         }
         .into());
     }
-    match fs_read::bytes(&path) {
+    read_draft_path_bounded(&path, MAX_AUTOMATIC_DRAFT_BYTES)
+}
+
+/// Read one body with an allocation bound that remains valid after metadata races.
+fn read_draft_path_bounded(path: &Path, max_bytes: u64) -> Result<Option<String>> {
+    // One sentinel byte detects growth after the metadata probe without ever
+    // allocating an unbounded body.
+    let read_limit = usize::try_from(max_bytes)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    match fs_read::prefix_bytes(path, read_limit) {
         Ok(bytes) => {
+            let observed_size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            if observed_size > max_bytes {
+                return Err(DraftReadError::Oversized {
+                    path: path.to_path_buf(),
+                    size: observed_size,
+                    max: max_bytes,
+                }
+                .into());
+            }
             let content = simdutf8::basic::from_utf8(&bytes)
                 .map_err(|error| DraftReadError::Read {
-                    path: path.clone(),
+                    path: path.to_path_buf(),
                     detail: error.to_string(),
                 })?
                 .to_string();
@@ -643,7 +717,7 @@ pub fn read_draft(data_dir: &Path, draft_id: &str) -> Result<Option<String>> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(DraftReadError::Read {
-            path,
+            path: path.to_path_buf(),
             detail: e.to_string(),
         }
         .into()),
@@ -669,55 +743,517 @@ pub fn delete_draft_file(data_dir: &Path, draft_id: &str) -> Result<()> {
     }
 }
 
-/// Remove orphaned drafts: draft files with no manifest entry, and
-/// manifest entries whose draft file no longer exists. Returns the
-/// count of items cleaned up.
+/// Inspect one bounded set of draft artifacts without mutating filesystem state.
 ///
-/// **Threading:** blocking I/O, call from background thread.
+/// **Threading:** performs blocking metadata and directory I/O, so callers must
+/// run it on a background thread. A directory-level failure returns no plan;
+/// per-entry status failures stay inside a non-destructive plan so unaffected
+/// recovery evidence remains visible.
 ///
 /// # Errors
 ///
-/// Returns an error if the drafts directory exists but its contents cannot be
-/// inspected consistently enough to finish cleanup.
-pub fn cleanup_orphans(data_dir: &Path, manifest: &mut DraftManifest) -> Result<usize> {
+/// Returns a typed scan error when the drafts directory cannot be identified or
+/// traversed consistently. The caller must not execute cleanup after this error.
+pub fn inspect_orphan_cleanup(
+    data_dir: &Path,
+    manifest: &DraftManifest,
+) -> std::result::Result<DraftOrphanCleanupPlan, DraftOrphanCleanupScanError> {
+    inspect_orphan_cleanup_from(data_dir, manifest, 0)
+}
+
+/// Inspect one bounded manifest page and one bounded draft-directory scan.
+///
+/// `manifest_offset` advances through the supplied manifest snapshot without
+/// allocating evidence for every accepted entry at once.
+///
+/// **Threading:** performs blocking metadata and directory I/O; call from a
+/// background thread. Inspection is side-effect free.
+///
+/// # Errors
+///
+/// Returns the same directory-level failures as [`inspect_orphan_cleanup`].
+pub fn inspect_orphan_cleanup_from(
+    data_dir: &Path,
+    manifest: &DraftManifest,
+    manifest_offset: usize,
+) -> std::result::Result<DraftOrphanCleanupPlan, DraftOrphanCleanupScanError> {
     let dir = drafts_dir(data_dir);
-    let mut cleaned = 0;
+    let entries = match fs_metadata::path_status(&dir) {
+        Ok(PathStatus::Missing) => Vec::new(),
+        Ok(PathStatus::Directory) => fs_tree::scan_directory(
+            &dir,
+            DirectoryScanPolicy {
+                max_entries: MAX_ORPHAN_CLEANUP_DRAFT_SCAN,
+                include_hidden: false,
+            },
+        )
+        .map_err(|error| DraftOrphanCleanupScanError::Read {
+            path: dir.clone(),
+            detail: error.to_string(),
+        })?,
+        Ok(status) => {
+            return Err(DraftOrphanCleanupScanError::NotDirectory { path: dir, status });
+        }
+        Err(error) => {
+            return Err(DraftOrphanCleanupStatusError {
+                path: dir,
+                detail: error.to_string(),
+            }
+            .into());
+        }
+    };
 
-    // Remove manifest entries whose draft file is missing.
-    let before = manifest.drafts.len();
-    manifest.drafts.retain(|entry| {
-        let path = dir.join(format!("{}.draft", entry.draft_id));
-        fs_metadata::exists(&path)
-    });
-    cleaned += before - manifest.drafts.len();
-
-    let manifest_ids = manifest
+    let manifest_start = manifest_offset.min(manifest.drafts.len());
+    let manifest_page_len = manifest
+        .drafts
+        .len()
+        .saturating_sub(manifest_start)
+        .min(MAX_ORPHAN_CLEANUP_DRAFT_SCAN);
+    let manifest_entries = manifest
         .drafts
         .iter()
-        .map(|entry| entry.draft_id.as_str())
-        .collect::<HashSet<_>>();
-
-    // Remove draft files with no manifest entry, bounded so damaged draft
-    // directories cannot make deferred startup cleanup scan every orphan.
-    if let Ok(entries) = fs_tree::scan_directory(
-        &dir,
-        DirectoryScanPolicy {
-            max_entries: MAX_ORPHAN_CLEANUP_DRAFT_SCAN,
-            include_hidden: false,
+        .skip(manifest_start)
+        .take(manifest_page_len)
+        .collect::<Vec<_>>();
+    let next_manifest_offset = manifest_start.saturating_add(manifest_page_len);
+    let manifest_has_more = next_manifest_offset < manifest.drafts.len();
+    let mut plan = DraftOrphanCleanupPlan {
+        // A full-cap result cannot prove that the directory ended at the bound,
+        // so it conservatively schedules a later normal deferred opportunity.
+        has_more_work: entries.len() == MAX_ORPHAN_CLEANUP_DRAFT_SCAN || manifest_has_more,
+        next_manifest_offset: if manifest_has_more {
+            Some(next_manifest_offset)
+        } else {
+            None
         },
-    ) {
-        for entry in entries {
-            let Some(draft_id) = draft_id_from_draft_file_name(&entry.file_name) else {
-                continue;
-            };
-            if !manifest_ids.contains(draft_id.as_str()) {
-                let _ = fs_mutate::remove_file_if_exists(&entry.path);
-                cleaned += 1;
+        ..DraftOrphanCleanupPlan::default()
+    };
+    let mut seen_fingerprints = HashSet::new();
+    let mut id_counts = HashMap::<&str, usize>::new();
+    for entry in &manifest_entries {
+        *id_counts.entry(entry.draft_id.as_str()).or_default() += 1;
+    }
+
+    for (draft_id, _) in id_counts.iter().filter(|(_, count)| **count > 1) {
+        // Duplicate IDs are ambiguous even when fields match, so preserve every
+        // entry instead of selecting one generation for destructive cleanup.
+        plan.retained.push(DraftOrphanCleanupRetained {
+            draft_id: Some((*draft_id).to_string()),
+            path: draft_body_path(data_dir, draft_id),
+            reason: DraftOrphanCleanupRetentionReason::DuplicateManifestId,
+        });
+    }
+
+    for entry in &manifest_entries {
+        // Duplicate IDs are ambiguous even when their current persisted fields
+        // match, so inspection preserves all generations instead of selecting one.
+        if id_counts.get(entry.draft_id.as_str()).copied().unwrap_or(0) > 1 {
+            continue;
+        }
+        let path = dir.join(format!("{}.draft", entry.draft_id));
+        match fs_metadata::path_status(&path) {
+            Ok(PathStatus::Missing) => {
+                let fingerprint = DraftEntryFingerprint::from_entry(entry);
+                if seen_fingerprints.insert(fingerprint.clone()) {
+                    plan.missing_body_entries.push(fingerprint);
+                }
+            }
+            Ok(PathStatus::File) => {}
+            Ok(PathStatus::Directory | PathStatus::Other) => {
+                plan.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(entry.draft_id.clone()),
+                    path,
+                    reason: DraftOrphanCleanupRetentionReason::BodyNotRegularFile,
+                });
+            }
+            Err(error) => {
+                plan.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(entry.draft_id.clone()),
+                    path: path.clone(),
+                    reason: DraftOrphanCleanupRetentionReason::StatusUncertain,
+                });
+                plan.failures.push(
+                    DraftOrphanCleanupStatusError {
+                        path,
+                        detail: error.to_string(),
+                    }
+                    .into(),
+                );
             }
         }
     }
 
-    Ok(cleaned)
+    // This set covers only the current manifest page, so inspection may
+    // nominate IDs found later. Execution rechecks the complete latest manifest.
+    let manifest_ids = manifest_entries
+        .iter()
+        .map(|entry| entry.draft_id.as_str())
+        .collect::<HashSet<_>>();
+
+    for entry in entries {
+        if entry.file_name == MANIFEST_FILE {
+            continue;
+        }
+        let Some(draft_id) = draft_id_from_draft_file_name(&entry.file_name) else {
+            plan.retained.push(DraftOrphanCleanupRetained {
+                draft_id: None,
+                path: entry.path,
+                reason: DraftOrphanCleanupRetentionReason::UnknownFile,
+            });
+            continue;
+        };
+        if entry.kind != FileKind::File {
+            plan.retained.push(DraftOrphanCleanupRetained {
+                draft_id: Some(draft_id),
+                path: entry.path,
+                reason: DraftOrphanCleanupRetentionReason::BodyNotRegularFile,
+            });
+            continue;
+        }
+        if !manifest_ids.contains(draft_id.as_str()) {
+            let inode = match fs_metadata::inode(&entry.path) {
+                Ok(inode) => inode,
+                Err(error) => {
+                    plan.retained.push(DraftOrphanCleanupRetained {
+                        draft_id: Some(draft_id),
+                        path: entry.path.clone(),
+                        reason: DraftOrphanCleanupRetentionReason::StatusUncertain,
+                    });
+                    plan.failures.push(
+                        DraftOrphanCleanupStatusError {
+                            path: entry.path,
+                            detail: error.to_string(),
+                        }
+                        .into(),
+                    );
+                    continue;
+                }
+            };
+            plan.orphan_bodies.push(DraftOrphanBodyCandidate {
+                draft_id,
+                path: entry.path,
+                inode,
+            });
+        }
+    }
+
+    Ok(plan)
+}
+
+fn draft_body_path(data_dir: &Path, draft_id: &str) -> PathBuf {
+    drafts_dir(data_dir).join(format!("{draft_id}.draft"))
+}
+
+/// Execute a previously inspected cleanup plan against freshly loaded state.
+///
+/// **Threading:** performs blocking metadata, deletion, and durable manifest I/O;
+/// callers must run it on a background thread. The existing process-wide
+/// manifest lock covers latest-state revalidation and the final durable commit,
+/// preventing manifest publication from interleaving between those phases.
+///
+/// # Panics
+///
+/// Panics if an earlier panic poisoned the process-wide manifest write lock.
+#[must_use]
+pub fn execute_orphan_cleanup(
+    data_dir: &Path,
+    plan: DraftOrphanCleanupPlan,
+) -> DraftOrphanCleanupOutcome {
+    let DraftOrphanCleanupPlan {
+        missing_body_entries,
+        orphan_bodies,
+        retained,
+        failures,
+        has_more_work,
+        next_manifest_offset,
+    } = plan;
+    let retryable_inspection_failures = !failures.is_empty();
+    let mut outcome = DraftOrphanCleanupOutcome {
+        retained,
+        failures,
+        has_more_work: has_more_work || retryable_inspection_failures,
+        next_manifest_offset,
+        ..DraftOrphanCleanupOutcome::default()
+    };
+
+    let _guard = manifest_write_lock()
+        .lock()
+        .expect("draft manifest write lock poisoned");
+    let mut latest = match load_trusted_manifest_for_cleanup(data_dir) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            retain_unexecuted_plan(
+                data_dir,
+                &mut outcome,
+                &missing_body_entries,
+                &orphan_bodies,
+                DraftOrphanCleanupRetentionReason::StatusUncertain,
+            );
+            outcome.failures.push(error.into());
+            outcome.has_more_work = true;
+            return outcome;
+        }
+    };
+    // `Some` means the ID is unique; `None` marks ambiguous duplicates that
+    // destructive cleanup must preserve.
+    let mut latest_by_id = HashMap::<&str, Option<&DraftEntry>>::new();
+    for entry in &latest.drafts {
+        latest_by_id
+            .entry(entry.draft_id.as_str())
+            .and_modify(|value| *value = None)
+            .or_insert(Some(entry));
+    }
+    for candidate in orphan_bodies {
+        let expected_path = draft_body_path(data_dir, &candidate.draft_id);
+        if candidate.path != expected_path {
+            outcome.retained.push(DraftOrphanCleanupRetained {
+                draft_id: Some(candidate.draft_id),
+                path: candidate.path,
+                reason: DraftOrphanCleanupRetentionReason::CandidatePathMismatch,
+            });
+            outcome.has_more_work = true;
+            continue;
+        }
+        if latest_by_id.contains_key(candidate.draft_id.as_str()) {
+            outcome.retained.push(DraftOrphanCleanupRetained {
+                draft_id: Some(candidate.draft_id),
+                path: candidate.path,
+                reason: DraftOrphanCleanupRetentionReason::ManifestEntryPresent,
+            });
+            continue;
+        }
+
+        // The stable target guard closes the gap between identity validation
+        // and deletion. Atomic draft replacement uses the same guard, so either
+        // cleanup observes the newer inode or the newer write happens afterward.
+        let _body_guard = match fs_write::TargetWriteGuard::acquire(&candidate.path) {
+            Ok(guard) => guard,
+            Err(error) => {
+                outcome.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(candidate.draft_id),
+                    path: candidate.path.clone(),
+                    reason: DraftOrphanCleanupRetentionReason::StatusUncertain,
+                });
+                outcome.failures.push(
+                    DraftOrphanCleanupStatusError {
+                        path: candidate.path,
+                        detail: error.to_string(),
+                    }
+                    .into(),
+                );
+                outcome.has_more_work = true;
+                continue;
+            }
+        };
+        match fs_metadata::path_status(&candidate.path) {
+            Ok(PathStatus::Missing) => outcome.already_absent_files.push(candidate.path),
+            Ok(PathStatus::File)
+                if fs_metadata::inode(&candidate.path).ok() != Some(candidate.inode) =>
+            {
+                outcome.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(candidate.draft_id),
+                    path: candidate.path,
+                    reason: DraftOrphanCleanupRetentionReason::BodyGenerationChanged,
+                });
+            }
+            Ok(PathStatus::File) => match fs_mutate::remove_file_if_exists(&candidate.path) {
+                Ok(MutationOutcome::Changed) => outcome.deleted_files.push(candidate.path),
+                Ok(MutationOutcome::AlreadyAbsent) => {
+                    outcome.already_absent_files.push(candidate.path);
+                }
+                Err(error) => {
+                    outcome.retained.push(DraftOrphanCleanupRetained {
+                        draft_id: Some(candidate.draft_id.clone()),
+                        path: candidate.path.clone(),
+                        reason: DraftOrphanCleanupRetentionReason::DeleteFailed,
+                    });
+                    outcome.failures.push(
+                        DraftOrphanCleanupDeleteError {
+                            draft_id: candidate.draft_id,
+                            path: candidate.path,
+                            detail: error.to_string(),
+                        }
+                        .into(),
+                    );
+                    outcome.has_more_work = true;
+                }
+            },
+            Ok(PathStatus::Directory | PathStatus::Other) => {
+                outcome.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(candidate.draft_id),
+                    path: candidate.path,
+                    reason: DraftOrphanCleanupRetentionReason::BodyNotRegularFile,
+                });
+            }
+            Err(error) => {
+                outcome.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(candidate.draft_id),
+                    path: candidate.path.clone(),
+                    reason: DraftOrphanCleanupRetentionReason::StatusUncertain,
+                });
+                outcome.failures.push(
+                    DraftOrphanCleanupStatusError {
+                        path: candidate.path,
+                        detail: error.to_string(),
+                    }
+                    .into(),
+                );
+                outcome.has_more_work = true;
+            }
+        }
+    }
+
+    let mut pending_manifest_removals = HashMap::new();
+    for fingerprint in missing_body_entries {
+        let Some(entry) = latest_by_id.get(fingerprint.draft_id.as_str()) else {
+            outcome.retained.push(DraftOrphanCleanupRetained {
+                draft_id: Some(fingerprint.draft_id.clone()),
+                path: draft_body_path(data_dir, &fingerprint.draft_id),
+                reason: DraftOrphanCleanupRetentionReason::FingerprintChanged,
+            });
+            continue;
+        };
+        let Some(entry) = entry else {
+            outcome.retained.push(DraftOrphanCleanupRetained {
+                draft_id: Some(fingerprint.draft_id.clone()),
+                path: draft_body_path(data_dir, &fingerprint.draft_id),
+                reason: DraftOrphanCleanupRetentionReason::DuplicateManifestId,
+            });
+            continue;
+        };
+        if !fingerprint.matches(entry) {
+            outcome.retained.push(DraftOrphanCleanupRetained {
+                draft_id: Some(fingerprint.draft_id.clone()),
+                path: draft_body_path(data_dir, &fingerprint.draft_id),
+                reason: DraftOrphanCleanupRetentionReason::FingerprintChanged,
+            });
+            continue;
+        }
+        let path = draft_body_path(data_dir, &fingerprint.draft_id);
+        match fs_metadata::path_status(&path) {
+            Ok(PathStatus::Missing) => {
+                pending_manifest_removals.insert(fingerprint.draft_id.clone(), fingerprint);
+            }
+            Ok(PathStatus::File | PathStatus::Directory | PathStatus::Other) => {
+                outcome.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(fingerprint.draft_id),
+                    path,
+                    reason: DraftOrphanCleanupRetentionReason::BodyReappeared,
+                });
+            }
+            Err(error) => {
+                outcome.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(fingerprint.draft_id),
+                    path: path.clone(),
+                    reason: DraftOrphanCleanupRetentionReason::StatusUncertain,
+                });
+                outcome.failures.push(
+                    DraftOrphanCleanupStatusError {
+                        path,
+                        detail: error.to_string(),
+                    }
+                    .into(),
+                );
+                outcome.has_more_work = true;
+            }
+        }
+    }
+    // Release the borrowed manifest index before retaining from the owned
+    // manifest below; the explicit drop makes this mutation boundary visible.
+    drop(latest_by_id);
+
+    if pending_manifest_removals.is_empty() {
+        outcome.latest_persisted_manifest = Some(latest);
+        return outcome;
+    }
+
+    latest.drafts.retain(|entry| {
+        !pending_manifest_removals
+            .get(entry.draft_id.as_str())
+            .is_some_and(|fingerprint| fingerprint.matches(entry))
+    });
+
+    match save_manifest_locked(data_dir, &latest) {
+        Ok(()) => {
+            outcome.committed_manifest_removals = pending_manifest_removals.into_values().collect();
+            outcome.latest_persisted_manifest = Some(latest);
+        }
+        Err(error) => {
+            for fingerprint in pending_manifest_removals.values() {
+                outcome.retained.push(DraftOrphanCleanupRetained {
+                    draft_id: Some(fingerprint.draft_id.clone()),
+                    path: draft_body_path(data_dir, &fingerprint.draft_id),
+                    reason: DraftOrphanCleanupRetentionReason::ManifestCommitFailed,
+                });
+            }
+            outcome.failures.push(
+                DraftOrphanCleanupManifestError::Write {
+                    path: manifest_path(data_dir),
+                    detail: error.to_string(),
+                }
+                .into(),
+            );
+            // A post-rename durability error cannot prove which manifest is the
+            // latest durable state, so do not label the pre-write snapshot current.
+            outcome.latest_persisted_manifest = None;
+            outcome.has_more_work = true;
+        }
+    }
+    outcome
+}
+
+/// Load only manifest states that are safe inputs to destructive cleanup.
+fn load_trusted_manifest_for_cleanup(
+    data_dir: &Path,
+) -> std::result::Result<DraftManifest, DraftOrphanCleanupManifestError> {
+    let load = load_manifest_recovering(data_dir);
+    if matches!(
+        load.outcome,
+        RecoveryLoadOutcome::Loaded | RecoveryLoadOutcome::MissingDefault
+    ) && load.diagnostics.is_empty()
+    {
+        return Ok(load.value);
+    }
+
+    let detail = if load.diagnostics.is_empty() {
+        format!("recovery outcome {:?} was not trusted", load.outcome)
+    } else {
+        load.diagnostics
+            .iter()
+            .map(RecoveryDiagnostic::summary)
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    Err(DraftOrphanCleanupManifestError::Load {
+        path: manifest_path(data_dir),
+        detail,
+    })
+}
+
+/// Preserve every unexecuted candidate when latest manifest state is untrusted.
+fn retain_unexecuted_plan(
+    data_dir: &Path,
+    outcome: &mut DraftOrphanCleanupOutcome,
+    fingerprints: &[DraftEntryFingerprint],
+    bodies: &[DraftOrphanBodyCandidate],
+    reason: DraftOrphanCleanupRetentionReason,
+) {
+    outcome.retained.extend(
+        fingerprints
+            .iter()
+            .map(|fingerprint| DraftOrphanCleanupRetained {
+                draft_id: Some(fingerprint.draft_id.clone()),
+                path: draft_body_path(data_dir, &fingerprint.draft_id),
+                reason,
+            }),
+    );
+    outcome
+        .retained
+        .extend(bodies.iter().map(|candidate| DraftOrphanCleanupRetained {
+            draft_id: Some(candidate.draft_id.clone()),
+            path: candidate.path.clone(),
+            reason,
+        }));
 }
 
 #[cfg(test)]
@@ -756,7 +1292,8 @@ mod tests {
     fn draft_policy_constants_are_stable() {
         assert_eq!(DRAFTS_DIR, "drafts");
         assert_eq!(MANIFEST_FILE, "manifest.json");
-        assert_eq!(MAX_DRAFT_PRELOAD_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_AUTOMATIC_DRAFT_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_EAGER_DRAFT_PRELOAD_BYTES, 64 * 1024 * 1024);
         assert_eq!(MAX_MANIFEST_REPAIR_DRAFT_SCAN, 2048);
         assert_eq!(MAX_ORPHAN_CLEANUP_DRAFT_SCAN, 2048);
     }
@@ -1051,7 +1588,7 @@ mod tests {
         fixture::create_dir_all(&drafts_dir(dir.path()));
         fixture::create_sparse_file(
             &draft_path(dir.path(), draft_id),
-            MAX_DRAFT_PRELOAD_BYTES + 1,
+            MAX_AUTOMATIC_DRAFT_BYTES + 1,
         );
 
         let resolution = resolve_file_draft_restore(
@@ -1068,13 +1605,18 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let draft_id = "exact-large";
         fixture::create_dir_all(&drafts_dir(dir.path()));
-        fixture::create_sparse_file(&draft_path(dir.path(), draft_id), MAX_DRAFT_PRELOAD_BYTES);
+        fixture::create_sparse_file(&draft_path(dir.path(), draft_id), MAX_AUTOMATIC_DRAFT_BYTES);
         let mut preloaded_bytes = 0;
 
-        let decision = draft_preload_decision(dir.path(), draft_id, &mut preloaded_bytes);
+        let decision = draft_preload_decision(
+            dir.path(),
+            draft_id,
+            &mut preloaded_bytes,
+            MAX_EAGER_DRAFT_PRELOAD_BYTES,
+        );
 
         assert_eq!(decision, DraftPreloadDecision::Read);
-        assert_eq!(preloaded_bytes, MAX_DRAFT_PRELOAD_BYTES);
+        assert_eq!(preloaded_bytes, MAX_EAGER_DRAFT_PRELOAD_BYTES);
         assert_eq!(oversized_draft_size(dir.path(), draft_id), None);
     }
 
@@ -1083,12 +1625,87 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let draft_id = "last-byte";
         write_draft(dir.path(), draft_id, "x").expect("write small draft");
-        let mut preloaded_bytes = MAX_DRAFT_PRELOAD_BYTES - 1;
+        let mut preloaded_bytes = MAX_EAGER_DRAFT_PRELOAD_BYTES - 1;
 
-        let decision = draft_preload_decision(dir.path(), draft_id, &mut preloaded_bytes);
+        let decision = draft_preload_decision(
+            dir.path(),
+            draft_id,
+            &mut preloaded_bytes,
+            MAX_EAGER_DRAFT_PRELOAD_BYTES,
+        );
 
         assert_eq!(decision, DraftPreloadDecision::Read);
-        assert_eq!(preloaded_bytes, MAX_DRAFT_PRELOAD_BYTES);
+        assert_eq!(preloaded_bytes, MAX_EAGER_DRAFT_PRELOAD_BYTES);
+    }
+
+    #[test]
+    fn load_restore_state_marks_only_aggregate_cap_skips_for_lazy_restore() {
+        let dir = TempDir::new().expect("tempdir");
+        let first = "untitled-first";
+        let second = "untitled-second";
+        write_draft(dir.path(), first, "four").expect("write first draft");
+        write_draft(dir.path(), second, "also").expect("write second draft");
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![
+                    DraftEntry {
+                        draft_id: first.to_string(),
+                        original_path: None,
+                        original_mtime_secs: None,
+                        saved_at_secs: 1,
+                    },
+                    DraftEntry {
+                        draft_id: second.to_string(),
+                        original_path: None,
+                        original_mtime_secs: None,
+                        saved_at_secs: 1,
+                    },
+                ],
+            },
+        )
+        .expect("save manifest");
+        session_service::save(
+            dir.path(),
+            &SessionData {
+                tabs: vec![
+                    SessionTab {
+                        path: None,
+                        draft_id: Some(first.to_string()),
+                        cursor_line: 0,
+                        cursor_col: 0,
+                        scroll_line: 0,
+                        pinned: false,
+                    },
+                    SessionTab {
+                        path: None,
+                        draft_id: Some(second.to_string()),
+                        cursor_line: 0,
+                        cursor_col: 0,
+                        scroll_line: 0,
+                        pinned: false,
+                    },
+                ],
+                active_tab_index: Some(0),
+            },
+        )
+        .expect("save session");
+
+        let restore = load_restore_state_with_eager_limit(dir.path(), 4);
+
+        assert_eq!(
+            restore.preloaded_drafts.get(first),
+            Some(&PreloadedDraftRestore::Content("four".to_string()))
+        );
+        assert_eq!(
+            restore.preloaded_drafts.get(second),
+            Some(&PreloadedDraftRestore::LazyAggregateBudget)
+        );
+        assert!(restore.manifest.find_by_id(second).is_some());
+        assert_eq!(
+            read_draft(dir.path(), second).expect("read preserved lazy draft"),
+            Some("also".to_string())
+        );
     }
 
     #[test]
@@ -1193,7 +1810,7 @@ mod tests {
         let draft_id = "untitled-large";
         fixture::create_dir_all(&drafts_dir(dir.path()));
         let draft_path = draft_path(dir.path(), draft_id);
-        fixture::create_sparse_file(&draft_path, MAX_DRAFT_PRELOAD_BYTES + 1);
+        fixture::create_sparse_file(&draft_path, MAX_AUTOMATIC_DRAFT_BYTES + 1);
 
         save_manifest(
             dir.path(),
@@ -1380,7 +1997,7 @@ mod tests {
         let draft_id = "oversized-read";
         fixture::create_dir_all(&drafts_dir(dir.path()));
         let draft_path = draft_path(dir.path(), draft_id);
-        fixture::create_sparse_file(&draft_path, MAX_DRAFT_PRELOAD_BYTES + 1);
+        fixture::create_sparse_file(&draft_path, MAX_AUTOMATIC_DRAFT_BYTES + 1);
 
         let error = read_draft(dir.path(), draft_id).expect_err("oversized draft should not load");
 
@@ -1392,6 +2009,28 @@ mod tests {
             fs_metadata::exists(&draft_path),
             "oversized draft file must remain available for manual recovery"
         );
+    }
+
+    #[test]
+    fn bounded_read_rechecks_bytes_after_metadata_admission() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("racy-growth.draft");
+        fixture::write_text(&path, "four");
+
+        assert_eq!(
+            read_draft_path_bounded(&path, 4).expect("exact bound should load"),
+            Some("four".to_string())
+        );
+        let error = read_draft_path_bounded(&path, 3).expect_err("grown body must be rejected");
+        assert!(matches!(
+            error.downcast_ref::<DraftReadError>(),
+            Some(DraftReadError::Oversized {
+                size: 4,
+                max: 3,
+                ..
+            })
+        ));
+        assert!(fs_metadata::exists(&path));
     }
 
     #[test]
@@ -1432,9 +2071,9 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_orphans_removes_entries_without_files() {
+    fn orphan_inspection_plans_missing_entries_and_unreferenced_bodies() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        let mut manifest = DraftManifest {
+        let manifest = DraftManifest {
             drafts: vec![DraftEntry {
                 draft_id: "ghost".into(),
                 original_path: Some(PathBuf::from("/gone.rs")),
@@ -1442,34 +2081,248 @@ mod tests {
                 saved_at_secs: 1000,
             }],
         };
-        // Don't create the draft file — the manifest entry is orphaned
-        fixture::create_dir_all(&drafts_dir(dir.path()));
-        let cleaned =
-            cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
-        assert_eq!(cleaned, 1);
-        assert!(manifest.drafts.is_empty());
+        write_draft(dir.path(), "orphan", "stale content").expect("expected operation to succeed");
+
+        let plan = inspect_orphan_cleanup(dir.path(), &manifest)
+            .expect("inspection should produce a trusted plan");
+
+        assert_eq!(
+            plan.missing_body_entries,
+            vec![DraftEntryFingerprint::from_entry(&manifest.drafts[0])]
+        );
+        assert_eq!(
+            plan.orphan_bodies,
+            vec![DraftOrphanBodyCandidate {
+                draft_id: "orphan".to_string(),
+                path: draft_body_path(dir.path(), "orphan"),
+                inode: fs_metadata::inode(&draft_body_path(dir.path(), "orphan"))
+                    .expect("orphan inode"),
+            }]
+        );
+        assert!(plan.failures.is_empty());
+        assert!(!plan.has_more_work);
     }
 
     #[test]
-    fn cleanup_orphans_removes_files_without_entries() {
+    fn orphan_inspection_distinguishes_missing_from_status_errors() {
         let dir = TempDir::new().expect("expected operation to succeed");
-        let mut manifest = DraftManifest::default();
-        // Create a draft file with no manifest entry
-        write_draft(dir.path(), "orphan", "stale content").expect("expected operation to succeed");
-        let cleaned =
-            cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
-        assert_eq!(cleaned, 1);
+        let drafts = drafts_dir(dir.path());
+        fixture::create_dir_all(&drafts);
+        let loop_path = draft_body_path(dir.path(), "loop");
+        fixture::symlink(Path::new("loop.draft"), &loop_path);
+        let missing = DraftEntry {
+            draft_id: "missing".into(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1,
+        };
+        let loop_entry = DraftEntry {
+            draft_id: "loop".into(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 2,
+        };
+        let manifest = DraftManifest {
+            drafts: vec![missing.clone(), loop_entry],
+        };
+
+        let plan = inspect_orphan_cleanup(dir.path(), &manifest)
+            .expect("the directory scan itself should remain trusted");
+
         assert_eq!(
-            read_draft(dir.path(), "orphan").expect("expected operation to succeed"),
-            None
+            plan.missing_body_entries,
+            vec![DraftEntryFingerprint::from_entry(&missing)]
+        );
+        assert!(plan.failures.iter().any(|failure| matches!(
+            failure,
+            DraftOrphanCleanupFailure::Status(error) if error.path == loop_path
+        )));
+        assert!(plan.retained.iter().any(|retained| {
+            retained.draft_id.as_deref() == Some("loop")
+                && retained.reason == DraftOrphanCleanupRetentionReason::StatusUncertain
+        }));
+    }
+
+    #[test]
+    fn orphan_inspection_preserves_unknown_files_and_duplicate_ids() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let drafts = drafts_dir(dir.path());
+        fixture::create_dir_all(&drafts);
+        fixture::write_text(&drafts.join("notes.txt"), "preserve me");
+        let manifest = DraftManifest {
+            drafts: vec![
+                DraftEntry {
+                    draft_id: "same".into(),
+                    original_path: None,
+                    original_mtime_secs: None,
+                    saved_at_secs: 1,
+                },
+                DraftEntry {
+                    draft_id: "same".into(),
+                    original_path: Some(PathBuf::from("/newer.rs")),
+                    original_mtime_secs: Some(2),
+                    saved_at_secs: 2,
+                },
+            ],
+        };
+
+        let plan = inspect_orphan_cleanup(dir.path(), &manifest)
+            .expect("inspection should preserve ambiguous evidence");
+
+        assert!(plan.missing_body_entries.is_empty());
+        assert!(plan.retained.iter().any(|retained| {
+            retained.path == drafts.join("notes.txt")
+                && retained.reason == DraftOrphanCleanupRetentionReason::UnknownFile
+        }));
+        assert!(plan.retained.iter().any(|retained| {
+            retained.draft_id.as_deref() == Some("same")
+                && retained.reason == DraftOrphanCleanupRetentionReason::DuplicateManifestId
+        }));
+    }
+
+    #[test]
+    fn orphan_inspection_reports_exact_cap_as_unfinished() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let drafts = drafts_dir(dir.path());
+        fixture::create_dir_all(&drafts);
+        for index in 0..MAX_ORPHAN_CLEANUP_DRAFT_SCAN {
+            fixture::write_text(&drafts.join(format!("orphan-{index:04}.draft")), "body");
+        }
+
+        let capped = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("bounded scan should succeed");
+        assert_eq!(capped.orphan_bodies.len(), MAX_ORPHAN_CLEANUP_DRAFT_SCAN);
+        assert!(capped.has_more_work);
+
+        fixture::remove_file(&drafts.join("orphan-0000.draft"));
+        let below_cap = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("below-cap scan should succeed");
+        assert_eq!(
+            below_cap.orphan_bodies.len(),
+            MAX_ORPHAN_CLEANUP_DRAFT_SCAN - 1
+        );
+        assert!(!below_cap.has_more_work);
+    }
+
+    #[test]
+    fn orphan_inspection_pages_large_manifest_without_revisiting_prefix() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let manifest = DraftManifest {
+            drafts: (0..MAX_ORPHAN_CLEANUP_DRAFT_SCAN + 2)
+                .map(|index| DraftEntry {
+                    draft_id: format!("manifest-{index}"),
+                    original_path: None,
+                    original_mtime_secs: None,
+                    saved_at_secs: u64::try_from(index).expect("bounded fixture index fits u64"),
+                })
+                .collect(),
+        };
+
+        let first = inspect_orphan_cleanup(dir.path(), &manifest)
+            .expect("first manifest page should succeed");
+        assert_eq!(
+            first.missing_body_entries.len(),
+            MAX_ORPHAN_CLEANUP_DRAFT_SCAN
+        );
+        assert_eq!(
+            first.next_manifest_offset,
+            Some(MAX_ORPHAN_CLEANUP_DRAFT_SCAN)
+        );
+        assert!(first.has_more_work);
+
+        let second = inspect_orphan_cleanup_from(
+            dir.path(),
+            &manifest,
+            first.next_manifest_offset.expect("continuation offset"),
+        )
+        .expect("second manifest page should succeed");
+        assert_eq!(second.missing_body_entries.len(), 2);
+        assert_eq!(second.missing_body_entries[0].draft_id, "manifest-2048");
+        assert_eq!(second.next_manifest_offset, None);
+    }
+
+    #[test]
+    fn orphan_execution_preserves_duplicate_id_split_across_manifest_pages() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let mut drafts = (0..MAX_ORPHAN_CLEANUP_DRAFT_SCAN)
+            .map(|index| DraftEntry {
+                draft_id: format!("manifest-{index}"),
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: u64::try_from(index).expect("fixture index fits u64"),
+            })
+            .collect::<Vec<_>>();
+        drafts[0].draft_id = "duplicate".to_string();
+        drafts.push(DraftEntry {
+            draft_id: "duplicate".to_string(),
+            original_path: Some(PathBuf::from("/newer.rs")),
+            original_mtime_secs: Some(2),
+            saved_at_secs: 2,
+        });
+        let manifest = DraftManifest { drafts };
+        save_manifest(dir.path(), &manifest).expect("seed duplicate manifest");
+        let plan =
+            inspect_orphan_cleanup(dir.path(), &manifest).expect("inspect first bounded page");
+
+        let outcome = execute_orphan_cleanup(dir.path(), plan);
+
+        assert!(
+            !outcome
+                .committed_manifest_removals
+                .iter()
+                .any(|fingerprint| fingerprint.draft_id == "duplicate")
+        );
+        assert!(outcome.retained.iter().any(|retained| {
+            retained.draft_id.as_deref() == Some("duplicate")
+                && retained.reason == DraftOrphanCleanupRetentionReason::DuplicateManifestId
+        }));
+        assert_eq!(
+            load_manifest(dir.path())
+                .expect("load preserved manifest")
+                .drafts
+                .iter()
+                .filter(|entry| entry.draft_id == "duplicate")
+                .count(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn orphan_inspection_scan_failure_returns_no_partial_plan() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let drafts = drafts_dir(dir.path());
+        fixture::create_dir_all(&drafts);
+        fixture::write_text(&drafts.join("orphan.draft"), "body");
+        fixture::set_mode(&drafts, 0);
+
+        let result = inspect_orphan_cleanup(dir.path(), &DraftManifest::default());
+
+        fixture::set_mode(&drafts, 0o700);
+        assert!(
+            matches!(
+                &result,
+                Err(DraftOrphanCleanupScanError::Read { .. }
+                    | DraftOrphanCleanupScanError::Status(_))
+            ),
+            "unexpected orphan inspection result: {result:?}"
         );
     }
 
     #[test]
-    fn cleanup_orphans_keeps_valid_entries() {
+    fn confirmed_cleanup_count_saturates() {
+        assert_eq!(saturating_confirmed_cleanup_count(2, 3), 5);
+        assert_eq!(
+            saturating_confirmed_cleanup_count(usize::MAX, 1),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn orphan_inspection_keeps_valid_entries() {
         let dir = TempDir::new().expect("expected operation to succeed");
         write_draft(dir.path(), "valid", "content").expect("expected operation to succeed");
-        let mut manifest = DraftManifest {
+        let manifest = DraftManifest {
             drafts: vec![DraftEntry {
                 draft_id: "valid".into(),
                 original_path: Some(PathBuf::from("/a.rs")),
@@ -1477,24 +2330,26 @@ mod tests {
                 saved_at_secs: 1000,
             }],
         };
-        let cleaned =
-            cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
-        assert_eq!(cleaned, 0);
-        assert_eq!(manifest.drafts.len(), 1);
+
+        let plan = inspect_orphan_cleanup(dir.path(), &manifest)
+            .expect("valid draft should produce an empty plan");
+
+        assert!(plan.missing_body_entries.is_empty());
+        assert!(plan.orphan_bodies.is_empty());
+        assert!(plan.failures.is_empty());
     }
 
     #[test]
-    fn cleanup_orphans_ignores_hidden_draft_files() {
+    fn orphan_inspection_ignores_hidden_draft_files() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let hidden_path = drafts_dir(dir.path()).join(".hidden.draft");
         fixture::create_dir_all(hidden_path.parent().expect("expected drafts dir"));
         fixture::write_text(&hidden_path, "editor swap");
-        let mut manifest = DraftManifest::default();
 
-        let cleaned =
-            cleanup_orphans(dir.path(), &mut manifest).expect("expected operation to succeed");
+        let plan = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("hidden files should stay outside cleanup");
 
-        assert_eq!(cleaned, 0);
+        assert!(plan.orphan_bodies.is_empty());
         assert!(fs_metadata::exists(&hidden_path));
     }
 

@@ -221,3 +221,173 @@ The project SHALL add deterministic service, integration, widget, and smoke cove
 #### Scenario: Crash smoke covers recovered drafts and session
 - **WHEN** the crash recovery smoke lane runs against draft and session state
 - **THEN** it verifies recovery across a real process termination and relaunch
+
+### Requirement: Draft orphan cleanup reports typed conservative outcomes
+The system SHALL inspect and execute draft orphan cleanup through typed results that distinguish confirmed manifest removals, confirmed file deletions, already-absent files, retained items, scan or status failures, deletion failures, manifest-write failures, and unfinished bounded work. Cleanup counts and success diagnostics MUST include only confirmed committed actions.
+
+#### Scenario: Orphan draft file deletion succeeds
+- **WHEN** a bounded trusted cleanup pass finds a draft body with no entry in the latest manifest and deletion succeeds
+- **THEN** the outcome reports that file as confirmed deleted
+- **AND** the cleaned count includes it exactly once
+
+#### Scenario: Orphan draft file deletion fails
+- **WHEN** deletion of a confirmed orphan draft body fails
+- **THEN** the outcome retains the path with a typed failure
+- **AND** the cleaned count does not include that file
+- **AND** a later deferred pass may retry it
+
+#### Scenario: Draft directory scan fails
+- **WHEN** the drafts directory exists but cannot be scanned consistently
+- **THEN** cleanup returns a scan failure without executing a partial destructive plan
+- **AND** it does not report the directory as clean
+
+### Requirement: Cleanup distinguishes missing artifacts from metadata errors
+The system SHALL use recovery-aware path status for draft body presence decisions. Only a confirmed missing body MAY make its matching manifest entry eligible for cleanup; permission, metadata, symlink, or other I/O errors MUST retain the entry and produce diagnostics.
+
+#### Scenario: Manifest body is confirmed missing
+- **WHEN** path status confirms that a manifest entry's draft body does not exist
+- **THEN** the entry becomes eligible for merge-safe manifest removal
+- **AND** it is not treated as a body deletion
+
+#### Scenario: Manifest body status is unreadable
+- **WHEN** path status for a manifest entry fails because metadata cannot be inspected
+- **THEN** the manifest entry remains present
+- **AND** the cleanup outcome reports the status failure
+- **AND** no destructive decision is inferred from that error
+
+### Requirement: Cleanup revalidates latest recovery state before mutation
+The system MUST revalidate an orphan candidate against the latest persisted manifest and current path status before deletion or manifest removal. A cleanup plan MUST carry entry fingerprints or equivalent generation evidence so a newer draft with the same ID cannot be removed by stale work.
+
+#### Scenario: New manifest entry appears after inspection
+- **WHEN** inspection identifies an orphan body but a new manifest entry for that draft ID is committed before execution
+- **THEN** execution skips deleting the body
+- **AND** the newer recovery entry remains intact
+
+#### Scenario: Draft body reappears after missing-body inspection
+- **WHEN** inspection identifies a manifest entry's body as missing but a body is written before manifest cleanup commits
+- **THEN** execution rechecks the path and retains the manifest entry
+- **AND** stale cleanup does not detach the new body from its recovery metadata
+
+#### Scenario: Same draft ID has a newer generation
+- **WHEN** the latest manifest contains the same draft ID with newer saved-generation metadata than the inspected fingerprint
+- **THEN** cleanup does not remove the newer entry
+- **AND** the stale plan is reported as skipped
+
+### Requirement: Manifest cleanup is durable before visible acceptance
+The system SHALL remove confirmed missing-body entries through the serialized durable manifest update path. The window MUST merge only removals that were committed to the latest manifest; a manifest-write failure MUST leave visible state retryable and MUST NOT be presented as successful cleanup.
+
+#### Scenario: Manifest cleanup commit succeeds
+- **WHEN** a confirmed missing-body fingerprint still matches and the durable manifest update succeeds
+- **THEN** the outcome includes the exact committed removal
+- **AND** the window may remove that matching entry from its current manifest state
+
+#### Scenario: Manifest cleanup commit fails
+- **WHEN** the durable manifest update for confirmed missing entries fails
+- **THEN** the outcome reports no committed manifest removals for that update
+- **AND** the window retains its entries and surfaces retryable recovery feedback
+
+### Requirement: Orphan cleanup remains bounded and non-blocking
+The system SHALL keep orphan inspection and mutation off the GTK main thread and SHALL inspect no more than the configured bounded entry count in one pass. If eligible work remains, the outcome MUST record that fact for a later deferred retry rather than looping synchronously.
+
+#### Scenario: Damaged directory exceeds the scan bound
+- **WHEN** a drafts directory contains more candidates than one cleanup pass permits
+- **THEN** the pass inspects only the configured maximum
+- **AND** the outcome records that more work may remain
+- **AND** startup and the GTK main loop remain usable
+
+#### Scenario: Untrusted startup state skips cleanup
+- **WHEN** startup recovery cannot trust the draft manifest
+- **THEN** orphan cleanup is not executed
+- **AND** ambiguous draft bodies and metadata remain preserved for repair or diagnosis
+
+### Requirement: Draft orphan cleanup has deterministic fault coverage
+The project SHALL add service and integration tests for missing files, metadata errors, unreadable directories, bounded scans, delete failures, manifest-write failures, concurrent same-ID updates, and partial successful outcomes.
+
+#### Scenario: Generated failure combinations never over-report cleanup
+- **WHEN** tests inject combinations of scan, status, deletion, and manifest-write failures
+- **THEN** every reported removal corresponds to a confirmed action
+- **AND** ambiguous or failed artifacts remain represented as retained or retryable
+
+### Requirement: Draft persistence uses a bounded snapshot-write pipeline
+The system SHALL process dirty drafts through a bounded sequence of snapshot, durable body write, manifest commit, and snapshot release. A pass MUST retain no more than one full draft body plus bounded snapshot-chunk overhead at a time, while candidate and completion metadata MAY remain queued until the shared manifest commit.
+
+#### Scenario: Several large dirty tabs do not accumulate bodies
+- **WHEN** an autosave pass finds several dirty editors whose buffers require chunked snapshots
+- **THEN** the system snapshots and writes one draft body before snapshotting the next full body
+- **AND** completed draft strings are released instead of accumulating until the end of the pass
+
+#### Scenario: Close flush uses the same bounded pipeline
+- **WHEN** the user closes a window containing several modified editors
+- **THEN** close-time draft safety processes those editors through the bounded pipeline
+- **AND** the close remains pending until eligible bodies and the shared manifest commit finish
+
+#### Scenario: Empty draft remains recoverable
+- **WHEN** an eligible modified editor has an empty buffer at snapshot time
+- **THEN** the pipeline persists an empty draft body and matching manifest entry
+- **AND** it does not confuse empty content with a missing snapshot
+
+### Requirement: Draft acceptance is generation-safe and retryable
+The system MUST clear an editor's draft-dirty state only after the matching body write and manifest entry are durably accepted for the same draft ID and dirty generation. Snapshot, body-write, or manifest failures MUST leave affected editors eligible for retry, and an older completion MUST NOT clear newer dirty state.
+
+#### Scenario: Edit arrives after snapshot
+- **WHEN** an editor is modified again after its draft snapshot is captured but before the manifest commit completes
+- **THEN** completion for the older generation does not clear the newer draft-dirty state
+- **AND** a pending or later autosave pass remains eligible to capture the new content
+
+#### Scenario: Draft body write fails
+- **WHEN** the durable write of one draft body fails
+- **THEN** that draft receives no accepted manifest update from the failed write
+- **AND** its editor remains draft-dirty and retryable
+- **AND** other candidates in the pass may continue safely
+
+#### Scenario: Shared manifest commit fails
+- **WHEN** one or more draft bodies were written but the final manifest update fails
+- **THEN** none of those editor generations is marked successfully protected
+- **AND** all affected editors remain retryable
+- **AND** written bodies are preserved as recovery evidence rather than deleted as success cleanup
+
+### Requirement: Automatic draft write and restore limits stay aligned
+The system SHALL define a shared automatic per-draft recovery limit of `64 * 1024 * 1024` UTF-8 bytes for draft capture and draft read. A dirty buffer that exceeds the limit MUST NOT be presented as automatically protected, MUST remain draft-dirty, and MUST receive visible document-scoped feedback while normal explicit save workflows remain available.
+
+#### Scenario: Draft exceeds the automatic limit during chunked capture
+- **WHEN** a chunked draft snapshot grows beyond the automatic per-draft limit
+- **THEN** capture stops after bounded chunk overhead
+- **AND** no oversized draft body is committed as automatically recoverable
+- **AND** the editor remains draft-dirty with visible recovery-limit feedback
+
+#### Scenario: Draft exactly at the limit is accepted
+- **WHEN** a draft's UTF-8 body is exactly the automatic per-draft limit and its writes succeed
+- **THEN** the draft body and manifest entry are accepted
+- **AND** the matching dirty generation may be cleared
+
+### Requirement: Aggregate-preload skips restore lazily and safely
+The system SHALL preserve the `64 * 1024 * 1024` aggregate eager startup preload cap and SHALL lazily read a size-eligible valid draft that was skipped only because admitting it would exceed that aggregate cap. Lazy restore MUST be serialized to bound peak body memory and MUST validate draft identity, backing-file freshness, editor lifetime, and restore generation before applying text.
+
+#### Scenario: Second valid draft exceeds aggregate eager preload
+- **WHEN** multiple individually eligible drafts cannot all fit within the aggregate eager preload cap
+- **THEN** startup recreates every corresponding session tab
+- **AND** drafts skipped only by the aggregate cap are read and applied through the bounded lazy restore path
+
+#### Scenario: Lazy restore becomes stale
+- **WHEN** a user closes, repurposes, edits, or saves an editor before its lazy draft read completes
+- **THEN** the stale completion does not replace the current editor content
+- **AND** the preserved draft remains governed by the normal recovery-resolution rules
+
+#### Scenario: Lazy draft read fails
+- **WHEN** a size-eligible aggregate-cap-skipped draft cannot be read lazily
+- **THEN** the editor remains usable without applying partial text
+- **AND** the user receives a recovery diagnostic
+- **AND** the draft file and manifest entry are not deleted solely because the read failed
+
+### Requirement: Draft pipeline reliability has layered coverage
+The project SHALL add deterministic service, window, crash/restart, and scale coverage for pipeline memory bounds, generation races, body and manifest faults, close-time blocking, aggregate-cap lazy restore, and automatic-limit feedback.
+
+#### Scenario: Scale fixture bounds retained draft bodies
+- **WHEN** a test autosaves many large dirty tabs
+- **THEN** instrumentation shows at most one complete body retained by the pipeline at a time
+- **AND** every successfully accepted generation remains restorable
+
+#### Scenario: Abrupt termination preserves accepted generations
+- **WHEN** crash smoke terminates the app after one draft generation is accepted and another is still retryable
+- **THEN** relaunch restores the accepted generation
+- **AND** the artifacts do not claim the uncommitted generation was protected

@@ -4,7 +4,8 @@
 //!
 //! This suite focuses on the current window contract: split-view sidebar
 //! behavior, a few critical shell affordances, and preview-pane regressions
-//! that still live in the window layer.
+//! that still live in the window layer. It also covers bounded draft recovery,
+//! lazy-restore freshness, generation acceptance, and close safety.
 
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
@@ -24,7 +25,7 @@ use lushtext_core::model::automation::{
     AutomationReadinessPredicate, AutomationReadinessStatus,
 };
 use lushtext_core::model::content_search::SearchMatch;
-use lushtext_core::model::draft::{DraftEntry, DraftManifest};
+use lushtext_core::model::draft::{DraftEntry, DraftManifest, PreloadedDraftRestore};
 use lushtext_core::model::encoding::{
     DocumentEncoding, DocumentEncodingState, FileHealthFindingKind, InvisibleCharactersMode,
     LineEnding,
@@ -64,9 +65,10 @@ use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::search_panel::set_replace_preview_delay_for_test;
 use lushtext_core::ui::window::{
-    LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
+    DraftFlushError, LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
     set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
-    set_first_dirty_autosave_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
+    set_automatic_draft_limit_for_test, set_first_dirty_autosave_delay_for_test,
+    set_lazy_draft_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     with_print_runner_for_test,
 };
 use sourceview5::prelude::*;
@@ -109,6 +111,15 @@ struct FirstDirtyAutosaveDelayReset;
 impl Drop for FirstDirtyAutosaveDelayReset {
     fn drop(&mut self) {
         set_first_dirty_autosave_delay_for_test(750);
+    }
+}
+
+struct DraftPipelinePolicyReset;
+
+impl Drop for DraftPipelinePolicyReset {
+    fn drop(&mut self) {
+        set_automatic_draft_limit_for_test(draft_service::MAX_AUTOMATIC_DRAFT_BYTES);
+        set_lazy_draft_read_delay_for_test(0);
     }
 }
 
@@ -559,6 +570,8 @@ where
 
 fn shortcuts_dialogs_for(window: &LushtextWindow) -> Vec<libadwaita::ShortcutsDialog> {
     let dialogs = window.dialogs();
+    // The dialog list is heterogeneous, so checked GObject casts retain only
+    // the shortcuts surfaces this assertion inspects.
     (0..dialogs.n_items())
         .filter_map(|index| dialogs.item(index))
         .filter_map(|dialog| dialog.downcast::<libadwaita::ShortcutsDialog>().ok())
@@ -6245,6 +6258,316 @@ fn test_first_dirty_autosave_large_buffer_snapshots_across_main_loop_chunks() {
     assert!(!editor.draft_dirty());
 
     draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft");
+}
+
+#[test]
+fn test_draft_pipeline_retains_at_most_one_complete_body_across_many_tabs() {
+    ensure_gtk_init();
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let window = test_window();
+    let mut editors = Vec::new();
+    for index in 0..8 {
+        window.new_tab();
+        let editor = active_editor(&window);
+        editor
+            .buffer()
+            .set_text(&format!("draft-{index}-{}", "x".repeat(128 * 1024)));
+        editor.buffer().set_modified(true);
+        editors.push(editor);
+    }
+    present_window(&window);
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(15), || {
+        !window.draft_autosave_inflight_for_test()
+            && editors.iter().all(|editor| !editor.draft_dirty())
+    });
+
+    assert_eq!(window.draft_pipeline_max_retained_bodies_for_test(), 1);
+}
+
+#[test]
+fn test_draft_pipeline_limit_stays_retryable_then_clears_after_acceptance() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    set_automatic_draft_limit_for_test(8);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+
+    editor.buffer().set_text("123456789");
+    editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(3), || {
+        !window.draft_autosave_inflight_for_test()
+    });
+
+    assert!(editor.draft_dirty());
+    assert_eq!(
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .expect("automatic recovery warning")
+            .title,
+        "Automatic Recovery Paused"
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read absent oversized draft"),
+        None
+    );
+
+    editor.buffer().set_text("short");
+    editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(3), || {
+        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+    });
+
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .is_none(),
+        "only successful matching acceptance may clear the limit warning"
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read accepted draft"),
+        Some("short".to_string())
+    );
+}
+
+#[test]
+fn test_draft_pipeline_lazy_restore_rejects_stale_editor_and_advances_queue() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    set_lazy_draft_read_delay_for_test(100);
+    let window = test_window();
+    window.new_tab();
+    let first = active_editor(&window);
+    window.new_tab();
+    let second = active_editor(&window);
+    present_window(&window);
+    let first_id = first.draft_id().expect("first draft id");
+    let second_id = second.draft_id().expect("second draft id");
+    let data_dir = json_store::data_dir();
+    draft_service::write_draft(&data_dir, &first_id, "stale lazy body")
+        .expect("write first lazy draft");
+    draft_service::write_draft(&data_dir, &second_id, "current lazy body")
+        .expect("write second lazy draft");
+    for draft_id in [&first_id, &second_id] {
+        window.imp().drafts.manifest.borrow_mut().upsert(DraftEntry {
+            draft_id: draft_id.clone(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1,
+        });
+        window.imp().drafts.preloaded.borrow_mut().insert(
+            draft_id.clone(),
+            PreloadedDraftRestore::LazyAggregateBudget,
+        );
+    }
+
+    window.check_draft_by_id(&first, &first_id);
+    window.check_draft_by_id(&second, &second_id);
+    assert!(window.lazy_draft_restore_inflight_for_test());
+    first.buffer().set_text("user edit wins");
+    first.buffer().set_modified(true);
+    wait_until(Duration::from_secs(3), || {
+        !window.lazy_draft_restore_inflight_for_test()
+            && editor_buffer_text(&second) == "current lazy body"
+    });
+
+    assert_eq!(editor_buffer_text(&first), "user edit wins");
+    assert_eq!(editor_buffer_text(&second), "current lazy body");
+    assert!(second.is_draft_restored());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &first_id).expect("read preserved stale body"),
+        Some("stale lazy body".to_string())
+    );
+}
+
+#[test]
+fn test_draft_pipeline_lazy_read_failure_preserves_body_and_reports_diagnostic() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let drafts_dir = draft_service::drafts_dir(&data_dir);
+    fixture::create_dir_all(&drafts_dir);
+    let draft_path = drafts_dir.join(format!("{draft_id}.draft"));
+    fixture::write_bytes(&draft_path, [0xff, 0xfe]);
+    window.imp().drafts.manifest.borrow_mut().upsert(DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1,
+    });
+    window.imp().drafts.preloaded.borrow_mut().insert(
+        draft_id.clone(),
+        PreloadedDraftRestore::LazyAggregateBudget,
+    );
+
+    window.check_draft_by_id(&editor, &draft_id);
+    wait_until(Duration::from_secs(3), || {
+        !window.lazy_draft_restore_inflight_for_test()
+            && window
+                .imp()
+                .notification_bus
+                .editor_info_bar_view(editor.notification_owner_id())
+                .is_some()
+    });
+
+    assert_eq!(editor_buffer_text(&editor), "");
+    assert_eq!(
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .expect("lazy read failure diagnostic")
+            .title,
+        "Draft Restore Failed"
+    );
+    assert!(fs_metadata::exists(&draft_path));
+    assert!(
+        window
+            .imp()
+            .drafts
+            .manifest
+            .borrow()
+            .find_by_id(&draft_id)
+            .is_some()
+    );
+}
+
+#[test]
+fn test_draft_pipeline_cancelled_snapshot_keeps_retryable_without_partial_body() {
+    ensure_gtk_init();
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text(&"x".repeat(2_500_001));
+    editor.buffer().set_modified(true);
+
+    window.autosave_tick_for_test();
+    assert!(window.draft_autosave_inflight_for_test());
+    window.cancel_draft_snapshot_for_test();
+    wait_until(Duration::from_secs(3), || {
+        !window.draft_autosave_inflight_for_test()
+    });
+
+    assert!(editor.draft_dirty());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read cancelled draft"),
+        None,
+        "cancelled capture must never publish partial text"
+    );
+}
+
+#[test]
+fn test_draft_pipeline_partial_body_failure_accepts_only_successful_generation() {
+    ensure_gtk_init();
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let window = test_window();
+    window.new_tab();
+    let good = active_editor(&window);
+    window.new_tab();
+    let failed = active_editor(&window);
+    present_window(&window);
+    good.buffer().set_text("good generation");
+    good.buffer().set_modified(true);
+    failed.buffer().set_text("failed generation");
+    failed.buffer().set_modified(true);
+    let good_id = good.draft_id().expect("good draft id");
+    let failed_id = failed.draft_id().expect("failed draft id");
+    let data_dir = json_store::data_dir();
+    let failed_path = draft_service::drafts_dir(&data_dir).join(format!("{failed_id}.draft"));
+    fixture::create_dir_all(&failed_path);
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_autosave_inflight_for_test()
+    });
+
+    assert!(!good.draft_dirty());
+    assert!(failed.draft_dirty());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &good_id).expect("read good draft"),
+        Some("good generation".to_string())
+    );
+    let manifest = draft_service::load_manifest(&data_dir).expect("load partial manifest");
+    assert!(manifest.find_by_id(&good_id).is_some());
+    assert!(manifest.find_by_id(&failed_id).is_none());
+    fixture::remove_dir_all(&failed_path);
+}
+
+#[test]
+fn test_draft_pipeline_close_blocks_and_preserves_retry_state_over_limit() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    set_automatic_draft_limit_for_test(8);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    editor.buffer().set_text("123456789");
+    editor.buffer().set_modified(true);
+    window
+        .imp()
+        .drafts
+        .close_discard_ids
+        .borrow_mut()
+        .insert("unrelated-discard".to_string());
+    let result = Rc::new(RefCell::new(None));
+    let result_clone = result.clone();
+
+    window.flush_dirty_drafts_async(move |flush_result| {
+        *result_clone.borrow_mut() = Some(flush_result);
+    });
+    wait_until(Duration::from_secs(3), || result.borrow().is_some());
+
+    let error = result
+        .borrow_mut()
+        .take()
+        .expect("close result")
+        .expect_err("over-limit recovery must block close");
+    assert!(matches!(
+        error.downcast_ref::<DraftFlushError>(),
+        Some(DraftFlushError::Unconfirmed {
+            cancelled: 0,
+            over_limit: 1,
+            body_write: 0,
+            ..
+        })
+    ));
+    assert!(editor.draft_dirty());
+    assert!(
+        window
+            .imp()
+            .drafts
+            .close_discard_ids
+            .borrow()
+            .contains("unrelated-discard"),
+        "failed close safety must preserve retryable close state"
+    );
+    assert_eq!(editor.draft_id().as_deref(), Some(draft_id.as_str()));
 }
 
 #[test]
