@@ -64,12 +64,12 @@ mod cleanup_types;
 use cleanup_types::saturating_confirmed_cleanup_count;
 pub use cleanup_types::*;
 
-/// Deterministic cleanup failure selected by property tests.
+/// Deterministic cleanup failure selected by test builds.
 ///
-/// This seam is feature-gated so production callers cannot bypass real
-/// filesystem behavior, while generated tests remain independent of process
-/// privileges and platform permission semantics.
-#[cfg(feature = "property-tests")]
+/// This seam is gated behind the property and integration test features so
+/// ordinary production callers cannot bypass real filesystem behavior, while
+/// failure tests remain independent of process privileges.
+#[cfg(any(feature = "property-tests", feature = "test-utils"))]
 #[derive(Clone, Copy, Debug)]
 pub enum DraftOrphanCleanupFault {
     /// Fail an orphan-body deletion after its identity is revalidated.
@@ -982,12 +982,12 @@ pub fn execute_orphan_cleanup(
     execute_orphan_cleanup_impl(data_dir, plan, DraftOrphanCleanupFaults::default())
 }
 
-/// Execute orphan cleanup with one deterministic, property-test-only failure.
+/// Execute orphan cleanup with one deterministic, test-only failure.
 ///
 /// The injected failure follows the same retention and retry reporting path as
 /// a real filesystem error, without relying on permissions that privileged CI
 /// users may bypass.
-#[cfg(feature = "property-tests")]
+#[cfg(any(feature = "property-tests", feature = "test-utils"))]
 #[must_use]
 pub fn execute_orphan_cleanup_with_fault_for_test(
     data_dir: &Path,

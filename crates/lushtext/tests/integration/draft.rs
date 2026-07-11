@@ -470,14 +470,11 @@ fn cleanup_reports_delete_failure_and_preserves_body() {
     draft_service::write_draft(ctx.data_dir(), "blocked", "body").expect("write body");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
         .expect("inspect body");
-    let drafts = draft_service::drafts_dir(ctx.data_dir());
-    // Remove directory write permission to force deletion failure; restore
-    // owner access immediately after execution so fixture cleanup remains safe.
-    fixture::set_mode(&drafts, 0o555);
-
-    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
-
-    fixture::set_mode(&drafts, 0o700);
+    let outcome = draft_service::execute_orphan_cleanup_with_fault_for_test(
+        ctx.data_dir(),
+        plan,
+        draft_service::DraftOrphanCleanupFault::Delete,
+    );
     assert!(outcome.deleted_files.is_empty());
     assert!(
         outcome
@@ -508,14 +505,11 @@ fn cleanup_reports_manifest_write_failure_without_committing_removal() {
     draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
         .expect("inspect missing body");
-    let drafts = draft_service::drafts_dir(ctx.data_dir());
-    // Keep the manifest readable but block atomic replacement, then restore
-    // owner access immediately after the failure is captured.
-    fixture::set_mode(&drafts, 0o555);
-
-    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
-
-    fixture::set_mode(&drafts, 0o700);
+    let outcome = draft_service::execute_orphan_cleanup_with_fault_for_test(
+        ctx.data_dir(),
+        plan,
+        draft_service::DraftOrphanCleanupFault::Manifest,
+    );
     assert!(outcome.committed_manifest_removals.is_empty());
     assert!(outcome.failures.iter().any(|failure| matches!(
         failure,

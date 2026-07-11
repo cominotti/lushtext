@@ -241,11 +241,12 @@ tiny deterministic tempdir-backed service fixtures. Do not put GTK widget
 construction, compositor behavior, D-Bus/portal state, file chooser flows,
 watcher timing, or live session behavior in this target.
 
-Failure-path property fixtures must not depend on ambient Unix permissions to
-make filesystem operations fail: CI containers may run as root and bypass those
-permissions. Prefer feature-gated, per-invocation fault seams with no global
-mutable state so failure evidence stays deterministic across privilege levels,
-and parallel tests while production callers cannot select injected I/O.
+Failure-path filesystem fixtures, including property and integration tests,
+must not depend on ambient Unix permissions to make operations fail: CI
+containers may run as root and bypass those permissions. Prefer feature-gated,
+per-invocation fault seams with no global mutable state so failure evidence
+stays deterministic across privilege levels and parallel tests while production
+callers cannot select injected I/O.
 
 `make test-prop` uses the CI-safe default of 64 cases per property. Use
 `make test-prop-deep PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass.
