@@ -64,6 +64,26 @@ mod cleanup_types;
 use cleanup_types::saturating_confirmed_cleanup_count;
 pub use cleanup_types::*;
 
+/// Deterministic cleanup failure selected by property tests.
+///
+/// This seam is feature-gated so production callers cannot bypass real
+/// filesystem behavior, while generated tests remain independent of process
+/// privileges and platform permission semantics.
+#[cfg(feature = "property-tests")]
+#[derive(Clone, Copy, Debug)]
+pub enum DraftOrphanCleanupFault {
+    /// Fail an orphan-body deletion after its identity is revalidated.
+    Delete,
+    /// Fail the durable manifest commit after removals are selected.
+    Manifest,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DraftOrphanCleanupFaults {
+    fail_delete: bool,
+    fail_manifest: bool,
+}
+
 /// Draft, session, and diagnostics loaded for startup restore.
 #[derive(Debug)]
 pub struct RestoreState {
@@ -959,6 +979,44 @@ pub fn execute_orphan_cleanup(
     data_dir: &Path,
     plan: DraftOrphanCleanupPlan,
 ) -> DraftOrphanCleanupOutcome {
+    execute_orphan_cleanup_impl(data_dir, plan, DraftOrphanCleanupFaults::default())
+}
+
+/// Execute orphan cleanup with one deterministic, property-test-only failure.
+///
+/// The injected failure follows the same retention and retry reporting path as
+/// a real filesystem error, without relying on permissions that privileged CI
+/// users may bypass.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn execute_orphan_cleanup_with_fault_for_test(
+    data_dir: &Path,
+    plan: DraftOrphanCleanupPlan,
+    fault: DraftOrphanCleanupFault,
+) -> DraftOrphanCleanupOutcome {
+    let faults = match fault {
+        DraftOrphanCleanupFault::Delete => DraftOrphanCleanupFaults {
+            fail_delete: true,
+            fail_manifest: false,
+        },
+        DraftOrphanCleanupFault::Manifest => DraftOrphanCleanupFaults {
+            fail_delete: false,
+            fail_manifest: true,
+        },
+    };
+    execute_orphan_cleanup_impl(data_dir, plan, faults)
+}
+
+/// Shared blocking cleanup implementation used by production and property tests.
+///
+/// Callers inherit [`execute_orphan_cleanup`]'s background-thread and manifest
+/// lock requirements. `faults` is immutable per-invocation test control; the
+/// production wrapper always supplies the no-fault default.
+fn execute_orphan_cleanup_impl(
+    data_dir: &Path,
+    plan: DraftOrphanCleanupPlan,
+    faults: DraftOrphanCleanupFaults,
+) -> DraftOrphanCleanupOutcome {
     let DraftOrphanCleanupPlan {
         missing_body_entries,
         orphan_bodies,
@@ -1056,7 +1114,13 @@ pub fn execute_orphan_cleanup(
                     reason: DraftOrphanCleanupRetentionReason::BodyGenerationChanged,
                 });
             }
-            Ok(PathStatus::File) => match fs_mutate::remove_file_if_exists(&candidate.path) {
+            Ok(PathStatus::File) => match if faults.fail_delete {
+                Err(std::io::Error::other(
+                    "injected orphan cleanup deletion failure",
+                ))
+            } else {
+                fs_mutate::remove_file_if_exists(&candidate.path)
+            } {
                 Ok(MutationOutcome::Changed) => outcome.deleted_files.push(candidate.path),
                 Ok(MutationOutcome::AlreadyAbsent) => {
                     outcome.already_absent_files.push(candidate.path);
@@ -1173,7 +1237,14 @@ pub fn execute_orphan_cleanup(
             .is_some_and(|fingerprint| fingerprint.matches(entry))
     });
 
-    match save_manifest_locked(data_dir, &latest) {
+    let manifest_result = if faults.fail_manifest {
+        Err(anyhow::anyhow!(
+            "injected orphan cleanup manifest commit failure"
+        ))
+    } else {
+        save_manifest_locked(data_dir, &latest)
+    };
+    match manifest_result {
         Ok(()) => {
             outcome.committed_manifest_removals = pending_manifest_removals.into_values().collect();
             outcome.latest_persisted_manifest = Some(latest);

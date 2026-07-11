@@ -8,14 +8,11 @@
 
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::services::draft_service::{
-    self, DraftOrphanCleanupFailure, DraftOrphanCleanupRetentionReason,
+    self, DraftOrphanCleanupFailure, DraftOrphanCleanupFault, DraftOrphanCleanupRetentionReason,
 };
 use lushtext_core::services::filesystem::{fixture, metadata as fs_metadata};
-use proptest::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
-
-use crate::support::property_config;
 
 #[derive(Clone, Copy, Debug)]
 enum GeneratedCleanupCase {
@@ -23,16 +20,6 @@ enum GeneratedCleanupCase {
     StatusFailure,
     DeleteFailure,
     ManifestWriteFailure,
-}
-
-/// Generate success or one failure category that must remain retryable.
-fn generated_case() -> impl Strategy<Value = GeneratedCleanupCase> {
-    prop_oneof![
-        Just(GeneratedCleanupCase::ConfirmedDelete),
-        Just(GeneratedCleanupCase::StatusFailure),
-        Just(GeneratedCleanupCase::DeleteFailure),
-        Just(GeneratedCleanupCase::ManifestWriteFailure),
-    ]
 }
 
 fn entry(id: &str) -> DraftEntry {
@@ -44,22 +31,26 @@ fn entry(id: &str) -> DraftEntry {
     }
 }
 
-proptest! {
-    #![proptest_config(property_config())]
-
-    #[test]
-    #[cfg(unix)]
-    fn cleanup_never_reports_failed_evidence_as_removed(case in generated_case()) {
+#[test]
+#[cfg(unix)]
+fn cleanup_never_reports_failed_evidence_as_removed() {
+    for case in [
+        GeneratedCleanupCase::ConfirmedDelete,
+        GeneratedCleanupCase::StatusFailure,
+        GeneratedCleanupCase::DeleteFailure,
+        GeneratedCleanupCase::ManifestWriteFailure,
+    ] {
         let temp = TempDir::new().expect("create property fixture");
         let data_dir = temp.path();
         let drafts = draft_service::drafts_dir(data_dir);
 
-        let (plan, expected_failure) = match case {
+        let (plan, expected_failure, fault) = match case {
             GeneratedCleanupCase::ConfirmedDelete => {
                 draft_service::write_draft(data_dir, "orphan", "body").expect("write orphan");
                 (
                     draft_service::inspect_orphan_cleanup(data_dir, &DraftManifest::default())
                         .expect("inspect orphan"),
+                    None,
                     None,
                 )
             }
@@ -74,19 +65,15 @@ proptest! {
                     draft_service::inspect_orphan_cleanup(data_dir, &manifest)
                         .expect("directory scan remains trusted"),
                     Some("status"),
+                    None,
                 )
             }
             GeneratedCleanupCase::DeleteFailure => {
                 draft_service::write_draft(data_dir, "blocked", "body").expect("write body");
-                let plan = draft_service::inspect_orphan_cleanup(
-                    data_dir,
-                    &DraftManifest::default(),
-                )
-                .expect("inspect blocked body");
-                // Remove directory write permission to force the mutation
-                // failure; owner access is restored immediately after execution.
-                fixture::set_mode(&drafts, 0o555);
-                (plan, Some("delete"))
+                let plan =
+                    draft_service::inspect_orphan_cleanup(data_dir, &DraftManifest::default())
+                        .expect("inspect blocked body");
+                (plan, Some("delete"), Some(DraftOrphanCleanupFault::Delete))
             }
             GeneratedCleanupCase::ManifestWriteFailure => {
                 let manifest = DraftManifest {
@@ -95,46 +82,57 @@ proptest! {
                 draft_service::save_manifest(data_dir, &manifest).expect("save manifest");
                 let plan = draft_service::inspect_orphan_cleanup(data_dir, &manifest)
                     .expect("inspect missing body");
-                // The same permission guard makes durable manifest replacement
-                // fail without making the existing manifest unreadable.
-                fixture::set_mode(&drafts, 0o555);
-                (plan, Some("manifest"))
+                (
+                    plan,
+                    Some("manifest"),
+                    Some(DraftOrphanCleanupFault::Manifest),
+                )
             }
         };
 
-        let outcome = draft_service::execute_orphan_cleanup(data_dir, plan);
-        fixture::set_mode(&drafts, 0o700);
+        let outcome = match fault {
+            Some(fault) => {
+                draft_service::execute_orphan_cleanup_with_fault_for_test(data_dir, plan, fault)
+            }
+            None => draft_service::execute_orphan_cleanup(data_dir, plan),
+        };
 
         match expected_failure {
             None => {
-                prop_assert_eq!(outcome.confirmed_cleaned_count(), 1);
-                prop_assert_eq!(outcome.deleted_files.len(), 1);
+                assert_eq!(outcome.confirmed_cleaned_count(), 1, "case: {case:?}");
+                assert_eq!(outcome.deleted_files.len(), 1, "case: {case:?}");
             }
             Some(category) => {
-                prop_assert_eq!(outcome.confirmed_cleaned_count(), 0);
-                prop_assert!(outcome.has_more_work);
-                prop_assert!(!outcome.retained.is_empty());
-                let category_present = outcome.failures.iter().any(|failure| matches!(
-                    (category, failure),
-                    ("status", DraftOrphanCleanupFailure::Status(_))
-                        | ("delete", DraftOrphanCleanupFailure::Delete(_))
-                        | ("manifest", DraftOrphanCleanupFailure::Manifest(_))
-                ));
-                prop_assert!(category_present);
-                prop_assert!(outcome.retained.iter().any(|retained| matches!(
-                    retained.reason,
-                    DraftOrphanCleanupRetentionReason::StatusUncertain
-                        | DraftOrphanCleanupRetentionReason::DeleteFailed
-                        | DraftOrphanCleanupRetentionReason::ManifestCommitFailed
-                        | DraftOrphanCleanupRetentionReason::BodyNotRegularFile
-                )));
+                assert_eq!(outcome.confirmed_cleaned_count(), 0, "case: {case:?}");
+                assert!(outcome.has_more_work, "case: {case:?}");
+                assert!(!outcome.retained.is_empty(), "case: {case:?}");
+                let category_present = outcome.failures.iter().any(|failure| {
+                    matches!(
+                        (category, failure),
+                        ("status", DraftOrphanCleanupFailure::Status(_))
+                            | ("delete", DraftOrphanCleanupFailure::Delete(_))
+                            | ("manifest", DraftOrphanCleanupFailure::Manifest(_))
+                    )
+                });
+                assert!(category_present, "case: {case:?}");
+                assert!(
+                    outcome.retained.iter().any(|retained| matches!(
+                        retained.reason,
+                        DraftOrphanCleanupRetentionReason::StatusUncertain
+                            | DraftOrphanCleanupRetentionReason::DeleteFailed
+                            | DraftOrphanCleanupRetentionReason::ManifestCommitFailed
+                            | DraftOrphanCleanupRetentionReason::BodyNotRegularFile
+                    )),
+                    "case: {case:?}"
+                );
             }
         }
 
         for deleted in &outcome.deleted_files {
-            prop_assert_eq!(
+            assert_eq!(
                 fs_metadata::path_status(deleted).expect("deleted path status"),
-                lushtext_core::services::filesystem::PathStatus::Missing
+                lushtext_core::services::filesystem::PathStatus::Missing,
+                "case: {case:?}",
             );
         }
     }
