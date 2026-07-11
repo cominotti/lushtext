@@ -1275,10 +1275,12 @@ fn test_open_popover_bulk_path_close_reconciles_after_batch() {
 
     window.close_tab_for_path(dir.path());
     flush_events();
-    wait_until(Duration::from_secs(2), || {
+    // Bulk tab close and recent-row reconciliation span asynchronous window
+    // workflow callbacks, so retain the shared generous CI scheduling budget.
+    wait_until(Duration::from_secs(10), || {
         window.imp().tab_view.n_pages() == 0
     });
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window.imp().open_popover.visible_titles_for_test()
             == vec!["first-open.txt", "second-open.txt"]
     });

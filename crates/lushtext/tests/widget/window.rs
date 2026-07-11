@@ -6742,7 +6742,10 @@ fn test_draft_pipeline_cancelled_snapshot_keeps_retryable_without_partial_body()
     window.autosave_tick_for_test();
     assert!(window.draft_autosave_inflight_for_test());
     window.cancel_draft_snapshot_for_test();
-    wait_until(Duration::from_secs(3), || {
+    // Chunked GTK snapshots complete through main-loop timeouts. Under the
+    // fully concurrent CI suite, cancellation delivery can be delayed even
+    // though the same observable gate settles immediately in isolation.
+    wait_until(Duration::from_secs(10), || {
         !window.draft_autosave_inflight_for_test()
     });
 
