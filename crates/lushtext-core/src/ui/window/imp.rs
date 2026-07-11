@@ -176,10 +176,19 @@ struct AdaptiveShellLayout {
 /// Editor-memory accounting shared by the eviction helpers.
 #[derive(Default)]
 pub struct EditorMemoryState {
-    /// Running total of estimated buffer memory across all open tabs.
-    pub total: Cell<u64>,
-    /// Per-editor estimates keyed by `editor.as_ptr() as usize`.
-    pub by_editor: RefCell<HashMap<usize, u64>>,
+    /// Whether a next-main-loop aggregate evaluation is already queued.
+    pub evaluation_armed: Cell<bool>,
+    /// Guard that keeps eviction-triggered buffer signals from rearming the pass.
+    pub evaluation_running: Cell<bool>,
+    /// Window-wide generation source used for deterministic least-recent use.
+    pub next_access_generation: Cell<u64>,
+    /// Number of aggregate evaluations, retained for coalescing assertions.
+    pub evaluation_count: Cell<u64>,
+    /// Stable result of the most recently completed aggregate policy pass.
+    pub last_outcome: Cell<crate::model::editor_memory::EditorMemoryBudgetOutcome>,
+    /// One-shot race injector run after planning and before candidate rechecks.
+    #[cfg(feature = "test-utils")]
+    pub before_eviction_hook: RefCell<Option<Box<dyn FnOnce()>>>,
 }
 
 /// Search-progress lease state used by the status-bar heartbeat flow.
@@ -953,6 +962,11 @@ impl ObjectImpl for LushtextWindow {
                     window.refresh_status_bar();
                     window.refresh_sidebar_file_row_states();
                     window.refresh_open_popover_rows();
+                    // Stamp recency before reload/evaluation so a newly active
+                    // tab invalidates any earlier LRU candidate.
+                    if let Some(editor) = window.active_editor() {
+                        window.mark_editor_memory_accessed(&editor);
+                    }
                     window.reload_if_evicted();
                     window.maybe_evict_background_tabs();
                     window.save_session_debounced();

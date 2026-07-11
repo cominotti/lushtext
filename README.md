@@ -63,6 +63,9 @@ local history, and careful recovery behavior.
 - **GTK Lush** is an in-tree internal platform for hardened GTK4/Libadwaita
   patterns, proof helpers, and adoption experiments. It is useful contributor
   context even though it is not published as stable external crates.
+- **Soft live-editor memory budget** reacts to untitled and growing buffers,
+  evicts only clean inactive files that can be reloaded, and preserves active,
+  modified, loading, saving, failed-load, or otherwise non-recoverable work.
 
 ## Installation
 

@@ -11,6 +11,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
 use lushtext_core::model::encoding::DocumentEncodingState;
+use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
 use lushtext_core::services::editor_io::LoadResult;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
@@ -873,6 +874,55 @@ fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
     );
     assert_eq!(editor_buffer_text(&page), "current buffer\n");
     assert_eq!(page.file_size(), None);
+}
+
+#[test]
+fn test_live_memory_estimate_tracks_untitled_unicode_and_growth() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+
+    page.buffer().set_text("abc");
+    assert_eq!(page.estimated_live_buffer_bytes(), 12);
+
+    page.buffer().set_text("é🙂");
+    assert_eq!(
+        page.estimated_live_buffer_bytes(),
+        8,
+        "two Unicode scalars use the conservative four-byte bound"
+    );
+
+    page.apply_loaded_content_for_test("abc", 100);
+    assert_eq!(page.estimated_live_buffer_bytes(), 100);
+    page.buffer().set_text(&"x".repeat(30));
+    assert_eq!(page.estimated_live_buffer_bytes(), 120);
+}
+
+#[test]
+fn test_live_memory_estimate_updates_after_save_and_eviction() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let temp = tempfile::NamedTempFile::new().expect("memory estimate temp file");
+    page.set_file_path(temp.path());
+    page.buffer().set_text("saved unicode 🙂\n");
+
+    let before_save = page.estimated_live_buffer_bytes();
+    let done = Rc::new(Cell::new(false));
+    let done_clone = done.clone();
+    page.save_file_async(move |result| {
+        result.expect("memory estimate save should succeed");
+        done_clone.set(true);
+    });
+    wait_until(std::time::Duration::from_secs(5), || done.get());
+
+    assert!(!page.is_saving());
+    assert!(page.file_size().is_some());
+    assert_eq!(page.estimated_live_buffer_bytes(), before_save);
+
+    page.evict();
+    assert_eq!(
+        page.estimated_live_buffer_bytes(),
+        EVICTED_EDITOR_BOOKKEEPING_BYTES
+    );
 }
 
 #[test]

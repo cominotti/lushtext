@@ -183,7 +183,7 @@ impl LushtextEditorPage {
         self.set_minimap_tracking_suspended(false);
         self.clear_modified_line_marks();
         self.refresh_minimap();
-        self.notify_estimated_memory_changed();
+        self.notify_memory_policy_changed();
 
         self.imp()
             .local_history

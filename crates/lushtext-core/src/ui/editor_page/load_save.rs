@@ -55,6 +55,8 @@ impl LushtextEditorPage {
         self.imp().canonical_file_path.borrow_mut().take();
         self.imp().file_size.set(None);
         self.imp().load_state.set(EditorLoadState::Loading);
+        self.imp().latest_load_failed.set(false);
+        self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
 
         self.imp()
@@ -97,6 +99,7 @@ impl LushtextEditorPage {
                     .canonical_file_path
                     .replace(loaded.canonical_path);
                 self.imp().load_state.set(EditorLoadState::Loaded);
+                self.imp().latest_load_failed.set(false);
                 self.imp().evicted.set(false);
                 self.set_document_encoding_state(loaded.encoding_state);
                 self.set_has_bom(loaded.has_bom);
@@ -106,7 +109,7 @@ impl LushtextEditorPage {
                 self.set_minimap_tracking_suspended(false);
                 self.clear_modified_line_marks();
                 self.apply_restore_position();
-                self.notify_estimated_memory_changed();
+                self.notify_memory_policy_changed();
                 self.imp().monitor.last_known_mtime.set(loaded.mtime);
                 self.clear_inline_notification();
                 self.seed_local_history_from_loaded_content(&loaded.content);
@@ -144,6 +147,8 @@ impl LushtextEditorPage {
                 tracing::error!("{error}");
                 let error_text = error.to_string();
                 self.imp().load_state.set(error_state);
+                self.imp().latest_load_failed.set(true);
+                self.notify_memory_policy_changed();
                 self.emit_inline_notification(InlineActionNotification {
                     style: InlineNotificationStyle::Error,
                     title: "Could Not Open File".to_string(),
@@ -171,10 +176,11 @@ impl LushtextEditorPage {
         self.imp().file_size.set(Some(reported_size));
         self.imp().size_check.set(size_check);
         self.imp().load_state.set(EditorLoadState::Loaded);
+        self.imp().latest_load_failed.set(false);
         self.imp().evicted.set(false);
         self.apply_loaded_content(content, size_check);
         self.seed_local_history_from_loaded_content(content);
-        self.notify_estimated_memory_changed();
+        self.notify_memory_policy_changed();
         self.refresh_minimap();
         self.refresh_accessibility_metadata();
     }
@@ -267,6 +273,7 @@ impl LushtextEditorPage {
             self.reapply_language();
         }
         self.schedule_minimap_refresh();
+        self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
     }
 
@@ -276,10 +283,12 @@ impl LushtextEditorPage {
         self.imp().canonical_file_path.borrow_mut().take();
         self.imp().file_size.set(None);
         self.imp().load_state.set(EditorLoadState::Loading);
+        self.imp().latest_load_failed.set(false);
         if self.imp().size_check.get().syntax_enabled() {
             self.reapply_language();
         }
         self.schedule_minimap_refresh();
+        self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
     }
 
@@ -292,8 +301,10 @@ impl LushtextEditorPage {
         self.imp().canonical_file_path.borrow_mut().take();
         self.imp().file_size.set(None);
         self.imp().load_state.set(EditorLoadState::Failed);
+        self.imp().latest_load_failed.set(true);
         self.buffer().set_language(None::<&sourceview5::Language>);
         self.schedule_minimap_refresh();
+        self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
     }
 
@@ -330,7 +341,10 @@ impl LushtextEditorPage {
         }
 
         self.cancel_load();
+        // Publish saving before snapshotting or yielding so an already planned
+        // memory pass revalidates this page as protected.
         self.imp().save.inflight.set(true);
+        self.notify_memory_policy_changed();
         let view = self.source_view().clone();
         let restore_state = ViewInteractivityState {
             editable: view.is_editable(),
@@ -481,6 +495,7 @@ impl LushtextEditorPage {
                     .source_view()
                     .set_cursor_visible(restore_view_state.cursor_visible);
                 editor.imp().save.inflight.set(false);
+                editor.notify_memory_policy_changed();
 
                 match result {
                     Ok((size, mtime, canonical_path, clean_text, saved_buffer_text)) => {
@@ -491,6 +506,7 @@ impl LushtextEditorPage {
                         editor.imp().file_size.set(Some(size));
                         editor.imp().size_check.set(FileSizeCheck::classify(size));
                         editor.imp().load_state.set(EditorLoadState::Loaded);
+                        editor.imp().latest_load_failed.set(false);
                         let mut state = editor.document_encoding_state();
                         state.opened_encoding = state.save_encoding;
                         state.detected_line_ending = state.save_line_ending;
@@ -525,7 +541,7 @@ impl LushtextEditorPage {
                             );
                         }
                         editor.set_file_health(findings);
-                        editor.notify_estimated_memory_changed();
+                        editor.notify_memory_policy_changed();
                         editor.imp().monitor.last_known_mtime.set(mtime);
                         editor.clear_modified_line_marks();
                         editor.refresh_minimap();

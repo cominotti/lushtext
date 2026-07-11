@@ -21,6 +21,10 @@ use lushtext_core::model::content_search::{
     ContentSearchOptions, Replacement, SearchMatch, generate_replacement_preview,
 };
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
+use lushtext_core::model::editor_memory::{
+    EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorResidency, estimate_live_editor_bytes,
+    evaluate_editor_memory_budget,
+};
 use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
@@ -1209,6 +1213,68 @@ fn bench_file_size_classify(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark the scalar-only editor memory policy at deliberately large tab counts.
+fn bench_editor_memory_policy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("editor_memory_policy");
+    // One percent makes the 10k-tab clean case traverse many candidates rather
+    // than ending after only a handful of evictions.
+    let per_page = EDITOR_MEMORY_UPPER_BUDGET_BYTES / 100;
+
+    for tab_count in [1_000usize, 10_000, 100_000] {
+        for &(label, eligible) in &[("clean", true), ("protected", false)] {
+            let pages = (0..tab_count)
+                .map(|editor_id| EditorResidency {
+                    editor_id,
+                    estimated_bytes: per_page,
+                    access_generation: u64::try_from(editor_id).expect("benchmark generation"),
+                    policy_generation: 1,
+                    eligible_for_eviction: eligible,
+                })
+                .collect::<Vec<_>>();
+            group.bench_function(BenchmarkId::new(format!("{tab_count}_tabs"), label), |b| {
+                b.iter(|| evaluate_editor_memory_budget(black_box(&pages)));
+            });
+        }
+    }
+
+    let bookkeeping_heavy = (0..10_000usize)
+        .map(|editor_id| EditorResidency {
+            editor_id,
+            estimated_bytes: lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES
+                + 1,
+            access_generation: u64::try_from(editor_id).expect("benchmark generation"),
+            policy_generation: 1,
+            eligible_for_eviction: true,
+        })
+        .chain(std::iter::once(EditorResidency {
+            editor_id: 10_000,
+            estimated_bytes: EDITOR_MEMORY_UPPER_BUDGET_BYTES,
+            access_generation: 10_000,
+            policy_generation: 1,
+            eligible_for_eviction: false,
+        }))
+        .collect::<Vec<_>>();
+    group.bench_function("10k_tabs/bookkeeping_heavy", |b| {
+        b.iter(|| evaluate_editor_memory_budget(black_box(&bookkeeping_heavy)));
+    });
+
+    for &(label, characters, file_bytes) in &[
+        ("ascii_growth", 10_000_000, Some(10_000_000)),
+        ("unicode_growth", 10_000_000, Some(30_000_000)),
+    ] {
+        group.bench_function(BenchmarkId::new("live_estimate", label), |b| {
+            b.iter(|| {
+                estimate_live_editor_bytes(
+                    black_box(characters),
+                    black_box(file_bytes),
+                    black_box(false),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
 /// Benchmark startup draft preload and conservative orphan cleanup.
 ///
 /// Batched fixtures exclude setup from cleanup timing, while the scale group
@@ -1731,6 +1797,7 @@ criterion_group!(
     bench_replace_undo_workflows,
     bench_tree_population,
     bench_file_size_classify,
+    bench_editor_memory_policy,
     bench_draft_restore,
     bench_recovery_performance,
     bench_content_search,

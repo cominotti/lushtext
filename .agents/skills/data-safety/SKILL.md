@@ -163,7 +163,7 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 >
 > **DI-5: Evicted tab handling in draft flush**
 > Grep: `is_evicted` in flush context
-> Tree: Does flush skip evicted tabs? → No: SAFE. Can modified buffers be evicted? → Check `maybe_evict_background_tabs` for `!is_modified()` guard. Guard present and correctly checks `is_modified()`: SAFE. Guard missing or incorrect: FLAG CRITICAL.
+> Tree: Does flush skip evicted tabs? → No: SAFE. Can modified buffers be evicted? → Check the live editor memory policy snapshot and immediate candidate revalidation for active/modified/save/load/failure/path guards. Both snapshot and revalidation protect modified content: SAFE. Either guard missing or incorrect: FLAG CRITICAL.
 >
 > **Output**: For each FLAG: Pattern ID, severity, file:line_number, 3-5 line code snippet, one-sentence data loss scenario, one-sentence required fix. If no findings: "draft-integrity: CLEAN"
 

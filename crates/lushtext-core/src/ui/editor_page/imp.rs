@@ -32,9 +32,8 @@ use std::sync::atomic::AtomicBool;
 use super::minimap::{MinimapAvailability, MinimapMarker};
 use super::style_scheme::apply_color_scheme_to_editor;
 
-/// Callback for notifying the window when this editor's estimated buffer
-/// memory changes. The `u64` argument is the new estimated byte count.
-type MemoryChangedCallback = Box<dyn Fn(u64)>;
+/// Callback for notifying the window when residency or eviction safety changes.
+type MemoryChangedCallback = Box<dyn Fn()>;
 type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
 type LoadCompletedCallback = Box<dyn FnOnce()>;
 type LoadFailedCallback = Box<dyn FnOnce(String)>;
@@ -362,11 +361,23 @@ pub struct LushtextEditorPage {
     pub file_size: Cell<Option<u64>>,
     /// Explicit file-load lifecycle state for duplicate ownership decisions.
     pub load_state: Cell<EditorLoadState>,
+    /// Whether the newest accepted load attempt failed while content remained visible.
+    ///
+    /// A failed reload may preserve the prior buffer and `Loaded` state, so
+    /// eviction safety cannot be inferred from `load_state` alone.
+    pub latest_load_failed: Cell<bool>,
     /// Feature gate classification based on file size (syntax, undo thresholds).
     pub size_check: Cell<FileSizeCheck>,
     /// Whether this tab's buffer was evicted to free memory. Evicted tabs
     /// reload from disk when re-focused.
     pub evicted: Cell<bool>,
+    /// Window-wide least-recently-used generation assigned on load or activation.
+    pub memory_access_generation: Cell<u64>,
+    /// Page-local generation advanced whenever residency or eligibility changes.
+    pub memory_policy_generation: Cell<u64>,
+    /// Synthetic estimate used by deterministic budget widget tests.
+    #[cfg(feature = "test-utils")]
+    pub memory_estimate_override: Cell<Option<u64>>,
     /// Cooperative cancellation token for the current background file load.
     /// A fresh `Arc<AtomicBool>` per load prevents a newer request from
     /// uncancelling an older background worker.
@@ -389,7 +400,10 @@ pub struct LushtextEditorPage {
     pub document_buffer_signals: SignalBag,
     /// Editor-local buffer signals for user edit actions.
     pub editing_buffer_signals: SignalBag,
-    /// Callback invoked when estimated buffer memory changes (load, save, evict).
+    /// Page-to-window callback invoked when residency or eviction safety changes.
+    ///
+    /// The `RefCell` permits replacing the single GTK-main-thread observer
+    /// through the wrapper's shared `&self` API.
     pub memory_changed_callback: RefCell<Option<MemoryChangedCallback>>,
     /// Callback invoked when the editor needs to surface an inline notification.
     pub notification_callback: RefCell<Option<NotificationCallback>>,
@@ -431,8 +445,13 @@ impl Default for LushtextEditorPage {
             canonical_file_path: RefCell::default(),
             file_size: Cell::default(),
             load_state: Cell::new(EditorLoadState::Untitled),
+            latest_load_failed: Cell::new(false),
             size_check: Cell::new(FileSizeCheck::Normal),
             evicted: Cell::new(false),
+            memory_access_generation: Cell::new(0),
+            memory_policy_generation: Cell::new(0),
+            #[cfg(feature = "test-utils")]
+            memory_estimate_override: Cell::new(None),
             cancel_token: RefCell::new(Arc::new(AtomicBool::new(false))),
             load_generation: Cell::new(0),
             applied_style_scheme_id: RefCell::new(None),
@@ -707,6 +726,28 @@ impl ObjectImpl for LushtextEditorPage {
                         editor.emit_bookmarks_changed();
                     }
                     editor.schedule_minimap_refresh();
+                }
+            });
+            self.editing_buffer_signals.track(&buffer, handler_id);
+        }
+
+        // Text changes update residency, while modified-state changes alter
+        // eviction safety independently. The window coalesces both at idle.
+        {
+            let editor_weak = self.obj().downgrade();
+            let handler_id = buffer.connect_changed(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.notify_memory_policy_changed();
+                }
+            });
+            self.editing_buffer_signals.track(&buffer, handler_id);
+        }
+
+        {
+            let editor_weak = self.obj().downgrade();
+            let handler_id = buffer.connect_modified_changed(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.notify_memory_policy_changed();
                 }
             });
             self.editing_buffer_signals.track(&buffer, handler_id);

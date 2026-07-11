@@ -253,19 +253,19 @@ IMPORTANT: This audit is about ARCHITECTURAL memory decisions, not micro allocat
 - Drop ordering or intermediate scoping
 
 Review criteria — check for architectural memory concerns:
-1. Buffer memory awareness: code that opens files or creates tabs — does it account for ~1.5-2x file size per tab in GtkTextBuffer? Are the established size limits (50MB undo disable, 500MB refuse) respected?
+1. Buffer memory awareness: code that opens files or creates tabs — does it preserve the O(1) live character-count estimate, known-file floor, and explicit evicted bookkeeping? Are the established size limits (50MB undo disable, 500MB refuse) respected?
 2. Concurrent load budgeting: session restore or batch operations — is peak memory capped by the thread spawn guard (8 concurrent)?
 3. Index memory scaling: new code adding to FileIndex — does it respect the 100k file cap?
 4. Large data in signal closures: closures that capture large indexes or collections by value (these live for widget lifetime and become stale) — should use @weak ref + imp() access instead
-5. Buffer eviction: are new tab-opening paths aware of the 256MB eviction budget?
+5. Buffer eviction: do residency/eligibility transitions reach the coalesced 256 MiB policy, and does application remain O(n log n) with identity/generation revalidation?
 
 Anti-patterns to flag:
 - [FLAG] Capturing entire FileIndex or Vec<IndexedFile> (~20MB for 100k files) in a signal closure — use @weak ref + imp() access
 - [FLAG] Missing file size limits on a new file-loading path
 - [RECOMMEND] Unbounded concurrent spawn_blocking_then without awareness of the thread spawn guard
-- [RECOMMEND] New tab-opening code that doesn't trigger eviction check
+- [RECOMMEND] New tab-opening or editor-transition code that does not notify the coalesced live-memory policy
 - [GOOD] Correct use of Arc<PathBuf> sharing for workspace folders (established pattern)
-- [GOOD] Buffer eviction on tab switch when memory budget exceeded
+- [GOOD] Live residency changes coalesce into safe LRU eviction toward the 90% low-water mark
 
 Output format — return findings as:
 **[SEVERITY] Title** — file:line

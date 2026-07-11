@@ -141,6 +141,12 @@ impl LushtextEditorPage {
         self.imp().load_state.get()
     }
 
+    /// Whether the newest accepted load attempt failed for this visible buffer.
+    #[must_use]
+    pub(crate) fn latest_load_failed(&self) -> bool {
+        self.imp().latest_load_failed.get()
+    }
+
     /// Current encoding and line-ending facts for this tab.
     #[must_use]
     pub fn document_encoding_state(&self) -> DocumentEncodingState {
@@ -311,7 +317,7 @@ impl LushtextEditorPage {
         self.set_minimap_tracking_suspended(false);
         self.clear_modified_line_marks();
         self.refresh_minimap();
-        self.notify_estimated_memory_changed();
+        self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
     }
 
@@ -321,17 +327,51 @@ impl LushtextEditorPage {
     }
 
     #[must_use]
-    pub fn estimated_buffer_bytes(&self) -> u64 {
-        if self.is_evicted() {
-            return 0;
+    /// Return a conservative O(1) estimate of this editor's live buffer residency.
+    ///
+    /// This GTK-main-thread query reads only scalar buffer metadata, never
+    /// copies document text, and uses accepted file bytes as a floor. Evicted
+    /// pages report only their fixed bookkeeping estimate.
+    pub fn estimated_live_buffer_bytes(&self) -> u64 {
+        #[cfg(feature = "test-utils")]
+        if let Some(bytes) = self.imp().memory_estimate_override.get() {
+            return bytes;
         }
 
-        self.file_size().map_or(0, |size| {
-            size.saturating_mul(self.size_check().estimated_buffer_multiplier())
-        })
+        // GtkTextBuffer maintains char_count as scalar metadata. Reading it is
+        // O(1), so accounting never copies or scans document text on edits.
+        let character_count = u64::try_from(self.buffer().char_count()).unwrap_or(0);
+        crate::model::editor_memory::estimate_live_editor_bytes(
+            character_count,
+            self.file_size(),
+            self.is_evicted(),
+        )
     }
 
-    pub fn connect_estimated_memory_changed<F: Fn(u64) + 'static>(&self, f: F) {
+    /// Current least-recently-used generation assigned by the owning window.
+    #[must_use]
+    pub(crate) fn memory_access_generation(&self) -> u64 {
+        self.imp().memory_access_generation.get()
+    }
+
+    /// Current residency and eviction-eligibility generation.
+    #[must_use]
+    pub(crate) fn memory_policy_generation(&self) -> u64 {
+        self.imp().memory_policy_generation.get()
+    }
+
+    /// Assign a window-wide access generation and invalidate stale decisions.
+    pub(crate) fn mark_memory_accessed(&self, generation: u64) {
+        self.imp().memory_access_generation.set(generation);
+        self.notify_memory_policy_changed();
+    }
+
+    /// Install the page-to-window callback for residency or safety changes.
+    ///
+    /// It runs on the GTK main thread after edits, modified-state changes,
+    /// load/save transitions, eviction, or access updates. A new callback
+    /// replaces the previous window observer.
+    pub fn connect_memory_policy_changed<F: Fn() + 'static>(&self, f: F) {
         *self.imp().memory_changed_callback.borrow_mut() = Some(Box::new(f));
     }
 
@@ -339,10 +379,21 @@ impl LushtextEditorPage {
         *self.imp().notification_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    fn notify_estimated_memory_changed(&self) {
+    /// Advance policy freshness and notify the window without copying text.
+    pub(crate) fn notify_memory_policy_changed(&self) {
+        self.imp()
+            .memory_policy_generation
+            .set(self.imp().memory_policy_generation.get().wrapping_add(1));
         if let Some(ref callback) = *self.imp().memory_changed_callback.borrow() {
-            callback(self.estimated_buffer_bytes());
+            callback();
         }
+    }
+
+    /// Override scalar residency for deterministic window-policy tests.
+    #[cfg(feature = "test-utils")]
+    pub fn set_memory_estimate_for_test(&self, bytes: Option<u64>) {
+        self.imp().memory_estimate_override.set(bytes);
+        self.notify_memory_policy_changed();
     }
 
     pub fn emit_inline_notification(&self, notification: InlineActionNotification) {

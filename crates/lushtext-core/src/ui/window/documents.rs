@@ -139,6 +139,12 @@ impl LushtextWindow {
         self.open_document_with_intent(path, OpenDocumentIntent::SessionRestore);
     }
 
+    /// Exercise the session-restore open intent from the external widget harness.
+    #[cfg(feature = "test-utils")]
+    pub fn open_document_from_session_restore_for_test(&self, path: &Path) {
+        self.open_document_from_session_restore(path);
+    }
+
     fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) {
         let tab_view = &self.imp().tab_view;
         let key = open_path_key(path);

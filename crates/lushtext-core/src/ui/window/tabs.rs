@@ -79,6 +79,7 @@ impl LushtextWindow {
                 }
             }
             self.dismiss_editor_notifications(editor);
+            editor.notify_memory_policy_changed();
             self.untrack_editor_memory(editor);
             editor.cancel_load();
             editor.stop_file_monitor();

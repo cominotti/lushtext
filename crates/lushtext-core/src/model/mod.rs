@@ -12,6 +12,7 @@ pub mod bookmark;
 pub mod content_search;
 pub mod document_note;
 pub mod draft;
+pub mod editor_memory;
 pub mod encoding;
 pub mod folder_note;
 pub mod formatting_overrides;

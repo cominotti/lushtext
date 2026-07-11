@@ -36,7 +36,7 @@ GtkSourceView's `GtkTextBuffer` uses a B-tree of text segments with gap buffers 
 
 - **Undo is the biggest memory multiplier.** Disabling it for files >50MB (via permanent `begin_irreversible_action()`) is critical — without this, editing a 50MB file can consume 200MB+ in undo entries after a few find-and-replace operations.
 - **Syntax highlighting adds memory proportional to context cache.** Disabling it for files >10MB saves 10-30% of text memory and eliminates the initial highlight scan cost.
-- **Buffer eviction** triggers when total estimated buffer memory exceeds `BUFFER_MEMORY_BUDGET` (256MB). Unmodified background tabs are evicted on tab switch.
+- **Buffer eviction** reacts to live character-count, file-size, and eligibility transitions through one coalesced 256 MiB policy pass. Safe LRU candidates evict toward 90% low water; protected work makes the budget soft.
 
 ---
 
@@ -99,7 +99,7 @@ This is why the thread spawn guard (max 8 concurrent) matters for RAM, not just 
 These patterns are already implemented and should be preserved:
 
 - **`Arc<PathBuf>` sharing** for workspace folders in `IndexedFile` — files in the same indexed folder share one allocation instead of cloning per file. 10x memory reduction at 50k files.
-- **Buffer eviction** on tab switch when total memory exceeds 256MB budget.
+- **Coalesced live-buffer eviction** with O(1) per-editor estimates, LRU hysteresis, generation revalidation, and soft protected-work outcomes.
 - **`ListStore::splice()`** for batch updates — single `items-changed` signal instead of per-item `append()`.
 - **Thread spawn guard** (max 8 concurrent) — caps peak thread memory.
 - **File size limits** — 1MB toast, 10MB no syntax, 50MB no undo, 500MB refuse.

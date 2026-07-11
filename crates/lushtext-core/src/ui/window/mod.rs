@@ -53,10 +53,6 @@ pub use notes::set_bookmark_excerpt_preview_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
 
-/// Maximum total estimated buffer memory across all tabs before evicting
-/// unmodified background tabs. ~256MB is comfortable on 8GB machines.
-const BUFFER_MEMORY_BUDGET: u64 = 256_000_000;
-
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).
 #[must_use]

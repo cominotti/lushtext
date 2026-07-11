@@ -30,6 +30,9 @@ use lushtext_core::model::encoding::{
     DocumentEncoding, DocumentEncodingState, FileHealthFindingKind, InvisibleCharactersMode,
     LineEnding,
 };
+use lushtext_core::model::editor_memory::{
+    EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorMemoryBudgetOutcome,
+};
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::palette::IndexedFile;
@@ -87,6 +90,15 @@ struct CanonicalRefreshDelayReset;
 impl Drop for CanonicalRefreshDelayReset {
     fn drop(&mut self) {
         set_canonical_refresh_delay_for_test(0);
+    }
+}
+
+/// Restore the process-wide editor-load delay when a test exits or unwinds.
+struct EditorLoadDelayReset;
+
+impl Drop for EditorLoadDelayReset {
+    fn drop(&mut self) {
+        editor_io::set_load_delay_for_test(0);
     }
 }
 
@@ -5547,25 +5559,14 @@ fn test_memory_pressure_evicts_background_tab_and_reloads_without_path_corruptio
         .tab_view
         .selected_page()
         .expect("second page selected");
-    let second_editor = active_editor(&window);
 
     window.imp().tab_view.set_selected_page(&first_page);
     flush_events();
-    first_editor.imp().file_size.set(Some(200_000_000));
-    first_editor
-        .imp()
-        .size_check
-        .set(FileSizeCheck::DisableUndoAndSyntax);
-    second_editor.imp().file_size.set(Some(100_000));
-    window
-        .imp()
-        .editor_memory
-        .total
-        .set(first_editor.estimated_buffer_bytes() + second_editor.estimated_buffer_bytes());
+    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
 
     window.imp().tab_view.set_selected_page(&second_page);
     flush_events();
-    wait_until(Duration::from_secs(2), || first_editor.is_evicted());
+    wait_until(Duration::from_secs(5), || first_editor.is_evicted());
     assert_eq!(editor_buffer_text(&first_editor), "");
     assert_eq!(window.imp().tab_view.n_pages(), 2);
     assert!(window.imp().open_paths.borrow().contains(&first_key));
@@ -5582,6 +5583,280 @@ fn test_memory_pressure_evicts_background_tab_and_reloads_without_path_corruptio
     flush_events();
     assert_eq!(window.imp().tab_view.n_pages(), 2);
     assert_eq!(active_editor(&window).file_path(), Some(first_path));
+}
+
+#[test]
+fn test_memory_budget_coalesces_edit_bursts_and_keeps_protected_work() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    window.new_tab();
+    flush_events();
+
+    let editor = active_editor(&window);
+    let baseline = window.editor_memory_evaluation_count_for_test();
+    editor.buffer().set_text("a");
+    editor.buffer().set_text("ab");
+    editor.buffer().set_text("abc");
+    flush_events();
+    assert_eq!(
+        window.editor_memory_evaluation_count_for_test(),
+        baseline + 1,
+        "one edit burst should produce one aggregate scan"
+    );
+
+    editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    flush_events();
+    assert!(!editor.is_evicted(), "active untitled work is always protected");
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::NoProgress
+    );
+    let no_progress_count = window.editor_memory_evaluation_count_for_test();
+    flush_events();
+    assert_eq!(
+        window.editor_memory_evaluation_count_for_test(),
+        no_progress_count,
+        "a stable protected state must not spin no-progress evaluations"
+    );
+
+    editor.set_memory_estimate_for_test(Some(12));
+    flush_events();
+    assert_eq!(
+        window.editor_memory_evaluation_count_for_test(),
+        no_progress_count + 1,
+        "a later residency transition should rearm evaluation"
+    );
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::WithinBudget
+    );
+}
+
+#[test]
+fn test_unsaved_growth_alone_evicts_an_eligible_clean_background_tab() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("unsaved-growth tempdir");
+    let clean_path = dir.path().join("clean.txt");
+    fixture::write_text(&clean_path, "reloadable clean content\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&clean_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+    let clean_editor = active_editor(&window);
+    clean_editor.set_memory_estimate_for_test(Some(64 * 1024 * 1024));
+
+    window.new_tab();
+    flush_events();
+    let growing_editor = active_editor(&window);
+    growing_editor.buffer().set_text("unsaved work");
+    growing_editor.set_memory_estimate_for_test(Some(220 * 1024 * 1024));
+    flush_events();
+
+    assert!(clean_editor.is_evicted());
+    assert!(!growing_editor.is_evicted());
+    assert!(growing_editor.is_modified());
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::Converged
+    );
+}
+
+#[test]
+fn test_memory_budget_revalidates_an_active_tab_change_before_eviction() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("active-race tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_text(&first_path, "first\n");
+    fixture::write_text(&second_path, "second\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&first_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+    let first_page = window.imp().tab_view.selected_page().expect("first page");
+    let first_editor = active_editor(&window);
+    window.open_document(&second_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+
+    let tab_view = window.imp().tab_view.clone();
+    let first_page_for_hook = first_page.clone();
+    window.set_before_editor_memory_eviction_hook_for_test(move || {
+        tab_view.set_selected_page(&first_page_for_hook);
+    });
+    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    flush_events();
+
+    assert_eq!(window.imp().tab_view.selected_page(), Some(first_page));
+    assert!(!first_editor.is_evicted());
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::NoProgress
+    );
+}
+
+#[test]
+fn test_memory_budget_revalidates_save_start_before_eviction() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("save-race tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_text(&first_path, "first\n");
+    fixture::write_text(&second_path, "second\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&first_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+    let first_editor = active_editor(&window);
+    window.open_document(&second_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+
+    let first_for_hook = first_editor.clone();
+    window.set_before_editor_memory_eviction_hook_for_test(move || {
+        // The production save path sets this before yielding to snapshot or I/O.
+        first_for_hook.imp().save.inflight.set(true);
+    });
+    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+    flush_events();
+
+    assert!(first_editor.is_saving());
+    assert!(!first_editor.is_evicted());
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::NoProgress
+    );
+    first_editor.imp().save.inflight.set(false);
+}
+
+#[test]
+fn test_memory_budget_evicts_lru_clean_tab_to_lower_watermark() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("lru tempdir");
+    let paths = [
+        dir.path().join("first.txt"),
+        dir.path().join("second.txt"),
+        dir.path().join("third.txt"),
+    ];
+    for (index, path) in paths.iter().enumerate() {
+        fixture::write_text(path, &format!("tab {index}\n"));
+    }
+    let window = test_window();
+    present_window(&window);
+
+    let mut editors = Vec::new();
+    for path in &paths {
+        window.open_document(path);
+        wait_until(Duration::from_secs(5), || {
+            active_editor(&window).load_state() == EditorLoadState::Loaded
+        });
+        editors.push(active_editor(&window));
+    }
+
+    let mib = 1024 * 1024;
+    editors[0].set_memory_estimate_for_test(Some(64 * mib));
+    editors[1].set_memory_estimate_for_test(Some(64 * mib));
+    editors[2].set_memory_estimate_for_test(Some(160 * mib));
+    flush_events();
+
+    assert!(editors[0].is_evicted(), "oldest clean tab should evict first");
+    assert!(!editors[1].is_evicted());
+    assert!(!editors[2].is_evicted(), "active tab stays protected");
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::Converged
+    );
+}
+
+#[test]
+fn test_delayed_session_restore_completions_preserve_active_and_modified_pages() {
+    ensure_gtk_init();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_load_delay_for_test(300);
+    let dir = tempfile::tempdir().expect("restore-memory tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_text(&first_path, "first disk\n");
+    fixture::write_text(&second_path, "second disk\n");
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document_from_session_restore_for_test(&first_path);
+    window.open_document_from_session_restore_for_test(&second_path);
+    let first_page = window.imp().tab_view.nth_page(0);
+    let second_page = window.imp().tab_view.nth_page(1);
+    let first_editor = first_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("first restore editor");
+    let second_editor = second_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("second restore editor");
+
+    // Cancel delayed workers so accepted completions can be injected in reverse
+    // order without relying on scheduler timing.
+    first_editor.cancel_load();
+    second_editor.cancel_load();
+    let first_generation = first_editor.load_generation_for_test();
+    let second_generation = second_editor.load_generation_for_test();
+    let result = |content: &str, path: &Path| editor_io::LoadResult {
+        content: content.to_string(),
+        size: u64::try_from(content.len()).expect("fixture length"),
+        size_check: FileSizeCheck::Normal,
+        canonical_path: Some(fs_metadata::canonical_path(path).expect("canonical restore path")),
+        mtime: Some(1),
+        encoding_state: DocumentEncodingState::default(),
+        has_bom: false,
+        file_health: Vec::new(),
+    };
+
+    assert!(second_editor.apply_load_result_for_test(
+        second_generation,
+        Ok(result("second accepted\n", &second_path)),
+    ));
+    assert!(first_editor.apply_load_result_for_test(
+        first_generation,
+        Ok(result("first accepted\n", &first_path)),
+    ));
+    window.imp().tab_view.set_selected_page(&second_page);
+    first_editor.buffer().set_text("first modified\n");
+    first_editor.buffer().set_modified(true);
+
+    // Advance generations again, then inject captured results to prove stale
+    // completions cannot overwrite either protected buffer.
+    let stale_first = first_editor.load_generation_for_test();
+    let stale_second = second_editor.load_generation_for_test();
+    first_editor.cancel_load();
+    second_editor.cancel_load();
+    assert!(!first_editor.apply_load_result_for_test(
+        stale_first,
+        Ok(result("stale first\n", &first_path)),
+    ));
+    assert!(!second_editor.apply_load_result_for_test(
+        stale_second,
+        Ok(result("stale second\n", &second_path)),
+    ));
+
+    first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
+    second_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
+    flush_events();
+    assert!(!first_editor.is_evicted(), "modified restored page is protected");
+    assert!(!second_editor.is_evicted(), "active restored page is protected");
+    assert_eq!(editor_buffer_text(&first_editor), "first modified\n");
+    assert_eq!(editor_buffer_text(&second_editor), "second accepted\n");
 }
 
 #[test]

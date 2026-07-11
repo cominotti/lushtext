@@ -167,10 +167,11 @@ Note: GtkSourceView5 performs incremental re-highlighting as the user edits, so 
 
 ## 5. Buffer Eviction {#5-buffer-eviction}
 
-**Status: IMPLEMENTED** — When total estimated buffer memory exceeds `BUFFER_MEMORY_BUDGET` (256MB), unmodified background tabs are evicted on tab switch. Memory estimation uses `file_size * 2` to account for GtkTextBuffer overhead.
+**Status: IMPLEMENTED** — Loaded editors use an O(1) four-byte-per-character upper estimate with accepted file bytes as a floor and explicit evicted bookkeeping. Residency and eligibility transitions coalesce into one GTK-main-loop pass; above 256 MiB the GTK-free policy selects least-recently-used safe candidates toward a 90% low-water mark.
 
 - `EditorPage::evict()` sets `evicted=true` first (prevents `modified-changed` signal flash), then clears buffer text via irreversible action.
 - `reload_if_evicted()` transparently reloads evicted tabs when re-focused via `load_file_async`.
-- The eviction loop in `window/mod.rs` computes a running total inline (O(n)) and evicts the current tab if it brings total under budget.
+- Active, modified, untitled, loading, saving, failed-load, or otherwise non-reloadable pages remain protected, making the budget soft when necessary.
+- Candidate application uses window-local identity maps plus access/policy generations and immediate safety revalidation. The complete pass is O(n log n), dominated by LRU sorting.
 
-**RAM impact**: Evicting a 50MB tab with undo history reclaims ~100-200MB (buffer B-tree + undo entries). The reload cost is a brief peak of ~2.5-3x file size during `set_text()`, identical to the initial load.
+**RAM impact**: The estimate is a deterministic editor-text policy rather than an exact process-RSS ceiling. Eviction retains a small fixed tab-bookkeeping estimate, and protected user work may keep residency above the soft budget.
