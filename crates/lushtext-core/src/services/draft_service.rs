@@ -2360,22 +2360,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn orphan_inspection_scan_failure_returns_no_partial_plan() {
+    fn orphan_inspection_directory_failure_returns_no_partial_plan() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let drafts = drafts_dir(dir.path());
-        fixture::create_dir_all(&drafts);
-        fixture::write_text(&drafts.join("orphan.draft"), "body");
-        fixture::set_mode(&drafts, 0);
+        // A self-referential directory symlink fails deterministically even
+        // when CI runs as root, unlike permission-based scan fixtures.
+        fixture::symlink(Path::new("drafts"), &drafts);
 
         let result = inspect_orphan_cleanup(dir.path(), &DraftManifest::default());
 
-        fixture::set_mode(&drafts, 0o700);
         assert!(
-            matches!(
-                &result,
-                Err(DraftOrphanCleanupScanError::Read { .. }
-                    | DraftOrphanCleanupScanError::Status(_))
-            ),
+            matches!(&result, Err(DraftOrphanCleanupScanError::Status(_))),
             "unexpected orphan inspection result: {result:?}"
         );
     }
