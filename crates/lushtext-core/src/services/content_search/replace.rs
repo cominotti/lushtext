@@ -397,7 +397,7 @@ fn build_replaced_text(
             };
         };
         let line = &original_text[line_span.clone()];
-        if line != replacement.original_line {
+        if line != replacement.original_line.as_ref() {
             return ReplacementTextOutcome::StaleLine {
                 line_number: replacement.line_number,
             };
@@ -408,7 +408,7 @@ fn build_replaced_text(
             edits.push((
                 line_span.start + start,
                 line_span.start + end,
-                replacement.replacement.as_str(),
+                replacement.replacement.as_ref(),
             ));
         }
     }
@@ -652,11 +652,12 @@ mod tests {
         let end = match_range.end.min(replaced_line.len());
         replaced_line.replace_range(start..end, replacement);
         Replacement {
+            match_id: crate::model::content_search::SearchMatchId::from_index(0),
             path: path.to_path_buf(),
             line_number,
-            original_line: original_line.to_string(),
+            original_line: original_line.to_string().into(),
             replaced_line,
-            replacement: replacement.to_string(),
+            replacement: replacement.to_string().into(),
             match_range,
         }
     }

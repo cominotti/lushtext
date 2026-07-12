@@ -80,22 +80,20 @@ impl imp::LushtextSearchPanel {
                 let Some(panel) = panel_weak.upgrade() else {
                     return;
                 };
-                let Some(idx) = preview_index_for_checkbox(&panel, checkbox) else {
+                let Some(match_id) = preview_match_id_for_checkbox(&panel, checkbox) else {
                     return;
                 };
                 let imp = panel.imp();
-                let mut indices = imp.preview.checked_indices.borrow_mut();
+                let mut checked_ids = imp.preview.checked_match_ids.borrow_mut();
                 if checkbox.is_active() {
-                    indices.insert(idx);
+                    checked_ids.insert(match_id);
                 } else {
-                    indices.remove(&idx);
+                    checked_ids.remove(&match_id);
                 }
-                let checked = indices.len();
-                let total = imp.preview.preview_replacements.borrow().len();
-                drop(indices);
-                imp.replace_all_button
-                    .set_label(&format!("Replace {checked} of {total}"));
-                imp.replace_all_button.set_sensitive(checked > 0);
+                let has_checked = !checked_ids.is_empty();
+                drop(checked_ids);
+                panel.refresh_preview_summary();
+                imp.replace_all_button.set_sensitive(has_checked);
             });
 
             let file_label = gtk4::Label::new(None);
@@ -236,18 +234,14 @@ impl imp::LushtextSearchPanel {
                 if in_preview {
                     if let Some(panel) = bind_panel_weak.upgrade() {
                         let imp = panel.imp();
-                        let file_path = result_item.file_path();
-                        let line_number = result_item.line_number();
-                        let original_match_start = result_item.original_match_start() as usize;
-                        let replacements = imp.preview.preview_replacements.borrow();
-                        let match_idx = replacements.iter().position(|r| {
-                            r.path.display().to_string() == file_path
-                                && r.line_number == u64::from(line_number)
-                                && r.match_range.start == original_match_start
-                        });
+                        let match_id = result_item.match_id();
+                        let outcome = imp.preview.preview_outcome.borrow();
+                        let match_idx = outcome
+                            .as_ref()
+                            .and_then(|outcome| outcome.preview_index(match_id));
 
                         if let Some(idx) = match_idx {
-                            let r = &replacements[idx];
+                            let r = &outcome.as_ref().expect("preview outcome").replacements[idx];
                             let replacement_line_number = r.line_number;
                             let original = &r.original_line;
                             let replaced = &r.replaced_line;
@@ -255,8 +249,9 @@ impl imp::LushtextSearchPanel {
                             let end = r.match_range.end.min(original.len());
 
                             let markup = render_preview_markup(original, replaced, start, end);
-                            let is_checked = imp.preview.checked_indices.borrow().contains(&idx);
-                            drop(replacements);
+                            let is_checked =
+                                imp.preview.checked_match_ids.borrow().contains(&match_id);
+                            drop(outcome);
 
                             if let Some(ref label) = line_content_label {
                                 label.set_markup(&markup);
@@ -277,7 +272,7 @@ impl imp::LushtextSearchPanel {
                                 checkbox.set_visible(true);
                             }
                         } else {
-                            drop(replacements);
+                            drop(outcome);
                             if let Some(ref label) = line_content_label {
                                 let content = result_item.line_content();
                                 let markup = render_match_markup(
@@ -423,10 +418,10 @@ fn render_match_markup(content: &str, start: usize, end: usize) -> String {
 }
 
 /// Resolve the replacement preview index for the row that owns a stable checkbox slot.
-fn preview_index_for_checkbox(
+fn preview_match_id_for_checkbox(
     panel: &super::LushtextSearchPanel,
     checkbox: &gtk4::CheckButton,
-) -> Option<usize> {
+) -> Option<crate::model::content_search::SearchMatchId> {
     let expander = checkbox
         .parent()
         .and_then(|w| w.parent())
@@ -442,18 +437,13 @@ fn preview_index_for_checkbox(
         return None;
     }
 
-    let file_path = result_item.file_path();
-    let line_number = result_item.line_number();
-    let original_match_start = result_item.original_match_start() as usize;
+    let match_id = result_item.match_id();
     imp.preview
-        .preview_replacements
+        .preview_outcome
         .borrow()
-        .iter()
-        .position(|replacement| {
-            replacement.path.display().to_string() == file_path
-                && replacement.line_number == u64::from(line_number)
-                && replacement.match_range.start == original_match_start
-        })
+        .as_ref()
+        .and_then(|outcome| outcome.preview_index(match_id))
+        .map(|_| match_id)
 }
 
 /// Build markup for a preview row: original line dimmed/struck through and the

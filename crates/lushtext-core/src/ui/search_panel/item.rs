@@ -12,6 +12,8 @@ use glib::subclass::prelude::*;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
 
+use crate::model::content_search::SearchMatchId;
+
 mod imp {
     use super::{
         Cell, DerivedObjectProperties, ObjectExt, ObjectImpl, ObjectSubclass, RefCell, glib,
@@ -48,13 +50,8 @@ mod imp {
         /// Byte offset where the match ends within `line_content` (match items only).
         /// Clamped to the truncated display content for highlight rendering.
         pub match_end: Cell<u32>,
-        /// Bounded line content before the 500-byte row display truncation.
-        /// Replace All preview ignores search matches already marked as source-line truncated.
-        pub original_line_content: RefCell<String>,
-        /// Unclamped match start from the search engine (match items only).
-        pub original_match_start: Cell<u32>,
-        /// Unclamped match end from the search engine (match items only).
-        pub original_match_end: Cell<u32>,
+        /// Dense identity of the plain search-cache entry (match items only).
+        pub match_id: Cell<usize>,
     }
 
     // ObjectSubclass registers this row type with GLib's runtime type system.
@@ -97,14 +94,8 @@ impl SearchResultItem {
 
     /// Create a match item (child of a file group).
     ///
-    /// `match_start`/`match_end` are clamped to the truncated display content.
-    /// `original_line_content` and `original_match_start`/`original_match_end`
-    /// store the values before row-display truncation so preview rows can match
-    /// replacements without retaining unbounded source lines.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Search result rows need both display-clamped and pre-display-truncation match coordinates for preview row lookup"
-    )]
+    /// `match_start`/`match_end` are clamped to the truncated display content;
+    /// preview consumers resolve complete source data through `match_id`.
     #[must_use]
     pub fn new_match(
         file_path: &str,
@@ -112,9 +103,7 @@ impl SearchResultItem {
         line_content: &str,
         match_start: u32,
         match_end: u32,
-        original_line_content: &str,
-        original_match_start: u32,
-        original_match_end: u32,
+        match_id: SearchMatchId,
     ) -> Self {
         let obj: Self = glib::Object::builder().build();
         let inner = obj.imp();
@@ -124,11 +113,7 @@ impl SearchResultItem {
         inner.line_content.replace(line_content.to_string());
         inner.match_start.set(match_start);
         inner.match_end.set(match_end);
-        inner
-            .original_line_content
-            .replace(original_line_content.to_string());
-        inner.original_match_start.set(original_match_start);
-        inner.original_match_end.set(original_match_end);
+        inner.match_id.set(match_id.index());
         obj
     }
 
@@ -173,17 +158,7 @@ impl SearchResultItem {
     }
 
     #[must_use]
-    pub fn original_line_content(&self) -> String {
-        self.imp().original_line_content.borrow().clone()
-    }
-
-    #[must_use]
-    pub fn original_match_start(&self) -> u32 {
-        self.imp().original_match_start.get()
-    }
-
-    #[must_use]
-    pub fn original_match_end(&self) -> u32 {
-        self.imp().original_match_end.get()
+    pub fn match_id(&self) -> SearchMatchId {
+        SearchMatchId::from_index(self.imp().match_id.get())
     }
 }

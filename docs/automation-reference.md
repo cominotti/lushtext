@@ -705,6 +705,8 @@ receive a ` [truncated]` suffix when shortened.
 | <span id="snapshot-field-replace-preview-pending"></span>`snapshot-field-replace-preview-pending` | `content_search.replace_preview_pending` | `bool` | Whether Replace All preview generation is pending. |
 | <span id="snapshot-field-replace-preview-count"></span>`snapshot-field-replace-preview-count` | `content_search.replace_preview_count` | `u32` | Number of generated replacement preview rows. |
 | <span id="snapshot-field-checked-replacement-count"></span>`snapshot-field-checked-replacement-count` | `content_search.checked_replacement_count` | `u32` | Number of checked replacement preview rows. |
+| <span id="snapshot-field-omitted-replacement-count"></span>`snapshot-field-omitted-replacement-count` | `content_search.omitted_replacement_count` | `u32` | Number of eligible matches omitted by the Replace Preview resource budget. |
+| <span id="snapshot-field-skipped-replacement-count"></span>`snapshot-field-skipped-replacement-count` | `content_search.skipped_replacement_count` | `u32` | Number of source-truncated or invalid matches skipped by Replace Preview generation. |
 | <span id="snapshot-field-has-undo-backup"></span>`snapshot-field-has-undo-backup` | `content_search.has_undo_backup` | `bool` | Whether a Replace All undo backup is available. |
 | <span id="snapshot-field-history-count"></span>`snapshot-field-history-count` | `content_search.history_count` | `u32` | Number of recent history rows loaded into the workspace search panel. |
 | <span id="snapshot-field-saved-search-count"></span>`snapshot-field-saved-search-count` | `content_search.saved_search_count` | `u32` | Number of named saved searches loaded into the workspace search panel. |

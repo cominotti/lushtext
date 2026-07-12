@@ -105,7 +105,80 @@ pub(crate) fn run_case_session(
     timeout: Duration,
 ) -> Result<CaseSessionResult, String> {
     let programs = LivePrograms::current()?;
-    run_case_session_with_programs(case_json, timeout, &programs)
+    let first = run_case_session_with_programs(case_json, timeout, &programs)?;
+    if !case_session_needs_atspi_startup_retry(case_json, &first)? {
+        return Ok(first);
+    }
+
+    let case_dir = case_dir_for(case_json)?;
+    fs::copy(
+        case_dir.join("session.log"),
+        case_dir.join("session-attempt-1.log"),
+    )
+    .map_err(|error| format!("cannot preserve first session attempt: {error}"))?;
+    fs::copy(
+        case_dir.join("process-report.json"),
+        case_dir.join("process-report-attempt-1.json"),
+    )
+    .map_err(|error| format!("cannot preserve first process report: {error}"))?;
+    let first_stderr = case_dir.join("lushtext.stderr");
+    if first_stderr.is_file() {
+        fs::copy(&first_stderr, case_dir.join("lushtext-attempt-1.stderr"))
+            .map_err(|error| format!("cannot preserve first app stderr: {error}"))?;
+    }
+
+    let second = run_case_session_with_programs(case_json, timeout, &programs)?;
+    artifacts::write_json(
+        &case_dir.join("session-retry.json"),
+        &serde_json::json!({
+            "schema_version": model::SUPPORTED_SCHEMA_VERSION,
+            "status": if second.exit_code == Some(0) && !second.timed_out {
+                "recovered"
+            } else {
+                "failed"
+            },
+            "reason": "transient-atspi-registry-startup",
+            "attempt_count": 2,
+            "first_attempt": {
+                "exit_code": first.exit_code,
+                "timed_out": first.timed_out,
+                "session_log": "session-attempt-1.log",
+                "process_report": "process-report-attempt-1.json"
+            },
+            "second_attempt": {
+                "exit_code": second.exit_code,
+                "timed_out": second.timed_out,
+                "session_log": "session.log",
+                "process_report": "process-report.json"
+            }
+        }),
+    )?;
+    Ok(second)
+}
+
+fn case_session_needs_atspi_startup_retry(
+    case_json: &Path,
+    result: &CaseSessionResult,
+) -> Result<bool, String> {
+    if result.timed_out || result.exit_code == Some(0) {
+        return Ok(false);
+    }
+    let case_dir = case_dir_for(case_json)?;
+    let mut log = String::new();
+    for path in [
+        case_dir.join("session.log"),
+        case_dir.join("lushtext.stderr"),
+    ] {
+        if path.is_file() {
+            log.push_str(
+                &fs::read_to_string(&path)
+                    .map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+            );
+        }
+    }
+    Ok(log.contains("Unable to register the application:")
+        && log.contains("org.a11y.atspi.Registry")
+        && log.contains("unit failed"))
 }
 
 fn run_case_session_with_programs(
@@ -258,6 +331,7 @@ fn run_mutter_child_with_programs(
     fs::create_dir_all(&app_data_dir)
         .map_err(|error| format!("cannot create {}: {error}", app_data_dir.display()))?;
     prepare_open_popover_recents(&case, &case_dir, &app_data_dir)?;
+    prepare_replace_preview_workspace(&case, Path::new(fixture), &app_data_dir)?;
     fs::write(case_dir.join("lushtext.stdout"), b"")
         .map_err(|error| format!("cannot create lushtext stdout log: {error}"))?;
     let app_env = lushtext_process_environment(&app_data_dir);
@@ -344,7 +418,12 @@ fn capture_case_steps(
     let before = capture_step(client, case_dir, "before")?;
     let action =
         run_case_action_with_optional_animation(client, case, case_dir, &before, prepared_actions)?;
-    let wait = client.wait_for_ready("visual-geometry-settled", 5_000)?;
+    let settle_timeout = if scenario_type(case)? == "replace-preview" {
+        60_000
+    } else {
+        5_000
+    };
+    let wait = client.wait_for_ready("visual-geometry-settled", settle_timeout)?;
     append_automation_wait(case_dir, &wait)?;
     if !wait.ok {
         return Err(format!(
@@ -569,6 +648,47 @@ fn prepare_case_before_primary_action(
     case_dir: &Path,
 ) -> Result<Vec<serde_json::Value>, String> {
     let mut actions = Vec::new();
+    if scenario_type(case)? == "replace-preview" {
+        actions.push(action_row(&client.activate_window_action(
+            "set-search-panel-visible",
+            automation::ActionParameter::Bool(true),
+        )?));
+        actions.push(action_row(&client.activate_window_action(
+            "set-search-panel-query",
+            automation::ActionParameter::String("needle"),
+        )?));
+        let search_wait = client.wait_for_ready("search-complete", 10_000)?;
+        append_automation_wait(case_dir, &search_wait)?;
+        if !search_wait.ok {
+            return Err(format!(
+                "Automation1 workspace search failed: {}: {}",
+                search_wait.status, search_wait.detail
+            ));
+        }
+        wait_for_snapshot_predicate(
+            client,
+            case_dir,
+            "dense workspace search results",
+            Duration::from_secs(60),
+            |snapshot| {
+                let count_ready = snapshot
+                    .pointer("/window/content_search/match_count")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|count| count >= 140);
+                let finished = snapshot
+                    .pointer("/window/content_search/searching")
+                    .and_then(Value::as_bool)
+                    == Some(false);
+                count_ready && finished
+            },
+        )?;
+        let replacement = "界".repeat(32);
+        actions.push(action_row(&client.activate_window_action(
+            "set-search-panel-replace-query",
+            automation::ActionParameter::String(&replacement),
+        )?));
+        return Ok(actions);
+    }
     if scenario_type(case)? != "minimap-sidebar"
         || case.get("viewport_position").and_then(Value::as_str) != Some("mid")
     {
@@ -1675,6 +1795,7 @@ fn primary_action_name(case: &Value) -> Result<&'static str, String> {
         "minimap-sidebar" => Ok("toggle-sidebar"),
         "command-palette-overlay" => Ok("toggle-command-palette"),
         "open-popover" => Ok("open-recent"),
+        "replace-preview" => Ok("preview-search-panel-replacements"),
         other => Err(format!(
             "unsupported visual geometry scenario type: {other}"
         )),
@@ -1958,6 +2079,35 @@ fn apply_gsettings(case: &Value, programs: &LivePrograms, case_dir: &Path) -> Re
     Ok(())
 }
 
+fn prepare_replace_preview_workspace(
+    case: &Value,
+    fixture: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    if scenario_type(case)? != "replace-preview" {
+        return Ok(());
+    }
+    let folder = fixture
+        .parent()
+        .ok_or_else(|| "replace-preview fixture has no parent".to_string())?;
+    let document = serde_json::json!({
+        "kind": "dev.cominotti.lushtext.workspace-state",
+        "version": 1,
+        "data": {
+            "current_scope": { "kind": "workspace", "workspace_id": "proof" },
+            "workspaces": [{
+                "id": "proof",
+                "name": "Dense Replace Preview",
+                "folders": [{ "id": "proof-folder", "path": folder }]
+            }]
+        }
+    });
+    let bytes = serde_json::to_vec_pretty(&document)
+        .map_err(|error| format!("cannot serialize replace-preview workspace: {error}"))?;
+    fs::write(data_dir.join("workspaces.json"), bytes)
+        .map_err(|error| format!("cannot write replace-preview workspace: {error}"))
+}
+
 fn prepare_open_popover_recents(
     case: &Value,
     case_dir: &Path,
@@ -2213,6 +2363,37 @@ mod tests {
         assert_eq!(value["schema_version"], model::SUPPORTED_SCHEMA_VERSION);
         assert_eq!(value["status"], "launched");
         assert_eq!(value["logs"][0], "session.log");
+    }
+
+    #[test]
+    fn atspi_registry_startup_failure_is_the_only_retryable_session_error() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let case_json = tempdir.path().join("case.json");
+        fs::write(
+            tempdir.path().join("session.log"),
+            "Unable to register the application: org.a11y.atspi.Registry: unit failed\n",
+        )
+        .expect("session log");
+        let failed = CaseSessionResult {
+            exit_code: Some(1),
+            timed_out: false,
+            report_path: tempdir.path().join("process-report.json"),
+        };
+
+        assert!(case_session_needs_atspi_startup_retry(&case_json, &failed).expect("classify"));
+
+        fs::write(
+            tempdir.path().join("session.log"),
+            "real geometry failure\n",
+        )
+        .expect("session log");
+        assert!(!case_session_needs_atspi_startup_retry(&case_json, &failed).expect("classify"));
+
+        let timed_out = CaseSessionResult {
+            timed_out: true,
+            ..failed
+        };
+        assert!(!case_session_needs_atspi_startup_retry(&case_json, &timed_out).expect("classify"));
     }
 
     #[test]

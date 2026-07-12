@@ -182,6 +182,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <child>
                       <object class="GtkScrolledWindow" id="results_scroll">
                         <property name="propagate-natural-height">true</property>
+                        <property name="propagate-natural-width">false</property>
+                        <property name="hscrollbar-policy">2</property>
                         <property name="min-content-height">100</property>
                         <property name="child">
                           <object class="GtkListView" id="results_list"></object>

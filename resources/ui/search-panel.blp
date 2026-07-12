@@ -160,6 +160,8 @@ template $LushtextSearchPanel: Box {
 
           ScrolledWindow results_scroll {
             propagate-natural-height: true;
+            propagate-natural-width: false;
+            hscrollbar-policy: never;
             min-content-height: 100;
 
             child: ListView results_list {};

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "scenario_id": "replace-preview",
+  "scenario_type": "replace-preview",
+  "description": "Dense Replace Preview with a source-truncated row keeps complete feedback and confirmation outside item-only scrolling.",
+  "matrix": {
+    "sizes": [
+      { "id": "constrained", "width": 900, "height": 620 }
+    ],
+    "color_schemes": ["force-light", "force-dark"]
+  },
+  "protected_regions": [
+    {
+      "name": "header-bar",
+      "surface": "header-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": []
+    },
+    {
+      "name": "status-bar",
+      "surface": "status-bar",
+      "comparison": "exact-equality",
+      "require_same_rect": true,
+      "mask_rects": []
+    }
+  ],
+  "allowed_changing_regions": [
+    {
+      "surface": "search-results-scroll",
+      "relationship": "Only result items scroll; long Unicode preview rows do not introduce horizontal scrolling"
+    },
+    {
+      "surface": "search-preview-summary",
+      "relationship": "Generated, checked, omitted, and skipped feedback remains below and outside the item scroller"
+    },
+    {
+      "surface": "search-replace-controls",
+      "relationship": "Replacement and confirmation controls remain above and outside the item scroller"
+    }
+  ],
+  "readiness_predicates": ["search-complete", "visual-geometry-settled"]
+}

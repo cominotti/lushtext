@@ -18,7 +18,7 @@ use tempfile::TempDir;
 
 use lushtext_core::model::bookmark::BookmarkRecord;
 use lushtext_core::model::content_search::{
-    ContentSearchOptions, Replacement, SearchMatch, generate_replacement_preview,
+    ContentSearchOptions, Replacement, SearchMatch, SearchMatchId, generate_replacement_preview,
 };
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::editor_memory::{
@@ -347,12 +347,13 @@ fn make_replace_all_fixture(
         fixture::write_text(&path, &content);
         for line_index in 0..lines_per_file {
             replacements.push(Replacement {
+                match_id: SearchMatchId::from_index(replacements.len()),
                 path: path.clone(),
                 line_number: u64::try_from(line_index + 1)
                     .expect("benchmark line index fits in u64"),
-                original_line: original_line.to_string(),
+                original_line: original_line.into(),
                 replaced_line: replaced_line.to_string(),
-                replacement: "thread".to_string(),
+                replacement: "thread".into(),
                 match_range: 7..13,
             });
         }
@@ -371,6 +372,7 @@ fn make_replace_preview_matches(match_count: usize) -> Vec<SearchMatch> {
                 &format!("let needle_{index} = needle;"),
                 4..10,
             )
+            .with_id(SearchMatchId::from_index(index))
         })
         .collect()
 }
@@ -388,11 +390,12 @@ fn make_replace_all_10mb_fixture() -> (TempDir, Vec<Replacement>) {
     (
         dir,
         vec![Replacement {
+            match_id: SearchMatchId::from_index(0),
             path,
             line_number: 1,
-            original_line: original_line.to_string(),
+            original_line: original_line.into(),
             replaced_line: "prefix thread suffix".to_string(),
-            replacement: "thread".to_string(),
+            replacement: "thread".into(),
             match_range: 7..13,
         }],
     )
@@ -406,11 +409,12 @@ fn make_replace_all_over_cap_fixture() -> (TempDir, Vec<Replacement>) {
     (
         dir,
         vec![Replacement {
+            match_id: SearchMatchId::from_index(0),
             path,
             line_number: 1,
-            original_line: "needle".to_string(),
+            original_line: "needle".into(),
             replaced_line: "thread".to_string(),
-            replacement: "thread".to_string(),
+            replacement: "thread".into(),
             match_range: 0..6,
         }],
     )
@@ -944,6 +948,23 @@ fn bench_editor_file_io(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_line_ending_detection(c: &mut Criterion) {
+    let mut group = c.benchmark_group("line_ending_detection");
+    let fixtures = [
+        ("empty", String::new()),
+        ("lf_100k", "plain line\n".repeat(100_000)),
+        ("crlf_100k", "plain line\r\n".repeat(100_000)),
+        ("mixed_large", "plain🙂\r\nplain\nplain\r".repeat(100_000)),
+    ];
+
+    for (label, text) in fixtures {
+        group.bench_function(label, |b| {
+            b.iter(|| editor_io::detect_line_endings(black_box(&text)));
+        });
+    }
+    group.finish();
+}
+
 fn bench_replace_undo_workflows(c: &mut Criterion) {
     let mut group = c.benchmark_group("replace_undo_workflows");
     group.sample_size(10);
@@ -1060,6 +1081,39 @@ fn bench_replace_preview_generation(c: &mut Criterion) {
             },
         );
     }
+
+    let matches = make_replace_preview_matches(10_000);
+    let outcome = generate_replacement_preview(
+        &matches,
+        "needle",
+        "thread",
+        &ContentSearchOptions::default(),
+    );
+    group.bench_function("dense_identity_lookup_10k", |b| {
+        b.iter(|| {
+            for index in 0..10_000 {
+                black_box(outcome.preview_index(SearchMatchId::from_index(index)));
+            }
+        });
+    });
+    group.bench_function("checked_identity_toggle_10k", |b| {
+        b.iter_batched(
+            || {
+                (0..10_000)
+                    .map(SearchMatchId::from_index)
+                    .collect::<HashSet<_>>()
+            },
+            |mut checked| {
+                for index in 0..10_000 {
+                    let id = SearchMatchId::from_index(index);
+                    checked.remove(&id);
+                    checked.insert(id);
+                }
+                black_box(checked);
+            },
+            BatchSize::SmallInput,
+        );
+    });
 
     group.finish();
 }
@@ -1793,6 +1847,7 @@ criterion_group!(
     bench_json_persistence,
     bench_utf8_validation,
     bench_editor_file_io,
+    bench_line_ending_detection,
     bench_replace_preview_generation,
     bench_replace_undo_workflows,
     bench_tree_population,

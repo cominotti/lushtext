@@ -6,6 +6,7 @@
 
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,12 +16,36 @@ use serde::{Deserialize, Serialize};
 /// match keeps worst-case retained line text in the tens of MiB rather than
 /// allowing minified or generated files to retain multi-GiB result sets.
 pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
+/// Maximum number of complete rows retained by Replace Preview.
+pub const MAX_REPLACE_PREVIEW_ROWS: usize = 10_000;
+/// Maximum conservatively charged UTF-8 bytes retained by Replace Preview.
+pub const MAX_REPLACE_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
 /// ASCII marker added when a search-result line is shortened.
 const SEARCH_MATCH_TRUNCATION_MARKER: &str = " [truncated]";
+
+/// Dense identity of one search match within a single search generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SearchMatchId(usize);
+
+impl SearchMatchId {
+    /// Create an identity from the match's zero-based ingestion position.
+    #[must_use]
+    pub fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
+    /// Return the dense zero-based index used by generation-scoped lookup tables.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
 
 /// A single match within a file.
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
+    /// Dense identity assigned when the match enters the active search generation.
+    pub id: SearchMatchId,
     /// Absolute path to the file containing the match.
     pub path: PathBuf,
     /// 1-based line number of the match.
@@ -30,7 +55,7 @@ pub struct SearchMatch {
     /// For long lines this is a match-containing excerpt, not the full source
     /// line. `line_truncated` tells Replace All preview to avoid using it as a
     /// correctness snapshot.
-    pub line_content: String,
+    pub line_content: Arc<str>,
     /// Byte range within the stored `line_content` that matched the query.
     pub match_range: Range<usize>,
     /// Whether `line_content` was shortened from the source line.
@@ -52,13 +77,21 @@ impl SearchMatch {
         let (line_content, match_range, line_truncated) =
             bounded_match_line(line_content, match_range);
         Self {
+            id: SearchMatchId::from_index(0),
             path,
             line_number,
-            line_content,
+            line_content: Arc::from(line_content),
             match_range,
             line_truncated,
             original_line_byte_len,
         }
+    }
+
+    /// Assign the generation-scoped identity owned by streamed-result ingestion.
+    #[must_use]
+    pub fn with_id(mut self, id: SearchMatchId) -> Self {
+        self.id = id;
+        self
     }
 }
 
@@ -243,18 +276,94 @@ pub enum SearchEvent {
 /// A replacement instruction for Replace All, including preview data.
 #[derive(Debug, Clone)]
 pub struct Replacement {
+    /// Identity of the originating search match in the active generation.
+    pub match_id: SearchMatchId,
     /// Absolute path to the file containing the match.
     pub path: PathBuf,
     /// 1-based line number.
     pub line_number: u64,
     /// The original full line content (before replacement).
-    pub original_line: String,
+    pub original_line: Arc<str>,
     /// The full line content after applying the replacement (for preview).
     pub replaced_line: String,
     /// The literal replacement text for the matched range.
-    pub replacement: String,
+    pub replacement: Arc<str>,
     /// Byte range within `original_line` that matched the query.
     pub match_range: Range<usize>,
+}
+
+/// Resource policy applied while constructing one Replace Preview outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplacePreviewBudget {
+    /// Maximum number of complete replacement rows retained.
+    pub max_rows: usize,
+    /// Maximum conservatively charged UTF-8 payload bytes retained.
+    pub max_bytes: usize,
+}
+
+impl Default for ReplacePreviewBudget {
+    fn default() -> Self {
+        Self {
+            max_rows: MAX_REPLACE_PREVIEW_ROWS,
+            max_bytes: MAX_REPLACE_PREVIEW_BYTES,
+        }
+    }
+}
+
+/// The resource limit that stopped Replace Preview from admitting complete rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplacePreviewLimit {
+    Rows,
+    Bytes,
+}
+
+/// Bounded preview rows plus explicit accounting for every input match.
+#[derive(Debug, Clone)]
+pub struct ReplacePreviewOutcome {
+    /// Complete, apply-capable rows admitted in deterministic search order.
+    pub replacements: Vec<Replacement>,
+    /// Dense match-ID-to-preview-index table. Omitted and skipped matches map to `None`.
+    pub match_to_preview: Vec<Option<usize>>,
+    /// Eligible matches excluded after the first row or byte limit was reached.
+    pub omitted_eligible: usize,
+    /// Source-line excerpts that cannot safely participate in replacement.
+    pub skipped_truncated: usize,
+    /// Complete source rows whose regex no longer matched the recorded range.
+    pub skipped_invalid: usize,
+    /// Conservative retained-payload charge for all admitted rows.
+    pub charged_bytes: usize,
+    /// First resource limit that prevented admission, if any.
+    pub limiting_reason: Option<ReplacePreviewLimit>,
+}
+
+impl ReplacePreviewOutcome {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.replacements.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.replacements.is_empty()
+    }
+
+    #[must_use]
+    pub fn skipped_source_count(&self) -> usize {
+        self.skipped_truncated.saturating_add(self.skipped_invalid)
+    }
+
+    #[must_use]
+    pub fn preview_index(&self, id: SearchMatchId) -> Option<usize> {
+        self.match_to_preview.get(id.index()).copied().flatten()
+    }
+}
+
+impl std::ops::Deref for ReplacePreviewOutcome {
+    type Target = [Replacement];
+
+    fn deref(&self) -> &Self::Target {
+        &self.replacements
+    }
 }
 
 /// Result of a Replace All operation.
@@ -283,7 +392,66 @@ pub fn generate_replacement_preview(
     query: &str,
     replacement_template: &str,
     options: &ContentSearchOptions,
-) -> Vec<Replacement> {
+) -> ReplacePreviewOutcome {
+    generate_replacement_preview_with_budget(
+        matches,
+        query,
+        replacement_template,
+        options,
+        ReplacePreviewBudget::default(),
+    )
+}
+
+/// Generate a replacement preview using an explicit resource budget.
+#[must_use]
+pub fn generate_replacement_preview_with_budget(
+    matches: &[SearchMatch],
+    query: &str,
+    replacement_template: &str,
+    options: &ContentSearchOptions,
+    budget: ReplacePreviewBudget,
+) -> ReplacePreviewOutcome {
+    generate_replacement_preview_impl(
+        matches,
+        query,
+        replacement_template,
+        options,
+        budget,
+        || false,
+    )
+}
+
+/// Generate a bounded preview that stops between rows when its owner is superseded.
+///
+/// A cancelled call returns the bounded partial work completed so far. The owning
+/// generation guard must discard that partial outcome rather than presenting it.
+#[must_use]
+pub fn generate_replacement_preview_with_budget_and_cancel(
+    matches: &[SearchMatch],
+    query: &str,
+    replacement_template: &str,
+    options: &ContentSearchOptions,
+    budget: ReplacePreviewBudget,
+    is_cancelled: impl Fn() -> bool,
+) -> ReplacePreviewOutcome {
+    generate_replacement_preview_impl(
+        matches,
+        query,
+        replacement_template,
+        options,
+        budget,
+        is_cancelled,
+    )
+}
+
+fn generate_replacement_preview_impl(
+    matches: &[SearchMatch],
+    query: &str,
+    replacement_template: &str,
+    options: &ContentSearchOptions,
+    budget: ReplacePreviewBudget,
+    is_cancelled: impl Fn() -> bool,
+) -> ReplacePreviewOutcome {
     // Pre-compile regex once if in regex mode. If compilation fails,
     // fall back to literal replacement (the search already validated the pattern,
     // but belt-and-suspenders).
@@ -295,53 +463,159 @@ pub fn generate_replacement_preview(
         None
     };
 
-    matches
-        .iter()
-        .filter_map(|m| {
-            if m.line_truncated {
-                return None;
-            }
-            let original_line = m.line_content.clone();
-            let start =
-                original_line.floor_char_boundary(m.match_range.start.min(original_line.len()));
-            let end = original_line.ceil_char_boundary(m.match_range.end.min(original_line.len()));
+    let mut literal_replacement: Option<Arc<str>> = None;
+    let mut outcome = ReplacePreviewOutcome {
+        replacements: Vec::with_capacity(matches.len().min(budget.max_rows)),
+        match_to_preview: vec![None; matches.len()],
+        omitted_eligible: 0,
+        skipped_truncated: 0,
+        skipped_invalid: 0,
+        charged_bytes: 0,
+        limiting_reason: None,
+    };
+    let mut budget_exhausted = false;
+    let mut literal_charged = false;
 
-            let (replaced_line, replacement_text) = if let Some(ref re) = compiled_regex {
-                // Regex mode: find the match within the line at the known range
-                // and expand backreferences.
-                if let Some(cap) = re.captures(&original_line[start..end]) {
-                    let mut expanded = String::new();
-                    cap.expand(replacement_template, &mut expanded);
-                    let mut line = original_line.clone();
-                    line.replace_range(start..end, &expanded);
-                    (line, expanded)
-                } else {
-                    // Regex didn't match the extracted range — skip this match rather
-                    // than inserting unexpanded backreference syntax ($1/$2) literally.
-                    tracing::warn!(
-                        "Regex did not match extracted range for line {}: {:?}",
-                        m.line_number,
-                        &original_line[start..end],
-                    );
-                    (original_line.clone(), original_line[start..end].to_string())
-                }
+    for m in matches {
+        if is_cancelled() {
+            break;
+        }
+        if m.line_truncated {
+            outcome.skipped_truncated = outcome.skipped_truncated.saturating_add(1);
+            continue;
+        }
+        let original_line = m.line_content.clone();
+        let start = original_line.floor_char_boundary(m.match_range.start.min(original_line.len()));
+        let end = original_line.ceil_char_boundary(m.match_range.end.min(original_line.len()));
+
+        if budget_exhausted {
+            if compiled_regex
+                .as_ref()
+                .is_some_and(|regex| regex.captures(&original_line[start..end]).is_none())
+            {
+                outcome.skipped_invalid = outcome.skipped_invalid.saturating_add(1);
             } else {
-                // Literal mode: direct string replacement.
-                let mut line = original_line.clone();
-                line.replace_range(start..end, replacement_template);
-                (line, replacement_template.to_string())
-            };
+                outcome.omitted_eligible = outcome.omitted_eligible.saturating_add(1);
+            }
+            continue;
+        }
 
-            Some(Replacement {
-                path: m.path.clone(),
-                line_number: m.line_number,
-                original_line,
-                replaced_line,
-                replacement: replacement_text,
-                match_range: m.match_range.clone(),
-            })
-        })
-        .collect()
+        if outcome.replacements.len() >= budget.max_rows {
+            outcome.limiting_reason = Some(ReplacePreviewLimit::Rows);
+            outcome.omitted_eligible = outcome.omitted_eligible.saturating_add(1);
+            budget_exhausted = true;
+            continue;
+        }
+
+        let replacement_text = if let Some(ref re) = compiled_regex {
+            // Regex mode: find the match within the line at the known range
+            // and expand backreferences.
+            if let Some(cap) = re.captures(&original_line[start..end]) {
+                if is_cancelled() {
+                    break;
+                }
+                let expansion_upper_bound =
+                    regex_expansion_upper_bound(replacement_template, end.saturating_sub(start));
+                let conservative_replaced_len = original_line
+                    .len()
+                    .saturating_sub(end.saturating_sub(start))
+                    .saturating_add(expansion_upper_bound);
+                let conservative_next_bytes = saturating_preview_bytes(
+                    outcome.charged_bytes,
+                    [
+                        original_line.len(),
+                        conservative_replaced_len,
+                        m.path.as_os_str().as_encoded_bytes().len(),
+                        expansion_upper_bound,
+                    ],
+                );
+                if conservative_next_bytes > budget.max_bytes {
+                    outcome.limiting_reason = Some(ReplacePreviewLimit::Bytes);
+                    outcome.omitted_eligible = outcome.omitted_eligible.saturating_add(1);
+                    budget_exhausted = true;
+                    continue;
+                }
+                let mut expanded = String::new();
+                cap.expand(replacement_template, &mut expanded);
+                Arc::<str>::from(expanded)
+            } else {
+                // Regex didn't match the extracted range — skip this match rather
+                // than inserting unexpanded backreference syntax ($1/$2) literally.
+                tracing::warn!(
+                    "Regex did not match extracted range for line {}: {:?}",
+                    m.line_number,
+                    &original_line[start..end],
+                );
+                outcome.skipped_invalid = outcome.skipped_invalid.saturating_add(1);
+                continue;
+            }
+        } else {
+            literal_replacement
+                .get_or_insert_with(|| Arc::from(replacement_template))
+                .clone()
+        };
+
+        let replacement_charge = if options.regex || !literal_charged {
+            replacement_text.len()
+        } else {
+            0
+        };
+        let replaced_line_len = original_line
+            .len()
+            .saturating_sub(end.saturating_sub(start))
+            .saturating_add(replacement_text.len());
+        let next_bytes = saturating_preview_bytes(
+            outcome.charged_bytes,
+            [
+                original_line.len(),
+                replaced_line_len,
+                m.path.as_os_str().as_encoded_bytes().len(),
+                replacement_charge,
+            ],
+        );
+        let limiting_reason = if next_bytes > budget.max_bytes {
+            Some(ReplacePreviewLimit::Bytes)
+        } else {
+            None
+        };
+        if let Some(reason) = limiting_reason {
+            outcome.limiting_reason = Some(reason);
+            outcome.omitted_eligible = outcome.omitted_eligible.saturating_add(1);
+            budget_exhausted = true;
+            continue;
+        }
+
+        outcome.charged_bytes = next_bytes;
+        literal_charged |= !options.regex;
+        let mut replaced_line = original_line.to_string();
+        replaced_line.replace_range(start..end, &replacement_text);
+        let preview_index = outcome.replacements.len();
+        if let Some(slot) = outcome.match_to_preview.get_mut(m.id.index()) {
+            *slot = Some(preview_index);
+        }
+        outcome.replacements.push(Replacement {
+            match_id: m.id,
+            path: m.path.clone(),
+            line_number: m.line_number,
+            original_line,
+            replaced_line,
+            replacement: replacement_text,
+            match_range: m.match_range.clone(),
+        });
+    }
+
+    outcome
+}
+
+fn regex_expansion_upper_bound(template: &str, matched_bytes: usize) -> usize {
+    let capture_markers = template.bytes().filter(|byte| *byte == b'$').count();
+    template
+        .len()
+        .saturating_add(capture_markers.saturating_mul(matched_bytes))
+}
+
+fn saturating_preview_bytes(current: usize, components: impl IntoIterator<Item = usize>) -> usize {
+    components.into_iter().fold(current, usize::saturating_add)
 }
 
 /// A single entry in the search history, capturing query text and all toggle
@@ -574,9 +848,9 @@ mod tests {
         assert_eq!(previews.len(), 1);
         assert_eq!(previews[0].path, PathBuf::from("/tmp/file.rs"));
         assert_eq!(previews[0].line_number, 7);
-        assert_eq!(previews[0].original_line, "hello world");
+        assert_eq!(previews[0].original_line.as_ref(), "hello world");
         assert_eq!(previews[0].replaced_line, "hello Rust");
-        assert_eq!(previews[0].replacement, "Rust");
+        assert_eq!(previews[0].replacement.as_ref(), "Rust");
         assert_eq!(previews[0].match_range, 6..11);
     }
 
@@ -588,7 +862,227 @@ mod tests {
 
         assert_eq!(previews.len(), 1);
         assert_eq!(previews[0].replaced_line, "name: <Ada>");
-        assert_eq!(previews[0].replacement, "<Ada>");
+        assert_eq!(previews[0].replacement.as_ref(), "<Ada>");
+    }
+
+    #[test]
+    fn replacement_preview_zero_budget_omits_complete_eligible_rows() {
+        let matches = vec![match_in_line("hello world", 6..11)];
+        let outcome = generate_replacement_preview_with_budget(
+            &matches,
+            "world",
+            "Rust",
+            &ContentSearchOptions::default(),
+            ReplacePreviewBudget {
+                max_rows: 0,
+                max_bytes: 0,
+            },
+        );
+
+        assert!(outcome.is_empty());
+        assert_eq!(outcome.omitted_eligible, 1);
+        assert_eq!(outcome.limiting_reason, Some(ReplacePreviewLimit::Rows));
+    }
+
+    #[test]
+    fn replacement_preview_row_budget_admits_exact_limit_and_omits_one_over() {
+        let matches: Vec<_> = (0..3)
+            .map(|index| {
+                match_in_line("hello world", 6..11).with_id(SearchMatchId::from_index(index))
+            })
+            .collect();
+        let outcome = generate_replacement_preview_with_budget(
+            &matches,
+            "world",
+            "Rust",
+            &ContentSearchOptions::default(),
+            ReplacePreviewBudget {
+                max_rows: 2,
+                max_bytes: usize::MAX,
+            },
+        );
+
+        assert_eq!(outcome.len(), 2);
+        assert_eq!(outcome.omitted_eligible, 1);
+        assert_eq!(outcome.limiting_reason, Some(ReplacePreviewLimit::Rows));
+        assert_eq!(outcome.preview_index(SearchMatchId::from_index(0)), Some(0));
+        assert_eq!(outcome.preview_index(SearchMatchId::from_index(1)), Some(1));
+        assert_eq!(outcome.preview_index(SearchMatchId::from_index(2)), None);
+    }
+
+    #[test]
+    fn replacement_preview_byte_budget_admits_exact_limit_and_rejects_one_less() {
+        let matches = vec![match_in_line("hello world", 6..11)];
+        let unrestricted = generate_replacement_preview_with_budget(
+            &matches,
+            "world",
+            "Rust",
+            &ContentSearchOptions::default(),
+            ReplacePreviewBudget {
+                max_rows: 1,
+                max_bytes: usize::MAX,
+            },
+        );
+        let exact = generate_replacement_preview_with_budget(
+            &matches,
+            "world",
+            "Rust",
+            &ContentSearchOptions::default(),
+            ReplacePreviewBudget {
+                max_rows: 1,
+                max_bytes: unrestricted.charged_bytes,
+            },
+        );
+        let one_less = generate_replacement_preview_with_budget(
+            &matches,
+            "world",
+            "Rust",
+            &ContentSearchOptions::default(),
+            ReplacePreviewBudget {
+                max_rows: 1,
+                max_bytes: unrestricted.charged_bytes - 1,
+            },
+        );
+
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact.charged_bytes, unrestricted.charged_bytes);
+        assert!(one_less.is_empty());
+        assert_eq!(one_less.limiting_reason, Some(ReplacePreviewLimit::Bytes));
+    }
+
+    #[test]
+    fn replacement_preview_shares_original_and_literal_but_not_regex_expansions() {
+        let literal_matches: Vec<_> = (0..2)
+            .map(|index| {
+                match_in_line("hello world", 6..11).with_id(SearchMatchId::from_index(index))
+            })
+            .collect();
+        let literal = generate_replacement_preview(
+            &literal_matches,
+            "world",
+            "Rust",
+            &ContentSearchOptions::default(),
+        );
+        assert!(Arc::ptr_eq(
+            &literal_matches[0].line_content,
+            &literal[0].original_line
+        ));
+        assert!(Arc::ptr_eq(
+            &literal[0].replacement,
+            &literal[1].replacement
+        ));
+
+        let regex_matches = vec![
+            match_in_line("name: Ada", 6..9).with_id(SearchMatchId::from_index(0)),
+            match_in_line("name: Bob", 6..9).with_id(SearchMatchId::from_index(1)),
+        ];
+        let regex = generate_replacement_preview(
+            &regex_matches,
+            "([a-z]+)",
+            "<$1>",
+            &ContentSearchOptions::new(false, true, false, true, None),
+        );
+        assert_eq!(regex[0].replacement.as_ref(), "<Ada>");
+        assert_eq!(regex[1].replacement.as_ref(), "<Bob>");
+        assert!(!Arc::ptr_eq(&regex[0].replacement, &regex[1].replacement));
+    }
+
+    #[test]
+    fn replacement_preview_counts_truncated_invalid_large_and_unicode_inputs() {
+        let long_line = format!("{}needle{}", "a".repeat(5000), "b".repeat(5000));
+        let mut truncated = match_in_line(&long_line, 5000..5006);
+        truncated.id = SearchMatchId::from_index(0);
+        let invalid = match_in_line("name: 123", 6..9).with_id(SearchMatchId::from_index(1));
+        let unicode = match_in_line("olá 🌍", 4..8).with_id(SearchMatchId::from_index(2));
+        let outcome = generate_replacement_preview_with_budget(
+            &[truncated, invalid, unicode],
+            "([a-z]+)",
+            &"界".repeat(1024),
+            &ContentSearchOptions::new(false, true, false, true, None),
+            ReplacePreviewBudget {
+                max_rows: 10,
+                max_bytes: 128,
+            },
+        );
+
+        assert_eq!(outcome.skipped_truncated, 1);
+        assert_eq!(outcome.skipped_invalid, 2);
+        assert_eq!(outcome.skipped_source_count(), 3);
+        assert!(outcome.is_empty());
+    }
+
+    #[test]
+    fn replacement_preview_accounting_saturates() {
+        assert_eq!(
+            saturating_preview_bytes(usize::MAX - 1, [1, 1, usize::MAX]),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn replacement_preview_rejects_amplifying_regex_before_expansion() {
+        let matched = "a".repeat(MAX_SEARCH_MATCH_LINE_BYTES - 1);
+        let search_match = match_in_line(&matched, 0..matched.len());
+        let template = "$1".repeat(20_000);
+        let outcome = generate_replacement_preview_with_budget(
+            &[search_match],
+            "(a+)",
+            &template,
+            &ContentSearchOptions::new(true, true, false, true, None),
+            ReplacePreviewBudget::default(),
+        );
+
+        assert!(outcome.is_empty());
+        assert_eq!(outcome.omitted_eligible, 1);
+        assert_eq!(outcome.charged_bytes, 0);
+        assert_eq!(outcome.limiting_reason, Some(ReplacePreviewLimit::Bytes));
+    }
+
+    #[test]
+    fn replacement_preview_large_literal_is_byte_limited_without_partial_row() {
+        let matches = vec![match_in_line("needle", 0..6)];
+        let replacement = "界".repeat(1024);
+        let outcome = generate_replacement_preview_with_budget(
+            &matches,
+            "needle",
+            &replacement,
+            &ContentSearchOptions::default(),
+            ReplacePreviewBudget {
+                max_rows: 1,
+                max_bytes: replacement.len() - 1,
+            },
+        );
+
+        assert!(outcome.is_empty());
+        assert_eq!(outcome.omitted_eligible, 1);
+        assert_eq!(outcome.charged_bytes, 0);
+        assert_eq!(outcome.limiting_reason, Some(ReplacePreviewLimit::Bytes));
+    }
+
+    #[test]
+    fn replacement_preview_ten_thousand_dense_ids_have_constant_shape_lookup() {
+        let matches: Vec<_> = (0..MAX_REPLACE_PREVIEW_ROWS)
+            .map(|index| {
+                match_in_line("prefix needle suffix", 7..13)
+                    .with_id(SearchMatchId::from_index(index))
+            })
+            .collect();
+        let outcome = generate_replacement_preview(
+            &matches,
+            "needle",
+            "thread",
+            &ContentSearchOptions::default(),
+        );
+
+        assert_eq!(outcome.len(), MAX_REPLACE_PREVIEW_ROWS);
+        assert!(outcome.charged_bytes <= MAX_REPLACE_PREVIEW_BYTES);
+        assert_eq!(outcome.match_to_preview.len(), MAX_REPLACE_PREVIEW_ROWS);
+        for index in 0..MAX_REPLACE_PREVIEW_ROWS {
+            assert_eq!(
+                outcome.preview_index(SearchMatchId::from_index(index)),
+                Some(index)
+            );
+        }
     }
 
     #[test]

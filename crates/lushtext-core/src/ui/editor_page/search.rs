@@ -11,6 +11,9 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use super::LushtextEditorPage;
 
+/// Maximum selected characters copied into the in-editor Find/Replace query.
+const MAX_SEARCH_SELECTION_PREFILL_CHARS: i32 = 1_024;
+
 impl LushtextEditorPage {
     /// Open the search bar in find-only mode.
     pub fn show_search(&self) {
@@ -65,8 +68,9 @@ impl LushtextEditorPage {
 
             let buffer = self.buffer();
             if let Some((start, end)) = buffer.selection_bounds() {
-                let text = buffer.text(&start, &end, true);
-                if !text.is_empty() {
+                let selection_chars = end.offset().saturating_sub(start.offset());
+                if selection_chars > 0 && selection_chars <= MAX_SEARCH_SELECTION_PREFILL_CHARS {
+                    let text = buffer.text(&start, &end, true);
                     search_bar.search_entry().set_text(text.as_str());
                 }
             }

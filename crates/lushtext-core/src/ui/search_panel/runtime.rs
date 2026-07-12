@@ -245,13 +245,12 @@ impl LushtextSearchPanel {
         imp.error_label.set_visible(false);
         imp.error_label.set_text("");
         imp.error_label.remove_css_class("error");
-        imp.preview
-            .preview_generation
-            .set(imp.preview.preview_generation.get().wrapping_add(1));
+        self.advance_preview_generation();
         imp.preview.preview_pending.set(false);
+        imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_replacements.borrow_mut().clear();
-        imp.preview.checked_indices.borrow_mut().clear();
+        imp.preview.preview_outcome.replace(None);
+        imp.preview.checked_match_ids.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
         self.update_replace_button_sensitivity();
         self.refresh_accessibility_state();
@@ -267,6 +266,10 @@ fn append_match_result(
     let imp = panel.imp();
     let path = search_match.path.clone();
     let display = make_display_path(&path, workspace_folders);
+    let match_id = crate::model::content_search::SearchMatchId::from_index(
+        imp.runtime.search_matches.borrow().len(),
+    );
+    let search_match = search_match.with_id(match_id);
     imp.runtime
         .search_matches
         .borrow_mut()
@@ -287,7 +290,6 @@ fn append_match_result(
     let child_store = group.child_store.clone();
     drop(groups);
 
-    let original_line_content = search_match.line_content.clone();
     let truncated_len = if search_match.line_content.len() > 500 {
         Some(search_match.line_content.floor_char_boundary(500))
     } else {
@@ -296,7 +298,7 @@ fn append_match_result(
     let content = if let Some(end) = truncated_len {
         format!("{}…", &search_match.line_content[..end])
     } else {
-        search_match.line_content
+        search_match.line_content.to_string()
     };
 
     let clamp_len = truncated_len.unwrap_or(content.len());
@@ -304,18 +306,13 @@ fn append_match_result(
         u32::try_from(search_match.match_range.start.min(clamp_len)).unwrap_or(u32::MAX);
     let match_end = u32::try_from(search_match.match_range.end.min(clamp_len)).unwrap_or(u32::MAX);
     let line_number = u32::try_from(search_match.line_number).unwrap_or(u32::MAX);
-    let original_match_start = u32::try_from(search_match.match_range.start).unwrap_or(u32::MAX);
-    let original_match_end = u32::try_from(search_match.match_range.end).unwrap_or(u32::MAX);
-
     let match_item = SearchResultItem::new_match(
         &search_match.path.display().to_string(),
         line_number,
         &content,
         match_start,
         match_end,
-        &original_line_content,
-        original_match_start,
-        original_match_end,
+        match_id,
     );
     let child_position = child_store.n_items();
     child_store.append(&match_item);

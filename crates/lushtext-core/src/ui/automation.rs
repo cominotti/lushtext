@@ -965,6 +965,8 @@ fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSn
         replace_preview_pending: search_panel.replace_preview_pending(),
         replace_preview_count: search_panel.replace_preview_count(),
         checked_replacement_count: search_panel.checked_replacement_count(),
+        omitted_replacement_count: search_panel.omitted_replacement_count(),
+        skipped_replacement_count: search_panel.skipped_replacement_count(),
         has_undo_backup: search_panel.has_undo_backup(),
         history_count: search_panel.history_count(),
         saved_search_count: search_panel.saved_search_count(),
@@ -1026,6 +1028,25 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     );
     push_widget_surface(&mut surfaces, "preview", &*imp.markdown_preview, root);
     push_widget_surface(&mut surfaces, "search-panel", &*imp.search_panel, root);
+    let search_imp = imp.search_panel.imp();
+    push_widget_surface(
+        &mut surfaces,
+        "search-results-scroll",
+        &*search_imp.results_scroll,
+        root,
+    );
+    push_widget_surface(
+        &mut surfaces,
+        "search-preview-summary",
+        &*search_imp.count_label,
+        root,
+    );
+    push_widget_surface(
+        &mut surfaces,
+        "search-replace-controls",
+        &*search_imp.replace_entry,
+        root,
+    );
     push_open_popover_surfaces(window, &mut surfaces, root);
 
     if let Some(editor) = active_editor(window) {

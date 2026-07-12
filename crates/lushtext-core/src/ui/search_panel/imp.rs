@@ -9,7 +9,9 @@
 
 use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
-use crate::model::content_search::{Replacement, SavedSearch, SearchHistoryEntry, SearchMatch};
+use crate::model::content_search::{
+    ReplacePreviewOutcome, Replacement, SavedSearch, SearchHistoryEntry, SearchMatch, SearchMatchId,
+};
 use crate::services::content_search::ReplaceUndoBackup;
 use crate::ui::accessibility;
 use gtk_lush_settle::Debounce;
@@ -119,10 +121,16 @@ pub struct SearchPreviewState {
     pub preview_generation: Cell<u32>,
     /// Whether pure replacement preview construction is currently running.
     pub preview_pending: Cell<bool>,
-    /// Replacement previews currently displayed in preview mode.
-    pub preview_replacements: RefCell<Vec<Replacement>>,
-    /// Indices of preview rows the user chose to apply.
-    pub checked_indices: RefCell<HashSet<usize>>,
+    /// Whether this panel currently owns one active preview worker.
+    pub preview_worker_running: Cell<bool>,
+    /// Cancellation token for the active worker; superseding generations set it immediately.
+    pub preview_cancel_token: RefCell<Option<Arc<AtomicBool>>>,
+    /// Latest superseding request retained while the single worker is active.
+    pub(super) queued_preview_request: RefCell<Option<super::replace::ReplacePreviewRequest>>,
+    /// Accepted bounded preview plus its dense generation-scoped identity map.
+    pub preview_outcome: RefCell<Option<ReplacePreviewOutcome>>,
+    /// Stable identities of generated preview rows the user chose to apply.
+    pub checked_match_ids: RefCell<HashSet<SearchMatchId>>,
 }
 
 /// Match-navigation state used by F4 / Shift+F4.
@@ -519,6 +527,7 @@ impl LushtextSearchPanel {
             let Some(panel) = panel_weak.upgrade() else {
                 return;
             };
+            panel.invalidate_replace_preview_request();
             let imp = panel.imp();
             if imp.history.restoring_history.get() {
                 return; // History restore — skip debounce.
@@ -622,6 +631,8 @@ impl LushtextSearchPanel {
             if imp.history.restoring_history.get() {
                 return;
             }
+
+            panel.invalidate_replace_preview_request();
 
             let spec = panel.current_query_spec();
             if spec.query.is_empty() {

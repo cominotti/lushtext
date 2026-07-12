@@ -1158,6 +1158,20 @@ fn evaluate_allowed_region_relationships(
                 header_open_precedes_new_tab(after_snapshot),
             );
         }
+        "replace-preview" => {
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "bounded-preview-state-visible",
+                replace_preview_state_visible(after_snapshot),
+            );
+            push_relationship(
+                &mut rows,
+                &mut status,
+                "preview-controls-outside-item-scroll",
+                replace_preview_controls_outside_scroll(after_snapshot),
+            );
+        }
         _ => {
             push_relationship(
                 &mut rows,
@@ -1172,6 +1186,53 @@ fn evaluate_allowed_region_relationships(
         "specs": case.pointer("/manifest/allowed_changing_regions").cloned().unwrap_or_default(),
         "assertions": rows,
     })
+}
+
+fn replace_preview_state_visible(snapshot: &Value) -> Result<(), String> {
+    let content = snapshot
+        .pointer("/window/content_search")
+        .ok_or_else(|| "snapshot is missing content_search".to_string())?;
+    let preview_mode = content
+        .get("replace_preview_mode")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let generated = content
+        .get("replace_preview_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let omitted = content
+        .get("omitted_replacement_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let skipped = content
+        .get("skipped_replacement_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if preview_mode && generated > 0 && skipped > 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "expected generated/omitted/skipped preview state, got mode={preview_mode} generated={generated} omitted={omitted} skipped={skipped}"
+        ))
+    }
+}
+
+fn replace_preview_controls_outside_scroll(snapshot: &Value) -> Result<(), String> {
+    let scroll = surface_box(snapshot, "search-results-scroll")?;
+    let summary = surface_box(snapshot, "search-preview-summary")?;
+    let controls = surface_box(snapshot, "search-replace-controls")?;
+    let panel = surface_box(snapshot, "search-panel")?;
+    if summary.y >= scroll.y + scroll.height
+        && controls.y + controls.height <= scroll.y
+        && scroll.x >= panel.x
+        && scroll.x + scroll.width <= panel.x + panel.width
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "controls or summary entered the item scroller: controls={controls:?} scroll={scroll:?} summary={summary:?} panel={panel:?}"
+        ))
+    }
 }
 
 /// Add one relationship assertion while preserving a single aggregate status.
@@ -1826,11 +1887,18 @@ fn write_fixture(case: &model::ExpandedCaseOverview, case_dir: &Path) -> Result<
     let text = match case.scenario_type() {
         Some("minimap-sidebar") => minimap_fixture_text(case),
         Some("open-popover") => "Open popover visual geometry fixture\n".to_string(),
+        Some("replace-preview") => replace_preview_fixture_text(),
         _ => "Command palette visual geometry fixture\n".to_string(),
     };
     std::fs::write(&path, text)
         .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
     Ok(path)
+}
+
+fn replace_preview_fixture_text() -> String {
+    let mut lines = vec![format!("{}needle{}", "a".repeat(5000), "b".repeat(5000))];
+    lines.extend((0..140).map(|index| format!("dense needle row {index:03} — 界/awkward path")));
+    lines.join("\n") + "\n"
 }
 
 fn minimap_fixture_text(case: &model::ExpandedCaseOverview) -> String {

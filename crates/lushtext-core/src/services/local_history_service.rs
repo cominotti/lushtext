@@ -250,6 +250,18 @@ pub fn availability_for_size_check(size_check: FileSizeCheck) -> LocalHistoryAva
     }
 }
 
+/// Classify local-history capture from the current GTK buffer character count.
+///
+/// GTK exposes scalar count in O(1), while persistence policy is byte-based.
+/// Multiplying by the maximum UTF-8 scalar width deliberately gives a
+/// conservative bound so periodic capture never copies a buffer that may have
+/// outgrown the full-history limit.
+#[must_use]
+pub fn availability_for_live_buffer_chars(char_count: i32) -> LocalHistoryAvailability {
+    let char_count = u64::try_from(char_count).unwrap_or(u64::MAX);
+    availability_for_size_check(FileSizeCheck::classify(char_count.saturating_mul(4)))
+}
+
 /// Fail the next obsolete local-history lineage cleanup in test builds.
 ///
 /// Prefer [`fail_next_obsolete_lineage_cleanup_for_path_for_test`] when tests
@@ -1366,6 +1378,43 @@ mod tests {
                 "{size_check:?} browsing policy changed"
             );
         }
+    }
+
+    #[test]
+    fn live_buffer_availability_uses_conservative_utf8_boundaries() {
+        assert_eq!(
+            availability_for_live_buffer_chars(0),
+            LocalHistoryAvailability::Full
+        );
+        assert_eq!(
+            availability_for_live_buffer_chars(2_500_000),
+            LocalHistoryAvailability::Full
+        );
+        assert_eq!(
+            availability_for_live_buffer_chars(2_500_001),
+            LocalHistoryAvailability::SaveOnly
+        );
+        assert_eq!(
+            availability_for_live_buffer_chars(12_500_000),
+            LocalHistoryAvailability::SaveOnly
+        );
+        assert_eq!(
+            availability_for_live_buffer_chars(12_500_001),
+            LocalHistoryAvailability::Unavailable
+        );
+        assert_eq!(
+            availability_for_live_buffer_chars(-1),
+            LocalHistoryAvailability::Unavailable
+        );
+
+        let unicode = "é🙂漢字";
+        assert!(unicode.len() > unicode.chars().count());
+        assert_eq!(
+            availability_for_live_buffer_chars(
+                i32::try_from(unicode.chars().count()).expect("small fixture")
+            ),
+            LocalHistoryAvailability::Full
+        );
     }
 
     #[test]

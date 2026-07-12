@@ -3857,7 +3857,7 @@
         {
           "class": "GtkListView",
           "id": "results_list",
-          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/2:property/0:object:GtkListView#results_list"
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/4:property/0:object:GtkListView#results_list"
         },
         {
           "class": "GtkSeparator",
@@ -4298,8 +4298,22 @@
         },
         {
           "context": "",
-          "name": "min-content-height",
+          "name": "propagate-natural-width",
           "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/1:property",
+          "translatable": "",
+          "value": "false"
+        },
+        {
+          "context": "",
+          "name": "hscrollbar-policy",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/2:property",
+          "translatable": "",
+          "value": "2"
+        },
+        {
+          "context": "",
+          "name": "min-content-height",
+          "path": "0:template:LushtextSearchPanel/6:child/0:object:GtkRevealer#results_feedback_revealer/3:property/0:object:GtkBox#results_feedback_box/2:child/0:object:GtkRevealer#results_body_revealer/3:property/0:object:GtkBox#results_body_box/1:child/0:object:GtkScrolledWindow#results_scroll/3:property",
           "translatable": "",
           "value": "100"
         },

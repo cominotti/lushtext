@@ -1619,6 +1619,7 @@ impl LushtextMarkdownPreview {
         }
         imp.text_link_targets.borrow_mut().clear();
         imp.text_view.buffer().set_text("");
+        self.advance_rendered_embed_generation();
     }
 
     /// Insert one buffered table as a native GTK grid anchored into the text flow.
@@ -1757,6 +1758,13 @@ impl LushtextMarkdownPreview {
             .rendered_embeds
             .borrow_mut()
             .push(RenderedEmbed::new(widget.clone(), layout));
+        self.advance_rendered_embed_generation();
+    }
+
+    fn advance_rendered_embed_generation(&self) {
+        let imp = self.imp();
+        imp.rendered_embed_generation
+            .set(imp.rendered_embed_generation.get().wrapping_add(1));
     }
 
     /// Refresh anchored code blocks after GTK has allocated the preview text view.
@@ -1768,6 +1776,18 @@ impl LushtextMarkdownPreview {
         let Some(column_width) = preview_text_column_width(&self.imp().text_view.get()) else {
             return;
         };
+        let embed_generation = self.imp().rendered_embed_generation.get();
+        if self.imp().last_code_block_layout.get() == Some((column_width, embed_generation)) {
+            return;
+        }
+
+        #[cfg(feature = "test-utils")]
+        self.imp().code_block_width_traversal_count.set(
+            self.imp()
+                .code_block_width_traversal_count
+                .get()
+                .wrapping_add(1),
+        );
 
         let mut changed = false;
         for embed in self.imp().rendered_embeds.borrow().iter() {
@@ -1785,6 +1805,28 @@ impl LushtextMarkdownPreview {
             self.imp().text_view.queue_resize();
             self.queue_resize();
         }
+        self.imp()
+            .last_code_block_layout
+            .set(Some((column_width, embed_generation)));
+    }
+
+    /// Return the number of full embed traversals for performance assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn code_block_width_traversal_count_for_test(&self) -> u64 {
+        self.imp().code_block_width_traversal_count.get()
+    }
+
+    /// Reset only the performance counter without changing layout cache state.
+    #[cfg(feature = "test-utils")]
+    pub fn reset_code_block_width_traversal_count_for_test(&self) {
+        self.imp().code_block_width_traversal_count.set(0);
+    }
+
+    /// Queue the production deferred repair sequence for widget assertions.
+    #[cfg(feature = "test-utils")]
+    pub fn queue_code_block_width_refresh_for_test<F: Fn() + 'static>(&self, callback: F) {
+        self.queue_code_block_width_refresh_after(callback);
     }
 
     /// Refresh code-block widths across the current GTK layout turn.

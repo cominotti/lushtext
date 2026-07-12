@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
-use lushtext_core::model::content_search::Replacement;
+use lushtext_core::model::content_search::{
+    ContentSearchOptions, Replacement, SearchMatch, SearchMatchId, generate_replacement_preview,
+};
 use lushtext_core::services::content_search::apply_replacements_to_text_for_property_test;
 use proptest::prelude::*;
 
@@ -40,6 +42,70 @@ proptest! {
         let actual = apply_replacements_to_text_for_property_test(&original_text, &replacements);
 
         prop_assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn accepted_literal_preview_applies_like_direct_safe_range_replacement(
+        prefix in support::text_fragment(),
+        matched in "[a-zA-Z0-9]{1,16}",
+        suffix in support::text_fragment(),
+        replacement in support::optional_text_fragment(),
+    ) {
+        let line = format!("{prefix}{matched}{suffix}");
+        let range = prefix.len()..prefix.len() + matched.len();
+        let search_match = SearchMatch::new(
+            PathBuf::from("/tmp/lushtext-preview-property.txt"),
+            1,
+            &line,
+            range.clone(),
+        )
+        .with_id(SearchMatchId::from_index(0));
+        let preview = generate_replacement_preview(
+            &[search_match],
+            &matched,
+            &replacement,
+            &ContentSearchOptions::default(),
+        );
+        let mut expected = line.clone();
+        expected.replace_range(range, &replacement);
+
+        prop_assert_eq!(preview.len(), 1);
+        prop_assert_eq!(preview[0].replaced_line.as_str(), expected.as_str());
+        prop_assert_eq!(
+            apply_replacements_to_text_for_property_test(&line, &preview.replacements),
+            Some((expected, 1)),
+        );
+    }
+
+    #[test]
+    fn accepted_regex_preview_preserves_capture_expansion_and_apply_semantics(
+        first in "[a-z]{1,12}",
+        second in "[a-z]{1,12}",
+    ) {
+        let matched = format!("{first}_{second}");
+        let line = format!("prefix {matched} suffix");
+        let start = "prefix ".len();
+        let search_match = SearchMatch::new(
+            PathBuf::from("/tmp/lushtext-regex-preview-property.txt"),
+            1,
+            &line,
+            start..start + matched.len(),
+        )
+        .with_id(SearchMatchId::from_index(0));
+        let preview = generate_replacement_preview(
+            &[search_match],
+            r"([a-z]+)_([a-z]+)",
+            "$2-$1",
+            &ContentSearchOptions::new(true, true, false, true, None),
+        );
+        let expected = format!("prefix {second}-{first} suffix");
+
+        prop_assert_eq!(preview.len(), 1);
+        prop_assert_eq!(preview[0].replacement.as_ref(), format!("{second}-{first}"));
+        prop_assert_eq!(
+            apply_replacements_to_text_for_property_test(&line, &preview.replacements),
+            Some((expected, 1)),
+        );
     }
 }
 
@@ -76,11 +142,14 @@ fn build_unique_line_replacements(
             .cloned()
             .unwrap_or_else(|| "missing generated line".to_string());
         replacements.push(Replacement {
+            match_id: lushtext_core::model::content_search::SearchMatchId::from_index(
+                replacements.len(),
+            ),
             path: PathBuf::from("/tmp/lushtext-property-search.txt"),
             line_number,
-            original_line,
+            original_line: original_line.into(),
             replaced_line: String::new(),
-            replacement,
+            replacement: replacement.into(),
             match_range,
         });
     }

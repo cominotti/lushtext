@@ -222,6 +222,16 @@ pub struct LushtextMarkdownPreview {
     /// time so `render_markdown`, `clear`, and `show_placeholder` can remove
     /// stale embeds and resize code blocks after later allocations.
     pub(super) rendered_embeds: RefCell<Vec<super::RenderedEmbed>>,
+    /// Generation advanced whenever the rendered embed membership changes.
+    pub(super) rendered_embed_generation: Cell<u64>,
+    /// Last valid text-column width and embed generation fully traversed.
+    ///
+    /// Hidden or not-yet-allocated previews deliberately leave this untouched
+    /// so a later valid allocation still repairs every current code block.
+    pub(super) last_code_block_layout: Cell<Option<(i32, u64)>>,
+    /// Number of full embed traversals, exposed only to performance fixtures.
+    #[cfg(feature = "test-utils")]
+    pub(super) code_block_width_traversal_count: Cell<u64>,
     /// Launchable link spans rendered directly into the text buffer.
     ///
     /// The preview rerenders whole documents, so this list is rebuilt from

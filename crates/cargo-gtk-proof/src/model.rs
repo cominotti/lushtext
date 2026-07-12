@@ -338,7 +338,7 @@ fn validate_visual_scenario(value: &Value) -> Result<(), ProofValidationError> {
                 ));
             }
         }
-        "command-palette-overlay" | "open-popover" => {}
+        "command-palette-overlay" | "open-popover" | "replace-preview" => {}
         other => {
             return Err(ProofValidationError::malformed(format!(
                 "unsupported scenario_type {other}"
@@ -550,7 +550,9 @@ impl VisualScenarioManifest {
     ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         match self.scenario_type.as_str() {
             "minimap-sidebar" => self.minimap_sidebar_cases(manifest_value),
-            "command-palette-overlay" => self.command_palette_cases(manifest_value),
+            "command-palette-overlay" | "replace-preview" => {
+                self.command_palette_cases(manifest_value)
+            }
             "open-popover" => self.open_popover_cases(manifest_value),
             _ => Ok(Vec::new()),
         }

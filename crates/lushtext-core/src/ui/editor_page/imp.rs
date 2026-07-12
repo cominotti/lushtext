@@ -12,6 +12,7 @@ use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, Invisible
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::InlineActionNotification;
+use crate::ui::buffer_snapshot::BufferSnapshotCancellation;
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use glib::value::ToValue;
@@ -307,6 +308,16 @@ pub struct LocalHistoryState {
     pub last_clean_text: RefCell<Option<String>>,
     /// Generation counter used to cancel or replace pending periodic capture timers.
     pub periodic_generation: Cell<u32>,
+    /// Generation advanced when disposal invalidates every in-flight capture.
+    pub editor_generation: Cell<u64>,
+    /// Generation advanced whenever the saved-file identity changes.
+    pub path_generation: Cell<u64>,
+    /// Generation advanced on every buffer content change.
+    pub edit_generation: Cell<u64>,
+    /// Cancellation for the current chunked periodic snapshot, if any.
+    pub(crate) periodic_snapshot_cancellation: RefCell<Option<BufferSnapshotCancellation>>,
+    /// Whether this editor already has one weak baseline waiter in the global FIFO.
+    pub(crate) baseline_retry_pending: Cell<bool>,
     /// Suppresses automatic capture while save or restore changes the buffer programmatically.
     pub automatic_capture_suppressed: Cell<bool>,
     /// One-shot text used by the browser's immediate undo-restore action.
@@ -505,6 +516,12 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
+        if let Some(cancellation) = self.local_history.periodic_snapshot_cancellation.take() {
+            cancellation.cancel();
+        }
+        self.local_history
+            .editor_generation
+            .set(self.local_history.editor_generation.get().wrapping_add(1));
         self.preference_bindings.signals.clear();
         self.document_buffer_signals.clear();
         self.editing_buffer_signals.clear();

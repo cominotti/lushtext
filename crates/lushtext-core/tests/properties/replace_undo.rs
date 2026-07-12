@@ -56,11 +56,14 @@ impl ReplaceUndoFile {
     /// Build the preview instruction consumed by the production Replace All service.
     fn replacement_for_path(&self, path: PathBuf) -> Replacement {
         Replacement {
+            match_id: lushtext_core::model::content_search::SearchMatchId::from_index(
+                self.line_index,
+            ),
             path,
             line_number: u64::try_from(self.line_index + 1).unwrap_or(u64::MAX),
-            original_line: self.lines[self.line_index].clone(),
+            original_line: self.lines[self.line_index].clone().into(),
             replaced_line: String::new(),
-            replacement: self.replacement.clone(),
+            replacement: self.replacement.clone().into(),
             match_range: self.match_range.clone(),
         }
     }

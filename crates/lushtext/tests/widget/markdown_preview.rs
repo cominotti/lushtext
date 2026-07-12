@@ -1509,6 +1509,92 @@ fn test_render_code_block_width_updates_after_late_allocation() {
 }
 
 #[test]
+fn test_many_code_blocks_skip_unchanged_deferred_traversal_and_refresh_new_embeds() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let _window = present_preview_with_size(&preview, 900, 700);
+    let many_blocks = (0..128)
+        .map(|index| format!("```rust\nlet value_{index} = {index};\n```\n"))
+        .collect::<String>();
+    preview.render_markdown(&many_blocks);
+    wait_until(Duration::from_secs(5), || {
+        code_block_containers(&preview).len() == 128
+            && code_block_containers(&preview)
+                .iter()
+                .all(|block| block.width_request() > 0)
+    });
+
+    let settled = Rc::new(std::cell::Cell::new(false));
+    let settled_for_callback = settled.clone();
+    preview.queue_code_block_width_refresh_for_test(move || settled_for_callback.set(true));
+    wait_until(Duration::from_secs(2), || settled.get());
+    preview.reset_code_block_width_traversal_count_for_test();
+
+    let unchanged_done = Rc::new(std::cell::Cell::new(false));
+    let unchanged_done_for_callback = unchanged_done.clone();
+    preview.queue_code_block_width_refresh_for_test(move || {
+        unchanged_done_for_callback.set(true);
+    });
+    wait_until(Duration::from_secs(2), || unchanged_done.get());
+    assert_eq!(
+        preview.code_block_width_traversal_count_for_test(),
+        0,
+        "unchanged immediate, idle, and timed passes should all use the tuple fast path"
+    );
+
+    preview.render_markdown(&(many_blocks + "```rust\nlet newest = true;\n```\n"));
+    wait_until(Duration::from_secs(5), || {
+        code_block_containers(&preview).len() == 129
+            && code_block_containers(&preview)
+                .iter()
+                .all(|block| block.width_request() > 0)
+    });
+    assert_eq!(
+        preview.code_block_width_traversal_count_for_test(),
+        1,
+        "new embed membership should force one full pass, then cache deferred repeats"
+    );
+}
+
+#[test]
+fn test_hidden_code_blocks_preserve_invalid_cache_until_late_valid_allocation() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("```rust\nlet allocated_later = true;\n```\n");
+    assert_eq!(preview.code_block_width_traversal_count_for_test(), 0);
+
+    let _window = present_preview_with_size(&preview, 620, 280);
+    wait_for_code_block_layout(&preview);
+    assert_eq!(preview.code_block_width_traversal_count_for_test(), 1);
+}
+
+#[test]
+fn test_root_and_nested_code_blocks_repair_after_resize_at_constrained_width() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let window = present_preview_with_size(&preview, 900, 420);
+    preview.render_markdown(concat!(
+        "```rust\nlet root = true;\n```\n\n",
+        "Term\n\n:   Definition\n\n        let nested = true;\n",
+    ));
+    wait_until(Duration::from_secs(2), || {
+        code_block_containers(&preview).len() == 2
+    });
+    wait_for_code_block_layout(&preview);
+
+    window.set_default_size(320, 420);
+    wait_until(Duration::from_secs(2), || {
+        preview.text_view().width() < 500
+            && code_block_containers(&preview).iter().all(|block| {
+                block.width_request() == expected_code_block_width(&preview, block)
+            })
+    });
+    let blocks = code_block_containers(&preview);
+    assert!(blocks.iter().any(|block| block.margin_start() == 0));
+    assert!(blocks.iter().any(|block| block.margin_start() > 0));
+}
+
+#[test]
 fn test_render_markdown_cleans_up_code_block_widgets_on_rerender() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();

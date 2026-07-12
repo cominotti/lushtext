@@ -171,6 +171,10 @@ and fallback paths.
 
 ![File-relative preview card sample](assets/preview-secondary.svg)
 
+### Unloadable Local Image Fallback
+
+![Invalid image data](assets/invalid-preview-image.png)
+
 ### Missing Local Image Fallback
 
 ![Missing image](missing-preview-image.png)

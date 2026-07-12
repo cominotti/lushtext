@@ -16,6 +16,12 @@ and workflow evidence, and writes an authoritative root summary. `cargo
 gtk-proof run --oracle python` remains an explicit Rust-supervised
 diagnostic/oracle path and is not default Rust proof.
 
+The committed scenarios include a bounded Replace Preview case. It exercises
+dense Unicode/awkward-path rows, a source-truncated match, complete bounded
+feedback, and the geometry contract that confirmation and summary stay outside
+the item-only scrolling region. Byte-budget omission is covered by the model
+and widget scale lanes, where the exact boundary is deterministic.
+
 ## Commands
 
 - `cargo gtk-proof --help`
@@ -55,7 +61,10 @@ diagnostic/oracle path and is not default Rust proof.
   `unsupported-host` when host tooling is missing, otherwise writes
   schema-valid per-case manifests, comparison reports, optional animation
   reports, warning scans, and a root `summary.json` with
-  `engine.authoritative=true`.
+  `engine.authoritative=true`. A case whose first private session fails only
+  because the AT-SPI registry service could not start is retried once in a
+  fresh session; the preserved first-attempt logs and `session-retry.json` keep
+  that recovery auditable.
 - `cargo gtk-proof run --oracle python`
   Runs the legacy Python visual runner under Rust process supervision with a
   bounded log and explicit `python-visual-oracle` engine metadata. Skipped or

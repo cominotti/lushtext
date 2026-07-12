@@ -266,6 +266,7 @@ impl LushtextEditorPage {
         path: &Path,
         canonical_path: Option<PathBuf>,
     ) {
+        self.advance_local_history_path_generation();
         self.imp().file_path.replace(Some(path.to_path_buf()));
         self.imp().canonical_file_path.replace(canonical_path);
         self.imp().load_state.set(EditorLoadState::Loaded);
@@ -279,6 +280,7 @@ impl LushtextEditorPage {
 
     /// Set a provisional path before an async load result is available.
     pub(crate) fn set_file_path_for_pending_load(&self, path: &Path) {
+        self.advance_local_history_path_generation();
         self.imp().file_path.replace(Some(path.to_path_buf()));
         self.imp().canonical_file_path.borrow_mut().take();
         self.imp().file_size.set(None);
@@ -297,6 +299,7 @@ impl LushtextEditorPage {
     /// Failed desktop activation can leave an editor visible with an inline
     /// error, but it must not behave as if the path was successfully opened.
     pub(crate) fn clear_file_path_after_failed_load(&self) {
+        self.advance_local_history_path_generation();
         self.imp().file_path.replace(None);
         self.imp().canonical_file_path.borrow_mut().take();
         self.imp().file_size.set(None);
@@ -442,7 +445,10 @@ impl LushtextEditorPage {
         let metadata = self.document_encoding_state();
         let formatting_overrides = self.formatting_overrides();
         let allow_lossy = self.take_lossy_save_once();
-        let history_availability = self.local_history_availability();
+        let history_availability =
+            crate::services::local_history_service::availability_for_live_buffer_chars(
+                self.buffer().char_count(),
+            );
 
         spawn_blocking_then(
             self.clone(),

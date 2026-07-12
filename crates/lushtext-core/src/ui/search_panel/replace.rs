@@ -6,7 +6,9 @@
 //! models, but isolating them here keeps the runtime search loop separate from
 //! replace/undo behavior.
 
-use crate::model::content_search::generate_replacement_preview;
+use crate::model::content_search::{
+    ReplacePreviewBudget, generate_replacement_preview_with_budget_and_cancel,
+};
 use crate::services::content_search::ReplaceUndoBackup;
 use crate::services::{json_store, search_backup};
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -18,6 +20,14 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 
 use super::LushtextSearchPanel;
+
+/// Latest plain-Rust preview request retained by the panel's single-flight worker.
+pub(super) struct ReplacePreviewRequest {
+    search_matches: Vec<crate::model::content_search::SearchMatch>,
+    query_spec: crate::model::content_search::SearchQuerySpec,
+    replacement_text: String,
+    generation: u32,
+}
 
 impl LushtextSearchPanel {
     /// Show the undo button (called after a successful replace).
@@ -177,45 +187,82 @@ impl LushtextSearchPanel {
         let generation = self.advance_preview_generation();
         imp.preview.preview_pending.set(true);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_replacements.borrow_mut().clear();
-        imp.preview.checked_indices.borrow_mut().clear();
+        imp.preview.preview_outcome.replace(None);
+        imp.preview.checked_match_ids.borrow_mut().clear();
         imp.replace_all_button.set_label("Preparing Preview…");
         imp.replace_all_button.set_sensitive(false);
         self.refresh_accessibility_state();
 
-        let replacement_text = replacement_text.to_string();
+        let request = ReplacePreviewRequest {
+            search_matches,
+            query_spec,
+            replacement_text: replacement_text.to_string(),
+            generation,
+        };
+        self.enqueue_preview_request(request);
+    }
+
+    fn enqueue_preview_request(&self, request: ReplacePreviewRequest) {
+        let imp = self.imp();
+        if imp.preview.preview_worker_running.get() {
+            imp.preview.queued_preview_request.replace(Some(request));
+            return;
+        }
+        self.spawn_preview_request(request);
+    }
+
+    fn spawn_preview_request(&self, request: ReplacePreviewRequest) {
+        let imp = self.imp();
+        imp.preview.preview_worker_running.set(true);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        imp.preview
+            .preview_cancel_token
+            .replace(Some(cancel.clone()));
+        let expected_query_spec = request.query_spec.clone();
+        let generation = request.generation;
         spawn_blocking_then(
             self.clone(),
             move || {
                 delay_replace_preview_for_test();
-                generate_replacement_preview(
-                    &search_matches,
-                    &query_spec.query,
-                    &replacement_text,
-                    &query_spec.options,
+                generate_replacement_preview_with_budget_and_cancel(
+                    &request.search_matches,
+                    &request.query_spec.query,
+                    &request.replacement_text,
+                    &request.query_spec.options,
+                    replace_preview_budget(),
+                    || cancel.load(std::sync::atomic::Ordering::Relaxed),
                 )
             },
-            move |panel, previews| {
+            move |panel, outcome| {
                 let imp = panel.imp();
-                if imp.preview.preview_generation.get() != generation
-                    || !imp.preview.preview_pending.get()
+                imp.preview.preview_worker_running.set(false);
+                imp.preview.preview_cancel_token.replace(None);
+                if imp.preview.preview_generation.get() == generation
+                    && imp.preview.preview_pending.get()
+                    && panel.current_query_spec() == expected_query_spec
                 {
-                    return;
+                    imp.preview.preview_pending.set(false);
+
+                    let checked = outcome
+                        .replacements
+                        .iter()
+                        .map(|replacement| replacement.match_id)
+                        .collect();
+                    imp.preview.checked_match_ids.replace(checked);
+                    let total = outcome.replacements.len();
+                    imp.preview.preview_outcome.replace(Some(outcome));
+                    imp.preview.preview_mode.set(true);
+
+                    panel.refresh_preview_summary();
+                    imp.replace_all_button.set_sensitive(total > 0);
+
+                    panel.refresh_results_display();
+                    panel.refresh_accessibility_state();
                 }
-                imp.preview.preview_pending.set(false);
 
-                let all_indices: std::collections::HashSet<usize> = (0..previews.len()).collect();
-                imp.preview.checked_indices.replace(all_indices);
-                imp.preview.preview_replacements.replace(previews);
-                imp.preview.preview_mode.set(true);
-
-                let total = imp.preview.preview_replacements.borrow().len();
-                imp.replace_all_button
-                    .set_label(&format!("Replace {total} of {total}"));
-                imp.replace_all_button.set_sensitive(total > 0);
-
-                panel.refresh_results_display();
-                panel.refresh_accessibility_state();
+                if let Some(queued) = imp.preview.queued_preview_request.take() {
+                    panel.spawn_preview_request(queued);
+                }
             },
         );
     }
@@ -225,10 +272,12 @@ impl LushtextSearchPanel {
         let imp = self.imp();
         self.advance_preview_generation();
         imp.preview.preview_pending.set(false);
+        imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_replacements.borrow_mut().clear();
-        imp.preview.checked_indices.borrow_mut().clear();
+        imp.preview.preview_outcome.replace(None);
+        imp.preview.checked_match_ids.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
+        self.restore_search_summary();
         self.update_replace_button_sensitivity();
         self.refresh_results_display();
         self.refresh_accessibility_state();
@@ -241,7 +290,7 @@ impl LushtextSearchPanel {
             imp.replace_all_button.set_sensitive(false);
         } else if imp.preview.preview_mode.get() {
             imp.replace_all_button
-                .set_sensitive(!imp.preview.checked_indices.borrow().is_empty());
+                .set_sensitive(!imp.preview.checked_match_ids.borrow().is_empty());
         } else {
             // Empty replacement text is allowed (deletes matches).
             imp.replace_all_button
@@ -261,19 +310,77 @@ impl LushtextSearchPanel {
         }
         self.advance_preview_generation();
         imp.preview.preview_pending.set(false);
+        imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_replacements.borrow_mut().clear();
-        imp.preview.checked_indices.borrow_mut().clear();
+        imp.preview.preview_outcome.replace(None);
+        imp.preview.checked_match_ids.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
+        self.restore_search_summary();
         self.refresh_results_display();
         self.refresh_accessibility_state();
     }
 
-    fn advance_preview_generation(&self) -> u32 {
+    pub(super) fn advance_preview_generation(&self) -> u32 {
         let imp = self.imp();
+        if let Some(cancel) = imp.preview.preview_cancel_token.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let generation = imp.preview.preview_generation.get().wrapping_add(1);
         imp.preview.preview_generation.set(generation);
         generation
+    }
+
+    /// Refresh visible and accessible confirmation feedback from accepted state.
+    pub(crate) fn refresh_preview_summary(&self) {
+        let imp = self.imp();
+        let checked = imp.preview.checked_match_ids.borrow().len();
+        let outcome = imp.preview.preview_outcome.borrow();
+        let Some(outcome) = outcome.as_ref() else {
+            return;
+        };
+        let generated = outcome.replacements.len();
+        let omitted = outcome.omitted_eligible;
+        let skipped = outcome.skipped_source_count();
+        imp.replace_all_button
+            .set_label(&format!("Replace {checked} checked"));
+        let summary = if generated == 0 {
+            format!("No eligible replacements; {omitted} omitted, {skipped} skipped")
+        } else if omitted > 0 || skipped > 0 {
+            format!(
+                "{generated} previewed, {checked} checked, {omitted} omitted, {skipped} skipped"
+            )
+        } else {
+            format!("{generated} previewed, {checked} checked")
+        };
+        imp.count_label.set_text(&summary);
+        crate::ui::accessibility::set_labelled_description(
+            &*imp.replace_all_button,
+            &format!("Apply {checked} checked replacements"),
+            &summary,
+        );
+        self.refresh_accessibility_state();
+    }
+
+    fn restore_search_summary(&self) {
+        let imp = self.imp();
+        let total = imp.runtime.total_matches.get();
+        let files = imp.runtime.total_files.get();
+        if total == 0 {
+            imp.count_label.set_text("No results found");
+        } else if imp.runtime.result_capped.get() {
+            imp.count_label
+                .set_text("10,000+ results (truncated) — narrow your search");
+            imp.count_label.add_css_class("warning");
+        } else {
+            imp.count_label.remove_css_class("warning");
+            imp.count_label
+                .set_text(&format!("{total} results in {files} files"));
+        }
+        crate::ui::accessibility::set_labelled_description(
+            &*imp.replace_all_button,
+            "Replace all matches",
+            "Preview replacements before applying them",
+        );
     }
 }
 
@@ -286,6 +393,10 @@ fn undo_backup_disk_lock() -> &'static Mutex<()> {
 static UNDO_BACKUP_DISK_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
 static REPLACE_PREVIEW_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static REPLACE_PREVIEW_MAX_ROWS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static REPLACE_PREVIEW_MAX_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// Configure an artificial Replace All undo persistence delay for widget tests.
 #[cfg(feature = "test-utils")]
@@ -297,6 +408,28 @@ pub fn set_undo_backup_disk_delay_for_test(delay_ms: u64) {
 #[cfg(feature = "test-utils")]
 pub fn set_replace_preview_delay_for_test(delay_ms: u64) {
     REPLACE_PREVIEW_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+/// Override Replace Preview limits for state-extreme widget tests; zero restores production.
+#[cfg(feature = "test-utils")]
+pub fn set_replace_preview_budget_for_test(max_rows: u64, max_bytes: u64) {
+    REPLACE_PREVIEW_MAX_ROWS.store(max_rows, Ordering::Release);
+    REPLACE_PREVIEW_MAX_BYTES.store(max_bytes, Ordering::Release);
+}
+
+fn replace_preview_budget() -> ReplacePreviewBudget {
+    #[cfg(feature = "test-utils")]
+    {
+        let max_rows = REPLACE_PREVIEW_MAX_ROWS.load(Ordering::Acquire);
+        let max_bytes = REPLACE_PREVIEW_MAX_BYTES.load(Ordering::Acquire);
+        if max_rows > 0 || max_bytes > 0 {
+            return ReplacePreviewBudget {
+                max_rows: usize::try_from(max_rows).unwrap_or(usize::MAX),
+                max_bytes: usize::try_from(max_bytes).unwrap_or(usize::MAX),
+            };
+        }
+    }
+    ReplacePreviewBudget::default()
 }
 
 fn delay_undo_backup_disk_for_test() {

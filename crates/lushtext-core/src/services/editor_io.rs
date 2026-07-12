@@ -578,30 +578,35 @@ fn guess_utf16_without_bom(bytes: &[u8]) -> Option<DocumentEncoding> {
 }
 
 /// Detect line-ending style from decoded text and choose a safe save default.
-fn detect_line_endings(text: &str) -> (LineEnding, LineEnding) {
+///
+/// The input must already be decoded text. CR/LF candidate discovery uses the
+/// established byte-search dependency, while every candidate remains an ASCII
+/// byte and therefore cannot split a UTF-8 scalar.
+#[must_use]
+pub fn detect_line_endings(text: &str) -> (LineEnding, LineEnding) {
     let bytes = text.as_bytes();
-    let mut index = 0usize;
     let mut crlf_count = 0usize;
     let mut lf_count = 0usize;
     let mut cr_count = 0usize;
+    let mut paired_lf = None;
 
-    while index < bytes.len() {
+    for index in memchr::memchr2_iter(b'\r', b'\n', bytes) {
+        if paired_lf == Some(index) {
+            paired_lf = None;
+            continue;
+        }
         match bytes[index] {
             b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
                 crlf_count += 1;
-                index += 2;
+                paired_lf = Some(index + 1);
             }
             b'\r' => {
                 cr_count += 1;
-                index += 1;
             }
             b'\n' => {
                 lf_count += 1;
-                index += 1;
             }
-            _ => {
-                index += 1;
-            }
+            _ => unreachable!("memchr2_iter yields only CR or LF candidates"),
         }
     }
 
@@ -876,6 +881,7 @@ fn is_zero_width(character: char) -> bool {
 mod tests {
     use super::*;
     use crate::services::filesystem::{fixture, metadata as fs_metadata};
+    use proptest::prelude::*;
     use std::assert_matches;
     use std::sync::atomic::AtomicBool;
     use tempfile::NamedTempFile;
@@ -1073,6 +1079,7 @@ mod tests {
 
     #[test]
     fn detect_line_endings_classifies_single_styles_and_suggests_majority() {
+        assert_eq!(detect_line_endings(""), (LineEnding::Lf, LineEnding::Crlf));
         assert_eq!(
             detect_line_endings("a\nb\n"),
             (LineEnding::Lf, LineEnding::Lf)
@@ -1093,6 +1100,64 @@ mod tests {
             detect_line_endings("a\rb\rc\n"),
             (LineEnding::Mixed, LineEnding::Cr)
         );
+        assert_eq!(
+            detect_line_endings("\r\nstart\nend\r\n"),
+            (LineEnding::Mixed, LineEnding::Crlf)
+        );
+    }
+
+    fn detect_line_endings_scalar(text: &str) -> (LineEnding, LineEnding) {
+        let bytes = text.as_bytes();
+        let mut index = 0usize;
+        let mut crlf_count = 0usize;
+        let mut lf_count = 0usize;
+        let mut cr_count = 0usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
+                    crlf_count += 1;
+                    index += 2;
+                }
+                b'\r' => {
+                    cr_count += 1;
+                    index += 1;
+                }
+                b'\n' => {
+                    lf_count += 1;
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        }
+        let distinct_styles =
+            usize::from(crlf_count > 0) + usize::from(lf_count > 0) + usize::from(cr_count > 0);
+        let detected = match distinct_styles {
+            1 if crlf_count > 0 => LineEnding::Crlf,
+            1 if cr_count > 0 => LineEnding::Cr,
+            0 | 1 => LineEnding::Lf,
+            _ => LineEnding::Mixed,
+        };
+        let suggested = if crlf_count >= lf_count && crlf_count >= cr_count {
+            LineEnding::Crlf
+        } else if cr_count >= lf_count {
+            LineEnding::Cr
+        } else {
+            LineEnding::Lf
+        };
+        (detected, suggested)
+    }
+
+    proptest! {
+        #[test]
+        fn optimized_line_endings_match_scalar_policy(
+            pieces in prop::collection::vec(
+                prop_oneof![Just("x"), Just("é"), Just("🙂"), Just("\r"), Just("\n")],
+                0..4_096,
+            )
+        ) {
+            let text = pieces.concat();
+            prop_assert_eq!(detect_line_endings(&text), detect_line_endings_scalar(&text));
+        }
     }
 
     #[test]

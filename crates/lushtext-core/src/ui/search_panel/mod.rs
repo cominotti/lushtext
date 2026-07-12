@@ -18,7 +18,10 @@ mod results;
 mod runtime;
 
 #[cfg(feature = "test-utils")]
-pub use replace::{set_replace_preview_delay_for_test, set_undo_backup_disk_delay_for_test};
+pub use replace::{
+    set_replace_preview_budget_for_test, set_replace_preview_delay_for_test,
+    set_undo_backup_disk_delay_for_test,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -114,6 +117,7 @@ impl LushtextSearchPanel {
             cancel.store(true, Ordering::Relaxed);
         }
         self.imp().runtime.searching.set(false);
+        self.invalidate_replace_preview_request();
 
         // Replace All journal files are intentionally bounded to the active
         // panel lifetime so a later session cannot inherit stale rollback state.
@@ -132,7 +136,9 @@ impl LushtextSearchPanel {
     /// automation-friendly window actions; applying replacements still requires
     /// the explicit preview and confirm steps.
     pub fn set_replace_query(&self, text: &str) {
-        self.imp().replace_entry.set_text(text);
+        let imp = self.imp();
+        imp.more_toggle.set_active(true);
+        imp.replace_entry.set_text(text);
     }
 
     /// Activate the same Replace All preview step as the panel button.
@@ -155,15 +161,16 @@ impl LushtextSearchPanel {
         if !imp.preview.preview_mode.get() {
             return;
         }
-        let replacements = imp.preview.preview_replacements.borrow();
-        let checked = imp.preview.checked_indices.borrow();
-        let selected: Vec<_> = checked
-            .iter()
-            .filter_map(|&idx| replacements.get(idx).cloned())
-            .collect();
-        drop(checked);
-        drop(replacements);
+        let outcome = imp.preview.preview_outcome.take();
+        let checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
         self.exit_preview_mode();
+        let selected = outcome.map_or_else(Vec::new, |outcome| {
+            outcome
+                .replacements
+                .into_iter()
+                .filter(|replacement| checked.contains(&replacement.match_id))
+                .collect()
+        });
         if let Some(ref callback) = *imp.callbacks.replace_callback.borrow() {
             callback(selected);
         }
@@ -266,13 +273,45 @@ impl LushtextSearchPanel {
     /// Return the number of replacement preview rows currently held in memory.
     #[must_use]
     pub fn replace_preview_count(&self) -> u32 {
-        u32::try_from(self.imp().preview.preview_replacements.borrow().len()).unwrap_or(u32::MAX)
+        let imp = self.imp();
+        u32::try_from(
+            imp.preview
+                .preview_outcome
+                .borrow()
+                .as_ref()
+                .map_or(0, |outcome| outcome.replacements.len()),
+        )
+        .unwrap_or(u32::MAX)
     }
 
     /// Return the number of replacement preview rows selected for apply.
     #[must_use]
     pub fn checked_replacement_count(&self) -> u32 {
-        u32::try_from(self.imp().preview.checked_indices.borrow().len()).unwrap_or(u32::MAX)
+        u32::try_from(self.imp().preview.checked_match_ids.borrow().len()).unwrap_or(u32::MAX)
+    }
+
+    /// Return eligible matches omitted by the current preview resource budget.
+    #[must_use]
+    pub fn omitted_replacement_count(&self) -> u32 {
+        u32::try_from(
+            self.imp()
+                .preview
+                .preview_outcome
+                .borrow()
+                .as_ref()
+                .map_or(0, |outcome| outcome.omitted_eligible),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
+    /// Return source-truncated or invalid matches skipped by the current preview.
+    #[must_use]
+    pub fn skipped_replacement_count(&self) -> u32 {
+        u32::try_from(self.imp().preview.preview_outcome.borrow().as_ref().map_or(
+            0,
+            crate::model::content_search::ReplacePreviewOutcome::skipped_source_count,
+        ))
+        .unwrap_or(u32::MAX)
     }
 
     /// Return whether a Replace All undo backup is currently available.

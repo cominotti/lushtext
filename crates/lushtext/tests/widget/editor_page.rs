@@ -3,8 +3,8 @@
 //! Tests for the LushtextEditorPage widget.
 
 use crate::common::{
-    ensure_gtk_init, fixture, flush_after_delay, fs_read, present_window, test_application,
-    wait_until,
+    ensure_gtk_init, fixture, flush_after_delay, fs_read, isolated_data_dir, present_window,
+    test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -15,6 +15,7 @@ use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
 use lushtext_core::services::editor_io::LoadResult;
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use lushtext_core::services::local_history_service;
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, EditorLoadState,
@@ -27,7 +28,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn button_label(button: &gtk4::Button) -> gtk4::Label {
     button
@@ -1110,6 +1111,135 @@ fn test_show_search_reveals_search_bar() {
     // show_search is NOT a toggle — calling it again keeps the bar open
     page.show_search();
     assert!(revealer.reveals_child());
+}
+
+fn select_buffer_chars(page: &LushtextEditorPage, start_offset: i32, end_offset: i32) {
+    let buffer = page.buffer();
+    let start = buffer.iter_at_offset(start_offset);
+    let end = buffer.iter_at_offset(end_offset);
+    buffer.select_range(&start, &end);
+}
+
+fn assert_search_query_focused_and_selected(page: &LushtextEditorPage, expected: &str) {
+    let entry = page.search_bar().search_entry();
+    wait_until(std::time::Duration::from_secs(2), || {
+        let Some(window) = page.root().and_downcast::<gtk4::Window>() else {
+            return false;
+        };
+        let mut focus = gtk4::prelude::GtkWindowExt::focus(&window);
+        while let Some(widget) = focus {
+            if same_widget(&widget, entry) {
+                return true;
+            }
+            focus = widget.parent();
+        }
+        false
+    });
+    assert_eq!(entry.text().as_str(), expected);
+    assert_eq!(
+        entry.selection_bounds(),
+        Some((0, i32::try_from(expected.chars().count()).expect("small query"))),
+        "the complete existing query should be selected for replacement"
+    );
+}
+
+#[test]
+fn test_search_prefill_empty_and_exact_limit_keep_query_surface_usable() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let window = present_editor_page(&page);
+    let entry = page.search_bar().search_entry();
+
+    page.buffer().set_text("plain text");
+    entry.set_text("existing");
+    page.show_search();
+    assert_search_query_focused_and_selected(&page, "existing");
+
+    page.hide_search();
+    flush_after_delay(Duration::from_millis(300));
+    let exact = "x".repeat(1_024);
+    page.buffer().set_text(&exact);
+    select_buffer_chars(&page, 0, 1_024);
+    page.show_search();
+    assert_search_query_focused_and_selected(&page, &exact);
+
+    window.destroy();
+}
+
+#[test]
+fn test_replace_prefill_rejects_one_over_and_large_selection_without_copying() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let window = present_editor_page(&page);
+    let entry = page.search_bar().search_entry();
+    let one_over = "z".repeat(1_025);
+    page.buffer().set_text(&one_over);
+    select_buffer_chars(&page, 0, 1_025);
+    entry.set_text("keep me");
+    page.show_replace();
+    assert!(page.search_bar().imp().replace_mode_button.is_active());
+    assert_search_query_focused_and_selected(&page, "keep me");
+
+    window.destroy();
+
+    let large_page = LushtextEditorPage::new();
+    let large_entry = large_page.search_bar().search_entry();
+    large_page.buffer().set_text(&"z".repeat(100_000));
+    select_buffer_chars(&large_page, 0, 100_000);
+    large_entry.set_text("still bounded");
+    large_page.show_replace();
+    assert!(large_page.search_bar().imp().replace_mode_button.is_active());
+    assert_eq!(large_entry.text().as_str(), "still bounded");
+    assert_eq!(large_entry.selection_bounds(), Some((0, 13)));
+}
+
+#[test]
+fn test_search_prefill_counts_unicode_scalars_and_repeated_open_does_not_reprefill() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let window = present_editor_page(&page);
+    let unicode = "é🙂漢字".repeat(25);
+    let unicode_chars = i32::try_from(unicode.chars().count()).expect("small Unicode fixture");
+    page.buffer().set_text(&format!("{unicode}later"));
+    select_buffer_chars(&page, 0, unicode_chars);
+
+    page.show_search();
+    assert_search_query_focused_and_selected(&page, &unicode);
+
+    select_buffer_chars(&page, unicode_chars, unicode_chars + 5);
+    page.show_replace();
+    assert!(page.search_bar().imp().replace_mode_button.is_active());
+    assert_search_query_focused_and_selected(&page, &unicode);
+
+    window.destroy();
+}
+
+#[test]
+fn test_periodic_local_history_edit_cancels_chunked_snapshot_without_persistence() {
+    ensure_gtk_init();
+    let data_dir = isolated_data_dir();
+    let document = data_dir.path().join("periodic-edit.md");
+    fixture::write_text(&document, "saved\n");
+    let page = LushtextEditorPage::new();
+    page.set_file_path(&document);
+    let buffer = page.buffer();
+    buffer.set_text(&"x".repeat(2_500_000));
+    buffer.set_modified(true);
+
+    page.run_local_history_periodic_capture_for_test();
+    assert!(page.local_history_periodic_snapshot_inflight_for_test());
+
+    let mut end = buffer.end_iter();
+    buffer.insert(&mut end, "edited while chunking");
+    flush_after_delay(Duration::from_millis(100));
+
+    assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+    let snapshots = local_history_service::list_snapshots_for_path(data_dir.path(), &document)
+        .expect("list local-history snapshots");
+    assert!(
+        snapshots.is_empty(),
+        "an edit-stale periodic snapshot must never reach persistence"
+    );
 }
 
 #[test]

@@ -1809,6 +1809,10 @@ pub struct AutomationContentSearchSnapshot {
     pub replace_preview_count: u32,
     /// Number of checked replacement preview rows.
     pub checked_replacement_count: u32,
+    /// Number of eligible matches omitted by the preview resource budget.
+    pub omitted_replacement_count: u32,
+    /// Number of source-truncated or invalid matches skipped by preview generation.
+    pub skipped_replacement_count: u32,
     /// Whether a Replace All undo backup is available.
     pub has_undo_backup: bool,
     /// Number of recent history rows loaded into the panel.

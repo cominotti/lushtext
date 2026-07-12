@@ -2,12 +2,12 @@
 
 //! Tests for the workspace search panel and its components.
 
-use crate::common::{ensure_gtk_init, fixture, flush_events, wait_until};
+use crate::common::{ensure_gtk_init, fixture, flush_after_delay, flush_events, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::content_search::{
     ContentSearchOptions, ReplaceResult, Replacement, SavedSearch, SearchEvent, SearchHistoryEntry,
-    SearchMatch, SearchQuerySpec, generate_replacement_preview,
+    SearchMatch, SearchMatchId, SearchQuerySpec, generate_replacement_preview,
 };
 use lushtext_core::services::notifications::{
     NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
@@ -20,7 +20,7 @@ use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
     LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchProgressUpdate,
     apply_search_result_row_accessibility_for_test, set_replace_preview_delay_for_test,
-    set_undo_backup_disk_delay_for_test,
+    set_replace_preview_budget_for_test, set_undo_backup_disk_delay_for_test,
 };
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
@@ -76,6 +76,8 @@ fn sample_replace_backup(path: &str) -> ReplaceUndoBackup {
 fn panel_with_one_search_match() -> LushtextSearchPanel {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.set_query("hello");
+    flush_after_delay(Duration::from_millis(200));
+    let _ = panel.imp().runtime.search_debounce.invalidate();
     let search_match = SearchMatch::new(
         std::path::PathBuf::from("/test.rs"),
         1,
@@ -89,9 +91,7 @@ fn panel_with_one_search_match() -> LushtextSearchPanel {
         "let hello = 1;",
         4,
         9,
-        "let hello = 1;",
-        4,
-        9,
+        SearchMatchId::from_index(0),
     );
     let child_store = gtk4::gio::ListStore::new::<SearchResultItem>();
     child_store.append(&match_item);
@@ -116,6 +116,7 @@ impl Drop for SearchPanelDelayReset {
     fn drop(&mut self) {
         set_undo_backup_disk_delay_for_test(0);
         set_replace_preview_delay_for_test(0);
+        set_replace_preview_budget_for_test(0, 0);
     }
 }
 
@@ -150,9 +151,7 @@ fn test_search_result_item_new_match() {
         "fn main() {",
         0,
         2,
-        "fn main() {",
-        0,
-        2,
+        SearchMatchId::from_index(0),
     );
     assert!(!item.is_file_item());
     assert!(item.is_match_item());
@@ -163,6 +162,7 @@ fn test_search_result_item_new_match() {
     assert!(item.display_path().is_empty());
     assert_eq!(item.match_start(), 0);
     assert_eq!(item.match_end(), 2);
+    assert_eq!(item.match_id(), SearchMatchId::from_index(0));
 }
 
 #[test]
@@ -382,9 +382,7 @@ fn test_search_result_row_accessibility_metadata_is_bounded_and_clearable() {
         &long_line,
         0,
         6,
-        &long_line,
-        0,
-        6,
+        SearchMatchId::from_index(0),
     );
     apply_search_result_row_accessibility_for_test(&row, &match_item, None);
     AccessibleAudit::new()
@@ -612,9 +610,7 @@ fn test_search_result_item_match_range_stored_and_returned() {
         "let x = 42;",
         4,
         5,
-        "let x = 42;",
-        4,
-        5,
+        SearchMatchId::from_index(0),
     );
     assert_eq!(item.match_start(), 4);
     assert_eq!(item.match_end(), 5);
@@ -946,7 +942,7 @@ fn test_enter_preview_mode_sets_flag() {
     assert!(!panel.is_preview_mode());
 
     panel.enter_preview_mode("goodbye");
-    wait_until(Duration::from_secs(2), || panel.is_preview_mode());
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
     assert!(panel.is_preview_mode());
 }
 
@@ -955,6 +951,8 @@ fn test_enter_preview_mode_uses_cached_search_matches_without_gtk_rows() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.set_query("hello");
+    flush_after_delay(Duration::from_millis(200));
+    let _ = panel.imp().runtime.search_debounce.invalidate();
     panel.imp().runtime.total_matches.set(1);
     panel
         .imp()
@@ -970,9 +968,9 @@ fn test_enter_preview_mode_uses_cached_search_matches_without_gtk_rows() {
 
     panel.enter_preview_mode("goodbye");
 
-    wait_until(Duration::from_secs(2), || panel.is_preview_mode());
-    assert_eq!(panel.imp().preview.preview_replacements.borrow().len(), 1);
-    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 1 of 1"));
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    assert_eq!(panel.replace_preview_count(), 1);
+    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 1 checked"));
 }
 
 #[test]
@@ -981,13 +979,13 @@ fn test_exit_preview_mode_clears_state() {
     let panel = panel_with_one_search_match();
 
     panel.enter_preview_mode("goodbye");
-    wait_until(Duration::from_secs(2), || panel.is_preview_mode());
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
     assert!(panel.is_preview_mode());
 
     panel.exit_preview_mode();
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_replacements.borrow().is_empty());
-    assert!(panel.imp().preview.checked_indices.borrow().is_empty());
+    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+    assert!(panel.imp().preview.checked_match_ids.borrow().is_empty());
 }
 
 #[test]
@@ -1004,10 +1002,10 @@ fn test_enter_preview_mode_shows_pending_until_worker_finishes() {
     assert!(!panel.imp().replace_all_button.is_sensitive());
     assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Preparing Preview…"));
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
     });
-    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 1 of 1"));
+    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 1 checked"));
 }
 
 #[test]
@@ -1025,14 +1023,274 @@ fn test_stale_replace_preview_result_is_rejected_after_replacement_change() {
 
     assert!(!panel.imp().preview.preview_pending.get());
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_replacements.borrow().is_empty());
+    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
     assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace All"));
 
     std::thread::sleep(Duration::from_millis(350));
     flush_events();
 
     assert!(!panel.is_preview_mode());
-    assert!(panel.imp().preview.preview_replacements.borrow().is_empty());
+    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+}
+
+#[test]
+fn test_query_edit_invalidates_preview_before_debounce() {
+    ensure_gtk_init();
+    let panel = panel_with_one_search_match();
+    panel.enter_preview_mode("goodbye");
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().preview.preview_worker_running.get()
+    });
+    assert!(panel.is_preview_mode(), "initial preview was not accepted");
+
+    panel.imp().search_entry.set_text("new query");
+    flush_after_delay(Duration::from_millis(200));
+    assert!(!panel.is_preview_mode());
+    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+}
+
+#[test]
+fn test_glob_edit_invalidates_preview_before_debounce() {
+    ensure_gtk_init();
+    let panel = panel_with_one_search_match();
+    panel.enter_preview_mode("goodbye");
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    panel.imp().glob_entry.set_text("*.rs");
+    flush_events();
+    assert!(!panel.is_preview_mode());
+    assert!(panel.imp().preview.preview_outcome.borrow().is_none());
+}
+
+#[test]
+fn test_superseding_preview_requests_coalesce_to_latest_result() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    let panel = panel_with_one_search_match();
+    set_replace_preview_delay_for_test(250);
+
+    panel.enter_preview_mode("first");
+    panel.enter_preview_mode("second");
+    panel.enter_preview_mode("latest");
+
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().preview.preview_worker_running.get()
+    });
+    assert!(
+        panel.is_preview_mode(),
+        "latest request was not accepted: generation={} pending={} outcome={}",
+        panel.imp().preview.preview_generation.get(),
+        panel.imp().preview.preview_pending.get(),
+        panel.imp().preview.preview_outcome.borrow().is_some()
+    );
+    let outcome = panel.imp().preview.preview_outcome.borrow();
+    let replacement = outcome
+        .as_ref()
+        .and_then(|outcome| outcome.replacements.first())
+        .expect("latest preview row");
+    assert_eq!(replacement.replacement.as_ref(), "latest");
+    assert!(!panel.imp().preview.preview_worker_running.get());
+}
+
+#[test]
+fn test_new_search_cancels_active_preview_before_latest_request_runs() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    let panel = panel_with_one_search_match();
+    set_replace_preview_delay_for_test(250);
+
+    panel.enter_preview_mode("stale");
+    panel.start_search(&search_spec(""));
+    panel
+        .imp()
+        .runtime
+        .search_matches
+        .borrow_mut()
+        .push(
+            SearchMatch::new(
+                std::path::PathBuf::from("/test.rs"),
+                1,
+                "let hello = 1;",
+                4..9,
+            )
+            .with_id(SearchMatchId::from_index(0)),
+        );
+    panel.imp().runtime.total_matches.set(1);
+    panel.enter_preview_mode("latest");
+
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().preview.preview_worker_running.get()
+    });
+    assert!(panel.is_preview_mode(), "latest request was not accepted");
+    let outcome = panel.imp().preview.preview_outcome.borrow();
+    assert_eq!(
+        outcome
+            .as_ref()
+            .and_then(|outcome| outcome.replacements.first())
+            .expect("latest preview")
+            .replacement
+            .as_ref(),
+        "latest"
+    );
+}
+
+#[test]
+fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.set_query("hello");
+    flush_after_delay(Duration::from_millis(200));
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    let matches = vec![
+        SearchMatch::new(
+            std::path::PathBuf::from("/project/awkward/界 one.rs"),
+            1,
+            "hello one",
+            0..5,
+        )
+        .with_id(SearchMatchId::from_index(0)),
+        SearchMatch::new(
+            std::path::PathBuf::from("/project/awkward/界 two.rs"),
+            2,
+            "hello two",
+            0..5,
+        )
+        .with_id(SearchMatchId::from_index(1)),
+        SearchMatch::new(
+            std::path::PathBuf::from("/project/awkward/界 three.rs"),
+            3,
+            "hello three",
+            0..5,
+        )
+        .with_id(SearchMatchId::from_index(2)),
+    ];
+    panel.imp().runtime.search_matches.replace(matches);
+    panel.imp().runtime.total_matches.set(3);
+    panel.imp().runtime.total_files.set(3);
+    set_replace_preview_budget_for_test(2, u64::MAX);
+
+    let confirmed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Replacement>::new()));
+    let captured = confirmed.clone();
+    panel.connect_replace_all(move |replacements| {
+        captured.replace(replacements);
+    });
+    panel.enter_preview_mode("goodbye");
+
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    assert_eq!(panel.replace_preview_count(), 2);
+    assert_eq!(panel.checked_replacement_count(), 2);
+    assert_eq!(panel.omitted_replacement_count(), 1);
+    assert_eq!(panel.skipped_replacement_count(), 0);
+    assert_eq!(
+        panel.imp().count_label.text(),
+        "2 previewed, 2 checked, 1 omitted, 0 skipped"
+    );
+    assert_eq!(
+        panel.imp().results_scroll.hscrollbar_policy(),
+        gtk4::PolicyType::Never
+    );
+
+    panel
+        .imp()
+        .preview
+        .checked_match_ids
+        .borrow_mut()
+        .remove(&SearchMatchId::from_index(1));
+    panel.activate_confirm_replacements();
+    let confirmed = confirmed.borrow();
+    assert_eq!(confirmed.len(), 1);
+    assert_eq!(confirmed[0].match_id, SearchMatchId::from_index(0));
+}
+
+#[test]
+fn test_no_eligible_preview_has_explicit_feedback_and_disabled_confirmation() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.set_query("needle");
+    flush_after_delay(Duration::from_millis(200));
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    let line = format!("{}needle{}", "a".repeat(5000), "b".repeat(5000));
+    let search_match = SearchMatch::new(
+        std::path::PathBuf::from("/project/深い/very-long-name.rs"),
+        1,
+        &line,
+        5000..5006,
+    )
+    .with_id(SearchMatchId::from_index(0));
+    panel
+        .imp()
+        .runtime
+        .search_matches
+        .replace(vec![search_match]);
+    panel.imp().runtime.total_matches.set(1);
+    panel.imp().runtime.total_files.set(1);
+
+    panel.enter_preview_mode("");
+
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    assert_eq!(panel.replace_preview_count(), 0);
+    assert_eq!(panel.omitted_replacement_count(), 0);
+    assert_eq!(panel.skipped_replacement_count(), 1);
+    assert_eq!(
+        panel.imp().count_label.text(),
+        "No eligible replacements; 0 omitted, 1 skipped"
+    );
+    assert!(!panel.imp().replace_all_button.is_sensitive());
+    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 0 checked"));
+
+    panel.clamp_results_height(0);
+    assert_eq!(panel.imp().results_scroll.height_request(), 0);
+    assert!(panel.imp().footer_box.property::<bool>("visible"));
+    assert!(panel.imp().replace_all_button.property::<bool>("visible"));
+}
+
+#[test]
+fn test_byte_limited_preview_reports_omitted_when_no_row_fits() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    let panel = panel_with_one_search_match();
+    set_replace_preview_budget_for_test(u64::MAX, 1);
+
+    panel.enter_preview_mode(&"replacement".repeat(1024));
+
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    assert_eq!(panel.replace_preview_count(), 0);
+    assert_eq!(panel.checked_replacement_count(), 0);
+    assert_eq!(panel.omitted_replacement_count(), 1);
+    assert_eq!(panel.skipped_replacement_count(), 0);
+    assert_eq!(
+        panel.imp().count_label.text(),
+        "No eligible replacements; 1 omitted, 0 skipped"
+    );
+    assert!(!panel.imp().replace_all_button.is_sensitive());
+}
+
+#[test]
+fn test_large_and_empty_replacement_previews_remain_accessible() {
+    ensure_gtk_init();
+    let panel = panel_with_one_search_match();
+    let large_replacement = "界".repeat(2048);
+
+    panel.enter_preview_mode(&large_replacement);
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    assert_eq!(panel.replace_preview_count(), 1);
+    assert!(panel.imp().replace_all_button.is_sensitive());
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&*panel.imp().replace_all_button);
+
+    panel.exit_preview_mode();
+    panel.enter_preview_mode("");
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    assert_eq!(panel.replace_preview_count(), 1);
+    assert_eq!(
+        panel.imp().preview.preview_outcome.borrow().as_ref().expect("preview").replacements[0]
+            .replaced_line,
+        "let  = 1;"
+    );
 }
 
 #[test]
@@ -1247,16 +1505,17 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
 fn test_replacement_and_replace_result_construction() {
     ensure_gtk_init();
     let r = Replacement {
+        match_id: SearchMatchId::from_index(0),
         path: std::path::PathBuf::from("/test.rs"),
         line_number: 1,
-        original_line: "let hello = 1;".to_string(),
+        original_line: "let hello = 1;".into(),
         replaced_line: "let goodbye = 1;".to_string(),
-        replacement: "goodbye".to_string(),
+        replacement: "goodbye".into(),
         match_range: 4..9,
     };
     assert_eq!(r.path.display().to_string(), "/test.rs");
     assert_eq!(r.line_number, 1);
-    assert_eq!(r.original_line, "let hello = 1;");
+    assert_eq!(r.original_line.as_ref(), "let hello = 1;");
     assert_eq!(r.replaced_line, "let goodbye = 1;");
 
     let result = ReplaceResult {
@@ -1284,9 +1543,9 @@ fn test_generate_replacement_preview_literal() {
     let result = generate_replacement_preview(&matches, "hello", "goodbye", &options);
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0].original_line, "let hello = 1;");
+    assert_eq!(result[0].original_line.as_ref(), "let hello = 1;");
     assert_eq!(result[0].replaced_line, "let goodbye = 1;");
-    assert_eq!(result[0].replacement, "goodbye");
+    assert_eq!(result[0].replacement.as_ref(), "goodbye");
 }
 
 #[test]
