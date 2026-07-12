@@ -1,0 +1,4 @@
+interface:
+  display_name: "Data Safety"
+  short_description: "Protect editor data across persistence workflows"
+  default_prompt: "Use $data-safety to audit this change for concrete data-loss risks and verify every authorized fix."

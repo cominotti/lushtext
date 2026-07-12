@@ -30,7 +30,7 @@ EXPECTED_HELPER_FLAG_MARKER = (
     "capture-lushtext-mutter "
     "--file --output --search --expected-search-matches --enable-minimap "
     "--enable-atspi --app-action --window-action --window-string-action --window-bool-action --wait-predicate --wait-window-action --wait-atspi-text --allow-file-open-failure --step "
-    "--color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --width --height --keep-artifacts "
+    "--color-scheme --capture-artifact-dir --atspi-tree-output --atspi-focus-output --binary --repo-root --app-id --app-object-path --automation-interface --gsettings-schema --gsettings-schema-dir --width --height --keep-artifacts "
     "run-portal-sandbox-smoke --artifact-dir check-flatpak-permissions --manifest --self-test "
         "lushtext-automation introspect catalog snapshot predicates events wait action artifact-summary visual-geometry-capture self-test "
         "--bus-name --object-path --interface --window-path --timeout-ms --json --field --string --bool --uint32 --variant-json "
@@ -43,6 +43,8 @@ REQUIRED_HELPER_TABLE_ROWS = (
     "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--window-bool-action ACTION=true\\|false` | Activates a window-scoped `org.gtk.Actions` action with one boolean parameter before capture; may be repeated. |",
     "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--allow-file-open-failure` | Continues after the initial file-open readiness wait reports a failed editor load so negative error-surface scenarios can capture AT-SPI evidence. |",
     "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--step KIND:VALUE` | Runs ordered app/window action, wait, AT-SPI text, AT-SPI editor-text, AT-SPI button-click, AT-SPI focus, AT-SPI activate, AT-SPI context-click, or AT-SPI key steps for workflows that need interleaved action and readiness proof. |",
+    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--app-id ID` | Overrides the application D-Bus identity for a renamed development build. |",
+    "| `.agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py` | `--gsettings-schema-dir PATH` | Overrides the compiled GSettings schema directory for relocated fixtures. |",
 )
 
 

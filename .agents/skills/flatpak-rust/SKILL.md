@@ -1,333 +1,91 @@
 ---
 name: flatpak-rust
-description: "Guide Flatpak packaging and Flathub publishing for Rust + GTK4/Libadwaita applications. Trigger whenever the user discusses packaging, distribution, Flatpak, Flathub, Meson build system, desktop files, AppStream metainfo, icons, app store submission, or works on files in build-aux/, data/, or the root meson.build. Also trigger when adding dependencies (cargo-sources.json regeneration needed), preparing releases, writing CI/CD pipelines for Flatpak builds, or when any file matching *.desktop*, *.metainfo*, *.Flatpak.json, or meson* is created or modified."
+description: Guide and review LushText Flatpak, Flathub, Meson, desktop-entry, AppStream, icon, Cargo vendoring, packaging CI, and release-distribution work. Trigger for changes under build-aux/ or data/, root meson files, Cargo dependency changes that require cargo-sources.json, Flatpak permissions, app-store submission, release packaging, and any *.desktop*, *.metainfo*, *.Flatpak.json, or meson* file.
 ---
 
-Guide the full Flatpak packaging pipeline for LushText — from Meson build system integration through Flathub publication. This skill covers the GNOME ecosystem conventions for Rust + GTK4/Libadwaita apps, drawing on patterns from established GNOME apps like GNOME Text Editor, Fractal, and Amberol.
+# Flatpak and Flathub packaging
 
-The Flatpak build wraps Cargo inside Meson. Meson handles install targets, GResource compilation, desktop file installation, and AppStream metainfo — things Cargo doesn't know about. Flatpak then builds the whole thing in a sandboxed environment with vendored dependencies.
+Treat the checkout as the authority for LushText packaging. Do not paste generic manifests,
+metainfo, Meson files, release versions, screenshots, runtime versions, or CI jobs into the
+repository. They become stale quickly and can erase project-specific behavior.
 
-## Architecture Overview
+## Start from current state
 
-```
-                     ┌─────────────┐
-                     │  Flathub CI  │
-                     └──────┬──────┘
-                            │ builds
-                     ┌──────▼──────┐
-                     │   Flatpak    │
-                     │   Builder    │
-                     └──────┬──────┘
-                            │ invokes
-                     ┌──────▼──────┐         ┌──────────────┐
-                     │    Meson     │────────►│  cargo.sh    │
-                     │  (root)      │         │  (wrapper)   │
-                     └──────┬──────┘         └──────┬───────┘
-                            │                       │ invokes
-                     ┌──────▼──────┐         ┌──────▼───────┐
-                     │  data/       │         │    Cargo      │
-                     │  meson.build │         │  (Rust build) │
-                     └─────────────┘         └──────────────┘
-```
+1. Read `SOUL.md`, root `AGENTS.md`, `.agents/rules/build.md`, and any instructions local to the changed path.
+2. Inspect `Makefile`, `meson.build`, `meson_options.txt`, `build-aux/cargo.sh`, the active manifest under `build-aux/`, `data/meson.build`, and the current desktop/metainfo/icon files relevant to the task.
+3. For releases or distribution changes, inspect `docs/next/flatpak-packaging.md`, the release workflows, and release helper scripts before proposing commands.
+4. Fetch current upstream documentation for Flatpak, Flathub, AppStream, Meson, or a CLI before making an upstream-policy or syntax claim. Keep repository contracts distinct from upstream recommendations.
+5. Modify the smallest current surface that owns the behavior. Never reconstruct a repository file from a reference example.
 
-## File Checklist
+Read these references only when their topic applies:
 
-All files required for a complete Flatpak package. Create in this order:
+- [Meson and Cargo integration](references/meson-cargo.md) for build integration and vendored Cargo sources.
+- [AppStream and desktop metadata](references/appstream.md) for desktop metadata and AppStream checks.
+- [Flathub review and handoff](references/flathub-review.md) for submission, broad-permission review, and immutable release sources.
 
-| # | File | Purpose | Blocks |
-|---|------|---------|--------|
-| 1 | `meson.build` (root) | Top-level Meson build, project metadata, subdir declarations | Everything |
-| 2 | `meson_options.txt` | Build options (profile: debug/release) | `cargo.sh` |
-| 3 | `build-aux/cargo.sh` | Shell wrapper: invokes Cargo inside Meson's sandbox | Meson build |
-| 4 | `resources/meson.build` | GResource compilation via Meson (replaces `build.rs` for Flatpak) | Binary |
-| 5 | `data/dev.cominotti.lushtext.desktop.in` | Desktop entry file | Desktop integration |
-| 6 | `data/dev.cominotti.lushtext.metainfo.xml.in` | AppStream store metadata | Flathub listing |
-| 7 | `data/icons/` | App icon (scalable SVG + symbolic) | Desktop integration |
-| 8 | `data/meson.build` | Install desktop file, metainfo, icons, GSettings schema | Desktop integration |
-| 9 | `build-aux/dev.cominotti.lushtext.Flatpak.json` | Flatpak manifest (modules, SDK, permissions) | Flatpak build |
-| 10 | `po/meson.build` + `po/POTFILES` | i18n scaffolding (even if no translations yet) | Meson build |
+## Preserve LushText's filesystem contract
 
-## File Details
+LushText intentionally uses full host filesystem access because workspaces, file monitoring,
+sidecars, search, rename/delete, and durable writes operate on arbitrary local paths. Preserve
+the manifest's `--filesystem=host` permission and run `make check-flatpak-permissions` whenever
+packaging or sandbox policy changes.
 
-### 1. Root `meson.build`
+Do not describe this permission as universally recommended or guaranteed to pass Flathub review.
+It is a deliberate product tradeoff with a large sandbox surface. Flathub expects minimal
+permissions and permission changes receive review, so a Flathub submission must explain why the
+editor's current semantics require host access. A portals-only or narrower-permission migration
+is a separate product/architecture change requiring explicit authorization, end-to-end behavior
+coverage, and updates to the repository's permission policy.
 
-```meson
-project('lushtext',
-  version: '0.1.0',
-  meson_version: '>= 0.62.0',
-  license: 'GPL-3.0-or-later',
-)
+## Dependency changes
 
-i18n = import('i18n')
-gnome = import('gnome')
-
-# Build profile
-profile = get_option('profile')
-if profile == 'development'
-  app_id = 'dev.cominotti.lushtext.Devel'
-  vcs_tag = run_command('git', 'rev-parse', '--short', 'HEAD', check: false).stdout().strip()
-else
-  app_id = 'dev.cominotti.lushtext'
-  vcs_tag = ''
-endif
-
-# Subdirectories
-subdir('resources')
-subdir('data')
-subdir('po')
-
-# Cargo build via wrapper script
-cargo = find_program('build-aux/cargo.sh')
-cargo_build = custom_target('cargo-build',
-  build_by_default: true,
-  build_always_stale: true,
-  output: 'lushtext',
-  console: true,
-  command: [
-    cargo,
-    meson.project_build_root(),
-    meson.project_source_root(),
-    '@OUTPUT@',
-    profile,
-  ],
-)
-
-# Install binary
-install_data(
-  cargo_build,
-  install_dir: get_option('bindir'),
-  install_mode: 'rwxr-xr-x',
-)
-```
-
-### 2. `meson_options.txt`
-
-```meson
-option('profile',
-  type: 'combo',
-  choices: ['development', 'release'],
-  value: 'development',
-  description: 'Build profile'
-)
-```
-
-### 3. `build-aux/cargo.sh`
-
-This is the crucial bridge between Meson and Cargo. It handles the Flatpak build environment:
+After any dependency, feature, source, or `Cargo.lock` change that affects the build:
 
 ```bash
-#!/bin/sh
-# Cargo wrapper for Meson builds — handles Flatpak sandbox constraints
-
-export MESON_BUILD_ROOT="$1"
-export MESON_SOURCE_ROOT="$2"
-export CARGO_TARGET_DIR="$MESON_BUILD_ROOT/target"
-export CARGO_HOME="${CARGO_HOME:-$MESON_BUILD_ROOT/cargo-home}"
-
-OUTPUT="$3"
-PROFILE="$4"
-
-if [ "$PROFILE" = "release" ]; then
-    CARGO_PROFILE="--release"
-    TARGET_SUBDIR="release"
-else
-    CARGO_PROFILE=""
-    TARGET_SUBDIR="debug"
-fi
-
-# Build the binary
-cargo build --manifest-path "$MESON_SOURCE_ROOT/Cargo.toml" $CARGO_PROFILE -p lushtext
-
-# Copy binary to Meson output
-cp "$CARGO_TARGET_DIR/$TARGET_SUBDIR/lushtext" "$OUTPUT"
+make cargo-sources
+git diff --check
 ```
 
-### 4. Flatpak Manifest
+Review the generated `build-aux/cargo-sources.json` and include it in the same change. Do not
+install a generator ad hoc or invoke a copied command when the repository target is available.
+The Flatpak build is offline; the generated sources and Cargo configuration must remain aligned
+with the current manifest and wrapper.
 
-```json
-{
-    "id": "dev.cominotti.lushtext",
-    "runtime": "org.gnome.Platform",
-    "runtime-version": "50",
-    "sdk": "org.gnome.Sdk",
-    "sdk-extensions": ["org.freedesktop.Sdk.Extension.rust-stable"],
-    "command": "lushtext",
-    "finish-args": [
-        "--socket=wayland",
-        "--socket=fallback-x11",
-        "--share=ipc",
-        "--device=dri",
-        "--filesystem=home"
-    ],
-    "build-options": {
-        "append-path": "/usr/lib/sdk/rust-stable/bin",
-        "env": {
-            "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
-            "CARGO_HOME": "/run/build/lushtext/cargo"
-        }
-    },
-    "cleanup": [
-        "/include",
-        "/lib/pkgconfig",
-        "*.la",
-        "*.a"
-    ],
-    "modules": [
-        {
-            "name": "lushtext",
-            "buildsystem": "meson",
-            "config-opts": ["-Dprofile=release"],
-            "sources": [
-                {
-                    "type": "dir",
-                    "path": ".."
-                },
-                "build-aux/cargo-sources.json"
-            ]
-        }
-    ]
-}
-```
+## Proportional validation
 
-### 5. Desktop File
-
-```desktop
-[Desktop Entry]
-Name=LushText
-Comment=A minimalist text editor
-Exec=lushtext %U
-Icon=dev.cominotti.lushtext
-Terminal=false
-Type=Application
-Categories=TextEditor;Utility;GTK;GNOME;
-Keywords=Text;Editor;Code;
-MimeType=text/plain;text/x-csrc;text/x-chdr;text/x-python;application/json;text/markdown;text/x-rust;
-StartupNotify=true
-# Translators: Do not translate this
-X-Purism-FormFactor=workstation;
-```
-
-### 6. AppStream Metainfo
-
-Read `references/appstream.md` for the complete template. Key requirements:
-- `<id>` must match the app ID exactly
-- `<launchable>` must match the desktop file name
-- At least one `<screenshot>` with a caption
-- `<content_rating>` must be present (use `oars-1.1`)
-- `<releases>` section with at least one release
-- `<branding>` with accent colors (GNOME 45+ convention)
-
-### 7. Dependency Vendoring
-
-Flatpak builds are **offline** — no network access during build. All Cargo dependencies must be pre-fetched:
+Run the narrow checks first, then the build proof appropriate to the change:
 
 ```bash
-# Install the generator
-pip install flatpak-cargo-generator
-
-# Generate cargo-sources.json from Cargo.lock
-python3 -m flatpak_cargo_generator Cargo.lock -o build-aux/cargo-sources.json
+make check-flatpak-permissions
+make check-agent-docs
+make meson-build
+make meson-test
+make flatpak
+make flatpak-install
+make verify-flatpak-identity
+git diff --check
 ```
 
-**When to regenerate**: After any `cargo update`, adding/removing dependencies, or changing feature flags. The Flatpak build will fail if `cargo-sources.json` doesn't match `Cargo.lock`.
+- Run `make cargo-sources` before the build when dependency inputs changed.
+- `make flatpak` proves that the manifest builds; it does not replace or verify an already installed app. Run `make flatpak-install` immediately before `make verify-flatpak-identity` whenever claiming installed identity, permissions, MIME registration, or launch behavior. If installing into the user's Flatpak state is outside the task's authority, omit both installed-state commands and report build-only evidence.
+- Run `make meson-test` for the Meson-registered AppStream and desktop-file checks. The target requires both validator programs, reconfigures Meson, asserts both expected test names exist, and fails instead of treating an absent validator or test as proof. Use the release helper's direct validators as the additional release-readiness surface.
+- Run release helper self-tests and Flathub-manifest tests when their generators or release flows change.
+- Do not claim launch, identity, permission, or store readiness without the corresponding current-tree evidence.
 
-## Permissions Philosophy
+## Release safety
 
-Follow the principle of least privilege. LushText needs:
+Use the repository release helpers and the `publish-release` skill for an actual release. Start
+with a dry run and an explicit notes file. Never invent a version, date, tag, commit, screenshot,
+remote, or release body. Use immutable tag-plus-commit sources for published manifests and verify
+the exact generated artifact. Treat Cominotti repository publication and optional Flathub handoff
+as distinct validation surfaces.
 
-| Permission | Why | Can we narrow it? |
-|------------|-----|-------------------|
-| `--filesystem=home` | Text editor reads/writes user files | Could use portal API for file access (`--filesystem=host:ro` + portal), but this limits UX significantly for a text editor |
-| `--socket=wayland` | Display on Wayland | Required |
-| `--socket=fallback-x11` | Display on X11 (legacy) | Can drop when X11 support is no longer needed |
-| `--share=ipc` | X11 shared memory (for fallback-x11) | Drop when X11 is dropped |
-| `--device=dri` | GPU rendering (OpenGL/Vulkan for GTK4) | Required for hardware acceleration |
+## Review checklist
 
-**Do NOT add**: `--share=network` (text editor doesn't need network), `--filesystem=host` (too broad), `--talk-name=org.freedesktop.*` (only if using specific D-Bus services).
-
-## Flathub Submission Checklist
-
-Read `references/flathub-review.md` for the full review criteria. The quick checklist:
-
-1. [ ] App ID follows reverse DNS: `dev.cominotti.lushtext`
-2. [ ] Desktop file validates: `desktop-file-validate data/*.desktop.in`
-3. [ ] AppStream metainfo validates: `appstreamcli validate data/*.metainfo.xml.in`
-4. [ ] At least one screenshot in metainfo (1602x900px recommended)
-5. [ ] Content rating present (OARS 1.1)
-6. [ ] License is FOSS (GPL-3.0-or-later ✓)
-7. [ ] No bundled libraries that are in the runtime
-8. [ ] Minimal permissions (no `--filesystem=host`, no `--share=network` unless needed)
-9. [ ] `cargo-sources.json` committed and up-to-date
-10. [ ] `appstreamcli validate --explain` passes with no errors
-11. [ ] Build succeeds with `flatpak-builder --force-clean build-dir build-aux/*.Flatpak.json`
-12. [ ] App launches and basic functionality works in sandbox
-
-## CI Integration
-
-### GitHub Actions for Flatpak Build
-
-```yaml
-name: Flatpak
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  flatpak:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
-      options: --privileged
-    steps:
-      - uses: actions/checkout@v6
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
-        with:
-          manifest-path: build-aux/dev.cominotti.lushtext.Flatpak.json
-          bundle: lushtext.flatpak
-          cache-key: flatpak-builder-${{ github.sha }}
-```
-
-This CI job:
-- Builds the Flatpak in a container matching the runtime version
-- Produces a `.flatpak` bundle as an artifact
-- Caches the build for faster subsequent runs
-
-## Common Pitfalls
-
-### Cargo.lock Must Be Committed
-
-Flatpak needs `Cargo.lock` to generate `cargo-sources.json`. Without it, the vendoring step fails. Always commit `Cargo.lock` for binary crates.
-
-### GResource Compilation in Meson vs `build.rs`
-
-For development builds, `build.rs` compiles GResources via `glib_build_tools`. For Flatpak builds, Meson compiles them via `gnome.compile_resources()`. The binary needs to handle both:
-
-```rust
-// In lib.rs — register resources from either source
-fn register_resources() {
-    // Try Meson-compiled resources first (Flatpak/installed build)
-    let resource_path = "/dev/cominotti/lushtext/";
-    if gio::resources_lookup_data(
-        &format!("{resource_path}ui/window.ui"),
-        gio::ResourceLookupFlags::NONE,
-    ).is_ok() {
-        return; // Already registered by Meson/GResource system
-    }
-    
-    // Fall back to build.rs-compiled resources (dev build)
-    let bytes = glib::Bytes::from_static(
-        include_bytes!(concat!(env!("OUT_DIR"), "/lushtext.gresource"))
-    );
-    let resource = gio::Resource::from_data(&bytes).unwrap();
-    gio::resources_register(&resource);
-}
-```
-
-### SDK Extension Path
-
-The Rust SDK extension installs to `/usr/lib/sdk/rust-stable/bin`. The manifest must add this to `PATH` via `build-options.append-path`, or `cargo` won't be found.
-
-### Profile Mismatch
-
-Dev builds use debug profile; Flatpak should use release. The `cargo.sh` wrapper reads the Meson profile option to pass `--release` to Cargo. Forgetting this results in a debug build in the Flatpak (slow, large binary).
+- App ID, command, runtime, SDK extension, Meson profile, installed filenames, and exported identity agree.
+- The desktop entry, metainfo, icons, GSettings schema, and resources are installed by the current Meson graph.
+- Manifest sources are offline-complete and generated sources match `Cargo.lock`.
+- Full host access remains explicit, tested, and accurately described as a Flathub review risk.
+- AppStream release metadata and screenshots are current files/URLs, not placeholders.
+- Local-source manifests are not confused with immutable publication manifests.
+- Tests report exact commands and failures; unsupported host capabilities are not presented as passes.

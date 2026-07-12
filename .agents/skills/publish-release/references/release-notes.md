@@ -1,5 +1,14 @@
 # Release Notes
 
+## Table of Contents
+
+- [Required Shape](#required-shape)
+- [Poetic Opening](#poetic-opening)
+- [Semantic Diff Analysis](#semantic-diff-analysis)
+- [Tone](#tone)
+- [Section Guidance](#section-guidance)
+- [GitHub Release Body](#github-release-body)
+
 Release notes should feel like a careful teammate explaining what changed. Use concrete language, avoid internal-only jargon, and explain why changes matter to users.
 
 ## Required Shape

@@ -1,50 +1,37 @@
-# Search & Indexing Scaling Patterns
+# Search and Index Scaling
 
-Code examples for making the command palette's fuzzy search and file indexing scale to 100k+ files.
+Use this reference for palette, recent-document, note, and workspace search changes. Search workflows have different semantics; verify the specific implementation before reusing a pattern.
 
-## Table of Contents
+## Contents
 
-1. [Debounced Search Input](#1-debounced-search)
-2. [Debounce Token for Stale Results](#2-generation-counter)
-3. [Bounded Heap for Top-N](#3-bounded-heap)
-4. [Incremental Index Updates](#4-incremental-index)
-5. [SIMD Fuzzy Search](#5-nucleo)
-6. [Index Rebuild Coalescing](#6-rebuild-coalescing)
+1. [Input settling and freshness](#input-settling-and-freshness)
+2. [Index construction](#index-construction)
+3. [Scoring and result bounds](#scoring-and-result-bounds)
+4. [Review questions](#review-questions)
 
----
+## Input settling and freshness
 
-## 1. Debounced Search Input {#1-debounced-search}
+UI search commonly uses `gtk_lush_settle::Debounce`, but the delay is workflow-owned policy. Clearing an empty query may require immediate projection. A debounce token prevents superseded scheduled work; background search or rebuild completion also needs a freshness check before installing results.
 
-**Status: IMPLEMENTED** — `setup_search` in `command_palette/imp.rs` uses a 150ms `gtk_lush_settle::Debounce`. Empty queries rebuild immediately (instant clear UX); non-empty queries are scheduled through the helper, and superseded timers no-op before rebuilding.
+Do not confuse cancellation with freshness: work may finish successfully and still be obsolete.
 
----
+## Index construction
 
-## 2. Debounce Token for Stale Results {#2-generation-counter}
+`services/palette/index.rs` owns file-count and depth limits. Rebuild and incremental-update paths must preserve those limits, canonical/path semantics, ignore rules, and stable ownership. Workspace-triggered rebuilds should be coalesced and performed off the GTK thread.
 
-**Status: IMPLEMENTED** — `search_debounce: Debounce` on the imp struct. `rebuild_results` advances and captures the helper token; on completion, it checks whether the token is still current before updating the `ListStore`. This prevents stale results from flashing when the user types faster than the debounce interval.
+Verify how filesystem watcher events update the index before recommending a full rebuild. A simpler full rebuild can be materially worse on large workspaces.
 
----
+## Scoring and result bounds
 
-## 3. Bounded Heap for Top-N {#3-bounded-heap}
+Palette fuzzy scoring uses `nucleo-matcher`; inspect current matcher reuse and ordering semantics. Result construction must have an explicit maximum, but the best top-N algorithm depends on candidate count, result count, ranking stability, and measured cost. Preserve deterministic tie-breaking where user-visible order depends on it.
 
-**Status: IMPLEMENTED** — `search_items` uses `collect` + `sort_unstable_by` + `truncate(max)`. With k=50 fixed and small, Vec+sort is simpler and equivalently fast to a bounded heap. Benchmarked at 100k files in `bench_file_index_search`.
+Do not claim a fixed candidate count fits a frame budget without a current benchmark on representative data. Background scoring still requires bounded results and freshness on completion.
 
----
+## Review questions
 
-## 4. Incremental Index Updates {#4-incremental-index}
-
-**Status: IMPLEMENTED** — `FileIndex` has `add_file`, `remove_path` (handles both files and directories via `Path::starts_with`), and `rename_path`. Wired to file operation callbacks in the command palette. Full rebuilds only on initial load or workspace folder add/remove. `remove_path` calls `shrink_to_fit()` when >25% of entries removed to reclaim Vec capacity. Benchmarked in `bench_file_index_incremental`.
-
----
-
-## 5. SIMD Fuzzy Search {#5-nucleo}
-
-**Status: IMPLEMENTED** — The codebase uses `nucleo-matcher = "0.3"` (the low-level SIMD-accelerated scoring library) via `fuzzy_score` and `search_items` in `services/palette.rs`. Matcher and char buffer are reused across candidates. Top-N uses bounded `BinaryHeap`.
-
-**Future option**: The full `nucleo = "0.5"` framework adds a dedicated background worker thread, incremental results streaming, and match position highlighting. Migration guide at `docs/next/nucleo-migration.md`. This is not a current scaling concern — the synchronous approach with 150ms debounce handles 100k files within the frame budget.
-
----
-
-## 6. Index Rebuild Coalescing {#6-rebuild-coalescing}
-
-**Status: IMPLEMENTED** — `rebuild_file_index` in `window/focus_indexing.rs` uses a 300ms `Debounce` (`index_rebuild_debounce`). If the scheduled token is still current, it spawns a background `FileIndex::rebuild` via `spawn_blocking_then`; async completion checks the same token before installing results. This coalesces rapid workspace mutations (add/remove folders) into a single rebuild.
+- What caps candidates, index size, traversal depth, result count, and history?
+- Does every rebuild/update preserve the same caps?
+- Can repeated input enqueue unbounded work or retain large query snapshots?
+- Are empty queries and mode switches handled without stale flashes?
+- Does ranking remain deterministic after an optimization?
+- Does benchmark data include realistic names, paths, misses, Unicode, and maximum-size indexes?

@@ -19,7 +19,7 @@ Options:
 EOF
 }
 
-dbus_name="dev.cominotti.lushtext"
+dbus_name="${LUSHTEXT_DEBUG_APP_ID:-dev.cominotti.lushtext}"
 pid_pattern=""
 session_dir=""
 require_dbus=0

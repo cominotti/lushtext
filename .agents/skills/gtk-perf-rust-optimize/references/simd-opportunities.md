@@ -1,126 +1,51 @@
-# SIMD Optimization Opportunities
+# Established Acceleration Patterns
 
-Code patterns for maximizing SIMD acceleration in LushText. The project targets x86-64-v3 (AVX2) and Apple Silicon (NEON) — SIMD paths are guaranteed to run on every target machine.
+Use this reference to recognize existing hot-path choices. Verify each pattern and dependency in the current checkout before reporting it; CPU features, file sizes, and speedups vary by target and workload.
 
-## Table of Contents
+## Contents
 
-1. [simdutf8 for All File Sizes](#1-simdutf8-universal)
-2. [memchr for Byte Scanning](#2-memchr)
-3. [SIMD Line Counting](#3-line-counting)
-4. [Throughput Reference](#4-throughput)
+1. [Encoding-aware text decode](#encoding-aware-text-decode)
+2. [Byte scanning](#byte-scanning)
+3. [Fuzzy matching](#fuzzy-matching)
+4. [Evidence standard](#evidence-standard)
 
----
+## Encoding-aware text decode
 
-## 1. simdutf8 for All File Sizes {#1-simdutf8-universal}
-
-**Status: IMPLEMENTED** — All file loads use SIMD UTF-8 validation unconditionally.
-
-The code uses `services::filesystem::read::bytes` + `simdutf8::basic::from_utf8` + `String::from_utf8_unchecked` for all file sizes. Syntax highlighting is gated separately on file size via `FileSizeCheck`.
-
-### Current pattern (editor_page/mod.rs)
+`services/editor_io.rs` owns document decoding. Its normal load path reads bytes through `services::filesystem`, checks BOM and explicit reopen choices, uses `simdutf8` as the fast valid-UTF-8 branch, and falls back to supported legacy encodings. The current production conversion is safe:
 
 ```rust
-// SIMD UTF-8 validation for ALL file sizes
-let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
-let content = match simdutf8::basic::from_utf8(&bytes) {
-    // SAFETY: simdutf8 just confirmed these bytes are valid UTF-8
-    Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
-    Err(_) => {
-        return Err(EditorLoadError::Read {
-            path: file_path,
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8"),
-        });
-    }
-};
-```
-
-**Why this matters**: even for a 1MB file, simdutf8 validates in ~0.08ms vs ~0.7ms for the scalar UTF-8 path. The filesystem byte-read boundary also avoids one internal reallocation that string-growth based reads can do. Benchmarked in `bench_utf8_validation` at 1/5/10/50MB.
-
----
-
-## 2. memchr for Byte Scanning {#2-memchr}
-
-`memchr` provides SIMD-accelerated single-byte and multi-byte scanning. It is already a transitive dependency (via nucleo-matcher) but should be a direct dependency for explicit use.
-
-### Adding the dependency
-
-```toml
-# In workspace Cargo.toml [workspace.dependencies]:
-memchr = "2"
-
-# In crates/lushtext-core/Cargo.toml [dependencies]:
-memchr = { workspace = true }
-```
-
-Then: `cargo hakari generate && make cargo-sources`
-
-### Newline counting
-
-Replace any scalar newline counting with `memchr_iter`:
-
-```rust
-use memchr::memchr_iter;
-
-/// Count newlines in a byte slice.
-/// ~32 bytes/cycle on AVX2 vs ~1 byte/cycle scalar.
-pub fn count_newlines(content: &[u8]) -> usize {
-    memchr_iter(b'\n', content).count()
+if let Ok(utf8) = simdutf8::basic::from_utf8(bytes) {
+    utf8.to_string()
+} else {
+    // Continue through the encoding-aware fallback policy.
 }
 ```
 
-### Line offset lookup
+Do not replace this workflow with “validate then `from_utf8_unchecked`,” and do not require SIMD validation for unrelated small metadata reads. The contract is correct decoding and surfaced confidence, not SIMD for its own sake.
 
-Find the byte offset where line N begins:
+When reviewing a new document-reading path, first ask whether it should reuse `editor_io` rather than duplicating decode policy.
 
-```rust
-use memchr::memchr_iter;
+## Byte scanning
 
-/// Find the byte offset of the start of line `line` (0-indexed).
-/// Returns None if the content has fewer lines.
-pub fn line_start_offset(content: &[u8], line: usize) -> Option<usize> {
-    if line == 0 {
-        return Some(0);
-    }
-    memchr_iter(b'\n', content)
-        .nth(line - 1)
-        .map(|pos| pos + 1)
-}
-```
+The workspace has a direct `memchr` dependency and uses it on established byte-scanning paths. Recommend it only when all of these hold:
 
-### When to use memchr vs scalar
+- the input is already bytes;
+- scanning is material at realistic sizes or frequency;
+- Unicode semantics are not required;
+- an existing equivalent path or benchmark supports the choice.
 
-| Data size | Use memchr? | Reason |
-|-----------|-------------|--------|
-| <64 bytes | No | SIMD setup overhead dominates |
-| 64 bytes–1KB | Maybe | Marginal benefit, but no harm |
-| >1KB | Yes | 32x throughput on AVX2 |
+Never infer a universal crossover size. `memchr` chooses optimized implementations at runtime where supported, but targets do not all guarantee AVX2 or NEON. Empty and tiny editor files are valid inputs.
 
-For LushText, file content is always >64 bytes (the file is open in the editor), so memchr is always beneficial.
+## Fuzzy matching
 
----
+Palette scoring uses `nucleo-matcher`. Preserve matcher/buffer reuse and bounded result handling when changing equivalent search paths. Do not describe `nucleo-matcher` as guaranteeing a particular SIMD instruction set or measured speedup.
 
-## 3. SIMD Line Counting {#3-line-counting}
+New search semantics may not be equivalent to fuzzy filename scoring. Confirm ranking, Unicode, highlighting, and cancellation requirements before reusing the matcher.
 
-If the status bar displays "Line X, Col Y" by scanning the buffer text for newlines, this should use memchr. For a 50MB file:
+## Evidence standard
 
-| Method | Time |
-|--------|------|
-| `.chars().filter(\|&c\| c == '\n').count()` | ~50ms |
-| `memchr_iter(b'\n', bytes).count()` | ~1.5ms |
-
-The GtkTextBuffer API provides `get_iter_at_offset` and cursor position natively, so this may not be needed if the status bar reads from GTK directly. But any Rust-side line counting (e.g., for the command palette's file preview, or for save-path line counting) should use memchr.
-
----
-
-## 4. Throughput Reference {#4-throughput}
-
-Reference numbers on modern hardware (AMD Zen4 / Apple M2):
-
-| Operation | Scalar | SIMD | Speedup | Crate |
-|-----------|--------|------|---------|-------|
-| UTF-8 validation | ~1.5 GB/s | ~12 GB/s | 8x | simdutf8 |
-| Byte scanning (memchr) | ~1 byte/cycle | ~32 bytes/cycle | 32x | memchr |
-| Fuzzy scoring | ~100ns/candidate | ~50ns/candidate | 2x | nucleo-matcher |
-| Multi-pattern search | O(n*k) scalar | O(n) DFA + SIMD | 5-10x | aho-corasick |
-
-These numbers assume warm caches. Cold-cache performance is dominated by memory latency, not instruction throughput — SIMD still wins but by a smaller margin (2-4x instead of 8-32x).
+- Verify versions in the workspace `Cargo.toml`.
+- Locate the current call site with `rg`.
+- Use checked-in Criterion groups or add representative coverage for a changed hot path.
+- Compare before and after on the same machine, profile, and data set.
+- Label external crate behavior as such; do not turn approximate hardware figures into project guarantees.

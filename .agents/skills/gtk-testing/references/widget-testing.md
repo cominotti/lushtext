@@ -1,5 +1,16 @@
 # Widget Testing Patterns for GTK4 and Rust
 
+## Table of Contents
+
+- [Current Harness](#current-harness)
+- [Headless Runs](#headless-runs)
+- [Waiting for Async UI State](#waiting-for-async-ui-state)
+- [Visibility and Realization Traps](#visibility-and-realization-traps)
+- [`AdwDialog` Geometry Assertions](#adwdialog-geometry-assertions)
+- [Animations and Frame Clocks](#animations-and-frame-clocks)
+- [List Models and Row Reuse](#listview-treelistmodel-and-row-reuse)
+- [When Widget Tests Are the Wrong Tool](#when-widget-tests-are-the-wrong-tool)
+
 Use this reference for the current LushText widget harness and the failure modes that make GTK widget tests confusing.
 
 ## Current Harness

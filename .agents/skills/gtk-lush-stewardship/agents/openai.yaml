@@ -1,0 +1,4 @@
+interface:
+  display_name: "GTK Lush Stewardship"
+  short_description: "Govern GTK Lush boundaries and adoption evidence"
+  default_prompt: "Use $gtk-lush-stewardship to review this GTK Lush API or boundary change against the platform's governance contract."

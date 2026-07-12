@@ -4,17 +4,18 @@ description: "Identify and fix data loss risks: draft persistence failures, save
   flow gaps, replace-all backup safety, session restore bugs, async concurrency hazards.
   Auto-invoked on .rs changes in Rust app code under any */src/ui, */src/services,
   or */src/model tree to provide scoped guidance only. Also invocable as
-  /data-safety for the full deterministic 5-subagent audit. Trigger whenever
+  $data-safety for the full deterministic five-domain audit. Trigger whenever
   code touches: file I/O, buffer state, tab or window close, draft or session
   persistence, spawn_blocking_then, search/replace, or any async pattern that
   modifies application state. Automatic mode must stay lightweight: no broad
-  scans or audit dispatch. Explicit audit findings must be fixed immediately —
-  never deferred."
+  scans or audit dispatch. In explicit mode, report every confirmed finding and
+  fix it when the user has authorized implementation; otherwise request that
+  authority instead of mutating the repository."
 ---
 
 # Data Safety
 
-Guide and audit code patterns that can cause silent data loss. Data loss is the most severe bug class in a text editor — users who lose work never trust the app again. Automatic invocation gives scoped guidance for the current task; explicit `/data-safety` runs the full deterministic audit.
+Guide and audit code patterns that can cause silent data loss. Data loss is the most severe bug class in a text editor — users who lose work never trust the app again. Automatic invocation gives scoped guidance for the current task; explicit `$data-safety` runs the full deterministic audit.
 
 ## Guidance Mode (automatic invocation)
 
@@ -22,11 +23,11 @@ Use this mode when the skill was triggered automatically by agents because the c
 
 - Stay scoped to the active task, diff, or already-open files.
 - Do **not** run the explicit audit workflow below.
-- Do **not** dispatch the 5 audit subagents.
+- Do **not** dispatch audit subagents.
 - Do **not** broad-scan the repo or inspect all in-scope Rust files.
 - Do **not** emit the full audit report format, severity list, or fix-policy framing.
-- Output concise guidance only: touched safety domains, must-preserve invariants, concrete pitfalls, and whether the human should explicitly run `/data-safety`.
-- If you lack enough context to give confident guidance without expanding scope, stop at recommending explicit `/data-safety` rather than escalating automatically.
+- Output concise guidance only: touched safety domains, must-preserve invariants, concrete pitfalls, and whether the human should explicitly run `$data-safety`.
+- If you lack enough context to give confident guidance without expanding scope, stop at recommending explicit `$data-safety` rather than escalating automatically.
 
 ### Responsiveness guardrails
 
@@ -51,7 +52,7 @@ Automatic guidance must not create or encourage responsiveness regressions.
   but disk save/delete work must be generation-guarded so delayed persistence
   cannot resurrect stale backups or clear a newer one.
 - For path presence or kind checks, prefer `services::filesystem::metadata::exists` or `path_status`; reserve `file_facts` for workflows that also need canonical identity, byte size, or mtime.
-- If deeper review would require repo-wide inspection, many-file greps, or parallel audit subagents, recommend explicit `/data-safety` instead of doing it automatically.
+- If deeper review would require repo-wide inspection, many-file greps, or parallel audit subagents, recommend explicit `$data-safety` instead of doing it automatically.
 - When safety and responsiveness pull in different directions, preserve both: do not propose data-loss fixes that introduce UI jank, animation stutter, or "Application Not Responding" risks.
 
 ### Automatic-mode output
@@ -61,17 +62,25 @@ Present guidance as:
 1. `Touched domains:` ...
 2. `Protect these invariants:` ...
 3. `Avoid:` ...
-4. `Escalate to /data-safety?` Yes/No + one sentence
+4. `Escalate to $data-safety?` Yes/No + one sentence
 
-## Explicit Audit Mode (`/data-safety`)
+## Explicit Audit Mode (`$data-safety`)
 
-Use this mode only when the human explicitly invokes `/data-safety` or explicitly asks for a full data-safety audit. The determinism contract, subagent dispatch, fix policy, and report format below apply only to this mode.
+Use this mode only when the human explicitly invokes `$data-safety` or explicitly asks for a full data-safety audit. The determinism contract, subagent dispatch, fix policy, and report format below apply only to this mode.
 
 ## Determinism Contract
 
 This contract applies only to explicit audit mode.
 
-Every finding is anchored to a grep match, validated through a binary decision tree (each check resolves to SAFE or continue), and reported only when all conditions resolve to FLAG. Ambiguous matches are dropped silently — false positives erode trust. Multiple runs against the same code produce identical results.
+Make the audit reproducible by recording the exact revision and scope source,
+the normalized file list, the patterns checked, and the fixed domain/report
+ordering. Anchor confirmed findings to source evidence and walk the same binary
+decision trees for every candidate. If the available code or runtime evidence
+cannot resolve a branch, report an `UNRESOLVED` candidate with the missing
+evidence and do not classify it as either safe or a finding. The same recorded
+scope and evidence should produce the same ordering and classification; do not
+promise identical results when the checkout, generated files, environment, or
+available runtime evidence differs.
 
 ## Definitions
 
@@ -93,7 +102,7 @@ Assigned by trigger likelihood (impact is always data loss):
 
 ### 1. Scope
 
-- **Collect candidates**: Read changed `.rs` files from `git diff --name-only` (or known review context). For explicit `/data-safety`, inspect all `.rs` files.
+- **Collect candidates**: In automatic mode, read changed `.rs` files from `git diff --name-only` or the known review context. In explicit mode, enumerate every tracked `.rs` file, normalize it as below, then retain every suffix under `ui/`, `services/`, or `model/` plus any other `.rs` file whose contents match a listed domain hint.
 - **Normalize paths**: Normalize separators to `/`, strip any leading `./`, and derive a **path suffix alias** by removing everything through the last `/src/` when present.
   - `/repo/crates/lushtext-core/src/ui/window/drafts.rs` → `ui/window/drafts.rs`
   - `/repo/crates/lushtext-core/src/ui/window/session_persistence.rs` → `ui/window/session_persistence.rs`
@@ -101,7 +110,7 @@ Assigned by trigger likelihood (impact is always data loss):
   - `packages/editor-core/src/model/draft.rs` → `model/draft.rs`
 - **Match on suffix aliases, not repo layout**: Trigger matching must work for absolute paths, repo-relative paths, crate-relative paths, and future crate moves/reorgs.
 - **Relevant Rust app files**: Any normalized suffix under `ui/`, `services/`, or `model/` is in scope. If none match and no content-hint fallback below applies → "No data-safety-relevant changes" → stop.
-- **Explicit `/data-safety`**: Audit all in-scope `.rs` files after normalization, plus any other `.rs` files whose contents hit a data-safety content hint.
+- **Explicit `$data-safety`**: Use exactly the retained normalized list from the collection rule above for all five domain prompts; record it once in the audit evidence so reruns cannot silently broaden or narrow scope.
 
 ### 2. Context
 
@@ -109,7 +118,21 @@ Read `references/known-vectors.md` from the skill directory. Include the relevan
 
 ### 3. Dispatch
 
-Launch subagents in parallel via the Agent tool. Skip any whose normalized suffixes AND content hints both miss. For explicit `/data-safety` invocation, dispatch all 5.
+Audit the five domains below. Skip any whose normalized suffixes AND content
+hints both miss, except that explicit `$data-safety` always covers all five.
+
+When subagents are available, dispatch only leaf reviewers and respect the
+runtime's total concurrency limit. A root agent in a four-slot runtime has at
+most three child slots, so use these deterministic batches:
+
+1. `draft-integrity`, `close-flow`, and `atomic-write` in parallel.
+2. After all three finish and release their slots, `replace-safety` and
+   `restore-lifecycle` in parallel.
+
+If fewer child slots are available, preserve that order and use smaller
+batches. If no child slot is available, run the same prompts and decision trees
+locally, one domain at a time. Never claim independent or parallel validation
+when it did not occur. Do not let reviewers spawn their own subagents.
 
 | Subagent | Trigger suffixes | Content hints / fallback triggers |
 |---|---|---|
@@ -187,11 +210,6 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 > Grep: `cleanup_drafts` near save completion paths
 > Tree: Called after save operations? → No: skip. Conditional on ALL saves succeeding? → Yes: SAFE.
 > FLAG CRITICAL: "Drafts deleted regardless of save result. Failed save + deleted draft = content permanently gone."
->
-> **CF-3: close_page_finish behind failing weak refs**
-> Grep: `close_page_finish` with `upgrade()` nearby
-> Tree: Called through weak ref upgrade? → No: skip. If upgrade returns None, close_page_finish skipped entirely?
-> FLAG MEDIUM: "Window destroyed during close dialog → close_page_finish never called → tab stuck in inhibited state."
 >
 > **CF-4: Untitled tabs silently excluded from save dialog**
 > Grep: `file_path().is_some()` in save-dialog pending-saves logic
@@ -281,13 +299,13 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 >
 > **RS-2: Stale skip_paths snapshot across async boundary**
 > Grep: `skip_paths` in replace/replacement context
-> Tree: Set of "modified tabs to skip" built on main thread and sent to background thread? → No: skip. Can source data (tab modified state) change between snapshot and background use?
-> FLAG MEDIUM: "skip_paths snapshot becomes stale during background Replace All. File saved after snapshot but before background write is overwritten."
+> Tree: Set of modified targets is captured on the main thread and sent to background work? → No: skip. Is every captured modified path excluded immutably for the whole operation, and do editor saves plus replacement acquire the same stable-target guard? → Yes: continue. Can a path absent from the captured set acquire unsaved in-memory changes before replacement? → No: SAFE. If yes, do shared coordination, a freshness/content check, and durable recovery evidence prevent or recover an overwrite? → Yes: SAFE.
+> FLAG MEDIUM: "Replace All can overwrite a target whose live editor became modified after the safety snapshot without shared coordination or content validation."
 >
 > **RS-3: Partial multi-file replacement without rollback**
-> Grep: `apply_replacements` — look for loop structure and cancel token checks
-> Tree: Replacement loop interruptible (cancel token, error break)? → No: SAFE. Already-processed files rolled back from backup on interruption? → Yes: SAFE.
-> FLAG HIGH: "Cancel mid-Replace All → some files replaced, others not. No automatic rollback for already-written files."
+> Grep: `apply_replacements` — inspect backup persistence, the mutation loop, error exits, and recovery reporting
+> Tree: Is a durable pre-mutation undo entry accepted for each file before its rename? → No: FLAG. On cancellation, process interruption, or a mid-loop I/O failure, does the journal retain every already-mutated file and expose a bounded recovery/undo path? → Yes: SAFE. Does any exit delete or invalidate recovery evidence for files that may already contain replacements?
+> FLAG HIGH: "Replace All can leave already-mutated files without durable, discoverable rollback evidence after interruption or a mid-loop failure."
 >
 > **RS-4: TOCTOU gap in replacement validation**
 > Grep: `original_line` or `content_mismatch` in replace path
@@ -335,15 +353,28 @@ Each subagent: read assigned files, grep each pattern, walk the decision tree, r
 
 1. **Deduplicate**: Same file:line flagged by two subagents → keep higher severity, more specific pattern ID.
 2. **Sort**: CRITICAL → HIGH → MEDIUM. Within a level, by file path.
-3. **Unified report**: Use the format below.
+3. **Preserve unresolved candidates**: Deduplicate them by pattern and location,
+   then sort by domain, file path, and line. A domain with an unresolved
+   candidate is not `CLEAN`.
+4. **Unified report**: Use the format below.
 
 ### 6. Fix Policy
 
 This policy applies only to explicit audit mode.
 
-Every finding must be fixed in the current work stream. This aligns with `.agents/rules/preexisting-blockers.md`.
+Never suppress, downgrade, or relabel a confirmed finding as merely
+pre-existing. Apply the repository's no-preexisting-blockers rule within the
+authority granted by the current request:
 
-Do not defer, document as known, skip as pre-existing, or downgrade severity. If a fix requires a design change (e.g., disk-based undo backup for RS-1), implement the design change.
+- If the user asked to fix, implement, or complete the audited work, fix every
+  finding in the same work stream, including necessary design changes.
+- If the user asked only for an audit, review, or explanation, keep the pass
+  read-only. Report every finding and ask for implementation authority.
+- If a fix would require a materially different external action or scope, stop
+  at that boundary and request direction; do not silently broaden authority.
+
+A finding is unresolved until fixed and verified. Lack of write authority
+changes the next action, not the severity or verdict.
 
 ### 7. Verification Expectations
 
@@ -373,6 +404,11 @@ Present findings as:
     #### [HIGH] DI-1: Draft dirty flag not restored on write error
     **File**: `ui/window/drafts.rs:408`
     ...
+
+    ### Unresolved Candidates
+    - RS-3 — `services/content_search/replace.rs:NN`: could not determine
+      whether the validation-to-write interval holds a stable target guard.
+      Needed evidence: guard acquisition and release path.
 
     ### Clean Domains
     - atomic-write: CLEAN

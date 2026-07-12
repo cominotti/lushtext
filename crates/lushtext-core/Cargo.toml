@@ -6,6 +6,12 @@ rust-version.workspace = true
 license = "GPL-3.0-or-later"
 publish = false
 
+[package.metadata.lushtext-agent]
+performance-roots = ["src/ui", "src/services", "src/model", "benches"]
+release-ui-roots = ["src/ui"]
+release-service-roots = ["src/services"]
+release-model-roots = ["src/model"]
+
 [features]
 fuzzing = []
 property-tests = []

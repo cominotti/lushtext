@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Hex Architecture"
+  short_description: "Review Rust boundaries, CQS, and domain design"
+  default_prompt: "Use $rust-hex-arch to review this Rust change for clean boundaries, caller contracts, and justified abstractions."

@@ -1,3 +1,4 @@
+# agent-release-role: benchmark-report
 name: Release Benchmark Report
 
 on:

@@ -1,0 +1,6 @@
+interface:
+  display_name: "GTK Performance Review"
+  short_description: "Review GTK Rust performance across three domains"
+  default_prompt: "Use $gtk-perf-review to review the current Rust changes for responsiveness, scale, memory, and hot-path correctness."
+policy:
+  allow_implicit_invocation: true

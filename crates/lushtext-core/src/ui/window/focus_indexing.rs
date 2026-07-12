@@ -6,7 +6,7 @@
 //! memory decisions live in `model::editor_memory`, and filesystem indexing
 //! crosses to background work through the task adapter.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -77,9 +77,16 @@ impl LushtextWindow {
     /// Coalesce any number of residency transitions into one next-idle pass.
     fn schedule_editor_memory_evaluation(&self) {
         let state = &self.imp().editor_memory;
-        // One armed callback absorbs a burst; signals caused by the active
-        // eviction pass are ignored so no-progress state cannot spin.
-        if state.evaluation_running.get() || state.evaluation_armed.replace(true) {
+        // Remember transitions that happen between bounded eviction turns. A
+        // signal emitted synchronously by `evict()` itself is already included
+        // in the running pass and does not require a redundant scan.
+        if state.evaluation_running.get() {
+            if !state.applying_eviction.get() {
+                state.evaluation_armed.set(true);
+            }
+            return;
+        }
+        if state.evaluation_armed.replace(true) {
             return;
         }
 
@@ -319,7 +326,6 @@ impl LushtextWindow {
         let tab_view = &self.imp().tab_view;
         let selected = tab_view.selected_page();
         let mut snapshot = Vec::with_capacity(usize::try_from(tab_view.n_pages()).unwrap_or(0));
-        let mut pages_by_editor = HashMap::with_capacity(snapshot.capacity());
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
@@ -340,69 +346,129 @@ impl LushtextWindow {
                     policy_generation: editor.memory_policy_generation(),
                     eligible_for_eviction,
                 });
-                pages_by_editor.insert(editor_id, (page.downgrade(), editor.downgrade()));
             }
         }
 
         let decision = evaluate_editor_memory_budget(&snapshot);
         memory.last_outcome.set(decision.outcome);
+        if decision.candidates.is_empty() {
+            memory.evaluation_running.set(false);
+            return;
+        }
+
         #[cfg(feature = "test-utils")]
         if let Some(hook) = memory.before_eviction_hook.borrow_mut().take() {
             hook();
         }
-        // The test race hook can detach pages after planning. Snapshot attached
-        // identities once so candidate checks stay O(1); AdwTabView::page_position
-        // performs its own linear scan and would make a many-candidate pass O(n²).
-        let attached_pages = (0..tab_view.n_pages())
-            .map(|index| tab_view.nth_page(index).as_ptr() as usize)
+
+        // Build widget lookups only for an over-budget decision. The ordinary
+        // edit path therefore pays for one scalar tab walk and no hash tables.
+        let candidate_ids = decision
+            .candidates
+            .iter()
+            .map(|candidate| candidate.editor_id)
             .collect::<HashSet<_>>();
-        let mut applied_bytes = 0u64;
-        for candidate in decision.candidates {
-            // Weak O(1) lookup keeps application linear after policy sorting;
-            // upgrades plus the attached identity set reject later detachments.
-            let Some((page_weak, editor_weak)) = pages_by_editor.get(&candidate.editor_id) else {
-                continue;
+        let mut pages_by_editor = HashMap::with_capacity(candidate_ids.len());
+        for index in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(index);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                let editor_id = editor.as_ptr() as usize;
+                if candidate_ids.contains(&editor_id) {
+                    pages_by_editor.insert(editor_id, (page.downgrade(), editor.downgrade()));
+                }
+            }
+        }
+
+        let mut candidates = VecDeque::from(decision.candidates);
+        let mut actual_projected = decision.total_bytes;
+        let window_weak = self.downgrade();
+        // Clearing a GtkTextBuffer and its projections is main-thread work. One
+        // candidate per idle dispatch gives GTK a chance to serve input and
+        // render between large clean-tab evictions.
+        glib::idle_add_local(move || {
+            let Some(window) = window_weak.upgrade() else {
+                return glib::ControlFlow::Break;
             };
-            let (Some(page), Some(editor)) = (page_weak.upgrade(), editor_weak.upgrade()) else {
-                continue;
+            let memory = &window.imp().editor_memory;
+            #[cfg(feature = "test-utils")]
+            memory
+                .eviction_dispatch_count
+                .set(memory.eviction_dispatch_count.get().wrapping_add(1));
+
+            // Any transition outside `evict()` invalidates aggregate totals and
+            // candidate ordering. Resnapshot instead of applying a stale plan.
+            if memory.evaluation_armed.replace(false) {
+                memory
+                    .last_outcome
+                    .set(EditorMemoryBudgetOutcome::NoProgress);
+                memory.evaluation_running.set(false);
+                window.schedule_editor_memory_evaluation();
+                return glib::ControlFlow::Break;
+            }
+
+            let Some(candidate) = candidates.pop_front() else {
+                memory
+                    .last_outcome
+                    .set(EditorMemoryBudgetOutcome::NoProgress);
+                memory.evaluation_running.set(false);
+                return glib::ControlFlow::Break;
             };
-            if !attached_pages.contains(&(page.as_ptr() as usize))
-                || page.child().as_ptr() != editor.upcast_ref::<gtk4::Widget>().as_ptr()
+            if let Some((page_weak, editor_weak)) = pages_by_editor.get(&candidate.editor_id)
+                && let (Some(page), Some(editor)) = (page_weak.upgrade(), editor_weak.upgrade())
             {
-                continue;
+                // Widget ancestry proves current membership without scanning
+                // every open tab on each bounded continuation callback.
+                let still_attached = editor.is_ancestor(&*window.imp().tab_view);
+                let same_child =
+                    page.child().as_ptr() == editor.upcast_ref::<gtk4::Widget>().as_ptr();
+                let still_active = window.imp().tab_view.selected_page().as_ref() == Some(&page);
+                let still_current = editor.memory_access_generation()
+                    == candidate.access_generation
+                    && editor.memory_policy_generation() == candidate.policy_generation;
+                let still_reloadable = !still_active
+                    && !editor.is_evicted()
+                    && !editor.is_modified()
+                    && !editor.is_saving()
+                    && editor.load_state() == crate::ui::editor_page::EditorLoadState::Loaded
+                    && !editor.latest_load_failed()
+                    && editor.file_path().is_some();
+                if still_attached && same_child && still_current && still_reloadable {
+                    tracing::info!("Evicting tab to free memory: {}", editor.title());
+                    let before = editor.estimated_live_buffer_bytes();
+                    memory.applying_eviction.set(true);
+                    editor.evict();
+                    memory.applying_eviction.set(false);
+                    #[cfg(feature = "test-utils")]
+                    if let Some(hook) = memory.after_eviction_hook.borrow_mut().take() {
+                        hook();
+                    }
+                    let reclaimed = before.saturating_sub(editor.estimated_live_buffer_bytes());
+                    actual_projected = actual_projected.saturating_sub(reclaimed);
+                }
             }
 
-            let still_active = tab_view.selected_page().as_ref() == Some(&page);
-            let still_current = editor.memory_access_generation() == candidate.access_generation
-                && editor.memory_policy_generation() == candidate.policy_generation;
-            let still_reloadable = !still_active
-                && !editor.is_evicted()
-                && !editor.is_modified()
-                && !editor.is_saving()
-                && editor.load_state() == crate::ui::editor_page::EditorLoadState::Loaded
-                && !editor.latest_load_failed()
-                && editor.file_path().is_some();
-            if still_current && still_reloadable {
-                tracing::info!("Evicting tab to free memory: {}", editor.title());
-                editor.evict();
-                applied_bytes = applied_bytes.saturating_add(candidate.reclaimable_bytes);
+            if actual_projected <= crate::model::editor_memory::EDITOR_MEMORY_LOWER_WATER_BYTES {
+                memory
+                    .last_outcome
+                    .set(EditorMemoryBudgetOutcome::Converged);
+                memory.evaluation_running.set(false);
+                if memory.evaluation_armed.replace(false) {
+                    window.schedule_editor_memory_evaluation();
+                }
+                glib::ControlFlow::Break
+            } else if candidates.is_empty() {
+                memory
+                    .last_outcome
+                    .set(EditorMemoryBudgetOutcome::NoProgress);
+                memory.evaluation_running.set(false);
+                if memory.evaluation_armed.replace(false) {
+                    window.schedule_editor_memory_evaluation();
+                }
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
             }
-        }
-
-        if decision.outcome != EditorMemoryBudgetOutcome::WithinBudget {
-            // Candidates can fail freshness checks, so convergence is based on
-            // bytes actually evicted rather than the immutable plan.
-            let actual_projected = decision.total_bytes.saturating_sub(applied_bytes);
-            memory.last_outcome.set(
-                if actual_projected <= crate::model::editor_memory::EDITOR_MEMORY_LOWER_WATER_BYTES
-                {
-                    EditorMemoryBudgetOutcome::Converged
-                } else {
-                    EditorMemoryBudgetOutcome::NoProgress
-                },
-            );
-        }
-        memory.evaluation_running.set(false);
+        });
     }
 
     /// Number of completed aggregate passes for burst-coalescing tests.
@@ -419,12 +485,28 @@ impl LushtextWindow {
         self.imp().editor_memory.last_outcome.get()
     }
 
+    /// Number of bounded idle callbacks used to apply eviction candidates.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn editor_memory_eviction_dispatch_count_for_test(&self) -> u64 {
+        self.imp().editor_memory.eviction_dispatch_count.get()
+    }
+
     /// Inject one transition between candidate selection and safety rechecks.
     #[cfg(feature = "test-utils")]
     pub fn set_before_editor_memory_eviction_hook_for_test<F: FnOnce() + 'static>(&self, hook: F) {
         self.imp()
             .editor_memory
             .before_eviction_hook
+            .replace(Some(Box::new(hook)));
+    }
+
+    /// Inject one transition after the first applied candidate and before the next idle turn.
+    #[cfg(feature = "test-utils")]
+    pub fn set_after_editor_memory_eviction_hook_for_test<F: FnOnce() + 'static>(&self, hook: F) {
+        self.imp()
+            .editor_memory
+            .after_eviction_hook
             .replace(Some(Box::new(hook)));
     }
 

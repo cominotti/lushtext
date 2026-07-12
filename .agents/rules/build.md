@@ -15,7 +15,9 @@ make run        # build + force a fresh launch with temporary GNOME desktop stag
 make run-command-palette-notes-manual-test # launch isolated Notes palette fixtures for manual review
 make refresh-dock-icon # regenerate icon assets + force a fresh GNOME Shell dock icon reload
 make clear-lushtext-xdg # remove LushText-owned XDG data/config/cache/state and reset app settings
-make verify-flatpak-identity # verify Flatpak export identity, permissions, and MIME registration
+make meson-test # build with Meson and run registered desktop/AppStream metadata tests
+make flatpak-install # build and install the current Flatpak before installed-state verification
+make verify-flatpak-identity # after flatpak-install, verify installed identity, permissions, and MIME registration
 make test       # all tests
 make test-prop  # bounded property tests for pure deterministic logic
 make test-prop-deep # opt-in deeper property run with more generated cases
@@ -51,6 +53,7 @@ make blueprint-generate # regenerate generated .ui files from Blueprint sources
 make check-blueprint # validate Blueprint drift and UI template contract
 make lint-blueprint # advisory grouped Blueprint lint triage
 make lint-advisory # grouped advisory Clippy/rustc lint discovery
+make check-agent-skills # validate skill registry, metadata, links, and rename-safe topology discovery
 make check-agent-docs # validate agent rules/skills guidance
 make end-user-smoke # run all host-supported end-user smoke lanes
 make mutants-smoke # small cargo-mutants smoke run
@@ -68,8 +71,24 @@ documented as a non-blocking smoke shortcut. `make check` runs rustfmt,
 all-feature Clippy, and fast policy audits, including Blueprint template drift
 and generated UI contract validation. Filesystem-sensitive changes should
 also pass `make check-agent-docs`; that target verifies the
-`services::filesystem` guidance in rules and skills, then runs the raw
-filesystem no-leftovers audit. Automation-surface changes should also pass
+`services::filesystem` guidance in rules and skills, runs the raw filesystem
+no-leftovers audit, self-tests rename-safe Cargo/release/test topology discovery,
+self-tests the dependency-free agent-skill validator, and
+validates every maintained skill's metadata, body size, local links and
+anchors, icon containment, and progressive-disclosure structure.
+`.agents/skills/skill-policy.toml` is the single source of truth for maintained
+skill exclusions, implicit invocation, performance umbrella/leaf roles,
+filesystem-contract consumers, and required release workflow roles. Cargo
+packages expose move-safe review roots through
+`[package.metadata.lushtext-agent]`; keep those roots beside the package they
+describe and update them in the same change as an internal layout move.
+Required release workflows carry an `agent-release-role` marker so filenames
+and display names may change without weakening publication checks.
+`scripts/agent-topology.py validate` rejects missing role roots, missing or
+duplicate required workflow owners, and required workflows that no longer
+trigger on `v*` tags. Do not duplicate these registries in shell or Python
+allowlists.
+Automation-surface changes should also pass
 `make check-automation-docs`; it verifies user/developer docs against the
 exported action catalog, read-only D-Bus interface, snapshot schema, workflow
 event schema, readiness predicates/blockers, scenario manifest fields, and
@@ -135,7 +154,7 @@ Use `make dev-tools` on a fresh local checkout before deep GTK debugging or UI t
 
 On GNOME Shell, `make run` asks any already-running `dev.cominotti.lushtext` owner to quit before staging a development-only desktop file plus matching development `hicolor` icons and launching the freshly built debug binary. If the existing owner refuses to close, the launcher must fail instead of activating stale code. The launcher must recognize stale debug processes whose `/proc/$pid/exe` target ends with ` (deleted)` after a rebuild, and must fall back to the session bus owner check when `gapplication list-apps` misses an already-owned `dev.cominotti.lushtext` name. The staged desktop entry uses a content-addressed absolute icon file path. This avoids Shell holding onto a stale themed-icon cache entry when the app icon bytes change between dev runs while keeping the icon file alive for as long as a restored user-local desktop entry might reference it. The launcher must quarantine any stale same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadow before staging so the installed Flatpak export stays visible. Because the staged desktop file also carries `MimeType` associations, the launcher must refresh the applications desktop database after staging or restoring it so GNOME Settings and `gio mime` see current handler metadata.
 
-All dev staging, temporary or persistent, must use a non-production ID such as `dev.cominotti.lushtext.Devel`; leaving a same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadows the Flatpak export and makes GNOME Settings treat LushText as unsandboxed. Use `make verify-flatpak-identity` after Flatpak or desktop-entry work to confirm the exported desktop entry has `X-Flatpak=dev.cominotti.lushtext`, no same-ID dev shadow exists, effective Flatpak permissions are reported, and required MIME handlers remain registered. Use `make clear-lushtext-xdg` to remove stale development launchers and development icon staging along with the app's XDG data when a live desktop run leaves leftovers behind.
+All dev staging, temporary or persistent, must use a non-production ID such as `dev.cominotti.lushtext.Devel`; leaving a same-ID non-Flatpak `~/.local/share/applications/dev.cominotti.lushtext.desktop` shadows the Flatpak export and makes GNOME Settings treat LushText as unsandboxed. After Flatpak or desktop-entry work, run `make flatpak-install` immediately before `make verify-flatpak-identity` so the verifier cannot pass against an older installed build; together they confirm the exported desktop entry has `X-Flatpak=dev.cominotti.lushtext`, no same-ID dev shadow exists, effective Flatpak permissions are reported, and required MIME handlers remain registered. If the task does not authorize modifying the user's Flatpak installation, omit installed-state verification and report only build-time evidence. Use `make clear-lushtext-xdg` to remove stale development launchers and development icon staging along with the app's XDG data when a live desktop run leaves leftovers behind.
 
 For GNOME Settings File Types work, treat the desktop entry's explicit `MimeType=` line as the allowlist source of truth. `gio mime <type>` can still list LushText for source-like MIME types that inherit from `text/plain`, even when LushText does not explicitly advertise those types; that inherited output must not be used as proof that the File Types allowlist is wrong.
 

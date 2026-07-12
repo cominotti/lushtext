@@ -7,6 +7,17 @@ description: "Run and observe GTK4 and Libadwaita applications the way a human d
 
 Use this skill when static code reading is not enough and the bug only becomes obvious in a live GTK session.
 
+## Host and Toolbx Boundary
+
+Run desktop-session operations on the Fedora host: user-session D-Bus, AT-SPI,
+portals, screenshots, `journalctl --user`, Wayland/X11 input, PipeWire, and
+Mutter/Xvfb capture. Toolbx is appropriate for builds and non-session tests,
+but its Python and environment may not expose the host accessibility bindings
+or desktop bus correctly. If the current shell is inside Toolbx, leave it for
+live helpers or use an explicit, verified host-command bridge; do not infer host
+readiness from tools found only inside the container. The AT-SPI helpers use
+their `/usr/bin/python3` shebang and require the host `pyatspi` package.
+
 ## Boundary with gtk4-libadwaita-internals
 
 This skill is for evidence collection: reproduce the bug, capture logs, correlate timestamps, and narrow the failing phase.
@@ -31,6 +42,12 @@ For repeatable agent-owned inspection, make headless Mutter the first path:
 ```
 
 This launches LushText on a private `mutter --headless` Wayland monitor, isolates XDG data/config/cache plus keyfile GSettings, sets in-document search through the exported `win.set-search-query` D-Bus action, waits through Automation1 readiness predicates, saves `automation-snapshot.json`, and captures the monitor through Mutter's `RecordMonitor("Meta-0")` screencast stream. Prefer this before touching the human's live GNOME session or falling back to Xvfb.
+
+The helper discovers its repository through Git and resolves bundled AT-SPI helpers relative to
+its own script directory. For renamed or relocated builds, pass `--repo-root`, `--binary`,
+`--app-id`, `--app-object-path`, `--automation-interface`, `--gsettings-schema`, and
+`--gsettings-schema-dir`, or use the matching `LUSHTEXT_DEBUG_*` environment variables. Never
+patch product identities into the helper for a one-off fixture.
 
 Prefer a capture session over ad hoc commands. Run the helper through `functions.exec_command` with `tty: true`, then keep polling with `write_stdin` while the human interacts with the app window.
 
@@ -60,11 +77,13 @@ Before using `ydotool type` or `ydotool key`, ask the human to focus the specifi
 
 Prefer D-Bus for interactions whenever LushText exports the needed behavior as a `org.gtk.Actions` action on the application or window object. For ordinary inspection, use `scripts/lushtext-automation.py catalog`, `snapshot`, `wait`, and `action` so the action catalog, typed parameters, statuses, and result envelope stay consistent with docs. For lower-level tracing, inspect `/dev/cominotti/lushtext/Automation` with `dev.cominotti.lushtext.Automation1.GetActionCatalog`, then drive the documented app/window action and use `WaitForReady` with the narrowest named predicate plus `GetSnapshot` for bounded assertions. Fall back to broad `WaitForIdle` only when no narrower predicate matches the workflow. For text entry into visible GTK widgets that is not covered by a target-state action, prefer AT-SPI D-Bus editable-text automation before `ydotool`. Screenshot capture may also use D-Bus through the desktop portal or GNOME Shell, but those APIs are permission-gated and can return `AccessDenied` or wait for human approval.
 
-Prefer non-interactive portal screenshots before opening the GNOME Shell screenshot UI. In this Fedora Toolbx on Wayland, `capture-screenshot.py --portal-only --non-interactive` can save a PNG without a visible prompt, while `gnome-screenshot -f` may hang after falling back to X11. If an interactive portal UI appears, do not try to approve it with coordinate clicks; only use AT-SPI actions when the accessible exposes a real invokable action.
+Prefer non-interactive portal screenshots before opening the GNOME Shell screenshot UI. On the Fedora Wayland host, `capture-screenshot.py --portal-only --non-interactive` can save a PNG without a visible prompt, while `gnome-screenshot -f` may hang after falling back to X11. If an interactive portal UI appears, do not try to approve it with coordinate clicks; only use AT-SPI actions when the accessible exposes a real invokable action.
 
 Do not use coordinate clicks to focus LushText or any other application window. GNOME Shell can report broad or full-screen frame extents through AT-SPI, and clicking near the top of a maximized frame can activate Shell UI such as Overview or quick settings instead of the app. If D-Bus/AT-SPI activation does not focus the target window, ask the human to focus it.
 
 If headless Mutter is unavailable, use `scripts/capture-lushtext-xvfb.sh --file PATH --search TEXT --enable-minimap --output /tmp/shot.png` as the fallback isolated display. It launches the debug binary on a private Xvfb display, uses temporary XDG data/config/cache home plus keyfile GSettings, invokes `win.begin-search` through `org.gtk.Actions`, types only inside that isolated display with `xdotool`, and captures the root window with `xwd` + ImageMagick. This path is lower compositor fidelity than `mutter --headless`.
+The Xvfb helper accepts the same repository, binary, app-ID, object-path, and GSettings overrides
+where those identities affect its lower-fidelity D-Bus flow.
 
 After the reproduction, inspect the generated `summary.md`, then open the raw `app.typescript`, `dbus.log`, and `journal.log` files only as needed.
 
@@ -188,6 +207,18 @@ This is the preferred workflow over broad speculative code changes. For geometry
   - Uses system Python AT-SPI bindings to find and invoke a visible button by accessible name.
   - Useful for human-approved portal dialogs where the button is visible but D-Bus cannot bypass the permission prompt.
   - Does not perform coordinate fallback. `--fallback-mouse` is kept only as a disabled compatibility flag because GNOME Shell can route exact-looking coordinates to Overview or top-bar controls.
+- `scripts/atspi-accessible-action.py`
+  - Finds one visible accessible by application, name, and role regex, then
+    focuses it, invokes its exported action, sends a requested key, or performs
+    an explicit AT-SPI context click.
+  - Prefer `focus` or `activate`; use `context-click` only on an isolated or
+    human-approved surface because it synthesizes pointer input from reported
+    accessible extents.
+- `scripts/atspi-dump-tree.py`
+  - Writes a bounded accessibility-tree dump and a separate focused-node report
+    for one application regex.
+  - Use it to prove roles, names, visibility, actions, text state, and focus
+    before choosing an AT-SPI interaction. Keep bounds finite on large trees.
 - `scripts/atspi-set-text.py`
   - Uses system Python AT-SPI bindings to set text on visible editable widgets, scoped by application, role, and optional accessible-name regex.
   - Preferred over `ydotool type` for entries such as LushText's in-tab search field because it does not require keyboard focus to move.

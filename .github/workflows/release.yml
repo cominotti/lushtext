@@ -1,3 +1,4 @@
+# agent-release-role: publication
 name: Release
 
 on:

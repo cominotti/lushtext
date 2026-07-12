@@ -333,6 +333,9 @@ impl LushtextEditorPage {
     /// copies document text, and uses accepted file bytes as a floor. Evicted
     /// pages report only their fixed bookkeeping estimate.
     pub fn estimated_live_buffer_bytes(&self) -> u64 {
+        if self.is_evicted() {
+            return crate::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
+        }
         #[cfg(feature = "test-utils")]
         if let Some(bytes) = self.imp().memory_estimate_override.get() {
             return bytes;

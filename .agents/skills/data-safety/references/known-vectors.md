@@ -1,5 +1,13 @@
 # Known Data Loss Vectors
 
+## Table of Contents
+
+- [Draft Persistence](#draft-persistence)
+- [Save and Close Flows](#save-and-close-flows)
+- [Atomic Writes and Concurrency](#atomic-writes-and-concurrency)
+- [Replace Operations](#replace-operations)
+- [Restore Lifecycle](#restore-lifecycle)
+
 Calibration catalog for data-safety subagents. Each entry documents a confirmed or calibration-relevant data loss pattern with its location, the specific code that causes it, the user scenario, and a safe counterexample where one exists. Subagents use this to distinguish genuinely dangerous code from similar-looking safe patterns.
 
 All paths are written as normalized suffixes relative to any `*/src/` root.
@@ -34,25 +42,10 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 
 ## Save and Close Flows
 
-### CF-1: Destroy after save failure (CONFIRMED — CRITICAL)
-**Location**: `ui/window/dialogs.rs` — `show_save_changes_dialog`, RESPONSE_SAVE handler
-**Code**: Each `save_file_async` callback decrements a `pending` counter. When counter reaches 0, `cleanup_drafts_for_editors(&all_editors)` + `on_done(true)` runs REGARDLESS of individual save results.
-**Scenario**: User has 3 unsaved tabs, clicks Save in close dialog. Tab 2's save fails (permission denied). Counter still reaches 0. Drafts deleted. Window destroyed. Tab 2's content: not saved, draft deleted. **Permanently lost.**
-**Why critical**: This is the normal close flow — every user encounters it. The only protection is that saves rarely fail, but when they do, the failure is catastrophic.
-
-### CF-2: Draft cleanup without save check (CONFIRMED — CRITICAL)
-**Location**: Same as CF-1 — `cleanup_drafts_for_editors` called unconditionally
-**Entangled with CF-1**: The draft deletion IS the data loss mechanism. If saves fail but drafts are preserved, the user can recover on next startup. The fix for CF-1 and CF-2 is the same: only delete drafts for files that were successfully saved.
-
-### CF-4: Untitled tabs in save dialog (CONFIRMED)
-**Location**: `ui/window/dialogs.rs` — the `if check.is_active() && editor.file_path().is_some()` guard
-**Code**: Untitled tabs increment `pending_saves` only if `file_path` is `Some`. Since untitled tabs have `None`, they're excluded from the save count.
-**UX issue**: The checkbox row IS shown for untitled tabs with "(new)" label. User can check it, believes save will happen, but it's silently skipped. Only `cleanup_drafts_for_editors` runs → draft deleted.
-
-### CF-5: Undo backup cleared on close attempt (CONFIRMED)
-**Location**: `ui/window/imp.rs` — `close_request` implementation
-**Code**: `self.search_panel.close()` is called BEFORE checking `modified_editors()` and showing the save dialog.
-**Scenario**: User does Replace All → tries to close window → `search_panel.close()` destroys undo backup → save dialog appears → user cancels → window stays open but Replace All undo is gone.
+### CF-1/CF-2/CF-4/CF-5: Close-flow loss cluster (CONFIRMED HISTORICAL)
+**Former location**: `ui/window/dialogs.rs` and `ui/window/imp.rs`
+**Old failure**: Close completion ignored individual save failures, deleted drafts unconditionally, silently skipped selected untitled rows, and closed search state before the user confirmed window closure.
+**Current guardrails**: The close coordinator records failed saves, preserves recovery drafts for unsuccessful or untitled work, blocks completion while selected untitled tabs still require an explicit save path, and closes search state only after confirmation succeeds. Re-audit these invariants at their current owners instead of reporting the historical defects as present.
 
 ---
 
@@ -92,16 +85,15 @@ All paths are written as normalized suffixes relative to any `*/src/` root.
 
 ## Replace Operations
 
-### RS-1: In-memory undo backup (CONFIRMED)
-**Location**: `ui/search_panel` imp struct — `undo_backup: RefCell<HashMap<PathBuf, Vec<u8>>>`
-**Code**: Backup populated during Replace All, stored only in widget state. Cleared by: new search, panel close, app exit, window close.
-**Scenario**: User does Replace All across 50 files → app crashes → backup gone → original content permanently lost. Only git or external backups can recover.
-**Safe counterexample**: Draft persistence saves content to DISK every 5 seconds. Replace backup should follow similar persistence pattern.
+### RS-1: In-memory undo backup (CONFIRMED HISTORICAL)
+**Former location**: `ui/search_panel` widget state
+**Old failure**: Replace All kept rollback bytes only in memory, so a crash or close discarded the only recovery copy.
+**Current guardrail**: `services/search_backup.rs` persists a generation-guarded undo journal before mutation and retains ambiguous post-rename failures. Visible widget state is only a projection of that durable recovery evidence.
 
-### RS-2: Stale skip_paths (CONFIRMED — NARROW WINDOW)
-**Location**: `ui/window/search.rs` — `replace_callback` closure
-**Code**: `skip_paths` is built from `editor.is_modified()` on the main thread, then passed to `spawn_blocking_then`. Between snapshot and background execution, a user could save a tab (clearing `is_modified`).
-**Window**: Typically very short (milliseconds for small codebases). Wider for large codebases where `apply_replacements` takes seconds.
+### RS-2: Modified-target snapshot coordination (CALIBRATION — CURRENT CODE SAFE)
+**Current workflow owner**: `ui/window/search.rs` plus `services/content_search/replace.rs`
+**Why the old flag was wrong**: A path modified when `skip_paths` is captured remains in the immutable skip set even if the user saves it later; it cannot become newly eligible inside that operation. Editor saves and replacements also coordinate through the same stable-target guard.
+**Calibration takeaway**: Flag only a target that can become newly modified after capture and then bypass both shared target coordination and the replacement content check. Do not claim that saving an already-skipped path makes it overwriteable.
 
 ---
 

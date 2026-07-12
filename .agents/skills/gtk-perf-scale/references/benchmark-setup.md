@@ -1,182 +1,49 @@
-# Benchmark Setup & Coverage for LushText
+# Benchmark Coverage and Comparison
 
-How to add `criterion` benchmarks, what to measure, current coverage, and how to detect regressions in CI.
+Use Criterion benchmarks to answer a concrete performance question. The checkout, not this document, owns versions and group names.
 
-## Table of Contents
+## Contents
 
-1. [Adding criterion](#1-adding-criterion)
-2. [Current Coverage](#2-current-coverage)
-3. [Benchmark Targets](#3-targets)
-4. [Example Benchmarks](#4-examples)
-5. [CI Regression Detection](#5-ci)
-6. [Expected Baselines](#6-baselines)
+1. [Discover current coverage](#discover-current-coverage)
+2. [Add representative coverage](#add-representative-coverage)
+3. [Compare responsibly](#compare-responsibly)
+4. [CI guidance](#ci-guidance)
 
----
+## Discover current coverage
 
-## 1. Adding criterion {#1-adding-criterion}
+Read:
 
-Add to workspace `Cargo.toml`:
+- workspace `Cargo.toml` for the current Criterion version;
+- `crates/lushtext-core/Cargo.toml` for bench target configuration;
+- `crates/lushtext-core/benches/benchmarks.rs` for registered groups and fixtures.
 
-```toml
-[workspace.dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-```
-
-Add to `crates/lushtext-core/Cargo.toml`:
-
-```toml
-[dev-dependencies]
-criterion = { workspace = true }
-
-[[bench]]
-name = "benchmarks"
-harness = false
-```
-
-After adding, run:
-```bash
-cargo hakari generate
-make cargo-sources  # for Flatpak
-```
-
-All benchmarks live in a single file:
-```
-crates/lushtext-core/benches/
-└── benchmarks.rs   # All benchmark groups (fuzzy_score, scan_directory, file_index, etc.)
-```
-
----
-
-## 2. Current Coverage {#2-current-coverage}
-
-The benchmark file at `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups) covers:
-
-| Group | Functions | Max Input Size |
-|-------|-----------|----------------|
-| `fuzzy_score` | `fuzzy_score()` single-call | 7 named cases |
-| `file_index_search` | `FileIndex::search()` | 100k files |
-| `file_index_rebuild` | `FileIndex::rebuild()` | 5k files on tmpfs |
-| `file_index_incremental` | `add_file`, `remove_path`, `rename_path` | 100k files |
-| `search_all` | `palette::search_all()` | 10k files |
-| `scan_directory` | `file_tree::scan_directory()` | 10k entries |
-| `json_persistence` | `workspace_manager`, `json_store` | 10 workspaces, 50 tabs |
-| `file_size_classify` | `FileSizeCheck::classify()` | 5 size buckets |
-| `utf8_validation` | filesystem text read vs filesystem byte read + `simdutf8` | 1/5/10/50 MB |
-
-### Known Gaps
-
-**File save path** — The save path's `buffer.text().to_string()` + filesystem write boundary is unbenchmarked. Since the GtkTextBuffer part requires GTK initialization, benchmark only the Rust portion (`services::filesystem::write` at 1/5/10/50 MB).
-
----
-
-## 3. Benchmark Targets {#3-targets}
-
-Priority order based on how often each function is called and its impact on UX:
-
-| Priority | Function | Hot path | Why benchmark |
-|----------|----------|----------|---------------|
-| P0 | `fuzzy_score` | Every keystroke × every file | Determines if debounce is needed and at what threshold |
-| P0 | `search_items` (end-to-end) | Every keystroke | Total search latency = scoring + sort + truncate |
-| P1 | `FileIndex::rebuild` | On workspace change | Determines if rebuild coalescing is needed |
-| P1 | `scan_directory` | On tree node expand | Determines if directory entry cap is needed |
-| P2 | `buffer.set_text` | On file open | Requires GTK init — harder to bench but critical for threshold calibration |
-
-P0 targets affect every search interaction. P1 affects periodic operations. P2 requires special setup.
-
----
-
-## 4. Example Benchmarks {#4-examples}
-
-### `benches/benchmarks.rs` (key patterns)
-
-All benchmarks live in a single file. Synthetic indexes use `FileIndex::from(Vec<IndexedFile>)` (the `From` trait impl). The `IndexedFile` struct requires an `Arc<PathBuf>` for `workspace_folder`:
-
-```rust
-use std::sync::Arc;
-use lushtext_core::model::palette::IndexedFile;
-use lushtext_core::services::palette::FileIndex;
-
-// Construct synthetic indexes for benchmarks:
-let folder = Arc::new(PathBuf::from("/workspace"));
-let files: Vec<_> = (0..size)
-    .map(|i| IndexedFile {
-        path: PathBuf::from(format!("/workspace/src/file_{}.rs", i)),
-        name: format!("file_{}.rs", i),
-        workspace_folder: Arc::clone(&folder),
-    })
-    .collect();
-let index = FileIndex::from(files);
-
-// search_all takes &FileIndex:
-palette::search_all(&index, "fil", SearchMode::Files, 50);
-```
-
-Current benchmark groups: `fuzzy_score`, `file_index_search`, `file_index_rebuild`, `file_index_incremental`, `search_all`, `scan_directory`, `json_persistence`, `file_size_classify`, `utf8_validation`.
-
----
-
-## 5. CI Regression Detection {#5-ci}
-
-### GitHub Actions workflow addition
-
-Add to `.github/workflows/ci.yml`:
-
-```yaml
-  bench:
-    name: Benchmarks (regression check)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run benchmarks
-        run: cargo bench --package lushtext-core -- --output-format bencher | tee bench_output.txt
-      - name: Check for regressions
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          tool: 'cargo'
-          output-file-path: bench_output.txt
-          alert-threshold: '120%'
-          fail-on-alert: true
-          comment-on-alert: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-```
-
-This fails the PR if any benchmark regresses by more than 20%. The `github-action-benchmark` action stores historical data in a GitHub Pages branch and adds comparison comments to PRs.
-
-### Local regression check
+Useful discovery commands:
 
 ```bash
-# Save baseline
-cargo bench --package lushtext-core -- --save-baseline main
-
-# Switch to feature branch, run comparison
-cargo bench --package lushtext-core -- --baseline main
+rg -n 'fn bench_|criterion_group!|criterion_main!' crates/lushtext-core/benches/benchmarks.rs
+cargo bench --package lushtext-core --no-run
 ```
 
-criterion generates HTML reports in `target/criterion/` with comparison charts.
+The benchmark file evolves. Do not paste a static “current coverage” table into a finding.
 
----
+## Add representative coverage
 
-## 6. Expected Baselines {#6-baselines}
+Benchmark the smallest GTK-free boundary that captures the changed cost. Use `services::filesystem::fixture` for filesystem setup and keep setup outside the measured iteration where appropriate. Cover realistic maximum policy inputs as well as common inputs.
 
-These are approximate numbers on a 2023 laptop (Ryzen 7, NVMe SSD). Use them as sanity checks — if your numbers are 10x worse, something is wrong.
+For search/index changes, include matches, misses, representative path/name distributions, Unicode where supported, and maximum bounded index size. For file workflows, include relevant byte sizes, encoding branches, durable-write behavior, cancellation checkpoints, and cleanup outside the timed path. Use `BatchSize` when each iteration consumes its input.
 
-| Benchmark | Input size | Expected range | Concerning if |
-|-----------|-----------|---------------|---------------|
-| `fuzzy_score` (match) | 15-char candidate | 50–150 ns | > 500 ns |
-| `fuzzy_score` (no match) | 15-char candidate | 30–100 ns | > 300 ns |
-| `search_items` | 1,000 files | 0.1–0.3 ms | > 1 ms |
-| `search_items` | 10,000 files | 1–3 ms | > 10 ms |
-| `search_items` | 100,000 files | 10–30 ms | > 50 ms |
-| `FileIndex::rebuild` | 1,000 files | 5–15 ms | > 50 ms |
-| `FileIndex::rebuild` | 10,000 files | 50–150 ms | > 500 ms |
-| `scan_directory` | 1,000 entries | 0.5–2 ms | > 5 ms |
-| `scan_directory` | 5,000 entries | 2–10 ms | > 20 ms |
+Do not benchmark a simplified helper if the optimization changes orchestration, batching, or result installation outside that helper.
 
-The `search_items` at 100k files baseline of 10–30ms is why the debounce threshold matters: at 150ms debounce, the search runs at most ~7 times per second, and each run at 30ms uses ~20% of the frame budget. Without debounce, 10 keypresses/second × 30ms = 300ms/second of main-thread time consumed by search alone.
+## Compare responsibly
+
+Run baseline and candidate with the same toolchain, build profile, machine load, storage class, and fixture. Criterion supports saved baselines; verify the exact CLI accepted by the checked-in Criterion version before scripting it.
+
+Treat absolute times copied from another machine as anecdotes, not gates. Report distributions and effect size, check for noise/outliers, and connect the result to user-visible latency or a policy bound. A statistically visible nanosecond change is not automatically material.
+
+GTK rendering, allocation, and main-loop behavior usually need the widget/proof harness or live runtime tracing rather than a pure Criterion benchmark.
+
+## CI guidance
+
+Do not add a benchmark action, permissions, historical-storage branch, or failure threshold from a template without reviewing repository CI policy and pinning requirements. Benchmark CI can be noisy and supply-chain-sensitive.
+
+Prefer deterministic compile/smoke coverage in ordinary CI unless the repository already owns a calibrated regression system. If proposing a gate, define runner stability, baseline storage, rerun policy, statistical threshold, artifact retention, action SHA pinning, and who can update the baseline.

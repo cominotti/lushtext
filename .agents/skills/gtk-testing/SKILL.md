@@ -5,6 +5,18 @@ description: "Guide testing strategy for GTK4/Libadwaita Rust applications, espe
 
 Guide testing for LushText as it exists today. The repo already has solid coverage layers and a custom GTK widget harness; use them before inventing new structure.
 
+Before selecting paths or Cargo package/target names, discover the current workspace test
+surfaces:
+
+```bash
+scripts/agent-topology.py testing-surfaces
+```
+
+Treat its Cargo-metadata output as authoritative for package names, manifests, target source
+paths, target kinds, and required features. The paths below are current checked examples and
+navigation hints, not immutable topology. Keep repository-owned `make` targets as the stable
+operator interface when they exist.
+
 The testing approach is pragmatic:
 
 - Keep pure logic in unit and service tests where no display server is needed.
@@ -86,9 +98,9 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
 - Shared widget wait/flush helpers live once in `crates/lushtext/tests/widget/common.rs` (`wait_until`, `flush_events`, `flush_after_delay`, `present_window`). Import them; do not paste private per-file copies (there were once five copy-pasted `wait_until`s, so fixing one missed the rest). `wait_until` polls and then **drains every ready main-loop source** (`while iteration(false) {}`). Drain-to-exhaustion is load-bearing: `spawn_blocking_then` delivers completion via a low-priority `idle_add_once` source, and only draining dispatches it reliably. Do **not** "optimize" `wait_until` into a single blocking `MainContext::iteration(true)` — a higher-priority timeout source starves the idle and every `spawn_blocking_then`-backed wait then times out (verified: that rewrite fails such tests 5/5).
 - `build.rs` generates the widget registry from `crates/lushtext/tests/widget/*.rs`.
 - `make test` may use `cargo nextest` for non-widget tests across the workspace, but widget tests still run through `scripts/run-widget-tests.sh`, which owns the headless `cargo test --test widget` path. Native/live-display widget runs are forbidden.
-- `make test-prop` runs the feature-gated `lushtext-core/property-tests` target. Keep this lane deterministic, bounded, and out of default nextest and mutation runs.
-- `make fuzz-corpus-replay` runs the feature-gated `lushtext-core/fuzzing` replay target on stable Rust. Keep it read-only and out of default test and mutation lanes; CI runs it as a separate explicit job so committed seeds stay guarded.
-- `make fuzz-smoke` runs the isolated `cargo-fuzz` project under `fuzz/` with `lushtext-core/fuzzing`. Keep it out of default test, property, widget, benchmark, mutation, and pull-request CI lanes; use scheduled/manual fuzz smoke for coverage-guided discovery.
+- `make test-prop` runs the discovered feature-gated property target. Keep this lane deterministic, bounded, and out of default nextest and mutation runs.
+- `make fuzz-corpus-replay` runs the discovered feature-gated replay target on stable Rust. Keep it read-only and out of default test and mutation lanes; CI runs it as a separate explicit job so committed seeds stay guarded.
+- `make fuzz-smoke` runs the repository's isolated `cargo-fuzz` project. Keep it out of default test, property, widget, benchmark, mutation, and pull-request CI lanes; use scheduled/manual fuzz smoke for coverage-guided discovery.
 - `make automation-client-self-test` proves the reusable
   `scripts/lushtext-automation.py` contract without launching the app. It is a
   fast policy check, not a replacement for real-process automation smoke.
@@ -228,7 +240,7 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
 
 - [references/widget-testing.md](references/widget-testing.md): current harness behavior, headless commands, wait helpers, and contract-sensitive assertions
 - [references/test-recipes.md](references/test-recipes.md): concrete service, integration, and widget recipes aligned with the repo's current helpers
-- [../../docs/fuzzing.md](../../docs/fuzzing.md): fuzz target scope, smoke commands, corpus handling, and crash minimization
+- [../../../docs/fuzzing.md](../../../docs/fuzzing.md): fuzz target scope, smoke commands, corpus handling, and crash minimization
 - [../gtk4-libadwaita-internals/references/geometry-measurement-and-allocation.md](../gtk4-libadwaita-internals/references/geometry-measurement-and-allocation.md): layout and visibility contracts that affect widget assertions
 - [../gtk4-libadwaita-internals/references/containers-lists-and-factories.md](../gtk4-libadwaita-internals/references/containers-lists-and-factories.md): `GtkListView` and `GtkTreeListModel` lifecycle rules for test reasoning
 - [../gtk4-libadwaita-internals/references/builder-templates-actions-css-accessibility.md](../gtk4-libadwaita-internals/references/builder-templates-actions-css-accessibility.md): focus, builder-template, CSS, and accessibility guidance for test assertions

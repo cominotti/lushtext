@@ -19,6 +19,9 @@ include = [
     "src/**",
 ]
 
+[package.metadata.lushtext-agent]
+performance-roots = ["src"]
+
 [lints]
 workspace = true
 

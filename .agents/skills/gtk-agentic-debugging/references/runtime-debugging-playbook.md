@@ -1,8 +1,28 @@
 # GTK Runtime Debugging Playbook
 
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Host and Toolbx Boundary](#host-and-toolbx-boundary)
+- [Capture Strategy](#capture-strategy)
+- [Preferred Live Debug Loop](#preferred-live-debug-loop)
+- [What the Helper Captures](#what-the-helper-captures)
+- [Fresh Launch Heuristics](#fresh-launch-heuristics)
+- [Screenshot Strategy](#screenshot-strategy)
+- [D-Bus Reading Guide](#d-bus-reading-guide)
+- [Mapping Logs Back to Code](#mapping-logs-back-to-code)
+
 ## Purpose
 
 Use this playbook when the failure only becomes visible while a GTK app is running on a real desktop session.
+
+## Host and Toolbx Boundary
+
+Use Toolbx for compilation and non-session test tools. Run user-session D-Bus,
+AT-SPI, portals, screenshots, journal capture, input injection, PipeWire, and
+compositor helpers on the Fedora host. Verify the host binary, host environment,
+and host `pyatspi` separately; a same-named Toolbx command does not prove the
+desktop session can be reached.
 
 ## Capture Strategy
 
@@ -92,6 +112,8 @@ This workflow is usually superior to broad speculative edits. It is also usually
 
 - For repeatable agent-owned visual checks, prefer the headless Mutter helper first:
   `scripts/capture-lushtext-mutter.py --file PATH --search TEXT --expected-search-matches N --enable-minimap --output PATH`.
+  It discovers the Git root and sibling helpers. Use its explicit identity/schema overrides or
+  matching `LUSHTEXT_DEBUG_*` variables for renamed fixtures instead of editing embedded paths.
   It runs LushText inside an isolated `dbus-run-session` and `mutter --headless`
   Wayland monitor, stores app state in temporary XDG directories with
   `GSETTINGS_BACKEND=keyfile`, drives exported window actions over D-Bus, waits

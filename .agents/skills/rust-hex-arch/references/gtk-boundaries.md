@@ -1,10 +1,21 @@
 # GObject Subclassing and Hexagonal Architecture
 
+## Table of Contents
+
+- [The Widget as Driving Adapter](#the-widget-as-driving-adapter)
+- [Keep Business Rules Out of Widget Internals](#keep-business-rules-out-of-widget-internals)
+- [Place Decisions at the Narrowest Owning Boundary](#place-decisions-at-the-narrowest-owning-boundary)
+- [The CompositeTemplate Boundary](#the-compositetemplate-boundary)
+- [`ensure_type()` and Registration](#ensure_type-and-the-registration-order)
+- [Thread Safety](#thread-safety-and-the-adapter-boundary)
+- [Boundary Summary](#summary-where-boundaries-live)
+
 Where the architectural boundary lives in GTK4/Rust widgets, and how GObject patterns relate to hex arch principles.
 
 ## The Widget as Driving Adapter
 
-Every GTK4 widget in LushText follows the two-module pattern:
+Many substantial GTK4 widgets in LushText use this two-module convention, while
+small widgets or workflow modules may use a different cohesive layout:
 
 ```
 ui/widget_name/
@@ -12,29 +23,36 @@ ui/widget_name/
 └── imp.rs   # Private implementation: ObjectSubclass, CompositeTemplate, signals
 ```
 
-In hexagonal terms:
-- **`mod.rs`** defines the **driving port** — the public API that other code (including other widgets) uses to interact with this widget
-- **`imp.rs`** is the **adapter internals** — how the widget translates between GTK's object model and the application's service layer
+In hexagonal terms, the widget as a whole is a driving adapter. Conventionally,
+`mod.rs` exposes its Rust wrapper and caller-facing API, while `imp.rs` owns the
+GObject subclass hooks, template children, and instance state. File names do not
+create an architectural boundary by themselves; dependency direction and
+responsibility do.
 
-## Where Business Logic Must NOT Live
+## Keep Business Rules Out of Widget Internals
 
-### In `imp.rs`: Never
+### In `imp.rs`: favor subclass mechanics and local lifecycle
 
-The `imp.rs` file should contain only:
+An `imp.rs` commonly contains:
 - `ObjectSubclass` trait implementation (type registration)
 - `ObjectImpl::constructed()` for signal wiring and initial setup
 - `WidgetImpl`, `WindowImpl`, etc. — trait chain required by GTK
 - `#[template_child]` field declarations
 - `RefCell<T>` fields for runtime state
 - Property getters/setters if using GObject properties
+- small widget-local lifecycle helpers when keeping them beside the state makes
+  ownership clearer
 
-If you find yourself writing `if/else` chains with domain logic in `imp.rs`, extract it to either:
-1. A method on `mod.rs` (if it coordinates UI elements)
+Do not flag control flow merely because it lives in `imp.rs`. When that control
+flow encodes reusable domain/application policy rather than widget lifecycle,
+extract it to either:
+1. A caller-facing widget or workflow method (often exposed from `mod.rs`) if it coordinates UI elements
 2. A service function (if it's a business rule)
 
-### In signal closures: Minimal
+### In signal closures: keep durable decisions visible
 
-Signal closures in `constructed()` should be thin dispatchers:
+Keep signal closures thin when practical, especially when they would otherwise
+hide blocking work, persistence, or reusable decisions:
 
 ```rust
 // Good: thin dispatcher
@@ -68,11 +86,12 @@ The second example has three problems:
 2. Synchronous file I/O on the main thread → use `spawn_blocking_then`
 3. Size checking is a business rule → belongs in a service
 
-## Where Business Logic SHOULD Live
+## Place Decisions at the Narrowest Owning Boundary
 
-### In `mod.rs` methods: UI orchestration
+### In caller-facing widget methods: UI orchestration
 
-The widget's `mod.rs` is where multi-step UI operations live. These methods coordinate between GTK widgets and service calls:
+Caller-facing widget methods often coordinate multi-step UI operations. They may
+live in `mod.rs` or a cohesive workflow module:
 
 ```rust
 impl LushtextWindow {
@@ -93,23 +112,22 @@ impl LushtextWindow {
 
 This is appropriate — it coordinates UI elements. The business decision "don't open duplicate tabs" is a UI policy, not a domain rule.
 
-### In service functions: Business rules
+### In domain or service functions: reusable rules
 
-Anything that doesn't need a GTK type to operate belongs in services:
+GTK-free code is eligible for the domain or service layer, but placement still
+depends on ownership. A pure invariant over one domain value belongs on that
+value; orchestration or infrastructure belongs in services.
 
 ```rust
-// services/session_service.rs
-pub fn filter_existing_tabs(data: &mut SessionData) {
-    data.tabs.retain(|tab| filesystem::metadata::exists(&tab.path));
-    if let Some(ref active) = data.active_tab {
-        if !data.tabs.iter().any(|t| t.path == *active) {
-            data.active_tab = None;
-        }
-    }
-}
+// After an explicit cleanup workflow has produced confirmed retention evidence:
+session.retain_tabs_by_path(&retained_paths);
 ```
 
-This logic uses only `std::path::Path::exists()` and domain types — it belongs in services, not in the window widget.
+The active-index rebasing rule belongs to `SessionData`. The retained-path set
+must be precomputed by an explicit cleanup or reconciliation workflow; startup
+restore must not drop tabs from future snapshots merely because a path is
+temporarily unavailable. Direct existence probes are both an infrastructure
+concern and unsafe evidence for destructive restore-time filtering.
 
 ## The CompositeTemplate Boundary
 
@@ -172,5 +190,5 @@ This IS the adapter boundary for async operations. The background thread is a dr
 | Domain ↔ Application | Module imports (`model/` never imports `services/`) | Code review (no compile-time enforcement within a crate) |
 | Application ↔ UI | Module imports (`services/` never imports `ui/`) | Code review + this skill's [FLAG] severity |
 | Main thread ↔ Background thread | `ThreadGuard` + `spawn_blocking_then` | Compile-time (`Send` bound) |
-| Widget public ↔ private | `mod.rs` (public API) / `imp.rs` (internals) | `pub` visibility |
+| Widget public ↔ private | Caller-facing wrapper API / subclass internals, often split across `mod.rs` and `imp.rs` | Rust visibility and module ownership |
 | Rust types ↔ GObject types | `glib::wrapper!` macro + `ObjectSubclass` | Type system |

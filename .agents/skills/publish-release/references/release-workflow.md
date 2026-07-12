@@ -1,5 +1,19 @@
 # Release Workflow
 
+## Table of Contents
+
+- [Preflight](#preflight)
+- [Choose Version](#choose-version)
+- [Build Release Context](#build-release-context)
+- [Draft Notes](#draft-notes)
+- [Dry Run](#dry-run)
+- [Real Release](#real-release)
+- [Monitor All Remote Workflows](#monitor-all-remote-workflows)
+- [GitHub Release Notes](#github-release-notes)
+- [Cominotti Flatpak Publication](#cominotti-flatpak-publication)
+- [Optional Flathub Handoff](#optional-flathub-handoff)
+- [Final Verification](#final-verification)
+
 Use this as the release runbook. Prefer dry runs and read-only inspection until the version, notes, and release scope are clear.
 
 ## Preflight
@@ -48,7 +62,8 @@ Gather the raw context first:
 If the base tag is unusual, pass it explicitly:
 
 ```bash
-.agents/skills/publish-release/scripts/collect-release-context.sh v0.1.0 HEAD > /tmp/lushtext-release-context.md
+PREVIOUS_TAG="${PREVIOUS_TAG:?set PREVIOUS_TAG to the confirmed previous v* tag}"
+.agents/skills/publish-release/scripts/collect-release-context.sh "$PREVIOUS_TAG" HEAD > /tmp/lushtext-release-context.md
 ```
 
 If there is no previous `v*` tag, stop and clarify the baseline. Do not invent a last release from AppStream metadata or package versions. For the first public release, either confirm that no prior-release diff exists or ask the user for the commit/tag that represents the previous shipped code.
@@ -123,19 +138,29 @@ The helper should:
 
 ## Monitor All Remote Workflows
 
-After the tag push, identify the exact release commit and monitor every GitHub Actions run created for both the pushed `main` commit and the pushed release tag. Do not watch only `release.yml`.
+After the tag push, identify the exact release commit and monitor every GitHub Actions run created for both the pushed `main` commit and the pushed release tag. Resolve required release roles first with `scripts/agent-topology.py release-workflows`; do not assume workflow filenames or watch only the publication role.
 
 ```bash
 VERSION=vX.Y.Z
 RELEASE_SHA="$(git rev-list -n 1 "$VERSION")"
-git ls-remote origin "refs/heads/main" "refs/tags/$VERSION"
+REMOTE_MAIN_SHA="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+REMOTE_TAG_OBJECT_SHA="$(git ls-remote origin "refs/tags/$VERSION" | awk '{print $1}')"
+REMOTE_TAG_COMMIT_SHA="$(git ls-remote origin "refs/tags/$VERSION^{}" | awk '{print $1}')"
+test -n "$REMOTE_TAG_OBJECT_SHA"
+test "$REMOTE_MAIN_SHA" = "$RELEASE_SHA"
+test "$REMOTE_TAG_COMMIT_SHA" = "$RELEASE_SHA"
 gh run list --commit "$RELEASE_SHA" --limit 50 \
   --json databaseId,name,displayTitle,event,headBranch,headSha,status,conclusion,url
 gh run list --branch "$VERSION" --limit 50 \
   --json databaseId,name,displayTitle,event,headBranch,headSha,status,conclusion,url
 ```
 
-Required release-critical runs include the tag-triggered `Release` workflow and the tag-triggered `Release Benchmark Report` workflow. Push-triggered workflows for the release commit, such as CI, Flatpak, Snap, and Release Dry Run, are also part of the green release surface whenever GitHub starts them. Recovery commits or manual recovery dispatches become part of the same surface and must also finish green. No release or recovery job may raise `timeout-minutes` above 30; timeout recovery must narrow scope, fix the harness, split the workflow, or dispatch a bounded replacement run.
+Signed releases use annotated tags, so `refs/tags/$VERSION` identifies the tag
+object rather than the release commit. The peeled `refs/tags/$VERSION^{}` ref
+must exist and equal `RELEASE_SHA`; comparing only the tag-object SHA is not a
+remote release-commit proof.
+
+Required release-critical runs are the tag-triggered workflows discovered for the `publication` and `benchmark-report` roles. The helper fails if either role is missing, duplicated, or no longer triggered by `v*` tags. Push-triggered workflows for the release commit, such as CI, Flatpak, Snap, and Release Dry Run, are also part of the green release surface whenever GitHub starts them. Recovery commits or manual recovery dispatches become part of the same surface and must also finish green. No release or recovery job may raise `timeout-minutes` above 30; timeout recovery must narrow scope, fix the harness, split the workflow, or dispatch a bounded replacement run.
 
 Watch every discovered run until it is completed:
 

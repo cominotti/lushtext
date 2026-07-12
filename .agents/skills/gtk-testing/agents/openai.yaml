@@ -1,0 +1,4 @@
+interface:
+  display_name: "GTK Testing"
+  short_description: "Choose and verify reliable GTK test coverage"
+  default_prompt: "Use $gtk-testing to choose the narrowest reliable test layer and verify this GTK change."

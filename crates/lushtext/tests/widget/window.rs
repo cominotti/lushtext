@@ -5781,6 +5781,105 @@ fn test_memory_budget_evicts_lru_clean_tab_to_lower_watermark() {
 }
 
 #[test]
+fn test_memory_budget_applies_at_most_one_eviction_per_idle_dispatch() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("bounded-eviction tempdir");
+    let paths = [
+        dir.path().join("first.txt"),
+        dir.path().join("second.txt"),
+        dir.path().join("third.txt"),
+    ];
+    let window = test_window();
+    present_window(&window);
+
+    let mut background_editors = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        fixture::write_text(path, &format!("tab {index}\n"));
+        window.open_document(path);
+        wait_until(Duration::from_secs(5), || {
+            active_editor(&window).load_state() == EditorLoadState::Loaded
+        });
+        let editor = active_editor(&window);
+        editor.set_memory_estimate_for_test(Some(20 * 1024 * 1024));
+        background_editors.push(editor);
+    }
+
+    window.new_tab();
+    flush_events();
+    let protected_editor = active_editor(&window);
+    protected_editor.buffer().set_text("protected unsaved work");
+    let dispatches_before = window.editor_memory_eviction_dispatch_count_for_test();
+    protected_editor.set_memory_estimate_for_test(Some(220 * 1024 * 1024));
+    flush_events();
+
+    let evicted = background_editors
+        .iter()
+        .filter(|editor| editor.is_evicted())
+        .count();
+    assert_eq!(evicted, 3, "all three clean tabs are needed to reach low water");
+    assert_eq!(
+        window.editor_memory_eviction_dispatch_count_for_test() - dispatches_before,
+        u64::try_from(evicted).expect("eviction count fits u64"),
+        "each idle callback may apply no more than one eviction"
+    );
+    assert!(!protected_editor.is_evicted());
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::Converged
+    );
+}
+
+#[test]
+fn test_memory_budget_resnapshots_instead_of_applying_stale_candidates() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("stale-plan tempdir");
+    let paths = [
+        dir.path().join("first.txt"),
+        dir.path().join("second.txt"),
+        dir.path().join("third.txt"),
+    ];
+    let window = test_window();
+    present_window(&window);
+
+    let mut background_editors = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        fixture::write_text(path, &format!("tab {index}\n"));
+        window.open_document(path);
+        wait_until(Duration::from_secs(5), || {
+            active_editor(&window).load_state() == EditorLoadState::Loaded
+        });
+        let editor = active_editor(&window);
+        editor.set_memory_estimate_for_test(Some(20 * 1024 * 1024));
+        background_editors.push(editor);
+    }
+
+    window.new_tab();
+    flush_events();
+    let protected_editor = active_editor(&window);
+    protected_editor.buffer().set_text("protected unsaved work");
+    let protected_for_hook = protected_editor.clone();
+    window.set_after_editor_memory_eviction_hook_for_test(move || {
+        protected_for_hook.set_memory_estimate_for_test(Some(1024 * 1024));
+    });
+    protected_editor.set_memory_estimate_for_test(Some(220 * 1024 * 1024));
+    flush_events();
+
+    assert_eq!(
+        background_editors
+            .iter()
+            .filter(|editor| editor.is_evicted())
+            .count(),
+        1,
+        "the fresh under-budget snapshot must cancel remaining stale candidates"
+    );
+    assert!(!protected_editor.is_evicted());
+    assert_eq!(
+        window.editor_memory_outcome_for_test(),
+        EditorMemoryBudgetOutcome::WithinBudget
+    );
+}
+
+#[test]
 fn test_delayed_session_restore_completions_preserve_active_and_modified_pages() {
     ensure_gtk_init();
     let _delay_reset = EditorLoadDelayReset;

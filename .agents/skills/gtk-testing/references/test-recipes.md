@@ -1,5 +1,13 @@
 # Test Recipes by Feature
 
+## Table of Contents
+
+- [File Operations](#file-operations)
+- [Tab Management](#tab-management)
+- [Session Persistence](#session-persistence)
+- [Sidebar and File Tree](#sidebar--file-tree)
+- [Helper Functions](#helper-functions)
+
 Concrete test patterns aligned with the repo's current helpers and harnesses.
 
 There is no standalone `tests/e2e/` target today. Workflow-level UI regressions usually belong in the widget harness under `crates/lushtext/tests/widget/*.rs`.
@@ -116,6 +124,7 @@ fn session_roundtrip_preserves_cursor() {
             cursor_line: 2,
             cursor_col: 5,
             scroll_line: 0,
+            pinned: false,
         }],
         active_tab_index: Some(0),
     };
@@ -131,40 +140,48 @@ fn session_roundtrip_preserves_cursor() {
 }
 ```
 
-### Filter Removes Deleted Files
+### Domain Retention Rebases the Active Tab
 
-**Level**: Integration
+**Level**: Unit
+
+Use `SessionData` retention only with evidence already computed by an explicit
+cleanup or reconciliation workflow. Never probe path existence while restoring
+a session: a temporarily unavailable mount must not be erased from the next
+persisted snapshot.
 
 ```rust
 #[test]
-fn session_filter_removes_deleted_files() {
-    let ctx = TestContext::new();
-    let real_file = ctx.write_file("exists.txt", "content");
-
+fn session_retention_uses_precomputed_evidence_and_rebases_active_index() {
+    let retained_paths = std::collections::HashSet::from([
+        std::path::PathBuf::from("/project/keep.txt"),
+    ]);
     let mut session = SessionData {
         tabs: vec![
             SessionTab {
-                path: Some(real_file.clone()),
+                path: Some("/project/keep.txt".into()),
                 draft_id: None,
                 cursor_line: 0,
                 cursor_col: 0,
                 scroll_line: 0,
+                pinned: true,
             },
             SessionTab {
-                path: Some(ctx.path().join("deleted.txt")),
+                path: Some("/project/remove.txt".into()),
                 draft_id: None,
                 cursor_line: 0,
                 cursor_col: 0,
                 scroll_line: 0,
+                pinned: false,
             },
         ],
         active_tab_index: Some(1),
     };
 
-    session_service::filter_existing_tabs(&mut session);
+    session.retain_tabs_by_path(&retained_paths);
 
     assert_eq!(session.tabs.len(), 1);
-    assert_eq!(session.tabs[0].path, Some(real_file));
+    assert_eq!(session.tabs[0].path.as_deref(), Some(std::path::Path::new("/project/keep.txt")));
+    assert!(session.tabs[0].pinned);
     assert_eq!(session.active_tab_index, None);
 }
 ```
@@ -186,10 +203,10 @@ fn scan_directory_sorts_dirs_first() {
     let entries = file_tree::scan_directory(ctx.path().join("project").as_path());
 
     assert_eq!(entries.len(), 3);
-    assert!(entries[0].1, "first entry should be directory");
-    assert_eq!(entries[0].0.file_name().unwrap(), "a_dir");
-    assert_eq!(entries[1].0.file_name().unwrap(), "b_file.txt");
-    assert_eq!(entries[2].0.file_name().unwrap(), "c_file.txt");
+    assert!(entries[0].is_dir, "first entry should be directory");
+    assert_eq!(entries[0].path.file_name().unwrap(), "a_dir");
+    assert_eq!(entries[1].path.file_name().unwrap(), "b_file.txt");
+    assert_eq!(entries[2].path.file_name().unwrap(), "c_file.txt");
 }
 ```
 

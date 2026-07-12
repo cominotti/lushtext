@@ -14,18 +14,43 @@ from pathlib import Path
 
 
 SCRIPT_PATH = Path(__file__).resolve()
-REPO_ROOT = SCRIPT_PATH.parents[4]
+SCRIPT_DIR = SCRIPT_PATH.parent
 SYSTEM_PYTHON = Path("/usr/bin/python3")
 ATSPI_REGISTRYD = Path("/usr/libexec/at-spi2-registryd")
-APP_ID = "dev.cominotti.lushtext"
-APP_OBJECT_PATH = "/dev/cominotti/lushtext"
+
+
+def discover_repo_root() -> Path:
+    override = os.environ.get("LUSHTEXT_DEBUG_REPO_ROOT")
+    if override:
+        return Path(override).resolve()
+    result = subprocess.run(
+        ["git", "-C", str(SCRIPT_DIR), "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip()).resolve()
+    for parent in SCRIPT_DIR.parents:
+        if (parent / "Cargo.toml").is_file():
+            return parent
+    raise RuntimeError("Could not discover repository root; set LUSHTEXT_DEBUG_REPO_ROOT.")
+
+
+REPO_ROOT = discover_repo_root()
+APP_ID = os.environ.get("LUSHTEXT_DEBUG_APP_ID", "dev.cominotti.lushtext")
+APP_OBJECT_PATH = os.environ.get(
+    "LUSHTEXT_DEBUG_APP_OBJECT_PATH", f"/{APP_ID.replace('.', '/')}"
+)
 WINDOW_OBJECT_PATH = f"{APP_OBJECT_PATH}/window/1"
 AUTOMATION_OBJECT_PATH = f"{APP_OBJECT_PATH}/Automation"
-AUTOMATION_INTERFACE = "dev.cominotti.lushtext.Automation1"
-
-
-def usage_binary() -> Path:
-    return REPO_ROOT / "target/debug/lushtext"
+AUTOMATION_INTERFACE = os.environ.get(
+    "LUSHTEXT_DEBUG_AUTOMATION_INTERFACE", f"{APP_ID}.Automation1"
+)
+GSETTINGS_SCHEMA = os.environ.get("LUSHTEXT_DEBUG_GSETTINGS_SCHEMA", APP_ID)
+GSETTINGS_SCHEMA_DIR = Path(
+    os.environ.get("LUSHTEXT_DEBUG_GSETTINGS_SCHEMA_DIR", str(REPO_ROOT / "data"))
+)
 
 
 def positive_int(value: str) -> int:
@@ -194,7 +219,32 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Write the focused accessible node path for the launched app.",
     )
-    parser.add_argument("--binary", type=Path, default=usage_binary())
+    parser.add_argument(
+        "--binary",
+        type=Path,
+        default=Path(os.environ["LUSHTEXT_DEBUG_BINARY"])
+        if "LUSHTEXT_DEBUG_BINARY" in os.environ
+        else None,
+    )
+    parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    parser.add_argument("--app-id", default=APP_ID)
+    parser.add_argument(
+        "--app-object-path", default=os.environ.get("LUSHTEXT_DEBUG_APP_OBJECT_PATH")
+    )
+    parser.add_argument(
+        "--automation-interface",
+        default=os.environ.get("LUSHTEXT_DEBUG_AUTOMATION_INTERFACE"),
+    )
+    parser.add_argument(
+        "--gsettings-schema", default=os.environ.get("LUSHTEXT_DEBUG_GSETTINGS_SCHEMA")
+    )
+    parser.add_argument(
+        "--gsettings-schema-dir",
+        type=Path,
+        default=Path(os.environ["LUSHTEXT_DEBUG_GSETTINGS_SCHEMA_DIR"])
+        if "LUSHTEXT_DEBUG_GSETTINGS_SCHEMA_DIR" in os.environ
+        else None,
+    )
     parser.add_argument("--width", type=positive_int, default=1600)
     parser.add_argument("--height", type=positive_int, default=1000)
     parser.add_argument("--keep-artifacts", action="store_true")
@@ -210,15 +260,41 @@ def require_command(command: str) -> None:
         )
 
 
+def configure_runtime(args: argparse.Namespace) -> None:
+    """Apply CLI identity overrides before any parent or child workflow runs."""
+
+    global REPO_ROOT, APP_ID, APP_OBJECT_PATH, WINDOW_OBJECT_PATH
+    global AUTOMATION_OBJECT_PATH, AUTOMATION_INTERFACE
+    global GSETTINGS_SCHEMA, GSETTINGS_SCHEMA_DIR
+
+    REPO_ROOT = args.repo_root.resolve()
+    APP_ID = args.app_id
+    args.binary = args.binary or REPO_ROOT / "target/debug/lushtext"
+    args.app_object_path = args.app_object_path or f"/{APP_ID.replace('.', '/')}"
+    args.automation_interface = args.automation_interface or f"{APP_ID}.Automation1"
+    args.gsettings_schema = args.gsettings_schema or APP_ID
+    args.gsettings_schema_dir = args.gsettings_schema_dir or REPO_ROOT / "data"
+    APP_OBJECT_PATH = args.app_object_path
+    WINDOW_OBJECT_PATH = f"{APP_OBJECT_PATH.rstrip('/')}/window/1"
+    AUTOMATION_OBJECT_PATH = f"{APP_OBJECT_PATH.rstrip('/')}/Automation"
+    AUTOMATION_INTERFACE = args.automation_interface
+    GSETTINGS_SCHEMA = args.gsettings_schema
+    GSETTINGS_SCHEMA_DIR = args.gsettings_schema_dir.resolve()
+
+
 def validate_args(args: argparse.Namespace) -> None:
     args.file = args.file.resolve()
     args.output = args.output.resolve()
     args.binary = args.binary.resolve()
+    args.repo_root = args.repo_root.resolve()
+    args.gsettings_schema_dir = args.gsettings_schema_dir.resolve()
 
     if not args.file.is_file():
         raise RuntimeError(f"File to open does not exist: {args.file}")
     if not args.binary.is_file() or not os.access(args.binary, os.X_OK):
         raise RuntimeError(f"LushText binary is not executable: {args.binary}")
+    if not args.gsettings_schema_dir.is_dir():
+        raise RuntimeError(f"GSettings schema directory does not exist: {args.gsettings_schema_dir}")
     if not SYSTEM_PYTHON.is_file():
         raise RuntimeError("Missing /usr/bin/python3. Run make dev-tools inside the Toolbx/container.")
     if args.expected_search_matches is not None and args.search is None:
@@ -265,6 +341,18 @@ def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
         str(args.output),
         "--binary",
         str(args.binary),
+        "--repo-root",
+        str(args.repo_root),
+        "--app-id",
+        args.app_id,
+        "--app-object-path",
+        args.app_object_path,
+        "--automation-interface",
+        args.automation_interface,
+        "--gsettings-schema",
+        args.gsettings_schema,
+        "--gsettings-schema-dir",
+        str(args.gsettings_schema_dir),
         "--width",
         str(args.width),
         "--height",
@@ -369,7 +457,7 @@ def outer_run(args: argparse.Namespace) -> int:
     env.update(
         {
             "GSETTINGS_BACKEND": "keyfile",
-            "GSETTINGS_SCHEMA_DIR": str(REPO_ROOT / "data"),
+            "GSETTINGS_SCHEMA_DIR": str(GSETTINGS_SCHEMA_DIR),
             "LUSHTEXT_MUTTER_ARTIFACT_DIR": str(artifact_dir),
             "XDG_CACHE_HOME": str(artifact_dir / "cache"),
             "XDG_CONFIG_HOME": str(artifact_dir / "config"),
@@ -585,13 +673,13 @@ def internal_run(args: argparse.Namespace) -> int:
 
         if args.enable_minimap:
             subprocess.run(
-                ["gsettings", "set", "dev.cominotti.lushtext", "show-minimap", "true"],
+                ["gsettings", "set", GSETTINGS_SCHEMA, "show-minimap", "true"],
                 check=True,
             )
         if args.color_scheme != "default":
             set_gsettings_value(
                 artifact_dir,
-                "dev.cominotti.lushtext",
+                GSETTINGS_SCHEMA,
                 "color-scheme",
                 args.color_scheme,
                 reason="requested color scheme variant",
@@ -645,7 +733,7 @@ def internal_run(args: argparse.Namespace) -> int:
         if args.tab_content_opacity is not None:
             set_gsettings_value(
                 artifact_dir,
-                "dev.cominotti.lushtext",
+                GSETTINGS_SCHEMA,
                 "tab-content-opacity",
                 str(args.tab_content_opacity),
                 reason="document surface opacity readability variant",
@@ -938,7 +1026,7 @@ def set_search_text(args: argparse.Namespace, artifact_dir: Path, env: dict[str,
     result = subprocess.run(
         [
             str(SYSTEM_PYTHON),
-            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-set-text.py"),
+            str(SCRIPT_DIR / "atspi-set-text.py"),
             "--application-regex",
             "^lushtext$",
             "--role-regex",
@@ -969,7 +1057,7 @@ def click_atspi_button(artifact_dir: Path, env: dict[str, str], name_regex: str)
     result = subprocess.run(
         [
             str(SYSTEM_PYTHON),
-            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-click-button.py"),
+            str(SCRIPT_DIR / "atspi-click-button.py"),
             "--application-regex",
             "^lushtext$",
             "--name-regex",
@@ -1023,7 +1111,7 @@ def run_atspi_accessible_action(
     result = subprocess.run(
         [
             str(SYSTEM_PYTHON),
-            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-accessible-action.py"),
+            str(SCRIPT_DIR / "atspi-accessible-action.py"),
             "--application-regex",
             "^lushtext$",
             "--command",
@@ -1064,7 +1152,7 @@ def run_atspi_key_action(artifact_dir: Path, env: dict[str, str], key: str) -> N
     result = subprocess.run(
         [
             str(SYSTEM_PYTHON),
-            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-accessible-action.py"),
+            str(SCRIPT_DIR / "atspi-accessible-action.py"),
             "--application-regex",
             "^lushtext$",
             "--command",
@@ -1095,7 +1183,7 @@ def set_atspi_editor_text(artifact_dir: Path, env: dict[str, str], text: str) ->
     result = subprocess.run(
         [
             str(SYSTEM_PYTHON),
-            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-set-text.py"),
+            str(SCRIPT_DIR / "atspi-set-text.py"),
             "--application-regex",
             "^lushtext$",
             "--name-regex",
@@ -1139,7 +1227,7 @@ def dump_atspi_tree(args: argparse.Namespace, artifact_dir: Path, env: dict[str,
     result = subprocess.run(
         [
             str(SYSTEM_PYTHON),
-            str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-dump-tree.py"),
+            str(SCRIPT_DIR / "atspi-dump-tree.py"),
             "--application-regex",
             "^lushtext$",
             "--output",
@@ -1176,7 +1264,7 @@ def wait_for_atspi_text(artifact_dir: Path, env: dict[str, str], expected_text: 
         result = subprocess.run(
             [
                 str(SYSTEM_PYTHON),
-                str(REPO_ROOT / ".agents/skills/gtk-agentic-debugging/scripts/atspi-dump-tree.py"),
+                str(SCRIPT_DIR / "atspi-dump-tree.py"),
                 "--application-regex",
                 "^lushtext$",
                 "--output",
@@ -1310,7 +1398,7 @@ def mutter_child(args: argparse.Namespace) -> int:
         {
             "GDK_BACKEND": "wayland",
             "GSETTINGS_BACKEND": "keyfile",
-            "GSETTINGS_SCHEMA_DIR": str(REPO_ROOT / "data"),
+            "GSETTINGS_SCHEMA_DIR": str(GSETTINGS_SCHEMA_DIR),
             "GSK_RENDERER": app_env.get("GSK_RENDERER", "cairo"),
             "GTK_USE_PORTAL": "0",
         }
@@ -1397,6 +1485,7 @@ def mutter_child(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
+    configure_runtime(args)
     try:
         if args.internal_run:
             return internal_run(args)

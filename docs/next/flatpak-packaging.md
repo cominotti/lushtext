@@ -200,21 +200,27 @@ metadata. A same-ID non-Flatpak desktop file in
 `$XDG_DATA_HOME/applications/dev.cominotti.lushtext.desktop` can shadow the
 Flatpak export and make Settings treat LushText as an unsandboxed host app.
 
-Development runs may temporarily stage the production desktop ID so GNOME Shell
-can associate the debug process with the app while it is running. Normal
-development staging must clean that file up. Persistent development staging must
-use a non-production ID, currently `dev.cominotti.lushtext.Devel`, so it does
-not override the installed Flatpak app info.
+All development staging, temporary or persistent, must use a non-production
+ID. The default is `dev.cominotti.lushtext.Devel`; helpers may accept another
+explicit safe development ID, but must never stage a same-ID host desktop file
+for `dev.cominotti.lushtext`, even briefly, because it can shadow the installed
+Flatpak export and make desktop settings report the production app as unsandboxed.
 
-Run this check after local packaging or desktop-entry work:
+When the task authorizes modifying the user's Flatpak installation, install the
+current checkout immediately before checking installed identity:
 
 ```bash
+make flatpak-install
 make verify-flatpak-identity
 ```
 
-The check verifies the Flatpak export marker, reports effective Flatpak
+The install-plus-check sequence verifies the current checkout rather than a
+stale previously installed build. The check verifies the Flatpak export marker, reports effective Flatpak
 permissions, detects same-ID non-Flatpak shadow entries, and confirms the MIME
 handler rows for plain text, Markdown, and empty documents remain registered.
+If installation is outside the task's authority, report only build-time
+evidence and do not claim installed identity, permissions, MIME registration,
+or launch behavior.
 
 ### Desktop D-Bus Activation
 

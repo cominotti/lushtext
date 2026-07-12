@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Comments"
+  short_description: "Keep Rust comments accurate and high signal"
+  default_prompt: "Use $rust-comments to review this change for missing contracts, stale rationale, and comment noise."

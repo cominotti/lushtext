@@ -1,5 +1,15 @@
 # Failure Recovery
 
+## Table of Contents
+
+- [Before Public Push](#before-public-push)
+- [After Local Commit or Tag](#after-local-commit-or-tag)
+- [GitHub Actions Problems](#github-actions-problems)
+- [GitHub Release Problems](#github-release-problems)
+- [Cominotti Flatpak Problems](#cominotti-flatpak-problems)
+- [Optional Flathub Problems](#optional-flathub-problems)
+- [Transport and Signing](#transport-and-signing)
+
 When something fails, first identify which public surfaces already changed: local files, local commit, local tag, pushed `main`, pushed tag, GitHub Release, Cominotti Flatpak repository artifact/deploy, Flathub PR, or merged Flathub update.
 
 ## Before Public Push

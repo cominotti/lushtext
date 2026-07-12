@@ -238,7 +238,16 @@ window actions, waits through Automation1, saves `automation-snapshot.json` for
 each capture, and scans logs for unexpected GTK/Adwaita/GDK/accessibility
 warnings. Each capture also writes a bounded manifest that indexes its
 screenshot, state assertions, AT-SPI excerpts, D-Bus summaries, warning scan,
-environment file, and skip/failure reason. Current captures cover
+environment file, and skip/failure reason.
+
+The helper discovers its checkout through Git and resolves bundled AT-SPI tools
+relative to its own location. Renamed or relocated development fixtures can
+override the repository root, binary, application ID/object path, Automation1
+interface, and GSettings schema/directory through documented command flags or
+the matching `LUSHTEXT_DEBUG_*` environment variables; the production defaults
+remain unchanged.
+
+Current captures cover
 search/minimap, normal document properties,
 compact document properties, constrained document properties, preview-only
 Markdown preview, constrained preview-only Markdown preview, side-by-side

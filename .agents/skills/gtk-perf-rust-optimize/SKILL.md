@@ -1,210 +1,37 @@
 ---
 name: gtk-perf-rust-optimize
-description: "Review Rust code for idiomatic patterns, correctness improvements, and SIMD coverage on established hot paths. Uses parallel subagents for focused reviews. Auto-invoked when writing or modifying Rust code in services/, ui/editor_page/, model/, or Cargo.toml. Trigger whenever code touches file loading/saving, fuzzy search, file indexing, byte processing, or error handling patterns. Also trigger when the user mentions SIMD, error handling, thiserror, or code quality. Use this skill proactively after writing any performance-sensitive Rust code."
+description: Explicit deep-dive checklist for Rust hot-path correctness, idioms, and established acceleration patterns in LushText. Use when explicitly invoked or when assigned as the Rust hot-path leaf by gtk-perf-review; do not auto-invoke alongside the umbrella performance skill. Applies to byte decoding, search scoring, indexing, file processing, error models, and benchmark-sensitive Rust. Leaf reviewers must return findings directly and must not delegate.
 ---
 
-Review Rust code in LushText for idiomatic patterns, correctness improvements, and SIMD coverage on established hot paths. While `gtk-responsiveness` answers "does this block the main thread?" and `gtk-perf-scale` answers "does this scale to large inputs?", this skill answers: **"is this Rust code idiomatic, correct, and following established project patterns?"** Benchmark coverage is handled by `gtk-perf-scale`'s benchmark-audit subagent.
+# Rust Hot-Path Deep Dive
 
-## Philosophy: Readability First
+Review whether performance-sensitive Rust is correct, readable, and consistent with patterns proven in the current checkout. This is a leaf of `gtk-perf-review`; never spawn subagents from this skill.
 
-**Code readability is the top priority.** Every recommendation from this skill must make the code easier to understand, not harder. If an optimization requires an unfamiliar abstraction, obscure trait bounds, or indirection that a new contributor wouldn't immediately grasp — it is a net negative.
+## Load references selectively
 
-The purpose of this skill is to catch:
-1. **Correctness issues** that look like optimizations but are really about robustness (thiserror vs string errors, proper SIMD validation)
-2. **Established pattern consistency** where the codebase already uses a pattern (nucleo for search, simdutf8 for validation) and new code should follow suit
-3. **Benchmark coverage** for genuinely hot paths
+- Read [references/simd-opportunities.md](references/simd-opportunities.md) for byte validation, scanning, and fuzzy matching.
+- Read [references/allocation-patterns.md](references/allocation-patterns.md) for owned handoffs, saves, typed errors, and model batching.
+- Read the applicable repository `AGENTS.md` files before judging ownership or architecture.
 
-### What We Do NOT Flag
+## Checklist
 
-These are explicitly out of scope:
+1. Inspect only the supplied scope and its diff.
+2. Verify dependency versions, edition, MSRV, and established patterns from current `Cargo.toml` and code; never recommend a migration because a skill reference says a version is current.
+3. Preserve `services::filesystem` as the production filesystem boundary; an optimization must not bypass it for direct standard-library I/O.
+4. For text loading, preserve the encoding-aware `services::editor_io` pipeline. `simdutf8` is a fast validation branch for valid UTF-8, not proof that every file is UTF-8. Do not prescribe unsafe conversion; current production code converts the validated `&str` with safe APIs and falls back to BOM, UTF-16, or Windows-1252 handling.
+5. Recommend `nucleo-matcher`, `memchr`, or another optimized primitive only when the repository already uses it for a materially equivalent hot path or profiling/benchmarks justify it.
+6. Check typed errors and exhaustive handling where callers need to distinguish failure modes. Do not demand `thiserror` for a small private helper whose single error shape is already clear.
+7. Check unsafe code only when present in scope. Require a local safety argument and a measurable reason; prefer a safe equivalent when its cost is immaterial.
+8. Check benchmarks for changed, established hot paths. Defer scale/budget calibration to `gtk-perf-scale`.
+9. Reject suggestions that trade readability for speculative throughput.
 
-- **Allocation micro-counting**: `.to_string_lossy().to_string()` vs `.into_owned()`, `format!()` vs `push_str()`, intermediate collections, `Cow<str>` opportunities
-- **Speculative SIMD adoption**: Don't recommend SIMD crates for code that hasn't been profiled. Only flag when an established project pattern (simdutf8, nucleo, memchr) is missing on a similar code path.
-- **Clone avoidance in non-hot paths**: `.clone()` is fine in setup code, signal handlers, error paths, and any code that runs fewer than ~1000 times
-- **`Vec::with_capacity()` suggestions**: The doubling strategy is fine for most collections
-- **Drop ordering**: Scoping intermediates to free memory earlier is not worth the nested blocks
+## Finding rules
 
-The threshold: **if the suggestion makes the code harder to read and you need a benchmark to prove the difference, don't suggest it.**
+- **FLAG** correctness bugs, unsafe precondition gaps, fragile error discrimination, or bypasses of an established hot-path contract.
+- **RECOMMEND** a measured or strongly evidenced improvement that also preserves clarity.
+- **CONSIDER** an optional profiling or benchmark follow-up.
+- **GOOD** relevant correct patterns.
 
-## Relationship to Other Performance Skills
+Do not use arbitrary item-count cutoffs to excuse or condemn an allocation. Judge frequency, input size, ownership, and evidence. Do not quote throughput figures unless reproduced in the current environment or sourced from a checked-in benchmark artifact.
 
-| Concern | gtk-responsiveness | gtk-perf-scale | gtk-perf-rust-optimize (this) |
-|---------|-------------------|----------------|-------------------------------|
-| Core question | "Does this block the main thread?" | "Does this scale to large inputs?" | "Is this idiomatic and following project patterns?" |
-| Primary focus | Thread safety, frame budget | Throughput at 10x-100x, RAM budgets | Correctness, SIMD consistency, benchmarks |
-| Benchmarks | Defer to gtk-perf-scale | Owns benchmark-audit | Defer to gtk-perf-scale |
-| Example finding | filesystem write on main thread | Missing file size check | `Result<T, String>` instead of thiserror enum |
-
-If you find a GTK threading issue, flag it but reference `gtk-responsiveness`. If you find a scaling issue, reference `gtk-perf-scale`.
-
-## Boundary with gtk4-libadwaita-internals
-
-Do not invent GTK or Libadwaita behavior from Rust syntax alone.
-
-If a recommendation depends on widget lifecycle, measurement, builder-template child rules, focus contracts, or list-factory semantics, hand that part to `gtk4-libadwaita-internals` and keep this skill focused on Rust idioms, established project patterns, and correctness.
-
-## Execution Model: Parallel Subagents
-
-This skill uses **parallel subagents** for independent review concerns. Do NOT review all concerns inline — dispatch focused subagents.
-
-### Workflow
-
-1. **Identify changed files** — run `git diff --name-only` (or use the diff context if already available)
-2. **Match trigger patterns** — for each subagent below, check its path globs and content patterns against the file list. A subagent triggers if any changed file matches a listed path glob OR contains a listed content pattern.
-3. **Dispatch all relevant subagents in parallel** via the Agent tool — even if only one triggers, always dispatch as a subagent for consistent output format. In each prompt, replace `{changed_files}` with the actual file list from step 1.
-4. **Aggregate results** — merge findings, deduplicate, produce the final report
-
-## Severity Levels
-
-- **[FLAG]** — Correctness or consistency issue. A proven hot path missing an established SIMD pattern, or an error handling approach that enables silent bugs. Must fix.
-- **[RECOMMEND]** — Idiomatic improvement that also improves readability or correctness. Fix proactively.
-- **[CONSIDER]** — Minor improvement. Only if the change is also a readability win.
-- **[GOOD]** — Existing correct pattern. Reinforce and protect from regression.
-
-## Subagent Definitions
-
-### 1. simd-coverage-audit
-
-**Triggers**:
-- paths: `ui/editor_page/**/*.rs`, `services/palette.rs`
-- content: `filesystem::read|from_utf8|memchr|simdutf8`
-
-**Subagent prompt**:
-```
-You are reviewing Rust code in a GTK4/Libadwaita text editor for consistency with established SIMD patterns.
-
-Read the reference file at: .agents/skills/gtk-perf-rust-optimize/references/simd-opportunities.md
-
-Changed files to review:
-{changed_files}
-
-The project has established SIMD patterns that new code on similar paths should follow:
-- simdutf8 for ALL file loads (UTF-8 validation)
-- nucleo-matcher for ALL fuzzy search scoring
-- memchr for byte scanning on large buffers (if applicable)
-
-IMPORTANT: Only flag SIMD issues where an ESTABLISHED project pattern is missing on a similar code path. Do NOT recommend SIMD adoption for new code paths that haven't been profiled. Do NOT flag micro allocation patterns.
-
-Review criteria:
-- Does new file-loading code use the established simdutf8 pattern (`services::filesystem::read::bytes` + simdutf8 validation + `from_utf8_unchecked`)?
-- Does new search/scoring code use nucleo-matcher (the established fuzzy search pattern)?
-- For new byte-scanning code on buffers that could be >1KB: is there an existing memchr pattern it should follow?
-
-Anti-patterns to flag:
-- [FLAG] New file-loading path uses a scalar string-read path instead of the filesystem byte-read boundary plus established simdutf8 validation
-- [FLAG] New fuzzy search code uses hand-rolled scoring instead of nucleo-matcher
-- [GOOD] nucleo-matcher used for fuzzy search with Matcher reuse across candidates
-- [GOOD] simdutf8 + from_utf8_unchecked with correct safety comment
-
-Output format — return findings as:
-**[SEVERITY] Title** — file:line
-Description. Which established pattern is missing. Fix.
-```
-
-### 2. modern-rust-audit
-
-**Triggers**: Any changed `.rs` file. This is the lightest subagent — always runs.
-
-**Subagent prompt** (self-contained — no reference file):
-```
-You are reviewing Rust code in a GTK4/Libadwaita text editor for modern Rust idioms and correctness improvements that also improve readability.
-
-Changed files to review:
-{changed_files}
-
-The project uses Rust edition 2024 with MSRV 1.96.0. thiserror = "2.0" is in workspace dependencies.
-
-IMPORTANT: Only flag improvements that make the code BOTH more correct AND more readable. Do NOT flag micro allocation patterns, Cow<str> opportunities, format!() vs push_str, or clone avoidance.
-
-Review criteria:
-1. thiserror adoption: flag Result<T, String> return types in service functions. thiserror enums improve BOTH correctness (exhaustive pattern matching, no fragile string comparison) AND readability (the error variants document what can go wrong). The crate is already a workspace dependency.
-2. Error string comparison: flag any `if err == "some string"` or `err.contains("...")` patterns. These are fragile (typo = silent bug) and hard to review. Enum pattern matching is clearer.
-3. let-else usage: only flag when let-else would significantly improve readability over a match arm that just extracts or early-returns. Do not flag cases where the match is already clear.
-4. Edition 2024 readiness: if the crate still uses edition = "2021", note that Edition 2024 is available. Key change: `unsafe_op_in_unsafe_fn` becomes deny-by-default — any existing `unsafe` blocks inside `unsafe fn` will need explicit `unsafe {}` wrappers. Relevant because the codebase uses `unsafe { String::from_utf8_unchecked(bytes) }`.
-5. #[expect] vs #[allow]: flag `#[allow(lint)]` when `#[expect(lint)]` would be more appropriate. `#[expect]` is self-policing — it causes a compile error if the lint no longer fires, catching stale suppressions automatically. Available since Rust 1.81, well within MSRV 1.96.0. Reserve `#[allow]` only for cases where the lint may or may not fire depending on configuration.
-6. if-let match guards: prefer Rust 1.96 match guards such as `Some(x) if let Ok(y) = parse(x) => ...` when the guard removes a nested `if let` and keeps the match exhaustive and easy to read. Do not use them when they duplicate arms or obscure fallback behavior.
-7. Atomic updates: flag hand-written compare-exchange loops when `Atomic*::update` or `Atomic*::try_update` expresses the same transition more clearly with the same ordering.
-8. Fixed-size slice windows: flag `.windows(N)` plus positional indexing when `.array_windows::<N>()` enables named destructuring.
-9. Peekable helpers: flag manual `peek()` + `next()` pairs when `next_if`, `next_if_eq`, `next_if_map`, or `next_if_map_mut` states the intent directly.
-10. cfg_select!: consider `cfg_select!` for expression-level or tightly grouped cfg branches. Do not flag item-level `#[cfg]` implementations that are already clearer.
-11. Pattern assertions: flag `assert!(matches!(...))` in tests when Rust 1.96's `std::assert_matches` gives clearer failure output and the asserted value implements `Debug`. Require an explicit macro import; the macro is not in the prelude.
-12. Copyable ranges: consider `core::range::Range` only for named byte-span values where `Copy` removes real clone or move friction. Do not recommend a broad rewrite while range syntax still produces legacy `std::ops` ranges.
-13. New Clippy 1.96 lints: expect the workspace to deny `manual_option_zip`, `manual_pop_if`, and `manual_noop_waker`; flag code that recreates those patterns if Clippy cannot see it.
-
-Anti-patterns to flag:
-- [RECOMMEND] Result<T, String> with format!() in service functions — thiserror enum is both more correct and more readable
-- [RECOMMEND] Error string equality comparison — fragile and hard to review, use enum pattern match
-- [CONSIDER] #[allow(lint)] where #[expect(lint)] would be self-policing — stale suppressions are bugs waiting to happen
-- [CONSIDER] match { Some(x) => x, None => return } where let-else would be noticeably cleaner
-- [CONSIDER] edition = "2021" when 2024 is available — note the unsafe_op_in_unsafe_fn impact
-- [CONSIDER] manual compare-exchange loop where `try_update` captures the state transition in one closure
-- [CONSIDER] `.windows(2)` with `window[0]` and `window[1]` where `array_windows::<2>()` destructuring is clearer
-- [CONSIDER] manual `peek()` + `next()` on `Peekable` where a `next_if*` helper names the condition
-- [CONSIDER] nested `if let` inside a match arm where a Rust 1.96 if-let guard keeps the arm readable
-- [CONSIDER] `assert!(matches!(...))` in tests where `assert_matches!` would produce a clearer failure
-- [CONSIDER] stored byte-span range clone where `core::range::Range` would remove move friction without conversion noise
-- [GOOD] Correct use of let-else for early returns
-- [GOOD] Correct use of if-let match guards for short fallible conditions
-- [GOOD] Atomic `try_update` with explicit success and failure orderings on shared counters
-- [GOOD] anyhow::Result with .context() in service error propagation
-- [GOOD] thiserror-derived error enums with exhaustive matching
-- [GOOD] #[expect(deprecated)] for APIs with no current replacement
-- [GOOD] Explicit `use std::assert_matches;` in test modules that use `assert_matches!`
-
-Output format — return findings as:
-**[SEVERITY] Title** — file:line
-Description. Why the modern pattern improves both correctness and readability. Fix.
-```
-
-## Aggregation
-
-After all subagents return, produce the unified report:
-
-1. **Merge findings** — combine all [FLAG], [RECOMMEND], [CONSIDER], [GOOD] items verbatim from subagents. Do not add new findings beyond what was reported.
-2. **Deduplicate** — if two subagents flag the same line, keep the more specific finding
-3. **Drop excluded items** — remove any finding that falls under the "What We Do NOT Flag" list above
-4. **Sort by severity** — FLAG first, then RECOMMEND, CONSIDER, GOOD
-
-## Audit Report Format
-
-```
-## Rust Code Quality Audit
-
-### Summary
-- **Files reviewed**: N
-- **Findings**: X flag, Y recommend, Z consider, W good
-- **SIMD consistency**: Brief status (e.g., "all file loads use simdutf8; search uses nucleo")
-
-### [FLAG] Title — file:line
-Description of the issue.
-**Why it matters**: Correctness or consistency impact (not micro-throughput).
-**Fix**: Concrete recommendation.
-
-### [RECOMMEND] Title — file:line
-...
-
-### [CONSIDER] Title — file:line
-...
-
-### [GOOD] Title — file:line
-Why this pattern is correct and idiomatic.
-```
-
-## Guidance Mode
-
-When implementing new features (not reviewing existing code), check:
-
-1. Does this code load files? → Follow the established simdutf8 pattern
-2. Does this code do fuzzy search? → Use nucleo-matcher (the established pattern)
-3. Does this return `Result<T, String>`? → Consider a `thiserror` enum (improves both correctness and readability)
-4. Is this a hot path? → Benchmark coverage is checked by `gtk-perf-scale`
-5. Is this a manual atomic CAS loop? → Prefer `Atomic*::try_update` if it keeps the transition readable
-6. Is this fixed-size window parsing? → Prefer `array_windows::<N>()` destructuring over positional indexing
-7. Is this a `peek()` + `next()` pair? → Prefer the matching `Peekable::next_if*` helper
-8. Is a match arm immediately doing `if let`? → Consider a Rust 1.96 if-let guard when it keeps fallback behavior obvious
-9. Is a test using `assert!(matches!(...))`? → Prefer `assert_matches!` when the asserted value implements `Debug`
-10. Is a stored byte-span range cloned just to keep using its bounds? → Consider `core::range::Range` only if conversion noise stays lower than the clone it removes
-
-## Tone
-
-Focus on correctness and consistency over raw throughput. Instead of "this allocates unnecessarily," say "this error handling uses string comparison, which is fragile — a typo would silently break the match arm." Acknowledge existing good patterns before suggesting improvements. Never recommend changes that trade readability for marginal performance.
+Return findings with `file:line`, evidence, user/correctness impact, and a concrete fix. If no issue survives verification, say so and list the inspected hot paths.

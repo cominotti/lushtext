@@ -1,0 +1,38 @@
+schema_version = 1
+excluded_prefixes = ["openspec-", "speckit-"]
+
+[implicit_invocation]
+learn = true
+gtk-perf-review = true
+gtk-perf-rust-optimize = false
+gtk-perf-scale = false
+gtk-responsiveness = false
+
+[performance]
+umbrella = "gtk-perf-review"
+leaves = [
+  "gtk-perf-rust-optimize",
+  "gtk-perf-scale",
+  "gtk-responsiveness",
+]
+package_metadata_namespace = "lushtext-agent"
+package_metadata_key = "performance-roots"
+fallback_suffixes = ["src/ui", "src/services", "src/model", "benches"]
+
+[filesystem_contract]
+paths = [
+  "AGENTS.md",
+  ".agents/rules/rust.md",
+  ".agents/rules/build.md",
+  ".agents/skills/data-safety/SKILL.md",
+  ".agents/skills/gtk-perf-review/SKILL.md",
+  ".agents/skills/gtk-perf-rust-optimize/SKILL.md",
+  ".agents/skills/gtk-perf-scale/SKILL.md",
+  ".agents/skills/gtk-responsiveness/SKILL.md",
+  ".agents/skills/rust-comments/SKILL.md",
+  ".agents/skills/rust-hex-arch/SKILL.md",
+]
+
+[release]
+workflow_role_marker = "agent-release-role"
+required_workflow_roles = ["publication", "benchmark-report"]

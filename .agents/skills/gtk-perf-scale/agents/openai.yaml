@@ -1,0 +1,6 @@
+interface:
+  display_name: "GTK Scale Review"
+  short_description: "Deep-review scale, bounds, memory, and benchmarks"
+  default_prompt: "Use $gtk-perf-scale for an explicit deep dive into large-input behavior, memory bounds, and benchmark coverage."
+policy:
+  allow_implicit_invocation: false

@@ -178,17 +178,25 @@ struct AdaptiveShellLayout {
 pub struct EditorMemoryState {
     /// Whether a next-main-loop aggregate evaluation is already queued.
     pub evaluation_armed: Cell<bool>,
-    /// Guard that keeps eviction-triggered buffer signals from rearming the pass.
+    /// Guard that prevents overlapping aggregate evaluations.
     pub evaluation_running: Cell<bool>,
+    /// Narrow guard for signals emitted synchronously by `EditorPage::evict`.
+    pub applying_eviction: Cell<bool>,
     /// Window-wide generation source used for deterministic least-recent use.
     pub next_access_generation: Cell<u64>,
     /// Number of aggregate evaluations, retained for coalescing assertions.
     pub evaluation_count: Cell<u64>,
     /// Stable result of the most recently completed aggregate policy pass.
     pub last_outcome: Cell<crate::model::editor_memory::EditorMemoryBudgetOutcome>,
+    /// Idle dispatches used to prove that candidate application stays bounded.
+    #[cfg(feature = "test-utils")]
+    pub eviction_dispatch_count: Cell<u64>,
     /// One-shot race injector run after planning and before candidate rechecks.
     #[cfg(feature = "test-utils")]
     pub before_eviction_hook: RefCell<Option<Box<dyn FnOnce()>>>,
+    /// One-shot between-turn transition injector for stale-plan tests.
+    #[cfg(feature = "test-utils")]
+    pub after_eviction_hook: RefCell<Option<Box<dyn FnOnce()>>>,
 }
 
 /// Search-progress lease state used by the status-bar heartbeat flow.

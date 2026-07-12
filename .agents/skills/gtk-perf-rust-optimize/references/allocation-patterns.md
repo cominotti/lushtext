@@ -1,98 +1,41 @@
-# Allocation Patterns — Reference Documentation
+# Ownership and Allocation Patterns
 
-Documentation of established allocation patterns in LushText. This file exists as **reference context** for understanding why certain patterns exist in the codebase, not as a checklist of things to flag during reviews.
+Use these patterns to understand intentional ownership costs. Verify implementation details against current code before treating a status statement as current.
 
-## Table of Contents
+## Contents
 
-1. [simdutf8 File Loading Pattern](#1-simdutf8-pattern)
-2. [Save-Path Memory Model](#2-save-path)
-3. [Error Enum Pattern](#3-error-enum)
-4. [ListStore splice Pattern](#4-splice)
+1. [Document decode](#document-decode)
+2. [GTK-to-worker save snapshots](#gtk-to-worker-save-snapshots)
+3. [Typed failures](#typed-failures)
+4. [GTK model updates](#gtk-model-updates)
 
----
+## Document decode
 
-## 1. simdutf8 File Loading Pattern {#1-simdutf8-pattern}
+Document loading is encoding-aware. `services/editor_io.rs` reads bytes through the filesystem boundary and produces owned Unicode text plus encoding and line-ending metadata. `simdutf8` accelerates the valid-UTF-8 branch; safe conversion and legacy-encoding fallbacks preserve correctness.
 
-**Status: IMPLEMENTED** — All file loads use SIMD UTF-8 validation.
+Avoid duplicating this policy in UI code. A copied “UTF-8 only” fast path is a correctness regression even if it allocates less.
 
-The code uses `services::filesystem::read::bytes` + `simdutf8::basic::from_utf8` + `String::from_utf8_unchecked` for all file sizes. This is the established pattern — new file-loading code should follow it.
+## GTK-to-worker save snapshots
 
-### Pattern (editor_page/mod.rs)
+GTK text objects are main-thread-bound and cannot be read from a worker. Saving therefore requires an owned snapshot before durable filesystem work begins. Current editor code chooses snapshot strategy from live buffer state: ordinary buffers may snapshot synchronously, while large or uncertain buffers can be copied in bounded main-loop slices. The editor remains protected for the save and applies completion on the GTK thread.
 
-```rust
-let bytes = filesystem::read::bytes(&file_path).map_err(read_err)?;
-let content = match simdutf8::basic::from_utf8(&bytes) {
-    Ok(_) => unsafe { String::from_utf8_unchecked(bytes) },
-    Err(_) => {
-        return Err(EditorLoadError::Read {
-            path: file_path,
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8"),
-        });
-    }
-};
-```
+Review peak lifetime rather than declaring the copy avoidable or unavoidable in isolation:
 
----
+- GTK buffer storage remains live;
+- an owned save snapshot is produced;
+- durable-write buffers and metadata may overlap;
+- stale or duplicate saves must not bypass ordering and modified-state rules.
 
-## 2. Save-Path Memory Model {#2-save-path}
+Do not suggest sending `GString`, `GtkTextBuffer`, or another GTK object to a worker.
 
-In `editor_page/mod.rs`, the save path extracts buffer content as:
+## Typed failures
 
-```rust
-let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-let content = text.to_string();  // copies entire file content
-```
+Use typed errors when callers must distinguish cancellation, refusal, pre-rename failure, durability uncertainty, or another workflow state. Preserve sources and relevant path/context. A private helper with one obvious failure shape does not need a new public enum merely for style consistency.
 
-The Rust String copy is **unavoidable** because:
-1. `GString` is not `Send` — it cannot cross thread boundaries
-2. The background thread needs owned data
+Never discriminate operational errors by display-string equality or substring matching when a typed variant is available.
 
-For a 50MB file, peak memory during save is ~3x file_size (GtkTextBuffer + GString + String). This is an accepted cost — no action needed.
+## GTK model updates
 
----
+Batch model reconciliation can reduce signal and allocation churn, but the correct operation depends on identity and selection contracts. `ListStore::splice` is useful when replacing a known contiguous range. Incremental reconciliation may be required to preserve row identity, expansion, selection, or watcher state.
 
-## 3. Error Enum Pattern {#3-error-enum}
-
-**Status: IMPLEMENTED** — `services/editor_io.rs` uses a `thiserror`-derived `EditorLoadError` enum.
-
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum EditorLoadError {
-    #[error("load cancelled")]
-    Cancelled,
-    #[error("Cannot stat {path}: {source}")]
-    Metadata { path: PathBuf, source: std::io::Error },
-    #[error("Failed to read {path}: {source}")]
-    Read { path: PathBuf, source: std::io::Error },
-    #[error("{path} is too large to edit ({size_mb} MB). Consider a pager like `less`.")]
-    TooLarge { path: PathBuf, size_mb: u64 },
-}
-```
-
-**Why this matters for correctness**: `EditorLoadError::Cancelled` enables exhaustive pattern matching. No fragile string comparisons. The error variants document what can go wrong.
-
-New service functions should follow this pattern when they have distinct failure modes.
-
----
-
-## 4. ListStore splice Pattern {#4-splice}
-
-**Status: IMPLEMENTED** — Both command palette results and file tree children use `ListStore::splice()`.
-
-```rust
-// Correct: single items-changed signal
-store.splice(0, store.n_items(), &items);
-```
-
-This matters for UI smoothness — per-item `append()` fires N signals causing visible jank in the ListView. `splice()` fires one signal for the entire batch.
-
----
-
-## Patterns That Are Fine As-Is
-
-These patterns have been reviewed and are acceptable. Do not flag them:
-
-- **`to_string_lossy().into_owned()`** — Used in file tree sort and index building. The `.into_owned()` pattern is already in place where it matters.
-- **`Arc<PathBuf>` for workspace folders** — Already implemented in `IndexedFile`. Files in the same indexed folder share one allocation.
-- **Vec + sort + truncate for top-N search results** — Already implemented in `search_items`. Simple collect, sort descending, truncate at max=50. Readable and fast enough for the fixed small k.
-- **`Vec::with_capacity` for large known-size collections** — Used where the size is clearly known (e.g., index rebuild). Don't flag missing capacity hints for small or unknown-size collections.
+Do not mechanically replace every append loop with `splice`; inspect factory and model semantics first.

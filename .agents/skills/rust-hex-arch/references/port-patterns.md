@@ -2,6 +2,14 @@
 
 When to use free functions, traits, or trait objects as hexagonal ports in a desktop application.
 
+## Table of Contents
+
+- [Decision Matrix](#decision-matrix)
+- [Pattern 1: Free Function](#pattern-1-free-function-default-choice)
+- [Pattern 2: Trait Parameter](#pattern-2-trait-parameter-static-dispatch)
+- [Pattern 3: Trait Object](#pattern-3-trait-object-dynamic-dispatch)
+- [Anti-Patterns](#anti-patterns)
+
 ## Decision Matrix
 
 | Situation | Pattern | Boundary enforcement | Testability |
@@ -46,7 +54,7 @@ fn test_roundtrip() {
 
 ## Pattern 2: Trait Parameter (Static Dispatch)
 
-Extract a trait when testability demands a seam. Use `impl Trait` for static dispatch (zero runtime cost). This is the "ports crate" pattern from invowk-rust, but applied at the module level.
+Extract a trait when testability demands a seam. Use `impl Trait` for static dispatch without storing a trait object.
 
 ```rust
 // services/ports.rs — or inline in the service module
@@ -148,20 +156,7 @@ pub trait AppServices {
 
 If you need traits, keep them focused on one bounded context. `WorkspaceStore` and `SessionStore` are separate ports.
 
-## Relationship to invowk-rust Architecture
-
-The invowk-rust project uses a multi-crate hexagonal architecture:
-- `invowk-domain` — pure business logic
-- `invowk-ports` — trait definitions (the boundary crate)
-- `invowk-application` — use cases that depend on domain + ports
-- `invowk-adapters` — concrete implementations
-
-LushText uses a lighter-weight version of the same pattern:
-- `model/` ≈ domain (pure types)
-- Function signatures ≈ ports (implicit contracts)
-- `services/` ≈ application + adapters (combined for simplicity)
-- `ui/` ≈ driving adapters
-
-The key difference: invowk-rust is a large CLI tool with multiple I/O backends (SSH, WASM, containers, Git), so explicit port traits in a dedicated crate are justified. LushText is a single-user desktop app with one persistence mechanism (local JSON files), so implicit ports via function signatures are appropriate.
-
-**When to consider the invowk-rust approach for LushText**: If the app grows to need multiple storage backends, cloud sync, or a plugin system, extract port traits into a separate module or crate at that point — not before.
+Prefer the lightest boundary that enforces the current contract. Revisit the
+choice when a second implementation, plugin boundary, or genuinely expensive
+test seam appears; do not pre-build a multi-crate ports layer for hypothetical
+future backends.

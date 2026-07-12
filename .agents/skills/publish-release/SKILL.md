@@ -12,7 +12,7 @@ Use this skill for the public LushText release lane. Treat every release as a st
 1. Read [references/release-workflow.md](references/release-workflow.md) before running release commands.
 2. Read [references/release-notes.md](references/release-notes.md) before drafting notes or choosing a poem stanza.
 3. Read [references/failure-recovery.md](references/failure-recovery.md) as soon as any command, CI job, GitHub Actions workflow, GitHub Release, Cominotti Flatpak publication, or optional Flathub PR step fails, is cancelled, times out, or is otherwise not conclusively successful.
-4. Use [scripts/collect-release-context.sh](scripts/collect-release-context.sh) to gather raw diff context.
+4. Use [scripts/collect-release-context.sh](scripts/collect-release-context.sh) to gather raw diff context. It classifies Cargo-owned paths through versioned workspace metadata and discovers AppStream inputs by file type, so crate, manifest, and metainfo renames do not silently disappear from release analysis.
 5. Use [scripts/validate-release-notes.py](scripts/validate-release-notes.py) before a real release.
 
 ## Non-Negotiables
@@ -36,8 +36,7 @@ Use this skill for the public LushText release lane. Treat every release as a st
 - `make cominotti-flatpak-repo VERSION=vX.Y.Z COMINOTTI_FLATPAK_PUBLIC_KEY=/path/to/public.asc COMINOTTI_FLATPAK_GPG_KEY=<fingerprint-or-keyid>`
 - `make verify-cominotti-flatpak-repo`
 - `scripts/release.sh` updates version surfaces, inserts AppStream release notes, validates metadata, builds Flatpak, creates the release commit, creates a signed tag, and pushes `main` plus the tag.
-- `.github/workflows/release.yml` validates `v*` tag releases, builds a GNOME 50 Flatpak, creates or updates the GitHub Release, generates and verifies the signed Cominotti Flatpak repository when signing material is configured, verifies Cloudflare Pages static asset limits, deploys to Cloudflare Pages when Cloudflare credentials are configured, supports `COMINOTTI_FLATPAK_DEPLOY_COMMAND` as an override, and opens a Flathub PR only when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured.
-- `.github/workflows/release-benchmark.yml` is release-critical: it generates and uploads the bounded release-safe benchmark report for release tags. Treat a cancelled, timed-out, failed, or missing benchmark-report run as an incomplete release until repaired and rerun successfully or superseded by a successful replacement dispatch for the same public tag.
+- Run `scripts/agent-topology.py release-workflows` to resolve the required `publication` and `benchmark-report` workflow responsibilities from semantic markers. The publication owner validates `v*` tags, builds the Flatpak, publishes GitHub/Cominotti artifacts when configured, enforces Pages limits, and handles optional Flathub handoff. The benchmark-report owner generates the bounded release-safe report. Treat a cancelled, timed-out, failed, duplicate, or missing required role as an incomplete release regardless of workflow filename or display-name changes.
 - `scripts/generate-cominotti-flatpak-repo.sh`, `scripts/verify-cominotti-flatpak-repo.sh`, `scripts/verify-cominotti-pages-limits.sh`, and `scripts/test-cominotti-flatpak-repo.sh` generate, verify, Pages-preflight, and regression-test the Cominotti-hosted Flatpak repository descriptors and release manifest.
 - `scripts/generate-flathub-manifest.sh` and `scripts/verify-flathub-manifest.sh` produce and verify the Flathub-facing manifest with a public Git tag/commit source and `cargo-sources.json`.
 
@@ -47,7 +46,7 @@ A release is complete only when:
 
 1. The release notes passed local and GitHub-body uniqueness checks for the poem stanza.
 2. The real release command succeeded, creating and pushing the signed release commit and tag.
-3. Every current GitHub Actions workflow responsibility created for the release commit, release tag, and any recovery commit or recovery dispatch completed with conclusion `success`, including `release.yml`, `release-benchmark.yml`, and normal push CI such as CI, Flatpak, Snap, and Release Dry Run when they run.
+3. Every current GitHub Actions workflow responsibility created for the release commit, release tag, and any recovery commit or recovery dispatch completed with conclusion `success`, including the discovered `publication` and `benchmark-report` roles and normal push CI such as CI, Flatpak, Snap, and Release Dry Run when they run.
 4. Any workflow failure, cancellation, timeout, missing expected release workflow, or skipped required workflow was fixed and rerun to success or superseded by a successful replacement run for the same responsibility; if external credentials or maintainer-only settings block repair, report the release as not fully green and name the exact blocker.
 5. Any skipped publication step inside a successful workflow is explicitly reported with its reason and next manual action.
 6. The GitHub Release body contains the authored release notes, not only generated notes.

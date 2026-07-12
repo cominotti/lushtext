@@ -14,6 +14,12 @@ Options:
   --search TEXT        Open in-tab search through D-Bus and type TEXT via xdotool.
   --enable-minimap     Enable show-minimap in an isolated GSettings keyfile.
   --binary PATH        LushText binary to launch (default: target/debug/lushtext).
+  --repo-root PATH     Repository root (default: Git-discovered root).
+  --app-id ID          Application D-Bus identity.
+  --app-object-path P  Application D-Bus object path.
+  --gsettings-schema S Application GSettings schema (default: app ID).
+  --gsettings-schema-dir PATH
+                       Compiled schema directory (default: REPO_ROOT/data).
   --width PX           Xvfb screen width (default: 1600).
   --height PX          Xvfb screen height (default: 1000).
   --keep-artifacts     Keep the temporary logs and xwd capture.
@@ -21,13 +27,17 @@ EOF
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "$script_dir/../../../.." && pwd)"
+repo_root="${LUSHTEXT_DEBUG_REPO_ROOT:-$(git -C "$script_dir" rev-parse --show-toplevel)}"
 
 file_path=""
 output_path=""
 search_text=""
 enable_minimap=0
-binary_path="$repo_root/target/debug/lushtext"
+binary_path="${LUSHTEXT_DEBUG_BINARY:-}"
+app_id="${LUSHTEXT_DEBUG_APP_ID:-dev.cominotti.lushtext}"
+app_object_path="${LUSHTEXT_DEBUG_APP_OBJECT_PATH:-}"
+gsettings_schema="${LUSHTEXT_DEBUG_GSETTINGS_SCHEMA:-}"
+gsettings_schema_dir="${LUSHTEXT_DEBUG_GSETTINGS_SCHEMA_DIR:-}"
 screen_width=1600
 screen_height=1000
 keep_artifacts=0
@@ -53,6 +63,26 @@ while (($#)); do
             ;;
         --binary)
             binary_path="${2:-}"
+            shift 2
+            ;;
+        --repo-root)
+            repo_root="${2:-}"
+            shift 2
+            ;;
+        --app-id)
+            app_id="${2:-}"
+            shift 2
+            ;;
+        --app-object-path)
+            app_object_path="${2:-}"
+            shift 2
+            ;;
+        --gsettings-schema)
+            gsettings_schema="${2:-}"
+            shift 2
+            ;;
+        --gsettings-schema-dir)
+            gsettings_schema_dir="${2:-}"
             shift 2
             ;;
         --width)
@@ -82,6 +112,12 @@ while (($#)); do
             ;;
     esac
 done
+
+repo_root="$(cd -- "$repo_root" && pwd)"
+binary_path="${binary_path:-$repo_root/target/debug/lushtext}"
+app_object_path="${app_object_path:-/${app_id//./\/}}"
+gsettings_schema="${gsettings_schema:-$app_id}"
+gsettings_schema_dir="${gsettings_schema_dir:-$repo_root/data}"
 
 require_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -162,8 +198,8 @@ wait_for_window_actions() {
     for _ in {1..120}; do
         if gdbus call \
             --session \
-            --dest dev.cominotti.lushtext \
-            --object-path /dev/cominotti/lushtext/window/1 \
+            --dest "$app_id" \
+            --object-path "$app_object_path/window/1" \
             --method org.gtk.Actions.List >/dev/null 2>&1; then
             return 0
         fi
@@ -179,8 +215,8 @@ activate_window_action() {
 
     gdbus call \
         --session \
-        --dest dev.cominotti.lushtext \
-        --object-path /dev/cominotti/lushtext/window/1 \
+        --dest "$app_id" \
+        --object-path "$app_object_path/window/1" \
         --method org.gtk.Actions.Activate \
         "$action_name" \
         "[]" \
@@ -209,6 +245,10 @@ outer_run() {
     export LUSHTEXT_XVFB_KEEP_ARTIFACTS="$keep_artifacts"
     export LUSHTEXT_XVFB_OUTPUT="$output_path"
     export LUSHTEXT_XVFB_REPO_ROOT="$repo_root"
+    export LUSHTEXT_XVFB_APP_ID="$app_id"
+    export LUSHTEXT_XVFB_APP_OBJECT_PATH="$app_object_path"
+    export LUSHTEXT_XVFB_GSETTINGS_SCHEMA="$gsettings_schema"
+    export LUSHTEXT_XVFB_GSETTINGS_SCHEMA_DIR="$gsettings_schema_dir"
     export LUSHTEXT_XVFB_SCREEN_HEIGHT="$screen_height"
     export LUSHTEXT_XVFB_SCREEN_WIDTH="$screen_width"
     export LUSHTEXT_XVFB_SEARCH="$search_text"
@@ -242,7 +282,9 @@ inner_run() {
     export DISPLAY="${LUSHTEXT_XVFB_DISPLAY:?}"
     export GDK_BACKEND=x11
     export GSETTINGS_BACKEND=keyfile
-    export GSETTINGS_SCHEMA_DIR="${LUSHTEXT_XVFB_REPO_ROOT:?}/data"
+    export GSETTINGS_SCHEMA_DIR="${LUSHTEXT_XVFB_GSETTINGS_SCHEMA_DIR:?}"
+    app_id="${LUSHTEXT_XVFB_APP_ID:?}"
+    app_object_path="${LUSHTEXT_XVFB_APP_OBJECT_PATH:?}"
     export GSK_RENDERER="${GSK_RENDERER:-cairo}"
     export NO_AT_BRIDGE=1
     export XDG_CACHE_HOME="$artifact_dir/cache"
@@ -261,7 +303,7 @@ inner_run() {
     trap cleanup EXIT
 
     if [[ "${LUSHTEXT_XVFB_ENABLE_MINIMAP:?}" == "1" ]]; then
-        gsettings set dev.cominotti.lushtext show-minimap true
+        gsettings set "${LUSHTEXT_XVFB_GSETTINGS_SCHEMA:?}" show-minimap true
     fi
 
     Xvfb "$DISPLAY" \

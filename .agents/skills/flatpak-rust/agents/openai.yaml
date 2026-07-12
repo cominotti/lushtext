@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flatpak Rust"
+  short_description: "Maintain LushText Flatpak and Flathub packaging"
+  default_prompt: "Use $flatpak-rust to update and validate LushText packaging from the current repository contracts."

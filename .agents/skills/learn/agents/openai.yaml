@@ -1,0 +1,6 @@
+interface:
+  display_name: "Learn"
+  short_description: "Review durable repository learning candidates"
+  default_prompt: "Use $learn to review completed work for durable guidance updates and report candidates without expanding scope."
+policy:
+  allow_implicit_invocation: true
