@@ -30,7 +30,7 @@ FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---(?:\n|\Z)", re.DOTALL)
 TOC_RE = re.compile(r"^## (?:Table of Contents|Contents)\s*$", re.MULTILINE)
 KEY_VALUE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(.*)$")
-HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.*)$", re.MULTILINE)
 EXPLICIT_ANCHOR_RE = re.compile(r"<(?:a\s+(?:id|name)|span\s+id)=[\"']([^\"']+)[\"']", re.I)
 EXTERNAL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
@@ -273,7 +273,7 @@ def parse_yaml_subset(text: str) -> object:
                 duplicate = set(entry) & set(continuation)
                 if duplicate:
                     raise SubsetYamlError(
-                        f"line {line_number}: duplicate key {sorted(duplicate)[0]!r}"
+                        f"line {line_number}: duplicate key {min(duplicate)!r}"
                     )
                 entry.update(continuation)
             result.append(entry)
@@ -421,7 +421,7 @@ def validate_openai_yaml(
 
 
 REFERENCE_DEFINITION_RE = re.compile(
-    r"^[ ]{0,3}\[([^\]]+)\]:[ \t]*(.+?)\s*$", re.MULTILINE
+    r"^ {0,3}\[([^]]+)\]:[ \t]*(.+)$", re.MULTILINE
 )
 REFERENCE_USE_RE = re.compile(r"!?\[([^\]]*)\]\[([^\]]*)\]")
 

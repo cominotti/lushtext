@@ -76,7 +76,7 @@ class AgentTopologyTests(unittest.TestCase):
                 },
             ],
         }
-        self.topology = TOPOLOGY.WorkspaceTopology(self.metadata, self.policy)
+        self.topology = TOPOLOGY.WorkspaceTopology(self.metadata, self.policy, self.root)
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()

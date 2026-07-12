@@ -69,16 +69,28 @@ class WorkspacePackage:
 class WorkspaceTopology:
     """Semantic workspace view derived from Cargo's versioned metadata JSON."""
 
-    def __init__(self, metadata: dict[str, object], policy: dict[str, object]) -> None:
-        workspace_root = Path(str(metadata["workspace_root"])).resolve()
+    def __init__(
+        self,
+        metadata: dict[str, object],
+        policy: dict[str, object],
+        workspace_root: Path,
+    ) -> None:
+        workspace_root = workspace_root.resolve()
+        reported_root = os.path.realpath(str(metadata["workspace_root"]))
+        if reported_root != str(workspace_root):
+            raise ValueError(
+                f"Cargo metadata workspace root {reported_root!r} does not match {workspace_root}"
+            )
         member_ids = set(metadata["workspace_members"])
         packages: list[WorkspacePackage] = []
         for package in metadata["packages"]:
             if package["id"] not in member_ids:
                 continue
-            manifest_path = Path(package["manifest_path"]).resolve()
-            root = manifest_path.parent.relative_to(workspace_root).as_posix()
-            manifest = manifest_path.relative_to(workspace_root).as_posix()
+            manifest_real = os.path.realpath(str(package["manifest_path"]))
+            if os.path.commonpath((str(workspace_root), manifest_real)) != str(workspace_root):
+                raise ValueError(f"Cargo manifest escapes workspace root: {manifest_real}")
+            manifest = normalized(os.path.relpath(manifest_real, workspace_root))
+            root = PurePosixPath(manifest).parent.as_posix()
             packages.append(
                 WorkspacePackage(
                     name=package["name"],
@@ -179,14 +191,18 @@ class WorkspaceTopology:
                     kind in {"test", "bench"} for kind in kinds
                 ):
                     continue
-                src_path = Path(target["src_path"]).resolve()
+                src_real = os.path.realpath(str(target["src_path"]))
+                if os.path.commonpath((str(self.workspace_root), src_real)) != str(
+                    self.workspace_root
+                ):
+                    raise ValueError(f"Cargo target source escapes workspace root: {src_real}")
                 surfaces.append(
                     {
                         "package": package.name,
                         "manifest": package.manifest,
                         "target": target["name"],
                         "kind": kinds,
-                        "src_path": src_path.relative_to(self.workspace_root).as_posix(),
+                        "src_path": normalized(os.path.relpath(src_real, self.workspace_root)),
                         "required_features": target.get("required-features", []),
                     }
                 )
@@ -212,14 +228,20 @@ class WorkspaceTopology:
                     continue
                 if key == self.performance_policy["package_metadata_key"] and roots:
                     registered_performance += 1
-                package_root = self.workspace_root / package.root
                 for root in roots:
                     try:
                         relative = normalized(root)
                     except ValueError as error:
                         errors.append(f"{package.name}: {key}: {error}")
                         continue
-                    if not (package_root / relative).exists():
+                    candidate = os.path.realpath(
+                        os.path.join(str(self.workspace_root), package.root, relative)
+                    )
+                    if os.path.commonpath((str(self.workspace_root), candidate)) != str(
+                        self.workspace_root
+                    ):
+                        errors.append(f"{package.name}: {key} root escapes workspace: {relative}")
+                    elif not os.path.exists(candidate):
                         errors.append(f"{package.name}: {key} root does not exist: {relative}")
         if registered_performance == 0:
             errors.append("no Cargo package registers performance roots")
@@ -248,8 +270,6 @@ def discover_release_workflows(repo_root: Path, policy: dict[str, object]) -> li
     release_policy = policy["release"]
     marker = re.escape(release_policy["workflow_role_marker"])
     role_pattern = re.compile(rf"^\s*#\s*{marker}:\s*([a-z0-9-]+)\s*$", re.MULTILINE)
-    name_pattern = re.compile(r"^name:\s*(.+?)\s*$", re.MULTILINE)
-
     def has_v_tag_trigger(text: str) -> bool:
         lines = text.splitlines()
         for index, line in enumerate(lines):
@@ -268,6 +288,12 @@ def discover_release_workflows(repo_root: Path, policy: dict[str, object]) -> li
                 if "v*" in nested:
                     return True
         return False
+
+    def workflow_name(text: str) -> str | None:
+        for line in text.splitlines():
+            if line.startswith("name:"):
+                return line.partition(":")[2].strip().strip("'\"")
+        return None
     workflows: list[dict[str, object]] = []
     workflow_root = repo_root / ".github" / "workflows"
     for path in sorted((*workflow_root.glob("*.yml"), *workflow_root.glob("*.yaml"))):
@@ -275,13 +301,13 @@ def discover_release_workflows(repo_root: Path, policy: dict[str, object]) -> li
         role_match = role_pattern.search(text)
         if role_match is None:
             continue
-        name_match = name_pattern.search(text)
-        if name_match is None:
+        name = workflow_name(text)
+        if not name:
             raise ValueError(f"release workflow has no top-level name: {path}")
         workflows.append(
             {
                 "role": role_match.group(1),
-                "name": name_match.group(1).strip().strip("'\""),
+                "name": name,
                 "path": path.relative_to(repo_root).as_posix(),
                 "tag_triggered": has_v_tag_trigger(text),
             }
@@ -334,6 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     topology = WorkspaceTopology(
         load_cargo_metadata(repo_root, args.metadata_json),
         policy,
+        repo_root,
     )
     if args.command == "validate":
         errors = topology.validation_errors()
