@@ -16,6 +16,7 @@ This folder owns the multi-workspace sidebar adapter and its workspace-section s
 - Width presets are selected from `Preferences > Workspace` and keep their `Small=20%`, `Comfy=30%`, `Large=40%` identities while the window layer clamps their visible width on large displays. Do not reinterpret them as local paned fractions.
 - Preserve the no-horizontal-scrollbar contract. Prefer tooltips, focused folders, or explicit drill-down behavior over widening the sidebar or clipping silently.
 - Keep workspace-section async tree loading off the main thread and preserve deduplication/placeholder behavior for large directories.
+- Keep workspace watcher targets as an incremental mirror of flattened-row splices and expansion state; do not restore full `GtkTreeListModel` scans on restart. Watcher creation, registration, replacement teardown, and stale-handle disposal stay off the GTK thread, with at most one lifecycle worker per section and one latest-generation handoff.
 - In workspace-section rows, workspace-folder reorder DnD hover belongs to the transparent row-level shield. `GtkTreeExpander` owns normal disclosure behavior, and any idle collapse after drag-hover child-model creation is defensive only, not the intended reorder path.
 
 ## Editing Rules

@@ -65,14 +65,6 @@ pub(super) fn build_children_model(
     // ListStore is GObject's observable list; TreeListModel/ListView react when
     // rows are appended or replaced.
     let store = gio::ListStore::new::<FileTreeItem>();
-    let section_weak = section.downgrade();
-    // Expanding a directory materializes a new visible scope. Defer watcher
-    // reconciliation so TreeListModel can return its child store immediately.
-    glib::idle_add_local_once(move || {
-        if let Some(section) = section_weak.upgrade() {
-            section.restart_workspace_watch();
-        }
-    });
     populate_child_store(section, dir_path, &store);
     store
 }

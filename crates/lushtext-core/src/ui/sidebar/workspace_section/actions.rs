@@ -287,6 +287,9 @@ impl super::LushtextWorkspaceSection {
                                     .insert(new_path.clone(), tree_row.downgrade());
                             }
                             file_item.set_path(new_path.clone());
+                            // `set_path` mutates the row model in place, so the
+                            // flattened model emits no splice for the watcher mirror.
+                            section.refresh_workspace_watch_row(&tree_row);
                             section.rename_cached_item(&old_path, &new_path);
                             if file_item.is_empty() == Some(true) {
                                 label.set_markup(&format!(

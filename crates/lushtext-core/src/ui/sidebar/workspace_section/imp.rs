@@ -8,6 +8,9 @@
 
 use super::super::file_tree_item::FileTreeItem;
 use super::icon_presentation;
+use super::watch_targets::{
+    MaterializedWatchTargets, WatchLifetimeGeneration, WatchTargetGeneration,
+};
 use crate::model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
@@ -138,16 +141,30 @@ pub struct RefreshRuntimeState {
 pub struct WatchRuntimeState {
     /// Backend watcher for the current materialized folder scopes, if active.
     pub watcher: RefCell<Option<WorkspaceWatcher>>,
-    /// Generation counter dropping stale deferred watcher startups after folders
-    /// or drill-down scope change again before the scheduled start runs.
-    pub start_generation: Cell<u32>,
-    /// Pending deferred startup source so startup/dispose can cancel it.
-    pub start_source_id: RefCell<Option<glib::SourceId>>,
+    /// Incremental mirror of flattened rows and their effective target set.
+    pub(super) targets: RefCell<MaterializedWatchTargets>,
+    /// Coalesces rapid model signals before a worker owns watcher replacement.
+    pub restart_debounce: Debounce,
+    /// Invalidates every completion created before this section is disposed.
+    pub(super) lifetime_generation: Cell<WatchLifetimeGeneration>,
+    /// Generation owned by the installed watcher, or none during replacement.
+    pub(super) installed_generation: Cell<Option<WatchTargetGeneration>>,
+    /// Whether this section already owns one watcher lifecycle worker.
+    pub(super) worker_inflight: Cell<bool>,
     /// GTK main-loop source that polls the watcher receiver without blocking.
     pub poll_source_id: RefCell<Option<glib::SourceId>>,
     /// Last watcher error shown to the user so repeated backend failures do not
     /// spam the status bar every poll tick.
     pub last_reported_error: RefCell<Option<String>>,
+    #[cfg(feature = "test-utils")]
+    /// Section-local worker delay before backend creation in responsiveness tests.
+    pub(super) test_start_delay: Cell<std::time::Duration>,
+    #[cfg(feature = "test-utils")]
+    /// Section-local worker delay before old-handle teardown in responsiveness tests.
+    pub(super) test_drop_delay: Cell<std::time::Duration>,
+    #[cfg(feature = "test-utils")]
+    /// Worker starts observed by this section for latest-only handoff tests.
+    pub(super) test_worker_starts: Cell<usize>,
 }
 
 /// Private template implementation for one workspace section.
@@ -692,40 +709,6 @@ impl LushtextWorkspaceSection {
                     && let Some(section) = section_weak.upgrade()
                     && let Some(path) = file_item.path()
                 {
-                    // Tree rows persist beyond one ListItem binding, but the
-                    // signal is still tied to the visible binding and
-                    // disconnected on unbind. That keeps auto-refresh scoped to
-                    // directories the user has actually expanded.
-                    let has_expanded_hook =
-                        // SAFETY: the private key stores only this row's
-                        // expansion handler id and is cleared in unbind.
-                        unsafe {
-                            tree_row
-                                .data::<SignalBag>("workspace-watch-expanded-hook")
-                        }
-                            .is_some();
-                    if !has_expanded_hook {
-                        let section_weak = section.downgrade();
-                        let handler_id =
-                            tree_row.connect_notify_local(Some("expanded"), move |row, _| {
-                                if super::dnd::expanded_watch_should_be_suppressed(row) {
-                                    return;
-                                }
-                                let section_weak = section_weak.clone();
-                                glib::idle_add_local_once(move || {
-                                    if let Some(section) = section_weak.upgrade() {
-                                        section.restart_workspace_watch();
-                                    }
-                                });
-                            });
-                        let signals = SignalBag::new();
-                        signals.track(&tree_row, handler_id);
-                        // SAFETY: this private signal bag is stored on this
-                        // row and cleared in unbind; no external code reads it.
-                        unsafe {
-                            tree_row.set_data("workspace-watch-expanded-hook", signals);
-                        }
-                    }
                     section
                         .imp()
                         .dir_rows
@@ -880,17 +863,6 @@ impl LushtextWorkspaceSection {
             let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>() else {
                 return;
             };
-
-            // SAFETY: mirrors set_data("workspace-watch-expanded-hook") in
-            // connect_bind above. Clearing on unbind keeps recycled rows from
-            // retaining section callbacks beyond their visible binding.
-            unsafe {
-                if let Some(signals) =
-                    tree_row.steal_data::<SignalBag>("workspace-watch-expanded-hook")
-                {
-                    signals.clear();
-                }
-            }
 
             if file_item.is_dir()
                 && let Some(section) = section_weak.upgrade()

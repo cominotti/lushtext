@@ -49,6 +49,7 @@ impl LushtextWorkspaceSection {
     }
 
     pub(super) fn load_folder_model(&self, folders: &[FolderTreeEntry], auto_expand: bool) {
+        self.prepare_workspace_watch_model(folders);
         self.dismiss_peek_for_rebuild();
         self.save_expanded_paths();
         super::tree_loading::clear_all_dir_state(self);
@@ -88,13 +89,13 @@ impl LushtextWorkspaceSection {
         let imp = self.imp();
         imp.file_tree_view.set_model(Some(&selection));
         *imp.top_level_store.borrow_mut() = Some(top_level_store);
-        *imp.tree_model.borrow_mut() = Some(tree_model);
+        *imp.tree_model.borrow_mut() = Some(tree_model.clone());
+        self.install_workspace_watch_model(&tree_model);
         self.sync_section_body_visibility();
         self.update_button_state();
         self.sync_workspace_folder_reorder_handles();
         self.restore_folder_model_state(auto_expand);
         self.sync_file_row_states();
-        self.restart_workspace_watch();
     }
 
     /// Add a single folder path to an existing file tree.
@@ -159,7 +160,6 @@ impl LushtextWorkspaceSection {
         self.update_button_state();
         self.sync_workspace_folder_reorder_handles();
         self.sync_file_row_states();
-        self.restart_workspace_watch();
     }
 
     /// Remove one persisted workspace folder from the top-level section model.
@@ -183,7 +183,6 @@ impl LushtextWorkspaceSection {
         self.update_button_state();
         self.sync_workspace_folder_reorder_handles();
         self.sync_file_row_states();
-        self.restart_workspace_watch();
     }
 
     /// Return whether one configured folder can move earlier or later in this section.
@@ -346,7 +345,6 @@ impl LushtextWorkspaceSection {
             row.set_expanded(false);
         }
         self.sync_file_row_states();
-        self.restart_workspace_watch();
     }
 
     /// Expands the top-level folders of this workspace section if they are not confirmed empty.
@@ -355,7 +353,6 @@ impl LushtextWorkspaceSection {
             row.set_expanded(true);
         }
         self.sync_file_row_states();
-        self.restart_workspace_watch();
     }
 
     /// Toggle the expansion state of the top-level folders as one group.
@@ -366,7 +363,6 @@ impl LushtextWorkspaceSection {
             row.set_expanded(any_collapsed);
         }
         self.sync_file_row_states();
-        self.restart_workspace_watch();
     }
 
     /// Select and scroll to a path after its row exists in the flattened tree model.

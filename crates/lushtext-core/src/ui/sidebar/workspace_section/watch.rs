@@ -1,80 +1,239 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Filesystem watcher lifecycle for one workspace section.
-//!
-//! The section owns watcher setup and GTK-side polling, while the service layer
-//! owns the backend debouncer and path extraction. Restarting the watcher when
-//! visible folders or drill-down scope change keeps refresh work proportional to what the
-//! section is actually showing.
+//! Incremental filesystem watcher lifecycle for one workspace section.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::Duration;
 
 use gtk4::gio::prelude::ListModelExt;
 use gtk4::glib;
-use gtk4::prelude::Cast;
-use gtk4::prelude::ObjectExt;
+use gtk4::prelude::{Cast, ObjectExt};
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
+use crate::model::workspace::FolderTreeEntry;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::workspace_watch::{
     WorkspaceWatchError, WorkspaceWatchPoll, WorkspaceWatchTarget, WorkspaceWatcher,
 };
+use crate::ui::sidebar::file_tree_item::FileTreeItem;
 
 use super::LushtextWorkspaceSection;
+use super::watch_targets::RowWatchContribution;
 
 /// Poll cadence for draining debounced watcher results on the GTK thread.
 const WATCH_POLL_MS: u64 = 100;
-/// Delay watcher startup by one main-loop tick so the window can present the
-/// restored workspaces and session tabs before recursive watch setup begins.
-const WATCH_START_DELAY_MS: u64 = 1;
+/// Quiet window that folds one GTK model mutation burst into one replacement.
+const WATCH_RESTART_SETTLE_MS: u64 = 25;
+/// Private row marker proving the model-level expansion hook was installed.
+const WATCH_EXPANDED_HOOK_KEY: &str = "workspace-watch-model-expanded-hook";
+
+enum WatchWorkerResult {
+    Retired,
+    Started(Result<WorkspaceWatcher, WorkspaceWatchError>),
+}
 
 impl LushtextWorkspaceSection {
-    /// Restart automatic watching for the current visible folders.
-    pub(super) fn restart_workspace_watch(&self) {
-        self.stop_workspace_watch();
+    /// Switch to configured-folder fallback while a flattened model is replaced.
+    pub(super) fn prepare_workspace_watch_model(&self, folders: &[FolderTreeEntry]) {
+        let fallback = folders.iter().map(watch_target_for_folder).collect();
+        let changed = {
+            let mut targets = self.imp().watch_runtime.targets.borrow_mut();
+            let fallback_changed = targets.set_fallback(fallback);
+            targets.unmount() || fallback_changed
+        };
+        if changed {
+            self.queue_workspace_watch_restart();
+        }
+    }
 
-        let targets = self.current_watch_targets();
+    /// Install the initial mirror and incremental signals for one flattened model.
+    pub(super) fn install_workspace_watch_model(&self, model: &gtk4::TreeListModel) {
+        let rows = (0..model.n_items())
+            .map(|position| row_at(model, position).and_then(|row| watch_contribution(&row)))
+            .collect::<Vec<_>>();
+        let changed = self.imp().watch_runtime.targets.borrow_mut().mount(rows);
 
-        if targets.is_empty() {
+        for position in 0..model.n_items() {
+            if let Some(row) = row_at(model, position) {
+                self.install_expanded_watch_hook(&row);
+            }
+        }
+
+        let section_weak = self.downgrade();
+        model.connect_items_changed(move |model, position, removed, added| {
+            let Some(section) = section_weak.upgrade() else {
+                return;
+            };
+            section.apply_watch_model_splice(model, position, removed, added);
+        });
+
+        if changed {
+            self.queue_workspace_watch_restart();
+        }
+    }
+
+    fn apply_watch_model_splice(
+        &self,
+        model: &gtk4::TreeListModel,
+        position: u32,
+        removed: u32,
+        added: u32,
+    ) {
+        let added_rows = (position..position.saturating_add(added))
+            .filter_map(|index| row_at(model, index))
+            .collect::<Vec<_>>();
+        let contributions = added_rows
+            .iter()
+            .map(watch_contribution)
+            .collect::<Vec<_>>();
+        let changed = self.imp().watch_runtime.targets.borrow_mut().splice(
+            position as usize,
+            removed as usize,
+            &contributions,
+        );
+        for row in added_rows {
+            self.install_expanded_watch_hook(&row);
+        }
+        if changed {
+            self.queue_workspace_watch_restart();
+        }
+    }
+
+    fn install_expanded_watch_hook(&self, row: &gtk4::TreeListRow) {
+        // SAFETY: the private marker stores only `true` on this row. The row
+        // owns its signal handler, whose closure captures the section weakly.
+        if unsafe { row.data::<bool>(WATCH_EXPANDED_HOOK_KEY) }.is_some() {
+            return;
+        }
+        // SAFETY: this private row key stores only the marker described above.
+        unsafe {
+            row.set_data(WATCH_EXPANDED_HOOK_KEY, true);
+        }
+
+        let section_weak = self.downgrade();
+        row.connect_notify_local(Some("expanded"), move |row, _| {
+            if super::dnd::expanded_watch_should_be_suppressed(row) {
+                return;
+            }
+            let row_weak = row.downgrade();
+            let section_weak = section_weak.clone();
+            glib::idle_add_local_once(move || {
+                let (Some(section), Some(row)) = (section_weak.upgrade(), row_weak.upgrade())
+                else {
+                    return;
+                };
+                section.refresh_workspace_watch_row(&row);
+            });
+        });
+    }
+
+    /// Refresh one row contribution after an in-place model mutation.
+    pub(super) fn refresh_workspace_watch_row(&self, row: &gtk4::TreeListRow) {
+        let position = row.position();
+        if position == gtk4::INVALID_LIST_POSITION {
+            return;
+        }
+        let changed = self
+            .imp()
+            .watch_runtime
+            .targets
+            .borrow_mut()
+            .update_row(position as usize, watch_contribution(row));
+        if changed {
+            self.queue_workspace_watch_restart();
+        }
+    }
+
+    fn queue_workspace_watch_restart(&self) {
+        if self.imp().watch_runtime.targets.borrow().is_empty() {
             self.imp()
                 .watch_runtime
                 .last_reported_error
                 .borrow_mut()
                 .take();
             self.sync_file_tree_error_state();
+        }
+        self.imp().watch_runtime.restart_debounce.schedule(
+            self,
+            Duration::from_millis(WATCH_RESTART_SETTLE_MS),
+            |section, _| section.start_current_workspace_watch(),
+        );
+    }
+
+    fn start_current_workspace_watch(&self) {
+        self.start_current_workspace_watch_retiring(None);
+    }
+
+    fn start_current_workspace_watch_retiring(&self, retiring: Option<WorkspaceWatcher>) {
+        let runtime = &self.imp().watch_runtime;
+        if runtime.worker_inflight.get() {
+            if let Some(watcher) = retiring {
+                retire_watcher(watcher);
+            }
             return;
         }
 
-        let generation = self
-            .imp()
+        let snapshot = self.imp().watch_runtime.targets.borrow().snapshot();
+        let lifetime = self.imp().watch_runtime.lifetime_generation.get();
+        if let Some(source_id) = self.imp().watch_runtime.poll_source_id.borrow_mut().take() {
+            source_id.remove();
+        }
+        let old_watcher = retiring.or_else(|| self.imp().watch_runtime.watcher.borrow_mut().take());
+        self.imp().watch_runtime.installed_generation.set(None);
+        let generation = snapshot.generation;
+        let targets = snapshot.targets;
+        let section_weak = self.downgrade();
+        #[cfg(feature = "test-utils")]
+        let start_delay = self.imp().watch_runtime.test_start_delay.get();
+        #[cfg(feature = "test-utils")]
+        let drop_delay = self.imp().watch_runtime.test_drop_delay.get();
+        self.imp().watch_runtime.worker_inflight.set(true);
+        #[cfg(feature = "test-utils")]
+        self.imp()
             .watch_runtime
-            .start_generation
-            .get()
-            .wrapping_add(1);
-        self.imp().watch_runtime.start_generation.set(generation);
+            .test_worker_starts
+            .set(self.imp().watch_runtime.test_worker_starts.get() + 1);
 
-        let section_weak = ObjectExt::downgrade(self);
-        let targets = Rc::new(targets);
-        let source_id =
-            glib::timeout_add_local_once(Duration::from_millis(WATCH_START_DELAY_MS), move || {
+        gtk_lush_tasks::spawn_blocking_then(
+            (section_weak, generation, lifetime),
+            move || {
+                #[cfg(feature = "test-utils")]
+                std::thread::sleep(drop_delay);
+                drop(old_watcher);
+                if targets.is_empty() {
+                    WatchWorkerResult::Retired
+                } else {
+                    #[cfg(feature = "test-utils")]
+                    std::thread::sleep(start_delay);
+                    WatchWorkerResult::Started(WorkspaceWatcher::start(&targets))
+                }
+            },
+            |(section_weak, generation, lifetime), result| {
                 let Some(section) = section_weak.upgrade() else {
+                    retire_worker_result(result);
                     return;
                 };
-                section
-                    .imp()
-                    .watch_runtime
-                    .start_source_id
-                    .borrow_mut()
-                    .take();
-                if section.imp().watch_runtime.start_generation.get() != generation {
+                section.imp().watch_runtime.worker_inflight.set(false);
+                if section.imp().watch_runtime.lifetime_generation.get() != lifetime {
+                    retire_worker_result(result);
+                    return;
+                }
+                if section.imp().watch_runtime.targets.borrow().generation() != generation {
+                    let _ = section.imp().watch_runtime.restart_debounce.invalidate();
+                    section.start_current_workspace_watch_retiring(stale_watcher(result));
                     return;
                 }
 
-                match WorkspaceWatcher::start(targets.as_slice()) {
-                    Ok(watcher) => {
+                match result {
+                    WatchWorkerResult::Retired => {
+                        section
+                            .imp()
+                            .watch_runtime
+                            .last_reported_error
+                            .borrow_mut()
+                            .take();
+                        section.sync_file_tree_error_state();
+                    }
+                    WatchWorkerResult::Started(Ok(watcher)) => {
                         section
                             .imp()
                             .watch_runtime
@@ -83,57 +242,73 @@ impl LushtextWorkspaceSection {
                             .take();
                         section.sync_file_tree_error_state();
                         *section.imp().watch_runtime.watcher.borrow_mut() = Some(watcher);
+                        section
+                            .imp()
+                            .watch_runtime
+                            .installed_generation
+                            .set(Some(generation));
                         section.install_watch_poll_source();
                     }
-                    Err(error) => section.report_watch_error(&start_error_message(&error)),
+                    WatchWorkerResult::Started(Err(error)) => {
+                        section.report_watch_error(&start_error_message(&error));
+                    }
                 }
-            });
-        *self.imp().watch_runtime.start_source_id.borrow_mut() = Some(source_id);
+            },
+        );
     }
 
-    /// Stop automatic watching and remove the GTK poll source.
+    /// Stop automatic watching without dropping backend resources on GTK.
     pub(in crate::ui::sidebar) fn stop_workspace_watch(&self) {
-        if let Some(source_id) = self.imp().watch_runtime.start_source_id.borrow_mut().take() {
+        let runtime = &self.imp().watch_runtime;
+        let _ = runtime.restart_debounce.invalidate();
+        runtime
+            .lifetime_generation
+            .set(runtime.lifetime_generation.get().next());
+        if let Some(source_id) = runtime.poll_source_id.borrow_mut().take() {
             source_id.remove();
         }
-        if let Some(source_id) = self.imp().watch_runtime.poll_source_id.borrow_mut().take() {
-            source_id.remove();
+        runtime.installed_generation.set(None);
+        if let Some(watcher) = runtime.watcher.borrow_mut().take() {
+            retire_watcher(watcher);
         }
-        self.imp().watch_runtime.watcher.borrow_mut().take();
     }
 
     fn install_watch_poll_source(&self) {
         if let Some(source_id) = self.imp().watch_runtime.poll_source_id.borrow_mut().take() {
             source_id.remove();
         }
-        let section_weak = ObjectExt::downgrade(self);
+        let section_weak = self.downgrade();
         let source_id = glib::timeout_add_local(Duration::from_millis(WATCH_POLL_MS), move || {
             let Some(section) = section_weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            section.drain_watch_polls();
-            glib::ControlFlow::Continue
+            section.drain_watch_polls()
         });
         *self.imp().watch_runtime.poll_source_id.borrow_mut() = Some(source_id);
     }
 
-    fn drain_watch_polls(&self) {
+    fn drain_watch_polls(&self) -> glib::ControlFlow {
         loop {
             let poll = {
                 let watcher = self.imp().watch_runtime.watcher.borrow();
                 watcher.as_ref().and_then(WorkspaceWatcher::try_poll)
             };
-
             let Some(poll) = poll else {
-                break;
+                return glib::ControlFlow::Continue;
             };
-
             match poll {
                 WorkspaceWatchPoll::Update(update) => {
                     self.queue_auto_refresh(update.changed_paths);
                 }
-                WorkspaceWatchPoll::Error(message) => {
-                    self.report_watch_error(&message);
+                WorkspaceWatchPoll::Error(message) => self.report_watch_error(&message),
+                WorkspaceWatchPoll::Disconnected => {
+                    self.report_watch_error("Workspace auto-refresh disconnected.");
+                    self.imp().watch_runtime.installed_generation.set(None);
+                    self.imp().watch_runtime.poll_source_id.borrow_mut().take();
+                    if let Some(watcher) = self.imp().watch_runtime.watcher.borrow_mut().take() {
+                        retire_watcher(watcher);
+                    }
+                    return glib::ControlFlow::Break;
                 }
             }
         }
@@ -150,69 +325,56 @@ impl LushtextWorkspaceSection {
         self.emit_message(message, NotificationSeverity::Warning);
     }
 
-    fn current_watch_targets(&self) -> Vec<WorkspaceWatchTarget> {
-        let mut targets = Vec::new();
-
-        let tree_model = self
-            .imp()
-            .tree_model
-            .try_borrow()
-            .ok()
-            .and_then(|tree_model| tree_model.as_ref().cloned());
-
-        if let Some(tree_model) = tree_model {
-            for index in 0..tree_model.n_items() {
-                let Some(row): Option<gtk4::TreeListRow> = tree_model
-                    .item(index)
-                    .and_then(|obj| obj.downcast::<gtk4::TreeListRow>().ok())
-                else {
-                    continue;
-                };
-                let Some(item): Option<crate::ui::sidebar::file_tree_item::FileTreeItem> =
-                    row.item().and_then(|obj| {
-                        obj.downcast::<crate::ui::sidebar::file_tree_item::FileTreeItem>()
-                            .ok()
-                    })
-                else {
-                    continue;
-                };
-                let Some(path) = item.path() else {
-                    continue;
-                };
-
-                if item.is_dir() {
-                    if row.depth() == 0 || row.is_expanded() {
-                        targets.push(WorkspaceWatchTarget::directory(path));
-                    }
-                } else if row.depth() == 0 {
-                    targets.push(WorkspaceWatchTarget::file(path));
-                }
-            }
-        }
-
-        if targets.is_empty() {
-            targets.extend(
-                self.current_visible_folders()
-                    .into_iter()
-                    .map(|entry| match entry {
-                        crate::model::workspace::FolderTreeEntry::Directory { path } => {
-                            WorkspaceWatchTarget::directory(path)
-                        }
-                        crate::model::workspace::FolderTreeEntry::File { path } => {
-                            WorkspaceWatchTarget::file(path)
-                        }
-                    }),
-            );
-        }
-
-        dedupe_watch_targets(targets)
-    }
-
-    /// Test helper for verifying watcher target selection before backend startup.
+    /// Test helper for verifying incremental watcher target selection.
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn watch_targets_for_test(&self) -> Vec<WorkspaceWatchTarget> {
-        self.current_watch_targets()
+        self.imp().watch_runtime.targets.borrow().snapshot().targets
+    }
+
+    /// Return and reset the count of rows touched by target bookkeeping.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn take_watch_target_rows_touched_for_test(&self) -> usize {
+        self.imp()
+            .watch_runtime
+            .targets
+            .borrow_mut()
+            .take_touched_rows()
+    }
+
+    /// Return the effective target generation for restart-churn assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn watch_target_generation_for_test(&self) -> u64 {
+        self.imp()
+            .watch_runtime
+            .targets
+            .borrow()
+            .generation()
+            .value()
+    }
+
+    /// Whether the installed backend belongs to the latest effective targets.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn workspace_watcher_is_current_for_test(&self) -> bool {
+        let current = self.imp().watch_runtime.targets.borrow().generation();
+        self.imp().watch_runtime.installed_generation.get() == Some(current)
+    }
+
+    /// Configure section-local worker delays for lifecycle responsiveness tests.
+    #[cfg(feature = "test-utils")]
+    pub fn set_workspace_watcher_delays_for_test(&self, start: Duration, drop: Duration) {
+        self.imp().watch_runtime.test_start_delay.set(start);
+        self.imp().watch_runtime.test_drop_delay.set(drop);
+    }
+
+    /// Return section-local lifecycle worker starts for latest-only assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn workspace_watcher_worker_starts_for_test(&self) -> usize {
+        self.imp().watch_runtime.test_worker_starts.get()
     }
 
     /// Test helper for isolating manual refresh from automatic watcher events.
@@ -222,45 +384,60 @@ impl LushtextWorkspaceSection {
     }
 }
 
+fn row_at(model: &gtk4::TreeListModel, position: u32) -> Option<gtk4::TreeListRow> {
+    model.item(position)?.downcast::<gtk4::TreeListRow>().ok()
+}
+
+fn watch_contribution(row: &gtk4::TreeListRow) -> RowWatchContribution {
+    let item = row.item()?.downcast::<FileTreeItem>().ok()?;
+    let path = item.path()?;
+    if item.is_dir() && (row.depth() == 0 || row.is_expanded()) {
+        Some(WorkspaceWatchTarget::directory(path))
+    } else if !item.is_dir() && row.depth() == 0 {
+        Some(WorkspaceWatchTarget::file(path))
+    } else {
+        None
+    }
+}
+
+fn watch_target_for_folder(entry: &FolderTreeEntry) -> WorkspaceWatchTarget {
+    match entry {
+        FolderTreeEntry::Directory { path } => WorkspaceWatchTarget::directory(path.clone()),
+        FolderTreeEntry::File { path } => WorkspaceWatchTarget::file(path.clone()),
+    }
+}
+
 fn start_error_message(error: &WorkspaceWatchError) -> String {
     format!("Workspace auto-refresh unavailable: {error}")
 }
 
-fn dedupe_watch_targets(targets: Vec<WorkspaceWatchTarget>) -> Vec<WorkspaceWatchTarget> {
-    let mut seen = HashSet::<(PathBuf, bool)>::new();
-    let mut deduped = Vec::with_capacity(targets.len());
-    for target in targets {
-        if seen.insert((target.path.clone(), target.recursive)) {
-            deduped.push(target);
-        }
+fn retire_worker_result(result: WatchWorkerResult) {
+    if let WatchWorkerResult::Started(Ok(watcher)) = result {
+        retire_watcher(watcher);
     }
-    deduped
+}
+
+fn stale_watcher(result: WatchWorkerResult) -> Option<WorkspaceWatcher> {
+    match result {
+        WatchWorkerResult::Started(Ok(watcher)) => Some(watcher),
+        WatchWorkerResult::Retired | WatchWorkerResult::Started(Err(_)) => None,
+    }
+}
+
+fn retire_watcher(watcher: WorkspaceWatcher) {
+    gtk_lush_tasks::spawn_blocking_then((), move || drop(watcher), |(), ()| {});
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn dedupe_watch_targets_keeps_first_matching_path_and_mode() {
-        let folder = PathBuf::from("/tmp/project/src");
-        let targets = dedupe_watch_targets(vec![
-            WorkspaceWatchTarget::directory(folder.clone()),
-            WorkspaceWatchTarget::directory(folder.clone()),
-            WorkspaceWatchTarget {
-                path: folder.clone(),
-                recursive: true,
-            },
-        ]);
+    fn assert_send<T: Send>() {}
 
-        assert_eq!(targets.len(), 2);
-        assert_eq!(targets[0], WorkspaceWatchTarget::directory(folder.clone()));
-        assert_eq!(
-            targets[1],
-            WorkspaceWatchTarget {
-                path: folder,
-                recursive: true,
-            }
-        );
+    #[test]
+    fn concrete_watcher_and_worker_result_cross_the_worker_boundary() {
+        assert_send::<WorkspaceWatcher>();
+        assert_send::<WatchWorkerResult>();
+        assert_send::<super::super::watch_targets::WatchTargetSnapshot>();
     }
 }

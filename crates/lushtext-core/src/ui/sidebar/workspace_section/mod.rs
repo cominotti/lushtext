@@ -18,6 +18,7 @@ mod refresh;
 mod tree_index;
 mod tree_loading;
 mod watch;
+mod watch_targets;
 
 #[cfg(feature = "test-utils")]
 use std::collections::HashSet;
@@ -691,12 +692,6 @@ fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn
     {
         if file_item.is_dir() && !file_item.is_placeholder() && file_item.is_empty() != Some(true) {
             tree_row.set_expanded(!tree_row.is_expanded());
-            if let Some(section) = list_view
-                .ancestor(LushtextWorkspaceSection::static_type())
-                .and_downcast::<LushtextWorkspaceSection>()
-            {
-                section.restart_workspace_watch();
-            }
         } else if !file_item.is_dir()
             && let Some(ref path) = file_item.path()
         {

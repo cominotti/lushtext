@@ -24,7 +24,7 @@ const WATCH_DEBOUNCE_MS: u64 = 150;
 type WorkspaceDebouncer = Debouncer<notify::RecommendedWatcher, RecommendedCache>;
 
 /// One materialized path to watch for sidebar refresh.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WorkspaceWatchTarget {
     /// Absolute filesystem path that should produce refresh events.
     pub path: PathBuf,
@@ -80,8 +80,10 @@ pub struct WorkspaceWatchUpdate {
 pub enum WorkspaceWatchPoll {
     /// One or more filesystem paths changed and may need a sidebar refresh.
     Update(WorkspaceWatchUpdate),
-    /// The watcher backend reported an error or disconnected.
+    /// The watcher backend reported a recoverable error batch.
     Error(String),
+    /// The watcher event channel closed and cannot yield further updates.
+    Disconnected,
 }
 
 /// Startup failure while constructing a workspace watcher.
@@ -102,10 +104,11 @@ pub enum WorkspaceWatchError {
     },
 }
 
-/// Live recursive watcher for one workspace section.
+/// Live materialized-scope watcher for one workspace section.
 ///
-/// The UI keeps this object on the main thread and polls it with `try_poll()`.
-/// The backend watcher thread stays entirely inside the debouncer crate.
+/// Construction and destruction may touch slow platform resources, so the UI
+/// transfers this handle only through background lifecycle work. Once installed,
+/// the main thread polls its receiver with `try_poll()` without blocking.
 #[derive(Debug)]
 pub struct WorkspaceWatcher {
     /// Keep the debouncer alive for as long as the section wants updates.
@@ -147,23 +150,7 @@ impl WorkspaceWatcher {
     /// Poll the next watcher batch without blocking the GTK main loop.
     #[must_use]
     pub fn try_poll(&self) -> Option<WorkspaceWatchPoll> {
-        match self.receiver.try_recv() {
-            Ok(Ok(events)) => {
-                let changed_paths = collect_changed_paths(events);
-                if changed_paths.is_empty() {
-                    None
-                } else {
-                    Some(WorkspaceWatchPoll::Update(WorkspaceWatchUpdate {
-                        changed_paths,
-                    }))
-                }
-            }
-            Ok(Err(errors)) => Some(WorkspaceWatchPoll::Error(format_errors(&errors))),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(WorkspaceWatchPoll::Error(
-                "Workspace auto-refresh disconnected.".to_string(),
-            )),
-        }
+        poll_receiver(&self.receiver)
     }
 
     /// Count of actively watched targets, kept mainly so tests can sanity-check
@@ -171,6 +158,24 @@ impl WorkspaceWatcher {
     #[must_use]
     pub fn watched_target_count(&self) -> usize {
         self.target_count
+    }
+}
+
+fn poll_receiver(receiver: &Receiver<DebounceEventResult>) -> Option<WorkspaceWatchPoll> {
+    match receiver.try_recv() {
+        Ok(Ok(events)) => {
+            let changed_paths = collect_changed_paths(events);
+            if changed_paths.is_empty() {
+                None
+            } else {
+                Some(WorkspaceWatchPoll::Update(WorkspaceWatchUpdate {
+                    changed_paths,
+                }))
+            }
+        }
+        Ok(Err(errors)) => Some(WorkspaceWatchPoll::Error(format_errors(&errors))),
+        Err(TryRecvError::Empty) => None,
+        Err(TryRecvError::Disconnected) => Some(WorkspaceWatchPoll::Disconnected),
     }
 }
 
@@ -272,6 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn disconnected_receiver_reports_terminal_poll_state() {
+        let (sender, receiver) = mpsc::channel();
+        drop(sender);
+
+        assert_eq!(
+            poll_receiver(&receiver),
+            Some(WorkspaceWatchPoll::Disconnected)
+        );
+    }
+
+    #[test]
     fn watching_directory_target_reports_created_file() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let Some(watcher) =
@@ -341,7 +357,7 @@ mod tests {
                         || update.changed_paths.contains(&renamed_path)
                 );
             }
-            other @ WorkspaceWatchPoll::Error(_) => {
+            other @ (WorkspaceWatchPoll::Error(_) | WorkspaceWatchPoll::Disconnected) => {
                 panic!("expected update poll, got {other:?}");
             }
         }

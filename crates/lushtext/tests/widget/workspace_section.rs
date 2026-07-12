@@ -3,7 +3,8 @@
 //! Tests for the LushtextWorkspaceSection widget.
 
 use crate::common::{
-    emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_events, present_window, wait_until,
+    emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
+    present_window, wait_until,
 };
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -23,6 +24,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
+use std::time::Instant;
 
 fn present_section_window(section: &LushtextWorkspaceSection) -> gtk4::ApplicationWindow {
     present_section_window_with_size(section, 320, 420)
@@ -1615,7 +1617,7 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
     );
 
     section.stop_workspace_watch_for_test();
-    let initial_generation = section.imp().watch_runtime.start_generation.get();
+    let initial_generation = section.watch_target_generation_for_test();
     let initial_targets = section.watch_targets_for_test();
     let nested_row = row_for_path(&section, &nested).expect("nested folder should be visible");
     let second_row =
@@ -1776,7 +1778,7 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
         "ending the drag should clear all insertion-line feedback"
     );
     assert_eq!(
-        section.imp().watch_runtime.start_generation.get(),
+        section.watch_target_generation_for_test(),
         initial_generation,
         "drag-hover expansion suppression must not restart workspace watching"
     );
@@ -3394,7 +3396,7 @@ fn test_refresh_reconciles_top_level_rows_without_losing_folder_ids() {
 }
 
 #[test]
-fn test_watch_targets_follow_visible_workspace_folders_in_order() {
+fn test_watch_targets_keep_stable_path_order() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-watch-targets"));
     let first = tempfile::tempdir().expect("first folder");
@@ -3405,13 +3407,12 @@ fn test_watch_targets_follow_visible_workspace_folders_in_order() {
         WorkspaceFolder::with_id(WorkspaceFolderId::new("second"), second.path().to_path_buf()),
     ]);
 
-    assert_eq!(
-        section.watch_targets_for_test(),
-        vec![
-            WorkspaceWatchTarget::directory(first.path().to_path_buf()),
-            WorkspaceWatchTarget::directory(second.path().to_path_buf()),
-        ]
-    );
+    let mut expected = vec![
+        WorkspaceWatchTarget::directory(first.path().to_path_buf()),
+        WorkspaceWatchTarget::directory(second.path().to_path_buf()),
+    ];
+    expected.sort();
+    assert_eq!(section.watch_targets_for_test(), expected);
 }
 
 #[test]
@@ -3459,6 +3460,296 @@ fn test_watch_targets_ignore_collapsed_descendants_until_expanded() {
         ],
         "expanded descendants become explicit materialized watch targets"
     );
+}
+
+#[test]
+fn test_inline_rename_refreshes_expanded_directory_watch_target() {
+    ensure_gtk_init();
+    let parent = tempfile::tempdir().expect("parent folder");
+    let nested = parent.path().join("before");
+    let renamed = parent.path().join("after");
+    fixture::create_dir_all(&nested);
+    fixture::write_text(&nested.join("child.txt"), "materialize nested");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-inline-rename"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("parent"),
+        parent.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested folder should be visible")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || {
+        section
+            .watch_targets_for_test()
+            .contains(&WorkspaceWatchTarget::directory(nested.clone()))
+    });
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &nested.join("child.txt"))
+    });
+
+    prepare_context_menu_for_path(&section, &nested);
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(2), || {
+        inline_rename_entry_for_path(&section, &nested).is_some()
+    });
+    let entry = inline_rename_entry_for_path(&section, &nested)
+        .expect("expanded directory rename entry should be visible");
+    flush_after_delay(Duration::from_millis(100));
+    entry.set_text("after");
+    entry.emit_by_name::<()>("activate", &[]);
+
+    wait_until(Duration::from_secs(10), || {
+        fixture::exists(&renamed)
+            && section
+                .watch_targets_for_test()
+                .contains(&WorkspaceWatchTarget::directory(renamed.clone()))
+            && section.workspace_watcher_is_current_for_test()
+    });
+    assert!(
+        !section
+            .watch_targets_for_test()
+            .contains(&WorkspaceWatchTarget::directory(nested)),
+        "the in-place rename must release the stale directory target"
+    );
+}
+
+#[test]
+fn test_one_row_collapse_touches_only_its_incremental_watch_delta() {
+    ensure_gtk_init();
+    let parent = tempfile::tempdir().expect("parent folder");
+    let children = (0..32)
+        .map(|index| {
+            let child = parent.path().join(format!("child-{index:02}"));
+            fixture::create_dir_all(&child);
+            fixture::write_text(&child.join("entry.txt"), "materialized child");
+            child
+        })
+        .collect::<Vec<_>>();
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-many-expanded"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("parent"),
+        parent.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        children
+            .last()
+            .is_some_and(|child| tree_contains_path(&section, child))
+    });
+
+    for child in &children {
+        row_for_path(&section, child)
+            .expect("materialized child directory should have a row")
+            .set_expanded(true);
+    }
+    wait_until(Duration::from_secs(5), || {
+        section.watch_targets_for_test().len() == children.len() + 1
+    });
+    wait_until(Duration::from_secs(10), || {
+        children
+            .iter()
+            .all(|child| tree_contains_path(&section, &child.join("entry.txt")))
+    });
+    flush_events();
+    let _ = section.take_watch_target_rows_touched_for_test();
+
+    let collapsed = &children[children.len() / 2];
+    row_for_path(&section, collapsed)
+        .expect("expanded child should remain materialized")
+        .set_expanded(false);
+    wait_until(Duration::from_secs(5), || {
+        !section
+            .watch_targets_for_test()
+            .contains(&WorkspaceWatchTarget::directory(collapsed.clone()))
+    });
+
+    assert!(
+        section.take_watch_target_rows_touched_for_test() <= 2,
+        "one collapse should touch only the changed row and its removed child splice"
+    );
+}
+
+#[test]
+fn test_slow_watcher_start_and_teardown_leave_main_loop_schedulable() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-slow-worker"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    section.set_workspace_watcher_delays_for_test(
+        Duration::from_millis(300),
+        Duration::ZERO,
+    );
+
+    let start_tick = Rc::new(Cell::new(false));
+    let start_tick_clone = Rc::clone(&start_tick);
+    glib::timeout_add_local_once(Duration::from_millis(75), move || {
+        start_tick_clone.set(true);
+    });
+    let started_at = Instant::now();
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    wait_until(Duration::from_millis(200), || start_tick.get());
+    assert!(
+        started_at.elapsed() < Duration::from_millis(250),
+        "slow backend creation must not occupy the GTK callback"
+    );
+    wait_until(Duration::from_secs(3), || {
+        section.imp().watch_runtime.watcher.borrow().is_some()
+    });
+
+    section.set_workspace_watcher_delays_for_test(
+        Duration::ZERO,
+        Duration::from_millis(300),
+    );
+    let drop_tick = Rc::new(Cell::new(false));
+    let drop_tick_clone = Rc::clone(&drop_tick);
+    glib::timeout_add_local_once(Duration::from_millis(75), move || {
+        drop_tick_clone.set(true);
+    });
+    let retired_at = Instant::now();
+    section.load_folders(&[]);
+    wait_until(Duration::from_millis(200), || drop_tick.get());
+    assert!(
+        retired_at.elapsed() < Duration::from_millis(250),
+        "slow backend teardown must not occupy the GTK callback"
+    );
+    assert!(section.imp().refresh_button.is_sensitive());
+}
+
+#[test]
+fn test_stale_watcher_failure_is_ignored_after_targets_are_superseded() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-stale-failure"));
+    let parent = tempfile::tempdir().expect("workspace parent");
+    let missing = parent.path().join("missing");
+    let valid = tempfile::tempdir().expect("valid workspace folder");
+    let messages = Rc::new(RefCell::new(Vec::<String>::new()));
+    let messages_clone = Rc::clone(&messages);
+    section.connect_message(move |message, _| {
+        messages_clone.borrow_mut().push(message.to_string());
+    });
+    section.set_workspace_watcher_delays_for_test(
+        Duration::from_millis(250),
+        Duration::ZERO,
+    );
+
+    section.load_folders(&[FolderTreeEntry::Directory { path: missing }]);
+    let supersede = Rc::new(Cell::new(false));
+    let supersede_clone = Rc::clone(&supersede);
+    glib::timeout_add_local_once(Duration::from_millis(75), move || {
+        supersede_clone.set(true);
+    });
+    wait_until(Duration::from_millis(200), || supersede.get());
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("valid"),
+        valid.path().to_path_buf(),
+    )]);
+
+    wait_until(Duration::from_secs(3), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+    assert!(
+        messages
+            .borrow()
+            .iter()
+            .all(|message| !message.contains("Workspace auto-refresh unavailable")),
+        "an obsolete startup failure must not surface feedback for current targets"
+    );
+}
+
+#[test]
+fn test_rapid_successful_watcher_generations_install_only_the_latest() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-stale-success"));
+    let folders = (0..6)
+        .map(|_| tempfile::tempdir().expect("workspace folder"))
+        .collect::<Vec<_>>();
+    section.set_workspace_watcher_delays_for_test(
+        Duration::from_millis(500),
+        Duration::from_millis(25),
+    );
+
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder-0"),
+        folders[0].path().to_path_buf(),
+    )]);
+    for (index, folder) in folders.iter().enumerate().skip(1) {
+        let supersede = Rc::new(Cell::new(false));
+        let supersede_clone = Rc::clone(&supersede);
+        glib::timeout_add_local_once(Duration::from_millis(60), move || {
+            supersede_clone.set(true);
+        });
+        wait_until(Duration::from_millis(150), || supersede.get());
+        section.load_workspace_folders(&[WorkspaceFolder::with_id(
+            WorkspaceFolderId::new(format!("folder-{index}")),
+            folder.path().to_path_buf(),
+        )]);
+    }
+
+    wait_until(Duration::from_secs(4), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+    assert_eq!(
+        section.watch_targets_for_test(),
+        vec![WorkspaceWatchTarget::directory(
+            folders.last().expect("latest folder").path().to_path_buf()
+        )]
+    );
+    assert_eq!(
+        section
+            .imp()
+            .watch_runtime
+            .watcher
+            .borrow()
+            .as_ref()
+            .map(lushtext_core::services::workspace_watch::WorkspaceWatcher::watched_target_count),
+        Some(1)
+    );
+    assert_eq!(
+        section.workspace_watcher_worker_starts_for_test(),
+        2,
+        "one slow generation and one latest handoff should bound worker starts"
+    );
+}
+
+#[test]
+fn test_stopping_section_during_slow_start_rejects_returned_handle() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-stop-during-start"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    section.set_workspace_watcher_delays_for_test(
+        Duration::from_millis(250),
+        Duration::from_millis(50),
+    );
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+
+    let stop = Rc::new(Cell::new(false));
+    let stop_clone = Rc::clone(&stop);
+    glib::timeout_add_local_once(Duration::from_millis(75), move || stop_clone.set(true));
+    wait_until(Duration::from_millis(200), || stop.get());
+    section.stop_workspace_watch_for_test();
+
+    let completion_window = Rc::new(Cell::new(false));
+    let completion_window_clone = Rc::clone(&completion_window);
+    glib::timeout_add_local_once(Duration::from_millis(500), move || {
+        completion_window_clone.set(true);
+    });
+    wait_until(Duration::from_secs(1), || completion_window.get());
+    assert!(section.imp().watch_runtime.watcher.borrow().is_none());
+    assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
+    assert!(!section.workspace_watcher_is_current_for_test());
 }
 
 #[test]
@@ -3718,7 +4009,6 @@ fn test_load_empty_folders_shows_empty_folder_set_state() {
         0
     );
     assert!(section.imp().watch_runtime.watcher.borrow().is_none());
-    assert!(section.imp().watch_runtime.start_source_id.borrow().is_none());
     assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
     assert_eq!(
         section.watch_targets_for_test(),
@@ -3905,7 +4195,6 @@ fn test_empty_workspace_manual_refresh_noops_without_feedback_or_watchers() {
         "empty manual refresh should not rebuild the top-level store"
     );
     assert!(section.imp().watch_runtime.watcher.borrow().is_none());
-    assert!(section.imp().watch_runtime.start_source_id.borrow().is_none());
     assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
 }
 
