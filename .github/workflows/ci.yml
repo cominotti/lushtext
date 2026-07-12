@@ -45,7 +45,8 @@ jobs:
             blueprint-compiler \
             gcc \
             gettext \
-            git
+            git \
+            ripgrep
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.0

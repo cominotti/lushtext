@@ -27,7 +27,7 @@ EOF
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="${LUSHTEXT_DEBUG_REPO_ROOT:-$(git -C "$script_dir" rev-parse --show-toplevel)}"
+repo_root="${LUSHTEXT_DEBUG_REPO_ROOT:-}"
 
 file_path=""
 output_path=""
@@ -112,6 +112,28 @@ while (($#)); do
             ;;
     esac
 done
+
+if [[ -z "$repo_root" ]]; then
+    if command -v git >/dev/null 2>&1; then
+        repo_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$repo_root" ]]; then
+        candidate="$script_dir"
+        while [[ "$candidate" != "/" ]]; do
+            if [[ -f "$candidate/Cargo.toml" ]]; then
+                repo_root="$candidate"
+                break
+            fi
+            candidate="$(dirname -- "$candidate")"
+        done
+    fi
+
+    if [[ -z "$repo_root" ]]; then
+        echo "Could not discover the repository root; pass --repo-root PATH." >&2
+        exit 2
+    fi
+fi
 
 repo_root="$(cd -- "$repo_root" && pwd)"
 binary_path="${binary_path:-$repo_root/target/debug/lushtext}"
