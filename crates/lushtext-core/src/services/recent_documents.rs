@@ -16,6 +16,7 @@ use crate::model::recent_document::{RecentDocumentEntry, RecentDocumentFile, Rec
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::filesystem::read as fs_read;
 use crate::services::filesystem::types::PathStatus;
+use crate::services::fuzzy::FuzzyQuery;
 use crate::services::json_store;
 
 /// Recent-document storage filename under the app data directory.
@@ -162,23 +163,28 @@ pub fn merge_loaded_entries(
 pub fn search_rows(rows: &[RecentDocumentRow], query: &str) -> Vec<RecentDocumentRow> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return rows.to_vec();
+        let mut results = rows.to_vec();
+        results.sort_by(sort_rows_newest_first);
+        return results;
     }
-    let query = trimmed.to_lowercase();
+    let folded_query = trimmed.to_lowercase();
+    let mut fuzzy_query = FuzzyQuery::new(trimmed);
     let mut scored: Vec<_> = rows
         .iter()
         .filter_map(|row| {
-            let title = row.title.to_lowercase();
-            let subtitle = row.subtitle.to_lowercase();
-            let path = row.path.display().to_string().to_lowercase();
-            best_score(&query, [title.as_str(), subtitle.as_str(), path.as_str()])
-                .map(|score| (score, row.clone()))
+            let path = row.path.display().to_string();
+            best_rank(
+                &folded_query,
+                &mut fuzzy_query,
+                [row.title.as_str(), row.subtitle.as_str(), path.as_str()],
+            )
+            .map(|rank| (rank, row.clone()))
         })
         .collect();
-    scored.sort_by(|(left_score, left), (right_score, right)| {
-        left_score
-            .cmp(right_score)
+    scored.sort_by(|(left_rank, left), (right_rank, right)| {
+        compare_match_ranks(*left_rank, *right_rank)
             .then_with(|| right.last_opened_secs.cmp(&left.last_opened_secs))
+            .then_with(|| left.path.cmp(&right.path))
     });
     scored.into_iter().map(|(_, row)| row).collect()
 }
@@ -366,44 +372,73 @@ fn sort_newest_first(left: &RecentDocumentEntry, right: &RecentDocumentEntry) ->
         .then_with(|| left.path.cmp(&right.path))
 }
 
-fn best_score<'a>(query: &str, haystacks: impl IntoIterator<Item = &'a str>) -> Option<u8> {
+fn sort_rows_newest_first(left: &RecentDocumentRow, right: &RecentDocumentRow) -> Ordering {
+    right
+        .last_opened_secs
+        .cmp(&left.last_opened_secs)
+        .then_with(|| left.path.cmp(&right.path))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RecentMatchTier {
+    Prefix,
+    Substring,
+    Fuzzy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecentMatchRank {
+    tier: RecentMatchTier,
+    fuzzy_score: u32,
+}
+
+fn best_rank<'a>(
+    folded_query: &str,
+    fuzzy_query: &mut FuzzyQuery,
+    haystacks: impl IntoIterator<Item = &'a str>,
+) -> Option<RecentMatchRank> {
     let mut best = None;
     for haystack in haystacks {
-        let score = if haystack.starts_with(query) {
-            Some(0)
-        } else if haystack.contains(query) {
-            Some(1)
-        } else if fuzzy_match(haystack, query) {
-            Some(2)
+        let folded_haystack = haystack.to_lowercase();
+        let rank = if folded_haystack.starts_with(folded_query) {
+            Some(RecentMatchRank {
+                tier: RecentMatchTier::Prefix,
+                fuzzy_score: 0,
+            })
+        } else if folded_haystack.contains(folded_query) {
+            Some(RecentMatchRank {
+                tier: RecentMatchTier::Substring,
+                fuzzy_score: 0,
+            })
         } else {
-            None
+            fuzzy_query
+                .score(haystack)
+                .map(|fuzzy_score| RecentMatchRank {
+                    tier: RecentMatchTier::Fuzzy,
+                    fuzzy_score,
+                })
         };
-        best = match (best, score) {
-            (None, Some(score)) => Some(score),
-            (Some(current), Some(score)) => Some(current.min(score)),
+        best = match (best, rank) {
+            (None, Some(rank)) => Some(rank),
+            (Some(current), Some(rank)) => Some(if compare_match_ranks(rank, current).is_lt() {
+                rank
+            } else {
+                current
+            }),
             (best, None) => best,
         };
     }
     best
 }
 
-fn fuzzy_match(haystack: &str, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    let mut chars = query.chars();
-    let Some(mut expected) = chars.next() else {
-        return true;
-    };
-    for candidate in haystack.chars() {
-        if candidate == expected {
-            let Some(next) = chars.next() else {
-                return true;
-            };
-            expected = next;
+fn compare_match_ranks(left: RecentMatchRank, right: RecentMatchRank) -> Ordering {
+    left.tier.cmp(&right.tier).then_with(|| {
+        if left.tier == RecentMatchTier::Fuzzy {
+            right.fuzzy_score.cmp(&left.fuzzy_score)
+        } else {
+            Ordering::Equal
         }
-    }
-    false
+    })
 }
 
 #[cfg(test)]
@@ -414,6 +449,17 @@ mod tests {
 
     fn entry(path: &str, secs: u64) -> RecentDocumentEntry {
         RecentDocumentEntry::new(PathBuf::from(path), None, secs)
+    }
+
+    fn row(title: &str, subtitle: &str, path: &str, secs: u64) -> RecentDocumentRow {
+        RecentDocumentRow {
+            title: title.to_string(),
+            subtitle: subtitle.to_string(),
+            age_label: None,
+            path: PathBuf::from(path),
+            canonical_path: None,
+            last_opened_secs: secs,
+        }
     }
 
     #[test]
@@ -848,24 +894,198 @@ mod tests {
     }
 
     #[test]
-    fn search_ranks_prefix_substring_and_fuzzy_matches() {
+    fn search_ranks_prefix_before_substring_before_fuzzy() {
         let rows = vec![
-            RecentDocumentRow::from_entry(&entry("/tmp/work/src/main.rs", 30), 30),
-            RecentDocumentRow::from_entry(&entry("/tmp/work/domain.rs", 20), 30),
-            RecentDocumentRow::from_entry(&entry("/tmp/work/notes.txt", 10), 30),
+            row("a-b-c.txt", "/fuzzy", "/fuzzy/a-b-c.txt", 30),
+            row("notes-abc.txt", "/substring", "/substring/notes.txt", 20),
+            row("ABC-notes.txt", "/prefix", "/prefix/notes.txt", 10),
         ];
 
-        let results = search_rows(&rows, "dom");
-        assert_eq!(results[0].title, "domain.rs");
+        let results = search_rows(&rows, "abc");
 
-        let results = search_rows(&rows, "sr");
-        assert_eq!(results[0].title, "main.rs");
+        assert_eq!(
+            results
+                .iter()
+                .map(|row| row.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ABC-notes.txt", "notes-abc.txt", "a-b-c.txt"]
+        );
+    }
 
-        let results = search_rows(&rows, "absent");
-        assert!(results.is_empty());
+    #[test]
+    fn best_matching_field_determines_the_row_tier() {
+        let rows = vec![
+            row(
+                "a-b-c.txt",
+                "archive abc section",
+                "/best-field/first.txt",
+                10,
+            ),
+            row("a_b_c.txt", "fuzzy only", "/best-field/second.txt", 20),
+        ];
 
-        assert!(fuzzy_match("source.rs", "sr"));
-        assert!(!fuzzy_match("source.rs", "sx"));
+        let results = search_rows(&rows, "abc");
+
+        assert_eq!(results[0].path, PathBuf::from("/best-field/first.txt"));
+    }
+
+    #[test]
+    fn stronger_fuzzy_score_beats_recency() {
+        let older_strong = row("a-b-c.txt", "", "/ranking/strong.txt", 10);
+        let newer_weak = row("a very long b very long c.txt", "", "/ranking/weak.txt", 20);
+        let mut query = FuzzyQuery::new("abc");
+        let strong_score = query
+            .score(&older_strong.title)
+            .expect("strong fuzzy match");
+        let weak_score = query.score(&newer_weak.title).expect("weak fuzzy match");
+        assert!(strong_score > weak_score, "fixture must distinguish scores");
+
+        let results = search_rows(&[newer_weak, older_strong], "abc");
+
+        assert_eq!(results[0].path, PathBuf::from("/ranking/strong.txt"));
+    }
+
+    #[test]
+    fn equal_fuzzy_scores_use_recency_then_path() {
+        let rows = vec![
+            row("a-b-c.txt", "", "/ties/z.txt", 20),
+            row("a-b-c.txt", "", "/ties/a.txt", 20),
+            row("a-b-c.txt", "", "/ties/newest.txt", 30),
+        ];
+
+        let results = search_rows(&rows, "abc");
+
+        assert_eq!(
+            results
+                .iter()
+                .map(|row| row.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![
+                Path::new("/ties/newest.txt"),
+                Path::new("/ties/a.txt"),
+                Path::new("/ties/z.txt")
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_and_whitespace_queries_sort_newest_then_path() {
+        let rows = vec![
+            row("older", "", "/empty/older.txt", 10),
+            row("z", "", "/empty/z.txt", 20),
+            row("a", "", "/empty/a.txt", 20),
+        ];
+
+        for query in ["", " \t\n "] {
+            let results = search_rows(&rows, query);
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|row| row.path.as_path())
+                    .collect::<Vec<_>>(),
+                vec![
+                    Path::new("/empty/a.txt"),
+                    Path::new("/empty/z.txt"),
+                    Path::new("/empty/older.txt")
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn palette_and_recent_fuzzy_scores_share_semantics() {
+        let fixtures = [
+            ("mnr", "MainRunner.rs"),
+            ("cafex", "Café Example.txt"),
+            ("cafex", "Cafe\u{301} Example.txt"),
+            ("sr+", "symbols/rust+notes.md"),
+            ("zzq", "MainRunner.rs"),
+        ];
+
+        for (query_text, candidate) in fixtures {
+            let palette_score = crate::services::palette::fuzzy_score(query_text, candidate);
+            if query_text == "cafex" {
+                assert!(palette_score.is_some(), "normalization fixture must match");
+            }
+            let mut recent_query = FuzzyQuery::new(query_text);
+            let recent_score =
+                best_rank(&query_text.to_lowercase(), &mut recent_query, [candidate]).and_then(
+                    |rank| (rank.tier == RecentMatchTier::Fuzzy).then_some(rank.fuzzy_score),
+                );
+            assert_eq!(
+                recent_score, palette_score,
+                "shared acceptance/score drift for {query_text:?} against {candidate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_mixed_case_symbols_and_deep_paths_remain_searchable() {
+        let rows = vec![
+            row(
+                "CAFÉ Example.txt",
+                "",
+                "/workspace/alpha/beta/gamma/CAFÉ Example.txt",
+                40,
+            ),
+            row(
+                "Cafe\u{301} Example.txt",
+                "",
+                "/workspace/composed/Cafe\u{301} Example.txt",
+                30,
+            ),
+            row(
+                "rust+gtk@notes.md",
+                "",
+                "/workspace/symbols/rust+gtk@notes.md",
+                20,
+            ),
+            row(
+                "deep-file.txt",
+                "",
+                "/workspace/one/two/three/four/deep-file.txt",
+                10,
+            ),
+        ];
+
+        assert_eq!(search_rows(&rows, "café").len(), 1);
+        assert_eq!(search_rows(&rows, "cafex").len(), 2);
+        assert_eq!(search_rows(&rows, "R+G").len(), 1);
+        assert_eq!(search_rows(&rows, "one/three").len(), 1);
+    }
+
+    #[test]
+    fn search_handles_one_row_two_hundred_rows_and_no_results() {
+        let one = vec![row("needle.txt", "", "/one/needle.txt", 1)];
+        assert_eq!(search_rows(&one, "NEED").len(), 1);
+
+        let many = (0..MAX_RECENTS)
+            .map(|index| {
+                row(
+                    &format!("match-{index}.txt"),
+                    "",
+                    &format!("/many/match-{index}.txt"),
+                    index as u64,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(search_rows(&many, "match").len(), MAX_RECENTS);
+
+        assert!(search_rows(&many, "no-such-candidate").is_empty());
+    }
+
+    #[test]
+    fn all_open_rows_stay_excluded_before_search() {
+        let entries = vec![entry("/tmp/open-a.txt", 20), entry("/tmp/open-b.txt", 10)];
+        let open = entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+
+        let rows = visible_rows(&entries, &open, 30);
+
+        assert!(rows.is_empty());
+        assert!(search_rows(&rows, "open").is_empty());
     }
 
     #[test]

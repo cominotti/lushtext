@@ -17,10 +17,9 @@ use crate::model::palette::{
     PaletteOpenTabSource,
 };
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScopeSnapshot};
+use crate::services::fuzzy::FuzzyQuery;
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{bookmark_service, document_note_service, folder_note_service};
-
-use super::fuzzy::FuzzyQuery;
 
 /// Complete palette note source plus diagnostics from partially recovered sidecars.
 #[derive(Debug, Clone, PartialEq, Eq)]

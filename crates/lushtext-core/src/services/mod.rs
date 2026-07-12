@@ -23,6 +23,7 @@ pub mod file_tree;
 pub mod filesystem;
 pub mod folder_note_service;
 pub mod format_upgrade;
+pub(crate) mod fuzzy;
 pub mod json_format;
 pub mod json_store;
 pub mod local_history_service;

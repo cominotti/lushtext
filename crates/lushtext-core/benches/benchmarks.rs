@@ -31,6 +31,7 @@ use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnap
 use lushtext_core::model::migration_ledger::MigrationKind;
 use lushtext_core::model::palette::IndexedFile;
 use lushtext_core::model::palette::SearchMode;
+use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
 use lushtext_core::model::workspace::{
@@ -43,6 +44,7 @@ use lushtext_core::services::file_tree::{self, DirectoryEntry};
 use lushtext_core::services::filesystem::{fixture, read as fs_read};
 use lushtext_core::services::json_format::KIND_LOCAL_HISTORY_INDEX;
 use lushtext_core::services::palette::{self, FileIndex};
+use lushtext_core::services::recent_documents;
 use lushtext_core::services::recovery_metadata::{
     RecoveryLoadConfig, RecoveryMetadataClass, save_enveloped_json_path,
 };
@@ -603,6 +605,37 @@ fn bench_fuzzy_score(c: &mut Criterion) {
             &(query, candidate),
             |b, &(q, c)| b.iter(|| palette::fuzzy_score(black_box(q), black_box(c))),
         );
+    }
+    group.finish();
+}
+
+fn bench_recent_document_search(c: &mut Criterion) {
+    let rows = (0..200)
+        .map(|index| {
+            let path = PathBuf::from(format!(
+                "/workspace/projet-équipe/section-{}/nested/document-{index:03}-résumé.rs",
+                index % 20
+            ));
+            RecentDocumentRow::from_entry(
+                &RecentDocumentEntry::new(path, None, 10_000 - index),
+                10_000,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut group = c.benchmark_group("recent_document_search_200_rows");
+    let cases = [
+        ("prefix", "document"),
+        ("substring_unicode", "résumé"),
+        ("fuzzy", "dcmnt"),
+        ("fuzzy_unicode", "rsme"),
+        ("deep_path", "équipe/section-19"),
+        ("no_match", "zzqvv"),
+    ];
+
+    for (id, query) in cases {
+        group.bench_with_input(BenchmarkId::new("query", id), query, |b, query| {
+            b.iter(|| recent_documents::search_rows(black_box(&rows), black_box(query)));
+        });
     }
     group.finish();
 }
@@ -1839,6 +1872,7 @@ fn bench_content_search_smoke(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_fuzzy_score,
+    bench_recent_document_search,
     bench_file_index_search,
     bench_file_index_rebuild,
     bench_file_index_incremental,
