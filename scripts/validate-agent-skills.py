@@ -30,7 +30,6 @@ FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---(?:\n|\Z)", re.DOTALL)
 TOC_RE = re.compile(r"^## (?:Table of Contents|Contents)\s*$", re.MULTILINE)
 KEY_VALUE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(.*)$")
-HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.*)$", re.MULTILINE)
 EXPLICIT_ANCHOR_RE = re.compile(r"<(?:a\s+(?:id|name)|span\s+id)=[\"']([^\"']+)[\"']", re.I)
 EXTERNAL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
@@ -420,9 +419,6 @@ def validate_openai_yaml(
                     errors.append(f"{display_path(path)}: dependencies.tools[{index}].type must be mcp")
 
 
-REFERENCE_DEFINITION_RE = re.compile(
-    r"^ {0,3}\[([^]]+)\]:[ \t]*(.+)$", re.MULTILINE
-)
 REFERENCE_USE_RE = re.compile(r"!?\[([^\]]*)\]\[([^\]]*)\]")
 
 
@@ -514,9 +510,20 @@ def markdown_links(text: str) -> list[str]:
             index = marker + 2
 
     definitions: dict[str, str] = {}
-    for match in REFERENCE_DEFINITION_RE.finditer(text):
-        label = " ".join(match.group(1).lower().split())
-        destination = markdown_destination(match.group(2))
+    for line in text.splitlines():
+        indent = len(line) - len(line.lstrip(" "))
+        if indent > 3:
+            continue
+        definition = line[indent:]
+        if not definition.startswith("["):
+            continue
+        separator = definition.find("]:", 1)
+        if separator < 0:
+            continue
+        label = " ".join(definition[1:separator].lower().split())
+        destination = markdown_destination(definition[separator + 2 :].lstrip(" \t"))
+        if not label:
+            continue
         if destination:
             definitions[label] = destination
             links.append(destination)
@@ -532,7 +539,18 @@ def markdown_links(text: str) -> list[str]:
 def markdown_anchors(text: str) -> set[str]:
     anchors = set(EXPLICIT_ANCHOR_RE.findall(text))
     counts: dict[str, int] = {}
-    for heading in HEADING_RE.findall(FENCE_RE.sub("", text)):
+    for line in FENCE_RE.sub("", text).splitlines():
+        level = 0
+        while level < min(6, len(line)) and line[level] == "#":
+            level += 1
+        if level == 0 or level >= len(line) or line[level] not in " \t":
+            continue
+        heading = line[level:].lstrip(" \t").rstrip()
+        closing_start = len(heading)
+        while closing_start > 0 and heading[closing_start - 1] == "#":
+            closing_start -= 1
+        if closing_start > 0 and closing_start < len(heading) and heading[closing_start - 1].isspace():
+            heading = heading[:closing_start].rstrip()
         heading = re.sub(r"<[^>]+>", "", heading.lower())
         heading = heading.replace("`", "").replace("*", "").replace("~", "")
         slug = "".join(char for char in heading if char.isalnum() or char in "-_" or char.isspace())
