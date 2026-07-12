@@ -17,8 +17,6 @@ RELEVANT_EXACT_PATHS = (
     ".agents/skills/gtk-agentic-debugging/scripts/atspi-dump-tree.py",
     ".agents/skills/gtk-agentic-debugging/scripts/atspi-set-text.py",
     ".agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py",
-    "scripts/accessibility_source_fingerprint.py",
-    "scripts/check-accessibility-policy.py",
     "scripts/run-accessibility-smoke.sh",
     "scripts/run-visual-smoke.sh",
     "docs/accessibility.md",

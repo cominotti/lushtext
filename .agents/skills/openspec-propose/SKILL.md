@@ -1,12 +1,13 @@
 ---
 name: openspec-propose
 description: Propose a new change with all artifacts generated in one step. Use when the user wants to quickly describe what they want to build and get a complete proposal with design, specs, and tasks ready for implementation.
+allowed-tools: Bash(openspec:*)
 license: MIT
 compatibility: Requires openspec CLI.
 metadata:
   author: openspec
   version: "1.0"
-  generatedBy: "1.4.0"
+  generatedBy: "1.6.0"
 ---
 
 Propose a new change - create the change and generate all artifacts in one step.
@@ -19,6 +20,8 @@ I'll create a change with artifacts:
 When ready to implement, run /opsx:apply
 
 ---
+
+**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `openspec store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`). Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
 **Input**: The user's request should include a change name (kebab-case) OR a description of what they want to build.
 
@@ -98,12 +101,6 @@ After completing all artifacts, summarize:
 - Follow the `instruction` field from `openspec instructions` for each artifact type
 - The schema defines what each artifact should contain - follow it
 - Read dependency artifacts for context before creating new ones
-- For UI-facing changes, include acceptance coverage for the state extremes the
-  surface can enter: no items/no required context, representative populated
-  data, many or awkward items, and constrained geometry. Name the visible
-  contract in the spec or design when it matters: reachable commands, readable
-  empty states, item-region-only scrolling, preserved header/close/actions,
-  no unintended scrollbars, and no fake rows or unrelated-context dependency.
 - Use `template` as the structure for your output file - fill in its sections
 - **IMPORTANT**: `context` and `rules` are constraints for YOU, not content for the file
   - Do NOT copy `<context>`, `<rules>`, `<project_context>` blocks into the artifact

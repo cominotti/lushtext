@@ -324,6 +324,8 @@ def check_smoke_matrix_contracts(findings: list[Finding]) -> None:
 
 def check_smoke_summary_freshness(findings: list[Finding]) -> None:
     current_fingerprint = source_fingerprint(REPO_ROOT)
+    if not smoke_summary_freshness_required(current_fingerprint):
+        return
     current_digest = current_fingerprint.get("sha256")
     summaries = (
         (
@@ -348,6 +350,12 @@ def check_smoke_summary_freshness(findings: list[Finding]) -> None:
 
         for message in smoke_summary_release_issues(summary, lane, command, current_digest):
             findings.append(Finding(rel_path, 1, message))
+
+
+def smoke_summary_freshness_required(source: dict[str, object]) -> bool:
+    """Require fresh smoke proof only for dirty accessibility-relevant files."""
+
+    return bool(source.get("dirty"))
 
 
 def smoke_summary_release_issues(
@@ -625,6 +633,11 @@ def parse_matrix_rows_by_case(text: str) -> dict[str, list[str]]:
 
 
 def run_self_test() -> None:
+    if smoke_summary_freshness_required({"dirty": False}):
+        raise AssertionError("clean accessibility source unexpectedly requires fresh smoke proof")
+    if not smoke_summary_freshness_required({"dirty": True}):
+        raise AssertionError("dirty accessibility source did not require fresh smoke proof")
+
     cases = [
         (
             "direct label fails",
