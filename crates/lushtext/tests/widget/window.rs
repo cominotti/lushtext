@@ -9696,7 +9696,9 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
             && !editor.is_saving()
     });
 
-    editor.imp().size_check.set(FileSizeCheck::DisableSyntax);
+    editor.set_local_history_availability_for_test(
+        local_history_service::LocalHistoryAvailability::SaveOnly,
+    );
     let count_after_full = local_history_service::list_snapshots_for_path(&data_dir, &path)
         .expect("list after full mode")
         .len();
@@ -9721,7 +9723,9 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
             && !editor.is_saving()
     });
 
-    editor.imp().size_check.set(FileSizeCheck::DisableUndoAndSyntax);
+    editor.set_local_history_availability_for_test(
+        local_history_service::LocalHistoryAvailability::Unavailable,
+    );
     let count_after_save_only = local_history_service::list_snapshots_for_path(&data_dir, &path)
         .expect("list after save-only mode")
         .len();
@@ -9735,12 +9739,17 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
     });
     flush_after_delay(Duration::from_millis(120));
 
-    assert_eq!(
+    let snapshots_after_unavailable =
         local_history_service::list_snapshots_for_path(&data_dir, &path)
-            .expect("list after unavailable mode")
-            .len(),
+            .expect("list after unavailable mode");
+    let origins_after_unavailable = snapshots_after_unavailable
+        .iter()
+        .map(|snapshot| snapshot.origin)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        snapshots_after_unavailable.len(),
         count_after_save_only,
-        "unavailable mode must disable both automatic and save-boundary capture",
+        "unavailable mode must disable both automatic and save-boundary capture: {origins_after_unavailable:?}",
     );
 }
 

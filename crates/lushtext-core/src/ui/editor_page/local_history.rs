@@ -216,8 +216,28 @@ impl LushtextEditorPage {
         local_history_service::availability_for_size_check(self.size_check())
     }
 
-    fn live_local_history_availability(&self) -> local_history_service::LocalHistoryAvailability {
+    pub(super) fn live_local_history_availability(
+        &self,
+    ) -> local_history_service::LocalHistoryAvailability {
+        #[cfg(feature = "test-utils")]
+        if let Some(availability) = self.imp().local_history.availability_override.get() {
+            return availability;
+        }
+
         local_history_service::availability_for_live_buffer_chars(self.buffer().char_count())
+    }
+
+    /// Override live local-history admission without allocating a policy-sized test buffer.
+    #[cfg(feature = "test-utils")]
+    pub fn set_local_history_availability_for_test(
+        &self,
+        availability: local_history_service::LocalHistoryAvailability,
+    ) {
+        self.cancel_local_history_periodic_capture();
+        self.imp()
+            .local_history
+            .availability_override
+            .set(Some(availability));
     }
 
     pub(crate) fn advance_local_history_path_generation(&self) {

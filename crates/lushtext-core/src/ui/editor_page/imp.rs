@@ -324,6 +324,10 @@ pub struct LocalHistoryState {
     pub restore_undo_text: RefCell<Option<String>>,
     /// Buffer signal lifetimes that drive automatic local-history capture.
     pub buffer_signals: SignalBag,
+    /// Deterministic policy seam for widget tests without allocating huge buffers.
+    #[cfg(feature = "test-utils")]
+    pub availability_override:
+        Cell<Option<crate::services::local_history_service::LocalHistoryAvailability>>,
 }
 
 /// Private template implementation for one editor tab.

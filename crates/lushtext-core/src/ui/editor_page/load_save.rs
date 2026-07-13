@@ -445,10 +445,7 @@ impl LushtextEditorPage {
         let metadata = self.document_encoding_state();
         let formatting_overrides = self.formatting_overrides();
         let allow_lossy = self.take_lossy_save_once();
-        let history_availability =
-            crate::services::local_history_service::availability_for_live_buffer_chars(
-                self.buffer().char_count(),
-            );
+        let history_availability = self.live_local_history_availability();
 
         spawn_blocking_then(
             self.clone(),
