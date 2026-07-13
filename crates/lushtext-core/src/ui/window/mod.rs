@@ -8,6 +8,7 @@
 //! keep the adapter readable.
 
 mod actions;
+mod adaptive_shell;
 mod dialogs;
 mod documents;
 mod drafts;

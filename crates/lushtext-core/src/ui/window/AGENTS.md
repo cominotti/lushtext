@@ -11,7 +11,10 @@ This folder owns the top-level application shell adapter.
 ## Local Contracts
 
 - Treat draft lifecycle and session snapshot persistence as separate workflows. Coordinate them explicitly; do not collapse them back into one catch-all module.
-- Keep bookmark and note workflows in `notes.rs`: window actions, dialogs, workspace-scope browse flows, and sidecar migration belong there rather than in `documents.rs` or `imp.rs`.
+- Keep bookmark and note workflows in the private `notes/` module. `mod.rs`
+  owns shared callbacks, migration coordination, and menu availability;
+  `bookmarks.rs`, `editors.rs`, and `browser.rs` own their named workflows.
+  Keep these GTK workflows out of `documents.rs`, `imp.rs`, and services.
 - Keep status-bar refresh and properties-panel refresh behavior aligned when window-level document state changes.
 - Keep search-panel shell integration here, but keep search-panel internal list/history/replace/runtime mechanics in `ui/search_panel/`.
 - Keep window-level transient dismissal in `transient_surfaces.rs`: Escape closes one topmost dismissible shell surface before Focus Mode exit, and command-palette click-away routes through `close_command_palette()` so focus restoration stays centralized.
@@ -21,6 +24,10 @@ This folder owns the top-level application shell adapter.
   plus `docs/automation-reference.md` and run `make check-automation-docs`.
 - When split-view geometry changes, preserve the total-window width contracts and the mirrored status-bar toggle behavior described in the root `AGENTS.md` and `.agents/rules/ui.md`.
 - Keep split-view allocation paths cheap and runtime-only. `size_allocate()` may clamp live sidebar fractions and update cached breakpoint thresholds when the actual allocated width changes, but it must not persist GSettings, rebuild/reparse `AdwBreakpoint` conditions, or rehost secondary surfaces on every animation frame.
+- Keep plain split-view width, fraction, breakpoint, and compact-surface
+  decisions in `adaptive_shell.rs`. `imp.rs` owns the live Libadwaita objects,
+  settings reads and writes, focus restoration, signal setup, and application
+  of those decisions.
 
 ## Editing Rules
 

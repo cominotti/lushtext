@@ -17,6 +17,13 @@ This crate owns the application's real behavior: domain types, services, and GTK
 ## Structure
 
 - Treat `ui/` as driving adapters. Split big widget folders by workflow before inventing new abstraction layers.
+- Keep responsive main-window calculations in `ui/window/adaptive_shell.rs` as
+  plain inputs and decisions; `ui/window/imp.rs` retains GTK objects, settings,
+  allocation application, focus, signals, and disposal.
+- Keep the private `ui/window/notes/` facade responsible for shared note
+  coordination, with bookmark, editor, and browser workflows in their named
+  siblings. Keep recycled workspace-row factory, accessibility, and context
+  menu wiring in their named `ui/sidebar/workspace_section/` modules.
 - Treat `services/` as application logic and driven adapters. Prefer free functions unless a trait is clearly justified.
 - Treat `model/` as the home for invariants, value objects, and repeated field bundles.
 - Treat `services::filesystem` as the only production filesystem adapter. Prefer `metadata::exists` or `metadata::path_status` for cheap status probes and keep `metadata::file_facts` for workflows that need canonical identity, byte size, or mtime.

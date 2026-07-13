@@ -100,11 +100,14 @@ src/
 │   └── workspace_watch.rs # Materialized-scope filesystem watch service for sidebar auto-refresh
 ├── benches/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
-└── ui/                 # GTK4/Libadwaita widgets (each folder keeps mod.rs + imp.rs)
+└── ui/                 # GTK4/Libadwaita driving adapters
     ├── automation.rs    # App-owned read-only D-Bus automation adapter, readiness waits, and snapshot collection
-    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, Focus Mode, local-history, notes, recent Open popover integration, search, preview, startup data preflight, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
+    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, Focus Mode, local-history, recent Open popover integration, search, preview, startup data preflight, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
+    │   ├── adaptive_shell.rs # Plain-Rust split-view width, breakpoint, and compact-surface decisions
+    │   └── notes/       # Shared facade plus bookmark, document/folder editor, and unified browser workflows
     ├── editor_page/     # Per-tab editor adapter plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
+    │   └── workspace_section/ # Per-workspace state plus row factory, accessibility, and context-menu wiring
     ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
     ├── command_palette/ # Ctrl+Shift+P search: files + note records + commands
     ├── open_popover/    # Ctrl+K searchable recent-document Open popover

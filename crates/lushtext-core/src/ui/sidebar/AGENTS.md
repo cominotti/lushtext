@@ -18,6 +18,11 @@ This folder owns the multi-workspace sidebar adapter and its workspace-section s
 - Keep workspace-section async tree loading off the main thread and preserve deduplication/placeholder behavior for large directories.
 - Keep workspace watcher targets as an incremental mirror of flattened-row splices and expansion state; do not restore full `GtkTreeListModel` scans on restart. Watcher creation, registration, replacement teardown, and stale-handle disposal stay off the GTK thread, with at most one lifecycle worker per section and one latest-generation handoff.
 - In workspace-section rows, workspace-folder reorder DnD hover belongs to the transparent row-level shield. `GtkTreeExpander` owns normal disclosure behavior, and any idle collapse after drag-hover child-model creation is defensive only, not the intended reorder path.
+- Keep recycled row setup/bind/unbind ownership in
+  `workspace_section/row_factory.rs`, row metadata and expanded-hook symmetry in
+  `row_accessibility.rs`, and file/header popup construction plus targeting in
+  `context_menus.rs`. `workspace_section/imp.rs` retains subclass state,
+  template children, construction, and disposal glue.
 
 ## Editing Rules
 

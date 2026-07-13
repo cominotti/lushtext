@@ -6,6 +6,7 @@
 //! live in `actions.rs`, and index/cache helpers live in their dedicated files.
 
 mod actions;
+mod context_menus;
 mod dnd;
 mod folders;
 mod icon_presentation;
@@ -15,6 +16,8 @@ mod icon_presentation;
 mod imp;
 mod peek;
 mod refresh;
+mod row_accessibility;
+mod row_factory;
 mod tree_index;
 mod tree_loading;
 mod watch;
@@ -119,7 +122,7 @@ impl LushtextWorkspaceSection {
     ///
     /// Runs on the GTK main thread and exists for keyboard/automation paths
     /// that need to open the selected row's context menu without pointer input.
-    pub(crate) fn focus_file_tree(&self) -> bool {
+    pub(super) fn focus_file_tree(&self) -> bool {
         self.imp().file_tree_view.grab_focus()
     }
 
@@ -127,7 +130,7 @@ impl LushtextWorkspaceSection {
     ///
     /// The header itself owns the context-menu key controller, and GTK bubbles
     /// key events from this focusable child through that header controller.
-    pub(crate) fn focus_header_controls(&self) -> bool {
+    pub(super) fn focus_header_controls(&self) -> bool {
         self.imp().collapse_button.grab_focus()
     }
 
@@ -138,7 +141,7 @@ impl LushtextWorkspaceSection {
     }
 
     /// Replace the open/active file-row projection and resync realized rows.
-    pub(crate) fn set_file_row_state_snapshot(&self, snapshot: Rc<SidebarFileRowStateSnapshot>) {
+    pub(super) fn set_file_row_state_snapshot(&self, snapshot: Rc<SidebarFileRowStateSnapshot>) {
         *self.imp().file_row_state_snapshot.borrow_mut() = snapshot;
         if self.property::<bool>("visible") {
             self.sync_file_row_states();
@@ -146,7 +149,7 @@ impl LushtextWorkspaceSection {
     }
 
     /// Reapply open/active file-row styling to currently realized ListView rows.
-    pub(crate) fn sync_file_row_states(&self) {
+    pub(super) fn sync_file_row_states(&self) {
         for_each_realized_file_row_overlay(self, |overlay| {
             sync_file_row_state_for_overlay(self, &overlay);
         });
