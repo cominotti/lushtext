@@ -427,8 +427,22 @@ impl super::LushtextWindow {
         let content_generation = editor.draft_dirty_generation();
         let buffer = editor.buffer();
         let editor_weak = editor.downgrade();
-        let window = self.clone();
-        let run_analysis = move |text: String| {
+        let window_weak = self.downgrade();
+        let run_analysis = move |outcome: buffer_snapshot::BufferSnapshotOutcome| {
+            let Some(editor) = editor_weak.upgrade() else {
+                return;
+            };
+            editor
+                .imp()
+                .document_metadata
+                .lossy_analysis_snapshot
+                .take();
+            let buffer_snapshot::BufferSnapshotOutcome::Captured(text) = outcome else {
+                return;
+            };
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
             let editor_weak = editor_weak.clone();
             spawn_blocking_then(
                 window,
@@ -463,9 +477,16 @@ impl super::LushtextWindow {
         };
 
         if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
-            buffer_snapshot::snapshot_buffer_text_async(buffer, run_analysis);
+            let snapshot = buffer_snapshot::snapshot_buffer_text_async(buffer, run_analysis);
+            editor
+                .imp()
+                .document_metadata
+                .lossy_analysis_snapshot
+                .replace(Some(snapshot));
         } else {
-            run_analysis(buffer_snapshot::snapshot_buffer_text_direct(&buffer));
+            run_analysis(buffer_snapshot::BufferSnapshotOutcome::Captured(
+                buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+            ));
         }
     }
 

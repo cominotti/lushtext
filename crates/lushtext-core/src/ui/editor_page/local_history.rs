@@ -10,6 +10,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -32,6 +34,23 @@ const DEFAULT_PERIODIC_CAPTURE_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// document-sized string per modified tab.
 static AUTOMATIC_HISTORY_CAPTURE_INFLIGHT: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "test-utils")]
+static BASELINE_CAPTURE_FAILURES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static BASELINE_CAPTURE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Fail the next `count` baseline attempts before production persistence runs.
+#[cfg(feature = "test-utils")]
+pub fn set_local_history_baseline_failures_for_test(count: u64) {
+    BASELINE_CAPTURE_FAILURES.store(count, Ordering::Release);
+}
+
+/// Delay baseline persistence for deterministic ownership-generation tests.
+#[cfg(feature = "test-utils")]
+pub fn set_local_history_baseline_delay_for_test(delay_ms: u64) {
+    BASELINE_CAPTURE_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
 thread_local! {
     /// Contended baselines wait as weak/scalar state and are admitted one at a
     /// time when the current automatic capture releases its payload permit.
@@ -40,6 +59,41 @@ thread_local! {
 }
 
 struct AutomaticHistoryCapturePermit;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BaselineCaptureTicket {
+    editor_generation: u64,
+    path_generation: u64,
+    clean_baseline_generation: u64,
+    path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BaselineCaptureFacts {
+    editor_generation: u64,
+    path_generation: u64,
+    clean_baseline_generation: u64,
+    path: Option<PathBuf>,
+    modified: bool,
+    baseline_slot_empty: bool,
+}
+
+fn baseline_capture_is_current(
+    ticket: &BaselineCaptureTicket,
+    facts: &BaselineCaptureFacts,
+) -> bool {
+    facts.editor_generation == ticket.editor_generation
+        && facts.path_generation == ticket.path_generation
+        && facts.clean_baseline_generation == ticket.clean_baseline_generation
+        && facts.path.as_ref() == Some(&ticket.path)
+        && facts.modified
+        && facts.baseline_slot_empty
+}
+
+enum BaselineCaptureOutcome {
+    Captured,
+    Failed { detail: String, text: String },
+}
 
 impl AutomaticHistoryCapturePermit {
     fn try_acquire() -> Option<Self> {
@@ -157,8 +211,8 @@ impl LushtextEditorPage {
         let handler_id = buffer.connect_changed(move |_| {
             if let Some(editor) = editor_weak.upgrade() {
                 let state = &editor.imp().local_history;
-                if let Some(cancellation) = state.periodic_snapshot_cancellation.take() {
-                    cancellation.cancel();
+                if let Some(snapshot) = state.periodic_snapshot.borrow().as_ref() {
+                    snapshot.cancel();
                 }
                 state
                     .edit_generation
@@ -241,13 +295,21 @@ impl LushtextEditorPage {
     }
 
     pub(crate) fn advance_local_history_path_generation(&self) {
+        self.cancel_local_history_periodic_capture();
         let state = &self.imp().local_history;
-        if let Some(cancellation) = state.periodic_snapshot_cancellation.take() {
-            cancellation.cancel();
-        }
         state
             .path_generation
             .set(state.path_generation.get().wrapping_add(1));
+    }
+
+    fn replace_clean_baseline(&self, text: Option<String>) {
+        let state = &self.imp().local_history;
+        let has_text = text.is_some();
+        state.last_clean_text.replace(text);
+        state
+            .clean_baseline_generation
+            .set(state.clean_baseline_generation.get().wrapping_add(1));
+        state.baseline_retry_budget.set(u8::from(has_text));
     }
 
     /// Seed the tab's "last clean text" after a file load or reload completes.
@@ -261,7 +323,7 @@ impl LushtextEditorPage {
         } else {
             None
         };
-        self.imp().local_history.last_clean_text.replace(clean_text);
+        self.replace_clean_baseline(clean_text);
         self.set_local_history_restore_undo_text(None);
         self.imp()
             .local_history
@@ -281,7 +343,7 @@ impl LushtextEditorPage {
         } else {
             None
         };
-        self.imp().local_history.last_clean_text.replace(clean_text);
+        self.replace_clean_baseline(clean_text);
         self.set_local_history_restore_undo_text(None);
         self.cancel_local_history_periodic_capture();
     }
@@ -297,7 +359,7 @@ impl LushtextEditorPage {
 
     /// Finalize automatic-capture state after a successful save or Save As.
     pub(crate) fn complete_local_history_after_save_success(&self, clean_text: Option<String>) {
-        self.imp().local_history.last_clean_text.replace(clean_text);
+        self.replace_clean_baseline(clean_text);
         self.set_local_history_restore_undo_text(None);
         self.imp()
             .local_history
@@ -388,25 +450,96 @@ impl LushtextEditorPage {
         let Some(clean_text) = self.imp().local_history.last_clean_text.borrow_mut().take() else {
             return;
         };
+        let state = &self.imp().local_history;
+        let ticket = BaselineCaptureTicket {
+            editor_generation: state.editor_generation.get(),
+            path_generation: state.path_generation.get(),
+            clean_baseline_generation: state.clean_baseline_generation.get(),
+            path: path.clone(),
+        };
+        let retry_allowed = state.baseline_retry_budget.get() > 0;
 
         spawn_blocking_then(
             (self.downgrade(), permit),
             move || {
+                delay_baseline_capture_for_test();
+                if fail_baseline_capture_for_test() {
+                    return BaselineCaptureOutcome::Failed {
+                        detail: "injected baseline persistence failure".to_string(),
+                        text: clean_text,
+                    };
+                }
                 let data_dir = json_store::data_dir();
-                local_history_service::capture_snapshot_for_path(
+                match local_history_service::capture_snapshot_for_path(
                     &data_dir,
                     &path,
                     &clean_text,
                     LocalHistorySnapshotOrigin::Baseline,
                     local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
-                )
+                ) {
+                    Ok(_) => BaselineCaptureOutcome::Captured,
+                    Err(error) => BaselineCaptureOutcome::Failed {
+                        detail: error.to_string(),
+                        text: clean_text,
+                    },
+                }
             },
-            |(_editor_weak, _permit), result| {
-                if let Err(error) = result {
-                    tracing::warn!("Failed to capture local-history baseline snapshot: {error}");
+            move |(editor_weak, _permit), outcome| {
+                let BaselineCaptureOutcome::Failed { detail, text } = outcome else {
+                    return;
+                };
+                tracing::warn!("Failed to capture local-history baseline snapshot: {detail}");
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                let state = &editor.imp().local_history;
+                let facts = BaselineCaptureFacts {
+                    editor_generation: state.editor_generation.get(),
+                    path_generation: state.path_generation.get(),
+                    clean_baseline_generation: state.clean_baseline_generation.get(),
+                    path: editor.file_path(),
+                    modified: editor.is_modified(),
+                    baseline_slot_empty: state.last_clean_text.borrow().is_none(),
+                };
+                if !baseline_capture_is_current(&ticket, &facts) {
+                    return;
+                }
+                state.last_clean_text.replace(Some(text));
+                if retry_allowed && state.baseline_retry_budget.get() > 0 {
+                    state
+                        .baseline_retry_budget
+                        .set(state.baseline_retry_budget.get() - 1);
+                    enqueue_baseline_capture_waiter(&editor);
                 }
             },
         );
+    }
+
+    /// Start baseline capture immediately through the production admission path.
+    #[cfg(feature = "test-utils")]
+    pub fn capture_local_history_baseline_for_test(&self) {
+        self.capture_local_history_baseline();
+    }
+
+    /// Whether failed baseline text is retained without exposing its contents.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn local_history_baseline_candidate_present_for_test(&self) -> bool {
+        self.imp().local_history.last_clean_text.borrow().is_some()
+    }
+
+    /// Whether this editor owns one weak retry waiter in the global admission FIFO.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn local_history_baseline_retry_pending_for_test(&self) -> bool {
+        self.imp().local_history.baseline_retry_pending.get()
+    }
+
+    /// Whether one automatic baseline or periodic payload currently owns admission.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn local_history_automatic_capture_inflight_for_test(&self) -> bool {
+        AUTOMATIC_HISTORY_CAPTURE_INFLIGHT.load(Ordering::Acquire)
     }
 
     fn schedule_local_history_periodic_capture(&self) {
@@ -418,24 +551,28 @@ impl LushtextEditorPage {
             .wrapping_add(1);
         self.imp().local_history.periodic_generation.set(generation);
 
-        let editor_weak = self.downgrade();
-        glib::timeout_add_local_once(local_history_capture_interval(), move || {
-            let Some(editor) = editor_weak.upgrade() else {
-                return;
-            };
-            editor.run_local_history_periodic_capture(generation);
-        });
+        let token = self.imp().local_history.periodic_timer.arm(
+            self,
+            local_history_capture_interval(),
+            move |editor, token| {
+                if editor.imp().local_history.periodic_timer_token.get() == Some(token) {
+                    editor.imp().local_history.periodic_timer_token.set(None);
+                }
+                editor.run_local_history_periodic_capture(generation);
+            },
+        );
+        self.imp()
+            .local_history
+            .periodic_timer_token
+            .set(Some(token));
     }
 
     pub(crate) fn cancel_local_history_periodic_capture(&self) {
-        if let Some(cancellation) = self
-            .imp()
-            .local_history
-            .periodic_snapshot_cancellation
-            .take()
-        {
-            cancellation.cancel();
+        if let Some(snapshot) = self.imp().local_history.periodic_snapshot.take() {
+            snapshot.dispose();
         }
+        let _ = self.imp().local_history.periodic_timer.invalidate();
+        self.imp().local_history.periodic_timer_token.set(None);
         let generation = self
             .imp()
             .local_history
@@ -485,7 +622,7 @@ impl LushtextEditorPage {
             editor
                 .imp()
                 .local_history
-                .periodic_snapshot_cancellation
+                .periodic_snapshot
                 .borrow_mut()
                 .take();
             match outcome {
@@ -493,7 +630,7 @@ impl LushtextEditorPage {
                     editor.persist_periodic_snapshot_if_current(ticket.clone(), text, permit);
                 }
                 buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. }
-                | buffer_snapshot::BufferSnapshotOutcome::Cancelled => {
+                | buffer_snapshot::BufferSnapshotOutcome::Cancelled(_) => {
                     drop(permit);
                     editor.reschedule_local_history_after_capture();
                 }
@@ -501,17 +638,15 @@ impl LushtextEditorPage {
         };
 
         if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
-            let cancellation = buffer_snapshot::BufferSnapshotCancellation::default();
-            self.imp()
-                .local_history
-                .periodic_snapshot_cancellation
-                .replace(Some(cancellation.clone()));
-            buffer_snapshot::snapshot_buffer_text_async_budgeted(
+            let snapshot = buffer_snapshot::snapshot_buffer_text_async_budgeted(
                 buffer,
                 buffer_snapshot::BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD,
-                cancellation,
                 finish,
             );
+            self.imp()
+                .local_history
+                .periodic_snapshot
+                .replace(Some(snapshot));
         } else {
             finish(buffer_snapshot::snapshot_buffer_text_direct_budgeted(
                 &buffer,
@@ -523,6 +658,8 @@ impl LushtextEditorPage {
     /// Start one periodic capture immediately for GTK lifecycle regression tests.
     #[cfg(feature = "test-utils")]
     pub fn run_local_history_periodic_capture_for_test(&self) {
+        let _ = self.imp().local_history.periodic_timer.invalidate();
+        self.imp().local_history.periodic_timer_token.set(None);
         let generation = self
             .imp()
             .local_history
@@ -539,8 +676,19 @@ impl LushtextEditorPage {
     pub fn local_history_periodic_snapshot_inflight_for_test(&self) -> bool {
         self.imp()
             .local_history
-            .periodic_snapshot_cancellation
+            .periodic_snapshot
             .borrow()
+            .is_some()
+    }
+
+    /// Whether the tab currently owns one scheduled periodic timer source.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn local_history_periodic_timer_pending_for_test(&self) -> bool {
+        self.imp()
+            .local_history
+            .periodic_timer_token
+            .get()
             .is_some()
     }
 
@@ -613,6 +761,27 @@ fn local_history_capture_interval() -> Duration {
     }
 
     Duration::from_millis(DEFAULT_PERIODIC_CAPTURE_INTERVAL_MS)
+}
+
+fn delay_baseline_capture_for_test() {
+    #[cfg(feature = "test-utils")]
+    std::thread::sleep(Duration::from_millis(
+        BASELINE_CAPTURE_DELAY_MS.load(Ordering::Acquire),
+    ));
+}
+
+fn fail_baseline_capture_for_test() -> bool {
+    #[cfg(feature = "test-utils")]
+    {
+        BASELINE_CAPTURE_FAILURES
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    #[cfg(not(feature = "test-utils"))]
+    false
 }
 
 #[cfg(test)]
@@ -701,5 +870,42 @@ mod tests {
         assert!(AutomaticHistoryCapturePermit::try_acquire().is_none());
         drop(first);
         assert!(AutomaticHistoryCapturePermit::try_acquire().is_some());
+    }
+
+    #[test]
+    fn failed_baseline_returns_only_to_its_original_cycle() {
+        let ticket = BaselineCaptureTicket {
+            editor_generation: 3,
+            path_generation: 5,
+            clean_baseline_generation: 7,
+            path: PathBuf::from("/workspace/current.md"),
+        };
+        let facts = BaselineCaptureFacts {
+            editor_generation: 3,
+            path_generation: 5,
+            clean_baseline_generation: 7,
+            path: Some(ticket.path.clone()),
+            modified: true,
+            baseline_slot_empty: true,
+        };
+        assert!(baseline_capture_is_current(&ticket, &facts));
+
+        for mutate in [
+            |facts: &mut BaselineCaptureFacts| facts.editor_generation += 1,
+            |facts: &mut BaselineCaptureFacts| facts.path_generation += 1,
+            |facts: &mut BaselineCaptureFacts| facts.clean_baseline_generation += 1,
+        ] {
+            let mut stale = facts.clone();
+            mutate(&mut stale);
+            assert!(!baseline_capture_is_current(&ticket, &stale));
+        }
+
+        let mut renamed = facts.clone();
+        renamed.path = Some(PathBuf::from("/workspace/renamed.md"));
+        assert!(!baseline_capture_is_current(&ticket, &renamed));
+
+        let mut newer_baseline = facts;
+        newer_baseline.baseline_slot_empty = false;
+        assert!(!baseline_capture_is_current(&ticket, &newer_baseline));
     }
 }

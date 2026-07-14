@@ -18,8 +18,11 @@ use lushtext_core::services::notifications::{InlineActionNotification, InlineNot
 use lushtext_core::services::local_history_service;
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
-    BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState, EditorLoadState,
-    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind,
+    BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
+    BufferSnapshotCancelReason, BufferSnapshotOutcome, BufferSnapshotStateForTest,
+    BufferSnapshotTestEdit,
+    BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, LushtextEditorPage,
+    MinimapAvailability, MinimapMarkerKind, snapshot_buffer_text_async_for_test,
 };
 use lushtext_core::ui::info_bar::inline_alert_announcement_key_for_test;
 use sourceview5::prelude::*;
@@ -809,6 +812,44 @@ fn test_file_that_grew_in_memory_uses_chunked_save_snapshot_policy() {
 }
 
 #[test]
+fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let file = tempfile::NamedTempFile::new().expect("temp file");
+    fixture::write_text(file.path(), "old on disk");
+    page.set_file_path(file.path());
+    page.source_view().set_editable(true);
+    page.source_view().set_cursor_visible(true);
+    page.buffer().set_text(&"x".repeat(2_500_001));
+    page.buffer().set_modified(true);
+    let result = Rc::new(RefCell::new(None));
+    let result_for_callback = Rc::clone(&result);
+
+    page.save_file_async(move |save_result| {
+        result_for_callback.borrow_mut().replace(save_result);
+    });
+    assert!(page.save_snapshot_inflight_for_test());
+    assert!(!page.source_view().is_editable());
+    assert!(!page.source_view().is_cursor_visible());
+    let mut end = page.buffer().end_iter();
+    page.buffer().insert(&mut end, "mutated during save capture");
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+
+    assert!(matches!(
+        result.borrow().as_ref(),
+        Some(Err(
+            lushtext_core::ui::editor_page::EditorSaveError::SnapshotCancelled
+        ))
+    ));
+    assert!(!page.is_saving());
+    assert!(!page.save_snapshot_inflight_for_test());
+    assert!(page.source_view().is_editable());
+    assert!(page.source_view().is_cursor_visible());
+    assert!(page.is_modified());
+    assert_eq!(fs_read::text(file.path()).expect("read original"), "old on disk");
+}
+
+#[test]
 fn test_minimap_long_line_warning_scan_preserves_small_document_markers() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
@@ -1243,6 +1284,198 @@ fn test_periodic_local_history_edit_cancels_chunked_snapshot_without_persistence
 }
 
 #[test]
+fn test_periodic_local_history_clean_dirty_cycles_own_one_latest_timer() {
+    ensure_gtk_init();
+    let data_dir = isolated_data_dir();
+    let first_path = data_dir.path().join("periodic-cycle-one.md");
+    let second_path = data_dir.path().join("periodic-cycle-two.md");
+    fixture::write_text(&first_path, "saved\n");
+    fixture::write_text(&second_path, "saved\n");
+    let page = LushtextEditorPage::new();
+    page.set_file_path(&first_path);
+    page.buffer().set_text("working");
+
+    for _ in 0..3 {
+        page.buffer().set_modified(true);
+        assert!(page.local_history_periodic_timer_pending_for_test());
+        assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+        page.buffer().set_modified(false);
+        assert!(!page.local_history_periodic_timer_pending_for_test());
+        assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+    }
+
+    page.buffer().set_modified(true);
+    assert!(page.local_history_periodic_timer_pending_for_test());
+    page.set_file_path(&second_path);
+    assert!(!page.local_history_periodic_timer_pending_for_test());
+    assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+}
+
+#[test]
+fn test_chunked_buffer_snapshot_cancels_for_edits_before_and_after_progress_mark() {
+    ensure_gtk_init();
+
+    for edit in [
+        BufferSnapshotTestEdit::InsertBeforeMark,
+        BufferSnapshotTestEdit::InsertAfterMark,
+        BufferSnapshotTestEdit::DeleteBeforeMark,
+        BufferSnapshotTestEdit::DeleteAfterMark,
+    ] {
+        let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+        buffer.set_text(&"x".repeat(200_000));
+        let outcomes = Rc::new(RefCell::new(Vec::new()));
+        let outcomes_for_callback = Rc::clone(&outcomes);
+
+        let handle = snapshot_buffer_text_async_for_test(
+            buffer,
+            None,
+            Some(BufferSnapshotTestMutation {
+                trigger: BufferSnapshotTestTrigger::AfterSlice(1),
+                edit,
+            }),
+            move |outcome| outcomes_for_callback.borrow_mut().push(outcome),
+        );
+
+        assert_eq!(
+            outcomes.borrow().as_slice(),
+            &[BufferSnapshotOutcome::Cancelled(
+                BufferSnapshotCancelReason::SourceMutated
+            )],
+            "{edit:?} must reject every partial chunk"
+        );
+            assert_eq!(
+                handle.state_for_test(),
+                BufferSnapshotStateForTest::default()
+            );
+    }
+}
+
+#[test]
+fn test_chunked_buffer_snapshot_rejects_final_slice_mutation_once() {
+    ensure_gtk_init();
+    let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    buffer.set_text(&"x".repeat(100_000));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let outcomes_for_callback = Rc::clone(&outcomes);
+    let handle = snapshot_buffer_text_async_for_test(
+        buffer,
+        None,
+        Some(BufferSnapshotTestMutation {
+            trigger: BufferSnapshotTestTrigger::FinalSlice,
+            edit: BufferSnapshotTestEdit::InsertAfterMark,
+        }),
+        move |outcome| outcomes_for_callback.borrow_mut().push(outcome),
+    );
+
+    wait_until(Duration::from_secs(5), || !outcomes.borrow().is_empty());
+
+    assert_eq!(
+        outcomes.borrow().as_slice(),
+        &[BufferSnapshotOutcome::Cancelled(
+            BufferSnapshotCancelReason::SourceMutated
+        )]
+    );
+    flush_after_delay(Duration::from_millis(20));
+    assert_eq!(outcomes.borrow().len(), 1);
+    assert_eq!(
+        handle.state_for_test(),
+        BufferSnapshotStateForTest::default()
+    );
+}
+
+#[test]
+fn test_chunked_buffer_snapshot_explicit_cancel_cleans_resources_and_calls_back_once() {
+    ensure_gtk_init();
+    let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    buffer.set_text(&"x".repeat(200_000));
+    let deleted_marks = Rc::new(Cell::new(0));
+    buffer.connect_mark_deleted({
+        let deleted_marks = Rc::clone(&deleted_marks);
+        move |_, _| deleted_marks.set(deleted_marks.get() + 1)
+    });
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let outcomes_for_callback = Rc::clone(&outcomes);
+    let handle = snapshot_buffer_text_async_for_test(buffer, None, None, move |outcome| {
+        outcomes_for_callback.borrow_mut().push(outcome);
+    });
+    let active = handle.state_for_test();
+    assert!(active.active);
+    assert!(active.progress_mark_live);
+    assert!(active.changed_handler_live);
+    assert!(active.scheduled_source_live);
+    assert!(active.callback_pending);
+
+    handle.cancel_for_test();
+    wait_until(Duration::from_secs(5), || !outcomes.borrow().is_empty());
+
+    assert_eq!(
+        outcomes.borrow().as_slice(),
+        &[BufferSnapshotOutcome::Cancelled(
+            BufferSnapshotCancelReason::Superseded
+        )]
+    );
+    flush_after_delay(Duration::from_millis(20));
+    assert_eq!(outcomes.borrow().len(), 1);
+    assert_eq!(deleted_marks.get(), 1);
+    assert_eq!(
+        handle.state_for_test(),
+        BufferSnapshotStateForTest::default()
+    );
+}
+
+#[test]
+fn test_chunked_buffer_snapshot_overflow_and_disposal_are_terminal_and_leak_free() {
+    ensure_gtk_init();
+    let overflow_buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    overflow_buffer.set_text(&"x".repeat(200_000));
+    let overflow_outcomes = Rc::new(RefCell::new(Vec::new()));
+    let outcomes_for_callback = Rc::clone(&overflow_outcomes);
+    let overflow_handle = snapshot_buffer_text_async_for_test(
+        overflow_buffer,
+        Some(10),
+        None,
+        move |outcome| outcomes_for_callback.borrow_mut().push(outcome),
+    );
+    assert!(matches!(
+        overflow_outcomes.borrow().as_slice(),
+        [BufferSnapshotOutcome::ExceededLimit {
+            observed_at_least: 11..
+        }]
+    ));
+    assert_eq!(
+        overflow_handle.state_for_test(),
+        BufferSnapshotStateForTest::default()
+    );
+
+    let disposed_buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    disposed_buffer.set_text(&"x".repeat(200_000));
+    let deleted_marks = Rc::new(Cell::new(0));
+    disposed_buffer.connect_mark_deleted({
+        let deleted_marks = Rc::clone(&deleted_marks);
+        move |_, _| deleted_marks.set(deleted_marks.get() + 1)
+    });
+    let callback_count = Rc::new(Cell::new(0));
+    let callback_count_for_snapshot = Rc::clone(&callback_count);
+    let disposed_handle = snapshot_buffer_text_async_for_test(
+        disposed_buffer,
+        None,
+        None,
+        move |_| callback_count_for_snapshot.set(callback_count_for_snapshot.get() + 1),
+    );
+    assert!(disposed_handle.state_for_test().scheduled_source_live);
+
+    disposed_handle.dispose_for_test();
+    flush_after_delay(Duration::from_millis(20));
+
+    assert_eq!(callback_count.get(), 0);
+    assert_eq!(deleted_marks.get(), 1);
+    assert_eq!(
+        disposed_handle.state_for_test(),
+        BufferSnapshotStateForTest::default()
+    );
+}
+
+#[test]
 fn test_minimap_source_map_matches_upstream_geometry_contract() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
@@ -1280,6 +1513,31 @@ fn test_minimap_source_map_matches_upstream_geometry_contract() {
     assert_eq!(source_map.right_margin(), baseline_map.right_margin());
     assert_eq!(source_map.overflow(), baseline_map.overflow());
     assert!(!source_map.can_focus());
+}
+
+#[test]
+fn test_short_document_minimap_closes_zero_range_child_adjustment() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("short document\n");
+    let source_map = minimap_source_map(&page);
+    let _window = present_editor_page(&page);
+
+    wait_until(Duration::from_secs(2), || {
+        let Some(source_adjustment) = page.source_view().vadjustment() else {
+            return false;
+        };
+        let Some(map_adjustment) = source_map.vadjustment() else {
+            return false;
+        };
+        let source_range = source_adjustment.upper() - source_adjustment.page_size();
+        let map_range = map_adjustment.upper() - map_adjustment.page_size();
+        source_range.is_finite()
+            && map_range.is_finite()
+            && source_range.abs() <= f64::EPSILON
+            && map_range.abs() <= f64::EPSILON
+    });
 }
 
 #[test]

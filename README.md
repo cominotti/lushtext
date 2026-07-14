@@ -402,7 +402,8 @@ Cargo workspace:
 - `crates/lushtext-build-support` - build-script helper crate.
 - `crates/lushtext-core` - application logic: domain models, services, and GTK
   widgets. Its main-window adapter keeps pure responsive policy in
-  `ui/window/adaptive_shell.rs` and divides note workflows between the private
+  `ui/window/adaptive_shell.rs`, keeps draft intent epochs in
+  `ui/window/draft_ordering.rs`, and divides note workflows between the private
   `ui/window/notes/{bookmarks,editors,browser}.rs` modules. Recycled workspace
   row wiring is split under `ui/sidebar/workspace_section/` into
   `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`.

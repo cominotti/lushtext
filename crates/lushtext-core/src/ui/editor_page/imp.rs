@@ -12,11 +12,11 @@ use crate::model::encoding::{DocumentEncodingState, FileHealthFinding, Invisible
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::InlineActionNotification;
-use crate::ui::buffer_snapshot::BufferSnapshotCancellation;
+use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::info_bar::LushtextInfoBar;
 use crate::ui::search_bar::LushtextSearchBar;
 use glib::value::ToValue;
-use gtk_lush_settle::{Debounce, SettleBurst};
+use gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer, TimerToken};
 use gtk_lush_signals::SignalBag;
 use gtk_lush_viewport::{RestPause, RestState, ViewportObserver};
 use gtk_lush_widgets::RenderHoldOverlay;
@@ -119,6 +119,8 @@ pub struct SaveState {
     /// The modified flag stays true while this is set so close flows cannot treat
     /// an in-flight durable write as already safe.
     pub inflight: Cell<bool>,
+    /// Lifecycle handle for a save snapshot that is yielding between chunks.
+    pub snapshot: RefCell<Option<BufferSnapshotHandle>>,
 }
 
 /// One editor-scoped warning action routed through the shared inline alert buttons.
@@ -153,6 +155,8 @@ pub struct DocumentMetadataState {
     /// the window ignore stale worker results instead of showing an outdated
     /// lossy-conversion confirmation.
     pub lossy_analysis_generation: Cell<u32>,
+    /// Active large-buffer capture for the newest lossy-analysis request.
+    pub lossy_analysis_snapshot: RefCell<Option<BufferSnapshotHandle>>,
 }
 
 /// File-load lifecycle callbacks that need to survive repeated reloads.
@@ -306,8 +310,16 @@ pub struct FocusModeEditorState {
 pub struct LocalHistoryState {
     /// Last clean saved text used to capture the "before edits" baseline snapshot.
     pub last_clean_text: RefCell<Option<String>>,
+    /// Generation of the clean baseline currently owned by this editor/path cycle.
+    pub clean_baseline_generation: Cell<u64>,
+    /// One automatic retry admission for the current clean baseline generation.
+    pub baseline_retry_budget: Cell<u8>,
     /// Generation counter used to cancel or replace pending periodic capture timers.
     pub periodic_generation: Cell<u32>,
+    /// One physically superseding five-minute callback owned by this tab.
+    pub periodic_timer: SupersedingTimer,
+    /// Current timer token for readiness and deterministic lifecycle tests.
+    pub periodic_timer_token: Cell<Option<TimerToken>>,
     /// Generation advanced when disposal invalidates every in-flight capture.
     pub editor_generation: Cell<u64>,
     /// Generation advanced whenever the saved-file identity changes.
@@ -315,7 +327,7 @@ pub struct LocalHistoryState {
     /// Generation advanced on every buffer content change.
     pub edit_generation: Cell<u64>,
     /// Cancellation for the current chunked periodic snapshot, if any.
-    pub(crate) periodic_snapshot_cancellation: RefCell<Option<BufferSnapshotCancellation>>,
+    pub(crate) periodic_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Whether this editor already has one weak baseline waiter in the global FIFO.
     pub(crate) baseline_retry_pending: Cell<bool>,
     /// Suppresses automatic capture while save or restore changes the buffer programmatically.
@@ -520,9 +532,17 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
-        if let Some(cancellation) = self.local_history.periodic_snapshot_cancellation.take() {
-            cancellation.cancel();
+        if let Some(snapshot) = self.save.snapshot.take() {
+            snapshot.dispose();
         }
+        if let Some(snapshot) = self.document_metadata.lossy_analysis_snapshot.take() {
+            snapshot.dispose();
+        }
+        if let Some(snapshot) = self.local_history.periodic_snapshot.take() {
+            snapshot.dispose();
+        }
+        let _ = self.local_history.periodic_timer.invalidate();
+        self.local_history.periodic_timer_token.set(None);
         self.local_history
             .editor_generation
             .set(self.local_history.editor_generation.get().wrapping_add(1));

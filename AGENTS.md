@@ -102,7 +102,7 @@ src/
 │   └── benchmarks.rs   # Criterion benchmarks for all performance-sensitive services
 └── ui/                 # GTK4/Libadwaita driving adapters
     ├── automation.rs    # App-owned read-only D-Bus automation adapter, readiness waits, and snapshot collection
-    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts, encoding, Focus Mode, local-history, recent Open popover integration, search, preview, startup data preflight, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
+    ├── window/          # Main window shell plus workflow modules for actions, documents, drafts and their plain intent ordering, encoding, Focus Mode, local-history, recent Open popover integration, search, preview, startup data preflight, print, session persistence, tab management, transient-surface dismissal, workspace scope, and zoom
     │   ├── adaptive_shell.rs # Plain-Rust split-view width, breakpoint, and compact-surface decisions
     │   └── notes/       # Shared facade plus bookmark, document/folder editor, and unified browser workflows
     ├── editor_page/     # Per-tab editor adapter plus Focus Mode presentation, local-history capture, minimap, overscroll, invisible-character rendering, bookmark projection, load/save, monitor, and in-tab search helpers

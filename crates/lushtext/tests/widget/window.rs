@@ -62,17 +62,20 @@ use lushtext_core::ui::automation::{
 };
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
-    EditorLoadState, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, EditorSaveError,
+    EditorLoadState, EditorSaveError, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind,
+    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::search_panel::set_replace_preview_delay_for_test;
 use lushtext_core::ui::window::{
     DraftFlushError, LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
+    fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
     set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
-    set_automatic_draft_limit_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
-    with_print_runner_for_test,
+    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
+    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
+    set_lazy_draft_read_delay_for_test,
+    set_lossy_encoding_analysis_delay_for_test, with_print_runner_for_test,
 };
 use sourceview5::prelude::*;
 use std::cell::RefCell;
@@ -132,6 +135,18 @@ impl Drop for DraftPipelinePolicyReset {
     fn drop(&mut self) {
         set_automatic_draft_limit_for_test(draft_service::MAX_AUTOMATIC_DRAFT_BYTES);
         set_lazy_draft_read_delay_for_test(0);
+        set_draft_mutation_delays_for_test(0, 0, 0);
+        set_draft_manifest_completion_delay_for_test(0);
+        fail_next_draft_mutations_for_test(false, false, false);
+    }
+}
+
+struct LocalHistoryBaselineFaultReset;
+
+impl Drop for LocalHistoryBaselineFaultReset {
+    fn drop(&mut self) {
+        set_local_history_baseline_delay_for_test(0);
+        set_local_history_baseline_failures_for_test(0);
     }
 }
 
@@ -6769,6 +6784,232 @@ fn test_draft_pipeline_lazy_restore_rejects_stale_editor_and_advances_queue() {
 }
 
 #[test]
+fn test_ordinary_untitled_restore_rejects_edit_and_preserves_recovery() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    set_draft_restore_delay_for_test(100);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1,
+    };
+    draft_service::write_draft(&data_dir, &draft_id, "older recovery")
+        .expect("write recovery body");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+        .expect("persist recovery manifest");
+
+    window.check_draft_by_id(&editor, &draft_id);
+    assert!(window.draft_restore_inflight_for_test());
+    editor.buffer().set_text("live edit wins");
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_restore_inflight_for_test()
+    });
+
+    assert_eq!(editor_buffer_text(&editor), "live edit wins");
+    assert!(!editor.is_draft_restored());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read preserved recovery"),
+        Some("older recovery".to_string())
+    );
+    assert!(
+        window
+            .imp()
+            .drafts
+            .manifest
+            .borrow()
+            .find_by_id(&draft_id)
+            .is_some()
+    );
+}
+
+#[test]
+fn test_ordinary_restore_blocks_readiness_and_empty_candidate_close() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    set_draft_restore_delay_for_test(150);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1,
+    };
+    draft_service::write_draft(&data_dir, &draft_id, "recovery in flight")
+        .expect("write recovery body");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+        .expect("persist recovery manifest");
+    let app = window
+        .application()
+        .expect("window application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("LushText application");
+
+    window.check_draft_by_id(&editor, &draft_id);
+    assert!(window.draft_restore_inflight_for_test());
+    let readiness = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app,
+        AutomationReadinessPredicate::Idle,
+        1,
+    ));
+    assert!(!readiness.ok);
+    assert_eq!(readiness.blocker.as_deref(), Some("draft-autosave"));
+
+    let close_result = Rc::new(RefCell::new(None));
+    let close_result_for_callback = Rc::clone(&close_result);
+    window.flush_dirty_drafts_async(move |result| {
+        close_result_for_callback.borrow_mut().replace(result);
+    });
+    flush_after_delay(Duration::from_millis(30));
+    assert!(
+        close_result.borrow().is_none(),
+        "clean-candidate close must still wait for recovery resolution"
+    );
+
+    wait_until(Duration::from_secs(5), || close_result.borrow().is_some());
+    close_result
+        .borrow_mut()
+        .take()
+        .expect("close result")
+        .expect("resolved recovery should complete close flush");
+    assert_eq!(editor_buffer_text(&editor), "recovery in flight");
+}
+
+#[test]
+fn test_file_restore_rejects_reload_and_path_change() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    set_draft_restore_delay_for_test(120);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    for (index, invalidate_with_reload) in [(0, true), (1, false)] {
+        let path = dir.path().join(format!("source-{index}.txt"));
+        fixture::write_text(&path, "saved file");
+        window.new_tab();
+        let editor = active_editor(&window);
+        editor.set_file_path(&path);
+        window.assign_draft_id(&editor);
+        let draft_id = editor.draft_id().expect("draft id");
+        let entry = DraftEntry {
+            draft_id: draft_id.clone(),
+            original_path: Some(path.clone()),
+            original_mtime_secs: editor_io::mtime_secs(&path),
+            saved_at_secs: 1,
+        };
+        let data_dir = json_store::data_dir();
+        draft_service::write_draft(&data_dir, &draft_id, "stale completion")
+            .expect("write recovery body");
+        window.imp().drafts.manifest.borrow_mut().upsert(entry);
+        draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+            .expect("persist recovery manifest");
+
+        window.check_draft_on_open(&editor, &path);
+        assert!(window.draft_restore_inflight_for_test());
+        if invalidate_with_reload {
+            editor.cancel_load();
+        } else {
+            editor.set_file_path(&dir.path().join("renamed.txt"));
+        }
+        wait_until(Duration::from_secs(5), || {
+            !window.draft_restore_inflight_for_test()
+        });
+
+        assert_eq!(editor_buffer_text(&editor), "");
+        assert!(!editor.is_draft_restored());
+        assert!(
+            window
+                .imp()
+                .drafts
+                .manifest
+                .borrow()
+                .find_by_id(&draft_id)
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn test_file_restore_rejects_manifest_replacement_and_closed_editor() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    set_draft_restore_delay_for_test(120);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    for (index, close_editor) in [(0, false), (1, true)] {
+        let path = dir.path().join(format!("source-{index}.txt"));
+        fixture::write_text(&path, "saved file");
+        window.new_tab();
+        let editor = active_editor(&window);
+        editor.set_file_path(&path);
+        window.assign_draft_id(&editor);
+        let draft_id = editor.draft_id().expect("draft id");
+        let entry = DraftEntry {
+            draft_id: draft_id.clone(),
+            original_path: Some(path.clone()),
+            original_mtime_secs: editor_io::mtime_secs(&path),
+            saved_at_secs: 1,
+        };
+        let data_dir = json_store::data_dir();
+        draft_service::write_draft(&data_dir, &draft_id, "preserved recovery")
+            .expect("write recovery body");
+        window.imp().drafts.manifest.borrow_mut().upsert(entry.clone());
+        draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+            .expect("persist recovery manifest");
+
+        window.check_draft_on_open(&editor, &path);
+        assert!(window.draft_restore_inflight_for_test());
+        if close_editor {
+            close_selected_tab(&window);
+            drop(editor);
+        } else {
+            let mut replacement = entry;
+            replacement.saved_at_secs = 2;
+            window
+                .imp()
+                .drafts
+                .manifest
+                .borrow_mut()
+                .upsert(replacement);
+            draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+                .expect("persist replacement manifest");
+        }
+        wait_until(Duration::from_secs(5), || {
+            !window.draft_restore_inflight_for_test()
+        });
+
+        assert_eq!(
+            draft_service::read_draft(&data_dir, &draft_id).expect("read preserved recovery"),
+            Some("preserved recovery".to_string())
+        );
+        assert!(
+            window
+                .imp()
+                .drafts
+                .manifest
+                .borrow()
+                .find_by_id(&draft_id)
+                .is_some()
+        );
+    }
+}
+
+#[test]
 fn test_draft_pipeline_lazy_read_failure_preserves_body_and_reports_diagnostic() {
     ensure_gtk_init();
     let window = test_window();
@@ -6825,7 +7066,7 @@ fn test_draft_pipeline_lazy_read_failure_preserves_body_and_reports_diagnostic()
 }
 
 #[test]
-fn test_draft_pipeline_cancelled_snapshot_keeps_retryable_without_partial_body() {
+fn test_draft_pipeline_mutated_snapshot_retries_once_with_complete_latest_body() {
     ensure_gtk_init();
     let _delay_reset = FirstDirtyAutosaveDelayReset;
     set_first_dirty_autosave_delay_for_test(60_000);
@@ -6835,24 +7076,107 @@ fn test_draft_pipeline_cancelled_snapshot_keeps_retryable_without_partial_body()
     let editor = active_editor(&window);
     let draft_id = editor.draft_id().expect("draft id");
     let data_dir = json_store::data_dir();
-    editor.buffer().set_text(&"x".repeat(2_500_001));
+    let initial = "x".repeat(2_500_001);
+    let latest = format!("{initial}latest edit");
+    editor.buffer().set_text(&initial);
     editor.buffer().set_modified(true);
 
     window.autosave_tick_for_test();
     assert!(window.draft_autosave_inflight_for_test());
-    window.cancel_draft_snapshot_for_test();
-    // Chunked GTK snapshots complete through main-loop timeouts. Under the
-    // fully concurrent CI suite, cancellation delivery can be delayed even
-    // though the same observable gate settles immediately in isolation.
+    editor.buffer().set_text(&latest);
+    editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(10), || {
         !window.draft_autosave_inflight_for_test()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read retried draft")
+                .as_deref()
+                == Some(latest.as_str())
     });
 
+    assert!(!editor.draft_dirty());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read retried draft"),
+        Some(latest),
+        "mutation must publish only the complete latest-generation retry"
+    );
+}
+
+#[test]
+fn test_close_draft_snapshot_mutation_blocks_close_and_keeps_retryable_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text(&"x".repeat(2_500_001));
+    editor.buffer().set_modified(true);
+    let result = Rc::new(RefCell::new(None));
+    let result_for_callback = Rc::clone(&result);
+
+    window.flush_dirty_drafts_async(move |flush_result| {
+        result_for_callback.borrow_mut().replace(flush_result);
+    });
+    let mut end = editor.buffer().end_iter();
+    editor.buffer().insert(&mut end, "new edit during close");
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+
+    let error = result
+        .borrow_mut()
+        .take()
+        .expect("close result")
+        .expect_err("mutated close snapshot must block close");
+    assert!(matches!(
+        error.downcast_ref::<DraftFlushError>(),
+        Some(DraftFlushError::Unconfirmed {
+            cancelled: 1,
+            over_limit: 0,
+            body_write: 0,
+            ..
+        })
+    ));
     assert!(editor.draft_dirty());
     assert_eq!(
-        draft_service::read_draft(&data_dir, &draft_id).expect("read cancelled draft"),
-        None,
-        "cancelled capture must never publish partial text"
+        draft_service::read_draft(&data_dir, &draft_id).expect("read close draft"),
+        None
+    );
+}
+
+#[test]
+fn test_close_flush_persists_intentionally_empty_modified_draft() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("temporary text");
+    editor.buffer().set_text("");
+    editor.buffer().set_modified(true);
+    let result = Rc::new(RefCell::new(None));
+    let result_for_callback = Rc::clone(&result);
+
+    window.flush_dirty_drafts_async(move |flush_result| {
+        result_for_callback.borrow_mut().replace(flush_result);
+    });
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+
+    result
+        .borrow_mut()
+        .take()
+        .expect("close result")
+        .expect("empty modified draft must be accepted");
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read empty draft"),
+        Some(String::new())
+    );
+    assert!(
+        draft_service::load_manifest(&data_dir)
+            .expect("load close manifest")
+            .find_by_id(&draft_id)
+            .is_some()
     );
 }
 
@@ -6892,6 +7216,223 @@ fn test_draft_pipeline_partial_body_failure_accepts_only_successful_generation()
     assert!(manifest.find_by_id(&good_id).is_some());
     assert!(manifest.find_by_id(&failed_id).is_none());
     fixture::remove_dir_all(&failed_path);
+}
+
+#[test]
+fn test_save_tombstone_wins_over_delayed_autosave_body_and_manifest() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    set_draft_mutation_delays_for_test(150, 150, 0);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let output = tempfile::NamedTempFile::new().expect("output file");
+    editor.set_file_path(output.path());
+    window.assign_draft_id(&editor);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("save wins over old autosave");
+    editor.buffer().set_modified(true);
+
+    window.autosave_tick_for_test();
+    assert!(window.draft_autosave_inflight_for_test());
+    activate_action(&window, "save");
+
+    wait_until(Duration::from_secs(10), || {
+        !editor.is_saving()
+            && !window.draft_autosave_inflight_for_test()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read final draft state")
+                .is_none()
+            && draft_service::load_manifest(&data_dir)
+                .expect("load final manifest")
+                .find_by_id(&draft_id)
+                .is_none()
+    });
+
+    assert!(!editor.is_modified());
+    assert_eq!(
+        fs_read::text(output.path()).expect("read saved file"),
+        "save wins over old autosave"
+    );
+}
+
+#[test]
+fn test_delete_after_body_before_manifest_acceptance_is_final() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    set_draft_mutation_delays_for_test(0, 250, 0);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("body reaches disk first");
+    editor.buffer().set_modified(true);
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        window.draft_autosave_inflight_for_test()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read body stage")
+                .is_some()
+    });
+    window.delete_draft_by_id(&draft_id);
+
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_autosave_inflight_for_test()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read final body")
+                .is_none()
+            && draft_service::load_manifest(&data_dir)
+                .expect("load final manifest")
+                .find_by_id(&draft_id)
+                .is_none()
+    });
+}
+
+#[test]
+fn test_delete_after_upsert_dispatch_wins_before_completion() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    set_draft_manifest_completion_delay_for_test(200);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("upsert already durable");
+    editor.buffer().set_modified(true);
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        window.draft_autosave_inflight_for_test()
+            && draft_service::load_manifest(&data_dir)
+                .expect("load dispatched upsert")
+                .find_by_id(&draft_id)
+                .is_some()
+    });
+    window.delete_draft_by_id(&draft_id);
+
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_autosave_inflight_for_test()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read final body")
+                .is_none()
+            && draft_service::load_manifest(&data_dir)
+                .expect("load final manifest")
+                .find_by_id(&draft_id)
+                .is_none()
+    });
+}
+
+#[test]
+fn test_edit_after_delayed_delete_creates_newer_recovery() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("first recovery");
+    editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+    });
+
+    set_draft_mutation_delays_for_test(0, 0, 180);
+    window.delete_draft_by_id(&draft_id);
+    editor.buffer().set_text("strictly later edit");
+    editor.buffer().set_modified(true);
+
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_autosave_inflight_for_test()
+            && !editor.draft_dirty()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read newer recovery")
+                .as_deref()
+                == Some("strictly later edit")
+            && draft_service::load_manifest(&data_dir)
+                .expect("load newer manifest")
+                .find_by_id(&draft_id)
+                .is_some()
+    });
+}
+
+#[test]
+fn test_injected_draft_stage_failures_remain_retryable() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("retry every stage");
+    editor.buffer().set_modified(true);
+
+    fail_next_draft_mutations_for_test(true, false, false);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_autosave_inflight_for_test()
+    });
+    assert!(editor.draft_dirty());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read failed body"),
+        None
+    );
+
+    fail_next_draft_mutations_for_test(false, true, false);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_autosave_inflight_for_test()
+    });
+    assert!(editor.draft_dirty());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read unaccepted body"),
+        Some("retry every stage".to_string())
+    );
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+    });
+    fail_next_draft_mutations_for_test(false, false, true);
+    window.delete_draft_by_id(&draft_id);
+    wait_until(Duration::from_secs(5), || {
+        draft_service::load_manifest(&data_dir)
+            .expect("load manifest after failed body delete")
+            .find_by_id(&draft_id)
+            .is_none()
+    });
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read retained failed delete"),
+        Some("retry every stage".to_string())
+    );
+
+    window.delete_draft_by_id(&draft_id);
+    wait_until(Duration::from_secs(5), || {
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read retried delete")
+            .is_none()
+    });
 }
 
 #[test]
@@ -9649,6 +10190,60 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
 }
 
 #[test]
+fn test_local_history_restore_discards_mutated_chunked_safety_snapshot() {
+    ensure_gtk_init();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-mutated-restore.txt");
+    fixture::write_text(&path, "current\n");
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        "restore target\n",
+        lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed restore target");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    editor.set_local_history_availability_for_test(
+        local_history_service::LocalHistoryAvailability::SaveOnly,
+    );
+    // Keep both rendered dimensions bounded while still crossing the chunked
+    // snapshot threshold. One multi-megabyte visual line can overflow Pixman
+    // region coordinates before this lifecycle test reaches the restore path.
+    editor
+        .buffer()
+        .set_text(&format!("{}\n", "x".repeat(2_000)).repeat(1_250));
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_for_local_history_preview_text(&child, "restore target\n");
+    wait_until(Duration::from_secs(5), || {
+        find_button_by_label(&child, "Restore").is_some_and(|button| button.is_sensitive())
+    });
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+
+    restore_button.emit_clicked();
+    let mut end = editor.buffer().end_iter();
+    editor.buffer().insert(&mut end, "edit during safety capture");
+    wait_until(Duration::from_secs(10), || restore_button.is_sensitive());
+
+    assert!(editor_text(&editor).ends_with("edit during safety capture"));
+    assert_ne!(editor_text(&editor), "restore target\n");
+    assert!(dialog.is_visible());
+}
+
+#[test]
 fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_modes() {
     ensure_gtk_init();
     // SAFETY: each widget test runs in its own child process, and this interval
@@ -9750,6 +10345,202 @@ fn test_local_history_capture_policy_respects_full_save_only_and_unavailable_mod
         snapshots_after_unavailable.len(),
         count_after_save_only,
         "unavailable mode must disable both automatic and save-boundary capture: {origins_after_unavailable:?}",
+    );
+}
+
+#[test]
+fn test_local_history_baseline_transient_failure_retries_original_clean_text() {
+    ensure_gtk_init();
+    let _reset = LocalHistoryBaselineFaultReset;
+    set_local_history_baseline_failures_for_test(1);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("baseline-retry.txt");
+    fixture::write_text(&path, "original clean text\n");
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    let data_dir = json_store::data_dir();
+
+    editor.buffer().set_text("modified text\n");
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(10), || {
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .ok()
+            .is_some_and(|snapshots| {
+                snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.origin == LocalHistorySnapshotOrigin::Baseline)
+            })
+    });
+
+    let baseline = local_history_service::list_snapshots_for_path(&data_dir, &path)
+        .expect("list snapshots")
+        .into_iter()
+        .find(|snapshot| snapshot.origin == LocalHistorySnapshotOrigin::Baseline)
+        .expect("baseline snapshot");
+    let loaded = local_history_service::load_snapshot_for_path(
+        &data_dir,
+        &path,
+        &baseline.snapshot_id,
+    )
+    .expect("load baseline")
+    .expect("baseline body");
+    assert_eq!(loaded.text, "original clean text\n");
+}
+
+#[test]
+fn test_failed_local_history_baseline_does_not_cross_path_generation() {
+    ensure_gtk_init();
+    let _reset = LocalHistoryBaselineFaultReset;
+    set_local_history_baseline_failures_for_test(1);
+    set_local_history_baseline_delay_for_test(150);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let old_path = dir.path().join("old-lineage.txt");
+    let new_path = dir.path().join("new-lineage.txt");
+    fixture::write_text(&old_path, "old clean text\n");
+    fixture::write_text(&new_path, "new file\n");
+    window.open_document(&old_path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    let data_dir = json_store::data_dir();
+
+    editor.buffer().set_text("modified old lineage\n");
+    editor.buffer().set_modified(true);
+    editor.set_file_path(&new_path);
+    flush_after_delay(Duration::from_millis(350));
+
+    assert!(
+        local_history_service::list_snapshots_for_path(&data_dir, &old_path)
+            .expect("list old lineage")
+            .is_empty()
+    );
+    assert!(
+        local_history_service::list_snapshots_for_path(&data_dir, &new_path)
+            .expect("list new lineage")
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_failed_local_history_baseline_cannot_replace_newer_saved_cycle() {
+    ensure_gtk_init();
+    let _reset = LocalHistoryBaselineFaultReset;
+    set_local_history_baseline_failures_for_test(1);
+    set_local_history_baseline_delay_for_test(180);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("newer-save.txt");
+    fixture::write_text(&path, "old clean text\n");
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    let data_dir = json_store::data_dir();
+
+    editor.buffer().set_text("new saved text\n");
+    editor.buffer().set_modified(true);
+    activate_action(&window, "save");
+    wait_until(Duration::from_secs(5), || {
+        !editor.is_saving() && !editor.is_modified()
+    });
+    flush_after_delay(Duration::from_millis(300));
+
+    editor.buffer().set_text("second editing cycle\n");
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(10), || {
+        !editor.local_history_automatic_capture_inflight_for_test()
+            && !editor.local_history_baseline_candidate_present_for_test()
+    });
+    let snapshots = local_history_service::list_snapshots_for_path(&data_dir, &path)
+        .expect("list snapshots");
+    let texts = snapshots
+        .iter()
+        .map(|snapshot| {
+            local_history_service::load_snapshot_for_path(
+                &data_dir,
+                &path,
+                &snapshot.snapshot_id,
+            )
+            .expect("load snapshot")
+            .expect("snapshot body")
+            .text
+        })
+        .collect::<Vec<_>>();
+    assert!(texts.iter().any(|text| text == "new saved text\n"));
+    assert!(!texts.iter().any(|text| text == "old clean text\n"));
+}
+
+#[test]
+fn test_local_history_baseline_retry_is_bounded_and_releases_permit() {
+    ensure_gtk_init();
+    let _reset = LocalHistoryBaselineFaultReset;
+    set_local_history_baseline_failures_for_test(2);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("bounded-baseline-retry.txt");
+    fixture::write_text(&path, "clean baseline\n");
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    let data_dir = json_store::data_dir();
+
+    editor.buffer().set_text("modified\n");
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(5), || {
+        editor.local_history_baseline_candidate_present_for_test()
+            && !editor.local_history_baseline_retry_pending_for_test()
+    });
+    assert!(
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list failed snapshots")
+            .is_empty()
+    );
+
+    set_local_history_baseline_failures_for_test(0);
+    editor.capture_local_history_baseline_for_test();
+    wait_until(Duration::from_secs(10), || {
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .ok()
+            .is_some_and(|snapshots| !snapshots.is_empty())
+    });
+}
+
+#[test]
+fn test_failed_local_history_baseline_drops_after_editor_disposal() {
+    ensure_gtk_init();
+    let _reset = LocalHistoryBaselineFaultReset;
+    set_local_history_baseline_failures_for_test(1);
+    set_local_history_baseline_delay_for_test(150);
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("disposed-baseline.txt");
+    fixture::write_text(&path, "clean baseline\n");
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("modified\n");
+    editor.buffer().set_modified(true);
+
+    window.destroy();
+    drop(editor);
+    flush_after_delay(Duration::from_millis(350));
+
+    assert!(
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list disposed baseline")
+            .is_empty()
     );
 }
 
@@ -9991,6 +10782,62 @@ fn test_stale_lossy_encoding_analysis_result_is_rejected_after_buffer_change() {
         "stale lossy analysis must not show a confirmation for old buffer content",
     );
     assert_eq!(active_editor(&window).save_encoding(), DocumentEncoding::Utf8);
+}
+
+#[test]
+fn test_chunked_lossy_encoding_snapshot_discards_source_mutation() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("chunked-lossy.txt");
+    fixture::write_text(&path, "hello");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    let editor = active_editor(&window);
+    editor
+        .buffer()
+        .set_text(&format!("{}😀", "x".repeat(2_500_001)));
+    editor.buffer().set_modified(true);
+    activate_action(&window, "show-encoding-controls");
+    let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    click_alert_extra_button(&dialog, "Save Using Encoding…");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Save Using Encoding"))
+    });
+    let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    click_alert_extra_button(&dialog, "Windows-1252");
+    assert!(
+        editor
+            .imp()
+            .document_metadata
+            .lossy_analysis_snapshot
+            .borrow()
+            .is_some()
+    );
+
+    editor.buffer().set_text(&"a".repeat(2_500_001));
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(10), || {
+        editor
+            .imp()
+            .document_metadata
+            .lossy_analysis_snapshot
+            .borrow()
+            .is_none()
+    });
+
+    assert!(
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_none_or(|heading| !heading.contains("Lossy Encoding Conversion"))
+    );
+    assert_eq!(editor.save_encoding(), DocumentEncoding::Utf8);
 }
 
 #[test]
@@ -11776,17 +12623,76 @@ fn test_document_note_save_sensitivity_handles_large_chunked_buffer_edits() {
     assert_eq!(stack.visible_child_name().as_deref(), Some("edit"));
     wait_for_note_save_response_sensitive(&dialog, false);
 
-    stack.set_visible_child_name("render");
-    flush_events();
-    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
-
     let large_note = "chunked note body\n".repeat(150_000);
     let (edit, _) = note_editor_text_views(&extra);
     edit.buffer().set_text(&large_note);
-    wait_for_note_save_response_sensitive(&dialog, true);
+    flush_after_delay(Duration::from_millis(90));
 
+    stack.set_visible_child_name("render");
+    flush_events();
+    assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
     edit.buffer().set_text("");
     wait_for_note_save_response_sensitive(&dialog, false);
+    assert!(
+        notes_preview_text(&extra).is_none_or(|text| !text.contains("chunked note body")),
+        "a mutated chunked note body must not reach the render surface"
+    );
+
+    let latest_note = "# Latest complete note\n\nRendered after cancellation";
+    edit.buffer().set_text(latest_note);
+    wait_for_note_save_response_sensitive(&dialog, true);
+}
+
+#[test]
+fn test_large_document_note_save_snapshot_is_disposed_with_window() {
+    ensure_gtk_init();
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("disposed-document-note.md");
+    fixture::write_text(&path, "# Source\n");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_path() == Some(path.clone())
+            && action_enabled(&window, "open-document-note")
+    });
+
+    activate_action(&window, "open-document-note");
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .as_deref()
+            == Some("Document Note")
+    });
+    let dialog = visible_alert_dialog(&window).expect("document note dialog");
+    let extra = dialog.extra_child().expect("document note extra child");
+    let (edit, _) = note_editor_text_views(&extra);
+    edit.buffer()
+        .set_text(&"window-owned chunked note\n".repeat(120_000));
+    wait_for_note_save_response_sensitive(&dialog, true);
+
+    alert_response_button(&dialog, "save").emit_clicked();
+    flush_events();
+    assert_eq!(window.note_save_snapshot_count_for_test(), 1);
+
+    let window_weak = window.downgrade();
+    dialog.close();
+    drop(edit);
+    drop(extra);
+    drop(dialog);
+    window.destroy();
+    drop(window);
+    wait_until(Duration::from_secs(5), || window_weak.upgrade().is_none());
+    flush_after_delay(Duration::from_millis(20));
+    assert!(
+        document_note_service::load_for_path(&json_store::data_dir(), &path)
+            .expect("load document note after disposal")
+            .is_none(),
+        "disposed capture must not publish a partial note body"
+    );
 }
 
 #[test]

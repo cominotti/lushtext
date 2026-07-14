@@ -34,11 +34,21 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 pub use crate::services::editor_io::EditorSaveError;
+#[cfg(feature = "test-utils")]
+pub use crate::ui::buffer_snapshot::{
+    BufferSnapshotCancelReason, BufferSnapshotHandle, BufferSnapshotOutcome,
+    BufferSnapshotStateForTest, BufferSnapshotTestEdit, BufferSnapshotTestMutation,
+    BufferSnapshotTestTrigger, snapshot_buffer_text_async_for_test,
+};
 pub use bookmarks::{
     BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
 };
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::{EditorLoadState, PendingWarningAction};
+#[cfg(feature = "test-utils")]
+pub use local_history::{
+    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
+};
 pub(crate) use minimap::{
     MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
 };
@@ -179,6 +189,9 @@ impl LushtextEditorPage {
 
     /// Advance the per-editor lossy-encoding request generation.
     pub(crate) fn advance_lossy_analysis_generation(&self) -> u32 {
+        if let Some(snapshot) = self.imp().document_metadata.lossy_analysis_snapshot.take() {
+            snapshot.dispose();
+        }
         let generation = self
             .imp()
             .document_metadata

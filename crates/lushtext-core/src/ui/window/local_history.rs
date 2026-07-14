@@ -89,6 +89,8 @@ struct LocalHistoryBrowserState {
     loaded_snapshot: RefCell<Option<LocalHistorySnapshot>>,
     /// Generation counter suppressing stale preview loads when selection changes quickly.
     preview_generation: Cell<u32>,
+    /// Active safety capture for a pending restore, disposed with the dialog.
+    restore_snapshot: RefCell<Option<buffer_snapshot::BufferSnapshotHandle>>,
 }
 
 /// State passed through the restore-safety background capture.
@@ -471,6 +473,7 @@ impl LushtextWindow {
             snapshots,
             loaded_snapshot: RefCell::new(None),
             preview_generation: Cell::new(0),
+            restore_snapshot: RefCell::new(None),
         });
 
         populate_history_sidebar(&state);
@@ -518,7 +521,7 @@ impl LushtextWindow {
                 };
                 set_local_history_action_enabled(&state.restore_button, false);
                 set_local_history_action_enabled(&state.copy_button, false);
-                LushtextWindow::restore_local_history_snapshot(Rc::clone(&state), snapshot);
+                LushtextWindow::restore_local_history_snapshot(&state, snapshot);
             }
         });
 
@@ -553,6 +556,11 @@ impl LushtextWindow {
         state.dialog.connect_closed({
             let state_holder = Rc::clone(&state_holder);
             move |_| {
+                if let Some(state) = state_holder.borrow().as_ref()
+                    && let Some(snapshot) = state.restore_snapshot.take()
+                {
+                    snapshot.dispose();
+                }
                 state_holder.borrow_mut().take();
             }
         });
@@ -591,12 +599,20 @@ impl LushtextWindow {
     }
 
     fn restore_local_history_snapshot(
-        browser: Rc<LocalHistoryBrowserState>,
+        browser: &Rc<LocalHistoryBrowserState>,
         snapshot: LocalHistorySnapshot,
     ) {
         let buffer = browser.editor.buffer();
         let restore_text = snapshot.text;
-        let run_restore = move |undo_text: String| {
+        let browser_for_restore = Rc::clone(browser);
+        let run_restore = move |outcome: buffer_snapshot::BufferSnapshotOutcome| {
+            let browser = browser_for_restore;
+            browser.restore_snapshot.take();
+            let buffer_snapshot::BufferSnapshotOutcome::Captured(undo_text) = outcome else {
+                set_local_history_action_enabled(&browser.restore_button, true);
+                set_local_history_action_enabled(&browser.copy_button, true);
+                return;
+            };
             let path = browser.path.clone();
             spawn_blocking_then(
                 RestoreWorkState {
@@ -669,9 +685,12 @@ impl LushtextWindow {
         };
 
         if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
-            buffer_snapshot::snapshot_buffer_text_async(buffer, run_restore);
+            let snapshot = buffer_snapshot::snapshot_buffer_text_async(buffer, run_restore);
+            browser.restore_snapshot.replace(Some(snapshot));
         } else {
-            run_restore(buffer_snapshot::snapshot_buffer_text_direct(&buffer));
+            run_restore(buffer_snapshot::BufferSnapshotOutcome::Captured(
+                buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+            ));
         }
     }
 }

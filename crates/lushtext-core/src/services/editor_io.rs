@@ -170,6 +170,8 @@ pub enum EditorSaveError {
     NoPath,
     #[error("Save already in progress")]
     SaveInProgress,
+    #[error("Buffer changed while the save snapshot was being captured")]
+    SnapshotCancelled,
     #[error("Saving as {encoding} would replace {issue_count} character(s)")]
     LossyEncoding {
         encoding: DocumentEncoding,

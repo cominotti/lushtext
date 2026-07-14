@@ -33,7 +33,8 @@ assert!(debounce.is_current(token));
   bursts. Its `pending()` state remains true until the current repair handle
   finishes.
 - `SupersedingTimer` fits delayed one-shot cleanup or reveal/hide work where
-  each new arm supersedes the previous arm.
+  each new arm supersedes the previous arm. Re-arm and invalidation remove the
+  obsolete GLib source immediately, so long deadlines do not accumulate.
 
 ## Non-Settle Exceptions
 

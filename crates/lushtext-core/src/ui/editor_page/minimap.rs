@@ -480,6 +480,21 @@ impl LushtextEditorPage {
         *imp.minimap.render_hold.borrow_mut() = Some(render_hold);
         *imp.minimap.marker_strip.borrow_mut() = Some(marker_strip);
 
+        if let Some(vadj) = imp
+            .minimap
+            .source_map
+            .borrow()
+            .as_ref()
+            .and_then(sourceview5::prelude::ScrollableExt::vadjustment)
+        {
+            let editor_weak = self.downgrade();
+            vadj.connect_changed(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.guard_fitting_source_map_adjustment();
+                }
+            });
+        }
+
         let buffer = self.buffer();
         {
             let editor_weak = self.downgrade();
@@ -555,12 +570,45 @@ impl LushtextEditorPage {
             let editor_weak = self.downgrade();
             vadj.connect_changed(move |_| {
                 if let Some(editor) = editor_weak.upgrade() {
+                    editor.guard_fitting_source_map_adjustment();
                     editor.schedule_minimap_refresh();
                 }
             });
         }
 
+        self.guard_fitting_source_map_adjustment();
         self.schedule_minimap_refresh();
+    }
+
+    /// Keep GtkSourceMap 5.20 out of its zero-range adjustment division.
+    ///
+    /// Upstream maps the editor value with `value / (upper - page_size)` when
+    /// its own child adjustment still looks scrollable. A fitting source view
+    /// has a zero denominator, so mirror the semantic no-scroll state onto the
+    /// map adjustment before its queued frame callback runs.
+    fn guard_fitting_source_map_adjustment(&self) {
+        let Some(source_adjustment) = self.source_view().vadjustment() else {
+            return;
+        };
+        let Some(map_adjustment) = self
+            .imp()
+            .minimap
+            .source_map
+            .borrow()
+            .as_ref()
+            .and_then(sourceview5::prelude::ScrollableExt::vadjustment)
+        else {
+            return;
+        };
+        let Some(page_size) = fitting_source_map_page_size(
+            source_adjustment.upper(),
+            source_adjustment.page_size(),
+            map_adjustment.upper(),
+            map_adjustment.page_size(),
+        ) else {
+            return;
+        };
+        map_adjustment.set_page_size(page_size);
     }
 
     /// Build a native `GtkSourceMap` with LushText's stable minimap presentation.
@@ -820,7 +868,13 @@ impl LushtextEditorPage {
         let Some(source_adjustment) = self.source_view().vadjustment() else {
             return false;
         };
-        if (source_adjustment.value() - source_adjustment.lower()).abs() > 0.5 {
+        let Some(source_distance) = finite_adjustment_distance_from_lower(
+            source_adjustment.value(),
+            source_adjustment.lower(),
+        ) else {
+            return false;
+        };
+        if source_distance > 0.5 {
             return false;
         }
 
@@ -832,7 +886,12 @@ impl LushtextEditorPage {
         };
 
         let lower = map_adjustment.lower();
-        if (map_adjustment.value() - lower).abs() <= 0.5 {
+        let Some(map_distance) =
+            finite_adjustment_distance_from_lower(map_adjustment.value(), lower)
+        else {
+            return false;
+        };
+        if map_distance <= 0.5 {
             return false;
         }
         map_adjustment.set_value(lower);
@@ -1033,6 +1092,36 @@ fn source_map_editor_height_ratio_from_heights(
         return None;
     }
     Some(f64::from(source_map_document_height) / f64::from(editor_document_height))
+}
+
+/// Return a finite adjustment's absolute distance from its lower bound.
+///
+/// GTK can expose transitional non-finite values while a newly bound source
+/// map is allocating. Those values must never be passed back to `set_value`.
+fn finite_adjustment_distance_from_lower(value: f64, lower: f64) -> Option<f64> {
+    if !value.is_finite() || !lower.is_finite() {
+        return None;
+    }
+    Some((value - lower).abs())
+}
+
+/// Return the child page size that represents a fitting, non-scrollable source.
+fn fitting_source_map_page_size(
+    source_upper: f64,
+    source_page_size: f64,
+    map_upper: f64,
+    map_page_size: f64,
+) -> Option<f64> {
+    if !source_upper.is_finite()
+        || !source_page_size.is_finite()
+        || !map_upper.is_finite()
+        || !map_page_size.is_finite()
+        || (source_upper - source_page_size).abs() > f64::EPSILON
+        || map_page_size >= map_upper
+    {
+        return None;
+    }
+    Some(map_upper)
 }
 
 /// Choose the CSS class that compensates the native slider at the wide-editor threshold.
@@ -2169,6 +2258,34 @@ mod tests {
         assert_eq!(source_map_editor_height_ratio_from_heights(1_000, 0), None);
         assert_eq!(source_map_editor_height_ratio_from_heights(-1, 200), None);
         assert_eq!(source_map_editor_height_ratio_from_heights(1_000, -1), None);
+    }
+
+    #[test]
+    fn test_adjustment_distance_rejects_nonfinite_transition_values() {
+        assert_eq!(finite_adjustment_distance_from_lower(4.5, 1.0), Some(3.5));
+        assert_eq!(finite_adjustment_distance_from_lower(f64::NAN, 0.0), None);
+        assert_eq!(finite_adjustment_distance_from_lower(0.0, f64::NAN), None);
+        assert_eq!(
+            finite_adjustment_distance_from_lower(f64::INFINITY, 0.0),
+            None
+        );
+    }
+
+    #[test]
+    fn test_fitting_source_map_page_size_closes_only_zero_source_range() {
+        assert_eq!(
+            fitting_source_map_page_size(733.0, 733.0, 645.0, 0.0),
+            Some(645.0)
+        );
+        assert_eq!(fitting_source_map_page_size(900.0, 733.0, 645.0, 0.0), None);
+        assert_eq!(
+            fitting_source_map_page_size(733.0, 733.0, 645.0, 645.0),
+            None
+        );
+        assert_eq!(
+            fitting_source_map_page_size(f64::NAN, 733.0, 645.0, 0.0),
+            None
+        );
     }
 
     #[test]

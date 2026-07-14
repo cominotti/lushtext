@@ -18,6 +18,7 @@ use pulldown_cmark::BlockQuoteKind;
 use std::cell::{Cell, RefCell};
 
 use crate::ui::accessibility;
+use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 
 /// Adwaita-matching accent color (blue) for headings and links.
 const ACCENT_LIGHT: &str = "#1c71d8";
@@ -268,6 +269,8 @@ pub struct LushtextMarkdownPreview {
         RefCell<Vec<CodeBlockRefreshCompletionCallback>>,
     /// Global theme/settings handlers that must disconnect when the preview is disposed.
     pub global_signals: SignalBag,
+    /// Active app-local source-buffer capture for note preview rendering.
+    pub source_snapshot: RefCell<Option<BufferSnapshotHandle>>,
 }
 
 #[glib::object_subclass]
@@ -349,6 +352,9 @@ impl ObjectImpl for LushtextMarkdownPreview {
     }
 
     fn dispose(&self) {
+        if let Some(snapshot) = self.source_snapshot.take() {
+            snapshot.dispose();
+        }
         self.global_signals.clear();
         if let Some(source_id) = self.code_block_idle_source_id.take() {
             source_id.remove();

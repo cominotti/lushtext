@@ -2,7 +2,7 @@
 
 //! Document-note and folder-note editor workflows.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -365,8 +365,20 @@ impl LushtextWindow {
                 let buffer = note_view.buffer();
                 let path_for_save = path.clone();
                 let existing_note_for_save = existing_note.clone();
-                let window_for_save = window;
-                snapshot_note_buffer_text(buffer, move |note_text| {
+                let window_weak = window.downgrade();
+                let snapshot = snapshot_note_buffer_text(buffer, move |outcome| {
+                    let Some(window_for_save) = window_weak.upgrade() else {
+                        return;
+                    };
+                    window_for_save.prune_note_save_snapshots();
+                    let buffer_snapshot::BufferSnapshotOutcome::Captured(note_text) = outcome
+                    else {
+                        window_for_save.publish_status_message(
+                            "Document note changed while preparing the save",
+                            MessageKind::Warning,
+                        );
+                        return;
+                    };
                     if note_text.trim().is_empty() {
                         window_for_save.publish_status_message(
                             "Document notes need note text",
@@ -409,6 +421,7 @@ impl LushtextWindow {
                         },
                     );
                 });
+                window.track_note_save_snapshot(snapshot);
             }
         });
     }
@@ -499,8 +512,20 @@ impl LushtextWindow {
                 let buffer = note_view.buffer();
                 let folder_for_save = folder.clone();
                 let existing_note_for_save = existing_note.clone();
-                let window_for_save = window;
-                snapshot_note_buffer_text(buffer, move |note_text| {
+                let window_weak = window.downgrade();
+                let snapshot = snapshot_note_buffer_text(buffer, move |outcome| {
+                    let Some(window_for_save) = window_weak.upgrade() else {
+                        return;
+                    };
+                    window_for_save.prune_note_save_snapshots();
+                    let buffer_snapshot::BufferSnapshotOutcome::Captured(note_text) = outcome
+                    else {
+                        window_for_save.publish_status_message(
+                            "Folder note changed while preparing the save",
+                            MessageKind::Warning,
+                        );
+                        return;
+                    };
                     if note_text.trim().is_empty() {
                         window_for_save.publish_status_message(
                             "Folder notes need note text",
@@ -541,8 +566,32 @@ impl LushtextWindow {
                         },
                     );
                 });
+                window.track_note_save_snapshot(snapshot);
             }
         });
+    }
+
+    /// Retain a chunked note-save capture until it completes or the window is disposed.
+    fn track_note_save_snapshot(&self, snapshot: Option<buffer_snapshot::BufferSnapshotHandle>) {
+        self.prune_note_save_snapshots();
+        if let Some(snapshot) = snapshot {
+            self.imp().note_save_snapshots.borrow_mut().push(snapshot);
+        }
+    }
+
+    /// Drop terminal weak handles without disturbing other concurrent note saves.
+    fn prune_note_save_snapshots(&self) {
+        self.imp()
+            .note_save_snapshots
+            .borrow_mut()
+            .retain(buffer_snapshot::BufferSnapshotHandle::is_active);
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn note_save_snapshot_count_for_test(&self) -> usize {
+        self.prune_note_save_snapshots();
+        self.imp().note_save_snapshots.borrow().len()
     }
 }
 
@@ -706,6 +755,14 @@ fn install_note_save_response_state(
     dialog.set_response_enabled(RESPONSE_SAVE, presentation.save_enabled_for(initial_text));
 
     let refresh = NoteSaveResponseRefresh::new(dialog, presentation);
+    dialog.connect_closed({
+        let refresh = refresh.clone();
+        move |_| {
+            if let Some(snapshot) = refresh.snapshot.take() {
+                snapshot.dispose();
+            }
+        }
+    });
     buffer.connect_changed(move |buffer| {
         refresh.schedule(buffer);
     });
@@ -719,6 +776,7 @@ struct NoteSaveResponseRefresh {
     debounce: Debounce,
     in_flight: Rc<Cell<bool>>,
     rerun_requested: Rc<Cell<bool>>,
+    snapshot: Rc<RefCell<Option<buffer_snapshot::BufferSnapshotHandle>>>,
 }
 
 impl NoteSaveResponseRefresh {
@@ -730,6 +788,7 @@ impl NoteSaveResponseRefresh {
             debounce: Debounce::new(),
             in_flight: Rc::new(Cell::new(false)),
             rerun_requested: Rc::new(Cell::new(false)),
+            snapshot: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -760,7 +819,9 @@ impl NoteSaveResponseRefresh {
 
         let refresh = self.clone();
         let buffer_for_rerun = buffer.clone();
-        snapshot_note_buffer_text(buffer, move |text| {
+        let snapshot_slot = Rc::clone(&self.snapshot);
+        let snapshot = snapshot_note_buffer_text(buffer, move |outcome| {
+            snapshot_slot.borrow_mut().take();
             let rerun_requested = refresh.rerun_requested.replace(false);
             refresh.in_flight.set(false);
 
@@ -771,12 +832,17 @@ impl NoteSaveResponseRefresh {
                 return;
             }
 
+            let buffer_snapshot::BufferSnapshotOutcome::Captured(text) = outcome else {
+                return;
+            };
+
             let Some(dialog) = refresh.dialog_weak.upgrade() else {
                 return;
             };
             dialog
                 .set_response_enabled(RESPONSE_SAVE, refresh.presentation.save_enabled_for(&text));
         });
+        self.snapshot.replace(snapshot);
     }
 }
 
@@ -787,23 +853,40 @@ fn render_note_preview(
     render_context: &MarkdownPreviewRenderContext,
     empty_preview_description: &'static str,
 ) {
-    let preview = preview.clone();
+    preview.replace_source_snapshot(None);
+    let preview_weak = preview.downgrade();
     let render_context = render_context.clone();
-    snapshot_note_buffer_text(buffer.clone(), move |text| {
+    let snapshot = snapshot_note_buffer_text(buffer.clone(), move |outcome| {
+        let Some(preview) = preview_weak.upgrade() else {
+            return;
+        };
+        preview.clear_source_snapshot();
+        let buffer_snapshot::BufferSnapshotOutcome::Captured(text) = outcome else {
+            return;
+        };
         if text.trim().is_empty() {
             preview.show_content_placeholder(empty_preview_description);
         } else {
             preview.render_markdown_with_context(&text, &render_context);
         }
     });
+    preview.replace_source_snapshot(snapshot);
 }
 
 /// Snapshot note editor text without monopolizing the GTK main loop.
-fn snapshot_note_buffer_text<F: FnOnce(String) + 'static>(buffer: gtk4::TextBuffer, callback: F) {
+fn snapshot_note_buffer_text<F: FnOnce(buffer_snapshot::BufferSnapshotOutcome) + 'static>(
+    buffer: gtk4::TextBuffer,
+    callback: F,
+) -> Option<buffer_snapshot::BufferSnapshotHandle> {
     if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
-        buffer_snapshot::snapshot_buffer_text_async(buffer, callback);
+        Some(buffer_snapshot::snapshot_buffer_text_async(
+            buffer, callback,
+        ))
     } else {
-        callback(buffer_snapshot::snapshot_buffer_text_direct(&buffer));
+        callback(buffer_snapshot::BufferSnapshotOutcome::Captured(
+            buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+        ));
+        None
     }
 }
 /// Convert one concrete workspace into the only valid folder-note action shape.

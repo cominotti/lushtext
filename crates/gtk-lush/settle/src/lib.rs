@@ -30,7 +30,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -150,14 +150,45 @@ impl Debounce {
     }
 }
 
+/// Shared state for a delayed one-shot whose obsolete source is removed eagerly.
+#[derive(Debug, Default)]
+struct SupersedingTimerState {
+    gate: GenerationGate,
+    scheduled: RefCell<Option<(TimerToken, glib::SourceId)>>,
+}
+
+impl SupersedingTimerState {
+    fn take_scheduled(&self) -> Option<(TimerToken, glib::SourceId)> {
+        self.scheduled.borrow_mut().take()
+    }
+
+    fn remove_source(scheduled: Option<(TimerToken, glib::SourceId)>) {
+        if let Some((_token, source_id)) = scheduled {
+            source_id.remove();
+        }
+    }
+
+    fn forget_if_current(&self, token: TimerToken) {
+        if self
+            .scheduled
+            .borrow()
+            .as_ref()
+            .is_some_and(|(scheduled_token, _)| *scheduled_token == token)
+        {
+            self.scheduled.borrow_mut().take();
+        }
+    }
+}
+
 /// Delayed one-shot timer where each arm supersedes the previous arm.
 ///
 /// This is useful for UI cleanup such as pulse removal or delayed reveal/hide
-/// decisions. It does not own a custom runtime; callbacks run on GLib's main
-/// loop when their current generation fires.
+/// decisions. Re-arming or invalidating removes the obsolete GLib source
+/// immediately instead of retaining it until its original deadline. It does
+/// not own a custom runtime; callbacks run on GLib's main loop when current.
 #[derive(Clone, Debug, Default)]
 pub struct SupersedingTimer {
-    gate: Rc<GenerationGate>,
+    state: Rc<SupersedingTimerState>,
 }
 
 impl SupersedingTimer {
@@ -173,25 +204,37 @@ impl SupersedingTimer {
         T: IsA<Object> + Clone + 'static,
         F: FnOnce(T, TimerToken) + 'static,
     {
-        let token = self.gate.advance();
-        let gate = Rc::clone(&self.gate);
+        let scheduled = self.state.take_scheduled();
+        let token = self.state.gate.advance();
+        // Removing a source synchronously drops its callback captures. Advance first
+        // so a timer operation re-entered from a destructor remains the newest one.
+        SupersedingTimerState::remove_source(scheduled);
+        if !self.state.gate.is_current(token) {
+            return token;
+        }
+        let state = Rc::clone(&self.state);
         let target_weak = target.downgrade();
-        glib::timeout_add_local_once(delay, move || {
-            run_if_current(&target_weak, &gate, token, callback);
+        let source_id = glib::timeout_add_local_once(delay, move || {
+            state.forget_if_current(token);
+            run_if_current(&target_weak, &state.gate, token, callback);
         });
+        self.state.scheduled.replace(Some((token, source_id)));
         token
     }
 
     /// Invalidate pending cleanup work without scheduling a replacement.
     #[must_use]
     pub fn invalidate(&self) -> TimerToken {
-        self.gate.invalidate()
+        let scheduled = self.state.take_scheduled();
+        let token = self.state.gate.invalidate();
+        SupersedingTimerState::remove_source(scheduled);
+        token
     }
 
     /// Check whether a previously captured arm token is still current.
     #[must_use]
     pub fn is_current(&self, token: TimerToken) -> bool {
-        self.gate.is_current(token)
+        self.state.gate.is_current(token)
     }
 }
 
@@ -321,10 +364,61 @@ impl SettleHandle {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::{Mutex, MutexGuard};
 
     use proptest::prelude::*;
 
     use super::*;
+
+    static DEFAULT_MAIN_CONTEXT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_default_main_context_for_timer_test() -> MutexGuard<'static, ()> {
+        // Local timeout sources transiently acquire GLib's process-global default
+        // context, so parallel test-harness threads must not install them together.
+        DEFAULT_MAIN_CONTEXT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    struct DropProbe(Rc<Cell<u32>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    struct ReentrantInvalidationProbe {
+        timer: SupersedingTimer,
+        reentered: Rc<Cell<bool>>,
+    }
+
+    impl Drop for ReentrantInvalidationProbe {
+        fn drop(&mut self) {
+            let _ = self.timer.invalidate();
+            self.reentered.set(true);
+        }
+    }
+
+    struct ReentrantArmProbe {
+        timer: SupersedingTimer,
+        target: Object,
+        nested_drops: Rc<Cell<u32>>,
+        reentered: Rc<Cell<bool>>,
+    }
+
+    impl Drop for ReentrantArmProbe {
+        fn drop(&mut self) {
+            let nested_probe = DropProbe(Rc::clone(&self.nested_drops));
+            let _ = self
+                .timer
+                .arm(&self.target, Duration::from_secs(60), move |_, _| {
+                    let _nested_probe = nested_probe;
+                });
+            self.reentered.set(true);
+        }
+    }
 
     #[test]
     fn debounce_tokens_advance_and_reject_stale_tokens() {
@@ -426,6 +520,7 @@ mod tests {
 
     #[test]
     fn superseding_timer_rearm_rejects_stale_token() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
         let timer = SupersedingTimer::default();
         let target = Object::new::<Object>();
         let first = timer.arm(&target, Duration::from_millis(1), |_, _| {});
@@ -433,6 +528,88 @@ mod tests {
 
         assert!(!timer.is_current(first));
         assert!(timer.is_current(second));
+
+        let _ = timer.invalidate();
+    }
+
+    #[test]
+    fn superseding_timer_rearm_removes_the_obsolete_source_immediately() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let timer = SupersedingTimer::default();
+        let target = Object::new::<Object>();
+        let drops = Rc::new(Cell::new(0));
+        let probe = DropProbe(Rc::clone(&drops));
+        let _ = timer.arm(&target, Duration::from_secs(60), move |_, _| {
+            let _probe = probe;
+        });
+
+        let _ = timer.arm(&target, Duration::from_secs(60), |_, _| {});
+
+        assert_eq!(drops.get(), 1);
+
+        let _ = timer.invalidate();
+    }
+
+    #[test]
+    fn superseding_timer_invalidate_removes_the_current_source_immediately() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let timer = SupersedingTimer::default();
+        let target = Object::new::<Object>();
+        let drops = Rc::new(Cell::new(0));
+        let probe = DropProbe(Rc::clone(&drops));
+        let _ = timer.arm(&target, Duration::from_secs(60), move |_, _| {
+            let _probe = probe;
+        });
+
+        let _ = timer.invalidate();
+
+        assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn superseding_timer_source_cleanup_allows_reentrant_invalidation() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let timer = SupersedingTimer::default();
+        let target = Object::new::<Object>();
+        let reentered = Rc::new(Cell::new(false));
+        let probe = ReentrantInvalidationProbe {
+            timer: timer.clone(),
+            reentered: Rc::clone(&reentered),
+        };
+        let _ = timer.arm(&target, Duration::from_secs(60), move |_, _| {
+            let _probe = probe;
+        });
+
+        let _ = timer.invalidate();
+
+        assert!(reentered.get());
+    }
+
+    #[test]
+    fn superseding_timer_source_cleanup_preserves_reentrant_arm() {
+        let _main_context_guard = lock_default_main_context_for_timer_test();
+        let timer = SupersedingTimer::default();
+        let target = Object::new::<Object>();
+        let nested_drops = Rc::new(Cell::new(0));
+        let reentered = Rc::new(Cell::new(false));
+        let probe = ReentrantArmProbe {
+            timer: timer.clone(),
+            target: target.clone(),
+            nested_drops: Rc::clone(&nested_drops),
+            reentered: Rc::clone(&reentered),
+        };
+        let _ = timer.arm(&target, Duration::from_secs(60), move |_, _| {
+            let _probe = probe;
+        });
+
+        let superseded = timer.arm(&target, Duration::from_secs(60), |_, _| {});
+
+        assert!(reentered.get());
+        assert!(!timer.is_current(superseded));
+
+        let _ = timer.invalidate();
+
+        assert_eq!(nested_drops.get(), 1);
     }
 
     proptest! {

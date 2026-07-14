@@ -230,6 +230,13 @@ impl LushtextEditorPage {
         self.live_buffer_requires_chunked_snapshot()
     }
 
+    /// Whether save currently owns a chunked snapshot lifecycle.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn save_snapshot_inflight_for_test(&self) -> bool {
+        self.imp().save.snapshot.borrow().is_some()
+    }
+
     /// Return the active load generation for stale-callback regression tests.
     #[cfg(feature = "test-utils")]
     #[must_use]
@@ -358,16 +365,45 @@ impl LushtextEditorPage {
         self.refresh_accessibility_metadata();
 
         if self.live_buffer_requires_chunked_snapshot() {
-            let editor = self.clone();
-            buffer_snapshot::snapshot_buffer_text_async(self.buffer(), move |text| {
-                editor.write_snapshot_async(path, text, restore_state, callback);
-            });
+            let editor_weak = self.downgrade();
+            let snapshot =
+                buffer_snapshot::snapshot_buffer_text_async(self.buffer(), move |outcome| {
+                    let Some(editor) = editor_weak.upgrade() else {
+                        return;
+                    };
+                    editor.imp().save.snapshot.take();
+                    match outcome {
+                        buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
+                            editor.write_snapshot_async(path, text, restore_state, callback);
+                        }
+                        buffer_snapshot::BufferSnapshotOutcome::Cancelled(_)
+                        | buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
+                            editor.finish_save_snapshot_without_write(restore_state, callback);
+                        }
+                    }
+                });
+            self.imp().save.snapshot.replace(Some(snapshot));
             return;
         }
 
         let buffer = self.buffer();
         let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
         self.write_snapshot_async(path, text, restore_state, callback);
+    }
+
+    /// Restore the view after a chunked snapshot ends without coherent text.
+    fn finish_save_snapshot_without_write(
+        &self,
+        restore_state: ViewInteractivityState,
+        callback: SaveCallback,
+    ) {
+        self.source_view().set_editable(restore_state.editable);
+        self.source_view()
+            .set_cursor_visible(restore_state.cursor_visible);
+        self.imp().save.inflight.set(false);
+        self.notify_memory_policy_changed();
+        self.refresh_accessibility_metadata();
+        callback(Err(EditorSaveError::SnapshotCancelled));
     }
 
     /// Store a cursor and scroll position to apply after the next async load.

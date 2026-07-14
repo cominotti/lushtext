@@ -13,7 +13,8 @@ use super::adaptive_shell::{
     PROPERTIES_SIDEBAR_MIN_WIDTH_SP, WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout,
     desired_properties_fraction, properties_breakpoint_condition, workspace_breakpoint_condition,
 };
-use super::drafts::LazyDraftRestoreCandidate;
+use super::draft_ordering::{DraftMutationIntent, DraftMutationOrder};
+use super::drafts::DraftRestoreTicket;
 use super::notes::ActiveNotesBrowser;
 use crate::config::{self, keys};
 use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
@@ -21,7 +22,7 @@ use crate::model::recent_document::RecentDocumentEntry;
 use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
 use crate::ui::accessibility;
-use crate::ui::buffer_snapshot::BufferSnapshotCancellation;
+use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::LushtextMarkdownPreview;
@@ -162,18 +163,28 @@ pub struct DraftState {
     pub autosave_inflight: Cell<bool>,
     /// Whether another autosave pass is needed after the in-flight batch finishes.
     pub autosave_pending: Cell<bool>,
+    /// Main-thread intent allocator shared by autosave and deletion workflows.
+    pub(super) mutation_order: RefCell<DraftMutationOrder>,
+    /// Whether one autosave batch or delete command currently owns mutation execution.
+    pub(super) mutation_inflight: Cell<bool>,
+    /// Compact deletes waiting behind an earlier draft mutation.
+    pub(super) pending_deletes: RefCell<VecDeque<DraftMutationIntent>>,
+    /// IDs represented in `pending_deletes`, keeping common admission O(1).
+    pub(super) pending_delete_ids: RefCell<HashSet<String>>,
     /// Cancellation token for the current autosave buffer copy, if any.
-    pub(crate) autosave_snapshot_cancellation: RefCell<Option<BufferSnapshotCancellation>>,
+    pub(crate) autosave_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Cancellation token for the current close-time buffer copy, if any.
-    pub(crate) close_snapshot_cancellation: RefCell<Option<BufferSnapshotCancellation>>,
+    pub(crate) close_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Draft IDs explicitly discarded during an in-progress close flow.
     /// These must not be re-written by `flush_dirty_drafts()` right before the
     /// window is destroyed.
     pub close_discard_ids: RefCell<HashSet<String>>,
     /// Serialized startup reads skipped only by the aggregate eager budget.
-    pub(super) lazy_restore_queue: RefCell<VecDeque<LazyDraftRestoreCandidate>>,
+    pub(super) lazy_restore_queue: RefCell<VecDeque<DraftRestoreTicket>>,
     /// Whether one lazy draft body is currently crossing the worker boundary.
     pub(super) lazy_restore_inflight: Cell<bool>,
+    /// Number of asynchronous draft resolutions not yet delivered to GTK.
+    pub(super) restore_inflight_count: Cell<usize>,
     /// Number of complete autosave bodies currently held across a worker handoff.
     #[cfg(feature = "test-utils")]
     pub retained_complete_bodies: Cell<usize>,
@@ -407,6 +418,8 @@ pub struct LushtextWindow {
     pub tab_management: TabManagementState,
     /// Weak handle for browser-navigation actions while Browse Notes is visible.
     pub(super) active_notes_browser: RefCell<Option<ActiveNotesBrowser>>,
+    /// Active large note-save snapshots, owned until completion or window disposal.
+    pub(super) note_save_snapshots: RefCell<Vec<BufferSnapshotHandle>>,
     /// Focus widget saved before the search panel steals focus.
     pub search_saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// Window-scoped notification bus + store.
@@ -491,6 +504,7 @@ impl Default for LushtextWindow {
             recent_documents: RecentDocumentsState::default(),
             tab_management: TabManagementState::default(),
             active_notes_browser: RefCell::new(None),
+            note_save_snapshots: RefCell::new(Vec::new()),
             search_saved_focus: RefCell::new(None),
             notification_bus: NotificationBus::default(),
             notification_sweep_source_id: RefCell::new(None),
@@ -909,11 +923,14 @@ impl ObjectImpl for LushtextWindow {
         }
         // Chunked snapshots have later GTK slices queued. Cancel before the
         // window's workflow state is torn down so none can resume after dispose.
-        if let Some(cancellation) = self.drafts.autosave_snapshot_cancellation.take() {
-            cancellation.cancel();
+        if let Some(snapshot) = self.drafts.autosave_snapshot.take() {
+            snapshot.dispose();
         }
-        if let Some(cancellation) = self.drafts.close_snapshot_cancellation.take() {
-            cancellation.cancel();
+        if let Some(snapshot) = self.drafts.close_snapshot.take() {
+            snapshot.dispose();
+        }
+        for snapshot in self.note_save_snapshots.take() {
+            snapshot.dispose();
         }
         if let Some(source_id) = self.notification_sweep_source_id.take() {
             source_id.remove();

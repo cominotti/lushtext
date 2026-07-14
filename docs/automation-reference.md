@@ -748,7 +748,7 @@ a scenario truly needs all tracked app-owned work to settle.
 | <span id="readiness-app-startup"></span>`readiness-app-startup` | `app-startup` | The application has not produced an active LushText window yet. |
 | <span id="readiness-close-safety"></span>`readiness-close-safety` | `close-safety` | A close/quit safety flow is still resolving modified or saving documents. |
 | <span id="readiness-command-palette-index"></span>`readiness-command-palette-index` | `command-palette-index` | Command palette file-index mutations are still waiting for debounce flush. |
-| <span id="readiness-draft-autosave"></span>`readiness-draft-autosave` | `draft-autosave` | A draft autosave is in flight. |
+| <span id="readiness-draft-autosave"></span>`readiness-draft-autosave` | `draft-autosave` | Draft persistence, deletion, or recovery resolution is still in flight. |
 | <span id="readiness-editor-search"></span>`readiness-editor-search` | `editor-search` | The selected editor search context has not finished counting occurrences. |
 | <span id="readiness-file-load"></span>`readiness-file-load` | `file-load` | At least one editor tab is still loading file contents. |
 | <span id="readiness-minimap-refresh"></span>`readiness-minimap-refresh` | `minimap-refresh` | Minimap projection, marker, or viewport geometry is waiting for the post-layout refresh debounce. |

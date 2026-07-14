@@ -15,3 +15,8 @@ and this crate follows SemVer after functional publication.
   and standalone gtk-rs adoption example.
 - Adoption-lab, timed stock fixture, external-spike, and matrix evidence before
   functional publication.
+
+### Changed
+
+- `SupersedingTimer` now removes obsolete GLib sources immediately on re-arm or
+  invalidation while preserving its existing generation-token API.

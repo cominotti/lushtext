@@ -352,10 +352,13 @@ impl LushtextWindow {
         let window = self.clone();
         let editor_for_retry = editor.clone();
         let save_path = editor.file_path();
+        let draft_id = editor.draft_id();
         editor.save_file_async(move |result| match result {
             Ok(()) => {
+                if let Some(ref draft_id) = draft_id {
+                    window.delete_draft_by_id(draft_id);
+                }
                 if let Some(ref path) = save_path {
-                    window.delete_draft_for_path(path);
                     let mut open_paths = window.imp().open_paths.borrow_mut();
                     open_paths.insert(open_path_key(path));
                     if let Some(canonical_path) = editor_for_retry.canonical_file_path() {
@@ -430,7 +433,11 @@ impl LushtextWindow {
                 return;
             };
             if let Some(window) = window_weak.upgrade() {
-                window.delete_draft_for_path(&path);
+                if let Some(draft_id) = editor.draft_id() {
+                    window.delete_draft_by_id(&draft_id);
+                } else {
+                    window.delete_draft_for_path(&path);
+                }
             }
             editor.set_draft_restored(false);
             if let Some(window) = window_weak.upgrade() {
@@ -583,10 +590,12 @@ impl LushtextWindow {
                     None => {}
                 }
                 if editor.is_draft_restored() {
-                    if let Some(window) = window_weak.upgrade()
-                        && let Some(ref path) = editor.file_path()
-                    {
-                        window.delete_draft_for_path(path);
+                    if let Some(window) = window_weak.upgrade() {
+                        if let Some(draft_id) = editor.draft_id() {
+                            window.delete_draft_by_id(&draft_id);
+                        } else if let Some(ref path) = editor.file_path() {
+                            window.delete_draft_for_path(path);
+                        }
                     }
                     editor.set_draft_restored(false);
                 }

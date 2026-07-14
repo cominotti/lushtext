@@ -175,14 +175,19 @@ impl super::LushtextWindow {
                 self.refresh_sidebar_file_row_states();
                 self.refresh_open_popover_rows();
                 self.assign_draft_id(editor);
+                let new_draft_id = editor.draft_id();
                 self.resolve_editorconfig_for_editor(editor, path);
                 self.reset_notes_after_save_as(editor, path);
-                if let Some(old) = old_path {
-                    self.delete_draft_for_path(old);
-                } else if let Some(draft_id) = old_draft_id {
+                if let Some(draft_id) = old_draft_id {
                     self.delete_draft_by_id(draft_id);
+                } else if let Some(old) = old_path {
+                    self.delete_draft_for_path(old);
                 }
-                self.delete_draft_for_path(path);
+                if let Some(draft_id) = new_draft_id {
+                    self.delete_draft_by_id(&draft_id);
+                } else {
+                    self.delete_draft_for_path(path);
+                }
                 editor.set_draft_restored(false);
                 self.dismiss_editor_notifications(editor);
 
@@ -572,10 +577,10 @@ impl super::LushtextWindow {
     /// (by path lookup) and untitled tabs (by draft_id).
     fn cleanup_drafts_for_editors(&self, editors: &[LushtextEditorPage]) {
         for editor in editors {
-            if let Some(ref path) = editor.file_path() {
-                self.delete_draft_for_path(path);
-            } else if let Some(draft_id) = editor.draft_id() {
+            if let Some(draft_id) = editor.draft_id() {
                 self.delete_draft_by_id(&draft_id);
+            } else if let Some(ref path) = editor.file_path() {
+                self.delete_draft_for_path(path);
             }
         }
     }

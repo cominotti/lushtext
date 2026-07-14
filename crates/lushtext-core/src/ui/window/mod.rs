@@ -11,6 +11,7 @@ mod actions;
 mod adaptive_shell;
 mod dialogs;
 mod documents;
+mod draft_ordering;
 mod drafts;
 mod encoding;
 mod focus_indexing;
@@ -44,7 +45,9 @@ pub use drafts::DraftFlushError;
 pub use documents::set_canonical_refresh_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use drafts::{
-    set_automatic_draft_limit_for_test, set_first_dirty_autosave_delay_for_test,
+    fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
+    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
+    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
     set_lazy_draft_read_delay_for_test,
 };
 #[cfg(feature = "test-utils")]

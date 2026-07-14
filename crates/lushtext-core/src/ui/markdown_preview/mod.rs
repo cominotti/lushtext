@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{PathStatus, metadata as fs_metadata, read as fs_read};
 use crate::ui::accessibility;
+use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 use gtk_lush_tasks::spawn_blocking_then;
 
@@ -846,6 +847,18 @@ impl TableCellMarkupBuilder {
 }
 
 impl LushtextMarkdownPreview {
+    /// Replace the app-local note-source capture owned by this preview.
+    pub(crate) fn replace_source_snapshot(&self, snapshot: Option<BufferSnapshotHandle>) {
+        if let Some(previous) = self.imp().source_snapshot.replace(snapshot) {
+            previous.dispose();
+        }
+    }
+
+    /// Release the completed note-source capture without touching its callback.
+    pub(crate) fn clear_source_snapshot(&self) {
+        self.imp().source_snapshot.take();
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Object::builder().build()
