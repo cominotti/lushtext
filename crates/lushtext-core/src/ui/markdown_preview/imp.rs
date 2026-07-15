@@ -281,6 +281,16 @@ pub struct LushtextMarkdownPreview {
         RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// Replaceable latest request retained while the active planner disconnects.
     pub(super) queued_plan: RefCell<Option<super::PendingMarkdownPlan>>,
+    /// Latest render or projection work deferred by detached-generation pressure.
+    pub(super) deferred_work: RefCell<Option<super::PendingMarkdownWork>>,
+    /// Atomic mirror used by workers to destroy stale plans before GTK delivery.
+    pub(super) render_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Count of plan, source, or batch-tail payloads destroyed away from GTK.
+    pub(super) plain_retirement_jobs: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Plain payloads queued or active on the bounded worker facility.
+    pub(super) plain_retirement_pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Largest queued/active plain-payload retirement count observed.
+    pub(super) plain_retirement_pending_high_water: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Number of bounded projection turns used by the current generation.
     #[cfg(feature = "test-utils")]
     pub(super) projection_dispatch_count: Cell<u64>,
@@ -299,6 +309,12 @@ pub struct LushtextMarkdownPreview {
     pub(super) retirement: RefCell<Option<super::MarkdownRetirementSession>>,
     /// Whether the one retirement idle source is armed.
     pub(super) retirement_armed: Cell<bool>,
+    /// Largest ordinary detached-generation backlog observed.
+    #[cfg(feature = "test-utils")]
+    pub(super) retirement_generations_high_water: Cell<usize>,
+    /// Whether latest-work backpressure was observed during the current widget lifetime.
+    #[cfg(feature = "test-utils")]
+    pub(super) deferred_work_high_water: Cell<usize>,
     /// Largest detached characters and object references retired in one turn.
     #[cfg(feature = "test-utils")]
     pub(super) retirement_chars_high_water: Cell<usize>,
@@ -388,8 +404,17 @@ impl ObjectImpl for LushtextMarkdownPreview {
         if let Some(cancel) = self.planning_cancel_token.take() {
             cancel.store(true, std::sync::atomic::Ordering::Release);
         }
-        self.queued_plan.take();
-        self.render_session.borrow_mut().cancel();
+        if let Some(retired) = self.queued_plan.take() {
+            self.obj()
+                .retire_markdown_plain_data(super::RetiredMarkdownPlainData::PlanRequest(retired));
+        }
+        if let Some(retired) = self.deferred_work.take() {
+            self.obj()
+                .retire_markdown_plain_data(super::RetiredMarkdownPlainData::Work(retired));
+        }
+        let generation = self.render_session.borrow_mut().cancel();
+        self.render_generation
+            .store(generation, std::sync::atomic::Ordering::Release);
         if let Some(snapshot) = self.source_snapshot.take() {
             snapshot.dispose();
         }

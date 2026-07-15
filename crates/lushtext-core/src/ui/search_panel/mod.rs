@@ -19,8 +19,8 @@ mod runtime;
 
 #[cfg(feature = "test-utils")]
 pub use replace::{
-    set_replace_preview_budget_for_test, set_replace_preview_delay_for_test,
-    set_undo_backup_disk_delay_for_test,
+    set_preview_selection_delay_for_test, set_replace_preview_budget_for_test,
+    set_replace_preview_delay_for_test, set_undo_backup_disk_delay_for_test,
 };
 #[cfg(feature = "test-utils")]
 pub use runtime::set_search_worker_delay_for_test;
@@ -116,10 +116,6 @@ impl LushtextSearchPanel {
     pub fn close(&self) {
         self.cancel_active_search();
         self.clear_results(false, false);
-
-        // Replace All journal files are intentionally bounded to the active
-        // panel lifetime so a later session cannot inherit stale rollback state.
-        self.clear_undo_backup();
         self.refresh_accessibility_state();
     }
 
@@ -156,22 +152,27 @@ impl LushtextSearchPanel {
     /// only apply rows that were generated and checked by the current preview.
     pub fn activate_confirm_replacements(&self) {
         let imp = self.imp();
-        if !imp.preview.preview_mode.get() {
+        if imp.preview.replace_transaction_pending.get() || !imp.preview.preview_mode.get() {
             return;
         }
-        let outcome = imp.preview.preview_outcome.take();
-        let checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
-        self.exit_preview_mode();
-        let selected = outcome.map_or_else(Vec::new, |outcome| {
-            outcome
-                .replacements
-                .into_iter()
-                .filter(|replacement| checked.contains(&replacement.match_id))
-                .collect()
-        });
-        if let Some(ref callback) = *imp.callbacks.replace_callback.borrow() {
-            callback(selected);
+        let Some(outcome) = imp.preview.preview_outcome.take() else {
+            return;
+        };
+        if self.begin_replace_transaction().is_none() {
+            imp.preview.preview_outcome.replace(Some(outcome));
+            return;
         }
+        let checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
+        let expected_query_spec = self.current_query_spec();
+        let generation = self.advance_preview_generation();
+        imp.preview.preview_mode.set(false);
+        imp.preview.preview_pending.set(true);
+        imp.replace_all_button.set_label("Preparing Selection…");
+        imp.replace_all_button.set_sensitive(false);
+        self.restore_search_summary();
+        self.refresh_results_display();
+        self.refresh_accessibility_state();
+        self.spawn_preview_selection(generation, expected_query_spec, outcome, checked);
     }
 
     /// Trigger the visible Undo Replacements affordance through the normal callback.
@@ -181,6 +182,9 @@ impl LushtextSearchPanel {
     /// activation path for action-driven smoke tests.
     pub fn activate_undo_replacements(&self) {
         let imp = self.imp();
+        if imp.preview.replace_transaction_pending.get() {
+            return;
+        }
         if let Some(backup) = imp.preview.undo_backup.borrow().clone() {
             self.hide_undo_button();
             if let Some(ref callback) = *imp.callbacks.undo_callback.borrow() {
@@ -262,10 +266,18 @@ impl LushtextSearchPanel {
         self.imp().preview.preview_mode.get()
     }
 
-    /// Return whether replacement preview generation is still running.
+    /// Return whether replacement preview generation, selection, or retirement is pending.
     #[must_use]
     pub fn replace_preview_pending(&self) -> bool {
-        self.imp().preview.preview_pending.get()
+        let preview = &self.imp().preview;
+        preview.preview_pending.get()
+            || preview.replace_transaction_pending.get()
+            || preview.preview_worker_running.get()
+            || preview.queued_preview_request.borrow().is_some()
+            || preview
+                .preview_retirement_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
     }
 
     /// Return the number of replacement preview rows currently held in memory.
@@ -449,6 +461,7 @@ impl LushtextSearchPanel {
         let imp = self.imp();
         let searching = imp.runtime.searching.get();
         let preview_pending = imp.preview.preview_pending.get();
+        let replace_transaction_pending = imp.preview.replace_transaction_pending.get();
         let count_text = imp.count_label.text();
         let count_value = if count_text.is_empty() {
             "No workspace search results".to_string()
@@ -457,8 +470,14 @@ impl LushtextSearchPanel {
         };
 
         accessibility::set_busy(&*imp.search_entry, searching);
-        accessibility::set_busy(&*imp.results_list, searching || preview_pending);
-        accessibility::set_busy(&*imp.replace_all_button, preview_pending);
+        accessibility::set_busy(
+            &*imp.results_list,
+            searching || preview_pending || replace_transaction_pending,
+        );
+        accessibility::set_busy(
+            &*imp.replace_all_button,
+            preview_pending || replace_transaction_pending,
+        );
         accessibility::set_invalid(&*imp.search_entry, imp.error_label.is_visible());
         accessibility::set_hidden(
             &*imp.results_list,
@@ -481,7 +500,10 @@ impl LushtextSearchPanel {
             &*imp.replace_all_button,
             !imp.replace_all_button.is_sensitive(),
         );
-        accessibility::set_disabled(&*imp.undo_button, !self.has_undo_backup());
+        accessibility::set_disabled(
+            &*imp.undo_button,
+            !imp.undo_button.is_sensitive() || !self.has_undo_backup(),
+        );
         accessibility::set_hidden(&*imp.undo_button, !imp.undo_button.is_visible());
         accessibility::set_hidden(&*imp.save_button, !imp.save_button.is_visible());
 

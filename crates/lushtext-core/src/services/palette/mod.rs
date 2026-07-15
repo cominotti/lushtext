@@ -28,7 +28,7 @@ pub use grouped::{GroupedSearchInput, grouped_search};
 pub use index::{
     FileIndex, FileIndexBuildCoordinator, FileIndexBuildCoordinatorSnapshot, FileIndexBuildMetrics,
     FileIndexBuildOutcome, FileIndexBuildRequest, FileIndexBuildStart, FileIndexTruncationReason,
-    MAX_INDEXED_FILES,
+    MAX_INDEXED_DIRECTORIES, MAX_INDEXED_FILES,
 };
 pub use notes::{
     MAX_PALETTE_NOTE_ENTRIES, MAX_PALETTE_NOTE_TEXT_BYTES, NoteSourceLimits, NoteSourceMetrics,

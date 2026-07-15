@@ -10,7 +10,8 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::model::content_search::{ReplaceResult, Replacement};
 use crate::services::{
@@ -61,6 +62,32 @@ impl ReplaceUndoEntry {
 
 /// In-memory Replace All undo backup keyed by absolute file path.
 pub type ReplaceUndoBackup = HashMap<PathBuf, ReplaceUndoEntry>;
+
+/// GTK-free freshness token for one serialized Replace All journal transaction.
+#[derive(Clone)]
+pub(crate) struct ReplaceJournalFreshness {
+    generation: Arc<AtomicU32>,
+    expected: u32,
+}
+
+impl ReplaceJournalFreshness {
+    pub(crate) fn new(generation: Arc<AtomicU32>, expected: u32) -> Self {
+        Self {
+            generation,
+            expected,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn expected(&self) -> u32 {
+        self.expected
+    }
+
+    #[must_use]
+    fn is_current(&self) -> bool {
+        self.generation.load(Ordering::Acquire) == self.expected
+    }
+}
 
 /// Result of applying Replace All plus the undo payload needed by the caller.
 #[derive(Debug)]
@@ -134,9 +161,44 @@ pub fn apply_replacements(
     cancel: &AtomicBool,
     journal_data_dir: Option<&Path>,
 ) -> anyhow::Result<ApplyReplacementsOutcome> {
+    apply_replacements_inner(replacements, skip_paths, cancel, journal_data_dir, None).and_then(
+        |outcome| outcome.ok_or_else(|| anyhow::anyhow!("unguarded Replace All became stale")),
+    )
+}
+
+/// Apply only if the UI reservation is still current after acquiring the journal lock.
+pub(crate) fn apply_replacements_if_current(
+    replacements: &[Replacement],
+    skip_paths: &HashSet<PathBuf>,
+    cancel: &AtomicBool,
+    journal_data_dir: &Path,
+    freshness: &ReplaceJournalFreshness,
+) -> anyhow::Result<Option<ApplyReplacementsOutcome>> {
+    apply_replacements_inner(
+        replacements,
+        skip_paths,
+        cancel,
+        Some(journal_data_dir),
+        Some(freshness),
+    )
+}
+
+fn apply_replacements_inner(
+    replacements: &[Replacement],
+    skip_paths: &HashSet<PathBuf>,
+    cancel: &AtomicBool,
+    journal_data_dir: Option<&Path>,
+    freshness: Option<&ReplaceJournalFreshness>,
+) -> anyhow::Result<Option<ApplyReplacementsOutcome>> {
     let _journal_guard = journal_data_dir
         .map(|_| search_backup::acquire_journal_guard())
         .transpose()?;
+    // The journal lock serializes this decision with startup recovery and all
+    // journal commits. A stale UI generation must exit before preparing a new
+    // journal or mutating any target file.
+    if freshness.is_some_and(|freshness| !freshness.is_current()) {
+        return Ok(None);
+    }
     let mut by_file: BTreeMap<PathBuf, Vec<&Replacement>> = BTreeMap::new();
     for r in replacements {
         by_file.entry(r.path.clone()).or_default().push(r);
@@ -353,10 +415,10 @@ pub fn apply_replacements(
         skipped_paths,
         errors,
     };
-    Ok(ApplyReplacementsOutcome {
+    Ok(Some(ApplyReplacementsOutcome {
         result,
         undo_backup: backup,
-    })
+    }))
 }
 
 fn assert_active_journal_before_write_for_test(journal_data_dir: Option<&Path>, path: &Path) {
@@ -816,6 +878,43 @@ mod tests {
         let persisted =
             search_backup::load(journal_dir.path()).expect("expected operation to succeed");
         assert_eq!(persisted, backup);
+    }
+
+    #[test]
+    fn stale_reserved_apply_cannot_overwrite_newer_committed_journal_or_file() {
+        let dir = tempdir().expect("replace target tempdir");
+        let journal_dir = tempdir().expect("replace journal tempdir");
+        let file = dir.path().join("test.rs");
+        fixture::write_text(&file, "needle\n");
+        let replacements = vec![make_replacement(&file, 1, "needle", "stale", 0..6)];
+
+        let newer_path = dir.path().join("newer.rs");
+        let mut newer_backup = ReplaceUndoBackup::new();
+        newer_backup.insert(
+            newer_path,
+            ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec()),
+        );
+        search_backup::save(journal_dir.path(), &newer_backup)
+            .expect("commit newer replacement journal");
+
+        let generation = Arc::new(AtomicU32::new(2));
+        let stale = ReplaceJournalFreshness::new(generation, 1);
+        let cancel = AtomicBool::new(false);
+        let outcome = apply_replacements_if_current(
+            &replacements,
+            &HashSet::new(),
+            &cancel,
+            journal_dir.path(),
+            &stale,
+        )
+        .expect("stale apply freshness check");
+
+        assert!(outcome.is_none());
+        assert_eq!(fixture::read_text(&file), "needle\n");
+        assert_eq!(
+            search_backup::load(journal_dir.path()).expect("load newer journal"),
+            newer_backup
+        );
     }
 
     #[test]

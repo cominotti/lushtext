@@ -616,6 +616,94 @@ fn file_index_symlink_cycle_does_not_duplicate_results() {
 #[test]
 fn max_indexed_files_constant_remains_100k() {
     assert_eq!(super::index::MAX_INDEXED_FILES, 100_000);
+    assert_eq!(super::index::MAX_INDEXED_DIRECTORIES, 100_000);
+}
+
+#[test]
+fn file_index_directory_limit_is_independent_from_file_limit() {
+    let dir = TempDir::new().expect("temp directory");
+    for index in 0..8 {
+        fixture::create_dir(&dir.path().join(format!("empty-{index:02}")));
+    }
+    fixture::write_text(&dir.path().join("root.rs"), "");
+    let cancellation = PaletteSearchCancellation::default();
+
+    let FileIndexBuildOutcome::Complete { index, metrics } =
+        FileIndex::rebuild_cancellable_with_limits_for_test(
+            &[dir.path().to_path_buf()],
+            64,
+            4,
+            &cancellation,
+        )
+    else {
+        panic!("fresh index build must complete");
+    };
+
+    assert!(index.len() < 64);
+    assert_eq!(metrics.retained_files, index.len());
+    assert_eq!(metrics.scanned_directories, 4);
+    assert_eq!(metrics.peak_retained_directories, 4);
+    assert_eq!(
+        metrics.truncation,
+        Some(FileIndexTruncationReason::DirectoryRetentionLimit)
+    );
+}
+
+#[test]
+fn file_index_directory_limit_stops_before_scanning_another_batch() {
+    let dir = TempDir::new().expect("temp directory");
+    for index in 0..32 {
+        let child = dir.path().join(format!("branch-{index:02}"));
+        fixture::create_dir(&child);
+        fixture::create_dir(&child.join("nested"));
+    }
+    let cancellation = PaletteSearchCancellation::default();
+
+    let FileIndexBuildOutcome::Complete { metrics, .. } =
+        FileIndex::rebuild_cancellable_with_limits_for_test(
+            &[dir.path().to_path_buf()],
+            128,
+            5,
+            &cancellation,
+        )
+    else {
+        panic!("fresh index build must complete");
+    };
+
+    assert_eq!(metrics.scanned_directories, 5);
+    assert_eq!(metrics.peak_retained_directories, 5);
+    assert_eq!(
+        metrics.truncation,
+        Some(FileIndexTruncationReason::DirectoryRetentionLimit)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn file_index_directory_limit_counts_canonical_alias_once() {
+    let dir = TempDir::new().expect("temp directory");
+    let workspace = dir.path().join("workspace");
+    fixture::create_dir(&workspace);
+    fixture::write_text(&workspace.join("file.rs"), "");
+    let alias = dir.path().join("alias");
+    fixture::symlink(&workspace, &alias);
+    let cancellation = PaletteSearchCancellation::default();
+
+    let FileIndexBuildOutcome::Complete { index, metrics } =
+        FileIndex::rebuild_cancellable_with_limits_for_test(
+            &[workspace, alias],
+            8,
+            1,
+            &cancellation,
+        )
+    else {
+        panic!("fresh index build must complete");
+    };
+
+    assert_eq!(index.len(), 1);
+    assert_eq!(metrics.scanned_directories, 1);
+    assert_eq!(metrics.peak_retained_directories, 1);
+    assert_eq!(metrics.truncation, None);
 }
 
 #[test]
@@ -634,12 +722,47 @@ fn file_index_flat_directory_retains_only_the_remaining_capacity() {
 
     assert_eq!(index.len(), 8);
     assert_eq!(metrics.retained_files, 8);
+    assert_eq!(metrics.peak_retained_directories, 1);
     assert_eq!(metrics.examined_directory_entries, 64);
     assert!(metrics.peak_retained_directory_entries <= 8);
     assert_eq!(
         metrics.truncation,
         Some(FileIndexTruncationReason::FileLimit)
     );
+}
+
+#[test]
+fn file_index_deep_wide_traversal_accounts_for_the_global_pending_worklist() {
+    let dir = TempDir::new().expect("temp directory");
+    let mut level = dir.path().to_path_buf();
+    for depth in 0..4 {
+        for sibling in 0..7 {
+            fixture::create_dir(&level.join(format!("branch-{depth}-{sibling}")));
+        }
+        level = level.join(format!("zz-chain-{depth}"));
+        fixture::create_dir(&level);
+    }
+    let cancellation = PaletteSearchCancellation::default();
+    let file_limit = 8;
+    let directory_limit = 32;
+
+    let FileIndexBuildOutcome::Complete { metrics, .. } =
+        FileIndex::rebuild_cancellable_with_limits_for_test(
+            &[dir.path().to_path_buf()],
+            file_limit,
+            directory_limit,
+            &cancellation,
+        )
+    else {
+        panic!("fresh index build must complete");
+    };
+
+    assert!(metrics.peak_retained_directory_entries > file_limit);
+    assert!(
+        metrics.peak_retained_directory_entries <= file_limit + directory_limit,
+        "one scan batch plus the global pending worklist must bound live traversal entries"
+    );
+    assert!(metrics.peak_retained_directories <= directory_limit);
 }
 
 #[test]

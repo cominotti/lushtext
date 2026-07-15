@@ -22,7 +22,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use std::time::Duration;
 
 /// Callback type for file-open events (path, line_number).
@@ -153,6 +153,10 @@ pub struct SearchPreviewState {
     pub undo_backup: RefCell<Option<Arc<ReplaceUndoBackup>>>,
     /// Generation counter invalidating stale backup loads and deletes.
     pub undo_backup_generation: Arc<AtomicU32>,
+    /// Whether one Replace All apply or undo transaction owns journal mutation.
+    pub replace_transaction_pending: Cell<bool>,
+    /// Reserved generation awaiting handoff from preview selection to file apply.
+    pub replace_transaction_generation: Cell<Option<u32>>,
     /// Generation counter invalidating stale async preview generation results.
     pub preview_generation: Cell<u32>,
     /// Whether pure replacement preview construction is currently running.
@@ -167,6 +171,12 @@ pub struct SearchPreviewState {
     pub preview_outcome: RefCell<Option<ReplacePreviewOutcome>>,
     /// Stable identities of generated preview rows the user chose to apply.
     pub checked_match_ids: RefCell<HashSet<SearchMatchId>>,
+    /// Number of document-sized preview outcomes handed to worker retirement.
+    pub preview_retirement_jobs: Cell<u64>,
+    /// Superseded preview payloads still awaiting final off-main destruction.
+    pub preview_retirement_pending: Arc<AtomicUsize>,
+    /// Number of checked-row partitions executed on the worker lane.
+    pub preview_selection_jobs: Cell<u64>,
 }
 
 /// Match-navigation state used by F4 / Shift+F4.
@@ -432,6 +442,11 @@ impl ObjectImpl for LushtextSearchPanel {
         // the window closes, instead of running until the walker finishes.
         if let Some(cancel) = self.runtime.cancel_token.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(retired) = self.preview.undo_backup.take() {
+            // The durable journal survives app close; only its potentially large
+            // in-memory projection is released, and its final drop stays off GTK.
+            crate::ui::plain_disposal::spawn(move || drop(retired));
         }
         // Unparent the programmatically-parented popover to avoid leak warnings.
         self.history_popover.unparent();

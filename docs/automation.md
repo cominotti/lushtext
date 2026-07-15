@@ -80,6 +80,12 @@ generations stop blocking readiness once their bounded completion releases
 active ownership. A watcher generation that ends in a reported startup or
 disconnect failure is settled as unavailable rather than remaining a
 permanently pending lifecycle operation.
+The compatibility `preview-animation` blocker remains pending through the
+current Markdown planner/projection/image generation, one deferred latest
+render, off-main plain-payload retirement, bounded detached GTK retirement,
+layout switching, and embedded-widget repair. Replace Preview readiness likewise
+includes worker-side checked-identity selection and retirement of rejected or
+stale plain payloads before the generation is terminal.
 Workspace-search snapshots expose only whether replacement text is present;
 they never serialize the replacement template or expanded replacement content.
 Screenshot scenario helpers should use
@@ -465,8 +471,8 @@ If `WaitForReady` returns `ok=false`, read its status and detail string. If
 `WaitForIdle` returns `false`, read the detail string and the snapshot's
 `idle_blocker`. Common blockers include app startup, file loading, save work,
 draft persistence or recovery resolution, workspace persistence, workspace filter animation,
-workspace search or detached-result retirement, Markdown planning/projection/image work or
-detached-render retirement,
+workspace search or detached-result retirement, Markdown planning/projection/image work,
+deferred Markdown work, plain-payload worker retirement, or detached-render retirement,
 preview layout/code-block repair, editor search indexing, session
 restore, command-palette index debounce, Replace All preview generation, and
 close-safety work.

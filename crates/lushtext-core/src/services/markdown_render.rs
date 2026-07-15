@@ -274,6 +274,20 @@ pub fn plan_markdown(markdown: &str) -> MarkdownRenderPlan {
     plan_markdown_inner(markdown, None).expect("uncancelled Markdown planning cannot cancel")
 }
 
+/// Build the compact terminal used when a deferred request already knows its
+/// source exceeds the automatic preview budget.
+#[must_use]
+pub fn source_limited_markdown_plan(source_bytes: usize) -> MarkdownRenderPlan {
+    MarkdownRenderPlan {
+        batches: Vec::new(),
+        metrics: MarkdownPlanMetrics {
+            source_bytes,
+            ..MarkdownPlanMetrics::default()
+        },
+        limit: Some(MarkdownPlanLimit::SourceBytes),
+    }
+}
+
 /// Parse Markdown with bounded cancellation checkpoints for single-flight workers.
 #[must_use]
 pub fn plan_markdown_cancellable(
@@ -293,11 +307,7 @@ fn plan_markdown_inner(markdown: &str, cancel: Option<&AtomicBool>) -> Option<Ma
         ..MarkdownPlanMetrics::default()
     };
     if source_bytes > MAX_MARKDOWN_SOURCE_BYTES {
-        return Some(MarkdownRenderPlan {
-            batches: Vec::new(),
-            metrics,
-            limit: Some(MarkdownPlanLimit::SourceBytes),
-        });
+        return Some(source_limited_markdown_plan(source_bytes));
     }
 
     let mut batches = Vec::new();

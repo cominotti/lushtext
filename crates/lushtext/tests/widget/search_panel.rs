@@ -19,9 +19,9 @@ use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
     LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchProgressUpdate,
-    apply_search_result_row_accessibility_for_test, set_replace_preview_delay_for_test,
-    set_replace_preview_budget_for_test, set_search_worker_delay_for_test,
-    set_undo_backup_disk_delay_for_test,
+    apply_search_result_row_accessibility_for_test, set_preview_selection_delay_for_test,
+    set_replace_preview_budget_for_test, set_replace_preview_delay_for_test,
+    set_search_worker_delay_for_test, set_undo_backup_disk_delay_for_test,
 };
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
@@ -177,6 +177,7 @@ impl Drop for SearchPanelDelayReset {
     fn drop(&mut self) {
         set_undo_backup_disk_delay_for_test(0);
         set_replace_preview_delay_for_test(0);
+        set_preview_selection_delay_for_test(0);
         set_replace_preview_budget_for_test(0, 0);
         set_search_worker_delay_for_test(0);
     }
@@ -1181,6 +1182,8 @@ fn test_exit_preview_mode_clears_state() {
     assert!(!panel.is_preview_mode());
     assert!(panel.imp().preview.preview_outcome.borrow().is_none());
     assert!(panel.imp().preview.checked_match_ids.borrow().is_empty());
+    wait_until(Duration::from_secs(10), || !panel.replace_preview_pending());
+    assert_eq!(panel.preview_retirement_pending_for_test(), 0);
 }
 
 #[test]
@@ -1284,6 +1287,9 @@ fn test_superseding_preview_requests_coalesce_to_latest_result() {
         .expect("latest preview row");
     assert_eq!(replacement.replacement.as_ref(), "latest");
     assert!(!panel.imp().preview.preview_worker_running.get());
+    assert!(panel.preview_worker_counters_for_test().0 >= 1);
+    assert_eq!(panel.preview_retirement_pending_for_test(), 0);
+    assert!(!panel.replace_preview_pending());
 }
 
 #[test]
@@ -1395,9 +1401,15 @@ fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows
         .borrow_mut()
         .remove(&SearchMatchId::from_index(1));
     panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().preview.preview_pending.get()
+            && !panel.imp().preview.preview_worker_running.get()
+            && confirmed.borrow().len() == 1
+    });
     let confirmed = confirmed.borrow();
     assert_eq!(confirmed.len(), 1);
     assert_eq!(confirmed[0].match_id, SearchMatchId::from_index(0));
+    assert_eq!(panel.preview_worker_counters_for_test().1, 1);
 }
 
 #[test]
@@ -1444,9 +1456,114 @@ fn test_invalid_preview_rows_report_private_free_reason_counts_and_never_confirm
     assert!(!summary.contains(REPLACEMENT_SENTINEL));
 
     panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().preview.preview_pending.get()
+            && !panel.imp().preview.preview_worker_running.get()
+            && confirmed.borrow().len() == 1
+    });
     let confirmed = confirmed.borrow();
     assert_eq!(confirmed.len(), 1);
     assert_eq!(confirmed[0].match_id, SearchMatchId::from_index(0));
+}
+
+#[test]
+fn test_all_unchecked_preview_rows_retire_without_apply() {
+    ensure_gtk_init();
+    let panel = panel_with_one_search_match();
+    let confirmed = Rc::new(RefCell::new(Vec::<Replacement>::new()));
+    let captured = Rc::clone(&confirmed);
+    panel.connect_replace_all(move |replacements| {
+        captured.replace(replacements);
+    });
+    panel.enter_preview_mode("goodbye");
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    panel.imp().preview.checked_match_ids.borrow_mut().clear();
+
+    panel.activate_confirm_replacements();
+
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().preview.preview_pending.get()
+            && !panel.imp().preview.preview_worker_running.get()
+    });
+    assert!(confirmed.borrow().is_empty());
+    let (retirement_jobs, selection_jobs, running, queued) =
+        panel.preview_worker_counters_for_test();
+    assert_eq!(selection_jobs, 1);
+    assert_eq!(retirement_jobs, 0);
+    assert!(!running);
+    assert_eq!(queued, 0);
+}
+
+#[test]
+fn test_confirmation_selection_rejects_stale_generation_off_main() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    let panel = panel_with_one_search_match();
+    let confirmed = Rc::new(RefCell::new(Vec::<Replacement>::new()));
+    let captured = Rc::clone(&confirmed);
+    panel.connect_replace_all(move |replacements| {
+        captured.replace(replacements);
+    });
+    panel.set_persisted_undo_backup(sample_replace_backup("/prior-undo.rs"));
+    panel.show_undo_button();
+    let undo_calls = Rc::new(RefCell::new(0u32));
+    let captured_undo_calls = Rc::clone(&undo_calls);
+    panel.connect_undo_all(move |_| {
+        *captured_undo_calls.borrow_mut() += 1;
+    });
+    panel.enter_preview_mode("goodbye");
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    set_preview_selection_delay_for_test(250);
+
+    panel.activate_confirm_replacements();
+    assert!(panel.imp().preview.preview_pending.get());
+    assert!(!panel.imp().undo_button.is_sensitive());
+    panel.activate_undo_replacements();
+    assert_eq!(*undo_calls.borrow(), 0);
+    assert!(panel.has_undo_backup());
+    panel.imp().search_entry.set_text("newer query");
+    flush_events();
+
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().preview.preview_worker_running.get()
+    });
+    assert!(confirmed.borrow().is_empty());
+    assert!(!panel.is_preview_mode());
+    assert!(!panel.imp().preview.preview_pending.get());
+    let (retirement_jobs, selection_jobs, running, queued) =
+        panel.preview_worker_counters_for_test();
+    assert_eq!(selection_jobs, 1);
+    assert!(retirement_jobs >= 1);
+    assert!(!running);
+    assert_eq!(queued, 0);
+    assert!(panel.imp().undo_button.is_sensitive());
+    panel.activate_undo_replacements();
+    assert_eq!(*undo_calls.borrow(), 1);
+}
+
+#[test]
+fn test_entering_new_preview_retires_visible_outcome_before_latest_generation() {
+    ensure_gtk_init();
+    let panel = panel_with_one_search_match();
+    panel.enter_preview_mode("first");
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+
+    panel.enter_preview_mode("latest");
+
+    wait_until(Duration::from_secs(10), || {
+        panel.is_preview_mode() && !panel.imp().preview.preview_worker_running.get()
+    });
+    let outcome = panel.imp().preview.preview_outcome.borrow();
+    assert_eq!(
+        outcome
+            .as_ref()
+            .and_then(|outcome| outcome.replacements.first())
+            .expect("latest preview row")
+            .replacement
+            .as_ref(),
+        "latest"
+    );
+    assert!(panel.preview_worker_counters_for_test().0 >= 1);
 }
 
 #[test]
@@ -1604,7 +1721,7 @@ fn test_search_panel_restores_active_persisted_undo_backup_on_construction() {
 }
 
 #[test]
-fn test_search_panel_close_clears_undo_backup() {
+fn test_search_panel_close_preserves_durable_undo_backup() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let data_dir = json_store::data_dir();
@@ -1619,12 +1736,12 @@ fn test_search_panel_close_clears_undo_backup() {
 
     panel.close();
 
-    assert!(panel.imp().preview.undo_backup.borrow().is_none());
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir)
-            .expect("expected operation to succeed")
-            .is_empty()
-    });
+    assert_eq!(panel.imp().preview.undo_backup.borrow().as_deref(), Some(&backup));
+    assert!(panel.imp().undo_button.property::<bool>("visible"));
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
 
     let _ = search_backup::delete(&data_dir);
 }
@@ -1688,7 +1805,7 @@ fn test_clear_undo_backup_updates_ui_before_delayed_disk_delete() {
     });
 
     set_undo_backup_disk_delay_for_test(250);
-    panel.close();
+    panel.clear_undo_backup_for_test();
 
     assert!(panel.imp().preview.undo_backup.borrow().is_none());
     assert!(!panel.imp().undo_button.property::<bool>("visible"));
@@ -1715,7 +1832,7 @@ fn test_clear_after_delayed_undo_backup_save_keeps_disk_empty() {
 
     set_undo_backup_disk_delay_for_test(250);
     panel.set_undo_backup(backup);
-    panel.close();
+    panel.clear_undo_backup_for_test();
 
     assert!(panel.imp().preview.undo_backup.borrow().is_none());
     wait_until(Duration::from_secs(2), || {
@@ -1741,12 +1858,71 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
     });
 
     set_undo_backup_disk_delay_for_test(250);
-    panel.close();
+    panel.clear_undo_backup_for_test();
     panel.set_undo_backup(new_backup.clone());
 
     wait_until(Duration::from_secs(2), || {
         search_backup::load(&data_dir).expect("expected operation to succeed") == new_backup
     });
+}
+
+#[test]
+fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let data_dir = json_store::data_dir();
+    let _ = search_backup::delete(&data_dir);
+    let old_backup = sample_replace_backup("/old-committed.rs");
+    let new_backup = sample_replace_backup("/new-committed.rs");
+
+    panel.set_undo_backup(old_backup.clone());
+    wait_until(Duration::from_secs(2), || {
+        search_backup::load(&data_dir).expect("load old journal") == old_backup
+    });
+
+    set_undo_backup_disk_delay_for_test(250);
+    panel.clear_undo_backup_for_test();
+    let reserved = panel.reserve_undo_backup_generation_for_test();
+    search_backup::save(&data_dir, &new_backup).expect("simulate committed Replace All journal");
+    assert!(
+        panel.set_persisted_undo_backup_for_generation_for_test(new_backup.clone(), reserved)
+    );
+
+    flush_after_delay(Duration::from_millis(400));
+    assert_eq!(
+        search_backup::load(&data_dir).expect("load current journal"),
+        new_backup
+    );
+    assert_eq!(panel.imp().preview.undo_backup.borrow().as_deref(), Some(&new_backup));
+}
+
+#[test]
+fn test_replace_transaction_blocks_second_apply_and_prior_undo_activation() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let backup = sample_replace_backup("/prior-undo.rs");
+    panel.set_undo_backup(backup);
+    panel.show_undo_button();
+    let undo_calls = Rc::new(RefCell::new(0u32));
+    let captured_calls = Rc::clone(&undo_calls);
+    panel.connect_undo_all(move |_| {
+        *captured_calls.borrow_mut() += 1;
+    });
+
+    assert!(panel.begin_replace_transaction_for_test().is_some());
+    assert!(panel.replace_preview_pending());
+    assert!(!panel.imp().undo_button.is_sensitive());
+    assert!(panel.begin_replace_transaction_for_test().is_none());
+    panel.activate_undo_replacements();
+    assert_eq!(*undo_calls.borrow(), 0);
+    assert!(panel.has_undo_backup());
+
+    panel.finish_replace_transaction_for_test();
+    assert!(!panel.replace_preview_pending());
+    assert!(panel.imp().undo_button.is_sensitive());
+    panel.activate_undo_replacements();
+    assert_eq!(*undo_calls.borrow(), 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ pub mod editor_page;
 pub mod info_bar;
 pub mod markdown_preview;
 pub mod open_popover;
+pub(crate) mod plain_disposal;
 pub mod preferences;
 pub mod properties_panel;
 pub mod search_bar;

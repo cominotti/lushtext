@@ -201,6 +201,16 @@ fn make_flat_dir(entry_count: usize) -> TempDir {
     dir
 }
 
+/// Create a sparse directory forest so index evidence covers directory work
+/// independently from admitted file count.
+fn make_directory_only_tree(directory_count: usize) -> TempDir {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    for index in 0..directory_count {
+        fixture::create_dir(&dir.path().join(format!("empty_{index:05}")));
+    }
+    dir
+}
+
 /// Mirror bounded breadth-first sidebar model population and batching costs.
 fn populate_tree_store(entries: Vec<DirectoryEntry>, truncated: bool) -> gio::ListStore {
     // Match the production directory safety cap used by the sidebar fixture.
@@ -843,6 +853,28 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_rebuild");
     group.sample_size(20);
 
+    let directory_evidence = make_directory_only_tree(1_000);
+    let directory_outcome = FileIndex::rebuild_cancellable_with_hint(
+        &[directory_evidence.path().to_path_buf()],
+        0,
+        &palette::PaletteSearchCancellation::default(),
+    );
+    let palette::FileIndexBuildOutcome::Complete {
+        metrics: directory_metrics,
+        ..
+    } = directory_outcome
+    else {
+        panic!("fresh directory-only index evidence must complete");
+    };
+    assert!(directory_metrics.peak_retained_directories <= palette::MAX_INDEXED_DIRECTORIES);
+    assert_eq!(directory_metrics.retained_files, 0);
+    eprintln!(
+        "file-index-directory-bound-evidence fixture_directories=1000 retained_files={} peak_retained_directories={} directory_limit={}",
+        directory_metrics.retained_files,
+        directory_metrics.peak_retained_directories,
+        palette::MAX_INDEXED_DIRECTORIES,
+    );
+
     for file_count in [50, 500, 1_000, 5_000, 10_000, 100_000] {
         group.bench_function(BenchmarkId::from_parameter(file_count), |b| {
             b.iter_batched(
@@ -850,6 +882,27 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
                 |dir| {
                     let result = FileIndex::rebuild(black_box(&[dir.path().to_path_buf()]));
                     (result, dir) // keep TempDir alive past timing — drop runs after measurement
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    for directory_count in [1_000, 10_000] {
+        group.bench_function(BenchmarkId::new("directory_only", directory_count), |b| {
+            b.iter_batched(
+                || make_directory_only_tree(directory_count),
+                |dir| {
+                    let outcome = FileIndex::rebuild_cancellable_with_hint(
+                        black_box(&[dir.path().to_path_buf()]),
+                        0,
+                        &palette::PaletteSearchCancellation::default(),
+                    );
+                    let palette::FileIndexBuildOutcome::Complete { metrics, .. } = &outcome else {
+                        panic!("fresh file-index evidence must complete");
+                    };
+                    assert!(metrics.peak_retained_directories <= palette::MAX_INDEXED_DIRECTORIES);
+                    assert_eq!(metrics.retained_files, 0);
+                    (outcome, dir)
                 },
                 BatchSize::SmallInput,
             );
@@ -874,7 +927,11 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
         panic!("fresh file-index evidence must complete");
     };
     assert!(file_metrics.retained_files <= palette::MAX_INDEXED_FILES);
-    assert!(file_metrics.peak_retained_directory_entries <= palette::MAX_INDEXED_FILES);
+    assert!(file_metrics.peak_retained_directories <= palette::MAX_INDEXED_DIRECTORIES);
+    assert!(
+        file_metrics.peak_retained_directory_entries
+            <= palette::MAX_INDEXED_FILES + palette::MAX_INDEXED_DIRECTORIES
+    );
 
     let entry_bodies = (0..=palette::MAX_PALETTE_NOTE_ENTRIES)
         .map(|index| format!("note-{index:05}"))
@@ -1627,6 +1684,25 @@ fn bench_replace_preview_generation(c: &mut Criterion) {
                 black_box(checked);
             },
             BatchSize::SmallInput,
+        );
+    });
+    let checked = (0..10_000)
+        .step_by(2)
+        .map(SearchMatchId::from_index)
+        .collect::<HashSet<_>>();
+    let selected = outcome.clone().into_checked_replacements(&checked);
+    assert_eq!(selected.len(), 5_000);
+    eprintln!(
+        "replace-preview-selection-bound-evidence preview_rows={} checked_identities={} selected_rows={} gtk_payload_clones=0",
+        outcome.len(),
+        checked.len(),
+        selected.len(),
+    );
+    group.bench_function("checked_selection_10k_half", |b| {
+        b.iter_batched(
+            || (outcome.clone(), checked.clone()),
+            |(outcome, checked)| black_box(outcome.into_checked_replacements(black_box(&checked))),
+            BatchSize::LargeInput,
         );
     });
 

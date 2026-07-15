@@ -4,6 +4,7 @@
 //!
 //! Used by the search service, UI search panel, tests, and benchmarks.
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -393,6 +394,20 @@ impl ReplacePreviewOutcome {
     #[must_use]
     pub fn preview_index(&self, id: SearchMatchId) -> Option<usize> {
         self.match_to_preview.get(id.index()).copied().flatten()
+    }
+
+    /// Consume this preview and retain only replacements whose stable identities
+    /// remain checked. Callers use this on a worker because rejected rows can own
+    /// the full preview byte budget.
+    #[must_use]
+    pub fn into_checked_replacements(
+        self,
+        checked_match_ids: &HashSet<SearchMatchId>,
+    ) -> Vec<Replacement> {
+        self.replacements
+            .into_iter()
+            .filter(|replacement| checked_match_ids.contains(&replacement.match_id))
+            .collect()
     }
 }
 
@@ -852,6 +867,32 @@ mod tests {
             &ContentSearchOptions::default(),
         );
         assert!(previews.is_empty());
+    }
+
+    #[test]
+    fn preview_partition_consumes_only_checked_stable_identities() {
+        let matches = vec![
+            match_in_line("hello one", 0..5).with_id(SearchMatchId::from_index(0)),
+            match_in_line("hello two", 0..5).with_id(SearchMatchId::from_index(1)),
+            match_in_line("hello three", 0..5).with_id(SearchMatchId::from_index(2)),
+        ];
+        let outcome = generate_replacement_preview(
+            &matches,
+            "hello",
+            "goodbye",
+            &ContentSearchOptions::default(),
+        );
+        let checked = HashSet::from([SearchMatchId::from_index(0), SearchMatchId::from_index(2)]);
+
+        let selected = outcome.into_checked_replacements(&checked);
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|replacement| replacement.match_id)
+                .collect::<Vec<_>>(),
+            vec![SearchMatchId::from_index(0), SearchMatchId::from_index(2)]
+        );
     }
 
     #[test]

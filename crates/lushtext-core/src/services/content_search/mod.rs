@@ -14,4 +14,5 @@ pub use replace::{
     ApplyReplacementsOutcome, MAX_REPLACE_FILE_BYTES, MAX_REPLACE_UNDO_BYTES, ReplaceUndoBackup,
     ReplaceUndoEntry, UndoReplaceOutcome, apply_replacements, undo_replacements,
 };
+pub(crate) use replace::{ReplaceJournalFreshness, apply_replacements_if_current};
 pub use search::search;

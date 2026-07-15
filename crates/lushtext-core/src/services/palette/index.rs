@@ -26,6 +26,10 @@ const MAX_SCAN_DEPTH: u32 = 64;
 /// Maximum number of files to index. Beyond this, linear scan per query
 /// starts to exceed the palette's latency budget on one CPU core.
 pub const MAX_INDEXED_FILES: usize = 100_000;
+/// Maximum number of distinct canonical directories retained by one index build.
+/// This is independent from the file limit because sparse directory forests can
+/// otherwise consume unbounded traversal state while admitting almost no files.
+pub const MAX_INDEXED_DIRECTORIES: usize = 100_000;
 /// Directory names to skip during file-index scanning.
 pub(super) const IGNORED_INDEX_DIRS: &[&str] =
     &["node_modules", "target", "__pycache__", "venv", "vendor"];
@@ -42,7 +46,9 @@ pub enum FileIndexTruncationReason {
 pub struct FileIndexBuildMetrics {
     pub examined_directory_entries: usize,
     pub scanned_directories: usize,
+    pub peak_retained_directories: usize,
     pub retained_files: usize,
+    /// Peak scan batch plus pending directory work retained at the same time.
     pub peak_retained_directory_entries: usize,
     pub identity_failures: usize,
     pub truncation: Option<FileIndexTruncationReason>,
@@ -213,18 +219,20 @@ impl FileIndex {
         capacity_hint: usize,
         cancellation: &PaletteSearchCancellation,
     ) -> FileIndexBuildOutcome {
-        Self::rebuild_cancellable_with_limit(
+        Self::rebuild_cancellable_with_limits(
             workspace_folders,
             capacity_hint,
             MAX_INDEXED_FILES,
+            MAX_INDEXED_DIRECTORIES,
             cancellation,
         )
     }
 
-    fn rebuild_cancellable_with_limit(
+    fn rebuild_cancellable_with_limits(
         workspace_folders: &[PathBuf],
         capacity_hint: usize,
         file_limit: usize,
+        directory_limit: usize,
         cancellation: &PaletteSearchCancellation,
     ) -> FileIndexBuildOutcome {
         let mut files = Vec::with_capacity(capacity_hint.min(file_limit));
@@ -252,10 +260,11 @@ impl FileIndex {
                     canonical_files: &mut canonical_files,
                     canonical_folder: &canonical_folder,
                     file_limit,
+                    directory_limit,
                     cancellation,
                     metrics: &mut metrics,
                 };
-                collect_files_recursive(folder, &folder_arc, 0, &mut traversal)
+                collect_files_bounded(folder, &folder_arc, &mut traversal)
             };
             if !completed {
                 metrics.retained_files = files.len();
@@ -283,10 +292,27 @@ impl FileIndex {
         file_limit: usize,
         cancellation: &PaletteSearchCancellation,
     ) -> FileIndexBuildOutcome {
-        Self::rebuild_cancellable_with_limit(
+        Self::rebuild_cancellable_with_limits(
             workspace_folders,
             file_limit,
             file_limit,
+            MAX_INDEXED_DIRECTORIES,
+            cancellation,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn rebuild_cancellable_with_limits_for_test(
+        workspace_folders: &[PathBuf],
+        file_limit: usize,
+        directory_limit: usize,
+        cancellation: &PaletteSearchCancellation,
+    ) -> FileIndexBuildOutcome {
+        Self::rebuild_cancellable_with_limits(
+            workspace_folders,
+            file_limit,
+            file_limit,
+            directory_limit,
             cancellation,
         )
     }
@@ -529,68 +555,35 @@ struct FileIndexTraversal<'a> {
     canonical_files: &'a mut HashSet<PathBuf>,
     canonical_folder: &'a Path,
     file_limit: usize,
+    directory_limit: usize,
     cancellation: &'a PaletteSearchCancellation,
     metrics: &'a mut FileIndexBuildMetrics,
 }
 
-fn collect_files_recursive(
+fn collect_files_bounded(
     dir: &Path,
     workspace_folder: &Arc<PathBuf>,
-    depth: u32,
     traversal: &mut FileIndexTraversal<'_>,
 ) -> bool {
-    if traversal.cancellation.is_cancelled() {
-        return false;
-    }
-    if traversal.out.len() >= traversal.file_limit {
-        traversal.metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
-        return true;
-    }
-
-    if depth > MAX_SCAN_DEPTH {
-        tracing::warn!(
-            "Skipping deeply nested directory (depth > {MAX_SCAN_DEPTH}): {}",
-            dir.display()
-        );
-        return true;
-    }
-
-    let Ok(canonical) = fs_metadata::canonical_path(dir) else {
+    let Ok(canonical_root) = fs_metadata::canonical_path(dir) else {
         return true;
     };
-
-    if !canonical.starts_with(traversal.canonical_folder) {
+    if !canonical_root.starts_with(traversal.canonical_folder)
+        || traversal.visited_directories.contains(&canonical_root)
+    {
         return true;
     }
-
-    if !traversal.visited_directories.insert(canonical) {
-        return true;
-    }
-
-    let remaining = traversal.file_limit.saturating_sub(traversal.out.len());
-    let scan = file_tree::scan_directory_bounded_with_cancel(dir, remaining, 0, || {
-        traversal.cancellation.is_cancelled()
-    });
-    traversal.metrics.scanned_directories = traversal.metrics.scanned_directories.saturating_add(1);
-    traversal.metrics.examined_directory_entries = traversal
-        .metrics
-        .examined_directory_entries
-        .saturating_add(scan.examined_entries);
-    traversal.metrics.peak_retained_directory_entries = traversal
-        .metrics
-        .peak_retained_directory_entries
-        .max(scan.peak_retained_entries);
-    if scan.cancelled {
-        return false;
-    }
-    if scan.truncated {
+    if traversal.visited_directories.len() >= traversal.directory_limit {
         traversal
             .metrics
             .truncation
             .get_or_insert(FileIndexTruncationReason::DirectoryRetentionLimit);
+        return true;
     }
+    traversal.visited_directories.insert(canonical_root);
+    let mut pending = vec![(dir.to_path_buf(), 0u32)];
 
-    for entry in scan.entries {
+    while let Some((dir, depth)) = pending.pop() {
         if traversal.cancellation.is_cancelled() {
             return false;
         }
@@ -598,24 +591,83 @@ fn collect_files_recursive(
             traversal.metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
             return true;
         }
-        if entry.is_dir {
-            if !is_ignored_index_dir(&entry.path)
-                && !collect_files_recursive(&entry.path, workspace_folder, depth + 1, traversal)
-            {
+
+        traversal.metrics.peak_retained_directories = traversal
+            .metrics
+            .peak_retained_directories
+            .max(traversal.visited_directories.len());
+        let remaining = traversal.file_limit.saturating_sub(traversal.out.len());
+        let scan = file_tree::scan_directory_bounded_with_cancel(&dir, remaining, 0, || {
+            traversal.cancellation.is_cancelled()
+        });
+        traversal.metrics.scanned_directories =
+            traversal.metrics.scanned_directories.saturating_add(1);
+        traversal.metrics.examined_directory_entries = traversal
+            .metrics
+            .examined_directory_entries
+            .saturating_add(scan.examined_entries);
+        traversal.metrics.peak_retained_directory_entries = traversal
+            .metrics
+            .peak_retained_directory_entries
+            .max(pending.len().saturating_add(scan.peak_retained_entries));
+        if scan.cancelled {
+            return false;
+        }
+        if scan.truncated {
+            traversal
+                .metrics
+                .truncation
+                .get_or_insert(FileIndexTruncationReason::DirectoryRetentionLimit);
+        }
+
+        for entry in scan.entries {
+            if traversal.cancellation.is_cancelled() {
                 return false;
             }
-        } else {
-            let file = indexed_file_from_path(entry.path, Arc::clone(workspace_folder));
-            if matches!(file.identity, PaletteFileIdentity::Unavailable(_)) {
-                traversal.metrics.identity_failures =
-                    traversal.metrics.identity_failures.saturating_add(1);
+            if traversal.out.len() >= traversal.file_limit {
+                traversal.metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
+                return true;
             }
-            if file
-                .identity
-                .canonical_path()
-                .is_none_or(|canonical| traversal.canonical_files.insert(canonical.to_path_buf()))
-            {
-                traversal.out.push(file);
+            if entry.is_dir {
+                if is_ignored_index_dir(&entry.path) {
+                    continue;
+                }
+                let child_depth = depth.saturating_add(1);
+                if child_depth > MAX_SCAN_DEPTH {
+                    tracing::warn!(
+                        "Skipping deeply nested directory (depth > {MAX_SCAN_DEPTH}): {}",
+                        entry.path.display()
+                    );
+                    continue;
+                }
+                let Ok(canonical) = fs_metadata::canonical_path(&entry.path) else {
+                    continue;
+                };
+                if !canonical.starts_with(traversal.canonical_folder)
+                    || traversal.visited_directories.contains(&canonical)
+                {
+                    continue;
+                }
+                if traversal.visited_directories.len() >= traversal.directory_limit {
+                    traversal
+                        .metrics
+                        .truncation
+                        .get_or_insert(FileIndexTruncationReason::DirectoryRetentionLimit);
+                    continue;
+                }
+                traversal.visited_directories.insert(canonical);
+                pending.push((entry.path, child_depth));
+            } else {
+                let file = indexed_file_from_path(entry.path, Arc::clone(workspace_folder));
+                if matches!(file.identity, PaletteFileIdentity::Unavailable(_)) {
+                    traversal.metrics.identity_failures =
+                        traversal.metrics.identity_failures.saturating_add(1);
+                }
+                if file.identity.canonical_path().is_none_or(|canonical| {
+                    traversal.canonical_files.insert(canonical.to_path_buf())
+                }) {
+                    traversal.out.push(file);
+                }
             }
         }
     }

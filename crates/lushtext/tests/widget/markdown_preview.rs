@@ -1048,6 +1048,118 @@ fn test_rapid_large_markdown_renders_keep_one_planner_and_latest_request() {
     assert!(text.contains("latest paragraph 3999"));
     assert!(!text.contains("first paragraph"));
     assert!(!text.contains("second paragraph"));
+    let (_, _, _, _, plain_jobs, pending_plain_jobs, plain_high_water) =
+        preview.retirement_backlog_counters_for_test();
+    assert_eq!(
+        plain_jobs, 0,
+        "superseded queued sources should coalesce in the retained allocation"
+    );
+    assert_eq!(pending_plain_jobs, 0);
+    assert_eq!(plain_high_water, 0);
+}
+
+#[test]
+fn test_rapid_rerenders_cap_detached_generations_and_keep_latest_work() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown("first generation");
+    preview.render_markdown("second generation");
+    preview.render_markdown("third generation");
+    preview.render_markdown("latest generation");
+
+    let (detached, high_water, deferred, limit, _, _, _) =
+        preview.retirement_backlog_counters_for_test();
+    assert_eq!(detached, limit);
+    assert_eq!(high_water, limit);
+    assert_eq!(limit, 2);
+    assert_eq!(deferred, 1);
+    assert_eq!(preview.buffer_text().trim(), "third generation");
+
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+
+    assert_eq!(preview.buffer_text().trim(), "latest generation");
+    let (detached, high_water, deferred, limit, _, pending_plain_jobs, _) =
+        preview.retirement_backlog_counters_for_test();
+    assert_eq!(detached, 0);
+    assert!(high_water <= limit);
+    assert_eq!(deferred, 0);
+    assert_eq!(pending_plain_jobs, 0);
+    eprintln!(
+        "markdown-retirement-bound-evidence detached_generations={detached} detached_high_water={high_water} ordinary_limit={limit} deferred_latest={deferred} pending_plain_jobs={pending_plain_jobs}"
+    );
+}
+
+#[test]
+fn test_deferred_large_source_moves_into_background_planner_after_retirement() {
+    ensure_gtk_init();
+    let _delay_reset = MarkdownPlanDelayReset;
+    LushtextMarkdownPreview::set_markdown_plan_delay_for_test(250);
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown("first generation");
+    preview.render_markdown("second generation");
+    preview.render_markdown("third generation");
+    let latest = (0..5_000)
+        .map(|index| format!("owned deferred paragraph {index}\n\n"))
+        .collect::<String>();
+    preview.render_markdown(&latest);
+
+    assert_eq!(preview.retirement_backlog_counters_for_test().2, 1);
+    wait_until(Duration::from_secs(10), || {
+        preview.planning_counters_for_test() == (1, 0)
+    });
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+    assert!(preview.buffer_text().contains("owned deferred paragraph 4999"));
+    assert_eq!(preview.planning_counters_for_test(), (0, 0));
+}
+
+#[test]
+fn test_placeholder_close_remains_terminal_under_retirement_pressure() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("first generation");
+    preview.render_markdown("second generation");
+    preview.render_markdown("third generation");
+    assert_eq!(preview.retirement_backlog_counters_for_test().0, 2);
+
+    preview.show_placeholder("Preview closed under pressure");
+
+    assert!(!preview.is_showing_content());
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Cancelled);
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+    assert_eq!(
+        preview.placeholder_description_for_test().as_deref(),
+        Some("Preview closed under pressure")
+    );
+    let (detached, high_water, deferred, limit, _, pending_plain_jobs, _) =
+        preview.retirement_backlog_counters_for_test();
+    assert_eq!(detached, 0);
+    assert_eq!(high_water, limit + 1);
+    assert_eq!(deferred, 0);
+    assert_eq!(pending_plain_jobs, 0);
+}
+
+#[test]
+fn test_repeated_terminal_updates_reuse_the_single_escape_generation() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    preview.render_markdown("first generation");
+    preview.render_markdown("second generation");
+    preview.render_markdown("third generation");
+    assert_eq!(preview.retirement_backlog_counters_for_test().0, 2);
+
+    preview.show_render_failure("terminal one");
+    for index in 2..=8 {
+        preview.show_render_failure(&format!("terminal {index}"));
+    }
+
+    let (detached, high_water, _, limit, _, _, _) =
+        preview.retirement_backlog_counters_for_test();
+    assert_eq!(detached, limit + 1);
+    assert_eq!(high_water, limit + 1);
+    assert_eq!(preview.buffer_text(), "terminal 8");
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
 }
 
 #[test]
@@ -1120,10 +1232,11 @@ fn test_new_render_generation_rejects_stale_projection_slices() {
 
     preview.render_markdown(&old);
     preview.render_markdown("latest generation");
-    flush_after_delay(Duration::from_millis(100));
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
 
     assert_eq!(preview.buffer_text().trim(), "latest generation");
     assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert!(preview.retirement_backlog_counters_for_test().4 >= 1);
 }
 
 #[test]

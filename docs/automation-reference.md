@@ -755,7 +755,7 @@ a scenario truly needs all tracked app-owned work to settle.
 | <span id="readiness-editor-search"></span>`readiness-editor-search` | `editor-search` | The selected editor search context has not finished counting occurrences. |
 | <span id="readiness-file-load"></span>`readiness-file-load` | `file-load` | At least one editor tab is still loading file contents. |
 | <span id="readiness-minimap-refresh"></span>`readiness-minimap-refresh` | `minimap-refresh` | Minimap projection, marker, or viewport geometry is waiting for the post-layout refresh debounce. |
-| <span id="readiness-preview-animation"></span>`readiness-preview-animation` | `preview-animation` | Current Markdown planning, bounded GTK projection, image work, detached-render retirement, preview layout switching, or embedded Markdown widget repair is still settling. |
+| <span id="readiness-preview-animation"></span>`readiness-preview-animation` | `preview-animation` | Current Markdown planning, bounded GTK projection, image work, one deferred latest render, off-main plain-payload retirement, detached GTK retirement, preview layout switching, or embedded Markdown widget repair is still settling. |
 | <span id="readiness-replace-preview"></span>`readiness-replace-preview` | `replace-preview` | Replace All preview generation is still running. |
 | <span id="readiness-save"></span>`readiness-save` | `save` | At least one editor tab has a save in flight. |
 | <span id="readiness-session-restore"></span>`readiness-session-restore` | `session-restore` | Startup session/draft restoration is still active. |

@@ -7,14 +7,16 @@
 //! replace/undo behavior.
 
 use crate::model::content_search::{
-    ReplacePreviewBudget, ReplacePreviewSkipReason,
-    generate_replacement_preview_with_budget_and_cancel,
+    ReplacePreviewBudget, ReplacePreviewOutcome, ReplacePreviewSkipReason, Replacement,
+    SearchMatchId, SearchQuerySpec, generate_replacement_preview_with_budget_and_cancel,
 };
+use crate::services::content_search::ReplaceJournalFreshness;
 use crate::services::content_search::ReplaceUndoBackup;
 use crate::services::{json_store, search_backup};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
+use std::collections::HashSet;
 use std::sync::Arc;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicU64;
@@ -61,7 +63,106 @@ impl LushtextSearchPanel {
     /// Store undo backup after the replace service already wrote per-file journal entries.
     pub fn set_persisted_undo_backup(&self, backup: ReplaceUndoBackup) {
         let (_, retired) = self.set_undo_backup_in_memory(Arc::new(backup));
-        self.retire_undo_backup_off_main(retired);
+        Self::retire_undo_backup_off_main(retired);
+    }
+
+    /// Reserve the journal generation before Replace All can commit on a worker.
+    pub(crate) fn reserve_undo_backup_generation(&self) -> u32 {
+        self.imp()
+            .preview
+            .undo_backup_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+
+    /// Claim the sole UI Replace All apply/undo transaction and its journal generation.
+    pub(crate) fn begin_replace_transaction(&self) -> Option<ReplaceJournalFreshness> {
+        let imp = self.imp();
+        if imp.preview.replace_transaction_pending.replace(true) {
+            return None;
+        }
+        let generation = self.reserve_undo_backup_generation();
+        imp.preview
+            .replace_transaction_generation
+            .set(Some(generation));
+        imp.replace_all_button.set_sensitive(false);
+        imp.undo_button.set_sensitive(false);
+        self.refresh_accessibility_state();
+        Some(ReplaceJournalFreshness::new(
+            imp.preview.undo_backup_generation.clone(),
+            generation,
+        ))
+    }
+
+    /// Release the serialized transaction after its UI and journal state are published.
+    pub(crate) fn finish_replace_transaction(&self) {
+        let imp = self.imp();
+        imp.preview.replace_transaction_generation.set(None);
+        imp.preview.replace_transaction_pending.set(false);
+        imp.undo_button.set_sensitive(self.has_undo_backup());
+        self.update_replace_button_sensitivity();
+        self.refresh_accessibility_state();
+    }
+
+    /// Hand the preview selection's reservation to the durable apply workflow.
+    pub(crate) fn take_replace_transaction(&self) -> Option<ReplaceJournalFreshness> {
+        let imp = self.imp();
+        if !imp.preview.replace_transaction_pending.get() {
+            return None;
+        }
+        let generation = imp.preview.replace_transaction_generation.take()?;
+        Some(ReplaceJournalFreshness::new(
+            imp.preview.undo_backup_generation.clone(),
+            generation,
+        ))
+    }
+
+    /// Retire the prior recovery projection once a newer Replace All is committed to start.
+    pub(crate) fn supersede_prior_undo_for_replace(&self) {
+        let retired = self.imp().preview.undo_backup.replace(None);
+        self.hide_undo_button();
+        Self::retire_undo_backup_off_main(retired);
+    }
+
+    /// Install a service-persisted journal only for its pre-worker reservation.
+    pub(crate) fn set_persisted_undo_backup_for_generation(
+        &self,
+        backup: ReplaceUndoBackup,
+        generation: u32,
+    ) -> bool {
+        if self
+            .imp()
+            .preview
+            .undo_backup_generation
+            .load(Ordering::Acquire)
+            != generation
+        {
+            Self::retire_undo_backup_off_main(Some(Arc::new(backup)));
+            return false;
+        }
+        let retired = self
+            .imp()
+            .preview
+            .undo_backup
+            .replace(Some(Arc::new(backup)));
+        Self::retire_undo_backup_off_main(retired);
+        self.refresh_accessibility_state();
+        true
+    }
+
+    /// Clear an empty service result only if its reservation is still current.
+    pub(crate) fn clear_undo_backup_for_generation(&self, generation: u32) -> bool {
+        if self
+            .imp()
+            .preview
+            .undo_backup_generation
+            .load(Ordering::Acquire)
+            != generation
+        {
+            return false;
+        }
+        self.clear_undo_backup();
+        true
     }
 
     fn set_undo_backup_in_memory(
@@ -141,6 +242,44 @@ impl LushtextSearchPanel {
         self.refresh_accessibility_state();
     }
 
+    /// Clear the durable undo journal through its production generation guard.
+    #[cfg(feature = "test-utils")]
+    pub fn clear_undo_backup_for_test(&self) {
+        self.clear_undo_backup();
+    }
+
+    /// Reserve one production journal generation for ordering regressions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn reserve_undo_backup_generation_for_test(&self) -> u32 {
+        self.reserve_undo_backup_generation()
+    }
+
+    /// Install a service-persisted backup under a test reservation.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn set_persisted_undo_backup_for_generation_for_test(
+        &self,
+        backup: ReplaceUndoBackup,
+        generation: u32,
+    ) -> bool {
+        self.set_persisted_undo_backup_for_generation(backup, generation)
+    }
+
+    /// Claim the production transaction gate for widget race tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn begin_replace_transaction_for_test(&self) -> Option<u32> {
+        self.begin_replace_transaction()
+            .map(|freshness| freshness.expected())
+    }
+
+    /// Release the production transaction gate for widget race tests.
+    #[cfg(feature = "test-utils")]
+    pub fn finish_replace_transaction_for_test(&self) {
+        self.finish_replace_transaction();
+    }
+
     fn save_undo_backup_on_disk(
         &self,
         backup: Arc<ReplaceUndoBackup>,
@@ -190,14 +329,14 @@ impl LushtextSearchPanel {
         );
     }
 
-    fn retire_undo_backup_off_main(&self, retired: Option<Arc<ReplaceUndoBackup>>) {
+    fn retire_undo_backup_off_main(retired: Option<Arc<ReplaceUndoBackup>>) {
         let Some(retired) = retired else {
             return;
         };
         // The map can own the full 64 MiB undo window. Hand its final reference
         // to the blocking pool so replacing a persisted backup never releases
         // that payload on GTK.
-        spawn_blocking_then(self.clone(), move || drop(retired), |_panel, ()| {});
+        crate::ui::plain_disposal::spawn(move || drop(retired));
     }
 
     /// Whether the panel is in preview mode.
@@ -216,30 +355,40 @@ impl LushtextSearchPanel {
 
         let query_spec = self.current_query_spec();
         let generation = self.advance_preview_generation();
+        let retired_outcome = imp.preview.preview_outcome.take();
+        let retired_checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
         imp.preview.preview_pending.set(true);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_outcome.replace(None);
-        imp.preview.checked_match_ids.borrow_mut().clear();
         imp.replace_all_button.set_label("Preparing Preview…");
         imp.replace_all_button.set_sensitive(false);
         self.refresh_accessibility_state();
 
-        let request = ReplacePreviewRequest {
+        self.retire_preview_state(retired_outcome, retired_checked);
+        if imp.preview.preview_worker_running.get() {
+            if let Some(queued) = imp.preview.queued_preview_request.borrow_mut().as_mut() {
+                queued.search_matches = search_matches;
+                queued.query_spec = query_spec;
+                queued.replacement_text.clear();
+                queued.replacement_text.push_str(replacement_text);
+                queued.generation = generation;
+            } else {
+                imp.preview
+                    .queued_preview_request
+                    .replace(Some(ReplacePreviewRequest {
+                        search_matches,
+                        query_spec,
+                        replacement_text: replacement_text.to_string(),
+                        generation,
+                    }));
+            }
+            return;
+        }
+        self.spawn_preview_request(ReplacePreviewRequest {
             search_matches,
             query_spec,
             replacement_text: replacement_text.to_string(),
             generation,
-        };
-        self.enqueue_preview_request(request);
-    }
-
-    fn enqueue_preview_request(&self, request: ReplacePreviewRequest) {
-        let imp = self.imp();
-        if imp.preview.preview_worker_running.get() {
-            imp.preview.queued_preview_request.replace(Some(request));
-            return;
-        }
-        self.spawn_preview_request(request);
+        });
     }
 
     fn spawn_preview_request(&self, request: ReplacePreviewRequest) {
@@ -266,7 +415,6 @@ impl LushtextSearchPanel {
             },
             move |panel, outcome| {
                 let imp = panel.imp();
-                imp.preview.preview_worker_running.set(false);
                 imp.preview.preview_cancel_token.replace(None);
                 if imp.preview.preview_generation.get() == generation
                     && imp.preview.preview_pending.get()
@@ -289,13 +437,155 @@ impl LushtextSearchPanel {
 
                     panel.refresh_results_display();
                     panel.refresh_accessibility_state();
-                }
-
-                if let Some(queued) = imp.preview.queued_preview_request.take() {
-                    panel.spawn_preview_request(queued);
+                    panel.finish_preview_worker();
+                } else {
+                    panel.spawn_preview_plain_retirement(Some(outcome), HashSet::new(), None);
                 }
             },
         );
+    }
+
+    /// Detach accepted preview state in O(1) and release its plain payload on
+    /// the same serial worker lane used by preview generation.
+    pub(super) fn retire_preview_state(
+        &self,
+        outcome: Option<ReplacePreviewOutcome>,
+        checked_match_ids: HashSet<SearchMatchId>,
+    ) {
+        if outcome.is_none() && checked_match_ids.is_empty() {
+            return;
+        }
+        debug_assert!(!self.imp().preview.preview_worker_running.get());
+        self.imp().preview.preview_worker_running.set(true);
+        self.spawn_preview_plain_retirement(outcome, checked_match_ids, None);
+    }
+
+    fn spawn_preview_plain_retirement(
+        &self,
+        outcome: Option<ReplacePreviewOutcome>,
+        checked_match_ids: HashSet<SearchMatchId>,
+        request: Option<ReplacePreviewRequest>,
+    ) {
+        let imp = self.imp();
+        imp.preview
+            .preview_retirement_jobs
+            .set(imp.preview.preview_retirement_jobs.get().saturating_add(1));
+        let retirement_pending = imp.preview.preview_retirement_pending.clone();
+        retirement_pending.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        crate::ui::plain_disposal::spawn_then_main(
+            self.clone(),
+            move || {
+                drop((outcome, checked_match_ids, request));
+                retirement_pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            },
+            |panel| panel.finish_preview_worker(),
+        );
+    }
+
+    fn spawn_selected_preview_retirement(&self, selected: Vec<Replacement>) {
+        let imp = self.imp();
+        imp.preview
+            .preview_retirement_jobs
+            .set(imp.preview.preview_retirement_jobs.get().saturating_add(1));
+        let retirement_pending = imp.preview.preview_retirement_pending.clone();
+        retirement_pending.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        crate::ui::plain_disposal::spawn_then_main(
+            self.clone(),
+            move || {
+                drop(selected);
+                retirement_pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            },
+            |panel| panel.finish_preview_worker(),
+        );
+    }
+
+    fn finish_preview_worker(&self) {
+        let imp = self.imp();
+        if let Some(request) = imp.preview.queued_preview_request.take() {
+            if request.generation == imp.preview.preview_generation.get()
+                && imp.preview.preview_pending.get()
+            {
+                imp.preview.preview_worker_running.set(false);
+                self.spawn_preview_request(request);
+            } else {
+                self.spawn_preview_plain_retirement(None, HashSet::new(), Some(request));
+            }
+            return;
+        }
+        imp.preview.preview_worker_running.set(false);
+    }
+
+    pub(super) fn spawn_preview_selection(
+        &self,
+        generation: u32,
+        expected_query_spec: SearchQuerySpec,
+        outcome: ReplacePreviewOutcome,
+        checked_match_ids: HashSet<SearchMatchId>,
+    ) {
+        let imp = self.imp();
+        debug_assert!(!imp.preview.preview_worker_running.get());
+        imp.preview.preview_worker_running.set(true);
+        imp.preview
+            .preview_selection_jobs
+            .set(imp.preview.preview_selection_jobs.get().saturating_add(1));
+        spawn_blocking_then(
+            self.clone(),
+            move || {
+                delay_preview_selection_for_test();
+                outcome.into_checked_replacements(&checked_match_ids)
+            },
+            move |panel, selected| {
+                let imp = panel.imp();
+                if imp.preview.preview_generation.get() == generation
+                    && imp.preview.preview_pending.get()
+                    && panel.current_query_spec() == expected_query_spec
+                {
+                    imp.preview.preview_pending.set(false);
+                    imp.replace_all_button.set_label("Replace All");
+                    panel.update_replace_button_sensitivity();
+                    panel.refresh_accessibility_state();
+                    if selected.is_empty() {
+                        panel.finish_replace_transaction();
+                    } else if let Some(ref callback) = *imp.callbacks.replace_callback.borrow() {
+                        callback(selected);
+                        if imp.preview.replace_transaction_generation.get().is_some() {
+                            panel.finish_replace_transaction();
+                        }
+                    } else {
+                        panel.spawn_selected_preview_retirement(selected);
+                        panel.finish_replace_transaction();
+                        return;
+                    }
+                    panel.finish_preview_worker();
+                } else {
+                    panel.spawn_selected_preview_retirement(selected);
+                    panel.finish_replace_transaction();
+                }
+            },
+        );
+    }
+
+    /// Direct worker-route evidence for preview selection and plain-data retirement.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn preview_worker_counters_for_test(&self) -> (u64, u64, bool, usize) {
+        let imp = self.imp();
+        (
+            imp.preview.preview_retirement_jobs.get(),
+            imp.preview.preview_selection_jobs.get(),
+            imp.preview.preview_worker_running.get(),
+            usize::from(imp.preview.queued_preview_request.borrow().is_some()),
+        )
+    }
+
+    /// Direct pending-destruction evidence for Replace Preview readiness tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn preview_retirement_pending_for_test(&self) -> usize {
+        self.imp()
+            .preview
+            .preview_retirement_pending
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Exit preview mode: clear preview state and restore normal result display.
@@ -303,7 +593,6 @@ impl LushtextSearchPanel {
         let imp = self.imp();
         self.advance_preview_generation();
         imp.preview.preview_pending.set(false);
-        imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
         self.retire_preview_state(
             imp.preview.preview_outcome.take(),
@@ -319,7 +608,7 @@ impl LushtextSearchPanel {
     /// Update the "Replace All" / "Confirm Replace" button sensitivity.
     pub fn update_replace_button_sensitivity(&self) {
         let imp = self.imp();
-        if imp.preview.preview_pending.get() {
+        if imp.preview.preview_pending.get() || imp.preview.replace_transaction_pending.get() {
             imp.replace_all_button.set_sensitive(false);
         } else if imp.preview.preview_mode.get() {
             imp.replace_all_button
@@ -343,7 +632,6 @@ impl LushtextSearchPanel {
         }
         self.advance_preview_generation();
         imp.preview.preview_pending.set(false);
-        imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
         self.retire_preview_state(
             imp.preview.preview_outcome.take(),
@@ -404,7 +692,7 @@ impl LushtextSearchPanel {
         self.refresh_accessibility_state();
     }
 
-    fn restore_search_summary(&self) {
+    pub(super) fn restore_search_summary(&self) {
         let imp = self.imp();
         let total = imp.runtime.total_matches.get();
         let files = imp.runtime.total_files.get();
@@ -450,6 +738,8 @@ static UNDO_BACKUP_DISK_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
 static REPLACE_PREVIEW_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
+static PREVIEW_SELECTION_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
 static REPLACE_PREVIEW_MAX_ROWS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
 static REPLACE_PREVIEW_MAX_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -464,6 +754,12 @@ pub fn set_undo_backup_disk_delay_for_test(delay_ms: u64) {
 #[cfg(feature = "test-utils")]
 pub fn set_replace_preview_delay_for_test(delay_ms: u64) {
     REPLACE_PREVIEW_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+/// Configure an artificial checked-row partition delay for freshness tests.
+#[cfg(feature = "test-utils")]
+pub fn set_preview_selection_delay_for_test(delay_ms: u64) {
+    PREVIEW_SELECTION_DELAY_MS.store(delay_ms, Ordering::Release);
 }
 
 /// Override Replace Preview limits for state-extreme widget tests; zero restores production.
@@ -502,6 +798,16 @@ fn delay_replace_preview_for_test() {
     #[cfg(feature = "test-utils")]
     {
         let delay_ms = REPLACE_PREVIEW_DELAY_MS.load(Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+    }
+}
+
+fn delay_preview_selection_for_test() {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = PREVIEW_SELECTION_DELAY_MS.load(Ordering::Acquire);
         if delay_ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
         }

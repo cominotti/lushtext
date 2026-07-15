@@ -11,6 +11,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -509,16 +510,28 @@ impl super::LushtextWindow {
         }
 
         let saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>> = Rc::new(RefCell::new(Vec::new()));
+        let discarded_fingerprints = Rc::new(
+            discarded_editors
+                .iter()
+                .map(close_safety_editor_fingerprint_for)
+                .collect(),
+        );
         let discarded_editors = Rc::new(discarded_editors);
         let on_done: Rc<dyn Fn(bool)> = Rc::new(on_done);
+        let was_sensitive = self.is_sensitive();
+        // The user's checked/unchecked choices are consent for the exact editor
+        // generations visible at confirmation, not for edits made during a slow save.
+        self.set_sensitive(false);
         let close_session_identity = self.begin_close_save_session();
-        self.drive_close_save_pipeline(
-            close_session_identity,
-            VecDeque::from(selected_file_backed),
+        self.drive_close_save_pipeline(CloseSavePipeline {
+            identity: close_session_identity,
+            remaining: VecDeque::from(selected_file_backed),
             saved_editors,
             discarded_editors,
+            discarded_fingerprints,
+            was_sensitive,
             on_done,
-        );
+        });
     }
 
     fn begin_close_save_session(&self) -> u64 {
@@ -539,47 +552,54 @@ impl super::LushtextWindow {
         }
     }
 
-    fn drive_close_save_pipeline(
-        &self,
-        close_session_identity: u64,
-        mut remaining: VecDeque<LushtextEditorPage>,
-        saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>>,
-        discarded_editors: Rc<Vec<LushtextEditorPage>>,
-        on_done: Rc<dyn Fn(bool)>,
-    ) {
-        if !self.close_save_session_is_current(close_session_identity) {
-            on_done(false);
+    fn drive_close_save_pipeline(&self, mut pipeline: CloseSavePipeline) {
+        if !self.close_save_session_is_current(pipeline.identity) {
+            (pipeline.on_done)(false);
             return;
         }
 
-        let Some(editor) = remaining.pop_front() else {
-            self.finish_close_save_session(close_session_identity);
-            let saved = saved_editors.borrow().clone();
+        let Some(editor) = pipeline.remaining.pop_front() else {
+            self.finish_close_save_session(pipeline.identity);
+            if !close_discard_fingerprints_are_current(self, &pipeline.discarded_fingerprints) {
+                self.set_sensitive(pipeline.was_sensitive);
+                self.publish_status_message(
+                    "Documents changed while saving; review them and close again",
+                    MessageKind::Warning,
+                );
+                for editor in pipeline
+                    .discarded_editors
+                    .iter()
+                    .filter(|editor| editor.is_modified())
+                {
+                    editor.set_draft_dirty(true);
+                }
+                self.schedule_first_dirty_draft_autosave();
+                (pipeline.on_done)(false);
+                return;
+            }
+            let saved = pipeline.saved_editors.borrow().clone();
             if !saved.is_empty() {
                 self.cleanup_drafts_for_editors(&saved);
             }
-            if !discarded_editors.is_empty() {
-                self.stage_close_discard_drafts(discarded_editors.as_ref());
+            if !pipeline.discarded_editors.is_empty() {
+                self.stage_close_discard_drafts(pipeline.discarded_editors.as_ref());
             }
-            on_done(true);
+            // `on_done(true)` synchronously enters close safety and freezes the
+            // window again; restore the pre-dialog state for a correct abort path.
+            self.set_sensitive(pipeline.was_sensitive);
+            (pipeline.on_done)(true);
             return;
         };
 
         let window = self.clone();
         let saved_editor = editor.clone();
-        editor.save_file_async_for_close(close_session_identity, move |result| match result {
+        editor.save_file_async_for_close(pipeline.identity, move |result| match result {
             Ok(()) => {
-                saved_editors.borrow_mut().push(saved_editor);
-                window.drive_close_save_pipeline(
-                    close_session_identity,
-                    remaining,
-                    saved_editors,
-                    discarded_editors,
-                    on_done,
-                );
+                pipeline.saved_editors.borrow_mut().push(saved_editor);
+                window.drive_close_save_pipeline(pipeline);
             }
             Err(error) => {
-                window.finish_close_save_session(close_session_identity);
+                window.finish_close_save_session(pipeline.identity);
                 // A durability-unconfirmed result wrote bytes but could not
                 // prove them crash-safe. Keep every tab and draft recoverable.
                 if matches!(
@@ -598,7 +618,8 @@ impl super::LushtextWindow {
                         MessageKind::Error,
                     );
                 }
-                on_done(false);
+                window.set_sensitive(pipeline.was_sensitive);
+                (pipeline.on_done)(false);
             }
         });
     }
@@ -706,6 +727,16 @@ struct CloseSafetyEditorFingerprint {
     path: Option<PathBuf>,
 }
 
+struct CloseSavePipeline {
+    identity: u64,
+    remaining: VecDeque<LushtextEditorPage>,
+    saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>>,
+    discarded_editors: Rc<Vec<LushtextEditorPage>>,
+    discarded_fingerprints: Rc<Vec<CloseSafetyEditorFingerprint>>,
+    was_sensitive: bool,
+    on_done: Rc<dyn Fn(bool)>,
+}
+
 fn close_safety_editor_fingerprint(
     window: &super::LushtextWindow,
 ) -> Vec<CloseSafetyEditorFingerprint> {
@@ -714,15 +745,34 @@ fn close_safety_editor_fingerprint(
     for index in 0..tab_view.n_pages() {
         let page = tab_view.nth_page(index);
         if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-            fingerprint.push(CloseSafetyEditorFingerprint {
-                owner_id: editor.notification_owner_id(),
-                draft_generation: editor.draft_dirty_generation(),
-                modified: editor.is_modified(),
-                path: editor.file_path(),
-            });
+            fingerprint.push(close_safety_editor_fingerprint_for(editor));
         }
     }
     fingerprint
+}
+
+fn close_safety_editor_fingerprint_for(
+    editor: &LushtextEditorPage,
+) -> CloseSafetyEditorFingerprint {
+    CloseSafetyEditorFingerprint {
+        owner_id: editor.notification_owner_id(),
+        draft_generation: editor.draft_dirty_generation(),
+        modified: editor.is_modified(),
+        path: editor.file_path(),
+    }
+}
+
+fn close_discard_fingerprints_are_current(
+    window: &super::LushtextWindow,
+    expected: &[CloseSafetyEditorFingerprint],
+) -> bool {
+    let current: HashMap<_, _> = close_safety_editor_fingerprint(window)
+        .into_iter()
+        .map(|fingerprint| (fingerprint.owner_id, fingerprint))
+        .collect();
+    expected
+        .iter()
+        .all(|fingerprint| current.get(&fingerprint.owner_id) == Some(fingerprint))
 }
 
 fn finish_async_close_safety(

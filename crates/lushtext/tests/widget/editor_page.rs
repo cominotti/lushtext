@@ -3411,6 +3411,120 @@ fn test_bounded_buffer_replacement_supersession_publishes_only_latest_body() {
     assert_eq!(outcomes[1].body.as_deref(), Some(latest.as_str()));
 }
 
+fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'static str) {
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(initial);
+    page.buffer().set_modified(false);
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let latest = format!("latest-{expected_first_signal}-🙂{}", "z".repeat(1024 * 1024));
+    let armed = Rc::new(Cell::new(true));
+    let signal_count = Rc::new(Cell::new(0u64));
+
+    let page_for_signal = page.clone();
+    let outcomes_for_signal = Rc::clone(&outcomes);
+    let latest_for_signal = latest.clone();
+    let armed_for_signal = Rc::clone(&armed);
+    let signal_count_for_signal = Rc::clone(&signal_count);
+    page.buffer().connect_changed(move |_| {
+        signal_count_for_signal.set(signal_count_for_signal.get().saturating_add(1));
+        if armed_for_signal.replace(false) {
+            page_for_signal.replace_buffer_for_test(
+                latest_for_signal.clone(),
+                31,
+                Rc::new(Cell::new(true)),
+                Rc::clone(&outcomes_for_signal),
+            );
+        }
+    });
+
+    page.replace_buffer_for_test(
+        format!("obsolete-{expected_first_signal}-{}", "x".repeat(1024 * 1024)),
+        30,
+        Rc::new(Cell::new(true)),
+        Rc::clone(&outcomes),
+    );
+    wait_until(Duration::from_secs(10), || outcomes.borrow().len() == 2);
+
+    assert!(signal_count.get() > 1);
+    assert_eq!(editor_buffer_text(&page), latest);
+    assert!(page.source_view().is_editable());
+    assert!(page.is_modified());
+    assert!(!page.buffer_replacement_in_progress_for_test());
+    assert!(!page.buffer_replacement_projection_suspended_for_test());
+    let outcomes = outcomes.borrow();
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes[0].ticket.generation, 30);
+    assert_eq!(
+        outcomes[0].cancel_reason,
+        Some(BufferReplacementCancelReason::Superseded)
+    );
+    assert!(outcomes[0].body.is_none());
+    assert_eq!(outcomes[1].ticket.generation, 31);
+    assert!(outcomes[1].cancel_reason.is_none());
+    assert_eq!(outcomes[1].body.as_deref(), Some(latest.as_str()));
+    eprintln!(
+        "buffer-replacement-reentrant-evidence first_signal={expected_first_signal} terminal_outcomes={} final_generation={} editable={} modified={} projection_suspended={}",
+        outcomes.len(),
+        outcomes[1].ticket.generation,
+        page.source_view().is_editable(),
+        page.is_modified(),
+        page.buffer_replacement_projection_suspended_for_test(),
+    );
+}
+
+#[test]
+fn test_first_synchronous_delete_signal_can_supersede_buffer_replacement() {
+    ensure_gtk_init();
+    assert_changed_reentrant_replacement("old text", "delete");
+}
+
+#[test]
+fn test_first_synchronous_insert_signal_can_supersede_buffer_replacement() {
+    ensure_gtk_init();
+    assert_changed_reentrant_replacement("", "insert");
+}
+
+#[test]
+fn test_direct_reentrant_supersession_returns_cancelled_body() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("old");
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let cancelled_bodies = Rc::new(RefCell::new(Vec::new()));
+    let obsolete = "obsolete direct body".to_string();
+    let armed = Rc::new(Cell::new(true));
+
+    let page_for_signal = page.clone();
+    let outcomes_for_signal = Rc::clone(&outcomes);
+    let armed_for_signal = Rc::clone(&armed);
+    page.buffer().connect_changed(move |_| {
+        if armed_for_signal.replace(false) {
+            page_for_signal.replace_buffer_for_test(
+                "latest direct body".to_string(),
+                42,
+                Rc::new(Cell::new(true)),
+                Rc::clone(&outcomes_for_signal),
+            );
+        }
+    });
+
+    page.replace_buffer_returning_cancelled_body_for_test(
+        obsolete.clone(),
+        41,
+        Rc::new(Cell::new(true)),
+        Rc::clone(&outcomes),
+        Rc::clone(&cancelled_bodies),
+    );
+    wait_until(Duration::from_secs(2), || outcomes.borrow().len() == 2);
+
+    assert_eq!(cancelled_bodies.borrow().as_slice(), [obsolete]);
+    assert_eq!(editor_buffer_text(&page), "latest direct body");
+    assert_eq!(
+        outcomes.borrow()[0].cancel_reason,
+        Some(BufferReplacementCancelReason::Superseded)
+    );
+}
+
 #[test]
 fn test_bounded_buffer_replacement_disposal_terminal_releases_source_and_body() {
     ensure_gtk_init();

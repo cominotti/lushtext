@@ -180,6 +180,13 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             return;
         };
         let imp = window.imp();
+        let Some(freshness) = imp.search_panel.take_replace_transaction() else {
+            window.publish_status_message(
+                "Replace All selection no longer owns the active transaction",
+                MessageKind::Warning,
+            );
+            return;
+        };
 
         // Build skip_paths: files open with unsaved edits or an in-flight save.
         // The replacement service also takes the same per-path advisory lock
@@ -211,25 +218,29 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                 "No replacements to apply (all files have unsaved changes or active saves)",
                 MessageKind::Warning,
             );
+            imp.search_panel.finish_replace_transaction();
             return;
         }
 
         let cancel = AtomicBool::new(false);
         let data_dir = json_store::data_dir();
+        imp.search_panel.supersede_prior_undo_for_replace();
+        let undo_generation = freshness.expected();
         spawn_blocking_then(
             window.clone(),
             move || {
-                content_search::apply_replacements(
+                content_search::apply_replacements_if_current(
                     &replacements,
                     &skip_paths,
                     &cancel,
-                    Some(&data_dir),
+                    &data_dir,
+                    &freshness,
                 )
             },
             move |window, result| {
                 let imp = window.imp();
                 match result {
-                    Ok(outcome) => {
+                    Ok(Some(outcome)) => {
                         let (replace_result, backup) = outcome.into_parts();
                         let mut msg = format!(
                             "Replaced {} of {} matches in {} files",
@@ -261,9 +272,12 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         }
 
                         if backup.is_empty() {
-                            imp.search_panel.clear_undo_backup();
-                        } else {
-                            imp.search_panel.set_persisted_undo_backup(backup);
+                            imp.search_panel
+                                .clear_undo_backup_for_generation(undo_generation);
+                        } else if imp
+                            .search_panel
+                            .set_persisted_undo_backup_for_generation(backup, undo_generation)
+                        {
                             imp.search_panel.show_undo_button();
                             window.announce_workflow_update(
                                 AnnouncementLane::StatusUpdate,
@@ -275,6 +289,12 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         // Reload affected open tabs to show updated content.
                         reload_affected_tabs(&window, &affected_paths);
                     }
+                    Ok(None) => {
+                        window.publish_status_message(
+                            "Replace All was superseded before any files changed",
+                            MessageKind::Warning,
+                        );
+                    }
                     Err(e) => {
                         window.publish_status_message(
                             &format!("Replace failed: {e}"),
@@ -282,6 +302,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         );
                     }
                 }
+                imp.search_panel.finish_replace_transaction();
             },
         );
     });
@@ -290,6 +311,11 @@ pub fn setup_search_panel(window: &LushtextWindow) {
     let window_weak = window.downgrade();
     imp.search_panel.connect_undo_all(move |backup| {
         let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+
+        let Some(_freshness) = window.imp().search_panel.begin_replace_transaction() else {
+            window.imp().search_panel.show_undo_button();
             return;
         };
 
@@ -335,6 +361,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         .set_undo_backup(outcome.remaining_backup);
                     window.imp().search_panel.show_undo_button();
                 }
+                window.imp().search_panel.finish_replace_transaction();
             },
         );
     });

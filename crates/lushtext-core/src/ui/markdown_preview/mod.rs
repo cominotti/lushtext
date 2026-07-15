@@ -43,11 +43,12 @@ pub use crate::services::markdown_render::MarkdownRenderState;
 use crate::services::markdown_render::{
     MAX_MARKDOWN_SOURCE_BYTES, MarkdownEventBatch, MarkdownPlanLimit, MarkdownPlanMetrics,
     MarkdownRenderPlan, markdown_render_options, plan_markdown, plan_markdown_cancellable,
+    source_limited_markdown_plan,
 };
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
-use gtk_lush_tasks::spawn_blocking_then_weak;
+use gtk_lush_tasks::{spawn_blocking_then, spawn_blocking_then_weak};
 
 use imp::{
     ALERT_BODY_LEFT_MARGIN, ALERT_BODY_RIGHT_MARGIN, DEFINITION_DEF_LEFT_MARGIN,
@@ -200,6 +201,8 @@ const MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES: usize = 64 * 1024;
 const MARKDOWN_RETIREMENT_CHARS_PER_TURN: usize = 64 * 1024;
 /// Maximum detached widget/link references released in one retirement turn.
 const MARKDOWN_RETIREMENT_ITEMS_PER_TURN: usize = 64;
+/// Maximum ordinary detached generations retained before latest-render backpressure.
+const MAX_MARKDOWN_RETIREMENT_GENERATIONS: usize = 2;
 #[cfg(feature = "test-utils")]
 static IMAGE_WORK_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
@@ -481,10 +484,74 @@ struct ActiveImageWork {
 }
 
 /// Latest document-sized planning request retained behind one active worker.
-struct PendingMarkdownPlan {
+pub(super) struct PendingMarkdownPlan {
     generation: u64,
     source: String,
     context: MarkdownPreviewRenderContext,
+}
+
+fn retained_markdown_source(markdown: &str) -> String {
+    let mut source = String::with_capacity(MAX_MARKDOWN_SOURCE_BYTES);
+    source.push_str(markdown);
+    source
+}
+
+/// Latest render request retained while detached GTK generations drain.
+pub(super) enum PendingMarkdownRender {
+    Source(PendingMarkdownPlan),
+    /// Compact terminal request that avoids retaining an already over-limit source.
+    SourceLimited {
+        generation: u64,
+        source_bytes: usize,
+        context: MarkdownPreviewRenderContext,
+    },
+}
+
+impl PendingMarkdownRender {
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Source(request) => request.generation,
+            Self::SourceLimited { generation, .. } => *generation,
+        }
+    }
+}
+
+/// Latest work retained behind detached-generation backpressure.
+pub(super) enum PendingMarkdownWork {
+    Render(PendingMarkdownRender),
+    Projection {
+        generation: u64,
+        plan: MarkdownRenderPlan,
+        context: MarkdownPreviewRenderContext,
+    },
+}
+
+impl PendingMarkdownWork {
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Render(request) => request.generation(),
+            Self::Projection { generation, .. } => *generation,
+        }
+    }
+}
+
+/// Plain Rust payloads whose final destruction must not run in GTK dispatch.
+enum RetiredMarkdownPlainData {
+    Plan(MarkdownRenderPlan),
+    PlanRequest(PendingMarkdownPlan),
+    Work(PendingMarkdownWork),
+    ProjectionTail(VecDeque<MarkdownEventBatch>),
+}
+
+impl RetiredMarkdownPlainData {
+    fn dispose(self) {
+        match self {
+            Self::Plan(plan) => drop(plan),
+            Self::PlanRequest(request) => drop(request),
+            Self::Work(work) => drop(work),
+            Self::ProjectionTail(batches) => drop(batches),
+        }
+    }
 }
 
 /// One detached render generation awaiting bounded main-loop cleanup.
@@ -985,24 +1052,25 @@ impl LushtextMarkdownPreview {
         let generation = self.begin_render_session();
         let context = context.clone();
 
+        if self.markdown_retirement_at_capacity() {
+            self.defer_markdown_render(generation, markdown, context);
+            return;
+        }
+
+        self.render_markdown_generation(generation, markdown, context);
+    }
+
+    fn render_markdown_generation(
+        &self,
+        generation: u64,
+        markdown: &str,
+        context: MarkdownPreviewRenderContext,
+    ) {
         if markdown.len() > MAX_MARKDOWN_SOURCE_BYTES {
             self.start_render_plan(generation, plan_markdown(markdown), context);
         } else if markdown.len() > MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES {
-            self.show_content_view();
-            self.clear_rendered_state();
-            self.imp()
-                .text_view
-                .buffer()
-                .set_text("Rendering Markdown preview…");
-            accessibility::set_description(
-                &*self.imp().text_view,
-                "Markdown preview rendering is pending",
-            );
-            self.enqueue_markdown_plan(PendingMarkdownPlan {
-                generation,
-                source: markdown.to_string(),
-                context,
-            });
+            self.show_pending_markdown_plan();
+            self.enqueue_markdown_plan(generation, markdown, context);
         } else {
             let plan = match lower_inline_footnotes(markdown, markdown_render_options()) {
                 InlineFootnoteLowering::Lowered(lowered) => plan_markdown(&lowered),
@@ -1012,6 +1080,66 @@ impl LushtextMarkdownPreview {
             };
             self.start_render_plan(generation, plan, context);
         }
+    }
+
+    fn start_pending_markdown_render(&self, request: PendingMarkdownRender) {
+        match request {
+            PendingMarkdownRender::Source(request) => {
+                self.render_owned_markdown_generation(request);
+            }
+            PendingMarkdownRender::SourceLimited {
+                generation,
+                source_bytes,
+                context,
+            } => self.start_render_plan(
+                generation,
+                source_limited_markdown_plan(source_bytes),
+                context,
+            ),
+        }
+    }
+
+    fn render_owned_markdown_generation(&self, request: PendingMarkdownPlan) {
+        let source_bytes = request.source.len();
+        if source_bytes > MAX_MARKDOWN_SOURCE_BYTES {
+            let generation = request.generation;
+            let context = request.context.clone();
+            self.retire_markdown_plain_data(RetiredMarkdownPlainData::PlanRequest(request));
+            self.start_render_plan(
+                generation,
+                source_limited_markdown_plan(source_bytes),
+                context,
+            );
+        } else if source_bytes > MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES {
+            self.show_pending_markdown_plan();
+            self.enqueue_owned_markdown_plan(request);
+        } else {
+            let PendingMarkdownPlan {
+                generation,
+                source,
+                context,
+            } = request;
+            let plan = match lower_inline_footnotes(&source, markdown_render_options()) {
+                InlineFootnoteLowering::Lowered(lowered) => plan_markdown(&lowered),
+                InlineFootnoteLowering::Unchanged => plan_markdown(&source),
+                InlineFootnoteLowering::Limited => inline_footnote_limited_plan(source.len()),
+                InlineFootnoteLowering::Cancelled => return,
+            };
+            self.start_render_plan(generation, plan, context);
+        }
+    }
+
+    fn show_pending_markdown_plan(&self) {
+        self.show_content_view();
+        self.clear_rendered_state(false);
+        self.imp()
+            .text_view
+            .buffer()
+            .set_text("Rendering Markdown preview…");
+        accessibility::set_description(
+            &*self.imp().text_view,
+            "Markdown preview rendering is pending",
+        );
     }
 
     /// Apply one complete-block event batch. State never crosses a batch
@@ -1496,9 +1624,12 @@ impl LushtextMarkdownPreview {
     /// Invalidate older work and open one new generation-owned render session.
     fn begin_render_session(&self) -> u64 {
         let imp = self.imp();
-        self.cancel_pending_markdown_planning();
+        if let Some(cancel) = imp.planning_cancel_token.borrow().as_ref() {
+            cancel.store(true, Ordering::Release);
+        }
         self.cancel_queued_image_work();
         let generation = imp.render_session.borrow_mut().begin();
+        imp.render_generation.store(generation, Ordering::Release);
         #[cfg(feature = "test-utils")]
         {
             imp.projection_dispatch_count.set(0);
@@ -1508,17 +1639,164 @@ impl LushtextMarkdownPreview {
         generation
     }
 
+    fn markdown_retirement_at_capacity(&self) -> bool {
+        self.imp()
+            .retirement
+            .borrow()
+            .as_ref()
+            .is_some_and(|session| session.states.len() >= MAX_MARKDOWN_RETIREMENT_GENERATIONS)
+    }
+
+    fn defer_markdown_work(&self, work: PendingMarkdownWork) {
+        let imp = self.imp();
+        if let Some(retired) = imp.deferred_work.replace(Some(work)) {
+            self.retire_markdown_plain_data(RetiredMarkdownPlainData::Work(retired));
+        }
+        #[cfg(feature = "test-utils")]
+        imp.deferred_work_high_water.set(1);
+    }
+
+    /// Coalesce repeated source updates in the retained latest allocation.
+    fn defer_markdown_render(
+        &self,
+        generation: u64,
+        markdown: &str,
+        context: MarkdownPreviewRenderContext,
+    ) {
+        let mut deferred = self.imp().deferred_work.borrow_mut();
+        match deferred.as_mut() {
+            Some(PendingMarkdownWork::Render(PendingMarkdownRender::Source(request)))
+                if markdown.len() <= MAX_MARKDOWN_SOURCE_BYTES =>
+            {
+                request.generation = generation;
+                request.source.clear();
+                request.source.push_str(markdown);
+                request.context = context;
+            }
+            Some(PendingMarkdownWork::Render(PendingMarkdownRender::SourceLimited {
+                generation: retained_generation,
+                source_bytes,
+                context: retained_context,
+            })) if markdown.len() > MAX_MARKDOWN_SOURCE_BYTES => {
+                *retained_generation = generation;
+                *source_bytes = markdown.len();
+                *retained_context = context;
+            }
+            _ => {
+                let request = if markdown.len() > MAX_MARKDOWN_SOURCE_BYTES {
+                    PendingMarkdownRender::SourceLimited {
+                        generation,
+                        source_bytes: markdown.len(),
+                        context,
+                    }
+                } else {
+                    PendingMarkdownRender::Source(PendingMarkdownPlan {
+                        generation,
+                        source: retained_markdown_source(markdown),
+                        context,
+                    })
+                };
+                let retired = deferred.replace(PendingMarkdownWork::Render(request));
+                drop(deferred);
+                if let Some(retired) = retired {
+                    self.retire_markdown_plain_data(RetiredMarkdownPlainData::Work(retired));
+                }
+                #[cfg(feature = "test-utils")]
+                self.imp().deferred_work_high_water.set(1);
+            }
+        }
+    }
+
+    fn cancel_deferred_markdown_work(&self) {
+        if let Some(retired) = self.imp().deferred_work.take() {
+            self.retire_markdown_plain_data(RetiredMarkdownPlainData::Work(retired));
+        }
+    }
+
+    fn resume_deferred_markdown_work(&self) {
+        let Some(work) = self.imp().deferred_work.take() else {
+            return;
+        };
+        if !self
+            .imp()
+            .render_session
+            .borrow()
+            .is_current(work.generation())
+        {
+            self.retire_markdown_plain_data(RetiredMarkdownPlainData::Work(work));
+            return;
+        }
+        match work {
+            PendingMarkdownWork::Render(request) => self.start_pending_markdown_render(request),
+            PendingMarkdownWork::Projection {
+                generation,
+                plan,
+                context,
+            } => self.start_render_plan(generation, plan, context),
+        }
+    }
+
+    fn retire_markdown_plain_data(&self, retired: RetiredMarkdownPlainData) {
+        let imp = self.imp();
+        imp.plain_retirement_jobs.fetch_add(1, Ordering::AcqRel);
+        let pending = imp
+            .plain_retirement_pending
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        imp.plain_retirement_pending_high_water
+            .fetch_max(pending, Ordering::AcqRel);
+        let pending_counter = imp.plain_retirement_pending.clone();
+        crate::ui::plain_disposal::spawn(move || {
+            retired.dispose();
+            pending_counter.fetch_sub(1, Ordering::AcqRel);
+        });
+    }
+
     /// Keep one document-sized planner active and one replaceable latest source.
-    fn enqueue_markdown_plan(&self, request: PendingMarkdownPlan) {
+    fn enqueue_markdown_plan(
+        &self,
+        generation: u64,
+        markdown: &str,
+        context: MarkdownPreviewRenderContext,
+    ) {
         let imp = self.imp();
         if imp.planning_worker_running.get() {
             if let Some(cancel) = imp.planning_cancel_token.borrow().as_ref() {
                 cancel.store(true, Ordering::Release);
             }
-            imp.queued_plan.replace(Some(request));
+            if let Some(queued) = imp.queued_plan.borrow_mut().as_mut() {
+                queued.generation = generation;
+                queued.source.clear();
+                queued.source.push_str(markdown);
+                queued.context = context;
+            } else {
+                imp.queued_plan.replace(Some(PendingMarkdownPlan {
+                    generation,
+                    source: retained_markdown_source(markdown),
+                    context,
+                }));
+            }
             return;
         }
-        self.spawn_markdown_plan(request);
+        self.spawn_markdown_plan(PendingMarkdownPlan {
+            generation,
+            source: markdown.to_string(),
+            context,
+        });
+    }
+
+    fn enqueue_owned_markdown_plan(&self, request: PendingMarkdownPlan) {
+        let imp = self.imp();
+        if imp.planning_worker_running.get() {
+            if let Some(cancel) = imp.planning_cancel_token.borrow().as_ref() {
+                cancel.store(true, Ordering::Release);
+            }
+            if let Some(retired) = imp.queued_plan.replace(Some(request)) {
+                self.retire_markdown_plain_data(RetiredMarkdownPlainData::PlanRequest(retired));
+            }
+        } else {
+            self.spawn_markdown_plan(request);
+        }
     }
 
     fn spawn_markdown_plan(&self, request: PendingMarkdownPlan) {
@@ -1531,8 +1809,11 @@ impl LushtextMarkdownPreview {
             source,
             context,
         } = request;
-        spawn_blocking_then_weak(
-            self,
+        let generation_counter = imp.render_generation.clone();
+        let retirement_jobs = imp.plain_retirement_jobs.clone();
+        let preview_weak = self.downgrade();
+        spawn_blocking_then(
+            preview_weak,
             move || {
                 #[cfg(feature = "test-utils")]
                 std::thread::sleep(std::time::Duration::from_millis(
@@ -1541,7 +1822,7 @@ impl LushtextMarkdownPreview {
                 if cancel.load(Ordering::Acquire) {
                     return None;
                 }
-                match lower_inline_footnotes_cancellable(
+                let plan = match lower_inline_footnotes_cancellable(
                     &source,
                     markdown_render_options(),
                     &cancel,
@@ -1556,22 +1837,43 @@ impl LushtextMarkdownPreview {
                         Some(inline_footnote_limited_plan(source.len()))
                     }
                     InlineFootnoteLowering::Cancelled => None,
+                };
+                if generation_counter.load(Ordering::Acquire) == generation {
+                    plan
+                } else {
+                    if plan.is_some() {
+                        retirement_jobs.fetch_add(1, Ordering::AcqRel);
+                    }
+                    drop(plan);
+                    None
                 }
             },
-            move |preview, plan| {
+            move |preview_weak, plan| {
+                let Some(preview) = preview_weak.upgrade() else {
+                    if let Some(plan) = plan {
+                        crate::ui::plain_disposal::spawn(move || drop(plan));
+                    }
+                    return;
+                };
                 let imp = preview.imp();
                 imp.planning_worker_running.set(false);
                 imp.planning_cancel_token.take();
-                if let Some(plan) = plan
-                    && imp.render_session.borrow().is_current(generation)
-                {
-                    preview.start_render_plan(generation, plan, context);
+                if let Some(plan) = plan {
+                    if imp.render_session.borrow().is_current(generation) {
+                        preview.start_render_plan(generation, plan, context);
+                    } else {
+                        preview.retire_markdown_plain_data(RetiredMarkdownPlainData::Plan(plan));
+                    }
                 }
                 let queued = imp.queued_plan.take();
-                if let Some(queued) = queued
-                    && imp.render_session.borrow().is_current(queued.generation)
-                {
-                    preview.spawn_markdown_plan(queued);
+                if let Some(queued) = queued {
+                    if imp.render_session.borrow().is_current(queued.generation) {
+                        preview.spawn_markdown_plan(queued);
+                    } else {
+                        preview.retire_markdown_plain_data(RetiredMarkdownPlainData::PlanRequest(
+                            queued,
+                        ));
+                    }
                 }
             },
         );
@@ -1582,7 +1884,9 @@ impl LushtextMarkdownPreview {
         if let Some(cancel) = imp.planning_cancel_token.borrow().as_ref() {
             cancel.store(true, Ordering::Release);
         }
-        imp.queued_plan.take();
+        if let Some(retired) = imp.queued_plan.take() {
+            self.retire_markdown_plain_data(RetiredMarkdownPlainData::PlanRequest(retired));
+        }
     }
 
     /// Accept a current immutable plan and project at most one batch per GTK turn.
@@ -1593,10 +1897,19 @@ impl LushtextMarkdownPreview {
         context: MarkdownPreviewRenderContext,
     ) {
         if !self.imp().render_session.borrow().is_current(generation) {
+            self.retire_markdown_plain_data(RetiredMarkdownPlainData::Plan(plan));
+            return;
+        }
+        if self.markdown_retirement_at_capacity() {
+            self.defer_markdown_work(PendingMarkdownWork::Projection {
+                generation,
+                plan,
+                context,
+            });
             return;
         }
         self.show_content_view();
-        self.clear_rendered_state();
+        self.clear_rendered_state(false);
         self.imp()
             .render_session
             .borrow_mut()
@@ -1607,15 +1920,15 @@ impl LushtextMarkdownPreview {
             metrics: _,
             limit,
         } = plan;
-        let mut batches = VecDeque::from(batches);
+        let mut batches = Some(VecDeque::from(batches));
         // Preserve immediate small-document rendering while the planner's
         // event-and-byte ceilings bound this initial GTK turn exactly like
         // every deferred projection slice.
-        if let Some(batch) = batches.pop_front() {
+        if let Some(batch) = batches.as_mut().and_then(VecDeque::pop_front) {
             self.apply_render_batch(generation, &batch);
             self.render_event_batch(batch, &context);
         }
-        if batches.is_empty() {
+        if batches.as_ref().is_none_or(VecDeque::is_empty) {
             self.finish_render_plan(generation, limit);
             return;
         }
@@ -1627,16 +1940,24 @@ impl LushtextMarkdownPreview {
         let preview_weak = self.downgrade();
         glib::idle_add_local(move || {
             let Some(preview) = preview_weak.upgrade() else {
+                if let Some(retired) = batches.take() {
+                    crate::ui::plain_disposal::spawn(move || drop(retired));
+                }
                 return glib::ControlFlow::Break;
             };
             if !preview.imp().render_session.borrow().is_current(generation) {
+                if let Some(retired) = batches.take() {
+                    preview.retire_markdown_plain_data(RetiredMarkdownPlainData::ProjectionTail(
+                        retired,
+                    ));
+                }
                 return glib::ControlFlow::Break;
             }
-            if let Some(batch) = batches.pop_front() {
+            if let Some(batch) = batches.as_mut().and_then(VecDeque::pop_front) {
                 preview.apply_render_batch(generation, &batch);
                 preview.render_event_batch(batch, &context);
             }
-            if batches.is_empty() {
+            if batches.as_ref().is_none_or(VecDeque::is_empty) {
                 preview.finish_render_plan(generation, limit);
                 glib::ControlFlow::Break
             } else {
@@ -1688,8 +2009,12 @@ impl LushtextMarkdownPreview {
     /// Cancel current planning/projection work without retaining stale payloads.
     fn cancel_render_session(&self) {
         self.cancel_pending_markdown_planning();
+        self.cancel_deferred_markdown_work();
         self.cancel_queued_image_work();
-        self.imp().render_session.borrow_mut().cancel();
+        let generation = self.imp().render_session.borrow_mut().cancel();
+        self.imp()
+            .render_generation
+            .store(generation, Ordering::Release);
     }
 
     /// Whether current planning/projection blocks exact preview readiness.
@@ -1698,6 +2023,8 @@ impl LushtextMarkdownPreview {
         self.imp().render_session.borrow().pending()
             || self.imp().planning_worker_running.get()
             || self.imp().queued_plan.borrow().is_some()
+            || self.imp().deferred_work.borrow().is_some()
+            || self.imp().plain_retirement_pending.load(Ordering::Acquire) > 0
             || self.imp().current_image_work_count.get() > 0
             || self.imp().retirement.borrow().is_some()
     }
@@ -1745,6 +2072,28 @@ impl LushtextMarkdownPreview {
         (
             imp.retirement_chars_high_water.get(),
             imp.retirement_items_high_water.get(),
+        )
+    }
+
+    /// Direct detached-generation, latest-work, and plain-disposal evidence.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn retirement_backlog_counters_for_test(
+        &self,
+    ) -> (usize, usize, usize, usize, u64, usize, usize) {
+        let imp = self.imp();
+        (
+            imp.retirement
+                .borrow()
+                .as_ref()
+                .map_or(0, |session| session.states.len()),
+            imp.retirement_generations_high_water.get(),
+            usize::from(imp.deferred_work.borrow().is_some()),
+            MAX_MARKDOWN_RETIREMENT_GENERATIONS,
+            imp.plain_retirement_jobs.load(Ordering::Acquire),
+            imp.plain_retirement_pending.load(Ordering::Acquire),
+            imp.plain_retirement_pending_high_water
+                .load(Ordering::Acquire),
         )
     }
 
@@ -1951,7 +2300,7 @@ impl LushtextMarkdownPreview {
         accessibility::set_hidden(&*imp.scrolled_window, true);
         accessibility::set_hidden(&*imp.text_view, true);
         accessibility::set_hidden(&*imp.placeholder, false);
-        self.clear_rendered_state();
+        self.clear_rendered_state(true);
         imp.showing_content.set(false);
     }
 
@@ -1964,21 +2313,21 @@ impl LushtextMarkdownPreview {
     pub(crate) fn show_content_placeholder(&self, description: &str) {
         self.cancel_render_session();
         self.show_content_view();
-        self.clear_rendered_state();
+        self.clear_rendered_state(true);
         self.imp().text_view.buffer().set_text(description);
     }
 
     /// Clear the rendered content without showing the placeholder.
     pub fn clear(&self) {
         self.cancel_render_session();
-        self.clear_rendered_state();
+        self.clear_rendered_state(true);
     }
 
     /// Render an accessible terminal when a caller cannot produce a plan.
     pub fn show_render_failure(&self, description: &str) {
         self.cancel_render_session();
         self.show_content_view();
-        self.clear_rendered_state();
+        self.clear_rendered_state(true);
         self.imp().text_view.buffer().set_text(description);
         accessibility::set_description(&*self.imp().text_view, description);
         let mut session = self.imp().render_session.borrow_mut();
@@ -2052,8 +2401,25 @@ impl LushtextMarkdownPreview {
     }
 
     /// Detach the visible buffer in O(1) and retire its payload in bounded turns.
-    fn clear_rendered_state(&self) {
+    fn clear_rendered_state(&self, allow_escape_generation: bool) {
         let imp = self.imp();
+        let retirement_len = imp
+            .retirement
+            .borrow()
+            .as_ref()
+            .map_or(0, |session| session.states.len());
+        if allow_escape_generation
+            && retirement_len >= MAX_MARKDOWN_RETIREMENT_GENERATIONS.saturating_add(1)
+        {
+            // The first terminal transition may consume one escape generation.
+            // Further terminal updates own only the small current buffer, so
+            // reuse it instead of growing detached GTK generations without bound.
+            debug_assert!(imp.rendered_embeds.borrow().is_empty());
+            debug_assert!(imp.text_link_targets.borrow().is_empty());
+            imp.text_view.buffer().set_text("");
+            self.advance_rendered_embed_generation();
+            return;
+        }
         let old_buffer = imp.text_view.buffer();
         let new_buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
         imp::create_or_update_tags(&new_buffer, libadwaita::StyleManager::default().is_dark());
@@ -2065,11 +2431,20 @@ impl LushtextMarkdownPreview {
             links: std::mem::take(&mut *imp.text_link_targets.borrow_mut()).into(),
         };
         if !retired.is_empty() {
-            imp.retirement
-                .borrow_mut()
-                .get_or_insert_with(MarkdownRetirementSession::default)
-                .states
-                .push_back(retired);
+            let mut retirement = imp.retirement.borrow_mut();
+            let session = retirement.get_or_insert_with(MarkdownRetirementSession::default);
+            debug_assert!(
+                session.states.len()
+                    < MAX_MARKDOWN_RETIREMENT_GENERATIONS + usize::from(allow_escape_generation)
+            );
+            session.states.push_back(retired);
+            #[cfg(feature = "test-utils")]
+            imp.retirement_generations_high_water.set(
+                imp.retirement_generations_high_water
+                    .get()
+                    .max(session.states.len()),
+            );
+            drop(retirement);
             self.arm_markdown_retirement();
         }
         self.advance_rendered_embed_generation();
@@ -2146,12 +2521,17 @@ impl LushtextMarkdownPreview {
         if state.is_empty() {
             session.states.pop_front();
         }
+        let should_resume = session.states.len() < MAX_MARKDOWN_RETIREMENT_GENERATIONS
+            && imp.deferred_work.borrow().is_some();
         if session.states.is_empty() {
             session_slot.take();
-            false
-        } else {
-            true
         }
+        let retirement_pending = session_slot.is_some();
+        drop(session_slot);
+        if should_resume {
+            self.resume_deferred_markdown_work();
+        }
+        retirement_pending || self.imp().retirement.borrow().is_some()
     }
 
     /// Insert one buffered table as a native GTK grid anchored into the text flow.

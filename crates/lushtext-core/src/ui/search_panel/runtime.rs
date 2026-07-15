@@ -33,8 +33,34 @@ use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 const SEARCH_RETIREMENT_ROWS_PER_SLICE: usize = 250;
 /// Maximum detached generations retained before latest-query backpressure applies.
 const MAX_SEARCH_RETIREMENT_GENERATIONS: usize = 2;
+/// Maximum channel events received and dispatched by one scheduled GTK turn.
+const MAX_SEARCH_EVENTS_PER_TICK: usize = 250;
 #[cfg(feature = "test-utils")]
 static SEARCH_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+enum SearchEventPoll {
+    Event(SearchEvent),
+    Empty,
+    Disconnected,
+    BudgetExhausted,
+}
+
+fn receive_search_event(
+    receiver: &crossbeam_channel::Receiver<SearchEvent>,
+    received: &mut usize,
+) -> SearchEventPoll {
+    if *received >= MAX_SEARCH_EVENTS_PER_TICK {
+        return SearchEventPoll::BudgetExhausted;
+    }
+    match receiver.try_recv() {
+        Ok(event) => {
+            *received = (*received).saturating_add(1);
+            SearchEventPoll::Event(event)
+        }
+        Err(crossbeam_channel::TryRecvError::Empty) => SearchEventPoll::Empty,
+        Err(crossbeam_channel::TryRecvError::Disconnected) => SearchEventPoll::Disconnected,
+    }
+}
 
 /// Delay worker entry for deterministic cancellation/disconnection tests.
 #[cfg(feature = "test-utils")]
@@ -53,9 +79,6 @@ struct RetiredSearchGtkState {
     accepted_matches: Option<Arc<Vec<crate::model::content_search::SearchMatch>>>,
     accepted_match_rows: Vec<crate::model::content_search::SearchMatch>,
     match_positions: Vec<SearchMatchLocation>,
-    preview_replacements: Vec<crate::model::content_search::Replacement>,
-    preview_match_map: Vec<Option<usize>>,
-    checked_match_ids: std::collections::HashSet<crate::model::content_search::SearchMatchId>,
 }
 
 impl RetiredSearchGtkState {
@@ -109,15 +132,6 @@ impl RetiredSearchGtkState {
         retire_vec_tail(&mut self.search_matches, &mut budget);
         retire_vec_tail(&mut self.accepted_match_rows, &mut budget);
         retire_vec_tail(&mut self.match_positions, &mut budget);
-        retire_vec_tail(&mut self.preview_replacements, &mut budget);
-        retire_vec_tail(&mut self.preview_match_map, &mut budget);
-        while !budget.exhausted() {
-            let Some(match_id) = self.checked_match_ids.iter().next().copied() else {
-                break;
-            };
-            self.checked_match_ids.remove(&match_id);
-            debug_assert_eq!(budget.take(1), 1);
-        }
         budget.retired()
     }
 
@@ -130,9 +144,6 @@ impl RetiredSearchGtkState {
             && self.accepted_matches.is_none()
             && self.accepted_match_rows.is_empty()
             && self.match_positions.is_empty()
-            && self.preview_replacements.is_empty()
-            && self.preview_match_map.is_empty()
-            && self.checked_match_ids.is_empty()
     }
 }
 
@@ -147,55 +158,6 @@ pub(super) struct SearchRetirementSession {
 }
 
 impl LushtextSearchPanel {
-    /// Detach Replace Preview payloads and release them through the shared
-    /// bounded retirement disposer without replacing the visible result model.
-    pub(super) fn retire_preview_state(
-        &self,
-        outcome: Option<crate::model::content_search::ReplacePreviewOutcome>,
-        checked_match_ids: std::collections::HashSet<crate::model::content_search::SearchMatchId>,
-    ) {
-        let (preview_replacements, preview_match_map) = outcome.map_or_else(
-            || (Vec::new(), Vec::new()),
-            |outcome| (outcome.replacements, outcome.match_to_preview),
-        );
-        if preview_replacements.is_empty()
-            && preview_match_map.is_empty()
-            && checked_match_ids.is_empty()
-        {
-            return;
-        }
-
-        let imp = self.imp();
-        let mut retirement = imp.runtime.retirement.borrow_mut();
-        if let Some(state) = retirement
-            .as_mut()
-            .and_then(|session| session.states.back_mut())
-        {
-            state.preview_replacements.extend(preview_replacements);
-            state.preview_match_map.extend(preview_match_map);
-            state.checked_match_ids.extend(checked_match_ids);
-            return;
-        }
-        drop(retirement);
-
-        let generation = imp.runtime.retirement_generation.get().wrapping_add(1);
-        imp.runtime.retirement_generation.set(generation);
-        self.enqueue_search_retirement(RetiredSearchGtkState {
-            generation,
-            root_store: gtk4::gio::ListStore::new::<SearchResultItem>(),
-            file_groups: BTreeMap::new(),
-            match_rows: Vec::new(),
-            file_rows: BTreeMap::new(),
-            search_matches: Vec::new(),
-            accepted_matches: None,
-            accepted_match_rows: Vec::new(),
-            match_positions: Vec::new(),
-            preview_replacements,
-            preview_match_map,
-            checked_match_ids,
-        });
-    }
-
     /// Start a new search from one immutable query snapshot, cancelling any
     /// active worker and retaining only the latest compact superseding request.
     pub fn start_search(&self, spec: &SearchQuerySpec) {
@@ -354,24 +316,18 @@ impl LushtextSearchPanel {
             // monopolize the main loop while thousands of matches arrive. The
             // 250-event cap drains bursts quickly without starving input and
             // frame work on slower machines.
-            const MAX_EVENTS_PER_TICK: usize = 250;
-
             loop {
-                if items_this_tick >= MAX_EVENTS_PER_TICK {
-                    break;
-                }
-                match rx.try_recv() {
-                    Ok(SearchEvent::Match(search_match)) => {
-                        items_this_tick += 1;
+                match receive_search_event(&rx, &mut items_this_tick) {
+                    SearchEventPoll::Event(SearchEvent::Match(search_match)) => {
                         if !cancelled {
                             append_match_result(&panel, search_match, &workspace_folders);
                         }
                     }
-                    Ok(SearchEvent::Done) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    SearchEventPoll::Event(SearchEvent::Done) | SearchEventPoll::Disconnected => {
                         done = true;
                         break;
                     }
-                    Ok(SearchEvent::ResultCap) => {
+                    SearchEventPoll::Event(SearchEvent::ResultCap) => {
                         if !cancelled {
                             imp.runtime.result_capped.set(true);
                             imp.count_label.set_text(
@@ -381,8 +337,8 @@ impl LushtextSearchPanel {
                             panel.refresh_accessibility_state();
                         }
                     }
-                    Ok(SearchEvent::Progress(_)) => {}
-                    Ok(SearchEvent::Error(msg)) => {
+                    SearchEventPoll::Event(SearchEvent::Progress(_)) => {}
+                    SearchEventPoll::Event(SearchEvent::Error(msg)) => {
                         if !cancelled {
                             imp.error_label.set_text(&msg);
                             imp.error_label.add_css_class("error");
@@ -390,7 +346,7 @@ impl LushtextSearchPanel {
                             panel.refresh_accessibility_state();
                         }
                     }
-                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    SearchEventPoll::Empty | SearchEventPoll::BudgetExhausted => break,
                 }
             }
 
@@ -497,10 +453,7 @@ impl LushtextSearchPanel {
             .root_store
             .replace(gtk4::gio::ListStore::new::<SearchResultItem>());
         let preview_outcome = imp.preview.preview_outcome.take();
-        let (preview_replacements, preview_match_map) = preview_outcome.map_or_else(
-            || (Vec::new(), Vec::new()),
-            |outcome| (outcome.replacements, outcome.match_to_preview),
-        );
+        let checked_match_ids = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
         let retired = RetiredSearchGtkState {
             generation: retirement_generation,
             root_store: old_root,
@@ -511,12 +464,10 @@ impl LushtextSearchPanel {
             accepted_matches: imp.runtime.accepted_matches.take(),
             accepted_match_rows: Vec::new(),
             match_positions: std::mem::take(&mut *imp.navigation.match_positions.borrow_mut()),
-            preview_replacements,
-            preview_match_map,
-            checked_match_ids: std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
         };
         imp.install_results_model();
         self.enqueue_search_retirement(retired);
+        self.retire_preview_state(preview_outcome, checked_match_ids);
         imp.runtime.total_matches.set(0);
         imp.runtime.total_files.set(0);
         imp.runtime.result_capped.set(false);
@@ -530,7 +481,6 @@ impl LushtextSearchPanel {
         imp.error_label.remove_css_class("error");
         self.advance_preview_generation();
         imp.preview.preview_pending.set(false);
-        imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
         imp.replace_all_button.set_label("Replace All");
         self.update_replace_button_sensitivity();
@@ -790,4 +740,79 @@ fn persist_search_history(panel: &LushtextSearchPanel, query_spec: &SearchQueryS
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn receive_one_turn(receiver: &crossbeam_channel::Receiver<SearchEvent>) -> (usize, bool) {
+        let mut received = 0;
+        let mut terminal = false;
+        loop {
+            match receive_search_event(receiver, &mut received) {
+                SearchEventPoll::Event(SearchEvent::Done) | SearchEventPoll::Disconnected => {
+                    terminal = true;
+                    break;
+                }
+                SearchEventPoll::Event(_) => {}
+                SearchEventPoll::Empty | SearchEventPoll::BudgetExhausted => break,
+            }
+        }
+        (received, terminal)
+    }
+
+    #[test]
+    fn progress_only_burst_stops_at_total_event_budget() {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        for index in 0..=MAX_SEARCH_EVENTS_PER_TICK {
+            sender
+                .send(SearchEvent::Progress(index))
+                .expect("progress fixture receiver");
+        }
+
+        assert_eq!(
+            receive_one_turn(&receiver),
+            (MAX_SEARCH_EVENTS_PER_TICK, false)
+        );
+        assert_eq!(receive_one_turn(&receiver), (1, false));
+    }
+
+    #[test]
+    fn mixed_non_match_events_share_one_budget() {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        for index in 0..260 {
+            let event = match index % 3 {
+                0 => SearchEvent::Progress(index),
+                1 => SearchEvent::ResultCap,
+                _ => SearchEvent::Error(format!("error-{index}")),
+            };
+            sender.send(event).expect("mixed fixture receiver");
+        }
+
+        assert_eq!(
+            receive_one_turn(&receiver),
+            (MAX_SEARCH_EVENTS_PER_TICK, false)
+        );
+        assert_eq!(receive_one_turn(&receiver), (10, false));
+        eprintln!(
+            "search-event-budget-evidence fixture_events=260 first_turn_events={MAX_SEARCH_EVENTS_PER_TICK} second_turn_events=10"
+        );
+    }
+
+    #[test]
+    fn done_is_charged_before_terminal_dispatch() {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        sender
+            .send(SearchEvent::Progress(1))
+            .expect("terminal fixture receiver");
+        sender
+            .send(SearchEvent::ResultCap)
+            .expect("terminal fixture receiver");
+        sender
+            .send(SearchEvent::Done)
+            .expect("terminal fixture receiver");
+
+        assert_eq!(receive_one_turn(&receiver), (3, true));
+    }
 }

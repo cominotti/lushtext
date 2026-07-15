@@ -11967,6 +11967,62 @@ fn test_multi_tab_window_close_saves_checked_and_discards_unchecked_documents() 
 }
 
 #[test]
+fn test_mixed_close_rejects_discarded_editor_changes_during_slow_save() {
+    ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(400);
+    let (_dir, files) = seed_named_tab_files(&["save-me.txt", "discard-me.txt"]);
+    let window = test_window();
+    present_window(&window);
+
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 2);
+    let save_editor = find_tab_page_by_title(&window, "save-me.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("save editor");
+    let discard_editor = find_tab_page_by_title(&window, "discard-me.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("discard editor");
+    wait_until(Duration::from_secs(2), || {
+        save_editor.file_size().is_some() && discard_editor.file_size().is_some()
+    });
+    save_editor.buffer().set_text("confirmed save\n");
+    save_editor.buffer().set_modified(true);
+    discard_editor.buffer().set_text("confirmed discard\n");
+    discard_editor.buffer().set_modified(true);
+    let discarded_draft_id =
+        seed_file_backed_draft(&window, &files[1], "recoverable discard draft\n");
+    let data_dir = json_store::data_dir();
+
+    window.close();
+    wait_for_save_changes_dialog(&window);
+    let dialog = visible_alert_dialog(&window).expect("multi-document save dialog");
+    save_changes_check_button_for_title(&dialog, "discard-me.txt").set_active(false);
+    respond_to_save_changes_dialog(&window, "save");
+
+    assert!(!window.is_sensitive());
+    discard_editor.buffer().set_text("changed after confirmation\n");
+    discard_editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(10), || window.is_sensitive());
+
+    assert!(window.is_visible());
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    assert_eq!(editor_buffer_text(&discard_editor), "changed after confirmation\n");
+    assert!(discard_editor.is_modified());
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &discarded_draft_id)
+            .expect("read preserved discarded draft")
+            .as_deref(),
+        Some("changed after confirmation\n")
+    );
+    assert!(window.imp().drafts.close_discard_ids.borrow().is_empty());
+}
+
+#[test]
 fn test_multi_tab_close_admits_one_save_payload_at_a_time() {
     ensure_gtk_init();
     let _delay_reset = SaveWriteDelayReset;

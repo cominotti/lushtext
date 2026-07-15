@@ -65,11 +65,11 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 cat >"$ARTIFACT_DIR/fixtures.txt" <<'EOF'
 file_index_search: generated command-palette indexes at representative file counts
 palette_pipeline_hardening_100000: generated 100,000-file indexes with varied hit rates, Unicode names, repeated equal-score names, bounded/reference limits, cancellation, and rapid latest-query replacement
-file_index_rebuild: generated workspace file lists at representative file counts
+file_index_rebuild: generated workspace file lists plus 1k/10k directory-only forests with direct retained-directory high water
 end_to_end_boundedness: generated one flat 10,000-entry directory, file/note source budget and cancellation fixtures, active/latest coordinator pressure, canonical top-one exclusion, a 2,048-row cleanup page, a 10,000-row middle reconciliation, and large replacement policy input
 content_search_smoke: generated 200-file trees plus one 10k-line file
-search_interactive_policies: generated 1,000-query latest-wins ownership and 10,000-result retirement counters
-markdown_render_planning: generated 10,000-paragraph complete and dense single-block limited plans
+search_interactive_policies: generated 1,000-query latest-wins ownership, 10,000-result retirement counters, and a 260-event mixed non-match turn-budget proof
+markdown_render_planning: generated 10,000-paragraph complete and dense single-block limited plans plus rapid detached-generation ownership pressure
 save_admission_policy: generated eight compact ordinary save requests under the shared byte budget
 editor_memory_policy: generated 1k/10k/100k scalar tab sets plus one-record incremental edit evidence
 json_persistence: generated workspace/session JSON save and load fixtures
@@ -77,7 +77,7 @@ editor_file_io: generated text files for load, save, and Save As-equivalent expl
 transient_file_load: generated scalar admission bursts, stale queues, an exclusive near-limit request, Unicode slice planning, and one headless chunked-install responsiveness fixture
 workspace_watch_pressure: generated duplicate/access-noise/deep Unicode event batches, varied producer/consumer rates, and cap-plus-one full-refresh promotion
 quality_gap_scale: generated a 10,000-row Notes browser source, a 4 MiB local-history preview, raw watcher ingress, a 10,000-row terminal cache rebuild, and headless main-loop/ownership fixtures
-replace_preview_generation: generated 1k and 10k in-memory match sets for worker-side Replace preview generation
+replace_preview_generation: generated 1k and 10k in-memory match sets plus a 10k-row half-checked worker-side selection handoff
 replace_undo_workflows: generated disposable files for Replace All and undo restore
 recovery_performance: generated malformed metadata, pending migration ledgers, duplicate bookmark sidecars, many local-history lineages, and first-dirty autosave persistence batches
 EOF
@@ -93,11 +93,12 @@ Coarse smoke thresholds:
 - end-to-end source construction: directory retention must stay within 100,000 rows, note admission within 10,000 entries and 64 MiB searchable text, deterministic note cancellation must stop at 256 admitted rows, and file/note coordinators must retain only one active plus one latest request
 - cleanup/tree completion: directory pages must retain at most 2,048 rows, broad reconciliation plans must stay plain until GTK applies at most 256 changed rows per turn, and widget evidence must prove main-loop progress, supersession, disposal, and readiness completion
 - workspace/content search: must complete every generated fixture without stalling
-- interactive search policy: active worker groups must stay at one, pending queries at one, whole-result clones at zero, and retirement turns at or below 250 rows/cache entries
-- Markdown planning: retained events must stay at or below 256 per projection batch and dense oversized blocks must publish an explicit limited terminal
+- interactive search policy: active worker groups must stay at one, pending queries at one, whole-result clones at zero, retirement turns at or below 250 rows/cache entries, and every received event variant must share the 250-event GTK-turn budget
+- Markdown planning and disposal: retained events must stay at or below 256 per projection batch, dense oversized blocks must publish an explicit limited terminal, ordinary detached ownership must stay at two generations, and only one latest deferred render may survive pressure
 - save admission: active payload weight must stay within the shared byte budget except for one explicit exclusive overweight request; queued requests retain scalar metadata only
 - editor memory: ordinary below-threshold edits must touch one record and perform zero full scans
-- Replace preview generation: 10k generated matches should stay sub-second on a developer workstation; investigate multi-second results before shipping preview-flow changes
+- Replace preview generation and selection: 10k generated matches and a 10k-row half-checked worker selection should stay sub-second on a developer workstation; preview selection must avoid whole-payload clones on GTK
+- sliced buffer replacement: a synchronous first delete or insert signal may supersede the active generation without a borrow conflict; exactly one latest body remains, editability/saveability are restored, and projection suspension clears
 - persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully
 - transient_file_load: admitted payload weight must stay within the scalar shared budget except for one exclusive request; the headless Unicode fixture must make main-loop progress between slices and release its permit after final editor residency is published
 - workspace_watch_pressure: retained unique paths must stay at or below 1,024, GTK consumption must stay at one bounded notice per poll, and cap overflow must promote to one conservative full refresh
@@ -208,6 +209,58 @@ case " $FILTERS " in
         {
             echo "## quality_gap_scale_headless"
             grep -E "notes-browser-runtime-evidence|local-history-preview-runtime-evidence|workspace-cache-runtime-evidence|test result:" "$widget_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+        ;;
+esac
+
+case " $FILTERS " in
+    *" search_interactive_policies "*)
+        unit_log="$ARTIFACT_DIR/unit-search-event-budget.log"
+        echo "Running exact mixed search-event turn-budget proof..."
+        if ! cargo test -p lushtext-core ui::search_panel::runtime::tests::mixed_non_match_events_share_one_budget --lib -- --nocapture \
+            >"$unit_log" 2>&1; then
+            tail -n 120 "$unit_log" >&2 || true
+            smoke_fail "mixed search-event budget proof failed. Artifacts: $ARTIFACT_DIR"
+        fi
+        {
+            echo "## search_event_budget"
+            grep -E "search-event-budget-evidence|test result:" "$unit_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+        ;;
+esac
+
+case " $FILTERS " in
+    *" markdown_render_planning "*)
+        widget_log="$ARTIFACT_DIR/widget-markdown-retirement-pressure.log"
+        echo "Running headless Markdown retirement-pressure proof..."
+        if ! scripts/run-widget-tests.sh --headless -- \
+            markdown_preview::test_rapid_rerenders_cap_detached_generations_and_keep_latest_work \
+            --nocapture >"$widget_log" 2>&1; then
+            tail -n 120 "$widget_log" >&2 || true
+            smoke_fail "Markdown retirement-pressure proof failed. Artifacts: $ARTIFACT_DIR"
+        fi
+        {
+            echo "## markdown_retirement_pressure"
+            grep -E "markdown-retirement-bound-evidence|test result:" "$widget_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+        ;;
+esac
+
+case " $FILTERS " in
+    *" end_to_end_boundedness "*)
+        widget_log="$ARTIFACT_DIR/widget-buffer-reentrant-replacement.log"
+        echo "Running headless reentrant buffer-replacement proofs..."
+        if ! scripts/run-widget-tests.sh --headless -- synchronous_ --nocapture \
+            >"$widget_log" 2>&1; then
+            tail -n 120 "$widget_log" >&2 || true
+            smoke_fail "reentrant buffer-replacement proof failed. Artifacts: $ARTIFACT_DIR"
+        fi
+        {
+            echo "## buffer_replacement_reentrancy"
+            grep -E "buffer-replacement-reentrant-evidence|test result:" "$widget_log" || true
             echo
         } >>"$ARTIFACT_DIR/summary.txt"
         ;;

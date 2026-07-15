@@ -257,9 +257,7 @@ fn run_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
     }
 }
 
-fn delete_one_slice(buffer: &sourceview5::Buffer) -> (bool, u64) {
-    let remaining = buffer.char_count();
-    let count = next_clear_char_count(remaining);
+fn delete_one_slice(buffer: &sourceview5::Buffer, count: i32) -> (bool, u64) {
     if count == 0 {
         return (true, 0);
     }
@@ -271,16 +269,28 @@ fn delete_one_slice(buffer: &sourceview5::Buffer) -> (bool, u64) {
 }
 
 fn run_clear_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
-    let buffer = session.borrow().buffer.clone();
-    let (cleared, deleted) = delete_one_slice(&buffer);
+    let (buffer, count) = {
+        let mut state = session.borrow_mut();
+        let count = next_clear_char_count(state.buffer.char_count());
+        if count > 0 {
+            // GtkTextBuffer emits `changed` synchronously. Establish ownership
+            // before the call so a reentrant superseding request takes the
+            // partial-mutation cleanup path.
+            state.mutation_started = true;
+        }
+        (state.buffer.clone(), count)
+    };
+    let (cleared, deleted) = delete_one_slice(&buffer, count);
     {
         let mut state = session.borrow_mut();
-        if state.terminal || state.phase != ReplacementPhase::Clearing {
+        if state.terminal {
             return;
         }
-        state.mutation_started |= deleted > 0;
         state.metrics.cleared_characters = state.metrics.cleared_characters.saturating_add(deleted);
         state.metrics.slice_count = state.metrics.slice_count.saturating_add(1);
+        if state.phase != ReplacementPhase::Clearing {
+            return;
+        }
     }
     if !cleared {
         schedule_slice(session);
@@ -302,6 +312,7 @@ fn run_insert_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
             cancel_session(session, BufferReplacementCancelReason::Stale, false);
             return;
         };
+        state.mutation_started = true;
         (state.buffer.clone(), state.byte_offset, body)
     };
     let end = next_replacement_boundary(&body, start);
@@ -311,14 +322,25 @@ fn run_insert_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
 
     let current_phase = {
         let mut state = session.borrow_mut();
-        if state.terminal || state.phase != ReplacementPhase::Installing {
-            drop(body);
+        if state.terminal {
+            let cancelled_body = state.cancelled_body.take();
+            drop(state);
+            if let Some(cancelled_body) = cancelled_body {
+                cancelled_body(body);
+            }
             return;
         }
-        state.mutation_started = true;
-        state.byte_offset = end;
-        state.metrics.inserted_bytes = end;
+        state.metrics.inserted_bytes = state.metrics.inserted_bytes.max(end);
         state.metrics.slice_count = state.metrics.slice_count.saturating_add(1);
+        if state.phase != ReplacementPhase::Installing {
+            let cancelled_body = state.cancelled_body.take();
+            drop(state);
+            if let Some(cancelled_body) = cancelled_body {
+                cancelled_body(body);
+            }
+            return;
+        }
+        state.byte_offset = end;
         state.body = Some(body);
         state.phase
     };
@@ -357,7 +379,11 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
     buffer.set_text(&body);
     let mut state = session.borrow_mut();
     if state.terminal || state.phase != ReplacementPhase::Clearing {
-        drop(body);
+        let cancelled_body = state.cancelled_body.take();
+        drop(state);
+        if let Some(cancelled_body) = cancelled_body {
+            cancelled_body(body);
+        }
         return;
     }
     state.mutation_started = true;
@@ -381,7 +407,7 @@ fn cancel_session(
         let source = state.source_id.take();
         state.cancel_reason = Some(reason);
         let body = state.body.take();
-        let cancelled_body = state.cancelled_body.take();
+        let cancelled_body = body.as_ref().and_then(|_| state.cancelled_body.take());
         (source, state.mutation_started, body, cancelled_body)
     };
     if let (Some(body), Some(cancelled_body)) = (body, cancelled_body) {
@@ -400,7 +426,8 @@ fn cancel_session(
 
 fn run_cancelled_clear_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
     let buffer = session.borrow().buffer.clone();
-    let (cleared, deleted) = delete_one_slice(&buffer);
+    let count = next_clear_char_count(buffer.char_count());
+    let (cleared, deleted) = delete_one_slice(&buffer, count);
     {
         let mut state = session.borrow_mut();
         if state.terminal || state.phase != ReplacementPhase::ClearingCancelled {
@@ -701,6 +728,53 @@ impl LushtextEditorPage {
     }
 
     #[cfg(feature = "test-utils")]
+    pub fn replace_buffer_returning_cancelled_body_for_test(
+        &self,
+        body: String,
+        generation: u64,
+        current: Rc<std::cell::Cell<bool>>,
+        outcomes: Rc<RefCell<Vec<BufferReplacementTestOutcome>>>,
+        cancelled_bodies: Rc<RefCell<Vec<String>>>,
+    ) {
+        self.replace_buffer_bounded(
+            BufferReplacementRequest::new(
+                BufferReplacementTicket {
+                    workflow: BufferReplacementWorkflow::Test,
+                    generation,
+                },
+                body,
+                move |_| current.get(),
+                move |outcome| {
+                    let outcome = match outcome {
+                        BufferReplacementOutcome::Complete {
+                            ticket,
+                            body,
+                            metrics,
+                        } => BufferReplacementTestOutcome {
+                            ticket,
+                            body: Some(body),
+                            cancel_reason: None,
+                            metrics,
+                        },
+                        BufferReplacementOutcome::Cancelled {
+                            ticket,
+                            reason,
+                            metrics,
+                        } => BufferReplacementTestOutcome {
+                            ticket,
+                            body: None,
+                            cancel_reason: Some(reason),
+                            metrics,
+                        },
+                    };
+                    outcomes.borrow_mut().push(outcome);
+                },
+            )
+            .return_body_on_cancel(move |body| cancelled_bodies.borrow_mut().push(body)),
+        );
+    }
+
+    #[cfg(feature = "test-utils")]
     pub fn dispose_buffer_replacement_for_test(&self) {
         self.cancel_buffer_replacement_for_dispose();
     }
@@ -714,6 +788,12 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn buffer_replacement_in_progress_for_test(&self) -> bool {
         self.buffer_replacement_in_progress()
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn buffer_replacement_projection_suspended_for_test(&self) -> bool {
+        self.buffer_replacement_projection_suspended()
     }
 
     #[cfg(feature = "test-utils")]

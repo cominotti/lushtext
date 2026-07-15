@@ -21,6 +21,7 @@ was not overwritten:
 - `build/smoke/performance/bound-remaining-interactive-pipelines-memory-after-20260715`
 - `build/smoke/performance/bound-remaining-interactive-pipelines-markdown-after-20260715`
 - `build/smoke/performance/bound-remaining-interactive-pipelines-policy-after-20260715`
+- `build/smoke/performance/bound-traversal-retirement-closeout`
 
 Reproduce the focused policy measurements with:
 
@@ -51,10 +52,20 @@ scripts/run-performance-smoke.sh \
   conservative byte ceiling, with only one decoder active. Image ingestion is
   bounded before allocation and revalidates identity, size, and mtime before
   handing bytes to the decoder.
+- Ordinary Markdown render replacement retains at most two detached GTK
+  generations plus one latest deferred request. Stale render plans,
+  unprojected batch tails, cancelled planner results, and superseded queued
+  sources finish plain-data destruction through the app-owned bounded disposal
+  lane, whose slots release on worker completion rather than a GTK callback;
+  readiness tracks those tasks as well as GTK retirement. Terminal transitions
+  may use one escape generation, and repeated terminal updates reuse it.
 - Workspace query ownership stays at one active worker group and one replaceable
   latest compact request. Accepted matches are sealed once into
   `Arc<Vec<SearchMatch>>`;
   Replace Preview recorded one shared handoff and zero whole-result clones.
+  Confirmation consumes the bounded outcome on a worker against stable checked
+  identities; the near-limit fixture selects 5,000 of 10,000 rows without
+  cloning the document-sized outcome on GTK.
 - Replacing, clearing, or closing a 10,000-result panel detaches the current
   model immediately. Retirement released at most 250 rows or cache references
   per GTK turn and took 81 arithmetic policy slices for the configured
@@ -68,6 +79,15 @@ scripts/run-performance-smoke.sh \
 - UTF-8 and UTF-16 analysis returns lossless immediately. Windows-1252 and
   Shift_JIS use one reusable exact no-replacement encoder while retaining total
   issue count and only the first eight diagnostics.
+- Palette rebuild independently retains at most 100,000 files and 100,000
+  distinct canonical directories. Directory admission precedes retention and
+  descent, aliases charge once, and directory-only fixtures assert the direct
+  high-water counter.
+- Workspace-search polling charges Match, Progress, ResultCap, Error, and Done
+  alike to a 250-event GTK-turn budget. Whole-buffer replacement establishes
+  mutation ownership before GTK delete/insert signals, so a synchronous first
+  signal can supersede either path without retaining or publishing an obsolete
+  partial body.
 
 ## Focused measurements
 
@@ -80,6 +100,24 @@ scripts/run-performance-smoke.sh \
 | Dense single Markdown block, explicit limited terminal | 46.910-50.187 us |
 | One incremental edit in a 100,000-record residency ledger | 11.456-11.967 ns |
 | Full clean 100,000-tab memory-policy scan | 1.1499-1.2423 ms |
+| Directory-only palette rebuild, 1,000 directories | 3.5545-4.1802 ms |
+| Directory-only palette rebuild, 10,000 directories | 41.967-44.926 ms |
+| Replace Preview generation, 10,000 rows | 1.0467-1.0909 ms |
+| Replace Preview half-checked worker selection, 10,000 rows | 275.03-282.51 us |
+| Markdown plan, closeout 10,000-paragraph fixture | 1.5858-1.6636 ms |
+| 1,000 rapid compact workspace queries, closeout | 19.968-20.905 us |
+| Retirement-budget arithmetic, closeout | 174.42-182.52 ns |
+
+The backlog closeout adds focused `file_index_rebuild/directory_only/*`,
+`replace_preview_generation/checked_selection_10k_half`, mixed-event unit,
+rapid Markdown retirement, and reentrant buffer replacement evidence. Run it
+with:
+
+```sh
+scripts/run-performance-smoke.sh \
+  --artifact-dir build/smoke/performance/bound-traversal-retirement-closeout \
+  --filter 'file_index_rebuild replace_preview_generation markdown_render_planning search_interactive_policies end_to_end_boundedness'
+```
 
 The Windows-1252 CRLF end-to-end write comparison changed from
 8.7098-9.0391 ms to 1.7795-1.8555 ms at 1 MiB, from 88.023-91.861 ms to
