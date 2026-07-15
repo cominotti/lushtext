@@ -15,6 +15,7 @@ use crate::model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
 use crate::services::file_peek::PeekRequestToken;
+use crate::services::file_tree::DirectoryRowState;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::workspace_watch::WorkspaceWatcher;
 use crate::ui::accessibility;
@@ -44,7 +45,7 @@ type WorkspaceCallback = Box<dyn Fn(&WorkspaceId)>;
 /// Cached position of a file tree item for O(1) model removal.
 /// Stores the parent directory (or `None` for configured top-level rows) and
 /// the index within the parent's `ListStore`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ItemLocation {
     /// Parent directory store containing the item; `None` means top-level folder row.
     pub parent_dir: Option<PathBuf>,
@@ -95,7 +96,7 @@ pub struct PeekSessionState {
 pub struct RefreshRuntimeState {
     /// Debounce used to drop stale refresh callbacks.
     pub debounce: Debounce,
-    /// Paths accumulated since the last refresh run.
+    /// Paths accumulated since the last refresh run, capped by watcher policy.
     pub pending_paths: RefCell<HashSet<PathBuf>>,
     /// Whether the next refresh must rebuild the whole current section view.
     pub pending_full_reload: Cell<bool>,
@@ -104,6 +105,21 @@ pub struct RefreshRuntimeState {
     /// Last scan failure shown to the user so repeated auto-refresh attempts do
     /// not spam the status bar while a folder remains unreadable.
     pub last_reported_error: RefCell<Option<String>>,
+    /// Accepted GTK reconciliation batches in the latest refresh lifecycle.
+    pub reconcile_batch_count: Cell<u64>,
+    /// Largest changed-row batch accepted in the latest refresh lifecycle.
+    pub reconcile_max_batch_rows: Cell<usize>,
+    /// Exact current reconciliation terminals published by this section.
+    pub reconcile_terminal_count: Cell<u64>,
+    /// Active batch sources retired because a newer scan superseded them.
+    pub reconcile_superseded_count: Cell<u64>,
+    /// Rows in the most recently accepted terminal child-cache replacement.
+    pub cache_rebuild_input_rows: Cell<usize>,
+    /// Plain map/row operations in that terminal child-cache replacement.
+    pub cache_rebuild_operations: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    /// Section-local delay between GTK reconciliation batches in lifecycle tests.
+    pub test_reconcile_batch_delay: Cell<std::time::Duration>,
 }
 
 /// Live filesystem-watch wiring for one workspace section.
@@ -119,9 +135,11 @@ pub struct WatchRuntimeState {
     pub(super) lifetime_generation: Cell<WatchLifetimeGeneration>,
     /// Generation owned by the installed watcher, or none during replacement.
     pub(super) installed_generation: Cell<Option<WatchTargetGeneration>>,
+    /// Current target generation whose watcher reached a terminal unavailable state.
+    pub(super) unavailable_generation: Cell<Option<WatchTargetGeneration>>,
     /// Whether this section already owns one watcher lifecycle worker.
     pub(super) worker_inflight: Cell<bool>,
-    /// GTK main-loop source that polls the watcher receiver without blocking.
+    /// GTK main-loop source that takes one mailbox notice without blocking.
     pub poll_source_id: RefCell<Option<glib::SourceId>>,
     /// Last watcher error shown to the user so repeated backend failures do not
     /// spam the status bar every poll tick.
@@ -135,6 +153,12 @@ pub struct WatchRuntimeState {
     #[cfg(feature = "test-utils")]
     /// Worker starts observed by this section for latest-only handoff tests.
     pub(super) test_worker_starts: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    /// Notices consumed by the most recent GTK poll callback (always zero or one).
+    pub(super) test_last_poll_notices: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    /// Permanently suppresses watcher restarts for deterministic manual-refresh tests.
+    pub(super) test_disabled: Cell<bool>,
 }
 
 /// Private template implementation for one workspace section.
@@ -227,6 +251,21 @@ pub struct LushtextWorkspaceSection {
     /// multiple visible tree rows. Each expanded row owns a scan token so one
     /// duplicate row cannot cancel another row's child-store population.
     pub child_scan_tokens: RefCell<HashMap<PathBuf, Vec<Arc<AtomicBool>>>>,
+    /// Direct store-to-token ownership used by batch freshness checks.
+    pub child_store_tokens: RefCell<HashMap<usize, Arc<AtomicBool>>>,
+    /// Weak identity guard for raw child-store pointer keys.
+    ///
+    /// GLib may reuse an address after GTK releases a collapsed child model, so
+    /// every keyed mirror must still match the weakly held store object.
+    pub child_store_refs: RefCell<HashMap<usize, glib::WeakRef<gio::ListStore>>>,
+    /// Plain row projection for each child store, keyed by guarded live identity.
+    pub child_row_mirrors: RefCell<HashMap<usize, Vec<DirectoryRowState>>>,
+    /// Parent directory identity for each retained child-store mirror.
+    pub child_store_paths: RefCell<HashMap<usize, PathBuf>>,
+    /// Scalar generation advanced with every accepted mirror splice.
+    pub child_row_mirror_generations: RefCell<HashMap<usize, u64>>,
+    /// Scheduled large-reconciliation source owned with its scan token.
+    pub child_reconcile_sources: RefCell<HashMap<usize, (Arc<AtomicBool>, glib::SourceId)>>,
     /// Ordered folder paths in the folder ListStore.
     pub folder_paths: RefCell<Vec<PathBuf>>,
     /// Ordered child paths per parent directory.
@@ -390,6 +429,7 @@ impl ObjectImpl for LushtextWorkspaceSection {
     fn dispose(&self) {
         self.obj().unregister_folder_reorder_section();
         self.obj().stop_workspace_watch();
+        super::tree_loading::clear_all_dir_state(&self.obj());
 
         if let Some(popover) = self.context_menu.borrow_mut().take() {
             popover.unparent();

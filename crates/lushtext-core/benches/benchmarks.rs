@@ -8,6 +8,9 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use gtk4::gio;
 use gtk4::prelude::ListModelExt;
+use notify_debouncer_full::notify::event::{AccessKind, AccessMode, CreateKind};
+use notify_debouncer_full::notify::{Event, EventKind};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
@@ -17,6 +20,9 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 use lushtext_core::model::bookmark::BookmarkRecord;
+use lushtext_core::model::buffer_replacement::{
+    BufferReplacementPlan, REPLACEMENT_CLEAR_SLICE_CHARS, REPLACEMENT_INSERT_SLICE_BYTES,
+};
 use lushtext_core::model::content_search::{
     ContentSearchOptions, Replacement, SearchMatch, SearchMatchId, generate_replacement_preview,
 };
@@ -26,11 +32,17 @@ use lushtext_core::model::editor_memory::{
     evaluate_editor_memory_budget,
 };
 use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
+use lushtext_core::model::file_load::{
+    FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadPriority,
+    TRANSIENT_LOAD_SHARED_BUDGET_BYTES, next_install_boundary, transient_load_weight,
+};
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
 use lushtext_core::model::migration_ledger::MigrationKind;
-use lushtext_core::model::palette::IndexedFile;
-use lushtext_core::model::palette::SearchMode;
+use lushtext_core::model::palette::{
+    IndexedFile, PaletteFileIdentity, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
+    PaletteOpenEditorNoteSnapshot, SearchMode, SearchResultItem,
+};
 use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
@@ -40,8 +52,12 @@ use lushtext_core::model::workspace::{
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
-use lushtext_core::services::file_tree::{self, DirectoryEntry};
-use lushtext_core::services::filesystem::{fixture, read as fs_read};
+use lushtext_core::services::file_tree::{
+    self, DirectoryEntry, DirectoryReconciliationPlan, DirectoryRowState,
+};
+use lushtext_core::services::filesystem::{
+    DirectoryScanPolicy, fixture, read as fs_read, tree as fs_tree,
+};
 use lushtext_core::services::json_format::KIND_LOCAL_HISTORY_INDEX;
 use lushtext_core::services::palette::{self, FileIndex};
 use lushtext_core::services::recent_documents;
@@ -49,12 +65,14 @@ use lushtext_core::services::recovery_metadata::{
     RecoveryLoadConfig, RecoveryMetadataClass, save_enveloped_json_path,
 };
 use lushtext_core::services::workspace_manager;
+use lushtext_core::services::workspace_watch::{WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchMailbox};
 use lushtext_core::services::{
     bookmark_service, draft_service,
     local_history_service::{self, LocalHistoryCapturePolicy},
     migration_ledger, session_service,
 };
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
+use lushtext_core::ui::sidebar::workspace_section::child_cache_rebuild_operation_evidence_for_benchmark;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -125,9 +143,16 @@ fn make_synthetic_index(n: usize) -> FileIndex {
         .map(|i| {
             let dir = dirs[i % dirs.len()];
             let ext = extensions[i % extensions.len()];
-            let name = format!("file_{i}.{ext}");
+            let name = if i % 1_000 == 0 {
+                format!("résumé-shared-{i:06}.md")
+            } else if i % 997 == 0 {
+                "equal-score-tie.rs".to_string()
+            } else {
+                format!("file_{i}.{ext}")
+            };
             let path = PathBuf::from(format!("/synthetic/project/{dir}/{name}"));
             IndexedFile {
+                identity: PaletteFileIdentity::canonical(path.clone()),
                 path,
                 name,
                 workspace_folder: Arc::clone(&root),
@@ -661,6 +686,148 @@ fn bench_file_index_search(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_palette_pipeline_hardening(c: &mut Criterion) {
+    let index = make_synthetic_index(100_000);
+    let evidence_cancel = palette::PaletteSearchCancellation::default();
+    let evidence = index.search_cancellable("file", 50, &evidence_cancel);
+    let evidence_metrics = evidence.metrics();
+    let coordinator = RefCell::new(palette::PaletteSearchCoordinator::default());
+    let active = coordinator
+        .borrow_mut()
+        .submit("file")
+        .expect("first benchmark query starts");
+    let replacements_submitted = Cell::new(false);
+    let cancelled = index.search_cancellable_with_progress(
+        active.request,
+        50,
+        &active.cancellation,
+        &|examined| {
+            if examined >= palette::PALETTE_CANCEL_CHECK_INTERVAL
+                && !replacements_submitted.replace(true)
+            {
+                for query in ["f", "fi", "file", "file_9", "file_99999"] {
+                    let _ = coordinator.borrow_mut().submit(query);
+                }
+            }
+        },
+    );
+    let palette::PaletteSearchOutcome::Cancelled {
+        metrics: cancelled_metrics,
+    } = cancelled
+    else {
+        panic!("evidence scan must cancel after deterministic progress");
+    };
+    let ownership = coordinator.borrow().snapshot();
+    let latest = coordinator
+        .borrow_mut()
+        .finish(active.generation)
+        .expect("latest benchmark query starts");
+    let ownership_after_handoff = coordinator.borrow().snapshot();
+    eprintln!(
+        "palette-pipeline-evidence corpus=100000 retained_peak={} examined={} matching={} cancelled_examined={} active_high_water={} pending_high_water={} started={} final_query={}",
+        evidence_metrics.peak_retained_per_source,
+        evidence_metrics.candidates_examined,
+        evidence_metrics.matching_candidates,
+        cancelled_metrics.candidates_examined,
+        ownership.active_high_water,
+        ownership.pending_high_water,
+        ownership_after_handoff.started,
+        latest.request,
+    );
+
+    let mut group = c.benchmark_group("palette_pipeline_hardening_100000");
+    group.sample_size(20);
+    for (case, query) in [
+        ("high_hit", "file"),
+        ("medium_hit", "file_42"),
+        ("unicode", "résumé"),
+        ("ties", "equal-score-tie"),
+        ("no_hit", "zzqvv"),
+    ] {
+        for limit in [1usize, 10, 50, 500] {
+            group.bench_function(format!("bounded/{case}/limit_{limit}"), |b| {
+                b.iter(|| black_box(index.search(black_box(query), black_box(limit))));
+            });
+            group.bench_function(format!("full_sort_reference/{case}/limit_{limit}"), |b| {
+                b.iter(|| {
+                    black_box(index.search_full_sort_reference(black_box(query), black_box(limit)))
+                });
+            });
+        }
+    }
+
+    group.bench_function("cancelled_before_scan", |b| {
+        b.iter(|| {
+            let cancellation = palette::PaletteSearchCancellation::default();
+            let _ = cancellation.cancel();
+            black_box(index.search_cancellable("file", 50, &cancellation))
+        });
+    });
+    group.bench_function("cancelled_during_scan", |b| {
+        b.iter(|| {
+            let cancellation = palette::PaletteSearchCancellation::default();
+            let cancellation_requested = Cell::new(false);
+            let outcome =
+                index.search_cancellable_with_progress("file", 50, &cancellation, &|examined| {
+                    if examined >= palette::PALETTE_CANCEL_CHECK_INTERVAL
+                        && !cancellation_requested.replace(true)
+                    {
+                        let _ = cancellation.cancel();
+                    }
+                });
+            let palette::PaletteSearchOutcome::Cancelled { metrics } = outcome else {
+                panic!("checkpoint hook must cancel an active scan");
+            };
+            assert_eq!(
+                metrics.candidates_examined,
+                palette::PALETTE_CANCEL_CHECK_INTERVAL
+            );
+            black_box(metrics)
+        });
+    });
+    group.bench_function("rapid_latest_query_replacement", |b| {
+        b.iter(|| {
+            let coordinator = RefCell::new(palette::PaletteSearchCoordinator::default());
+            let active = coordinator
+                .borrow_mut()
+                .submit("file")
+                .expect("first query starts");
+            let replacements_submitted = Cell::new(false);
+            let cancelled = index.search_cancellable_with_progress(
+                active.request,
+                50,
+                &active.cancellation,
+                &|examined| {
+                    if examined >= palette::PALETTE_CANCEL_CHECK_INTERVAL
+                        && !replacements_submitted.replace(true)
+                    {
+                        for query in ["f", "fi", "fil", "file", "file_9", "file_99999"] {
+                            let _ = coordinator.borrow_mut().submit(query);
+                        }
+                    }
+                },
+            );
+            assert!(matches!(
+                cancelled,
+                palette::PaletteSearchOutcome::Cancelled { .. }
+            ));
+            let latest = coordinator
+                .borrow_mut()
+                .finish(active.generation)
+                .expect("latest query starts");
+            let rows = index.search(latest.request, 50);
+            let _ = coordinator.borrow_mut().finish(latest.generation);
+            let snapshot = coordinator.borrow().snapshot();
+            assert_eq!(snapshot.active_high_water, 1);
+            assert_eq!(snapshot.pending_high_water, 1);
+            assert_eq!(snapshot.active, 0);
+            assert_eq!(snapshot.pending, 0);
+            black_box((rows, snapshot))
+        });
+    });
+    group.finish();
+}
+
 fn bench_file_index_rebuild(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_index_rebuild");
     group.sample_size(20);
@@ -677,6 +844,259 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
             );
         });
     }
+    group.finish();
+}
+
+fn bench_end_to_end_boundedness(c: &mut Criterion) {
+    let flat = make_flat_dir(10_000);
+    let cancellation = palette::PaletteSearchCancellation::default();
+    let file_outcome = FileIndex::rebuild_cancellable_with_hint(
+        &[flat.path().to_path_buf()],
+        10_000,
+        &cancellation,
+    );
+    let palette::FileIndexBuildOutcome::Complete {
+        index: file_index,
+        metrics: file_metrics,
+    } = file_outcome
+    else {
+        panic!("fresh file-index evidence must complete");
+    };
+    assert!(file_metrics.retained_files <= palette::MAX_INDEXED_FILES);
+    assert!(file_metrics.peak_retained_directory_entries <= palette::MAX_INDEXED_FILES);
+
+    let entry_bodies = (0..=palette::MAX_PALETTE_NOTE_ENTRIES)
+        .map(|index| format!("note-{index:05}"))
+        .collect::<Vec<_>>();
+    let entry_outcome = palette::admit_synthetic_note_bodies_for_benchmark(&entry_bodies, None);
+    let palette::PaletteNoteSourceOutcome::Complete {
+        metrics: entry_metrics,
+        ..
+    } = &entry_outcome
+    else {
+        panic!("entry-budget evidence must complete");
+    };
+    assert_eq!(
+        entry_metrics.retained_entries,
+        palette::MAX_PALETTE_NOTE_ENTRIES
+    );
+
+    let byte_bodies = (0..65).map(|_| "n".repeat(1024 * 1024)).collect::<Vec<_>>();
+    let byte_outcome = palette::admit_synthetic_note_bodies_for_benchmark(&byte_bodies, None);
+    let palette::PaletteNoteSourceOutcome::Complete {
+        metrics: byte_metrics,
+        ..
+    } = &byte_outcome
+    else {
+        panic!("byte-budget evidence must complete");
+    };
+    assert!(byte_metrics.retained_searchable_bytes <= palette::MAX_PALETTE_NOTE_TEXT_BYTES);
+    let cancelled_outcome =
+        palette::admit_synthetic_note_bodies_for_benchmark(&entry_bodies, Some(256));
+    let palette::PaletteNoteSourceOutcome::Cancelled {
+        metrics: cancelled_note_metrics,
+    } = &cancelled_outcome
+    else {
+        panic!("deterministic note-source cancellation must cancel");
+    };
+    assert_eq!(cancelled_note_metrics.retained_entries, 256);
+
+    let excluded_path = file_index.files()[0]
+        .identity
+        .canonical_path()
+        .expect("benchmark index identities are canonical")
+        .to_path_buf();
+    let excluded = HashSet::from([excluded_path.clone()]);
+    let exclusion = file_index.search_cancellable_excluding(
+        "",
+        1,
+        &excluded,
+        &palette::PaletteSearchCancellation::default(),
+    );
+    let exclusion_metrics = exclusion.metrics();
+    let palette::PaletteSearchOutcome::Complete { value: rows, .. } = exclusion else {
+        panic!("fresh canonical exclusion must complete");
+    };
+    assert_eq!(rows.len(), 1);
+    let SearchResultItem::File(fallback) = rows[0].item else {
+        panic!("file-index exclusion must return a file row");
+    };
+    assert_ne!(
+        fallback.identity.canonical_path(),
+        Some(excluded_path.as_path())
+    );
+
+    let request = palette::FileIndexBuildRequest {
+        workspace_folders: Arc::from([flat.path().to_path_buf()]),
+        capacity_hint: 10_000,
+    };
+    let mut file_coordinator = palette::FileIndexBuildCoordinator::default();
+    let active = file_coordinator
+        .submit(request.clone())
+        .expect("first build starts");
+    for capacity_hint in [1, 10, 100, 1_000, 10_000] {
+        let mut latest = request.clone();
+        latest.capacity_hint = capacity_hint;
+        let _ = file_coordinator.submit(latest);
+    }
+    let latest = file_coordinator
+        .finish(active.generation)
+        .expect("latest build starts after active terminal");
+    assert_eq!(latest.request.capacity_hint, 10_000);
+    let file_ownership = file_coordinator.snapshot();
+    assert_eq!((file_ownership.active, file_ownership.pending), (1, 0));
+
+    let scope_snapshot = WorkspacesFile::default().current_scope_snapshot();
+    let note_request = palette::NoteSourceRefreshRequest {
+        data_dir: flat.path().to_path_buf(),
+        scope_snapshot,
+        open_editor_snapshots: Arc::from(Vec::<PaletteOpenEditorNoteSnapshot>::new()),
+        limits: palette::PALETTE_NOTE_SOURCE_LIMITS,
+    };
+    let mut note_coordinator = palette::NoteSourceRefreshCoordinator::default();
+    let active_note = note_coordinator
+        .submit(note_request.clone())
+        .expect("first note refresh starts");
+    for _ in 0..5 {
+        let _ = note_coordinator.submit(note_request.clone());
+    }
+    let _latest_note = note_coordinator
+        .finish(active_note.generation)
+        .expect("latest note refresh starts");
+    let note_ownership = note_coordinator.snapshot();
+    assert_eq!((note_ownership.active, note_ownership.pending), (1, 0));
+
+    let page = fs_tree::scan_directory_page_after(
+        flat.path(),
+        None,
+        DirectoryScanPolicy {
+            max_entries: 2_048,
+            include_hidden: false,
+        },
+    )
+    .expect("bounded directory page");
+    assert_eq!(page.entries.len(), 2_048);
+    assert!(page.has_more);
+
+    let current_rows = (0..10_000)
+        .map(|index| DirectoryRowState {
+            path: Some(PathBuf::from(format!("row-{index:05}"))),
+            is_dir: false,
+            is_empty: None,
+            is_placeholder: false,
+        })
+        .collect::<Vec<_>>();
+    let mut desired_rows = current_rows.clone();
+    desired_rows.splice(
+        2_500..7_500,
+        (0..5_000).map(|index| DirectoryRowState {
+            path: Some(PathBuf::from(format!("changed-{index:05}"))),
+            is_dir: false,
+            is_empty: None,
+            is_placeholder: false,
+        }),
+    );
+    let reconciliation = file_tree::plan_directory_reconciliation(&current_rows, &desired_rows);
+    let DirectoryReconciliationPlan::Splice {
+        removed,
+        replacement,
+        ..
+    } = &reconciliation
+    else {
+        panic!("broad reconciliation must produce one compact splice");
+    };
+    assert_eq!((*removed, replacement.len()), (5_000, 5_000));
+
+    let replacement_plan = BufferReplacementPlan::for_sizes(2_000_000, 2_000_000);
+    eprintln!(
+        "end-to-end-boundedness-evidence flat_entries=10000 retained_files={} file_peak_rows={} note_entries={} note_bytes={} cancelled_note_entries={} canonical_examined={} file_active={} file_pending={} note_active={} note_pending={} cleanup_page={} cleanup_has_more={} reconcile_removed={} reconcile_inserted={} replacement_mode={:?} clear_slice_chars={} insert_slice_bytes={}",
+        file_metrics.retained_files,
+        file_metrics.peak_retained_directory_entries,
+        entry_metrics.retained_entries,
+        byte_metrics.retained_searchable_bytes,
+        cancelled_note_metrics.retained_entries,
+        exclusion_metrics.candidates_examined,
+        file_ownership.active,
+        file_ownership.pending,
+        note_ownership.active,
+        note_ownership.pending,
+        page.entries.len(),
+        page.has_more,
+        removed,
+        replacement.len(),
+        replacement_plan.mode,
+        REPLACEMENT_CLEAR_SLICE_CHARS,
+        REPLACEMENT_INSERT_SLICE_BYTES,
+    );
+
+    let mut group = c.benchmark_group("end_to_end_boundedness");
+    group.sample_size(10);
+    group.bench_function("file_index/flat_10000", |b| {
+        b.iter(|| {
+            black_box(FileIndex::rebuild_cancellable_with_hint(
+                black_box(&[flat.path().to_path_buf()]),
+                10_000,
+                &palette::PaletteSearchCancellation::default(),
+            ))
+        });
+    });
+    group.bench_function("note_source/entry_budget", |b| {
+        b.iter(|| {
+            black_box(palette::admit_synthetic_note_bodies_for_benchmark(
+                black_box(&entry_bodies),
+                None,
+            ))
+        });
+    });
+    group.bench_function("note_source/byte_budget", |b| {
+        b.iter(|| {
+            black_box(palette::admit_synthetic_note_bodies_for_benchmark(
+                black_box(&byte_bodies),
+                None,
+            ))
+        });
+    });
+    group.bench_function("note_source/cancel_after_256", |b| {
+        b.iter(|| {
+            black_box(palette::admit_synthetic_note_bodies_for_benchmark(
+                black_box(&entry_bodies),
+                Some(256),
+            ))
+        });
+    });
+    group.bench_function("canonical_exclusion/before_top_one", |b| {
+        b.iter(|| {
+            black_box(file_index.search_cancellable_excluding(
+                "",
+                1,
+                black_box(&excluded),
+                &palette::PaletteSearchCancellation::default(),
+            ))
+        });
+    });
+    group.bench_function("cleanup_page/flat_10000_cap_2048", |b| {
+        b.iter(|| {
+            black_box(fs_tree::scan_directory_page_after(
+                flat.path(),
+                None,
+                DirectoryScanPolicy {
+                    max_entries: 2_048,
+                    include_hidden: false,
+                },
+            ))
+        });
+    });
+    group.bench_function("tree_reconciliation/middle_10000", |b| {
+        b.iter(|| {
+            black_box(file_tree::plan_directory_reconciliation(
+                black_box(&current_rows),
+                black_box(&desired_rows),
+            ))
+        });
+    });
+    group.bench_function("buffer_replacement/policy_large_unicode_bytes", |b| {
+        b.iter(|| black_box(BufferReplacementPlan::for_sizes(2_000_000, 2_000_000)));
+    });
     group.finish();
 }
 
@@ -1199,6 +1619,9 @@ fn bench_file_index_incremental(c: &mut Criterion) {
                     let root = Arc::new(PathBuf::from("/synthetic/project"));
                     let new_file = IndexedFile {
                         path: PathBuf::from("/synthetic/project/src/new_file.rs"),
+                        identity: PaletteFileIdentity::canonical(PathBuf::from(
+                            "/synthetic/project/src/new_file.rs",
+                        )),
                         name: "new_file.rs".to_string(),
                         workspace_folder: root,
                     };
@@ -1513,6 +1936,7 @@ fn bench_draft_restore(c: &mut Criterion) {
                             saved_at_secs: 1000,
                         })
                         .collect(),
+                    cleanup_continuation: None,
                 };
                 b.iter(|| {
                     draft_service::inspect_orphan_cleanup(
@@ -1552,6 +1976,7 @@ fn bench_draft_restore(c: &mut Criterion) {
                     b.iter_batched(
                         || DraftManifest {
                             drafts: entries.clone(),
+                            cleanup_continuation: None,
                         },
                         |mut manifest| {
                             draft_service::merge_committed_orphan_removals(
@@ -1866,6 +2291,403 @@ fn bench_content_search_smoke(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Transient file-load admission and bounded installation planning
+// ---------------------------------------------------------------------------
+
+fn run_transient_load_policy(weights: &[u64], cancel_even: bool) -> (u64, usize) {
+    let mut policy = FileLoadAdmissionPolicy::default();
+    for (index, weight) in weights.iter().copied().enumerate() {
+        let request_id = u64::try_from(index + 1).expect("benchmark request id");
+        policy.queue(FileLoadAdmissionRequest {
+            request_id,
+            owner_id: request_id,
+            sequence: request_id,
+            weight,
+            priority: if index % 7 == 0 {
+                FileLoadPriority::Active
+            } else {
+                FileLoadPriority::Normal
+            },
+        });
+        if cancel_even && index % 2 == 0 {
+            assert!(policy.cancel_queued(request_id));
+        }
+    }
+
+    let mut active = VecDeque::new();
+    loop {
+        if let Some(grant) = policy.admit_next(false) {
+            active.push_back(grant.request_id);
+            continue;
+        }
+        if let Some(request_id) = active.pop_front() {
+            assert!(policy.release(request_id));
+            continue;
+        }
+        break;
+    }
+    let snapshot = policy.snapshot();
+    (snapshot.high_water_weight, snapshot.queued_count)
+}
+
+fn bench_transient_file_load(c: &mut Criterion) {
+    let evidence_weights = [transient_load_weight(8 * 1024 * 1024); 8];
+    let mut evidence_policy = FileLoadAdmissionPolicy::default();
+    for (index, weight) in evidence_weights.iter().copied().enumerate() {
+        let request_id = u64::try_from(index + 1).expect("evidence request id");
+        evidence_policy.queue(FileLoadAdmissionRequest {
+            request_id,
+            owner_id: request_id,
+            sequence: request_id,
+            weight,
+            priority: FileLoadPriority::Normal,
+        });
+    }
+    while evidence_policy.admit_next(false).is_some() {}
+    let evidence = evidence_policy.snapshot();
+    eprintln!(
+        "transient-load-policy-evidence active_payload_weight={} queued_scalar_count={} high_water_weight={} shared_budget={}",
+        evidence.active_weight,
+        evidence.queued_count,
+        evidence.high_water_weight,
+        TRANSIENT_LOAD_SHARED_BUDGET_BYTES
+    );
+
+    let mut group = c.benchmark_group("transient_file_load");
+    let many_small = vec![transient_load_weight(64 * 1024); 512];
+    group.bench_function("admission/many_small_512", |b| {
+        b.iter(|| black_box(run_transient_load_policy(&many_small, false)));
+    });
+
+    let concurrent_large = vec![transient_load_weight(8 * 1024 * 1024); 8];
+    group.bench_function("admission/concurrent_large_8", |b| {
+        b.iter(|| black_box(run_transient_load_policy(&concurrent_large, false)));
+    });
+
+    let exclusive_near_limit = [transient_load_weight(
+        lushtext_core::services::file_limits::REFUSE_TO_OPEN - 1,
+    )];
+    group.bench_function("admission/exclusive_near_supported_limit", |b| {
+        b.iter(|| black_box(run_transient_load_policy(&exclusive_near_limit, false)));
+    });
+
+    let stale_queue = vec![transient_load_weight(256 * 1024); 1024];
+    group.bench_function("admission/stale_queued_1024", |b| {
+        b.iter(|| black_box(run_transient_load_policy(&stale_queue, true)));
+    });
+
+    let pattern = "🙂é\n";
+    let unicode_text = pattern.repeat((50 * 1024 * 1024) / pattern.len());
+    group.bench_function("install_boundaries/unicode_50_mib", |b| {
+        b.iter(|| {
+            let mut start = 0;
+            let mut slices = 0u64;
+            while start < unicode_text.len() {
+                start = next_install_boundary(black_box(&unicode_text), start);
+                slices = slices.saturating_add(1);
+            }
+            black_box(slices)
+        });
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Bounded workspace watcher normalization and mailbox pressure
+// ---------------------------------------------------------------------------
+
+fn awkward_watch_paths(count: usize) -> Vec<PathBuf> {
+    (0..count)
+        .map(|index| {
+            PathBuf::from(format!(
+                "/tmp/workspace-🙂/deep/one/two/three/four/five/six/seven/é-{index}.rs"
+            ))
+        })
+        .collect()
+}
+
+fn raw_watch_events(paths: &[PathBuf]) -> Vec<Event> {
+    let mut events = Vec::with_capacity(paths.len() * 3);
+    for path in paths {
+        let created = Event::new(EventKind::Create(CreateKind::File)).add_path(path.clone());
+        events.push(created.clone());
+        events.push(created);
+        events.push(
+            Event::new(EventKind::Access(AccessKind::Open(AccessMode::Read)))
+                .add_path(path.clone()),
+        );
+    }
+    events
+}
+
+fn run_watch_pressure(batches: &[Vec<PathBuf>], poll_every: usize) -> (usize, usize, usize) {
+    let mailbox = WorkspaceWatchMailbox::new();
+    let mut promotions = 0usize;
+    let mut notices = 0usize;
+    let mut max_retained = 0usize;
+    let mut full_refresh_pending = false;
+    for (index, batch) in batches.iter().enumerate() {
+        mailbox.merge_paths(batch.iter().cloned());
+        let snapshot = mailbox.snapshot();
+        if snapshot.full_refresh && !full_refresh_pending {
+            promotions += 1;
+        }
+        full_refresh_pending = snapshot.full_refresh;
+        max_retained = max_retained.max(snapshot.retained_paths);
+        if (index + 1) % poll_every == 0 && mailbox.take_notice().is_some() {
+            notices += 1;
+            full_refresh_pending = false;
+        }
+    }
+    notices += usize::from(mailbox.take_notice().is_some());
+    (promotions, notices, max_retained)
+}
+
+fn bench_workspace_watch_pressure(c: &mut Criterion) {
+    let evidence = WorkspaceWatchMailbox::new();
+    evidence.merge_paths(awkward_watch_paths(WORKSPACE_WATCH_PATH_CAP + 1));
+    let snapshot = evidence.snapshot();
+    eprintln!(
+        "workspace-watch-pressure-evidence path_cap={} retained_paths={} full_refresh={} notices_per_poll_max=1",
+        WORKSPACE_WATCH_PATH_CAP, snapshot.retained_paths, snapshot.full_refresh
+    );
+
+    let mut group = c.benchmark_group("workspace_watch_pressure");
+    let awkward = raw_watch_events(&awkward_watch_paths(WORKSPACE_WATCH_PATH_CAP / 2));
+    group.bench_function("normalize_merge/duplicate_unicode_deep_512", |b| {
+        b.iter_batched(
+            || awkward.clone(),
+            |events: Vec<Event>| {
+                let mailbox = WorkspaceWatchMailbox::new();
+                for event in events {
+                    mailbox.merge_backend_result_for_benchmark(Ok(event));
+                }
+                black_box(mailbox.snapshot())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let raw_overflow = raw_watch_events(&awkward_watch_paths(WORKSPACE_WATCH_PATH_CAP + 1));
+    group.bench_function("normalize_merge/raw_cap_plus_one_promotes", |b| {
+        b.iter_batched(
+            || raw_overflow.clone(),
+            |events: Vec<Event>| {
+                let mailbox = WorkspaceWatchMailbox::new();
+                for event in events {
+                    mailbox.merge_backend_result_for_benchmark(Ok(event));
+                }
+                black_box(mailbox.snapshot())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let batches = (0..32)
+        .map(|batch| {
+            (0..64)
+                .map(|index| PathBuf::from(format!("/tmp/batch-{batch}/path-{index}")))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (name, poll_every) in [
+        ("consumer_faster/poll_each_batch", 1usize),
+        ("producer_equal/poll_every_four_batches", 4usize),
+        ("producer_faster/no_poll_until_end", usize::MAX),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| black_box(run_watch_pressure(black_box(&batches), poll_every)));
+        });
+    }
+
+    let overflow = awkward_watch_paths(WORKSPACE_WATCH_PATH_CAP + 1);
+    group.bench_function("promotion/unique_paths_cap_plus_one", |b| {
+        b.iter(|| {
+            let mailbox = WorkspaceWatchMailbox::new();
+            mailbox.merge_paths(overflow.iter().cloned());
+            black_box(mailbox.snapshot())
+        });
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Remaining quality-gap scale evidence
+// ---------------------------------------------------------------------------
+
+fn synthetic_notes_browser_entries(count: usize) -> Vec<PaletteNoteEntry> {
+    (0..count)
+        .map(|index| PaletteNoteEntry {
+            category: PaletteNoteCategory::DocumentNotes,
+            title: format!("Document Note {index:05}"),
+            subtitle: format!("Workspace / synthetic-{index:05}.md"),
+            detail: Some("calibration row".to_string()),
+            note_text: Some(format!(
+                "bounded searchable body {index:05} {}",
+                "x".repeat(192)
+            )),
+            target: PaletteNoteTarget::DocumentNote {
+                path: PathBuf::from(format!("/benchmark/synthetic-{index:05}.md")),
+                workspace_folders: vec![PathBuf::from("/benchmark")],
+            },
+        })
+        .collect()
+}
+
+fn bench_quality_gap_scale(c: &mut Criterion) {
+    const NOTE_ROWS: usize = 10_000;
+    const NOTE_RENDER_CAP: usize = 500;
+    const PREVIEW_BYTES: usize = 4 * 1024 * 1024;
+    const CACHE_ROWS: usize = 10_000;
+
+    let note_entries = synthetic_notes_browser_entries(NOTE_ROWS);
+    let note_bytes = note_entries
+        .iter()
+        .map(|entry| {
+            entry.title.len()
+                + entry.subtitle.len()
+                + entry.detail.as_ref().map_or(0, String::len)
+                + entry.note_text.as_ref().map_or(0, String::len)
+        })
+        .sum::<usize>();
+    let note_request = palette::NotesBrowserQueryRequest {
+        query: "needle that is absent".to_string(),
+    };
+    let note_outcome = palette::query_notes_browser_source(
+        &note_entries,
+        &note_request,
+        NOTE_RENDER_CAP,
+        &palette::PaletteSearchCancellation::default(),
+    );
+    let note_metrics = note_outcome.metrics();
+    let mut note_coordinator = palette::NotesBrowserQueryCoordinator::default();
+    let active_note = note_coordinator
+        .submit(note_request.clone())
+        .expect("first Notes query starts");
+    for index in 0..32 {
+        let _ = note_coordinator.submit(palette::NotesBrowserQueryRequest {
+            query: format!("latest-{index}"),
+        });
+    }
+    let note_ownership = note_coordinator.snapshot();
+    let _ = note_coordinator.finish(active_note.generation);
+
+    let preview_dir = TempDir::new().expect("preview benchmark data dir");
+    let preview_path = preview_dir.path().join("preview-source.txt");
+    fixture::write_text(&preview_path, "current\n");
+    let preview_text = format!("preview 🙂 {}", "p".repeat(PREVIEW_BYTES));
+    local_history_service::capture_snapshot_for_path(
+        preview_dir.path(),
+        &preview_path,
+        &preview_text,
+        LocalHistorySnapshotOrigin::Save,
+        LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed preview benchmark snapshot");
+    let preview_id =
+        local_history_service::list_snapshots_for_path(preview_dir.path(), &preview_path)
+            .expect("list preview benchmark snapshots")
+            .into_iter()
+            .next()
+            .expect("preview benchmark snapshot")
+            .snapshot_id;
+    let preview_cancellation = local_history_service::LocalHistoryPreviewCancellation::default();
+    let preview_outcome = local_history_service::load_snapshot_for_path_cancellable(
+        preview_dir.path(),
+        &preview_path,
+        &preview_id,
+        &preview_cancellation,
+    )
+    .expect("load preview benchmark snapshot");
+    let local_history_service::LocalHistoryPreviewLoadOutcome::Loaded(preview) = preview_outcome
+    else {
+        panic!("preview benchmark snapshot must load");
+    };
+    let mut preview_offset = 0;
+    let mut preview_slices = 0usize;
+    while preview_offset < preview.text.len() {
+        preview_offset = next_install_boundary(&preview.text, preview_offset);
+        preview_slices = preview_slices.saturating_add(1);
+    }
+    let mut preview_coordinator = local_history_service::LocalHistoryPreviewCoordinator::default();
+    let active_preview = preview_coordinator
+        .submit(local_history_service::LocalHistoryPreviewRequest {
+            path: preview_path.clone(),
+            snapshot_id: preview_id.clone(),
+        })
+        .expect("first preview starts");
+    for index in 0..32 {
+        let _ = preview_coordinator.submit(local_history_service::LocalHistoryPreviewRequest {
+            path: preview_path.clone(),
+            snapshot_id: format!("latest-{index}"),
+        });
+    }
+    let preview_ownership = preview_coordinator.snapshot();
+    let _ = preview_coordinator.finish(active_preview.generation);
+
+    let raw_events = raw_watch_events(&awkward_watch_paths(WORKSPACE_WATCH_PATH_CAP / 2));
+    let watcher = WorkspaceWatchMailbox::new();
+    for event in raw_events.iter().cloned() {
+        watcher.merge_backend_result_for_benchmark(Ok(event));
+    }
+    let watcher_snapshot = watcher.snapshot();
+    let (cache_input_rows, cache_operations) =
+        child_cache_rebuild_operation_evidence_for_benchmark(CACHE_ROWS);
+    assert!(cache_operations <= cache_input_rows.saturating_mul(8));
+
+    eprintln!(
+        "quality-gap-scale-evidence notes_entries={} notes_searchable_bytes={} notes_examined={} notes_active={} notes_pending={} preview_bytes={} preview_slices={} preview_retained_payloads=1 preview_active={} preview_pending={} raw_watcher_events={} watcher_retained_paths={} cache_input_rows={} cache_operations={}",
+        note_entries.len(),
+        note_bytes,
+        note_metrics.candidates_examined,
+        note_ownership.active,
+        note_ownership.pending,
+        preview.text.len(),
+        preview_slices,
+        preview_ownership.active,
+        preview_ownership.pending,
+        raw_events.len(),
+        watcher_snapshot.retained_paths,
+        cache_input_rows,
+        cache_operations,
+    );
+
+    let mut group = c.benchmark_group("quality_gap_scale");
+    group.sample_size(10);
+    group.bench_function("notes_browser/no_match_10000", |b| {
+        b.iter(|| {
+            black_box(palette::query_notes_browser_source(
+                black_box(&note_entries),
+                black_box(&note_request),
+                NOTE_RENDER_CAP,
+                &palette::PaletteSearchCancellation::default(),
+            ))
+        });
+    });
+    group.bench_function("local_history_preview/read_4_mib", |b| {
+        b.iter(|| {
+            black_box(
+                local_history_service::load_snapshot_for_path_cancellable(
+                    preview_dir.path(),
+                    &preview_path,
+                    &preview_id,
+                    &local_history_service::LocalHistoryPreviewCancellation::default(),
+                )
+                .expect("benchmark preview read"),
+            )
+        });
+    });
+    group.bench_function("workspace_cache/terminal_rebuild_10000", |b| {
+        b.iter(|| {
+            black_box(child_cache_rebuild_operation_evidence_for_benchmark(
+                CACHE_ROWS,
+            ))
+        });
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -1874,7 +2696,9 @@ criterion_group!(
     bench_fuzzy_score,
     bench_recent_document_search,
     bench_file_index_search,
+    bench_palette_pipeline_hardening,
     bench_file_index_rebuild,
+    bench_end_to_end_boundedness,
     bench_file_index_incremental,
     bench_search_all,
     bench_scan_directory,
@@ -1891,5 +2715,8 @@ criterion_group!(
     bench_recovery_performance,
     bench_content_search,
     bench_content_search_smoke,
+    bench_transient_file_load,
+    bench_workspace_watch_pressure,
+    bench_quality_gap_scale,
 );
 criterion_main!(benches);

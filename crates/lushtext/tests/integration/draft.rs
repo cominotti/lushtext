@@ -131,6 +131,7 @@ fn cleanup_removes_manifest_entries_without_draft_files() {
             original_mtime_secs: None,
             saved_at_secs: 1000,
         }],
+        cleanup_continuation: None,
     };
 
     draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
@@ -183,6 +184,7 @@ fn cleanup_preserves_valid_drafts() {
             original_mtime_secs: None,
             saved_at_secs: 1000,
         }],
+        cleanup_continuation: None,
     };
 
     draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
@@ -252,6 +254,7 @@ fn manifest_find_by_path_with_multiple_entries() {
                 saved_at_secs: 3000,
             },
         ],
+        cleanup_continuation: None,
     };
 
     assert_eq!(
@@ -285,6 +288,7 @@ fn manifest_remove_by_path_leaves_others_intact() {
                 saved_at_secs: 2000,
             },
         ],
+        cleanup_continuation: None,
     };
 
     assert!(manifest.remove_by_path(std::path::Path::new("/a.rs")));
@@ -318,6 +322,7 @@ fn cleanup_preserves_body_when_manifest_entry_appears_after_inspection() {
         ctx.data_dir(),
         &DraftManifest {
             drafts: vec![new_entry.clone()],
+            cleanup_continuation: None,
         },
     )
     .expect("commit concurrent manifest entry");
@@ -371,6 +376,7 @@ fn cleanup_preserves_manifest_when_body_reappears_after_inspection() {
     };
     let manifest = DraftManifest {
         drafts: vec![entry.clone()],
+        cleanup_continuation: None,
     };
     draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
@@ -404,7 +410,10 @@ fn cleanup_preserves_newer_same_id_generation() {
         original_mtime_secs: Some(2),
         saved_at_secs: 2,
     };
-    let old_manifest = DraftManifest { drafts: vec![old] };
+    let old_manifest = DraftManifest {
+        drafts: vec![old],
+        cleanup_continuation: None,
+    };
     draft_service::save_manifest(ctx.data_dir(), &old_manifest).expect("seed old manifest");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &old_manifest)
         .expect("inspect old generation");
@@ -412,6 +421,7 @@ fn cleanup_preserves_newer_same_id_generation() {
         ctx.data_dir(),
         &DraftManifest {
             drafts: vec![newer.clone()],
+            cleanup_continuation: None,
         },
     )
     .expect("commit newer generation");
@@ -501,6 +511,7 @@ fn cleanup_reports_manifest_write_failure_without_committing_removal() {
     };
     let manifest = DraftManifest {
         drafts: vec![entry.clone()],
+        cleanup_continuation: None,
     };
     draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
@@ -557,6 +568,7 @@ fn batch_preload_reads_matching_drafts() {
                 saved_at_secs: 1000,
             },
         ],
+        cleanup_continuation: None,
     };
 
     // Simulate the batch preload loop from load_session_and_drafts.
@@ -587,6 +599,7 @@ fn batch_preload_skips_missing_draft_files() {
             original_mtime_secs: None,
             saved_at_secs: 1000,
         }],
+        cleanup_continuation: None,
     };
 
     let mut preloaded = std::collections::HashMap::new();

@@ -319,3 +319,108 @@ Every chunked snapshot consumer SHALL choose an explicit cancellation policy app
 - **WHEN** a save freezes the editor while chunked snapshotting runs
 - **THEN** success proceeds with one coherent snapshot
 - **AND** cancellation or failure restores the prior editable and cursor-visible state without clearing modified content
+
+### Requirement: Large file installation yields in bounded GTK slices
+Installing a decoded document above the synchronous installation threshold SHALL use bounded main-loop slices. The editor SHALL remain non-editable and projections that would amplify each insertion SHALL remain suspended until the complete current generation is installed or the operation is cancelled.
+
+#### Scenario: Large decoded text is installed
+- **WHEN** an admitted load returns text above the synchronous installation threshold
+- **THEN** GTK inserts the text in bounded slices with scheduling points between them
+- **AND** syntax, minimap, history, draft, monitor, and modified-state finalization run only after the complete current generation is present
+
+#### Scenario: Load is cancelled during installation
+- **WHEN** the tab closes, reloads, or advances generation between installation slices
+- **THEN** remaining slices stop without applying final loaded state
+- **AND** admission ownership and retained decoded text are released
+
+#### Scenario: Small load remains direct
+- **WHEN** decoded text is below the synchronous installation threshold
+- **THEN** the existing direct installation path may run in one GTK turn
+- **AND** it observes the same generation and finalization rules as chunked installation
+
+### Requirement: File reads enforce allocation limits at ingestion
+File loading MUST enforce the supported byte limit while reading, not solely through earlier metadata. Growth or replacement after the metadata phase MUST terminate with a typed size or freshness outcome without allocating beyond bounded sentinel overhead.
+
+#### Scenario: File grows after load planning
+- **WHEN** a file becomes larger than the supported limit after metadata admission but before or during its read
+- **THEN** ingestion stops at the configured limit plus bounded detection overhead
+- **AND** no oversized decoded payload reaches GTK
+
+#### Scenario: File identity changes after planning
+- **WHEN** the stable file facts no longer match the admitted load plan
+- **THEN** the stale read result is rejected or safely replanned
+- **AND** it cannot replace a newer editor generation
+
+### Requirement: Large transient UI state avoids long GTK ownership transitions
+The system SHALL keep filtering, installation, cache rebuilding, and destruction work proportional to large retained text or collections out of one uninterrupted GTK main-loop turn. Accepted UI state MUST remain generation- and lifetime-checked, and stale large payloads MUST be released without making GTK perform their final allocator teardown.
+
+#### Scenario: Large local-history preview is accepted
+- **WHEN** a current local-history snapshot exceeds the synchronous preview-install threshold
+- **THEN** its text is installed in bounded UTF-8-safe GTK slices with main-loop progress between slices
+- **AND** Copy and Restore become available only after the current generation finishes installing
+
+#### Scenario: Notes query has no early matches
+- **WHEN** a Notes browser query must examine the entire admitted source before returning few or no matches
+- **THEN** matching runs outside GTK with cooperative cancellation
+- **AND** GTK receives only the bounded current result projection
+
+#### Scenario: Broad workspace reconciliation finishes
+- **WHEN** a child-store reconciliation accepts thousands of rows
+- **THEN** terminal cache rebuilding performs linear work without repeated scans or index shifts for previously cached rows
+- **AND** the GTK thread does not execute a quadratic terminal phase after bounded model splices
+
+#### Scenario: Large palette index is replaced or rejected
+- **WHEN** full or incremental command-palette indexing leaves an old or stale large index without another owner
+- **THEN** the index's final destruction runs on the bounded worker lane
+- **AND** generation comparison, replay ordering, and visible results remain owned by GTK
+
+### Requirement: Document-sized GTK buffer replacement yields in bounded slices
+Any workflow that clears or replaces document-sized editor content SHALL use one editor-owned bounded GTK mutation session above the synchronous threshold. The session MUST carry weak editor ownership, workflow-specific freshness identity, source ownership, projection suppression, and one typed terminal outcome. While a replacement is partial, the editor MUST remain non-editable and non-saveable, and modified, eviction, history, draft, cursor, monitor, and projection finalization MUST occur only after the complete current generation is installed or safely cancelled.
+
+#### Scenario: Large clean editor is evicted
+- **WHEN** memory policy accepts eviction of a clean reloadable editor whose buffer exceeds the synchronous replacement threshold
+- **THEN** GTK clears the buffer in bounded main-loop slices
+- **AND** the editor is marked evicted and its residency is released only after the current clear session completes
+
+#### Scenario: Large recovery or history body is installed
+- **WHEN** draft recovery, local-history restore, or local-history undo replaces a large buffer
+- **THEN** GTK clears and inserts text through bounded slices with scheduling points between them
+- **AND** no partial body becomes editable, saveable, or visible as a completed restore
+
+#### Scenario: Save formatting rewrites a large live buffer
+- **WHEN** save-time formatting produces document-sized text different from the live buffer
+- **THEN** the accepted text is installed through the same bounded replacement contract
+- **AND** save finalization cannot apply to a newer edit, path, save, or load generation
+
+#### Scenario: Replacement becomes stale between slices
+- **WHEN** the editor closes, changes workflow generation, or otherwise invalidates an active replacement
+- **THEN** remaining slices stop and release their source and retained text exactly once
+- **AND** the workflow reports a typed cancellation or failure without publishing successful terminal state
+
+#### Scenario: Small replacement remains direct
+- **WHEN** both the existing buffer and replacement text are below the calibrated synchronous threshold
+- **THEN** the workflow MAY replace text in one GTK turn
+- **AND** it observes the same freshness and terminal-finalization rules as a sliced replacement
+
+### Requirement: Command-palette search is one-active and one-latest
+The command palette SHALL run at most one background search and retain at most one latest superseding request as compact query state. New input MUST cancel or supersede obsolete work cooperatively, and only the current generation may update rows, searching state, accessibility state, or readiness.
+
+#### Scenario: Rapid typing outpaces search completion
+- **WHEN** several query generations arrive while one full-index search is active
+- **THEN** intermediate pending requests are replaced by the latest query
+- **AND** at most one active worker and one compact pending request are retained
+
+#### Scenario: Active search observes cancellation
+- **WHEN** a newer query supersedes an active search
+- **THEN** candidate scoring stops at a bounded cancellation checkpoint
+- **AND** the latest request starts after active ownership is released
+
+#### Scenario: Stale completion reaches GTK
+- **WHEN** an obsolete search completes after a newer generation exists
+- **THEN** it changes neither visible results nor searching/accessibility state
+- **AND** readiness remains pending only for current active or queued work
+
+#### Scenario: Palette closes during search
+- **WHEN** the palette closes with active or pending query work
+- **THEN** cancellation releases retained search state
+- **AND** no later completion reopens or mutates the closed surface

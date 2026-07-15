@@ -9,13 +9,23 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::AtomicU64;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::glib;
+use gtk4::glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, SidebarItemExt};
 
+use crate::model::buffer_replacement::{
+    REPLACEMENT_INSERT_SLICE_BYTES, SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES,
+    next_replacement_boundary,
+};
 use crate::model::local_history::{LocalHistorySnapshot, LocalHistorySnapshotMeta};
 use crate::model::migration_ledger::MigrationKind;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
@@ -23,11 +33,17 @@ use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
     filesystem::metadata as fs_metadata, json_store, local_history_service, migration_ledger,
 };
-use crate::ui::editor_page::{LushtextEditorPage, PendingWarningAction};
+use crate::ui::editor_page::{
+    BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
+    BufferReplacementWorkflow, LushtextEditorPage, PendingWarningAction,
+};
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
 
 use super::LushtextWindow;
+
+#[cfg(feature = "test-utils")]
+pub use crate::services::local_history_service::set_local_history_preview_read_delay_for_test;
 
 /// Leave a visible gutter around the local-history viewer so it still reads as
 /// a parent-owned secondary surface instead of another primary window.
@@ -54,6 +70,53 @@ const EMPTY_LOCAL_HISTORY_WIDTH_SP: i32 = 640;
 /// Compact empty-history height fits the normal status-page icon, title, and
 /// description without introducing a scrollbar.
 const EMPTY_LOCAL_HISTORY_HEIGHT_SP: i32 = 480;
+/// Maximum preview body installed synchronously in one GTK turn.
+const LOCAL_HISTORY_PREVIEW_DIRECT_THRESHOLD_BYTES: usize = SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
+/// Maximum UTF-8 bytes inserted by one scheduled preview slice.
+const LOCAL_HISTORY_PREVIEW_INSTALL_SLICE_BYTES: usize = REPLACEMENT_INSERT_SLICE_BYTES;
+
+#[cfg(feature = "test-utils")]
+static LOCAL_HISTORY_PREVIEW_INSTALL_SLICES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "test-utils")]
+static LOCAL_HISTORY_PREVIEW_INSTALL_CANCELLATIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "test-utils")]
+static LOCAL_HISTORY_PREVIEW_INSTALL_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Delay successive preview slices without blocking GTK for deterministic tests.
+#[cfg(feature = "test-utils")]
+pub fn set_local_history_preview_install_delay_for_test(delay_ms: u64) {
+    LOCAL_HISTORY_PREVIEW_INSTALL_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+#[cfg(feature = "test-utils")]
+fn local_history_preview_install_delay_for_test() -> u64 {
+    LOCAL_HISTORY_PREVIEW_INSTALL_DELAY_MS.load(Ordering::Acquire)
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn local_history_preview_install_delay_for_test() -> u64 {
+    0
+}
+
+/// Scalar local-history preview installation evidence.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalHistoryPreviewInstallSnapshot {
+    /// GTK insertion slices completed by this test process.
+    pub slices: usize,
+    /// Sliced installations cancelled by supersession or disposal.
+    pub cancellations: usize,
+}
+
+/// Return process-local preview installation evidence.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn local_history_preview_install_snapshot_for_test() -> LocalHistoryPreviewInstallSnapshot {
+    LocalHistoryPreviewInstallSnapshot {
+        slices: LOCAL_HISTORY_PREVIEW_INSTALL_SLICES.load(Ordering::Acquire),
+        cancellations: LOCAL_HISTORY_PREVIEW_INSTALL_CANCELLATIONS.load(Ordering::Acquire),
+    }
+}
 
 /// UI state for one open local-history browser dialog.
 struct LocalHistoryBrowserState {
@@ -87,10 +150,21 @@ struct LocalHistoryBrowserState {
     snapshots: Vec<LocalHistorySnapshotMeta>,
     /// Last fully loaded snapshot preview.
     loaded_snapshot: RefCell<Option<LocalHistorySnapshot>>,
-    /// Generation counter suppressing stale preview loads when selection changes quickly.
-    preview_generation: Cell<u32>,
+    /// One-active/one-latest ownership for snapshot body reads.
+    preview_loads: RefCell<local_history_service::LocalHistoryPreviewCoordinator>,
+    /// Current browser-local sliced GTK installation, when required.
+    preview_install: RefCell<Option<LocalHistoryPreviewInstallSession>>,
+    /// Whether dialog teardown invalidated all preview work.
+    disposed: Cell<bool>,
     /// Active safety capture for a pending restore, disposed with the dialog.
     restore_snapshot: RefCell<Option<buffer_snapshot::BufferSnapshotHandle>>,
+}
+
+struct LocalHistoryPreviewInstallSession {
+    generation: u64,
+    snapshot: Option<LocalHistorySnapshot>,
+    offset: usize,
+    source_id: Option<glib::SourceId>,
 }
 
 /// State passed through the restore-safety background capture.
@@ -99,8 +173,35 @@ struct RestoreWorkState {
     browser: Rc<LocalHistoryBrowserState>,
     /// Current buffer text saved for the immediate undo affordance.
     undo_text: String,
-    /// Historical text that should replace the buffer on success.
-    restore_text: String,
+    /// Historical snapshot whose body should replace the buffer on success.
+    restore_snapshot: LocalHistorySnapshot,
+    /// Editor/path/edit identity captured with the safety body.
+    ticket: LocalHistoryReplacementTicket,
+}
+
+#[derive(Clone, Copy)]
+struct LocalHistoryReplacementTicket {
+    editor_generation: u64,
+    path_generation: u64,
+    edit_generation: u64,
+}
+
+impl LocalHistoryReplacementTicket {
+    fn capture(editor: &LushtextEditorPage) -> Self {
+        let state = &editor.imp().local_history;
+        Self {
+            editor_generation: state.editor_generation.get(),
+            path_generation: state.path_generation.get(),
+            edit_generation: state.edit_generation.get(),
+        }
+    }
+
+    fn is_current(self, editor: &LushtextEditorPage) -> bool {
+        let state = &editor.imp().local_history;
+        state.editor_generation.get() == self.editor_generation
+            && state.path_generation.get() == self.path_generation
+            && state.edit_generation.get() == self.edit_generation
+    }
 }
 
 /// Background outcome for opening local history from a path rather than an already-loaded tab.
@@ -312,14 +413,61 @@ impl LushtextWindow {
             );
             return;
         };
-
-        editor.replace_buffer_with_local_history_text(&undo_text);
-        if let Some(path) = editor.file_path() {
-            self.resolve_notes_for_editor(editor, &path);
-        }
-        self.dismiss_editor_notifications(editor);
-        self.publish_status_message("Local-history restore undone", MessageKind::Info);
-        self.refresh_status_bar();
+        let ticket = LocalHistoryReplacementTicket::capture(editor);
+        let freshness_editor = editor.downgrade();
+        let terminal_editor = editor.downgrade();
+        let cancelled_editor = editor.downgrade();
+        let window_weak = self.downgrade();
+        let request = BufferReplacementRequest::new(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::LocalHistoryUndo,
+                generation: ticket.edit_generation,
+            },
+            undo_text,
+            move |_| {
+                freshness_editor
+                    .upgrade()
+                    .is_some_and(|editor| ticket.is_current(&editor))
+            },
+            move |outcome| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let Some(editor) = terminal_editor.upgrade() else {
+                    return;
+                };
+                if !matches!(
+                    outcome,
+                    BufferReplacementOutcome::Complete {
+                        ticket: BufferReplacementTicket {
+                            workflow: BufferReplacementWorkflow::LocalHistoryUndo,
+                            generation,
+                        },
+                        ..
+                    } if generation == ticket.edit_generation && ticket.is_current(&editor)
+                ) {
+                    return;
+                }
+                editor.finish_local_history_buffer_replacement();
+                if let Some(path) = editor.file_path() {
+                    window.resolve_notes_for_editor(&editor, &path);
+                }
+                window.dismiss_editor_notifications(&editor);
+                window.publish_status_message("Local-history restore undone", MessageKind::Info);
+                window.refresh_status_bar();
+            },
+        )
+        .return_body_on_cancel(move |body| {
+            if let Some(editor) = cancelled_editor.upgrade()
+                && ticket.is_current(&editor)
+            {
+                editor.set_local_history_restore_undo_text(Some(body));
+                editor.set_pending_warning_action(Some(
+                    PendingWarningAction::UndoLocalHistoryRestore,
+                ));
+            }
+        });
+        editor.replace_buffer_bounded(request);
     }
 
     fn present_local_history_browser(
@@ -472,7 +620,9 @@ impl LushtextWindow {
             back_button,
             snapshots,
             loaded_snapshot: RefCell::new(None),
-            preview_generation: Cell::new(0),
+            preview_loads: RefCell::default(),
+            preview_install: RefCell::new(None),
+            disposed: Cell::new(false),
             restore_snapshot: RefCell::new(None),
         });
 
@@ -499,7 +649,8 @@ impl LushtextWindow {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let Some(snapshot) = state.loaded_snapshot.borrow().clone() else {
+                let snapshot = state.loaded_snapshot.borrow();
+                let Some(snapshot) = snapshot.as_ref() else {
                     return;
                 };
                 gtk4::prelude::RootExt::display(&state.window)
@@ -516,7 +667,7 @@ impl LushtextWindow {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let Some(snapshot) = state.loaded_snapshot.borrow().clone() else {
+                let Some(snapshot) = state.loaded_snapshot.borrow_mut().take() else {
                     return;
                 };
                 set_local_history_action_enabled(&state.restore_button, false);
@@ -561,6 +712,9 @@ impl LushtextWindow {
                 {
                     snapshot.dispose();
                 }
+                if let Some(state) = state_holder.borrow().as_ref() {
+                    state.dispose_preview_runtime();
+                }
                 state_holder.borrow_mut().take();
             }
         });
@@ -603,22 +757,24 @@ impl LushtextWindow {
         snapshot: LocalHistorySnapshot,
     ) {
         let buffer = browser.editor.buffer();
-        let restore_text = snapshot.text;
         let browser_for_restore = Rc::clone(browser);
         let run_restore = move |outcome: buffer_snapshot::BufferSnapshotOutcome| {
             let browser = browser_for_restore;
             browser.restore_snapshot.take();
             let buffer_snapshot::BufferSnapshotOutcome::Captured(undo_text) = outcome else {
+                browser.loaded_snapshot.replace(Some(snapshot));
                 set_local_history_action_enabled(&browser.restore_button, true);
                 set_local_history_action_enabled(&browser.copy_button, true);
                 return;
             };
             let path = browser.path.clone();
+            let ticket = LocalHistoryReplacementTicket::capture(&browser.editor);
             spawn_blocking_then(
                 RestoreWorkState {
                     browser,
                     undo_text: undo_text.clone(),
-                    restore_text,
+                    restore_snapshot: snapshot,
+                    ticket,
                 },
                 move || {
                     let data_dir = json_store::data_dir();
@@ -636,50 +792,109 @@ impl LushtextWindow {
                         set_local_history_action_enabled(&state.browser.restore_button, true);
                         set_local_history_action_enabled(
                             &state.browser.copy_button,
-                            !state.restore_text.is_empty(),
+                            !state.restore_snapshot.text.is_empty(),
                         );
+                        state
+                            .browser
+                            .loaded_snapshot
+                            .replace(Some(state.restore_snapshot));
                         state.browser.window.publish_status_message(
                             "Local history restore could not be prepared safely",
                             MessageKind::Error,
                         );
                         return;
                     }
-
-                    state
-                        .browser
-                        .editor
-                        .set_local_history_restore_undo_text(Some(state.undo_text));
-                    state
-                        .browser
-                        .editor
-                        .replace_buffer_with_local_history_text(&state.restore_text);
-                    state
-                        .browser
-                        .window
-                        .dismiss_editor_notifications(&state.browser.editor);
-                    state.browser.window.resolve_notes_for_editor(
-                        &state.browser.editor,
-                        state.browser.path.as_path(),
-                    );
-                    state
-                        .browser
-                        .editor
-                        .emit_inline_notification_with_warning_action(
-                            InlineActionNotification {
-                                style: InlineNotificationStyle::Warning,
-                                title: "Restored from Local History".to_string(),
-                                body: "The previous buffer state was saved as a safety snapshot. Use Undo Restore to switch back immediately.".to_string(),
-                                primary_button: Some("Undo Restore".to_string()),
-                                secondary_button: None,
-                            },
-                            PendingWarningAction::UndoLocalHistoryRestore,
+                    if !state.ticket.is_current(&state.browser.editor) {
+                        set_local_history_action_enabled(&state.browser.restore_button, true);
+                        set_local_history_action_enabled(
+                            &state.browser.copy_button,
+                            !state.restore_snapshot.text.is_empty(),
                         );
-                    state.browser.window.publish_status_message(
-                        "Snapshot restored into the editor",
-                        MessageKind::Info,
+                        state
+                            .browser
+                            .loaded_snapshot
+                            .replace(Some(state.restore_snapshot));
+                        return;
+                    }
+
+                    let freshness_editor = state.browser.editor.downgrade();
+                    let terminal_editor = state.browser.editor.downgrade();
+                    let browser = Rc::clone(&state.browser);
+                    let cancelled_browser = Rc::clone(&state.browser);
+                    let undo_text = state.undo_text;
+                    let ticket = state.ticket;
+                    let restore_meta = state.restore_snapshot.meta;
+                    let restore_text = state.restore_snapshot.text;
+                    state.browser.editor.replace_buffer_bounded(
+                        BufferReplacementRequest::new(
+                            BufferReplacementTicket {
+                                workflow: BufferReplacementWorkflow::LocalHistoryRestore,
+                                generation: ticket.edit_generation,
+                            },
+                            restore_text,
+                            move |_| {
+                                freshness_editor
+                                    .upgrade()
+                                    .is_some_and(|editor| ticket.is_current(&editor))
+                            },
+                            move |outcome| {
+                                let Some(editor) = terminal_editor.upgrade() else {
+                                    return;
+                                };
+                                if !matches!(
+                                    outcome,
+                                    BufferReplacementOutcome::Complete {
+                                        ticket: BufferReplacementTicket {
+                                            workflow: BufferReplacementWorkflow::LocalHistoryRestore,
+                                            generation,
+                                        },
+                                        ..
+                                    } if generation == ticket.edit_generation && ticket.is_current(&editor)
+                                ) {
+                                    set_local_history_action_enabled(&browser.restore_button, true);
+                                    set_local_history_action_enabled(
+                                        &browser.copy_button,
+                                        browser
+                                            .loaded_snapshot
+                                            .borrow()
+                                            .as_ref()
+                                            .is_some_and(|snapshot| !snapshot.text.is_empty()),
+                                    );
+                                    return;
+                                }
+                                editor.set_local_history_restore_undo_text(Some(undo_text));
+                                editor.finish_local_history_buffer_replacement();
+                                browser.window.dismiss_editor_notifications(&editor);
+                                browser
+                                    .window
+                                    .resolve_notes_for_editor(&editor, browser.path.as_path());
+                                editor.emit_inline_notification_with_warning_action(
+                                    InlineActionNotification {
+                                        style: InlineNotificationStyle::Warning,
+                                        title: "Restored from Local History".to_string(),
+                                        body: "The previous buffer state was saved as a safety snapshot. Use Undo Restore to switch back immediately.".to_string(),
+                                        primary_button: Some("Undo Restore".to_string()),
+                                        secondary_button: None,
+                                    },
+                                    PendingWarningAction::UndoLocalHistoryRestore,
+                                );
+                                browser.window.publish_status_message(
+                                    "Snapshot restored into the editor",
+                                    MessageKind::Info,
+                                );
+                                browser.window.refresh_status_bar();
+                                browser.dialog.close();
+                            },
+                        )
+                        .return_body_on_cancel(move |text| {
+                            cancelled_browser.loaded_snapshot.replace(Some(
+                                LocalHistorySnapshot {
+                                    meta: restore_meta,
+                                    text,
+                                },
+                            ));
+                        }),
                     );
-                    state.browser.window.refresh_status_bar();
-                    state.browser.dialog.close();
                 },
             );
         };
@@ -701,7 +916,10 @@ impl LocalHistoryBrowserState {
             return;
         };
 
-        self.loaded_snapshot.borrow_mut().take();
+        self.cancel_preview_install();
+        if let Some(snapshot) = self.loaded_snapshot.take() {
+            retire_local_history_snapshot(snapshot);
+        }
         self.preview_title.set_label("Loading snapshot…");
         self.preview_meta
             .set_label(&format_snapshot_meta(meta.origin, meta.byte_len));
@@ -723,86 +941,252 @@ impl LocalHistoryBrowserState {
             self.split_view.set_show_content(true);
         }
 
-        let generation = self.preview_generation.get().wrapping_add(1);
-        self.preview_generation.set(generation);
-        spawn_blocking_then(
-            Rc::clone(self),
-            {
-                let path = self.path.clone();
-                let snapshot_id = meta.snapshot_id;
-                move || {
-                    let data_dir = json_store::data_dir();
-                    local_history_service::load_snapshot_for_path(&data_dir, &path, &snapshot_id)
-                }
+        let start = self.preview_loads.borrow_mut().submit(
+            local_history_service::LocalHistoryPreviewRequest {
+                path: self.path.clone(),
+                snapshot_id: meta.snapshot_id,
             },
-            move |state, result| {
-                if state.preview_generation.get() != generation {
-                    return;
-                }
+        );
+        if let Some(start) = start {
+            self.start_preview_load(start);
+        }
+    }
 
-                match result {
-                    Ok(Some(snapshot)) => {
-                        state
-                            .preview_title
-                            .set_label(&format_history_time(snapshot.meta.captured_at_millis));
-                        state.preview_meta.set_label(&format_snapshot_meta(
-                            snapshot.meta.origin,
-                            snapshot.meta.byte_len,
-                        ));
-                        if snapshot.text.is_empty() {
-                            state.preview_buffer.set_text("");
-                            state.preview_stack.set_visible_child_name("empty");
-                            set_local_history_preview_accessibility(
-                                &state.preview_stack,
-                                "This snapshot was empty",
-                                false,
-                                false,
-                            );
-                            set_local_history_action_enabled(&state.copy_button, false);
-                        } else {
-                            state.preview_buffer.set_text(&snapshot.text);
-                            state.preview_stack.set_visible_child_name("content");
-                            set_local_history_preview_accessibility(
-                                &state.preview_stack,
-                                &format!(
-                                    "Snapshot from {}",
-                                    format_history_time(snapshot.meta.captured_at_millis)
-                                ),
-                                false,
-                                false,
-                            );
-                            set_local_history_action_enabled(&state.copy_button, true);
-                        }
-                        state.loaded_snapshot.replace(Some(snapshot));
-                        set_local_history_action_enabled(&state.restore_button, true);
-                    }
-                    Ok(None) => {
-                        state.preview_title.set_label("Snapshot missing");
-                        state.preview_meta.set_label("");
-                        state.preview_stack.set_visible_child_name("error");
-                        set_local_history_preview_accessibility(
-                            &state.preview_stack,
-                            "Snapshot missing",
-                            false,
-                            true,
-                        );
-                    }
-                    Err(error) => {
-                        tracing::error!("Failed to load local-history preview: {error}");
-                        state.preview_title.set_label("Preview unavailable");
-                        state.preview_meta.set_label("");
-                        state.preview_stack.set_visible_child_name("error");
-                        set_local_history_preview_accessibility(
-                            &state.preview_stack,
-                            "Preview unavailable",
-                            false,
-                            true,
-                        );
-                    }
-                }
+    fn start_preview_load(self: &Rc<Self>, start: local_history_service::LocalHistoryPreviewStart) {
+        let local_history_service::LocalHistoryPreviewStart {
+            generation,
+            request,
+            cancellation,
+        } = start;
+        let state_weak = Rc::downgrade(self);
+        spawn_blocking_then(
+            (),
+            move || {
+                let data_dir = json_store::data_dir();
+                local_history_service::load_snapshot_for_path_cancellable(
+                    &data_dir,
+                    &request.path,
+                    &request.snapshot_id,
+                    &cancellation,
+                )
+            },
+            move |(), result| {
+                let Some(state) = state_weak.upgrade() else {
+                    retire_local_history_preview_result(result);
+                    return;
+                };
+                state.finish_preview_load(generation, result);
             },
         );
     }
+
+    fn finish_preview_load(
+        self: &Rc<Self>,
+        generation: u64,
+        result: anyhow::Result<local_history_service::LocalHistoryPreviewLoadOutcome>,
+    ) {
+        let (accepted, next) = {
+            let mut loads = self.preview_loads.borrow_mut();
+            let accepted = loads.is_current(generation) && !self.disposed.get();
+            let next = loads.finish(generation);
+            (accepted, next)
+        };
+        if accepted {
+            match result {
+                Ok(local_history_service::LocalHistoryPreviewLoadOutcome::Loaded(snapshot)) => {
+                    self.begin_preview_install(generation, snapshot);
+                }
+                Ok(local_history_service::LocalHistoryPreviewLoadOutcome::Missing) => {
+                    self.preview_title.set_label("Snapshot missing");
+                    self.preview_meta.set_label("");
+                    self.preview_stack.set_visible_child_name("error");
+                    set_local_history_preview_accessibility(
+                        &self.preview_stack,
+                        "Snapshot missing",
+                        false,
+                        true,
+                    );
+                }
+                Ok(local_history_service::LocalHistoryPreviewLoadOutcome::Cancelled) => {}
+                Err(error) => {
+                    tracing::error!("Failed to load local-history preview: {error}");
+                    self.preview_title.set_label("Preview unavailable");
+                    self.preview_meta.set_label("");
+                    self.preview_stack.set_visible_child_name("error");
+                    set_local_history_preview_accessibility(
+                        &self.preview_stack,
+                        "Preview unavailable",
+                        false,
+                        true,
+                    );
+                }
+            }
+        } else {
+            retire_local_history_preview_result(result);
+        }
+        if let Some(next) = next {
+            self.start_preview_load(next);
+        }
+    }
+
+    fn begin_preview_install(self: &Rc<Self>, generation: u64, snapshot: LocalHistorySnapshot) {
+        self.preview_title
+            .set_label(&format_history_time(snapshot.meta.captured_at_millis));
+        self.preview_meta.set_label(&format_snapshot_meta(
+            snapshot.meta.origin,
+            snapshot.meta.byte_len,
+        ));
+        if snapshot.text.is_empty() {
+            self.preview_buffer.set_text("");
+            self.preview_stack.set_visible_child_name("empty");
+            set_local_history_preview_accessibility(
+                &self.preview_stack,
+                "This snapshot was empty",
+                false,
+                false,
+            );
+            set_local_history_action_enabled(&self.copy_button, false);
+            set_local_history_action_enabled(&self.restore_button, true);
+            self.loaded_snapshot.replace(Some(snapshot));
+            return;
+        }
+        if snapshot.text.len() <= LOCAL_HISTORY_PREVIEW_DIRECT_THRESHOLD_BYTES {
+            self.preview_buffer.set_text(&snapshot.text);
+            self.finish_preview_install(snapshot);
+            return;
+        }
+
+        self.preview_buffer.set_text("");
+        self.preview_install
+            .replace(Some(LocalHistoryPreviewInstallSession {
+                generation,
+                snapshot: Some(snapshot),
+                offset: 0,
+                source_id: None,
+            }));
+        self.schedule_preview_install_slice();
+    }
+
+    fn schedule_preview_install_slice(self: &Rc<Self>) {
+        let state_weak = Rc::downgrade(self);
+        let delay_ms = local_history_preview_install_delay_for_test();
+        let source_id = if delay_ms == 0 {
+            glib::idle_add_local_once(move || {
+                if let Some(state) = state_weak.upgrade() {
+                    state.run_preview_install_slice();
+                }
+            })
+        } else {
+            glib::timeout_add_local_once(Duration::from_millis(delay_ms), move || {
+                if let Some(state) = state_weak.upgrade() {
+                    state.run_preview_install_slice();
+                }
+            })
+        };
+        if let Some(session) = self.preview_install.borrow_mut().as_mut() {
+            session.source_id = Some(source_id);
+        } else {
+            source_id.remove();
+        }
+    }
+
+    fn run_preview_install_slice(self: &Rc<Self>) {
+        let Some(mut session) = self.preview_install.take() else {
+            return;
+        };
+        session.source_id = None;
+        if self.disposed.get() || !self.preview_loads.borrow().is_current(session.generation) {
+            if let Some(snapshot) = session.snapshot.take() {
+                retire_local_history_snapshot(snapshot);
+            }
+            record_local_history_preview_install_cancellation();
+            return;
+        }
+        let Some(snapshot) = session.snapshot.as_ref() else {
+            return;
+        };
+        let end = next_replacement_boundary(&snapshot.text, session.offset);
+        debug_assert!(
+            end.saturating_sub(session.offset) <= LOCAL_HISTORY_PREVIEW_INSTALL_SLICE_BYTES
+        );
+        let mut end_iter = self.preview_buffer.end_iter();
+        self.preview_buffer
+            .insert(&mut end_iter, &snapshot.text[session.offset..end]);
+        session.offset = end;
+        record_local_history_preview_install_slice();
+
+        if session.offset == snapshot.text.len() {
+            let snapshot = session.snapshot.take().expect("install snapshot exists");
+            self.finish_preview_install(snapshot);
+        } else {
+            self.preview_install.replace(Some(session));
+            self.schedule_preview_install_slice();
+        }
+    }
+
+    fn finish_preview_install(&self, snapshot: LocalHistorySnapshot) {
+        self.preview_stack.set_visible_child_name("content");
+        set_local_history_preview_accessibility(
+            &self.preview_stack,
+            &format!(
+                "Snapshot from {}",
+                format_history_time(snapshot.meta.captured_at_millis)
+            ),
+            false,
+            false,
+        );
+        set_local_history_action_enabled(&self.copy_button, true);
+        set_local_history_action_enabled(&self.restore_button, true);
+        self.loaded_snapshot.replace(Some(snapshot));
+    }
+
+    fn cancel_preview_install(&self) {
+        let Some(mut session) = self.preview_install.take() else {
+            return;
+        };
+        if let Some(source_id) = session.source_id.take() {
+            source_id.remove();
+        }
+        if let Some(snapshot) = session.snapshot.take() {
+            retire_local_history_snapshot(snapshot);
+        }
+        record_local_history_preview_install_cancellation();
+    }
+
+    fn dispose_preview_runtime(&self) {
+        if self.disposed.replace(true) {
+            return;
+        }
+        self.preview_loads.borrow_mut().invalidate();
+        self.cancel_preview_install();
+        if let Some(snapshot) = self.loaded_snapshot.take() {
+            retire_local_history_snapshot(snapshot);
+        }
+        set_local_history_action_enabled(&self.restore_button, false);
+        set_local_history_action_enabled(&self.copy_button, false);
+    }
+}
+
+fn retire_local_history_preview_result(
+    result: anyhow::Result<local_history_service::LocalHistoryPreviewLoadOutcome>,
+) {
+    if let Ok(local_history_service::LocalHistoryPreviewLoadOutcome::Loaded(snapshot)) = result {
+        retire_local_history_snapshot(snapshot);
+    }
+}
+
+fn retire_local_history_snapshot(snapshot: LocalHistorySnapshot) {
+    spawn_blocking_then((), move || drop(snapshot), |(), ()| {});
+}
+
+fn record_local_history_preview_install_slice() {
+    #[cfg(feature = "test-utils")]
+    LOCAL_HISTORY_PREVIEW_INSTALL_SLICES.fetch_add(1, Ordering::Release);
+}
+
+fn record_local_history_preview_install_cancellation() {
+    #[cfg(feature = "test-utils")]
+    LOCAL_HISTORY_PREVIEW_INSTALL_CANCELLATIONS.fetch_add(1, Ordering::Release);
 }
 
 /// Compute the current main-window size, falling back to the configured default

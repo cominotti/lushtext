@@ -247,3 +247,134 @@ The project SHALL separate cheap PR-friendly recovery checks from deeper schedul
 - **WHEN** a recovery performance threshold fails
 - **THEN** the report includes measured timings, fixture sizes, environment details, and the recovery operation being measured
 - **AND** maintainers can tell whether the regression is from code, fixture scale, or host noise
+
+### Requirement: Transient file-load bounds have deterministic scale coverage
+The project SHALL test and benchmark file-load admission, bounded ingestion, and GTK installation with concurrent small, large, and individually oversized supported files. Evidence MUST distinguish queued scalar requests, active payload weight, retained decoded results, and installed editor residency.
+
+#### Scenario: Session restore requests many large files
+- **WHEN** a scale fixture restores more large tabs than the transient budget can admit
+- **THEN** recorded active payload ownership never exceeds policy except for one documented exclusive load
+- **AND** remaining requests stay compact and eventually progress or become stale
+
+#### Scenario: Cancellation releases capacity
+- **WHEN** admitted and queued loads are cancelled in varied completion orders
+- **THEN** every permit is released exactly once
+- **AND** the next current request can progress without leaked capacity
+
+#### Scenario: Chunked installation remains responsive
+- **WHEN** the responsiveness harness installs representative large Unicode documents
+- **THEN** it records slice counts, retained payload bounds, and main-loop progress
+- **AND** final buffer contents match the decoded source exactly
+
+### Requirement: Watcher pressure has deterministic retained-state coverage
+The project SHALL test and benchmark watcher delivery from raw backend callback through GTK consumption when event production is slower than, equal to, and faster than GTK polling. Coverage MUST report the path cap, raw-event normalization count, contention/full-refresh promotions, mailbox state, notices consumed per poll, and retained refresh-plan size, and MUST prove that no intermediate debouncer vector or application queue grows with event count.
+
+#### Scenario: Sustained producer pressure exceeds consumer rate
+- **WHEN** a fixture emits many raw tree-changing events without GTK polling
+- **THEN** retained event state remains bounded from the first callback onward
+- **AND** the next poll observes a path notice or conservative full refresh representing the burst
+
+#### Scenario: Bulk rename storm is replayed
+- **WHEN** a scale fixture emits awkward Unicode, overlapping, duplicate, deeply nested, and ambiguous raw rename events
+- **THEN** normalization and merge timing are recorded off the GTK path
+- **AND** GTK-side work remains bounded by one notice and the configured path cap
+
+#### Scenario: Mailbox contention remains constant-space
+- **WHEN** producer callbacks overlap a held mailbox lock during a sustained event burst
+- **THEN** retained contention evidence remains constant-space and promotes conservatively to full refresh
+- **AND** the producer does not allocate a retry queue or block GTK consumption
+
+#### Scenario: Repeated errors remain bounded
+- **WHEN** watcher failures repeat faster than the UI can render feedback
+- **THEN** retained diagnostic state remains constant-space
+- **AND** current-generation recovery or manual Refresh stays available
+
+### Requirement: Quality closeout has deterministic feature-matrix and scale evidence
+The project SHALL verify the remaining quality closeout under both default and all-feature Rust configurations and SHALL add focused deterministic evidence for Notes admission/query ownership, local-history preview slicing, workspace bulk-cache rebuilding, command-palette index retirement, and draft-cleanup retry scheduling. Tests and benchmarks MUST assert retained-state or work bounds rather than relying only on elapsed time.
+
+#### Scenario: Default and all-feature unit configurations compile
+- **WHEN** closeout validation runs
+- **THEN** the default-feature unit-test target compiles and runs the in-module draft-cleanup fault tests
+- **AND** the all-feature unit, Clippy, property, and integration surfaces selected by repository policy also pass
+
+#### Scenario: Notes source and query pressure are exercised
+- **WHEN** fixtures exceed source admission and render limits while queries are superseded
+- **THEN** evidence records admitted entries, searchable bytes, truncation reasons, active and pending request counts, cancellation, and published result count
+- **AND** no stale or over-budget source/result is accepted
+
+#### Scenario: Large history preview remains interactive
+- **WHEN** representative Unicode snapshot text requires several preview-install slices and selection changes during installation
+- **THEN** evidence records slice count, main-loop progress, cancellation, and accepted retained payload count
+- **AND** final preview text exactly matches only the current snapshot
+
+#### Scenario: Broad tree cache rebuild is measured
+- **WHEN** mirrors from small sizes through the configured row cap are rebuilt
+- **THEN** instrumentation or an operation-count oracle demonstrates linear rebuild work
+- **AND** the benchmark separately reports terminal cache rebuild from reconciliation planning and model-splice timing
+
+#### Scenario: Palette indexes are retired off GTK
+- **WHEN** full, accepted incremental, and rejected incremental updates each release a last-owned large file index
+- **THEN** deterministic test evidence shows final destruction is transferred to the worker lane
+- **AND** current generation and replay behavior remain unchanged
+
+#### Scenario: Cleanup retries cursorless work
+- **WHEN** deterministic delete and manifest faults produce `has_more_work` without continuation cursors
+- **THEN** window-level decision tests schedule one delayed retry from the safe beginning with bounded backoff
+- **AND** a later successful outcome stops retrying and reports only confirmed cleanup
+
+### Requirement: Palette source construction has deterministic boundedness evidence
+The project SHALL test and benchmark palette source construction independently from query scoring. Evidence MUST cover flat-directory size, retained index entries, aggregate note entry and byte limits, canonical aliases, cancellation checkpoints, active and pending request counts, stale result disposal, and deterministic truncation diagnostics.
+
+#### Scenario: Huge file and note corpora are exercised
+- **WHEN** scale fixtures exceed the file-index and note-source limits
+- **THEN** recorded retained memory and result counts remain within the documented bounds
+- **AND** traversal and sidecar loading remain cancellable without unbounded pending requests
+
+#### Scenario: Canonical exclusion precedes bounded selection
+- **WHEN** tests use an open symlink alias as the best workspace match and a distinct lower-ranked match
+- **THEN** the alias appears only under `Open Tabs`
+- **AND** the distinct file fills the bounded workspace result slot
+
+### Requirement: Bounded palette search has equivalence and scale coverage
+The project SHALL prove bounded top-result selection and one-active/one-latest execution against a full-sort reference on representative and generated corpora. Coverage MUST include Unicode normalization, equal scores, empty queries, source deduplication, cancellation, rapid input, and the maximum indexed-file corpus.
+
+#### Scenario: Bounded selector is compared with a reference
+- **WHEN** generated candidate/query/result-limit combinations run through bounded and full-sort implementations
+- **THEN** both produce the same selected identities and deterministic order
+- **AND** the bounded implementation retains no more than the configured result count per source
+
+#### Scenario: Maximum index receives rapid queries
+- **WHEN** the 100,000-file fixture receives more queries than workers can complete
+- **THEN** measurements report one active search, at most one pending query, cancellation progress, and final-query latency
+- **AND** obsolete full-index jobs do not accumulate in the generic worker FIFO
+
+#### Scenario: Diagnostic privacy regression is exercised
+- **WHEN** an invalid Replace Preview range is generated under captured tracing output
+- **THEN** typed invalid counts remain correct
+- **AND** captured diagnostics contain none of the private source or replacement sentinel text
+
+### Requirement: Buffer replacement responsiveness has layered evidence
+The project SHALL cover bounded clear and replacement sessions with plain policy tests, GTK widget tests, current-generation cancellation tests, and calibrated large-Unicode diagnostics. Coverage MUST include eviction, draft recovery, local-history restore and undo, save-time formatting rewrite, disposal, stale generation, projection suppression, exact terminal cleanup, and final text equivalence.
+
+#### Scenario: Large replacements preserve main-loop progress
+- **WHEN** the responsiveness harness clears and replaces representative large Unicode buffers
+- **THEN** it records bounded per-turn slice sizes and main-loop progress
+- **AND** final content and workflow state match the accepted source exactly
+
+#### Scenario: Every terminal path releases ownership
+- **WHEN** replacement sessions complete, fail, become stale, or lose their editor
+- **THEN** sources, retained text, projection suppression, and workflow guards are released exactly once
+- **AND** no partial body becomes saveable or accepted as complete
+
+### Requirement: Cleanup continuation and tree reconciliation have scale evidence
+The project SHALL add deterministic coverage for draft directories with more than one cleanup page and workspace directories with thousands of changed rows. Draft evidence MUST prove eventual coverage across retained prefixes, failures, directory churn, and restart. Tree evidence MUST report planned and applied batch sizes, main-loop turns, supersession, cache finalization, and readiness completion.
+
+#### Scenario: Later orphan survives behind a retained prefix
+- **WHEN** more than one full cleanup page of live bodies precedes a later orphan and the process restarts between passes
+- **THEN** durable continuation eventually reaches and revalidates the orphan
+- **AND** no live or ambiguous body is deleted
+
+#### Scenario: Large refresh is superseded
+- **WHEN** a broad-directory reconciliation is replaced after one or more GTK batches
+- **THEN** the stale plan stops within one bounded checkpoint
+- **AND** the current plan alone owns final cache, state, and readiness evidence

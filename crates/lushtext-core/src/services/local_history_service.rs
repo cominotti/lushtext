@@ -11,7 +11,10 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::model::local_history::{
@@ -68,6 +71,196 @@ const DEFAULT_RECONCILE_MAX_MILLIS: u64 = 50;
 /// lineage. When this budget is exceeded, all snapshot files stay preserved and
 /// the index remains unavailable until a manual or future streaming repair path.
 const MAX_INDEX_REPAIR_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(feature = "test-utils")]
+static LOCAL_HISTORY_PREVIEW_READ_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Delay each bounded preview-read cancellation check for deterministic tests.
+#[cfg(feature = "test-utils")]
+pub fn set_local_history_preview_read_delay_for_test(delay_ms: u64) {
+    LOCAL_HISTORY_PREVIEW_READ_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+fn delay_local_history_preview_read_for_test() {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = LOCAL_HISTORY_PREVIEW_READ_DELAY_MS.load(Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+    }
+}
+
+/// Compact local-history selection retained by the latest preview slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalHistoryPreviewRequest {
+    /// Saved document whose lineage owns the snapshot.
+    pub path: PathBuf,
+    /// Stable snapshot identifier revalidated against current metadata.
+    pub snapshot_id: String,
+}
+
+/// Cooperative cancellation observed between bounded file-read chunks.
+#[derive(Clone, Debug, Default)]
+pub struct LocalHistoryPreviewCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl LocalHistoryPreviewCancellation {
+    /// Cancel the active preview load and report whether this was the first request.
+    #[must_use]
+    pub fn cancel(&self) -> bool {
+        !self.cancelled.swap(true, Ordering::Relaxed)
+    }
+
+    /// Return whether the owning selection was superseded.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+}
+
+/// Typed terminal outcome from one bounded snapshot load.
+#[derive(Debug)]
+pub enum LocalHistoryPreviewLoadOutcome {
+    /// Current metadata and body were loaded successfully.
+    Loaded(LocalHistorySnapshot),
+    /// Current metadata no longer contains the requested snapshot.
+    Missing,
+    /// Cooperative cancellation stopped the bounded body read.
+    Cancelled,
+}
+
+/// One request admitted as the sole active preview load.
+#[derive(Debug)]
+pub struct LocalHistoryPreviewStart {
+    /// Monotonic selection generation.
+    pub generation: u64,
+    /// Compact path and snapshot identity.
+    pub request: LocalHistoryPreviewRequest,
+    /// Cancellation token shared with the worker.
+    pub cancellation: LocalHistoryPreviewCancellation,
+}
+
+#[derive(Debug)]
+struct ActiveLocalHistoryPreview {
+    generation: u64,
+    cancellation: LocalHistoryPreviewCancellation,
+}
+
+#[derive(Debug)]
+struct PendingLocalHistoryPreview {
+    generation: u64,
+    request: LocalHistoryPreviewRequest,
+}
+
+/// Scalar one-active/one-latest ownership evidence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalHistoryPreviewCoordinatorSnapshot {
+    /// Active worker count, always zero or one.
+    pub active: usize,
+    /// Latest retained request count, always zero or one.
+    pub pending: usize,
+    /// Peak active count.
+    pub active_high_water: usize,
+    /// Peak pending count.
+    pub pending_high_water: usize,
+    /// Workers started over the coordinator lifetime.
+    pub started: usize,
+    /// Successful cancellation transitions requested.
+    pub cancellation_requests: usize,
+}
+
+/// Serialize preview loads while retaining only the latest superseding selection.
+#[derive(Debug, Default)]
+pub struct LocalHistoryPreviewCoordinator {
+    current_generation: u64,
+    active: Option<ActiveLocalHistoryPreview>,
+    pending: Option<PendingLocalHistoryPreview>,
+    snapshot: LocalHistoryPreviewCoordinatorSnapshot,
+}
+
+impl LocalHistoryPreviewCoordinator {
+    /// Submit a selection, starting immediately or replacing the latest slot.
+    pub fn submit(
+        &mut self,
+        request: LocalHistoryPreviewRequest,
+    ) -> Option<LocalHistoryPreviewStart> {
+        self.current_generation = self.current_generation.wrapping_add(1);
+        let generation = self.current_generation;
+        if let Some(active) = self.active.as_ref() {
+            if active.cancellation.cancel() {
+                self.snapshot.cancellation_requests =
+                    self.snapshot.cancellation_requests.saturating_add(1);
+            }
+            self.pending = Some(PendingLocalHistoryPreview {
+                generation,
+                request,
+            });
+            self.snapshot.pending_high_water = self.snapshot.pending_high_water.max(1);
+            None
+        } else {
+            Some(self.start(generation, request))
+        }
+    }
+
+    /// Finish the active generation and start the latest retained selection.
+    pub fn finish(&mut self, generation: u64) -> Option<LocalHistoryPreviewStart> {
+        if self.active.as_ref().map(|active| active.generation) != Some(generation) {
+            return None;
+        }
+        self.active = None;
+        self.pending
+            .take()
+            .map(|pending| self.start(pending.generation, pending.request))
+    }
+
+    /// Cancel active work and discard any pending selection.
+    pub fn invalidate(&mut self) {
+        self.current_generation = self.current_generation.wrapping_add(1);
+        if let Some(active) = self.active.as_ref()
+            && active.cancellation.cancel()
+        {
+            self.snapshot.cancellation_requests =
+                self.snapshot.cancellation_requests.saturating_add(1);
+        }
+        self.pending = None;
+    }
+
+    /// Return whether a completion or install still belongs to the latest selection.
+    #[must_use]
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.current_generation == generation
+    }
+
+    /// Return scalar ownership evidence without exposing paths or snapshot IDs.
+    #[must_use]
+    pub fn snapshot(&self) -> LocalHistoryPreviewCoordinatorSnapshot {
+        LocalHistoryPreviewCoordinatorSnapshot {
+            active: usize::from(self.active.is_some()),
+            pending: usize::from(self.pending.is_some()),
+            ..self.snapshot
+        }
+    }
+
+    fn start(
+        &mut self,
+        generation: u64,
+        request: LocalHistoryPreviewRequest,
+    ) -> LocalHistoryPreviewStart {
+        let cancellation = LocalHistoryPreviewCancellation::default();
+        self.active = Some(ActiveLocalHistoryPreview {
+            generation,
+            cancellation: cancellation.clone(),
+        });
+        self.snapshot.started = self.snapshot.started.saturating_add(1);
+        self.snapshot.active_high_water = self.snapshot.active_high_water.max(1);
+        LocalHistoryPreviewStart {
+            generation,
+            request,
+            cancellation,
+        }
+    }
+}
 
 /// Test-only switch for deterministic obsolete-lineage cleanup failures.
 ///
@@ -262,6 +455,13 @@ pub fn availability_for_live_buffer_chars(char_count: i32) -> LocalHistoryAvaila
     availability_for_size_check(FileSizeCheck::classify(char_count.saturating_mul(4)))
 }
 
+/// Classify an incoming immutable UTF-8 body before GTK installation.
+#[must_use]
+pub fn availability_for_utf8_bytes(byte_len: usize) -> LocalHistoryAvailability {
+    let byte_len = u64::try_from(byte_len).unwrap_or(u64::MAX);
+    availability_for_size_check(FileSizeCheck::classify(byte_len))
+}
+
 /// Fail the next obsolete local-history lineage cleanup in test builds.
 ///
 /// Prefer [`fail_next_obsolete_lineage_cleanup_for_path_for_test`] when tests
@@ -294,9 +494,7 @@ pub fn fail_next_obsolete_lineage_cleanup_for_path_for_test(path: &Path) {
 
 #[cfg(test)]
 fn force_next_mismatched_reconcile_budget_elapsed_for_test() {
-    *mismatched_reconcile_budget_elapsed_for_test()
-        .lock()
-        .expect("mismatched-reconcile budget hook poisoned") = true;
+    MISMATCHED_RECONCILE_BUDGET_ELAPSED.with(|should_expire| should_expire.set(true));
 }
 
 /// Capture one snapshot for a saved document path using the default retention policy.
@@ -368,9 +566,37 @@ pub fn load_snapshot_for_path(
     path: &Path,
     snapshot_id: &str,
 ) -> Result<Option<LocalHistorySnapshot>> {
+    let cancellation = LocalHistoryPreviewCancellation::default();
+    match load_snapshot_for_path_cancellable(data_dir, path, snapshot_id, &cancellation)? {
+        LocalHistoryPreviewLoadOutcome::Loaded(snapshot) => Ok(Some(snapshot)),
+        LocalHistoryPreviewLoadOutcome::Missing => Ok(None),
+        LocalHistoryPreviewLoadOutcome::Cancelled => {
+            unreachable!("a fresh cancellation token cannot cancel")
+        }
+    }
+}
+
+/// Load one snapshot with cooperative cancellation between bounded read chunks.
+///
+/// # Errors
+///
+/// Returns an error if identity or metadata recovery fails, the body exceeds
+/// policy, the file disappears, or its bytes are not valid UTF-8.
+pub fn load_snapshot_for_path_cancellable(
+    data_dir: &Path,
+    path: &Path,
+    snapshot_id: &str,
+    cancellation: &LocalHistoryPreviewCancellation,
+) -> Result<LocalHistoryPreviewLoadOutcome> {
+    if cancellation.is_cancelled() {
+        return Ok(LocalHistoryPreviewLoadOutcome::Cancelled);
+    }
     let _guard = local_history_lock()
         .lock()
         .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+    if cancellation.is_cancelled() {
+        return Ok(LocalHistoryPreviewLoadOutcome::Cancelled);
+    }
     let identity = resolve_document_identity(path)?;
     let document = load_document_for_identity(data_dir, identity.clone())?;
     let Some(meta) = document
@@ -379,12 +605,16 @@ pub fn load_snapshot_for_path(
         .find(|meta| meta.snapshot_id == snapshot_id)
         .cloned()
     else {
-        return Ok(None);
+        return Ok(LocalHistoryPreviewLoadOutcome::Missing);
     };
 
     let snapshot_path = snapshot_path(&document_dir(data_dir, &identity), &meta.snapshot_id);
-    let text = load_snapshot_text_bounded(&snapshot_path)?;
-    Ok(Some(LocalHistorySnapshot { meta, text }))
+    let Some(text) = load_snapshot_text_bounded_cancellable(&snapshot_path, cancellation)? else {
+        return Ok(LocalHistoryPreviewLoadOutcome::Cancelled);
+    };
+    Ok(LocalHistoryPreviewLoadOutcome::Loaded(
+        LocalHistorySnapshot { meta, text },
+    ))
 }
 
 /// Move local-history lineages after an in-app rename of a file or directory tree.
@@ -777,7 +1007,7 @@ fn repair_history_index_from_snapshots(
             )));
         }
         repair_body_bytes = repair_body_bytes.saturating_add(snapshot_bytes);
-        let text = match read_snapshot_text_after_size_check(&entry.path) {
+        let text = match read_snapshot_text_after_size_check(&entry.path, snapshot_bytes) {
             Ok(text) => text,
             Err(error) => {
                 return Ok(LocalHistoryIndexRepair::Skipped(format!(
@@ -815,9 +1045,12 @@ fn repair_history_index_from_snapshots(
     Ok(LocalHistoryIndexRepair::Repaired(document))
 }
 
-fn load_snapshot_text_bounded(path: &Path) -> Result<String> {
-    validate_snapshot_body_size(path)?;
-    read_snapshot_text_after_size_check(path)
+fn load_snapshot_text_bounded_cancellable(
+    path: &Path,
+    cancellation: &LocalHistoryPreviewCancellation,
+) -> Result<Option<String>> {
+    let byte_size = validate_snapshot_body_size(path)?;
+    read_snapshot_text_after_size_check_cancellable(path, byte_size, cancellation)
 }
 
 fn validate_snapshot_body_size(path: &Path) -> Result<u64> {
@@ -836,12 +1069,40 @@ fn validate_snapshot_body_size(path: &Path) -> Result<u64> {
     Ok(facts.byte_size)
 }
 
-fn read_snapshot_text_after_size_check(path: &Path) -> Result<String> {
-    let bytes =
-        fs_read::bytes(path).with_context(|| format!("failed to read {}", path.display()))?;
+fn read_snapshot_text_after_size_check(path: &Path, byte_size: u64) -> Result<String> {
+    let cancellation = LocalHistoryPreviewCancellation::default();
+    read_snapshot_text_after_size_check_cancellable(path, byte_size, &cancellation)?
+        .ok_or_else(|| anyhow::anyhow!("fresh local-history read was unexpectedly cancelled"))
+}
+
+fn read_snapshot_text_after_size_check_cancellable(
+    path: &Path,
+    byte_size: u64,
+    cancellation: &LocalHistoryPreviewCancellation,
+) -> Result<Option<String>> {
+    read_snapshot_text_with_cancel_check(path, byte_size, || {
+        delay_local_history_preview_read_for_test();
+        cancellation.is_cancelled()
+    })
+}
+
+fn read_snapshot_text_with_cancel_check(
+    path: &Path,
+    byte_size: u64,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Option<String>> {
+    let bytes = match fs_read::bounded_bytes(path, DISABLE_UNDO_HISTORY, byte_size, &mut cancelled)
+    {
+        Ok(bytes) => bytes,
+        Err(fs_read::BoundedFileReadError::Cancelled) => return Ok(None),
+        Err(error) => {
+            return Err(anyhow::Error::new(error))
+                .with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
     let text = simdutf8::basic::from_utf8(&bytes)
         .map_err(|error| anyhow::anyhow!("{} is not valid UTF-8: {error}", path.display()))?;
-    Ok(text.to_string())
+    Ok(Some(text.to_string()))
 }
 
 fn captured_millis_from_snapshot_id(snapshot_id: &str) -> Option<u64> {
@@ -1118,20 +1379,17 @@ fn obsolete_lineage_cleanup_failure() -> &'static Mutex<Option<ObsoleteLineageCl
 
 #[cfg(test)]
 fn take_mismatched_reconcile_budget_elapsed_for_test() -> bool {
-    let mut should_expire = mismatched_reconcile_budget_elapsed_for_test()
-        .lock()
-        .expect("mismatched-reconcile budget hook poisoned");
-    let value = *should_expire;
-    *should_expire = false;
-    value
+    MISMATCHED_RECONCILE_BUDGET_ELAPSED.with(|should_expire| should_expire.replace(false))
 }
 
 #[cfg(test)]
-fn mismatched_reconcile_budget_elapsed_for_test() -> &'static Mutex<bool> {
+thread_local! {
     // Sleeping until the wall-clock budget expires would make reconciliation
-    // tests flaky. The hook exercises the same branch without timing guesses.
-    static SHOULD_EXPIRE: OnceLock<Mutex<bool>> = OnceLock::new();
-    SHOULD_EXPIRE.get_or_init(|| Mutex::new(false))
+    // tests flaky. Thread-local ownership prevents one parallel test from
+    // consuming another test's deterministic one-shot branch.
+    static MISMATCHED_RECONCILE_BUDGET_ELAPSED: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
 }
 
 #[cfg(not(any(test, feature = "test-utils")))]
@@ -1241,6 +1499,46 @@ mod tests {
     fn history_dir_for_path(data_dir: &Path, path: &Path) -> PathBuf {
         let identity = resolve_document_identity(path).expect("resolve identity");
         document_dir(data_dir, &identity)
+    }
+
+    #[test]
+    fn preview_coordinator_retains_only_one_active_and_one_latest_selection() {
+        let mut coordinator = LocalHistoryPreviewCoordinator::default();
+        let request = |snapshot_id: &str| LocalHistoryPreviewRequest {
+            path: PathBuf::from("/workspace/file.txt"),
+            snapshot_id: snapshot_id.to_string(),
+        };
+        let first = coordinator
+            .submit(request("first"))
+            .expect("first selection starts");
+        assert!(coordinator.submit(request("middle")).is_none());
+        assert!(coordinator.submit(request("latest")).is_none());
+        assert!(first.cancellation.is_cancelled());
+        assert_eq!(coordinator.snapshot().active, 1);
+        assert_eq!(coordinator.snapshot().pending, 1);
+
+        let latest = coordinator
+            .finish(first.generation)
+            .expect("latest selection starts");
+        assert_eq!(latest.request.snapshot_id, "latest");
+        assert_eq!(coordinator.snapshot().active_high_water, 1);
+        assert_eq!(coordinator.snapshot().pending_high_water, 1);
+    }
+
+    #[test]
+    fn bounded_preview_read_observes_cancellation_between_chunks() {
+        let file = tempfile::NamedTempFile::new().expect("preview body temp file");
+        fixture::write_text(file.path(), &"x".repeat(256 * 1024));
+        let mut checks = 0usize;
+
+        let text = read_snapshot_text_with_cancel_check(file.path(), 256 * 1024, || {
+            checks = checks.saturating_add(1);
+            checks >= 2
+        })
+        .expect("cancelled preview read");
+
+        assert!(text.is_none());
+        assert!(checks >= 2);
     }
 
     fn seed_lineage_in_dir(document_dir: &Path, identity: DocumentSidecarIdentity, text: &str) {
@@ -1414,6 +1712,28 @@ mod tests {
                 i32::try_from(unicode.chars().count()).expect("small fixture")
             ),
             LocalHistoryAvailability::Full
+        );
+    }
+
+    #[test]
+    fn incoming_utf8_availability_uses_exact_body_bytes() {
+        assert_eq!(
+            availability_for_utf8_bytes(10_000_000),
+            LocalHistoryAvailability::Full
+        );
+        assert_eq!(
+            availability_for_utf8_bytes(10_000_001),
+            LocalHistoryAvailability::SaveOnly
+        );
+        assert_eq!(
+            availability_for_utf8_bytes(50_000_001),
+            LocalHistoryAvailability::Unavailable
+        );
+
+        let multibyte = "🙂".repeat(2_500_001);
+        assert_eq!(
+            availability_for_utf8_bytes(multibyte.len()),
+            LocalHistoryAvailability::SaveOnly
         );
     }
 

@@ -11,15 +11,17 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::model::workspace::FolderTreeEntry;
 use crate::services::notifications::NotificationSeverity;
+#[cfg(feature = "test-utils")]
+use crate::services::workspace_watch::WorkspaceWatchMailboxSnapshot;
 use crate::services::workspace_watch::{
-    WorkspaceWatchError, WorkspaceWatchPoll, WorkspaceWatchTarget, WorkspaceWatcher,
+    WorkspaceWatchChange, WorkspaceWatchError, WorkspaceWatchTarget, WorkspaceWatcher,
 };
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 
 use super::LushtextWorkspaceSection;
 use super::watch_targets::RowWatchContribution;
 
-/// Poll cadence for draining debounced watcher results on the GTK thread.
+/// Poll cadence for taking one coalesced watcher notice on the GTK thread.
 const WATCH_POLL_MS: u64 = 100;
 /// Quiet window that folds one GTK model mutation burst into one replacement.
 const WATCH_RESTART_SETTLE_MS: u64 = 25;
@@ -32,6 +34,56 @@ enum WatchWorkerResult {
 }
 
 impl LushtextWorkspaceSection {
+    /// Whether watcher transport, lifecycle, or refresh planning is still unsettled.
+    pub(crate) fn workspace_refresh_blocks_readiness(&self) -> bool {
+        let refresh = &self.imp().refresh_runtime;
+        if refresh.pending_full_reload.get() || !refresh.pending_paths.borrow().is_empty() {
+            return true;
+        }
+        if !self.imp().child_scan_tokens.borrow().is_empty()
+            || !self.imp().child_reconcile_sources.borrow().is_empty()
+        {
+            return true;
+        }
+
+        #[cfg(feature = "test-utils")]
+        if self.imp().watch_runtime.test_disabled.get() {
+            return false;
+        }
+
+        let watch = &self.imp().watch_runtime;
+        if watch.worker_inflight.get() {
+            return true;
+        }
+        let targets = watch.targets.borrow();
+        let target_install_pending = if targets.is_empty() {
+            watch.watcher.borrow().is_some()
+        } else {
+            let generation = targets.generation();
+            watch.installed_generation.get() != Some(generation)
+                && watch.unavailable_generation.get() != Some(generation)
+        };
+        drop(targets);
+        if target_install_pending {
+            return true;
+        }
+        watch.watcher.borrow().as_ref().is_some_and(|watcher| {
+            let snapshot = watcher.mailbox_snapshot();
+            snapshot.retained_paths > 0
+                || snapshot.full_refresh
+                || snapshot.has_error
+                || snapshot.disconnected
+                || snapshot.busy
+        })
+    }
+
+    /// Test seam for the same scalar state used by automation readiness.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn workspace_refresh_blocks_readiness_for_test(&self) -> bool {
+        self.workspace_refresh_blocks_readiness()
+    }
+
     /// Switch to configured-folder fallback while a flattened model is replaced.
     pub(super) fn prepare_workspace_watch_model(&self, folders: &[FolderTreeEntry]) {
         let fallback = folders.iter().map(watch_target_for_folder).collect();
@@ -144,6 +196,11 @@ impl LushtextWorkspaceSection {
     }
 
     fn queue_workspace_watch_restart(&self) {
+        #[cfg(feature = "test-utils")]
+        if self.imp().watch_runtime.test_disabled.get() {
+            return;
+        }
+
         if self.imp().watch_runtime.targets.borrow().is_empty() {
             self.imp()
                 .watch_runtime
@@ -179,6 +236,7 @@ impl LushtextWorkspaceSection {
         }
         let old_watcher = retiring.or_else(|| self.imp().watch_runtime.watcher.borrow_mut().take());
         self.imp().watch_runtime.installed_generation.set(None);
+        self.imp().watch_runtime.unavailable_generation.set(None);
         let generation = snapshot.generation;
         let targets = snapshot.targets;
         let section_weak = self.downgrade();
@@ -225,6 +283,7 @@ impl LushtextWorkspaceSection {
 
                 match result {
                     WatchWorkerResult::Retired => {
+                        section.imp().watch_runtime.unavailable_generation.set(None);
                         section
                             .imp()
                             .watch_runtime
@@ -234,6 +293,7 @@ impl LushtextWorkspaceSection {
                         section.sync_file_tree_error_state();
                     }
                     WatchWorkerResult::Started(Ok(watcher)) => {
+                        section.imp().watch_runtime.unavailable_generation.set(None);
                         section
                             .imp()
                             .watch_runtime
@@ -250,6 +310,11 @@ impl LushtextWorkspaceSection {
                         section.install_watch_poll_source();
                     }
                     WatchWorkerResult::Started(Err(error)) => {
+                        section
+                            .imp()
+                            .watch_runtime
+                            .unavailable_generation
+                            .set(Some(generation));
                         section.report_watch_error(&start_error_message(&error));
                     }
                 }
@@ -268,6 +333,7 @@ impl LushtextWorkspaceSection {
             source_id.remove();
         }
         runtime.installed_generation.set(None);
+        runtime.unavailable_generation.set(None);
         if let Some(watcher) = runtime.watcher.borrow_mut().take() {
             retire_watcher(watcher);
         }
@@ -282,36 +348,48 @@ impl LushtextWorkspaceSection {
             let Some(section) = section_weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            section.drain_watch_polls()
+            section.poll_workspace_watch()
         });
         *self.imp().watch_runtime.poll_source_id.borrow_mut() = Some(source_id);
     }
 
-    fn drain_watch_polls(&self) -> glib::ControlFlow {
-        loop {
-            let poll = {
-                let watcher = self.imp().watch_runtime.watcher.borrow();
-                watcher.as_ref().and_then(WorkspaceWatcher::try_poll)
-            };
-            let Some(poll) = poll else {
-                return glib::ControlFlow::Continue;
-            };
-            match poll {
-                WorkspaceWatchPoll::Update(update) => {
-                    self.queue_auto_refresh(update.changed_paths);
-                }
-                WorkspaceWatchPoll::Error(message) => self.report_watch_error(&message),
-                WorkspaceWatchPoll::Disconnected => {
-                    self.report_watch_error("Workspace auto-refresh disconnected.");
-                    self.imp().watch_runtime.installed_generation.set(None);
-                    self.imp().watch_runtime.poll_source_id.borrow_mut().take();
-                    if let Some(watcher) = self.imp().watch_runtime.watcher.borrow_mut().take() {
-                        retire_watcher(watcher);
-                    }
-                    return glib::ControlFlow::Break;
-                }
-            }
+    fn poll_workspace_watch(&self) -> glib::ControlFlow {
+        let notice = {
+            let watcher = self.imp().watch_runtime.watcher.borrow();
+            watcher.as_ref().and_then(WorkspaceWatcher::try_poll)
+        };
+        #[cfg(feature = "test-utils")]
+        self.imp()
+            .watch_runtime
+            .test_last_poll_notices
+            .set(usize::from(notice.is_some()));
+        let Some(notice) = notice else {
+            return glib::ControlFlow::Continue;
+        };
+
+        match notice.change {
+            Some(WorkspaceWatchChange::Paths(paths)) => self.queue_auto_refresh(paths),
+            Some(WorkspaceWatchChange::FullRefresh) => self.queue_auto_full_refresh(),
+            None => {}
         }
+        if let Some(message) = notice.error {
+            self.report_watch_error(&message);
+        }
+        if notice.disconnected {
+            self.report_watch_error("Workspace auto-refresh disconnected.");
+            let generation = self.imp().watch_runtime.installed_generation.replace(None);
+            self.imp()
+                .watch_runtime
+                .unavailable_generation
+                .set(generation);
+            self.imp().watch_runtime.poll_source_id.borrow_mut().take();
+            if let Some(watcher) = self.imp().watch_runtime.watcher.borrow_mut().take() {
+                retire_watcher(watcher);
+            }
+            return glib::ControlFlow::Break;
+        }
+
+        glib::ControlFlow::Continue
     }
 
     fn report_watch_error(&self, message: &str) {
@@ -363,6 +441,14 @@ impl LushtextWorkspaceSection {
         self.imp().watch_runtime.installed_generation.get() == Some(current)
     }
 
+    /// Whether terminal unavailability belongs to the latest effective targets.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn workspace_watcher_unavailability_is_current_for_test(&self) -> bool {
+        let current = self.imp().watch_runtime.targets.borrow().generation();
+        self.imp().watch_runtime.unavailable_generation.get() == Some(current)
+    }
+
     /// Configure section-local worker delays for lifecycle responsiveness tests.
     #[cfg(feature = "test-utils")]
     pub fn set_workspace_watcher_delays_for_test(&self, start: Duration, drop: Duration) {
@@ -377,9 +463,72 @@ impl LushtextWorkspaceSection {
         self.imp().watch_runtime.test_worker_starts.get()
     }
 
+    /// Merge a path batch into the installed handle without touching the filesystem.
+    #[cfg(feature = "test-utils")]
+    pub fn merge_workspace_watch_paths_for_test(&self, paths: Vec<std::path::PathBuf>) {
+        if let Some(watcher) = self.imp().watch_runtime.watcher.borrow().as_ref() {
+            watcher.merge_paths_for_test(paths);
+        }
+    }
+
+    /// Merge a backend diagnostic beside any pending change notice.
+    #[cfg(feature = "test-utils")]
+    pub fn merge_workspace_watch_error_for_test(&self, message: &str) {
+        if let Some(watcher) = self.imp().watch_runtime.watcher.borrow().as_ref() {
+            watcher.merge_error_for_test(message);
+        }
+    }
+
+    /// Mark the installed watcher disconnected so lifecycle recovery can be asserted.
+    #[cfg(feature = "test-utils")]
+    pub fn disconnect_workspace_watch_for_test(&self) {
+        if let Some(watcher) = self.imp().watch_runtime.watcher.borrow().as_ref() {
+            watcher.mark_disconnected_for_test();
+        }
+    }
+
+    /// Scalar mailbox, refresh-plan, and per-poll evidence without retained paths.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn workspace_watch_pressure_for_test(
+        &self,
+    ) -> (Option<WorkspaceWatchMailboxSnapshot>, usize, bool, usize) {
+        let mailbox = self
+            .imp()
+            .watch_runtime
+            .watcher
+            .borrow()
+            .as_ref()
+            .map(WorkspaceWatcher::mailbox_snapshot_for_test);
+        let (refresh_paths, refresh_full) = self.refresh_pressure_for_test();
+        (
+            mailbox,
+            refresh_paths,
+            refresh_full,
+            self.imp().watch_runtime.test_last_poll_notices.get(),
+        )
+    }
+
+    /// Pause the timer so one poll callback can be asserted deterministically.
+    #[cfg(feature = "test-utils")]
+    pub fn pause_workspace_watch_polling_for_test(&self) {
+        if let Some(source_id) = self.imp().watch_runtime.poll_source_id.borrow_mut().take() {
+            source_id.remove();
+        }
+    }
+
+    /// Run exactly one poll callback and report whether it consumed a notice.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn poll_workspace_watch_once_for_test(&self) -> usize {
+        let _ = self.poll_workspace_watch();
+        self.imp().watch_runtime.test_last_poll_notices.get()
+    }
+
     /// Test helper for isolating manual refresh from automatic watcher events.
     #[cfg(feature = "test-utils")]
     pub fn stop_workspace_watch_for_test(&self) {
+        self.imp().watch_runtime.test_disabled.set(true);
         self.stop_workspace_watch();
     }
 }

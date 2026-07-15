@@ -11,10 +11,11 @@ use crate::model::encoding::{
     DecodeConfidence, DocumentEncoding, DocumentEncodingState, FileHealthFinding,
     FileHealthFindingKind, FileHealthSeverity, LineEnding,
 };
+use crate::model::file_load::transient_load_weight;
 use crate::model::formatting_overrides::FormattingOverrides;
-use crate::services::file_limits::FileSizeCheck;
+use crate::services::file_limits::{FileSizeCheck, REFUSE_TO_OPEN};
 use crate::services::filesystem::{
-    WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
+    FileFacts, WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
 };
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -33,11 +34,27 @@ const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
 
 #[cfg(feature = "test-utils")]
 static LOAD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static PAYLOAD_LOAD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static TRANSIENT_WEIGHT_OVERRIDE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// Configure an artificial editor-load delay for widget race tests.
 #[cfg(feature = "test-utils")]
 pub fn set_load_delay_for_test(delay_ms: u64) {
     LOAD_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+/// Configure an artificial admitted payload delay for coordinator tests.
+#[cfg(feature = "test-utils")]
+pub fn set_payload_load_delay_for_test(delay_ms: u64) {
+    PAYLOAD_LOAD_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+/// Override planned transient weight without creating huge widget fixtures.
+#[cfg(feature = "test-utils")]
+pub fn set_transient_weight_override_for_test(weight: Option<u64>) {
+    TRANSIENT_WEIGHT_OVERRIDE_BYTES.store(weight.unwrap_or(0), Ordering::Release);
 }
 
 /// Successful result from `load_text_file`.
@@ -57,6 +74,17 @@ pub struct LoadResult {
     pub has_bom: bool,
     /// File-health findings surfaced for the current document.
     pub file_health: Vec<FileHealthFinding>,
+}
+
+/// Compact metadata and stable-identity snapshot produced before payload admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileLoadPlan {
+    /// Filesystem facts that admitted ingestion must revalidate.
+    pub facts: FileFacts,
+    /// Large-file feature policy selected from the planned byte size.
+    pub size_check: FileSizeCheck,
+    /// Conservative transient charge used by the process-wide coordinator.
+    pub transient_weight: u64,
 }
 
 /// Decoded byte-ingestion snapshot returned only to fuzz targets.
@@ -155,6 +183,25 @@ pub enum EditorLoadError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{path} changed while it was being opened. Retry to load the current file.")]
+    Changed { path: PathBuf },
+    #[error(
+        "{path} grew while it was being opened (planned {planned_bytes} bytes, observed at least {observed_min_bytes} bytes). Retry to load the current file."
+    )]
+    Grew {
+        path: PathBuf,
+        planned_bytes: u64,
+        observed_min_bytes: u64,
+    },
+    #[error(
+        "{path} grew beyond the supported limit while it was being opened (at least {observed_min_mb} MB)."
+    )]
+    GrownTooLarge { path: PathBuf, observed_min_mb: u64 },
+    #[error("Failed to decode {path} as {encoding}")]
+    Decode {
+        path: PathBuf,
+        encoding: DocumentEncoding,
+    },
     #[error("{path} is too large to edit ({size_mb} MB). Consider a pager like `less`.")]
     TooLarge { path: PathBuf, size_mb: u64 },
 }
@@ -168,6 +215,10 @@ pub enum EditorLoadError {
 pub enum EditorSaveError {
     #[error("No file path set")]
     NoPath,
+    #[error("File load or installation is still in progress")]
+    LoadInProgress,
+    #[error("The last file-load installation was incomplete; retry loading before saving")]
+    IncompleteLoadInstallation,
     #[error("Save already in progress")]
     SaveInProgress,
     #[error("Buffer changed while the save snapshot was being captured")]
@@ -226,6 +277,18 @@ pub fn load_text_file_with_encoding(
     cancel: &AtomicBool,
     reopen_as: Option<DocumentEncoding>,
 ) -> Result<LoadResult, EditorLoadError> {
+    let plan = plan_text_file(path, cancel)?;
+    load_planned_text_file(plan, cancel, reopen_as)
+}
+
+/// Resolve metadata and stable identity without retaining document bytes.
+///
+/// **Threading:** Performs blocking metadata I/O — call from a background thread.
+///
+/// # Errors
+///
+/// Returns a typed cancellation, metadata, or initial-size failure.
+pub fn plan_text_file(path: &Path, cancel: &AtomicBool) -> Result<FileLoadPlan, EditorLoadError> {
     if cancel.load(Ordering::Acquire) {
         return Err(EditorLoadError::Cancelled);
     }
@@ -236,15 +299,12 @@ pub fn load_text_file_with_encoding(
         path: path.to_path_buf(),
         source,
     })?;
-    let size = facts.byte_size;
-    let size_check = FileSizeCheck::classify(size);
-    let canonical_path = facts.canonical_path;
-    let mtime = facts.modified_at_secs;
+    let size_check = FileSizeCheck::classify(facts.byte_size);
 
     if size_check == FileSizeCheck::TooLarge {
         return Err(EditorLoadError::TooLarge {
             path: path.to_path_buf(),
-            size_mb: size / 1_000_000,
+            size_mb: facts.byte_size / 1_000_000,
         });
     }
 
@@ -252,27 +312,151 @@ pub fn load_text_file_with_encoding(
         return Err(EditorLoadError::Cancelled);
     }
 
-    let bytes = fs_read::bytes(path).map_err(|source| EditorLoadError::Read {
-        path: path.to_path_buf(),
-        source,
+    Ok(FileLoadPlan {
+        transient_weight: planned_transient_weight(facts.byte_size),
+        facts,
+        size_check,
+    })
+}
+
+/// Execute admitted bounded ingestion and decoding for one current plan.
+///
+/// The plan is revalidated before and after streaming so growth, rename, and
+/// replacement races cannot install bytes under stale metadata ownership.
+///
+/// **Threading:** Performs blocking I/O and decoding — call from a background thread.
+///
+/// # Errors
+///
+/// Returns typed cancellation, growth, identity-change, metadata, read, or
+/// initial planning outcomes.
+pub fn load_planned_text_file(
+    plan: FileLoadPlan,
+    cancel: &AtomicBool,
+    reopen_as: Option<DocumentEncoding>,
+) -> Result<LoadResult, EditorLoadError> {
+    load_planned_text_file_with_limit(plan, cancel, reopen_as, REFUSE_TO_OPEN)
+}
+
+fn load_planned_text_file_with_limit(
+    plan: FileLoadPlan,
+    cancel: &AtomicBool,
+    reopen_as: Option<DocumentEncoding>,
+    supported_limit: u64,
+) -> Result<LoadResult, EditorLoadError> {
+    let path = plan.facts.path.clone();
+    if cancel.load(Ordering::Acquire) {
+        return Err(EditorLoadError::Cancelled);
+    }
+
+    revalidate_load_plan(&plan, supported_limit)?;
+    delay_payload_load_for_test();
+    let read_limit = admitted_read_limit(&plan, supported_limit);
+    let bytes = fs_read::bounded_bytes(&path, read_limit, plan.facts.byte_size, || {
+        cancel.load(Ordering::Acquire)
+    })
+    .map_err(|error| match error {
+        fs_read::BoundedFileReadError::Cancelled => EditorLoadError::Cancelled,
+        fs_read::BoundedFileReadError::LimitExceeded { byte_limit } => EditorLoadError::Grew {
+            path: path.clone(),
+            planned_bytes: plan.facts.byte_size,
+            observed_min_bytes: byte_limit.saturating_add(1),
+        },
+        fs_read::BoundedFileReadError::Io(source) => EditorLoadError::Read {
+            path: path.clone(),
+            source,
+        },
     })?;
     if cancel.load(Ordering::Acquire) {
         return Err(EditorLoadError::Cancelled);
     }
 
+    revalidate_load_plan(&plan, supported_limit)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != plan.facts.byte_size {
+        return Err(EditorLoadError::Changed { path });
+    }
+
     let decoded = decode_document(&bytes, reopen_as);
+    if decoded.had_errors {
+        return Err(EditorLoadError::Decode {
+            path,
+            encoding: decoded.encoding_state.opened_encoding,
+        });
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err(EditorLoadError::Cancelled);
+    }
     let file_health = build_file_health(&decoded.content, &decoded, &bytes);
+    if cancel.load(Ordering::Acquire) {
+        return Err(EditorLoadError::Cancelled);
+    }
 
     Ok(LoadResult {
         content: decoded.content,
-        size,
-        size_check,
-        canonical_path,
-        mtime,
+        size: plan.facts.byte_size,
+        size_check: plan.size_check,
+        canonical_path: plan.facts.canonical_path,
+        mtime: plan.facts.modified_at_secs,
         encoding_state: decoded.encoding_state,
         has_bom: decoded.has_bom,
         file_health,
     })
+}
+
+fn admitted_read_limit(plan: &FileLoadPlan, supported_limit: u64) -> u64 {
+    plan.facts.byte_size.min(supported_limit)
+}
+
+fn planned_transient_weight(source_bytes: u64) -> u64 {
+    #[cfg(feature = "test-utils")]
+    {
+        let override_bytes = TRANSIENT_WEIGHT_OVERRIDE_BYTES.load(Ordering::Acquire);
+        if override_bytes > 0 {
+            return override_bytes;
+        }
+    }
+    transient_load_weight(source_bytes)
+}
+
+#[cfg(feature = "test-utils")]
+fn delay_payload_load_for_test() {
+    let delay_ms = PAYLOAD_LOAD_DELAY_MS.load(Ordering::Acquire);
+    if delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn delay_payload_load_for_test() {}
+
+fn revalidate_load_plan(plan: &FileLoadPlan, supported_limit: u64) -> Result<(), EditorLoadError> {
+    let path = &plan.facts.path;
+    let current = fs_metadata::file_facts(path).map_err(|source| EditorLoadError::Metadata {
+        path: path.clone(),
+        source,
+    })?;
+    if current.byte_size > supported_limit {
+        return Err(EditorLoadError::GrownTooLarge {
+            path: path.clone(),
+            observed_min_mb: current.byte_size / 1_000_000,
+        });
+    }
+    if current.byte_size > plan.facts.byte_size {
+        return Err(EditorLoadError::Grew {
+            path: path.clone(),
+            planned_bytes: plan.facts.byte_size,
+            observed_min_bytes: current.byte_size,
+        });
+    }
+    if current.canonical_path != plan.facts.canonical_path
+        || current.kind != plan.facts.kind
+        || current.identity != plan.facts.identity
+        || current.byte_size != plan.facts.byte_size
+        || current.modified_at_nanos != plan.facts.modified_at_nanos
+    {
+        return Err(EditorLoadError::Changed { path: path.clone() });
+    }
+    Ok(())
 }
 
 #[cfg(feature = "test-utils")]
@@ -467,32 +651,50 @@ struct DecodedDocument {
     content: String,
     encoding_state: DocumentEncodingState,
     has_bom: bool,
+    had_errors: bool,
 }
 
 /// Decode raw bytes into Unicode text and document metadata.
 fn decode_document(bytes: &[u8], reopen_as: Option<DocumentEncoding>) -> DecodedDocument {
-    let (content, opened_encoding, decode_confidence, has_bom) = if let Some(encoding) = reopen_as {
-        let (decoded, had_bom) = decode_with_encoding(bytes, encoding);
-        (decoded, encoding, DecodeConfidence::Exact, had_bom)
+    let (content, opened_encoding, decode_confidence, has_bom, had_errors) = if let Some(encoding) =
+        reopen_as
+    {
+        let (decoded, had_bom, had_errors) = decode_with_encoding(bytes, encoding);
+        (
+            decoded,
+            encoding,
+            DecodeConfidence::Exact,
+            had_bom,
+            had_errors,
+        )
     } else if let Some((encoding, stripped)) = bom_prefixed_encoding(bytes) {
-        let content = decode_bytes_without_bom(stripped, encoding);
-        (content, encoding, DecodeConfidence::Exact, true)
+        let (content, had_errors) = decode_bytes_without_bom(stripped, encoding);
+        (content, encoding, DecodeConfidence::Exact, true, had_errors)
     } else if let Ok(utf8) = simdutf8::basic::from_utf8(bytes) {
         (
             utf8.to_string(),
             DocumentEncoding::Utf8,
             DecodeConfidence::Exact,
             false,
+            false,
         )
     } else if let Some(encoding) = guess_utf16_without_bom(bytes) {
-        let content = decode_bytes_without_bom(bytes, encoding);
-        (content, encoding, DecodeConfidence::Heuristic, false)
-    } else {
+        let (content, had_errors) = decode_bytes_without_bom(bytes, encoding);
         (
-            decode_bytes_without_bom(bytes, DocumentEncoding::Windows1252),
+            content,
+            encoding,
+            DecodeConfidence::Heuristic,
+            false,
+            had_errors,
+        )
+    } else {
+        let (content, had_errors) = decode_bytes_without_bom(bytes, DocumentEncoding::Windows1252);
+        (
+            content,
             DocumentEncoding::Windows1252,
             DecodeConfidence::Low,
             false,
+            had_errors,
         )
     };
 
@@ -509,31 +711,34 @@ fn decode_document(bytes: &[u8], reopen_as: Option<DocumentEncoding>) -> Decoded
         content,
         encoding_state,
         has_bom,
+        had_errors,
     }
 }
 
 /// Decode bytes using an explicit encoding selection, stripping any matching BOM.
-fn decode_with_encoding(bytes: &[u8], encoding: DocumentEncoding) -> (String, bool) {
+fn decode_with_encoding(bytes: &[u8], encoding: DocumentEncoding) -> (String, bool, bool) {
     if let Some((detected_encoding, stripped)) = bom_prefixed_encoding(bytes)
         && detected_encoding == encoding
     {
-        return (decode_bytes_without_bom(stripped, encoding), true);
+        let (content, had_errors) = decode_bytes_without_bom(stripped, encoding);
+        return (content, true, had_errors);
     }
 
-    (decode_bytes_without_bom(bytes, encoding), false)
+    let (content, had_errors) = decode_bytes_without_bom(bytes, encoding);
+    (content, false, had_errors)
 }
 
 /// Decode bytes with the requested encoding after BOM handling has been resolved.
-fn decode_bytes_without_bom(bytes: &[u8], encoding: DocumentEncoding) -> String {
+fn decode_bytes_without_bom(bytes: &[u8], encoding: DocumentEncoding) -> (String, bool) {
     match encoding {
         DocumentEncoding::Utf8 | DocumentEncoding::Utf8Bom
             if let Ok(utf8) = simdutf8::basic::from_utf8(bytes) =>
         {
-            utf8.to_string()
+            (utf8.to_string(), false)
         }
         _ => {
-            let (decoded, _) = encoding.codec().decode_without_bom_handling(bytes);
-            decoded.into_owned()
+            let (decoded, had_errors) = encoding.codec().decode_without_bom_handling(bytes);
+            (decoded.into_owned(), had_errors)
         }
     }
 }
@@ -889,6 +1094,144 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
+    fn file_load_plan_is_payload_free_and_carries_conservative_weight() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_text(file.path(), "hello");
+        let cancel = AtomicBool::new(false);
+
+        let plan = plan_text_file(file.path(), &cancel).expect("load plan");
+
+        assert_eq!(plan.facts.byte_size, 5);
+        assert_eq!(plan.transient_weight, transient_load_weight(5));
+        assert!(std::mem::size_of_val(&plan) < 512);
+    }
+
+    #[test]
+    fn planned_load_reports_growth_before_allocating_past_limit() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_text(file.path(), "tiny");
+        let cancel = AtomicBool::new(false);
+        let plan = plan_text_file(file.path(), &cancel).expect("load plan");
+        fixture::write_text(file.path(), "this grew beyond the test limit");
+
+        let error = load_planned_text_file_with_limit(plan, &cancel, None, 10)
+            .expect_err("growth should fail");
+
+        assert_matches!(error, EditorLoadError::GrownTooLarge { .. });
+    }
+
+    #[test]
+    fn planned_load_classifies_supported_growth_against_admitted_size() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_text(file.path(), "tiny");
+        let cancel = AtomicBool::new(false);
+        let plan = plan_text_file(file.path(), &cancel).expect("load plan");
+        fixture::write_text(file.path(), "tiny+");
+
+        let error = load_planned_text_file(plan, &cancel, None).expect_err("growth should fail");
+
+        assert_matches!(
+            error,
+            EditorLoadError::Grew {
+                planned_bytes: 4,
+                observed_min_bytes: 5,
+                ..
+            }
+        );
+    }
+
+    #[test]
+    fn admitted_read_limit_never_exceeds_planned_payload() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_text(file.path(), "tiny");
+        let cancel = AtomicBool::new(false);
+        let plan = plan_text_file(file.path(), &cancel).expect("load plan");
+
+        assert_eq!(admitted_read_limit(&plan, REFUSE_TO_OPEN), 4);
+        assert_eq!(admitted_read_limit(&plan, 2), 2);
+    }
+
+    #[test]
+    fn planned_load_rejects_atomic_replacement_with_same_size() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_text(file.path(), "first");
+        let cancel = AtomicBool::new(false);
+        let plan = plan_text_file(file.path(), &cancel).expect("load plan");
+        fs_write::atomic_replace(file.path(), WriteLabel::SAVE, b"other")
+            .expect("atomic replacement");
+
+        let error = load_planned_text_file(plan, &cancel, None)
+            .expect_err("replacement should fail freshness");
+
+        assert_matches!(error, EditorLoadError::Changed { .. });
+    }
+
+    #[test]
+    fn planned_load_rejects_rename_and_recreated_original_path() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("document.txt");
+        let moved = dir.path().join("moved.txt");
+        fixture::write_text(&path, "same");
+        let cancel = AtomicBool::new(false);
+        let plan = plan_text_file(&path, &cancel).expect("load plan");
+        fixture::rename(&path, &moved);
+        fixture::write_text(&path, "same");
+
+        let error = load_planned_text_file(plan, &cancel, None)
+            .expect_err("renamed identity should fail freshness");
+
+        assert_matches!(error, EditorLoadError::Changed { .. });
+    }
+
+    #[test]
+    fn bounded_ingestion_loops_over_short_reads_and_honors_exact_limit() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_repeated_bytes(file.path(), "é".as_bytes(), 128 * 1024);
+        let bytes = fs_read::bounded_bytes(file.path(), 128 * 1024, 128 * 1024, || false)
+            .expect("exact-limit read");
+
+        assert_eq!(bytes.len(), 128 * 1024);
+        assert!(simdutf8::basic::from_utf8(&bytes).is_ok());
+    }
+
+    #[test]
+    fn bounded_ingestion_checks_cancellation_while_streaming() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_repeated_bytes(file.path(), b"x", 256 * 1024);
+        let mut checkpoints = 0usize;
+
+        let error = fs_read::bounded_bytes(file.path(), 256 * 1024, 256 * 1024, || {
+            checkpoints += 1;
+            checkpoints > 1
+        })
+        .expect_err("second checkpoint should cancel");
+
+        assert_matches!(error, fs_read::BoundedFileReadError::Cancelled);
+    }
+
+    #[test]
+    fn bounded_ingestion_detects_one_byte_beyond_limit_without_retaining_it() {
+        const SENTINEL_TEST_LIMIT: u64 = 64 * 1024;
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_repeated_bytes(file.path(), b"x", SENTINEL_TEST_LIMIT + 1);
+
+        let error = fs_read::bounded_bytes(
+            file.path(),
+            SENTINEL_TEST_LIMIT,
+            SENTINEL_TEST_LIMIT,
+            || false,
+        )
+        .expect_err("sentinel byte should prove overflow");
+
+        assert_matches!(
+            error,
+            fs_read::BoundedFileReadError::LimitExceeded {
+                byte_limit: SENTINEL_TEST_LIMIT
+            }
+        );
+    }
+
+    #[test]
     fn load_text_file_reads_utf8_and_classifies_size() {
         let file = NamedTempFile::new().expect("expected operation to succeed");
         fixture::write_bytes(file.path(), "hello\nworld");
@@ -950,6 +1293,25 @@ mod tests {
                 .expect("expected operation to succeed");
         assert_eq!(plain_utf8.content, "\u{feff}a");
         assert!(!plain_utf8.has_bom);
+    }
+
+    #[test]
+    fn explicit_reopen_reports_typed_decode_failure() {
+        let file = NamedTempFile::new().expect("temp file");
+        fixture::write_bytes(file.path(), [0xFF, 0xFE, 0xFF]);
+        let cancel = AtomicBool::new(false);
+
+        let error =
+            load_text_file_with_encoding(file.path(), &cancel, Some(DocumentEncoding::Utf8))
+                .expect_err("invalid forced UTF-8 should fail decoding");
+
+        assert_matches!(
+            error,
+            EditorLoadError::Decode {
+                encoding: DocumentEncoding::Utf8,
+                ..
+            }
+        );
     }
 
     #[test]

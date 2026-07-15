@@ -448,6 +448,21 @@ fn public_service_saves_write_v1_envelopes() {
     );
 }
 
+#[test]
+fn draft_manifest_v1_without_cleanup_continuation_remains_readable() {
+    let bytes = br#"{
+        "kind":"dev.cominotti.lushtext.draft-manifest",
+        "version":1,
+        "data":{"drafts":[]}
+    }"#;
+
+    let manifest = json_format::parse_v1_payload::<DraftManifest>(bytes, KIND_DRAFT_MANIFEST)
+        .expect("legacy v1 draft manifest payload should parse");
+
+    assert!(manifest.drafts.is_empty());
+    assert!(manifest.cleanup_continuation.is_none());
+}
+
 fn assert_file_kind(path: &Path, expected_kind: &'static str) {
     let bytes = fixture::read_bytes(path);
     let value: serde_json::Value =
@@ -521,6 +536,7 @@ fn sample_draft_manifest(path: &Path) -> DraftManifest {
             original_mtime_secs: Some(1),
             saved_at_secs: 2,
         }],
+        cleanup_continuation: None,
     }
 }
 

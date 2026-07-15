@@ -33,11 +33,97 @@ pub struct DirectoryEntry {
     pub is_empty: Option<bool>,
 }
 
+/// Plain projection retained for one materialized GTK child store.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DirectoryRowState {
+    /// Filesystem path for a real row; absent only for the truncation placeholder.
+    pub path: Option<PathBuf>,
+    /// Whether a real row represents a directory.
+    pub is_dir: bool,
+    /// Bounded empty-directory hint copied from the accepted scan.
+    pub is_empty: Option<bool>,
+    /// Whether this row is the synthetic truncation placeholder.
+    pub is_placeholder: bool,
+}
+
+impl DirectoryRowState {
+    /// Convert one scanned filesystem entry into its retained row projection.
+    #[must_use]
+    pub fn from_entry(entry: DirectoryEntry) -> Self {
+        Self {
+            path: Some(entry.path),
+            is_dir: entry.is_dir,
+            is_empty: entry.is_empty,
+            is_placeholder: false,
+        }
+    }
+
+    /// Build the single synthetic row appended after a truncated scan.
+    #[must_use]
+    pub const fn truncation_placeholder() -> Self {
+        Self {
+            path: None,
+            is_dir: false,
+            is_empty: None,
+            is_placeholder: true,
+        }
+    }
+}
+
+/// Compact changed-middle plan computed without reading GTK objects.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DirectoryReconciliationPlan {
+    /// Current and desired row mirrors are already identical.
+    Unchanged,
+    /// Replace one middle range while preserving equal prefix and suffix rows.
+    Splice {
+        /// First changed row in the current and desired mirrors.
+        position: usize,
+        /// Current rows removed from that position.
+        removed: usize,
+        /// Desired changed rows inserted at that position.
+        replacement: Vec<DirectoryRowState>,
+    },
+}
+
+/// Compute one prefix/middle/suffix plan from bounded plain row projections.
+#[must_use]
+pub fn plan_directory_reconciliation(
+    current: &[DirectoryRowState],
+    desired: &[DirectoryRowState],
+) -> DirectoryReconciliationPlan {
+    if current == desired {
+        return DirectoryReconciliationPlan::Unchanged;
+    }
+    let prefix = current
+        .iter()
+        .zip(desired.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let suffix = current[prefix..]
+        .iter()
+        .rev()
+        .zip(desired[prefix..].iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let removed = current.len().saturating_sub(prefix + suffix);
+    let replacement_end = desired.len().saturating_sub(suffix);
+    DirectoryReconciliationPlan::Splice {
+        position: prefix,
+        removed,
+        replacement: desired[prefix..replacement_end].to_vec(),
+    }
+}
+
 /// Result of a bounded directory scan.
 #[derive(Debug, Default)]
 pub struct DirectoryScan {
     /// Sorted entries for the directory, directories-first then alphabetical.
     pub entries: Vec<DirectoryEntry>,
+    /// Visible filesystem entries examined before completion or cancellation.
+    pub examined_entries: usize,
+    /// Largest number of directory rows retained during bounded selection.
+    pub peak_retained_entries: usize,
     /// True if the directory had more entries than `max_entries`.
     pub truncated: bool,
     /// True if the cancellation token was set during scanning.
@@ -100,24 +186,42 @@ pub fn is_dir_empty(path: &Path) -> bool {
 ///
 /// The result is still sorted directories-first and alphabetically, but for
 /// very large folders only the best `max_entries` rows are retained in memory.
+#[must_use]
 pub fn scan_directory_bounded(
     dir_path: &Path,
     max_entries: usize,
     lookahead_cap: usize,
     cancel: Option<&AtomicBool>,
 ) -> DirectoryScan {
+    scan_directory_bounded_with_cancel(dir_path, max_entries, lookahead_cap, || {
+        cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire))
+    })
+}
+
+/// Scan a directory with a workflow-owned cooperative cancellation predicate.
+pub fn scan_directory_bounded_with_cancel<F>(
+    dir_path: &Path,
+    max_entries: usize,
+    lookahead_cap: usize,
+    mut is_cancelled: F,
+) -> DirectoryScan
+where
+    F: FnMut() -> bool,
+{
     // Keep only the best bounded rows while scanning so enormous directories do
     // not require materializing every entry before sorting.
     let mut heap = BinaryHeap::with_capacity(max_entries.saturating_add(1).min(256));
     let mut truncated = false;
     let mut dirs_checked = 0;
     let mut cancelled = false;
+    let mut examined_entries = 0usize;
+    let mut peak_retained_entries = 0usize;
 
     let scan = fs_tree::visit_directory(
         dir_path,
         DirectoryScanPolicy::visible_workspace(),
         |entry| {
-            if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire)) {
+            if is_cancelled() {
                 cancelled = true;
                 return false;
             }
@@ -127,6 +231,7 @@ pub fn scan_directory_bounded(
                 FileKind::File => false,
                 FileKind::Other => return true,
             };
+            examined_entries = examined_entries.saturating_add(1);
 
             let mut is_empty = None;
             if is_dir && dirs_checked < lookahead_cap {
@@ -143,6 +248,7 @@ pub fn scan_directory_bounded(
                 heap.pop();
                 truncated = true;
             }
+            peak_retained_entries = peak_retained_entries.max(heap.len());
             true
         },
     );
@@ -153,6 +259,8 @@ pub fn scan_directory_bounded(
             let message = format!("Cannot read {}: {}", dir_path.display(), error);
             tracing::warn!("{message}");
             return DirectoryScan {
+                examined_entries,
+                peak_retained_entries,
                 error: Some(message),
                 ..DirectoryScan::default()
             };
@@ -161,6 +269,8 @@ pub fn scan_directory_bounded(
 
     DirectoryScan {
         entries: drain_sorted_entries(heap),
+        examined_entries,
+        peak_retained_entries,
         truncated,
         cancelled,
         error: None,
@@ -216,6 +326,30 @@ mod tests {
                     .into_owned()
             })
             .collect()
+    }
+
+    fn row(name: impl Into<String>) -> DirectoryRowState {
+        DirectoryRowState {
+            path: Some(PathBuf::from(name.into())),
+            is_dir: false,
+            is_empty: None,
+            is_placeholder: false,
+        }
+    }
+
+    fn apply_plan(
+        mut current: Vec<DirectoryRowState>,
+        plan: DirectoryReconciliationPlan,
+    ) -> Vec<DirectoryRowState> {
+        if let DirectoryReconciliationPlan::Splice {
+            position,
+            removed,
+            replacement,
+        } = plan
+        {
+            current.splice(position..position + removed, replacement);
+        }
+        current
     }
 
     #[test]
@@ -443,5 +577,54 @@ mod tests {
                 .is_some_and(|message| message.contains(missing.to_string_lossy().as_ref())),
             "scan error should identify the unreadable folder"
         );
+    }
+
+    #[test]
+    fn reconciliation_plan_compacts_a_ten_thousand_row_prefix_change() {
+        let current = (0..10_000)
+            .map(|index| row(format!("row-{index:05}")))
+            .collect::<Vec<_>>();
+        let mut desired = Vec::with_capacity(current.len() + 1);
+        desired.push(row("prefix-new"));
+        desired.extend(current.iter().cloned());
+
+        let plan = plan_directory_reconciliation(&current, &desired);
+
+        assert_eq!(
+            plan,
+            DirectoryReconciliationPlan::Splice {
+                position: 0,
+                removed: 0,
+                replacement: vec![row("prefix-new")],
+            }
+        );
+        assert_eq!(apply_plan(current, plan), desired);
+    }
+
+    #[test]
+    fn reconciliation_plan_compacts_a_ten_thousand_row_middle_change() {
+        let current = (0..10_000)
+            .map(|index| row(format!("row-{index:05}")))
+            .collect::<Vec<_>>();
+        let mut desired = current.clone();
+        desired.splice(
+            2_500..7_500,
+            (0..5_000).map(|index| row(format!("changed-{index:05}"))),
+        );
+
+        let plan = plan_directory_reconciliation(&current, &desired);
+
+        let DirectoryReconciliationPlan::Splice {
+            position,
+            removed,
+            replacement,
+        } = &plan
+        else {
+            panic!("middle change should produce a splice");
+        };
+        assert_eq!(*position, 2_500);
+        assert_eq!(*removed, 5_000);
+        assert_eq!(replacement.len(), 5_000);
+        assert_eq!(apply_plan(current, plan), desired);
     }
 }

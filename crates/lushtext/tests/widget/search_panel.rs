@@ -25,6 +25,9 @@ use lushtext_core::ui::search_panel::{
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
 use std::assert_matches;
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -1183,7 +1186,7 @@ fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows
     assert_eq!(panel.skipped_replacement_count(), 0);
     assert_eq!(
         panel.imp().count_label.text(),
-        "2 previewed, 2 checked, 1 omitted, 0 skipped"
+        "2 previewed, 2 checked, 1 omitted, 0 truncated, 0 stale ranges"
     );
     assert_eq!(
         panel.imp().results_scroll.hscrollbar_policy(),
@@ -1196,6 +1199,55 @@ fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows
         .checked_match_ids
         .borrow_mut()
         .remove(&SearchMatchId::from_index(1));
+    panel.activate_confirm_replacements();
+    let confirmed = confirmed.borrow();
+    assert_eq!(confirmed.len(), 1);
+    assert_eq!(confirmed[0].match_id, SearchMatchId::from_index(0));
+}
+
+#[test]
+fn test_invalid_preview_rows_report_private_free_reason_counts_and_never_confirm() {
+    ensure_gtk_init();
+    const SOURCE_SENTINEL: &str = "PRIVATE-SOURCE-WIDGET-55c7";
+    const REPLACEMENT_SENTINEL: &str = "PRIVATE-REPLACEMENT-WIDGET-a821";
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.set_query("([a-z]+)");
+    panel.imp().regex_toggle.set_active(true);
+    flush_after_delay(Duration::from_millis(200));
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    panel.imp().runtime.search_matches.replace(vec![
+        SearchMatch::new(PathBuf::from("/project/valid.rs"), 1, "abc", 0..3)
+            .with_id(SearchMatchId::from_index(0)),
+        SearchMatch::new(
+            PathBuf::from("/project/stale.rs"),
+            2,
+            &format!("123 {SOURCE_SENTINEL}"),
+            0..3,
+        )
+        .with_id(SearchMatchId::from_index(1)),
+    ]);
+    panel.imp().runtime.total_matches.set(2);
+    panel.imp().runtime.total_files.set(2);
+
+    let confirmed = Rc::new(RefCell::new(Vec::<Replacement>::new()));
+    let captured = Rc::clone(&confirmed);
+    panel.connect_replace_all(move |replacements| {
+        captured.replace(replacements);
+    });
+    panel.enter_preview_mode(REPLACEMENT_SENTINEL);
+
+    wait_until(Duration::from_secs(10), || panel.is_preview_mode());
+    assert_eq!(panel.replace_preview_count(), 1);
+    assert_eq!(panel.checked_replacement_count(), 1);
+    assert_eq!(panel.skipped_replacement_count(), 1);
+    let summary = panel.imp().count_label.text();
+    assert_eq!(
+        summary,
+        "1 previewed, 1 checked, 0 omitted, 0 truncated, 1 stale ranges"
+    );
+    assert!(!summary.contains(SOURCE_SENTINEL));
+    assert!(!summary.contains(REPLACEMENT_SENTINEL));
+
     panel.activate_confirm_replacements();
     let confirmed = confirmed.borrow();
     assert_eq!(confirmed.len(), 1);
@@ -1233,7 +1285,7 @@ fn test_no_eligible_preview_has_explicit_feedback_and_disabled_confirmation() {
     assert_eq!(panel.skipped_replacement_count(), 1);
     assert_eq!(
         panel.imp().count_label.text(),
-        "No eligible replacements; 0 omitted, 1 skipped"
+        "No eligible replacements; 0 omitted, 1 truncated, 0 stale ranges"
     );
     assert!(!panel.imp().replace_all_button.is_sensitive());
     assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 0 checked"));
@@ -1260,7 +1312,7 @@ fn test_byte_limited_preview_reports_omitted_when_no_row_fits() {
     assert_eq!(panel.skipped_replacement_count(), 0);
     assert_eq!(
         panel.imp().count_label.text(),
-        "No eligible replacements; 1 omitted, 0 skipped"
+        "No eligible replacements; 1 omitted, 0 truncated, 0 stale ranges"
     );
     assert!(!panel.imp().replace_all_button.is_sensitive());
 }

@@ -63,8 +63,17 @@ impl LushtextEditorPage {
         let was_visible = revealer.reveals_child();
         if !was_visible {
             self.save_pre_search_cursor();
-            search_bar.attach(&self.buffer(), self.source_view());
             revealer.set_reveal_child(true);
+
+            // The latest reveal intent is preserved during a file install, but
+            // attaching a SearchContext here would duplicate buffer projection
+            // work for every bounded text slice. Finalization attaches it to
+            // the exact completed buffer when the bar is still visible.
+            if self.load_projection_suspended() {
+                search_bar.set_replace_mode(replace_mode);
+                return;
+            }
+            search_bar.attach(&self.buffer(), self.source_view());
 
             let buffer = self.buffer();
             if let Some((start, end)) = buffer.selection_bounds() {

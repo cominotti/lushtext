@@ -535,6 +535,9 @@ impl LushtextEditorPage {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
                 };
+                if editor.imp().minimap.tracking_suspended.get() {
+                    return;
+                }
                 if !buffer.is_modified() {
                     editor.clear_modified_line_marks();
                 }
@@ -907,10 +910,23 @@ impl LushtextEditorPage {
             self.imp().minimap.too_large_feedback_shown.set(false);
         }
 
-        let overlay = &self.imp().minimap_overlay;
-        overlay.set_visible(availability == MinimapAvailability::Visible);
+        // Visibility and native projection are one lifecycle decision. A
+        // hidden GtkSourceMap that remains bound still performs text layout,
+        // so unavailable and load-suspended states must detach its view.
+        let projection_visible =
+            availability == MinimapAvailability::Visible && !self.load_projection_suspended();
+        if let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref() {
+            if projection_visible && source_map.view().is_none() {
+                source_map.set_view(self.source_view());
+            } else if !projection_visible && source_map.view().is_some() {
+                source_map.set_property("view", Option::<sourceview5::View>::None);
+            }
+        }
 
-        if availability != MinimapAvailability::Visible {
+        let overlay = &self.imp().minimap_overlay;
+        overlay.set_visible(projection_visible);
+
+        if !projection_visible {
             // Hidden source maps can keep stale EOF/top margins from the last
             // visible layout. Cancel pending timers first, then sync once so
             // the next visible frame cannot inherit old geometry.
@@ -922,7 +938,9 @@ impl LushtextEditorPage {
             self.drop_minimap_reflow_freeze();
             self.imp().minimap.markers.borrow_mut().clear();
             self.queue_minimap_draw();
-            self.publish_minimap_unavailable_feedback_if_needed(availability);
+            if availability != MinimapAvailability::Visible {
+                self.publish_minimap_unavailable_feedback_if_needed(availability);
+            }
             return;
         }
 
@@ -954,6 +972,33 @@ impl LushtextEditorPage {
     /// Temporarily suspend edit tracking while programmatic buffer mutations run.
     pub(crate) fn set_minimap_tracking_suspended(&self, suspended: bool) {
         self.imp().minimap.tracking_suspended.set(suspended);
+    }
+
+    /// Detach the native source map while bounded installation mutates the buffer.
+    ///
+    /// `GtkSourceMap` is a second text view. Hiding its shell alone does not
+    /// remove its buffer projection, so clear the nullable `view` property to
+    /// avoid duplicating layout work for every installation slice.
+    pub(crate) fn suspend_minimap_projection(&self) {
+        let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
+            return;
+        };
+        if source_map.view().is_some() {
+            source_map.set_property("view", Option::<sourceview5::View>::None);
+        }
+        self.imp().minimap_overlay.set_visible(false);
+    }
+
+    /// Whether the native source map currently projects this editor.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn minimap_projection_attached_for_test(&self) -> bool {
+        self.imp()
+            .minimap
+            .source_map
+            .borrow()
+            .as_ref()
+            .is_some_and(|source_map| source_map.view().is_some())
     }
 
     /// Clear all modified-since-save markers for this editor.

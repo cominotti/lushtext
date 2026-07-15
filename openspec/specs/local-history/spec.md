@@ -114,17 +114,28 @@ in both the sidebar and the active editor content surface.
 - **THEN** the preview text is padded inside its scrollable surface instead of rendering flush against the frame edge
 
 ### Requirement: Local-history restore is safe and reversible
-The system SHALL restore historical snapshots into the active editor buffer without writing directly to disk. Before replacing the buffer content, the system MUST store the current buffer state as a fresh local-history snapshot. After restore, the system MUST mark the editor modified and MUST provide an immediate undo path. The system SHALL also provide a non-destructive copy action for the selected snapshot.
+The system SHALL restore historical snapshots into the active editor buffer without writing directly to disk. Before replacing buffer content, the system MUST store the current eligible buffer state as a fresh local-history snapshot. After a complete current restore, the system MUST mark the editor modified and MUST provide an immediate undo path. Large restore and undo bodies MUST use the bounded GTK replacement contract, and a partial replacement MUST remain non-editable and non-saveable until exact finalization. The system SHALL also provide a non-destructive copy action for the selected snapshot.
 
 #### Scenario: Restore a historical snapshot
 - **WHEN** the user chooses Restore for a selected snapshot in the local-history browser
-- **THEN** the system stores the current buffer content as a fresh local-history snapshot before applying the selected snapshot
+- **THEN** the system stores the current eligible buffer content as a fresh local-history snapshot before applying the selected snapshot
 - **AND** the editor buffer is replaced with the selected snapshot content
-- **AND** the editor is marked modified after restore
+- **AND** the editor is marked modified only after complete installation
+
+#### Scenario: Restore a large historical snapshot
+- **WHEN** the selected or current body exceeds the synchronous replacement threshold
+- **THEN** history preparation and buffer replacement retain bounded full-body ownership and yield between GTK slices
+- **AND** no partial snapshot can be edited, saved, or reported as restored
 
 #### Scenario: Undo a restore
 - **WHEN** the user restores a snapshot and then invokes the immediate undo affordance for that restore
 - **THEN** the system returns the editor buffer to the content that was active immediately before the restore
+- **AND** a large undo body observes the same bounded installation and freshness rules
+
+#### Scenario: Restore becomes stale
+- **WHEN** editor lifetime, path identity, or history generation changes while replacement is pending
+- **THEN** remaining work is cancelled without publishing successful restore state
+- **AND** retained source and undo bodies are released exactly once
 
 #### Scenario: Copy snapshot content
 - **WHEN** the user chooses Copy for a selected snapshot in the local-history browser
@@ -378,3 +389,26 @@ The system MUST retain or recover the clean pre-edit baseline when baseline pers
 - **WHEN** a later successful save establishes a newer clean baseline before the older failure completes
 - **THEN** the older baseline cannot replace the newer baseline candidate
 - **AND** future editing cycles use the latest clean state
+
+### Requirement: Local-history preview loading and installation are bounded and superseding
+The system SHALL retain at most one active local-history preview load and one latest compact selection request. Snapshot reading MUST remain size-gated and cooperatively cancellable, and accepted text above the synchronous threshold MUST be installed into the read-only preview buffer in bounded UTF-8-safe GTK slices. Copy and Restore MUST stay bound to one completely installed current snapshot.
+
+#### Scenario: User rapidly selects large snapshots
+- **WHEN** a large snapshot load is active and the user selects one or more different snapshots
+- **THEN** the active load is cancelled cooperatively and only the latest pending selection is retained
+- **AND** no stale text, title, metadata, Copy target, or Restore target is published
+
+#### Scenario: Accepted preview requires several slices
+- **WHEN** the current snapshot text exceeds the synchronous preview-install threshold
+- **THEN** the preview buffer is cleared and populated through bounded UTF-8-safe main-loop slices
+- **AND** repaint, input, and current asynchronous completions can run between slices
+
+#### Scenario: Preview installation is superseded
+- **WHEN** selection changes or the browser closes between preview-install slices
+- **THEN** remaining slices stop without enabling Copy or Restore for the stale snapshot
+- **AND** temporary sources and retained stale payloads are released
+
+#### Scenario: Small, empty, missing, and failed snapshots terminate directly
+- **WHEN** the selected snapshot is below the synchronous threshold, empty, missing, or unreadable
+- **THEN** the browser reaches the corresponding existing content, empty, missing, or error state without scheduling unnecessary slices
+- **AND** action sensitivity remains consistent with that terminal state

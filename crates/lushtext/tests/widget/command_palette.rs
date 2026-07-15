@@ -8,23 +8,60 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::prelude::ToValue;
 use gtk4::prelude::*;
 use lushtext_core::model::palette::{
-    CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, PaletteNoteCategory,
-    PaletteNoteEntry, PaletteNoteTarget, SearchMode,
+    CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, PaletteFileIdentity,
+    PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, SearchMode,
 };
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::services::{json_store, workspace_manager};
-use lushtext_core::services::palette::FileIndex;
+use lushtext_core::services::palette::{
+    FileIndex, MAX_INDEXED_FILES, NoteSourceRefreshRequest,
+};
 use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_core::ui::command_palette::{
     LushtextCommandPalette, apply_palette_row_accessibility_for_test,
+    file_index_retirement_snapshot_for_test, set_index_update_delay_for_test,
+    set_search_delay_for_test,
 };
 use lushtext_core::ui::command_palette::item::PaletteItem;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
+
+struct PaletteSearchDelayReset;
+
+impl Drop for PaletteSearchDelayReset {
+    fn drop(&mut self) {
+        set_search_delay_for_test(0);
+    }
+}
+
+struct IndexUpdateDelayReset;
+
+impl Drop for IndexUpdateDelayReset {
+    fn drop(&mut self) {
+        set_index_update_delay_for_test(0);
+    }
+}
+
+fn in_memory_palette_index(prefix: &str, count: usize) -> FileIndex {
+    let root = Arc::new(PathBuf::from(format!("/synthetic/{prefix}")));
+    FileIndex::from(
+        (0..count)
+            .map(|index| {
+                let path = root.join(format!("{prefix}-{index:05}.rs"));
+                IndexedFile::new(
+                    path.clone(),
+                    PaletteFileIdentity::canonical(path),
+                    Arc::clone(&root),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
 
 /// Keep older command-palette assertions on the shared harness wait semantics.
 fn spin_until(predicate: impl Fn() -> bool) {
@@ -207,6 +244,7 @@ fn test_palette_item_from_indexed_file() {
     ensure_gtk_init();
     let file = IndexedFile {
         path: "/home/user/project/src/main.rs".into(),
+        identity: PaletteFileIdentity::canonical("/home/user/project/src/main.rs".into()),
         name: "main.rs".to_string(),
         workspace_folder: std::sync::Arc::new("/home/user/project".into()),
     };
@@ -258,6 +296,7 @@ fn test_palette_item_file_at_workspace_folder_top_level() {
     ensure_gtk_init();
     let file = IndexedFile {
         path: "/home/user/project/Cargo.toml".into(),
+        identity: PaletteFileIdentity::canonical("/home/user/project/Cargo.toml".into()),
         name: "Cargo.toml".to_string(),
         workspace_folder: std::sync::Arc::new("/home/user/project".into()),
     };
@@ -617,6 +656,203 @@ fn test_command_palette_search_filters_results() {
 }
 
 #[test]
+fn test_command_palette_rapid_queries_keep_one_active_one_latest_and_final_accessibility() {
+    ensure_gtk_init();
+    let _delay_reset = PaletteSearchDelayReset;
+    set_search_delay_for_test(150);
+    let palette = LushtextCommandPalette::new();
+    palette.set_file_index(in_memory_palette_index("rapid-final", 2_000));
+    palette.open();
+
+    palette.set_search_mode(SearchMode::Files);
+    palette.set_query("rapid-intermediate");
+    palette.set_query("rapid-final-01999");
+
+    let pressure = palette.search_runtime_snapshot_for_test();
+    assert_eq!(pressure.active, 1);
+    assert_eq!(pressure.pending, 1);
+    assert_eq!(pressure.active_high_water, 1);
+    assert_eq!(pressure.pending_high_water, 1);
+    assert!(palette.is_searching());
+    assert!(gtk4::test_accessible_has_state(
+        &*palette.imp().search_entry,
+        gtk4::AccessibleState::Busy,
+    ));
+
+    wait_until(Duration::from_secs(10), || {
+        !palette.is_searching()
+            && palette_labels(&palette)
+                .iter()
+                .any(|label| label == "rapid-final-01999.rs")
+    });
+
+    assert!(palette.observed_search_cancellations_for_test() > 0);
+    assert!(palette.last_cancelled_search_examined_for_test() <= 2_000);
+    assert!(!palette_labels(&palette)
+        .iter()
+        .any(|label| label.contains("intermediate")));
+    assert!(!gtk4::test_accessible_has_state(
+        &*palette.imp().search_entry,
+        gtk4::AccessibleState::Busy,
+    ));
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::ValueText])
+        .assert_on(&*palette.imp().results_view);
+}
+
+#[test]
+fn test_command_palette_latest_mode_index_and_scope_snapshot_wins() {
+    ensure_gtk_init();
+    let _delay_reset = PaletteSearchDelayReset;
+    set_search_delay_for_test(150);
+    let palette = LushtextCommandPalette::new();
+    palette.set_file_index(in_memory_palette_index("old-scope", 512));
+    palette.set_workspace_group_label("Old Scope");
+    palette.open();
+    palette.set_query("old-scope-00511");
+
+    palette.set_search_mode(SearchMode::Files);
+    palette.set_file_index(in_memory_palette_index("latest-scope", 512));
+    palette.set_workspace_group_label("Latest Scope");
+    palette.set_query("latest-scope-00511");
+
+    wait_until(Duration::from_secs(10), || {
+        let labels = palette_labels(&palette);
+        !palette.is_searching()
+            && labels.iter().any(|label| label == "Latest Scope")
+            && labels.iter().any(|label| label == "latest-scope-00511.rs")
+    });
+    let labels = palette_labels(&palette);
+    assert!(!labels.iter().any(|label| label == "Old Scope"));
+    assert!(!labels.iter().any(|label| label == "old-scope-00511.rs"));
+    assert_eq!(palette.mode(), SearchMode::Files);
+}
+
+#[test]
+fn test_command_palette_close_cancels_active_and_pending_without_stale_projection() {
+    ensure_gtk_init();
+    let _delay_reset = PaletteSearchDelayReset;
+    set_search_delay_for_test(200);
+    let palette = LushtextCommandPalette::new();
+    palette.set_file_index(in_memory_palette_index("close-search", 2_000));
+    palette.open();
+    palette.set_query("close-search-00001");
+    palette.set_query("close-search-01999");
+    assert_eq!(palette.search_runtime_snapshot_for_test().pending, 1);
+
+    palette.close();
+    assert!(!palette.is_searching());
+    assert_eq!(palette.result_count(), 0);
+    assert_eq!(palette.search_runtime_snapshot_for_test().pending, 0);
+
+    wait_until(Duration::from_secs(10), || {
+        palette.search_runtime_snapshot_for_test().active == 0
+    });
+    assert_eq!(palette.result_count(), 0);
+    assert!(!palette.imp().no_results_label.property::<bool>("visible"));
+    assert!(palette.observed_search_cancellations_for_test() > 0);
+}
+
+#[test]
+fn test_command_palette_incremental_index_worker_publishes_then_clears_readiness() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let root = Arc::new(PathBuf::from("/synthetic/incremental-index"));
+    let existing = root.join("existing.rs");
+    palette.set_file_index(FileIndex::from(vec![IndexedFile::new(
+        existing.clone(),
+        PaletteFileIdentity::canonical(existing),
+        Arc::clone(&root),
+    )]));
+    palette.open();
+    palette.set_search_mode(SearchMode::Files);
+    palette.set_query("created-latest");
+
+    palette.update_index_file_created(&root.join("created-latest.rs"));
+    assert!(palette.pending_index_update_count() > 0);
+    wait_until(Duration::from_secs(10), || {
+        palette.pending_index_update_count() == 0
+            && palette_labels(&palette)
+                .iter()
+                .any(|label| label == "created-latest.rs")
+    });
+
+    assert_eq!(palette.pending_index_update_count(), 0);
+    assert!(palette_labels(&palette)
+        .iter()
+        .any(|label| label == "created-latest.rs"));
+}
+
+#[test]
+fn test_command_palette_retires_last_owned_full_index_off_gtk() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.set_file_index(in_memory_palette_index("retire-full", MAX_INDEXED_FILES));
+
+    palette.set_file_index(FileIndex::default());
+
+    wait_until(Duration::from_secs(10), || {
+        file_index_retirement_snapshot_for_test().full_replacements == 1
+    });
+    assert_eq!(
+        file_index_retirement_snapshot_for_test().full_replacements,
+        1
+    );
+}
+
+#[test]
+fn test_command_palette_retires_last_owned_accepted_incremental_index_off_gtk() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    palette.set_file_index(in_memory_palette_index(
+        "retire-accepted",
+        MAX_INDEXED_FILES,
+    ));
+
+    palette.update_index_file_deleted(&PathBuf::from(
+        "/synthetic/retire-accepted/retire-accepted-00000.rs",
+    ));
+
+    wait_until(Duration::from_secs(10), || {
+        palette.pending_index_update_count() == 0
+            && file_index_retirement_snapshot_for_test().accepted_incremental == 1
+    });
+    assert_eq!(
+        file_index_retirement_snapshot_for_test().accepted_incremental,
+        1
+    );
+}
+
+#[test]
+fn test_command_palette_retires_last_owned_rejected_incremental_index_off_gtk() {
+    ensure_gtk_init();
+    let _delay_reset = IndexUpdateDelayReset;
+    set_index_update_delay_for_test(200);
+    let palette = LushtextCommandPalette::new();
+    palette.set_file_index(in_memory_palette_index(
+        "retire-rejected",
+        MAX_INDEXED_FILES,
+    ));
+    palette.update_index_file_deleted(&PathBuf::from(
+        "/synthetic/retire-rejected/missing.rs",
+    ));
+    wait_until(Duration::from_secs(10), || {
+        palette.index_update_worker_running_for_test()
+    });
+
+    palette.set_file_index(in_memory_palette_index("replacement", 1));
+
+    wait_until(Duration::from_secs(10), || {
+        palette.pending_index_update_count() == 0
+            && file_index_retirement_snapshot_for_test().rejected_incremental == 1
+    });
+    assert_eq!(
+        file_index_retirement_snapshot_for_test().rejected_incremental,
+        1
+    );
+}
+
+#[test]
 fn test_command_palette_files_mode_groups_open_tabs_before_workspace_files() {
     ensure_gtk_init();
     let palette = LushtextCommandPalette::new();
@@ -632,6 +868,7 @@ fn test_command_palette_files_mode_groups_open_tabs_before_workspace_files() {
         "alpha.rs".to_string(),
         duplicate.display().to_string(),
         duplicate.clone(),
+        PaletteFileIdentity::canonical(duplicate.clone()),
     )]);
     palette.set_file_index(FileIndex::rebuild(&[dir.path().to_path_buf()]));
     palette.imp().set_mode(SearchMode::Files);
@@ -707,6 +944,7 @@ fn test_command_palette_all_mode_groups_sources_by_priority() {
         "open_tab.rs".to_string(),
         "/tmp/open_tab.rs".to_string(),
         PathBuf::from("/tmp/open_tab.rs"),
+        PaletteFileIdentity::canonical(PathBuf::from("/tmp/open_tab.rs")),
     )]);
     palette.set_note_entries(vec![
         bookmark_note(
@@ -924,6 +1162,7 @@ fn test_command_palette_notes_mode_excludes_files_and_commands() {
         "open_notes_tab.rs".to_string(),
         "/tmp/open_notes_tab.rs".to_string(),
         PathBuf::from("/tmp/open_notes_tab.rs"),
+        PaletteFileIdentity::canonical(PathBuf::from("/tmp/open_notes_tab.rs")),
     )]);
     palette.set_note_entries(vec![text_note(
         PaletteNoteCategory::DocumentNotes,
@@ -1183,6 +1422,7 @@ fn test_command_palette_headers_do_not_activate() {
         "alpha.rs".to_string(),
         "/tmp/alpha.rs".to_string(),
         PathBuf::from("/tmp/alpha.rs"),
+        PaletteFileIdentity::canonical(PathBuf::from("/tmp/alpha.rs")),
     )]);
     palette.imp().set_mode(SearchMode::Files);
     rebuild_and_wait_for_label(&palette, "alpha", "Open Tabs");
@@ -1309,6 +1549,8 @@ fn test_command_palette_results_view_single_click_disabled() {
 // ---------------------------------------------------------------------------
 
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt};
+use lushtext_core::model::automation::AutomationReadinessPredicate;
+use lushtext_core::ui::automation::{current_idle_blocker, wait_for_ready_for_test};
 use lushtext_core::ui::editor_page::LushtextEditorPage;
 use lushtext_core::ui::window::LushtextWindow;
 
@@ -1343,6 +1585,19 @@ fn active_editor_has_focus(window: &LushtextWindow) -> bool {
     active_editor(window).is_some_and(|editor| {
         focus.as_ptr() == editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()
     })
+}
+
+fn command_palette_entry_has_focus(window: &LushtextWindow) -> bool {
+    let Some(focus) = gtk4::prelude::GtkWindowExt::focus(window) else {
+        return false;
+    };
+    let search_entry = window
+        .imp()
+        .command_palette
+        .imp()
+        .search_entry
+        .upcast_ref::<gtk4::Widget>();
+    focus.as_ptr() == search_entry.as_ptr() || focus.is_ancestor(search_entry)
 }
 
 /// Wait for the palette allocation and return its bounds in window coordinates.
@@ -1450,6 +1705,98 @@ fn test_toggle_reveals_palette() {
     let window = test_window();
     activate_action(&window, "toggle-command-palette");
     assert!(window.imp().palette_revealer.reveals_child());
+}
+
+#[test]
+fn test_command_palette_current_query_blocks_search_readiness_until_final_completion() {
+    ensure_gtk_init();
+    let _delay_reset = PaletteSearchDelayReset;
+    set_search_delay_for_test(250);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window).expect("active editor");
+    editor.source_view().grab_focus();
+    wait_until(Duration::from_secs(2), || active_editor_has_focus(&window));
+    window
+        .imp()
+        .command_palette
+        .set_file_index(in_memory_palette_index("readiness-final", 2_000));
+    activate_action(&window, "toggle-command-palette");
+    window
+        .imp()
+        .command_palette
+        .set_search_mode(SearchMode::Files);
+    window
+        .imp()
+        .command_palette
+        .set_query("readiness-final-01999");
+    let app = window
+        .application()
+        .expect("window application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("LushText application");
+
+    assert_eq!(
+        current_idle_blocker(&app).as_deref(),
+        Some("command-palette-search")
+    );
+    let pending = glib::MainContext::default().block_on(wait_for_ready_for_test(
+        app.clone(),
+        AutomationReadinessPredicate::SearchComplete,
+        1,
+    ));
+    assert!(!pending.ok);
+    assert_eq!(pending.blocker.as_deref(), Some("command-palette-search"));
+
+    wait_until(Duration::from_secs(10), || {
+        !window.imp().command_palette.is_searching()
+    });
+    assert_eq!(current_idle_blocker(&app), None);
+    assert!(command_palette_entry_has_focus(&window));
+}
+
+#[test]
+fn test_command_palette_note_source_refresh_blocks_idle_until_terminal_finish() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let app = window
+        .application()
+        .expect("window application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("LushText application");
+    let scope = WorkspacesFile {
+        current_scope: WorkspaceScope::All,
+        workspaces: Vec::new(),
+    }
+    .current_scope_snapshot();
+    let start = window
+        .imp()
+        .command_palette_note_refreshes
+        .borrow_mut()
+        .submit(NoteSourceRefreshRequest {
+            data_dir: PathBuf::from("/synthetic/note-refresh"),
+            scope_snapshot: scope,
+            open_editor_snapshots: Arc::from([]),
+            limits: lushtext_core::services::palette::PALETTE_NOTE_SOURCE_LIMITS,
+        })
+        .expect("first note-source request starts");
+
+    assert_eq!(
+        current_idle_blocker(&app).as_deref(),
+        Some("command-palette-index")
+    );
+
+    assert!(
+        window
+            .imp()
+            .command_palette_note_refreshes
+            .borrow_mut()
+            .finish(start.generation)
+            .is_none()
+    );
+    assert_eq!(current_idle_blocker(&app), None);
 }
 
 #[test]

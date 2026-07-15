@@ -8,12 +8,14 @@
 
 mod accessibility;
 mod bookmarks;
+mod buffer_replacement;
 mod focus_mode;
 // Private implementation module. GTK's GObject bindings split custom widgets
 // into an `imp` struct for instance data/lifecycle hooks and this public wrapper
 // module for the type-safe API.
 mod imp;
 mod invisibles;
+mod load_runtime;
 mod load_save;
 mod local_history;
 mod minimap;
@@ -43,6 +45,14 @@ pub use crate::ui::buffer_snapshot::{
 pub use bookmarks::{
     BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
 };
+#[cfg(feature = "test-utils")]
+pub use buffer_replacement::{
+    BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementTerminalDiagnostic,
+    BufferReplacementTestOutcome, BufferReplacementTicket, BufferReplacementWorkflow,
+};
+pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementRequest};
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use buffer_replacement::{BufferReplacementTicket, BufferReplacementWorkflow};
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::{EditorLoadState, PendingWarningAction};
 #[cfg(feature = "test-utils")]
@@ -320,23 +330,63 @@ impl LushtextEditorPage {
 
     /// Evict buffer content to free memory. The tab reloads from disk when re-focused.
     pub fn evict(&self) {
-        self.imp().evicted.set(true);
-        let buffer = self.buffer();
-        self.set_minimap_tracking_suspended(true);
-        buffer.begin_irreversible_action();
-        buffer.set_text("");
-        buffer.end_irreversible_action();
-        buffer.set_modified(false);
-        self.set_minimap_tracking_suspended(false);
-        self.clear_modified_line_marks();
-        self.refresh_minimap();
-        self.notify_memory_policy_changed();
-        self.refresh_accessibility_metadata();
+        let generation = self.imp().memory_policy_generation.get();
+        let editor_weak = self.downgrade();
+        self.replace_buffer_bounded(BufferReplacementRequest::new(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::MemoryEviction,
+                generation,
+            },
+            String::new(),
+            move |editor| {
+                editor.imp().memory_policy_generation.get() == generation
+                    && !editor.is_evicted()
+                    && !editor.is_saving()
+                    && editor.load_state() == EditorLoadState::Loaded
+                    && !editor.imp().latest_load_failed.get()
+            },
+            move |outcome| {
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                if !matches!(
+                    outcome,
+                    BufferReplacementOutcome::Complete {
+                        ticket: BufferReplacementTicket {
+                            workflow: BufferReplacementWorkflow::MemoryEviction,
+                            generation: current_generation,
+                        },
+                        ..
+                    } if current_generation == generation
+                ) {
+                    return;
+                }
+                editor.imp().evicted.set(true);
+                editor.buffer().set_modified(false);
+                editor.release_local_history_residency_for_eviction();
+                editor.clear_modified_line_marks();
+                editor.refresh_minimap();
+                editor.notify_memory_policy_changed();
+                editor.refresh_accessibility_metadata();
+            },
+        ));
     }
 
     #[must_use]
     pub fn is_evicted(&self) -> bool {
         self.imp().evicted.get()
+    }
+
+    /// Whether current content can be dropped and reconstructed from disk.
+    #[must_use]
+    pub(crate) fn eligible_for_memory_eviction(&self, active: bool) -> bool {
+        !active
+            && !self.is_evicted()
+            && !self.is_modified()
+            && !self.is_saving()
+            && self.load_state() == EditorLoadState::Loaded
+            && !self.latest_load_failed()
+            && self.file_path().is_some()
     }
 
     #[must_use]
@@ -545,6 +595,12 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn bookmark_records(&self) -> Vec<BookmarkRecord> {
         bookmarks::bookmark_records(self)
+    }
+
+    /// Snapshot at most `max_records` live bookmarks for compact background requests.
+    #[must_use]
+    pub(crate) fn bookmark_records_bounded(&self, max_records: usize) -> Vec<BookmarkRecord> {
+        bookmarks::bookmark_records_bounded(self, max_records)
     }
 
     /// Snapshot the live bookmark projection generation for async race guards.

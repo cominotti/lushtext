@@ -77,14 +77,26 @@ The system SHALL present `All` mode results in labeled groups ordered as `Open T
 - **AND** the note record appears under `Open Tab Notes`
 
 ### Requirement: File results are deduplicated across source groups
-The system SHALL show a file path at most once in grouped command palette results. If a matching file is both an open file-backed tab and a workspace-indexed file, the result MUST appear only under `Open Tabs`. If overlapping folders in the current workspace scope index the same canonical file, the workspace file group MUST contain only one result for that file, using folder order to choose the primary workspace/folder context displayed for the row.
+The system SHALL show a canonical file identity at most once in grouped command palette results. Display and activation paths MAY preserve the user-visible path, but deduplication MUST use canonical identity captured before bounded selection. If a matching file is both an open file-backed tab and a workspace-indexed file, every open canonical identity MUST be excluded from workspace top-result retention so the result appears only under `Open Tabs` without consuming a workspace result slot. If overlapping folders in the current workspace scope index the same canonical file, the workspace file group MUST contain only one result for that file, using workspace order and then folder order to choose its primary context.
 
 #### Scenario: Open tab suppresses duplicate workspace result
 - **WHEN** a file is open in a tab
-- **AND** the same file is included in the current workspace file index
+- **AND** the same canonical file is included in the current workspace file index
 - **AND** the command palette query matches that file
 - **THEN** the file appears under `Open Tabs`
-- **AND** the same file does not also appear under the workspace file group
+- **AND** the same canonical identity does not also appear under the workspace file group
+
+#### Scenario: Alias path resolves to an open file
+- **WHEN** an open tab and a workspace entry reach the same file through different symlink or overlapping-root paths
+- **AND** the query matches that file
+- **THEN** canonical identity suppresses the workspace alias
+- **AND** activation retains the selected open tab's normal display and action path
+
+#### Scenario: Excluded best match does not underfill workspace results
+- **WHEN** the highest-scoring workspace candidate is already represented by an open tab
+- **AND** a lower-scoring distinct workspace file also matches within the configured result limit
+- **THEN** the open canonical identity is excluded before workspace top-result retention
+- **AND** the distinct workspace file remains eligible to fill the workspace result group
 
 #### Scenario: Overlapping workspace folders suppress duplicate workspace rows
 - **WHEN** the selected workspace contains folders `/repo` and `/repo/src`
@@ -99,6 +111,60 @@ The system SHALL show a file path at most once in grouped command palette result
 - **AND** the command palette query matches that file
 - **THEN** the aggregate workspace file group shows that canonical file at most once
 - **AND** the row's primary context is chosen by workspace order and then folder order
+
+### Requirement: Palette source inventories are bounded and superseding
+The system SHALL keep palette source construction bounded before query scoring begins. File-index construction MUST retain at most 100,000 canonical files, MUST avoid materializing an unbounded flat directory, and MUST cooperatively cancel superseded traversal. Note-source construction MUST retain at most 10,000 entries and at most 64 MiB of aggregate searchable UTF-8 note text, MUST report deterministic truncation diagnostics, and MUST NOT retain bodies beyond those limits. File-index and note-source coordinators SHALL each own at most one active request plus one compact latest request.
+
+#### Scenario: Huge flat directory exceeds remaining index capacity
+- **WHEN** one workspace directory contains more visible entries than the remaining 100,000-file index capacity
+- **THEN** traversal retains only bounded directory and index state while selecting the admitted entries
+- **AND** it does not materialize and sort the complete flat directory before enforcing the index limit
+
+#### Scenario: Workspace scope changes during index construction
+- **WHEN** a newer workspace scope requests an index while an older traversal is active
+- **THEN** the older traversal observes cooperative cancellation
+- **AND** the coordinator retains only the latest compact scope request rather than queueing full indexes
+
+#### Scenario: Note corpus exceeds aggregate bounds
+- **WHEN** eligible note sidecars exceed either 10,000 entries or 64 MiB of aggregate searchable UTF-8 text
+- **THEN** source construction stops retaining additional note bodies according to deterministic source order
+- **AND** the palette remains usable with a visible bounded-truncation diagnostic
+
+#### Scenario: Note refresh is superseded repeatedly
+- **WHEN** note or bookmark edits request several refreshes while one sidecar load is active
+- **THEN** only one latest compact refresh request remains pending
+- **AND** stale workers release loaded bodies without replacing the current source
+
+### Requirement: Command palette retains only bounded top results while scoring
+For each command-palette source, the system SHALL retain at most the configured result limit while scoring candidates. Results MUST be ordered by descending fuzzy score with source ordinal as the deterministic equal-score tie-break, and grouped output MUST preserve existing source priority and canonical-file deduplication.
+
+#### Scenario: Many candidates match one source
+- **WHEN** a query matches more source items than the configured result limit
+- **THEN** scoring retains only a bounded top-result structure
+- **AND** the final rows equal the highest-ranked results under the defined score and tie order
+
+#### Scenario: Equal-score candidates are repeated
+- **WHEN** several candidates receive the same fuzzy score
+- **THEN** their relative order follows source ordinal deterministically
+- **AND** repeated identical queries return the same rows and order
+
+#### Scenario: Empty query uses source order
+- **WHEN** the query is empty
+- **THEN** each source returns its first bounded items in source order
+- **AND** no full-source result collection is materialized
+
+### Requirement: Palette source behavior survives bounded selection
+Bounded selection MUST preserve open-tab precedence, workspace-scope labels, note-category order, command grouping, and duplicate suppression across sources.
+
+#### Scenario: Open tab and workspace file both match
+- **WHEN** the same canonical file is selected into both source-local top sets
+- **THEN** grouped output retains only the `Open Tabs` row
+- **AND** bounded selection does not reintroduce the workspace duplicate
+
+#### Scenario: Mixed All-mode sources exceed their limits
+- **WHEN** open tabs, workspace files, notes, and commands all have more matches than their per-source limits
+- **THEN** each group remains individually bounded
+- **AND** group ordering and category labels remain unchanged
 
 ### Requirement: Notes command category identifies note workflows
 The system SHALL define a `Notes` command category for note and bookmark workflows exposed by the command palette. The category MUST include `Browse Notes`, `Browse Bookmarks`, `Toggle Bookmark`, `Edit Bookmark`, `Next Bookmark`, `Previous Bookmark`, `Open Document Note`, and `Open Folder Note`. Palette subtitles for those commands MUST display `Notes` and MUST preserve any existing shortcut hint.

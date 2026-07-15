@@ -541,8 +541,8 @@ mod tests {
             (
                 AutomationReadinessPredicate::WorkspaceRefreshComplete,
                 "workspace-refresh-complete",
-                "Workspace persistence",
-                READINESS_BLOCKER_WORKSPACE_PERSIST,
+                "Workspace watcher",
+                READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
             ),
             (
                 AutomationReadinessPredicate::SessionRestoreComplete,
@@ -934,6 +934,8 @@ pub const READINESS_BLOCKER_APP_STARTUP: &str = "app-startup";
 pub const READINESS_BLOCKER_CLOSE_SAFETY: &str = "close-safety";
 /// Stable serialized blocker ID for command-palette file-index debounce work.
 pub const READINESS_BLOCKER_COMMAND_PALETTE_INDEX: &str = "command-palette-index";
+/// Stable serialized blocker ID for command-palette fuzzy search work.
+pub const READINESS_BLOCKER_COMMAND_PALETTE_SEARCH: &str = "command-palette-search";
 /// Stable serialized blocker ID for draft autosaves.
 pub const READINESS_BLOCKER_DRAFT_AUTOSAVE: &str = "draft-autosave";
 /// Stable serialized blocker ID for in-document search occurrence counting.
@@ -952,6 +954,8 @@ pub const READINESS_BLOCKER_SAVE: &str = "save";
 pub const READINESS_BLOCKER_SESSION_RESTORE: &str = "session-restore";
 /// Stable serialized blocker ID for workspace state persistence.
 pub const READINESS_BLOCKER_WORKSPACE_PERSIST: &str = "workspace-persist";
+/// Stable serialized blocker ID for workspace watcher and tree-refresh work.
+pub const READINESS_BLOCKER_WORKSPACE_TREE_REFRESH: &str = "workspace-tree-refresh";
 /// Stable serialized blocker ID for workspace filter layout animation.
 pub const READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION: &str = "workspace-filter-animation";
 /// Stable serialized blocker ID for workspace sidebar show/hide animation.
@@ -970,8 +974,10 @@ const IDLE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
     READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
     READINESS_BLOCKER_REPLACE_PREVIEW,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
@@ -990,6 +996,7 @@ const APP_STARTUP_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
 ];
@@ -1003,6 +1010,7 @@ const SEARCH_COMPLETE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
     READINESS_BLOCKER_EDITOR_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_REPLACE_PREVIEW,
 ];
 /// Save-related blockers that can affect durable write or close-safety outcomes.
@@ -1015,6 +1023,7 @@ const SAVE_COMPLETE_BLOCKERS: &[&str] = &[
 /// Workspace blockers that affect visible scope state or command-palette file sources.
 const WORKSPACE_REFRESH_COMPLETE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
@@ -1032,6 +1041,7 @@ const RECOVERY_RESTORE_COMPLETE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
 ];
@@ -1043,9 +1053,11 @@ const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_DRAFT_AUTOSAVE,
     READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
+    READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
     READINESS_BLOCKER_EDITOR_SEARCH,
     READINESS_BLOCKER_REPLACE_PREVIEW,
@@ -1065,9 +1077,11 @@ const ACCESSIBILITY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_SAVE,
     READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
+    READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
     READINESS_BLOCKER_EDITOR_SEARCH,
     READINESS_BLOCKER_REPLACE_PREVIEW,
@@ -1087,7 +1101,7 @@ pub enum AutomationReadinessPredicate {
     SearchComplete,
     /// Save, close-safety, and draft autosave work settled.
     SaveComplete,
-    /// Workspace persistence, filter animation, and index refresh debounce settled.
+    /// Workspace watcher, tree refresh, persistence, filter, and index work settled.
     WorkspaceRefreshComplete,
     /// Startup session restore and its immediate file/draft follow-up work settled.
     SessionRestoreComplete,
@@ -1171,7 +1185,7 @@ impl AutomationReadinessPredicate {
                 "Editor saves, close-safety checks, and draft autosaves are no longer pending."
             }
             Self::WorkspaceRefreshComplete => {
-                "Workspace persistence, scope filter animation, and command-palette index debounce are settled."
+                "Workspace watcher, tree refresh, persistence, scope filter animation, and command-palette index work are settled."
             }
             Self::SessionRestoreComplete => {
                 "Session restore and immediate file/draft follow-up work are settled."
@@ -1730,6 +1744,8 @@ pub struct AutomationWorkspaceSnapshot {
 pub struct AutomationCommandPaletteSnapshot {
     /// Whether the palette overlay is currently revealed.
     pub visible: bool,
+    /// Whether current active or latest query work still owns readiness.
+    pub searching: bool,
     /// Current palette query text.
     pub query: String,
     /// Current search mode: `all`, `files`, `notes`, or `commands`.
@@ -1799,8 +1815,8 @@ pub struct AutomationContentSearchSnapshot {
     pub match_count: u32,
     /// Whether the search result cap was reached.
     pub result_capped: bool,
-    /// Current replacement text.
-    pub replace_query: String,
+    /// Whether non-empty replacement text is present, without exposing it.
+    pub replace_query_present: bool,
     /// Whether Replace All preview rows are visible.
     pub replace_preview_mode: bool,
     /// Whether preview generation is pending.

@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::model::draft::{DraftEntry, DraftManifest};
+use crate::model::draft::{DraftCleanupContinuation, DraftEntry, DraftManifest};
 use crate::services::filesystem::PathStatus;
 
 /// Exact manifest-entry generation captured during orphan inspection.
@@ -174,6 +174,12 @@ pub enum DraftOrphanCleanupScanError {
         /// Platform traversal error retained for recovery diagnostics.
         detail: String,
     },
+    /// Persisted continuation could not be treated as a portable filename.
+    #[error("draft cleanup continuation is not trusted: {file_name:?}")]
+    UntrustedContinuation {
+        /// Malformed filename boundary preserved for diagnostics only.
+        file_name: String,
+    },
 }
 
 /// Side-effect-free evidence collected by one bounded orphan inspection pass.
@@ -191,6 +197,12 @@ pub struct DraftOrphanCleanupPlan {
     pub has_more_work: bool,
     /// Manifest offset for the next bounded pass, when entries remain.
     pub next_manifest_offset: Option<usize>,
+    /// Durable cursor inspected when this plan was built.
+    pub inspected_directory_continuation: Option<DraftCleanupContinuation>,
+    /// Cursor to commit only if execution accepts this exact inspected state.
+    pub next_directory_continuation: Option<DraftCleanupContinuation>,
+    /// Whether this page crossed the directory end and restarted at the beginning.
+    pub directory_wrapped: bool,
 }
 
 /// Confirmed, skipped, and failed effects from executing one cleanup plan.
@@ -212,6 +224,10 @@ pub struct DraftOrphanCleanupOutcome {
     pub has_more_work: bool,
     /// Manifest offset the next bounded pass should inspect, when applicable.
     pub next_manifest_offset: Option<usize>,
+    /// Latest durably accepted directory cursor, when trusted persistence succeeded.
+    pub directory_continuation: Option<DraftCleanupContinuation>,
+    /// Whether the inspected page crossed the directory end.
+    pub directory_wrapped: bool,
 }
 
 impl DraftOrphanCleanupOutcome {

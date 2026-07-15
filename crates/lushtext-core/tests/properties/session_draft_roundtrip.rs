@@ -109,8 +109,12 @@ fn session_tab() -> impl Strategy<Value = SessionTab> {
 
 /// Generate a draft manifest while preserving the generated entry order.
 fn draft_manifest() -> impl Strategy<Value = DraftManifest> {
-    prop::collection::vec(draft_entry(), 0..=support::MAX_VECTOR_LEN)
-        .prop_map(|drafts| DraftManifest { drafts })
+    prop::collection::vec(draft_entry(), 0..=support::MAX_VECTOR_LEN).prop_map(|drafts| {
+        DraftManifest {
+            drafts,
+            cleanup_continuation: None,
+        }
+    })
 }
 
 /// Generate one draft manifest entry with optional backing-file metadata.

@@ -7,9 +7,10 @@
 //! service owns that source policy while GTK adapters decide how to render and
 //! activate the rows.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::model::note::{RichNoteBody, note_preview_line};
 use crate::model::palette::{
@@ -17,9 +18,135 @@ use crate::model::palette::{
     PaletteOpenTabSource,
 };
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScopeSnapshot};
+use crate::model::{bookmark::BookmarkDocument, document_note::DocumentNoteDocument};
+use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::fuzzy::FuzzyQuery;
-use crate::services::recovery_metadata::RecoveryDiagnostic;
-use crate::services::{bookmark_service, document_note_service, folder_note_service};
+use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
+use crate::services::{
+    bookmark_service, document_note_service, file_tree, folder_note_service, note_storage,
+};
+
+use super::fuzzy::search_items_cancellable;
+use super::runtime::{
+    PaletteSearchCancellation, PaletteSearchCoordinator, PaletteSearchMetrics, PaletteSearchOutcome,
+};
+
+#[cfg(feature = "test-utils")]
+static NOTES_BROWSER_QUERY_DELAY_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static NOTE_SOURCE_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Maximum UTF-8 bytes passed to nucleo for one note metadata field.
+const MAX_NOTE_FUZZY_SCORE_BYTES: usize = 4 * 1024;
+/// Character interval between cancellation checks while scanning note text.
+const NOTE_TEXT_CANCEL_CHECK_INTERVAL: usize = 1_024;
+/// Maximum note and bookmark rows retained for command-palette search.
+pub const MAX_PALETTE_NOTE_ENTRIES: usize = 10_000;
+/// Maximum aggregate searchable UTF-8 bytes retained for palette note rows.
+pub const MAX_PALETTE_NOTE_TEXT_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum recovery diagnostics retained with one bounded palette source.
+const MAX_PALETTE_NOTE_DIAGNOSTICS: usize = 1_024;
+
+/// Explicit aggregate limits for one immutable note-search source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteSourceLimits {
+    /// Maximum admitted note and bookmark rows.
+    pub entries: usize,
+    /// Maximum aggregate searchable UTF-8 bytes.
+    pub searchable_text_bytes: usize,
+    /// Maximum sidecar candidates retained by each directory scan.
+    pub sidecar_entries: usize,
+    /// Maximum recovery diagnostics retained for UI reporting.
+    pub diagnostics: usize,
+}
+
+/// Command-palette note-source policy.
+pub const PALETTE_NOTE_SOURCE_LIMITS: NoteSourceLimits = NoteSourceLimits {
+    entries: MAX_PALETTE_NOTE_ENTRIES,
+    searchable_text_bytes: MAX_PALETTE_NOTE_TEXT_BYTES,
+    sidecar_entries: MAX_PALETTE_NOTE_ENTRIES,
+    diagnostics: MAX_PALETTE_NOTE_DIAGNOSTICS,
+};
+
+/// Compact text request retained by the Notes browser's latest-query slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotesBrowserQueryRequest {
+    /// User-entered filter text captured on GTK.
+    pub query: String,
+}
+
+/// Bounded ordered indexes produced by one Notes browser query.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NotesBrowserQueryResult {
+    /// Source indexes in deterministic admission order.
+    pub matching_indices: Vec<usize>,
+    /// Whether at least one later match was omitted by the render cap.
+    pub truncated: bool,
+}
+
+/// One-active/one-latest ownership for browser query requests.
+pub type NotesBrowserQueryCoordinator = PaletteSearchCoordinator<NotesBrowserQueryRequest>;
+
+/// Delay Notes browser query workers for deterministic supersession tests.
+#[cfg(feature = "test-utils")]
+pub fn set_notes_browser_query_delay_for_test(delay_ms: u64) {
+    NOTES_BROWSER_QUERY_DELAY_MS.store(delay_ms, std::sync::atomic::Ordering::Release);
+}
+
+/// Delay bounded note-source workers for deterministic disposal tests.
+#[cfg(feature = "test-utils")]
+pub fn set_note_source_delay_for_test(delay_ms: u64) {
+    NOTE_SOURCE_DELAY_MS.store(delay_ms, std::sync::atomic::Ordering::Release);
+}
+
+fn delay_notes_browser_query_for_test() {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = NOTES_BROWSER_QUERY_DELAY_MS.load(std::sync::atomic::Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+    }
+}
+
+fn delay_note_source_for_test() {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = NOTE_SOURCE_DELAY_MS.load(std::sync::atomic::Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+    }
+}
+
+/// Typed reason a complete note source intentionally omitted later rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteSourceTruncationReason {
+    /// The aggregate row budget was exhausted.
+    EntryLimit,
+    /// The aggregate searchable-text byte budget was exhausted.
+    TextByteLimit,
+    /// A sidecar directory contained more candidates than the bounded scan retained.
+    SidecarLimit,
+    /// Recovery diagnostics exceeded their bounded evidence budget.
+    DiagnosticLimit,
+}
+
+/// Bounded source-construction evidence without note or diagnostic contents.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoteSourceMetrics {
+    /// Number of admitted note rows.
+    pub retained_entries: usize,
+    /// Aggregate bytes reachable through admitted searchable metadata and bodies.
+    pub retained_searchable_bytes: usize,
+    /// Number of sidecars loaded one at a time.
+    pub loaded_sidecars: usize,
+    /// Highest aggregate row count retained during construction.
+    pub peak_retained_entries: usize,
+    /// Stable reasons why later source material was omitted.
+    pub truncation_reasons: Vec<NoteSourceTruncationReason>,
+}
 
 /// Complete palette note source plus diagnostics from partially recovered sidecars.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +155,167 @@ pub struct PaletteNoteSourceLoad {
     pub entries: Vec<PaletteNoteEntry>,
     /// Recovery diagnostics for malformed or unreadable note/bookmark sidecars.
     pub diagnostics: Vec<RecoveryDiagnostic>,
+    /// Typed boundedness evidence safe to surface without note contents.
+    pub truncation_reasons: Vec<NoteSourceTruncationReason>,
+}
+
+/// Typed terminal result from cancellable palette note-source construction.
+#[derive(Debug)]
+pub enum PaletteNoteSourceOutcome {
+    /// The source reached a deterministic terminal boundary and may be published.
+    Complete {
+        /// Bounded row and recovery payload.
+        load: PaletteNoteSourceLoad,
+        /// Scalar ownership and truncation evidence.
+        metrics: NoteSourceMetrics,
+    },
+    /// Supersession stopped construction; no partial rows may be published.
+    Cancelled {
+        /// Scalar work completed before cancellation was observed.
+        metrics: NoteSourceMetrics,
+    },
+}
+
+/// Compact scope/editor snapshot retained by the latest note-source slot.
+#[derive(Clone, Debug)]
+pub struct NoteSourceRefreshRequest {
+    /// App-data root used for note sidecars.
+    pub data_dir: PathBuf,
+    /// Immutable workspace selection captured on GTK.
+    pub scope_snapshot: WorkspaceScopeSnapshot,
+    /// Bounded live-editor metadata captured on GTK.
+    pub open_editor_snapshots: Arc<[PaletteOpenEditorNoteSnapshot]>,
+    /// Aggregate admission policy owned by the requesting surface.
+    pub limits: NoteSourceLimits,
+}
+
+/// One request admitted as the sole active note-source refresh.
+#[derive(Debug)]
+pub struct NoteSourceRefreshStart {
+    /// Monotonic acceptance generation.
+    pub generation: u64,
+    /// Compact request owned by the active worker.
+    pub request: NoteSourceRefreshRequest,
+    /// Cooperative supersession token.
+    pub cancellation: PaletteSearchCancellation,
+}
+
+#[derive(Debug)]
+struct ActiveNoteSourceRefresh {
+    generation: u64,
+    cancellation: PaletteSearchCancellation,
+}
+
+#[derive(Debug)]
+struct PendingNoteSourceRefresh {
+    generation: u64,
+    request: NoteSourceRefreshRequest,
+}
+
+/// Scalar ownership evidence for note-source refresh tests and readiness.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoteSourceRefreshCoordinatorSnapshot {
+    /// Active worker count, always zero or one.
+    pub active: usize,
+    /// Retained latest-request count, always zero or one.
+    pub pending: usize,
+    /// Total workers started over the coordinator lifetime.
+    pub started: usize,
+    /// Total successful cancellation transitions requested.
+    pub cancellation_requests: usize,
+}
+
+/// Retain at most one active note refresh and one latest compact request.
+#[derive(Debug, Default)]
+pub struct NoteSourceRefreshCoordinator {
+    current_generation: u64,
+    active: Option<ActiveNoteSourceRefresh>,
+    pending: Option<PendingNoteSourceRefresh>,
+    snapshot: NoteSourceRefreshCoordinatorSnapshot,
+}
+
+impl NoteSourceRefreshCoordinator {
+    /// Submit a compact refresh, starting immediately or replacing the pending slot.
+    pub fn submit(&mut self, request: NoteSourceRefreshRequest) -> Option<NoteSourceRefreshStart> {
+        self.current_generation = self.current_generation.wrapping_add(1);
+        let generation = self.current_generation;
+        if let Some(active) = self.active.as_ref() {
+            if active.cancellation.cancel() {
+                self.snapshot.cancellation_requests =
+                    self.snapshot.cancellation_requests.saturating_add(1);
+            }
+            self.pending = Some(PendingNoteSourceRefresh {
+                generation,
+                request,
+            });
+            None
+        } else {
+            Some(self.start(generation, request))
+        }
+    }
+
+    /// Finish the matching active refresh and start the latest pending request, if any.
+    pub fn finish(&mut self, generation: u64) -> Option<NoteSourceRefreshStart> {
+        if self.active.as_ref().map(|active| active.generation) != Some(generation) {
+            return None;
+        }
+        self.active = None;
+        self.pending
+            .take()
+            .map(|pending| self.start(pending.generation, pending.request))
+    }
+
+    /// Reject current results, cancel active work, and discard the pending request.
+    pub fn invalidate(&mut self) {
+        self.current_generation = self.current_generation.wrapping_add(1);
+        if let Some(active) = self.active.as_ref()
+            && active.cancellation.cancel()
+        {
+            self.snapshot.cancellation_requests =
+                self.snapshot.cancellation_requests.saturating_add(1);
+        }
+        self.pending = None;
+    }
+
+    #[must_use]
+    /// Return whether this generation is still the only publishable result.
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.current_generation == generation
+    }
+
+    #[must_use]
+    /// Return whether active or pending work remains.
+    pub fn has_work(&self) -> bool {
+        self.active.is_some() || self.pending.is_some()
+    }
+
+    #[must_use]
+    /// Return scalar ownership evidence without retaining request payloads.
+    pub fn snapshot(&self) -> NoteSourceRefreshCoordinatorSnapshot {
+        NoteSourceRefreshCoordinatorSnapshot {
+            active: usize::from(self.active.is_some()),
+            pending: usize::from(self.pending.is_some()),
+            ..self.snapshot
+        }
+    }
+
+    fn start(
+        &mut self,
+        generation: u64,
+        request: NoteSourceRefreshRequest,
+    ) -> NoteSourceRefreshStart {
+        let cancellation = PaletteSearchCancellation::default();
+        self.active = Some(ActiveNoteSourceRefresh {
+            generation,
+            cancellation: cancellation.clone(),
+        });
+        self.snapshot.started = self.snapshot.started.saturating_add(1);
+        NoteSourceRefreshStart {
+            generation,
+            request,
+            cancellation,
+        }
+    }
 }
 
 /// Load all note rows covered by the current workspace scope.
@@ -98,7 +386,429 @@ pub fn load_note_entries_for_scope(
     Ok(PaletteNoteSourceLoad {
         entries,
         diagnostics,
+        truncation_reasons: Vec::new(),
     })
+}
+
+/// Load the command-palette note inventory with aggregate admission and cancellation.
+///
+/// Sidecars are loaded one at a time in deterministic source order. A rejected
+/// body is dropped before the next sidecar is read, so the returned inventory is
+/// the only retained body set after this function completes.
+///
+/// # Errors
+///
+/// Returns an error when a covered sidecar directory cannot be scanned or a
+/// workspace folder identity cannot be resolved.
+pub fn load_palette_note_entries_for_scope(
+    data_dir: &Path,
+    scope_snapshot: &WorkspaceScopeSnapshot,
+    open_editor_snapshots: &[PaletteOpenEditorNoteSnapshot],
+    cancellation: &PaletteSearchCancellation,
+) -> Result<PaletteNoteSourceOutcome> {
+    load_note_entries_bounded_for_scope(
+        data_dir,
+        scope_snapshot,
+        open_editor_snapshots,
+        PALETTE_NOTE_SOURCE_LIMITS,
+        cancellation,
+    )
+}
+
+/// Load one immutable note inventory under a caller-owned aggregate policy.
+///
+/// This is shared by the command palette and Browse Notes so sidecar ordering,
+/// canonical de-duplication, cancellation, and typed truncation stay identical.
+///
+/// # Errors
+///
+/// Returns an error when a covered sidecar directory cannot be scanned or a
+/// workspace folder identity cannot be resolved.
+pub fn load_note_entries_bounded_for_scope(
+    data_dir: &Path,
+    scope_snapshot: &WorkspaceScopeSnapshot,
+    open_editor_snapshots: &[PaletteOpenEditorNoteSnapshot],
+    limits: NoteSourceLimits,
+    cancellation: &PaletteSearchCancellation,
+) -> Result<PaletteNoteSourceOutcome> {
+    delay_note_source_for_test();
+    if cancellation.is_cancelled() {
+        return Ok(PaletteNoteSourceOutcome::Cancelled {
+            metrics: NoteSourceMetrics::default(),
+        });
+    }
+    let visible_workspaces = scope_snapshot.visible_workspaces();
+    let scope_folders = scope_snapshot.folder_paths();
+    let mut admission = NoteSourceAdmission::with_limits(limits);
+
+    let mut live_scoped_document_ids = HashSet::new();
+    for snapshot in open_editor_snapshots
+        .iter()
+        .filter(|snapshot| snapshot.open_tab_source.is_none())
+    {
+        if let Ok(identity) = bookmark_service::resolve_document_identity(&snapshot.path) {
+            live_scoped_document_ids.insert(identity.sidecar_id);
+        }
+    }
+
+    if !scope_folders.is_empty() {
+        let canonical_folders = note_storage::canonicalize_folders(scope_folders);
+        let dir = bookmark_service::bookmarks_dir(data_dir);
+        let sidecars =
+            bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?;
+        if cancellation.is_cancelled() {
+            return Ok(admission.cancelled());
+        }
+        for entry in sidecars {
+            if cancellation.is_cancelled() {
+                return Ok(admission.cancelled());
+            }
+            let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
+                data_dir,
+                &entry.path,
+                RecoveryMetadataClass::BookmarkSidecar,
+            );
+            admission.loaded_sidecar(&load.diagnostics);
+            let Some(document) = load.value else {
+                continue;
+            };
+            if !note_storage::matches_any_folder(&document.identity, &canonical_folders)
+                || live_scoped_document_ids.contains(&document.identity.sidecar_id)
+            {
+                continue;
+            }
+            let path = document.identity.display_path;
+            let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
+                continue;
+            };
+            let workspace_folder =
+                workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
+            let source = PaletteNoteDocumentSource::Workspace {
+                workspace_name: workspace.name.clone(),
+                workspace_folder,
+            };
+            for bookmark in document.bookmarks {
+                if !admission.admit(bookmark_entry(
+                    &source,
+                    path.clone(),
+                    bookmark.line,
+                    bookmark.label.as_deref(),
+                )) {
+                    return Ok(admission.complete());
+                }
+            }
+        }
+    }
+
+    for snapshot in open_editor_snapshots
+        .iter()
+        .filter(|snapshot| snapshot.open_tab_source.is_none())
+    {
+        let Some(workspace) = workspace_for_path(visible_workspaces, &snapshot.path) else {
+            continue;
+        };
+        let workspace_folder = workspace_folder_for_path(workspace, &snapshot.path)
+            .unwrap_or_else(|| snapshot.path.clone());
+        let source = PaletteNoteDocumentSource::Workspace {
+            workspace_name: workspace.name.clone(),
+            workspace_folder,
+        };
+        for bookmark in &snapshot.bookmarks {
+            if !admission.admit(bookmark_entry(
+                &source,
+                snapshot.path.clone(),
+                bookmark.line,
+                bookmark.label.as_deref(),
+            )) {
+                return Ok(admission.complete());
+            }
+        }
+    }
+
+    for workspace in visible_workspaces {
+        for folder in workspace.folder_paths() {
+            if cancellation.is_cancelled() {
+                return Ok(admission.cancelled());
+            }
+            let load = folder_note_service::load_for_folder_recovering(data_dir, &folder)?;
+            admission.loaded_sidecar(&load.diagnostics);
+            if let Some(document) = load.document
+                && !admission.admit(folder_note_entry(
+                    workspace.name.clone(),
+                    folder,
+                    document.note,
+                ))
+            {
+                return Ok(admission.complete());
+            }
+        }
+    }
+
+    if !scope_folders.is_empty() {
+        let canonical_folders = note_storage::canonicalize_folders(scope_folders);
+        let dir = document_note_service::document_notes_dir(data_dir);
+        let sidecars =
+            bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?;
+        if cancellation.is_cancelled() {
+            return Ok(admission.cancelled());
+        }
+        for entry in sidecars {
+            if cancellation.is_cancelled() {
+                return Ok(admission.cancelled());
+            }
+            let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
+                data_dir,
+                &entry.path,
+                RecoveryMetadataClass::DocumentNoteSidecar,
+            );
+            admission.loaded_sidecar(&load.diagnostics);
+            let Some(document) = load.value else {
+                continue;
+            };
+            if !note_storage::matches_any_folder(&document.identity, &canonical_folders) {
+                continue;
+            }
+            let path = document.identity.display_path;
+            let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
+                continue;
+            };
+            let workspace_folder =
+                workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
+            let source = PaletteNoteDocumentSource::Workspace {
+                workspace_name: workspace.name.clone(),
+                workspace_folder,
+            };
+            if !admission.admit(document_note_entry(&source, path, document.note)) {
+                return Ok(admission.complete());
+            }
+        }
+    }
+
+    for snapshot in open_editor_snapshots {
+        let Some(open_tab_source) = snapshot.open_tab_source.clone() else {
+            continue;
+        };
+        if cancellation.is_cancelled() {
+            return Ok(admission.cancelled());
+        }
+        let source = PaletteNoteDocumentSource::OpenTab(open_tab_source);
+        for bookmark in &snapshot.bookmarks {
+            if !admission.admit(bookmark_entry(
+                &source,
+                snapshot.path.clone(),
+                bookmark.line,
+                bookmark.label.as_deref(),
+            )) {
+                return Ok(admission.complete());
+            }
+        }
+        if let Ok(Some(document)) = document_note_service::load_for_path(data_dir, &snapshot.path)
+            && !admission.admit(document_note_entry(
+                &source,
+                snapshot.path.clone(),
+                document.note,
+            ))
+        {
+            return Ok(admission.complete());
+        }
+    }
+
+    Ok(admission.complete())
+}
+
+fn bounded_sidecar_entries(
+    dir: &Path,
+    sidecar_limit: usize,
+    cancellation: &PaletteSearchCancellation,
+    admission: &mut NoteSourceAdmission,
+) -> Result<Vec<file_tree::DirectoryEntry>> {
+    if !fs_metadata::path_status(dir)?.is_present() {
+        return Ok(Vec::new());
+    }
+    let scan = file_tree::scan_directory_bounded_with_cancel(dir, sidecar_limit, 0, || {
+        cancellation.is_cancelled()
+    });
+    if scan.cancelled {
+        return Ok(Vec::new());
+    }
+    if scan.truncated {
+        admission.add_truncation(NoteSourceTruncationReason::SidecarLimit);
+    }
+    if let Some(error) = scan.error {
+        return Err(anyhow::anyhow!(error))
+            .with_context(|| format!("failed to read {}", dir.display()));
+    }
+    Ok(scan.entries)
+}
+
+struct NoteSourceAdmission {
+    bookmark_entries: Vec<PaletteNoteEntry>,
+    folder_entries: Vec<PaletteNoteEntry>,
+    document_entries: Vec<PaletteNoteEntry>,
+    open_tab_entries: Vec<PaletteNoteEntry>,
+    diagnostics: Vec<RecoveryDiagnostic>,
+    metrics: NoteSourceMetrics,
+    entry_limit: usize,
+    text_byte_limit: usize,
+    diagnostic_limit: usize,
+}
+
+impl Default for NoteSourceAdmission {
+    fn default() -> Self {
+        Self::with_limits(PALETTE_NOTE_SOURCE_LIMITS)
+    }
+}
+
+impl NoteSourceAdmission {
+    fn with_limits(limits: NoteSourceLimits) -> Self {
+        Self {
+            bookmark_entries: Vec::new(),
+            folder_entries: Vec::new(),
+            document_entries: Vec::new(),
+            open_tab_entries: Vec::new(),
+            diagnostics: Vec::new(),
+            metrics: NoteSourceMetrics::default(),
+            entry_limit: limits.entries,
+            text_byte_limit: limits.searchable_text_bytes,
+            diagnostic_limit: limits.diagnostics,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_test_limits(
+        entry_limit: usize,
+        text_byte_limit: usize,
+        diagnostic_limit: usize,
+    ) -> Self {
+        Self::with_limits(NoteSourceLimits {
+            entries: entry_limit,
+            searchable_text_bytes: text_byte_limit,
+            sidecar_entries: entry_limit,
+            diagnostics: diagnostic_limit,
+        })
+    }
+
+    fn admit(&mut self, entry: PaletteNoteEntry) -> bool {
+        if self.metrics.retained_entries == self.entry_limit {
+            self.add_truncation(NoteSourceTruncationReason::EntryLimit);
+            return false;
+        }
+        let searchable_bytes = palette_note_searchable_bytes(&entry);
+        if self
+            .metrics
+            .retained_searchable_bytes
+            .saturating_add(searchable_bytes)
+            > self.text_byte_limit
+        {
+            self.add_truncation(NoteSourceTruncationReason::TextByteLimit);
+            return false;
+        }
+
+        self.metrics.retained_entries = self.metrics.retained_entries.saturating_add(1);
+        self.metrics.retained_searchable_bytes = self
+            .metrics
+            .retained_searchable_bytes
+            .saturating_add(searchable_bytes);
+        self.metrics.peak_retained_entries = self
+            .metrics
+            .peak_retained_entries
+            .max(self.metrics.retained_entries);
+        match entry.category {
+            PaletteNoteCategory::Bookmarks => self.bookmark_entries.push(entry),
+            PaletteNoteCategory::FolderNotes => self.folder_entries.push(entry),
+            PaletteNoteCategory::DocumentNotes => self.document_entries.push(entry),
+            PaletteNoteCategory::OpenTabs => self.open_tab_entries.push(entry),
+        }
+        true
+    }
+
+    fn loaded_sidecar(&mut self, diagnostics: &[RecoveryDiagnostic]) {
+        self.metrics.loaded_sidecars = self.metrics.loaded_sidecars.saturating_add(1);
+        let remaining = self.diagnostic_limit.saturating_sub(self.diagnostics.len());
+        self.diagnostics
+            .extend(diagnostics.iter().take(remaining).cloned());
+        if diagnostics.len() > remaining {
+            self.add_truncation(NoteSourceTruncationReason::DiagnosticLimit);
+        }
+    }
+
+    fn add_truncation(&mut self, reason: NoteSourceTruncationReason) {
+        if !self.metrics.truncation_reasons.contains(&reason) {
+            self.metrics.truncation_reasons.push(reason);
+        }
+    }
+
+    fn cancelled(self) -> PaletteNoteSourceOutcome {
+        PaletteNoteSourceOutcome::Cancelled {
+            metrics: self.metrics,
+        }
+    }
+
+    fn complete(mut self) -> PaletteNoteSourceOutcome {
+        sort_note_entries_by_label(&mut self.bookmark_entries);
+        sort_note_entries_by_label(&mut self.document_entries);
+        sort_note_entries_by_label(&mut self.open_tab_entries);
+        let mut entries = Vec::with_capacity(self.metrics.retained_entries);
+        entries.extend(self.bookmark_entries);
+        entries.extend(self.folder_entries);
+        entries.extend(self.document_entries);
+        entries.extend(self.open_tab_entries);
+        let truncation_reasons = self.metrics.truncation_reasons.clone();
+        PaletteNoteSourceOutcome::Complete {
+            load: PaletteNoteSourceLoad {
+                entries,
+                diagnostics: self.diagnostics,
+                truncation_reasons,
+            },
+            metrics: self.metrics,
+        }
+    }
+}
+
+/// Exercise the production aggregate note admission policy with synthetic bodies.
+///
+/// This hidden benchmark seam avoids sidecar serialization dominating the
+/// source-construction measurement while retaining the real entry/byte budgets,
+/// body ownership, cancellation token, and typed terminal outcome.
+#[doc(hidden)]
+#[must_use]
+pub fn admit_synthetic_note_bodies_for_benchmark(
+    bodies: &[String],
+    cancel_after_entries: Option<usize>,
+) -> PaletteNoteSourceOutcome {
+    let cancellation = PaletteSearchCancellation::default();
+    let mut admission = NoteSourceAdmission::default();
+    for (index, body) in bodies.iter().enumerate() {
+        if cancel_after_entries == Some(index) {
+            let _ = cancellation.cancel();
+        }
+        if cancellation.is_cancelled() {
+            return admission.cancelled();
+        }
+        let note = RichNoteBody {
+            text: body.clone(),
+            created_at_secs: 0,
+            updated_at_secs: 0,
+        };
+        let entry = folder_note_entry(
+            "Benchmark workspace".to_string(),
+            PathBuf::from(format!("/benchmark/folder-{index:05}")),
+            note,
+        );
+        if !admission.admit(entry) {
+            break;
+        }
+    }
+    admission.complete()
+}
+
+fn palette_note_searchable_bytes(entry: &PaletteNoteEntry) -> usize {
+    entry
+        .title
+        .len()
+        .saturating_add(entry.subtitle.len())
+        .saturating_add(entry.detail.as_deref().map_or(0, str::len))
+        .saturating_add(entry.note_text.as_deref().map_or(0, str::len))
 }
 
 /// Merge bookmarks plus folder and document notes into one section-ordered row list.
@@ -166,6 +876,75 @@ pub fn build_note_entries(
     entries
 }
 
+/// Match one immutable Notes browser source in admission order.
+///
+/// Cancellation is checked between rows and within large UTF-8 bodies. The
+/// returned indexes never exceed `max`, while `truncated` distinguishes a full
+/// current result from an admission-truncated source.
+#[must_use]
+pub fn query_notes_browser_source(
+    entries: &[PaletteNoteEntry],
+    request: &NotesBrowserQueryRequest,
+    max: usize,
+    cancellation: &PaletteSearchCancellation,
+) -> PaletteSearchOutcome<NotesBrowserQueryResult> {
+    delay_notes_browser_query_for_test();
+    let prepared = PaletteNoteTextQuery::new(&request.query);
+    let mut metrics = PaletteSearchMetrics::default();
+    let mut matching_indices = Vec::with_capacity(entries.len().min(max));
+    let mut truncated = false;
+
+    for (index, entry) in entries.iter().enumerate() {
+        if cancellation.is_cancelled() {
+            return PaletteSearchOutcome::Cancelled { metrics };
+        }
+        metrics.candidates_examined = metrics.candidates_examined.saturating_add(1);
+        let matches = match prepared.as_ref() {
+            None => true,
+            Some(query) => {
+                let mut matched = false;
+                for candidate in [
+                    Some(entry.title.as_str()),
+                    Some(entry.subtitle.as_str()),
+                    entry.note_text.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    match query.matches_cancellable(candidate, cancellation) {
+                        Some(true) => {
+                            matched = true;
+                            break;
+                        }
+                        Some(false) => {}
+                        None => return PaletteSearchOutcome::Cancelled { metrics },
+                    }
+                }
+                matched
+            }
+        };
+        if !matches {
+            continue;
+        }
+        metrics.matching_candidates = metrics.matching_candidates.saturating_add(1);
+        if matching_indices.len() == max {
+            truncated = true;
+            break;
+        }
+        matching_indices.push(index);
+        metrics.peak_retained_per_source =
+            metrics.peak_retained_per_source.max(matching_indices.len());
+    }
+
+    PaletteSearchOutcome::Complete {
+        value: NotesBrowserQueryResult {
+            matching_indices,
+            truncated,
+        },
+        metrics,
+    }
+}
+
 /// Search prepared note rows by visible metadata and stored note body text.
 #[must_use]
 pub fn search_note_entries<'a>(
@@ -173,15 +952,14 @@ pub fn search_note_entries<'a>(
     query: &str,
     max: usize,
 ) -> Vec<&'a PaletteNoteEntry> {
-    if max == 0 {
-        return Vec::new();
-    }
-    let Some(text_query) = PaletteNoteTextQuery::new(query) else {
-        return entries.iter().take(max).collect();
-    };
-
-    let mut fuzzy_query = FuzzyQuery::new(text_query.as_str());
-    search_scored_note_entries(entries.iter(), &text_query, &mut fuzzy_query, max)
+    let cancellation = PaletteSearchCancellation::default();
+    completed_note_refs(search_note_entries_cancellable(
+        entries,
+        None,
+        query,
+        max,
+        &cancellation,
+    ))
 }
 
 /// Search prepared note rows within one semantic Notes category.
@@ -192,63 +970,97 @@ pub fn search_note_entries_in_category<'a>(
     query: &str,
     max: usize,
 ) -> Vec<&'a PaletteNoteEntry> {
-    if max == 0 {
-        return Vec::new();
-    }
-    let Some(text_query) = PaletteNoteTextQuery::new(query) else {
-        return entries
-            .iter()
-            .filter(|entry| entry.category == category)
-            .take(max)
-            .collect();
-    };
-
-    let mut fuzzy_query = FuzzyQuery::new(text_query.as_str());
-    search_scored_note_entries(
-        entries.iter().filter(|entry| entry.category == category),
-        &text_query,
-        &mut fuzzy_query,
+    let cancellation = PaletteSearchCancellation::default();
+    completed_note_refs(search_note_entries_cancellable(
+        entries,
+        Some(category),
+        query,
         max,
+        &cancellation,
+    ))
+}
+
+pub(super) fn search_note_entries_cancellable<'a>(
+    entries: &'a [PaletteNoteEntry],
+    category: Option<PaletteNoteCategory>,
+    query: &str,
+    max: usize,
+    cancellation: &PaletteSearchCancellation,
+) -> PaletteSearchOutcome<Vec<crate::model::palette::ScoredResult<'a>>> {
+    let query = query.trim();
+    let text_query = PaletteNoteTextQuery::new(query);
+    search_items_cancellable(
+        entries.iter(),
+        |entry| category.is_none_or(|category| entry.category == category),
+        |entry, fuzzy_query| {
+            text_query.as_ref().and_then(|text_query| {
+                note_entry_score(entry, text_query, fuzzy_query, cancellation)
+            })
+        },
+        crate::model::palette::SearchResultItem::Note,
+        query,
+        max,
+        cancellation,
     )
 }
 
-fn search_scored_note_entries<'a>(
-    entries: impl Iterator<Item = &'a PaletteNoteEntry>,
-    text_query: &PaletteNoteTextQuery,
-    fuzzy_query: &mut FuzzyQuery,
-    max: usize,
-) -> Vec<&'a PaletteNoteEntry> {
-    let mut results: Vec<_> = entries
-        .filter_map(|entry| {
-            note_entry_score(entry, text_query, fuzzy_query).map(|score| (entry, score))
+fn completed_note_refs(
+    outcome: PaletteSearchOutcome<Vec<crate::model::palette::ScoredResult<'_>>>,
+) -> Vec<&PaletteNoteEntry> {
+    let PaletteSearchOutcome::Complete { value, .. } = outcome else {
+        unreachable!("fresh token cannot cancel");
+    };
+    value
+        .into_iter()
+        .filter_map(|result| match result.item {
+            crate::model::palette::SearchResultItem::Note(entry) => Some(entry),
+            crate::model::palette::SearchResultItem::OpenFile(_)
+            | crate::model::palette::SearchResultItem::File(_)
+            | crate::model::palette::SearchResultItem::Command(_) => None,
         })
-        .collect();
-    results.sort_unstable_by_key(|(_, score)| std::cmp::Reverse(*score));
-    results.iter().map(|(entry, _)| *entry).take(max).collect()
+        .collect()
 }
 
 fn note_entry_score(
     entry: &PaletteNoteEntry,
     text_query: &PaletteNoteTextQuery,
     fuzzy_query: &mut FuzzyQuery,
+    cancellation: &PaletteSearchCancellation,
 ) -> Option<u32> {
-    [
+    let mut best = None;
+    for candidate in [
         Some(entry.title.as_str()),
         Some(entry.subtitle.as_str()),
         entry.detail.as_deref(),
-        entry.note_text.as_deref(),
     ]
     .into_iter()
     .flatten()
-    .filter(|candidate| text_query.matches(candidate))
-    .map(|candidate| fuzzy_query.score(candidate).unwrap_or(0))
-    .max()
+    {
+        match text_query.matches_cancellable(candidate, cancellation) {
+            Some(true) if candidate.len() <= MAX_NOTE_FUZZY_SCORE_BYTES => {
+                best = best.max(Some(fuzzy_query.score(candidate).unwrap_or(0)));
+            }
+            Some(true) => best = best.max(Some(0)),
+            Some(false) => {}
+            None => return None,
+        }
+    }
+
+    if let Some(note_text) = entry.note_text.as_deref() {
+        match text_query.matches_cancellable(note_text, cancellation) {
+            Some(true) if note_text.len() <= MAX_NOTE_FUZZY_SCORE_BYTES => {
+                best = best.max(Some(fuzzy_query.score(note_text).unwrap_or(0)));
+            }
+            Some(true) => best = best.max(Some(0)),
+            Some(false) => {}
+            None => return None,
+        }
+    }
+    best
 }
 
 /// Case-insensitive full-text query used to decide note-row eligibility.
 struct PaletteNoteTextQuery {
-    /// Trimmed query text for nucleo score calculation after an exact match.
-    text: String,
     /// Query represented as Unicode scalar values so note bodies do not need to
     /// allocate their own lowercased copies on every keystroke.
     needle: Vec<char>,
@@ -260,25 +1072,14 @@ impl PaletteNoteTextQuery {
     /// Prepare one non-empty query for repeated row checks.
     #[must_use]
     fn new(query: &str) -> Option<Self> {
-        let text = query.trim().to_string();
-        let lower_text = text.to_lowercase();
+        let lower_text = query.trim().to_lowercase();
         if lower_text.is_empty() {
             return None;
         }
 
         let needle: Vec<_> = lower_text.chars().collect();
         let prefix = Self::prefix_table(&needle);
-        Some(Self {
-            text,
-            needle,
-            prefix,
-        })
-    }
-
-    /// Return the original trimmed query text for palette-style scoring.
-    #[must_use]
-    fn as_str(&self) -> &str {
-        &self.text
+        Some(Self { needle, prefix })
     }
 
     /// Build the KMP prefix table once per query instead of once per note body.
@@ -298,24 +1099,38 @@ impl PaletteNoteTextQuery {
     }
 
     /// Match without allocating a lowercased copy of large note bodies.
+    #[cfg(test)]
     fn matches(&self, haystack: &str) -> bool {
+        self.matches_cancellable(haystack, &PaletteSearchCancellation::default())
+            .unwrap_or(false)
+    }
+
+    /// Match while bounding superseded work within one large note body.
+    fn matches_cancellable(
+        &self,
+        haystack: &str,
+        cancellation: &PaletteSearchCancellation,
+    ) -> Option<bool> {
         if haystack.is_empty() {
-            return false;
+            return Some(false);
         }
 
         let mut matched = 0;
-        for character in haystack.chars().flat_map(char::to_lowercase) {
+        for (index, character) in haystack.chars().flat_map(char::to_lowercase).enumerate() {
+            if index % NOTE_TEXT_CANCEL_CHECK_INTERVAL == 0 && cancellation.is_cancelled() {
+                return None;
+            }
             while matched > 0 && character != self.needle[matched] {
                 matched = self.prefix[matched - 1];
             }
             if character == self.needle[matched] {
                 matched += 1;
                 if matched == self.needle.len() {
-                    return true;
+                    return Some(true);
                 }
             }
         }
-        false
+        Some(false)
     }
 }
 
@@ -658,6 +1473,63 @@ mod tests {
     }
 
     #[test]
+    fn notes_browser_no_match_query_scans_the_complete_admitted_source() {
+        let entries = (0..1_000)
+            .map(|index| {
+                test_note_entry(
+                    PaletteNoteCategory::FolderNotes,
+                    &format!("entry-{index:04}"),
+                    "ordinary body",
+                )
+            })
+            .collect::<Vec<_>>();
+        let outcome = query_notes_browser_source(
+            &entries,
+            &NotesBrowserQueryRequest {
+                query: "missing needle".to_string(),
+            },
+            500,
+            &PaletteSearchCancellation::default(),
+        );
+
+        let PaletteSearchOutcome::Complete { value, metrics } = outcome else {
+            panic!("fresh query should complete");
+        };
+        assert!(value.matching_indices.is_empty());
+        assert!(!value.truncated);
+        assert_eq!(metrics.candidates_examined, entries.len());
+        assert_eq!(metrics.peak_retained_per_source, 0);
+    }
+
+    #[test]
+    fn notes_browser_query_retains_only_the_ordered_render_cap() {
+        let entries = (0..=500)
+            .map(|index| {
+                test_note_entry(
+                    PaletteNoteCategory::DocumentNotes,
+                    &format!("matching-{index:04}"),
+                    "matching body",
+                )
+            })
+            .collect::<Vec<_>>();
+        let outcome = query_notes_browser_source(
+            &entries,
+            &NotesBrowserQueryRequest {
+                query: "matching".to_string(),
+            },
+            500,
+            &PaletteSearchCancellation::default(),
+        );
+
+        let PaletteSearchOutcome::Complete { value, metrics } = outcome else {
+            panic!("fresh query should complete");
+        };
+        assert_eq!(value.matching_indices, (0..500).collect::<Vec<_>>());
+        assert!(value.truncated);
+        assert_eq!(metrics.peak_retained_per_source, 500);
+    }
+
+    #[test]
     fn build_note_entries_returns_empty_for_empty_sources() {
         let dir = TempDir::new().expect("tempdir");
 
@@ -671,6 +1543,126 @@ mod tests {
         );
 
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn bounded_note_admission_stops_at_the_exact_entry_limit() {
+        let mut admission = NoteSourceAdmission::with_test_limits(2, usize::MAX, 4);
+
+        assert!(admission.admit(test_note_entry(
+            PaletteNoteCategory::Bookmarks,
+            "First",
+            "one",
+        )));
+        assert!(admission.admit(test_note_entry(
+            PaletteNoteCategory::DocumentNotes,
+            "Second",
+            "two",
+        )));
+        assert!(!admission.admit(test_note_entry(
+            PaletteNoteCategory::FolderNotes,
+            "Rejected",
+            "three",
+        )));
+
+        let PaletteNoteSourceOutcome::Complete { load, metrics } = admission.complete() else {
+            unreachable!("completed admission must publish a bounded source");
+        };
+        assert_eq!(load.entries.len(), 2);
+        assert_eq!(metrics.retained_entries, 2);
+        assert_eq!(metrics.peak_retained_entries, 2);
+        assert_eq!(
+            load.truncation_reasons,
+            vec![NoteSourceTruncationReason::EntryLimit]
+        );
+    }
+
+    #[test]
+    fn bounded_note_admission_accepts_the_exact_byte_boundary_only() {
+        let first = test_note_entry(PaletteNoteCategory::FolderNotes, "Boundary", "body");
+        let exact_bytes = palette_note_searchable_bytes(&first);
+        let mut admission = NoteSourceAdmission::with_test_limits(4, exact_bytes, 4);
+
+        assert!(admission.admit(first));
+        assert!(!admission.admit(test_note_entry(
+            PaletteNoteCategory::FolderNotes,
+            "Later",
+            "x",
+        )));
+
+        let PaletteNoteSourceOutcome::Complete { load, metrics } = admission.complete() else {
+            unreachable!("completed admission must publish a bounded source");
+        };
+        assert_eq!(load.entries.len(), 1);
+        assert_eq!(metrics.retained_searchable_bytes, exact_bytes);
+        assert_eq!(
+            load.truncation_reasons,
+            vec![NoteSourceTruncationReason::TextByteLimit]
+        );
+    }
+
+    #[test]
+    fn cancelled_note_source_never_publishes_partial_rows() {
+        let dir = TempDir::new().expect("tempdir");
+        let scope = WorkspacesFile {
+            current_scope: WorkspaceScope::All,
+            workspaces: Vec::new(),
+        }
+        .current_scope_snapshot();
+        let cancellation = PaletteSearchCancellation::default();
+        assert!(cancellation.cancel());
+
+        let outcome = load_palette_note_entries_for_scope(dir.path(), &scope, &[], &cancellation)
+            .expect("cancelled load");
+
+        assert!(matches!(
+            outcome,
+            PaletteNoteSourceOutcome::Cancelled {
+                metrics: NoteSourceMetrics {
+                    retained_entries: 0,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn note_refresh_coordinator_keeps_only_the_latest_pending_request() {
+        let scope = WorkspacesFile {
+            current_scope: WorkspaceScope::All,
+            workspaces: Vec::new(),
+        }
+        .current_scope_snapshot();
+        let request = |name: &str| NoteSourceRefreshRequest {
+            data_dir: PathBuf::from(name),
+            scope_snapshot: scope.clone(),
+            open_editor_snapshots: Arc::from([]),
+            limits: PALETTE_NOTE_SOURCE_LIMITS,
+        };
+        let mut coordinator = NoteSourceRefreshCoordinator::default();
+
+        let first = coordinator
+            .submit(request("first"))
+            .expect("first request starts");
+        assert!(coordinator.submit(request("second")).is_none());
+        assert!(coordinator.submit(request("latest")).is_none());
+        assert!(first.cancellation.is_cancelled());
+        assert_eq!(
+            coordinator.snapshot(),
+            NoteSourceRefreshCoordinatorSnapshot {
+                active: 1,
+                pending: 1,
+                started: 1,
+                cancellation_requests: 1,
+            }
+        );
+
+        let latest = coordinator
+            .finish(first.generation)
+            .expect("latest pending request starts");
+        assert_eq!(latest.request.data_dir, PathBuf::from("latest"));
+        assert!(coordinator.is_current(latest.generation));
+        assert_eq!(coordinator.snapshot().started, 2);
     }
 
     #[test]
@@ -760,11 +1752,10 @@ mod tests {
     }
 
     #[test]
-    fn palette_note_text_query_preserves_trimmed_query_and_prefix_table() {
+    fn palette_note_text_query_matches_trimmed_query_and_preserves_prefix_table() {
         let query = PaletteNoteTextQuery::new("  Launch Plan  ").expect("query");
         let overlap_query = PaletteNoteTextQuery::new("ababaca").expect("overlap query");
 
-        assert_eq!(query.as_str(), "Launch Plan");
         assert!(query.matches("the launch plan is ready"));
         assert!(overlap_query.matches("prefix abababaca suffix"));
         assert!(!overlap_query.matches("prefix ababaxyca suffix"));
@@ -775,6 +1766,47 @@ mod tests {
         assert_eq!(
             PaletteNoteTextQuery::prefix_table(&"ababb".chars().collect::<Vec<_>>()),
             vec![0, 0, 1, 2, 0]
+        );
+    }
+
+    #[test]
+    fn large_note_body_remains_eligible_without_unbounded_fuzzy_scoring() {
+        let body = format!(
+            "{} bounded-tail-needle",
+            "x".repeat(MAX_NOTE_FUZZY_SCORE_BYTES + 1)
+        );
+        let entries = vec![test_note_entry(
+            PaletteNoteCategory::DocumentNotes,
+            "Unrelated title",
+            &body,
+        )];
+        let cancellation = PaletteSearchCancellation::default();
+
+        let outcome = search_note_entries_cancellable(
+            &entries,
+            None,
+            "bounded-tail-needle",
+            10,
+            &cancellation,
+        );
+        let PaletteSearchOutcome::Complete { value, metrics } = outcome else {
+            panic!("fresh search should complete");
+        };
+
+        assert_eq!(value.len(), 1);
+        assert_eq!(value[0].score, 0);
+        assert_eq!(metrics.candidates_examined, 1);
+    }
+
+    #[test]
+    fn note_text_query_observes_preexisting_cancellation() {
+        let query = PaletteNoteTextQuery::new("needle").expect("query");
+        let cancellation = PaletteSearchCancellation::default();
+        let _ = cancellation.cancel();
+
+        assert_eq!(
+            query.matches_cancellable(&"x".repeat(8_192), &cancellation),
+            None
         );
     }
 
@@ -806,6 +1838,24 @@ mod tests {
             search_note_entries_in_category(&entries, PaletteNoteCategory::FolderNotes, "", 10);
         assert_eq!(default_folder_hits.len(), 1);
         assert_eq!(default_folder_hits[0].title, "Folder launch note");
+
+        let whitespace_folder_hits = search_note_entries_in_category(
+            &entries,
+            PaletteNoteCategory::FolderNotes,
+            "   \t ",
+            10,
+        );
+        assert_eq!(whitespace_folder_hits.len(), 1);
+        assert_eq!(whitespace_folder_hits[0].title, "Folder launch note");
+
+        let padded_document_hits = search_note_entries_in_category(
+            &entries,
+            PaletteNoteCategory::DocumentNotes,
+            "  shared body  ",
+            10,
+        );
+        assert_eq!(padded_document_hits.len(), 1);
+        assert_eq!(padded_document_hits[0].title, "Document launch note");
     }
 
     #[test]

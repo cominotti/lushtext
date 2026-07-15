@@ -12,13 +12,15 @@ use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
 use lushtext_core::model::encoding::DocumentEncodingState;
 use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
-use lushtext_core::services::editor_io::LoadResult;
+use lushtext_core::model::formatting_overrides::FormattingOverrides;
+use lushtext_core::services::editor_io::{EditorLoadError, LoadResult};
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::local_history_service;
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
+    BufferReplacementCancelReason, BufferReplacementWorkflow,
     BufferSnapshotCancelReason, BufferSnapshotOutcome, BufferSnapshotStateForTest,
     BufferSnapshotTestEdit,
     BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, LushtextEditorPage,
@@ -889,6 +891,7 @@ fn test_minimap_wrapped_budget_skips_large_buffer_line_scan() {
     });
 
     assert!(!page.is_minimap_visible());
+    assert!(!page.minimap_projection_attached_for_test());
 }
 
 #[test]
@@ -916,6 +919,355 @@ fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
     );
     assert_eq!(editor_buffer_text(&page), "current buffer\n");
     assert_eq!(page.file_size(), None);
+}
+
+#[test]
+fn test_failed_reload_restores_file_monitor_for_preserved_buffer() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("reload monitor tempdir");
+    let path = dir.path().join("watched.txt");
+    fixture::write_text(&path, "preserved buffer\n");
+    let page = LushtextEditorPage::new();
+    page.set_file_path(&path);
+    page.buffer().set_text("preserved buffer\n");
+    page.imp().load_state.set(EditorLoadState::Loading);
+    page.stop_file_monitor();
+    assert!(page.imp().monitor.file_monitor.borrow().is_none());
+
+    let generation = page.load_generation_for_test();
+    assert!(page.apply_reload_error_for_test(
+        generation,
+        EditorLoadError::Changed { path },
+    ));
+
+    assert_eq!(page.load_state(), EditorLoadState::Loaded);
+    assert_eq!(editor_buffer_text(&page), "preserved buffer\n");
+    assert!(
+        page.imp().monitor.file_monitor.borrow().is_some(),
+        "a failed reload that restores Loaded must resume external-change monitoring"
+    );
+}
+
+#[test]
+fn test_large_unicode_load_installs_in_exact_bounded_slices() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("chunked load tempdir");
+    let path = dir.path().join("unicode-large.txt");
+    let content = "prefix🙂é\r\n".repeat(140_000);
+    fixture::write_text(&path, &content);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    let main_loop_progress = Rc::new(Cell::new(0u64));
+    let maximum_active_weight = Rc::new(Cell::new(0u64));
+    let maximum_queued_count = Rc::new(Cell::new(0usize));
+    let page_for_tick = page.clone();
+    let progress_for_tick = Rc::clone(&main_loop_progress);
+    let active_for_tick = Rc::clone(&maximum_active_weight);
+    let queued_for_tick = Rc::clone(&maximum_queued_count);
+    glib::timeout_add_local(Duration::from_millis(1), move || {
+        if page_for_tick.load_installation_active_for_test() {
+            progress_for_tick.set(progress_for_tick.get().saturating_add(1));
+            let snapshot = page_for_tick.transient_load_admission_snapshot_for_test();
+            active_for_tick.set(active_for_tick.get().max(snapshot.active_weight));
+            queued_for_tick.set(queued_for_tick.get().max(snapshot.queued_count));
+        }
+        if matches!(
+            page_for_tick.load_state(),
+            EditorLoadState::Loaded | EditorLoadState::Failed
+        ) {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(15), || {
+        page.load_installation_active_for_test()
+    });
+    assert!(page.load_projection_suspended_for_test());
+    assert!(!page.minimap_projection_attached_for_test());
+    assert!(!page.source_view().is_editable());
+    wait_until(Duration::from_secs(15), || {
+        page.load_state() == EditorLoadState::Loaded
+    });
+
+    assert_eq!(editor_buffer_text(&page), content);
+    assert!(page.load_installation_slice_count_for_test() > 1);
+    assert!(!page.load_installation_active_for_test());
+    assert!(!page.load_projection_suspended_for_test());
+    assert!(page.minimap_projection_attached_for_test());
+    assert!(!page.is_modified());
+    assert!(!page.draft_dirty());
+    assert!(page.source_view().is_editable());
+    assert!(
+        main_loop_progress.get() > 0,
+        "the GTK main loop must run between bounded installation slices"
+    );
+    assert!(maximum_active_weight.get() > 0);
+    eprintln!(
+        "transient-load-runtime-evidence active_payload_weight={} queued_scalar_count={} installation_slices={} main_loop_progress={} final_editor_residency={}",
+        maximum_active_weight.get(),
+        maximum_queued_count.get(),
+        page.load_installation_slice_count_for_test(),
+        main_loop_progress.get(),
+        page.estimated_live_buffer_bytes()
+    );
+    wait_until(Duration::from_secs(5), || {
+        page.transient_load_admission_snapshot_for_test()
+            .active_count
+            == 0
+    });
+}
+
+#[test]
+fn test_direct_text_buffer_installation_records_unicode_baseline() {
+    ensure_gtk_init();
+    for size_mib in [1usize, 16] {
+        let pattern = "🙂é\r\n";
+        let repetitions = size_mib * 1024 * 1024 / pattern.len();
+        let content = pattern.repeat(repetitions);
+        let buffer = sourceview5::Buffer::new(None::<&gtk4::TextTagTable>);
+        let started = Instant::now();
+        buffer.set_text(&content);
+        let elapsed = started.elapsed();
+        assert_eq!(
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), true)
+                .as_str(),
+            content
+        );
+        eprintln!(
+            "transient-load-baseline direct-set-text size_mib={size_mib} elapsed_us={}",
+            elapsed.as_micros()
+        );
+    }
+}
+
+#[test]
+fn test_chunked_load_cancellation_clears_partial_text_and_releases_admission() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("cancelled load tempdir");
+    let path = dir.path().join("cancelled-large.txt");
+    fixture::write_repeated_bytes(&path, "🙂".as_bytes(), 8 * 1024 * 1024);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(15), || {
+        page.load_installation_active_for_test()
+    });
+    assert!(page.load_installation_weight_for_test().is_some());
+    page.cancel_load();
+    assert_eq!(page.load_state(), EditorLoadState::Loading);
+    assert!(page.load_installation_active_for_test());
+    assert!(!page.source_view().is_editable());
+    wait_until(Duration::from_secs(5), || {
+        !page.load_installation_active_for_test()
+            && page
+                .transient_load_admission_snapshot_for_test()
+                .active_count
+                == 0
+    });
+
+    assert_eq!(editor_buffer_text(&page), "");
+    assert_eq!(page.load_state(), EditorLoadState::Failed);
+    assert!(!page.load_projection_suspended_for_test());
+    assert!(page.source_view().is_editable());
+    let info = page.info_bar().imp();
+    assert_eq!(info.alert_title.label().as_str(), "Loading Cancelled");
+    assert!(info.alert_revealer.reveals_child());
+    assert_eq!(visible_alert_action_order(&page), vec!["retry", "dismiss"]);
+
+    let save_was_blocked = Rc::new(Cell::new(false));
+    let save_was_blocked_for_callback = Rc::clone(&save_was_blocked);
+    page.save_file_async(move |result| {
+        assert_matches!(
+            result,
+            Err(lushtext_core::ui::editor_page::EditorSaveError::IncompleteLoadInstallation)
+        );
+        save_was_blocked_for_callback.set(true);
+    });
+    assert!(save_was_blocked.get());
+    assert_eq!(fs_read::bytes(&path).expect("original load fixture").len(), 8 * 1024 * 1024);
+}
+
+#[test]
+fn test_reload_during_chunked_install_only_publishes_newest_content() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("reload during install tempdir");
+    let first_path = dir.path().join("first-large.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_repeated_bytes(&first_path, "first🙂\n".as_bytes(), 8 * 1024 * 1024);
+    fixture::write_text(&second_path, "second accepted\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&first_path);
+    wait_until(Duration::from_secs(15), || {
+        page.load_installation_active_for_test()
+    });
+    page.load_file_async(&second_path);
+    wait_until(Duration::from_secs(15), || {
+        page.load_state() == EditorLoadState::Loaded
+            && editor_buffer_text(&page) == "second accepted\n"
+    });
+
+    assert_eq!(page.file_path().as_deref(), Some(second_path.as_path()));
+    assert_eq!(page.load_installation_slice_count_for_test(), 0);
+    wait_until(Duration::from_secs(5), || {
+        page.transient_load_admission_snapshot_for_test()
+            .active_count
+            == 0
+    });
+}
+
+#[test]
+fn test_reload_reentrant_from_final_mark_deletion_is_drained_after_finalization() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("finalizing reload tempdir");
+    let first_path = dir.path().join("first-large.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_repeated_bytes(&first_path, "first🙂\n".as_bytes(), 4 * 1024 * 1024);
+    fixture::write_text(&second_path, "newest after finalization\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+    let requested = Rc::new(Cell::new(false));
+    let requested_for_signal = Rc::clone(&requested);
+    let page_weak = page.downgrade();
+    let second_for_signal = second_path.clone();
+    page.buffer().connect_mark_deleted(move |_, _| {
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if page.load_installation_active_for_test() && !requested_for_signal.replace(true) {
+            page.load_file_async(&second_for_signal);
+        }
+    });
+
+    page.load_file_async(&first_path);
+    wait_until(Duration::from_secs(15), || {
+        requested.get()
+            && page.load_state() == EditorLoadState::Loaded
+            && editor_buffer_text(&page) == "newest after finalization\n"
+    });
+
+    assert_eq!(page.file_path().as_deref(), Some(second_path.as_path()));
+    assert!(!page.load_installation_active_for_test());
+    assert!(!page.load_projection_suspended_for_test());
+}
+
+#[test]
+fn test_closing_search_during_chunked_install_does_not_reattach_stale_context() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("search close during load tempdir");
+    let path = dir.path().join("large.txt");
+    fixture::write_repeated_bytes(&path, "search🙂\n".as_bytes(), 4 * 1024 * 1024);
+    let page = LushtextEditorPage::new();
+    page.show_search();
+    assert!(page.is_search_visible());
+    assert!(page.search_bar().search_context().is_some());
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(15), || {
+        page.load_installation_active_for_test()
+    });
+    assert!(page.search_bar().search_context().is_none());
+    page.hide_search();
+    wait_until(Duration::from_secs(15), || {
+        page.load_state() == EditorLoadState::Loaded
+    });
+
+    assert!(!page.is_search_visible());
+    assert!(page.search_bar().search_context().is_none());
+}
+
+#[test]
+fn test_small_reload_of_large_buffer_uses_bounded_clear_phase() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("large-buffer small-reload tempdir");
+    let path = dir.path().join("reload.txt");
+    fixture::write_repeated_bytes(&path, b"large line\n", 4 * 1024 * 1024);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(15), || {
+        page.load_state() == EditorLoadState::Loaded
+    });
+    fixture::write_text(&path, "small replacement\n");
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(10), || {
+        page.load_installation_active_for_test()
+    });
+    assert!(page.load_projection_suspended_for_test());
+    wait_until(Duration::from_secs(15), || {
+        page.load_state() == EditorLoadState::Loaded
+            && editor_buffer_text(&page) == "small replacement\n"
+    });
+    assert_eq!(page.load_installation_slice_count_for_test(), 1);
+}
+
+#[test]
+fn test_reentrant_cancel_from_insert_signal_uses_bounded_cleanup_without_panic() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("reentrant cancel tempdir");
+    let path = dir.path().join("reentrant.txt");
+    fixture::write_repeated_bytes(&path, "reentrant🙂\n".as_bytes(), 4 * 1024 * 1024);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+    let cancelled = Rc::new(Cell::new(false));
+    let cancelled_for_signal = Rc::clone(&cancelled);
+    let page_weak = page.downgrade();
+    page.buffer().connect_changed(move |_| {
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        if page.load_installation_active_for_test() && !cancelled_for_signal.replace(true) {
+            page.cancel_load();
+        }
+    });
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(15), || {
+        cancelled.get()
+            && page.load_state() == EditorLoadState::Failed
+            && !page.load_installation_active_for_test()
+    });
+    assert_eq!(editor_buffer_text(&page), "");
+    wait_until(Duration::from_secs(5), || {
+        page.transient_load_admission_snapshot_for_test()
+            .active_count
+            == 0
+    });
+}
+
+#[test]
+fn test_dispose_during_chunked_install_releases_admission() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("dispose during install tempdir");
+    let path = dir.path().join("dispose-large.txt");
+    fixture::write_repeated_bytes(&path, "dispose🙂\n".as_bytes(), 8 * 1024 * 1024);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(15), || {
+        page.load_installation_active_for_test()
+    });
+    assert!(page.load_installation_weight_for_test().is_some());
+    let weak_page = page.downgrade();
+    let admission_probe = LushtextEditorPage::new();
+    drop(page);
+    wait_until(Duration::from_secs(5), || {
+        weak_page.upgrade().is_none()
+            && admission_probe
+                .transient_load_admission_snapshot_for_test()
+            .active_count
+            == 0
+    });
 }
 
 #[test]
@@ -965,6 +1317,47 @@ fn test_live_memory_estimate_updates_after_save_and_eviction() {
         page.estimated_live_buffer_bytes(),
         EVICTED_EDITOR_BOOKKEEPING_BYTES
     );
+}
+
+#[test]
+fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let content = "large eviction body\n".repeat(80_000);
+    page.apply_loaded_content_for_test(
+        &content,
+        u64::try_from(content.len()).expect("fixture size fits u64"),
+    );
+
+    page.evict();
+
+    assert!(!page.is_evicted());
+    assert!(page.buffer_replacement_in_progress_for_test());
+    assert!(!page.source_view().is_editable());
+    assert_ne!(
+        page.estimated_live_buffer_bytes(),
+        EVICTED_EDITOR_BOOKKEEPING_BYTES
+    );
+
+    wait_until(Duration::from_secs(10), || page.is_evicted());
+
+    assert_eq!(editor_buffer_text(&page), "");
+    assert_eq!(
+        page.estimated_live_buffer_bytes(),
+        EVICTED_EDITOR_BOOKKEEPING_BYTES
+    );
+    assert!(page.buffer_replacement_slice_count_for_test() > 1);
+    assert!(page.source_view().is_editable());
+    let diagnostic = page
+        .buffer_replacement_terminal_diagnostic_for_test()
+        .expect("eviction terminal diagnostic");
+    assert_eq!(
+        diagnostic.ticket.workflow,
+        BufferReplacementWorkflow::MemoryEviction
+    );
+    assert!(diagnostic.metrics.slice_count > 1);
+    assert_eq!(diagnostic.metrics.peak_retained_bodies, 1);
+    assert!(diagnostic.source_released && diagnostic.guard_released);
 }
 
 #[test]
@@ -1040,6 +1433,94 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
         gtk4::AccessibleState::Busy
     ));
     assert_eq!(fs_read::text(&path).expect("expected operation to succeed"), content);
+}
+
+#[test]
+fn test_document_sized_save_formatting_stays_inflight_until_bounded_install_finishes() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let tmp = tempfile::NamedTempFile::new().expect("save formatting temp file");
+    let source = "line with trailing spaces   \n".repeat(100_000);
+    let expected = "line with trailing spaces\n".repeat(100_000);
+
+    page.set_file_path(tmp.path());
+    page.apply_editorconfig_overrides(FormattingOverrides {
+        trim_trailing_whitespace: Some(true),
+        ..FormattingOverrides::default()
+    });
+    page.buffer().set_text(&source);
+
+    let done = Rc::new(Cell::new(false));
+    let done_clone = Rc::clone(&done);
+    page.save_file_async(move |result| {
+        result.expect("formatted save should succeed");
+        done_clone.set(true);
+    });
+
+    wait_until(Duration::from_secs(5), || {
+        page.buffer_replacement_in_progress_for_test()
+    });
+    assert!(page.is_saving());
+    assert!(!done.get());
+    assert!(!page.source_view().is_editable());
+
+    wait_until(Duration::from_secs(15), || done.get());
+    assert!(!page.is_saving());
+    assert!(!page.is_modified());
+    assert!(page.source_view().is_editable());
+    assert_eq!(editor_buffer_text(&page), expected);
+    assert_eq!(
+        fs_read::text(tmp.path()).expect("formatted save should reach disk"),
+        expected
+    );
+    assert!(page.buffer_replacement_slice_count_for_test() > 1);
+    let diagnostic = page
+        .buffer_replacement_terminal_diagnostic_for_test()
+        .expect("save-formatting terminal diagnostic");
+    assert_eq!(
+        diagnostic.ticket.workflow,
+        BufferReplacementWorkflow::SaveFormatting
+    );
+    assert!(diagnostic.metrics.slice_count > 1);
+    assert_eq!(diagnostic.metrics.peak_retained_bodies, 1);
+    assert!(diagnostic.source_released && diagnostic.guard_released);
+}
+
+#[test]
+fn test_stale_save_formatting_never_publishes_a_partial_save() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let tmp = tempfile::NamedTempFile::new().expect("stale save formatting temp file");
+    let source = "stale trailing spaces   \n".repeat(100_000);
+    let expected_disk = "stale trailing spaces\n".repeat(100_000);
+
+    page.set_file_path(tmp.path());
+    page.apply_editorconfig_overrides(FormattingOverrides {
+        trim_trailing_whitespace: Some(true),
+        ..FormattingOverrides::default()
+    });
+    page.buffer().set_text(&source);
+    page.make_buffer_replacement_stale_after_slices_for_test(1);
+
+    let result = Rc::new(RefCell::new(None));
+    let result_clone = Rc::clone(&result);
+    page.save_file_async(move |save_result| {
+        result_clone.replace(Some(save_result));
+    });
+
+    wait_until(Duration::from_secs(15), || result.borrow().is_some());
+    assert_matches!(
+        result.borrow_mut().take().expect("save callback result"),
+        Err(lushtext_core::ui::editor_page::EditorSaveError::SnapshotCancelled)
+    );
+    assert!(!page.is_saving());
+    assert!(page.is_modified());
+    assert!(!page.buffer_replacement_in_progress_for_test());
+    assert_eq!(editor_buffer_text(&page), "");
+    assert_eq!(
+        fs_read::text(tmp.path()).expect("durable write should remain exact"),
+        expected_disk
+    );
 }
 
 #[test]
@@ -2810,4 +3291,125 @@ fn test_escape_restores_cursor_position() {
         post_line, pre_line,
         "Escape should restore cursor to pre-search line"
     );
+}
+
+#[test]
+fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&"old".repeat(100_000));
+    let expected = format!("{}🙂e\u{301}tail", "a".repeat(1024 * 1024 + 17));
+    let current = Rc::new(Cell::new(true));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    page.replace_buffer_for_test(
+        expected.clone(),
+        1,
+        Rc::clone(&current),
+        Rc::clone(&outcomes),
+    );
+    assert!(page.buffer_replacement_in_progress_for_test());
+    assert!(!page.source_view().is_editable());
+
+    let main_loop_progressed = Rc::new(Cell::new(false));
+    let main_loop_progressed_clone = Rc::clone(&main_loop_progressed);
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        main_loop_progressed_clone.set(true);
+    });
+    wait_until(Duration::from_secs(2), || main_loop_progressed.get());
+    assert!(outcomes.borrow().is_empty());
+
+    wait_until(Duration::from_secs(10), || outcomes.borrow().len() == 1);
+
+    assert_eq!(editor_buffer_text(&page), expected);
+    assert!(page.source_view().is_editable());
+    assert!(!page.buffer_replacement_in_progress_for_test());
+    let outcomes = outcomes.borrow();
+    assert_eq!(outcomes[0].body.as_deref(), Some(expected.as_str()));
+    assert!(outcomes[0].cancel_reason.is_none());
+    assert!(outcomes[0].metrics.slice_count > 1);
+    assert_eq!(outcomes[0].metrics.peak_retained_bodies, 1);
+}
+
+#[test]
+fn test_bounded_buffer_replacement_stale_partial_body_is_cleared_not_published() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let old = "old".repeat(200_000);
+    page.buffer().set_text(&old);
+    let current = Rc::new(Cell::new(true));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    page.make_buffer_replacement_stale_after_slices_for_test(1);
+
+    page.replace_buffer_for_test(
+        "new".repeat(400_000),
+        2,
+        Rc::clone(&current),
+        Rc::clone(&outcomes),
+    );
+    wait_until(Duration::from_secs(10), || outcomes.borrow().len() == 1);
+
+    assert_eq!(editor_buffer_text(&page), "");
+    assert_eq!(
+        outcomes.borrow()[0].cancel_reason,
+        Some(BufferReplacementCancelReason::Stale)
+    );
+    assert!(outcomes.borrow()[0].body.is_none());
+    assert!(page.source_view().is_editable());
+}
+
+#[test]
+fn test_bounded_buffer_replacement_supersession_publishes_only_latest_body() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("preserved until first slice");
+    let first_current = Rc::new(Cell::new(true));
+    let latest_current = Rc::new(Cell::new(true));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let latest = "latest🙂".repeat(150_000);
+
+    page.replace_buffer_for_test(
+        "obsolete".repeat(200_000),
+        10,
+        first_current,
+        Rc::clone(&outcomes),
+    );
+    page.replace_buffer_for_test(
+        latest.clone(),
+        11,
+        latest_current,
+        Rc::clone(&outcomes),
+    );
+    wait_until(Duration::from_secs(10), || outcomes.borrow().len() == 2);
+
+    assert_eq!(editor_buffer_text(&page), latest);
+    let outcomes = outcomes.borrow();
+    assert_eq!(
+        outcomes[0].cancel_reason,
+        Some(BufferReplacementCancelReason::Superseded)
+    );
+    assert_eq!(outcomes[1].body.as_deref(), Some(latest.as_str()));
+}
+
+#[test]
+fn test_bounded_buffer_replacement_disposal_terminal_releases_source_and_body() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("existing");
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+
+    page.replace_buffer_for_test(
+        "replacement".repeat(200_000),
+        20,
+        Rc::new(Cell::new(true)),
+        Rc::clone(&outcomes),
+    );
+    page.dispose_buffer_replacement_for_test();
+
+    assert_eq!(outcomes.borrow().len(), 1);
+    assert_eq!(
+        outcomes.borrow()[0].cancel_reason,
+        Some(BufferReplacementCancelReason::Disposed)
+    );
+    assert!(outcomes.borrow()[0].body.is_none());
+    assert!(!page.buffer_replacement_in_progress_for_test());
 }

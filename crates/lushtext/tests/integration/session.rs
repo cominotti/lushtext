@@ -277,6 +277,7 @@ fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
                 original_mtime_secs: None,
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         },
     )
     .expect("expected operation to succeed");
@@ -321,6 +322,7 @@ fn test_startup_restore_load_marks_stale_file_backed_drafts_and_removes_them() {
                 original_mtime_secs: Some(stale_mtime),
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         },
     )
     .expect("expected operation to succeed");
@@ -361,6 +363,7 @@ fn test_startup_restore_reports_corrupt_session_json_without_deleting_drafts() {
                 original_mtime_secs: None,
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         },
     )
     .expect("save manifest");

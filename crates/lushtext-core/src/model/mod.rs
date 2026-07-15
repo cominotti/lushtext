@@ -9,11 +9,13 @@
 pub mod action_catalog;
 pub mod automation;
 pub mod bookmark;
+pub mod buffer_replacement;
 pub mod content_search;
 pub mod document_note;
 pub mod draft;
 pub mod editor_memory;
 pub mod encoding;
+pub mod file_load;
 pub mod folder_note;
 pub mod formatting_overrides;
 pub mod local_history;

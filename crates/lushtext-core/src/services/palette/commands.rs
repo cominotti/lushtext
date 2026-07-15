@@ -6,12 +6,19 @@
 //! command rows, command subset searches, and the merge logic that combines
 //! command results with file-index matches.
 
+use std::collections::HashSet;
+#[cfg(feature = "property-tests")]
+use std::path::PathBuf;
+
 use crate::model::palette::{
     CommandCategory, CommandDef, PaletteFileEntry, ScoredResult, SearchMode, SearchResultItem,
 };
 
-use super::fuzzy::search_items;
+#[cfg(feature = "property-tests")]
+use super::fuzzy::search_items_full_sort_reference;
+use super::fuzzy::{search_items, search_items_cancellable};
 use super::index::FileIndex;
+use super::runtime::{PaletteSearchCancellation, PaletteSearchOutcome};
 
 /// All built-in commands available in the palette.
 #[must_use]
@@ -296,14 +303,38 @@ fn search_command_subset<F>(query: &str, max: usize, predicate: F) -> Vec<Scored
 where
     F: Fn(&CommandDef) -> bool,
 {
-    search_items(
-        all_commands()
-            .iter()
-            .filter(move |command| predicate(command)),
-        |command| command.label,
+    let cancellation = PaletteSearchCancellation::default();
+    match search_command_subset_cancellable(query, max, predicate, &cancellation) {
+        PaletteSearchOutcome::Complete { value, .. } => value,
+        PaletteSearchOutcome::Cancelled { .. } => unreachable!("fresh token cannot cancel"),
+    }
+}
+
+pub(super) fn search_commands_cancellable(
+    query: &str,
+    max: usize,
+    cancellation: &PaletteSearchCancellation,
+) -> PaletteSearchOutcome<Vec<ScoredResult<'static>>> {
+    search_command_subset_cancellable(query, max, |_| true, cancellation)
+}
+
+fn search_command_subset_cancellable<F>(
+    query: &str,
+    max: usize,
+    predicate: F,
+    cancellation: &PaletteSearchCancellation,
+) -> PaletteSearchOutcome<Vec<ScoredResult<'static>>>
+where
+    F: Fn(&CommandDef) -> bool,
+{
+    search_items_cancellable(
+        all_commands().iter(),
+        predicate,
+        |command, fuzzy_query| fuzzy_query.score(command.label),
         SearchResultItem::Command,
         query,
         max,
+        cancellation,
     )
 }
 
@@ -320,6 +351,79 @@ pub fn search_open_files<'a>(
         query,
         max,
     )
+}
+
+pub(super) fn search_open_files_cancellable<'a>(
+    files: &'a [PaletteFileEntry],
+    query: &str,
+    max: usize,
+    cancellation: &PaletteSearchCancellation,
+) -> PaletteSearchOutcome<Vec<ScoredResult<'a>>> {
+    let mut canonical_paths = HashSet::new();
+    let mut unresolved_paths = HashSet::new();
+    search_items_cancellable(
+        files.iter(),
+        |file| match file.identity.canonical_path() {
+            Some(path) => canonical_paths.insert(path.to_path_buf()),
+            None => unresolved_paths.insert(file.path.clone()),
+        },
+        |file, fuzzy_query| fuzzy_query.score(&file.display_name),
+        SearchResultItem::OpenFile,
+        query,
+        max,
+        cancellation,
+    )
+}
+
+/// Bounded/reference projection plus retention metrics for property tests.
+#[cfg(feature = "property-tests")]
+pub type OpenFileSelectionEvidence = (
+    Vec<(PathBuf, u32, usize)>,
+    Vec<(PathBuf, u32, usize)>,
+    super::runtime::PaletteSearchMetrics,
+);
+
+/// Compare bounded and full-sort open-file selection in the property-test lane.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn open_file_selection_equivalence_for_property_test(
+    files: &[PaletteFileEntry],
+    query: &str,
+    max: usize,
+) -> OpenFileSelectionEvidence {
+    let cancellation = PaletteSearchCancellation::default();
+    let bounded = search_open_files_cancellable(files, query, max, &cancellation);
+    let metrics = bounded.metrics();
+    let PaletteSearchOutcome::Complete { value: bounded, .. } = bounded else {
+        unreachable!("fresh token cannot cancel");
+    };
+    let mut reference_canonical_paths = HashSet::new();
+    let mut reference_unresolved_paths = HashSet::new();
+    let reference = search_items_full_sort_reference(
+        files.iter(),
+        |file| match file.identity.canonical_path() {
+            Some(path) => reference_canonical_paths.insert(path.to_path_buf()),
+            None => reference_unresolved_paths.insert(file.path.clone()),
+        },
+        |file, fuzzy_query| fuzzy_query.score(&file.display_name),
+        SearchResultItem::OpenFile,
+        query,
+        max,
+    );
+    let project = |results: Vec<ScoredResult<'_>>| {
+        results
+            .into_iter()
+            .filter_map(|result| match result.item {
+                SearchResultItem::OpenFile(file) => {
+                    Some((file.path.clone(), result.score, result.source_ordinal))
+                }
+                SearchResultItem::File(_)
+                | SearchResultItem::Command(_)
+                | SearchResultItem::Note(_) => None,
+            })
+            .collect()
+    };
+    (project(bounded), project(reference), metrics)
 }
 
 /// Search the palette's file and command launcher sources according to mode.
@@ -423,6 +527,7 @@ mod tests {
         ScoredResult {
             item: SearchResultItem::Command(command),
             score,
+            source_ordinal: 0,
         }
     }
 
@@ -455,7 +560,9 @@ mod tests {
         assert_eq!(scores, vec![10, 9, 8, 8]);
         match results[2].item {
             SearchResultItem::Command(command) => assert_eq!(command.id, "test.left"),
-            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => {
+            SearchResultItem::OpenFile(_)
+            | SearchResultItem::File(_)
+            | SearchResultItem::Note(_) => {
                 panic!("expected command result");
             }
         }

@@ -24,11 +24,16 @@ fn ordered_session_saves() -> &'static Mutex<HashMap<std::path::PathBuf, u64>> {
     SAVES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Load the global session. Returns default (no tabs) if file doesn't exist.
+/// Load the global session, returning recovered/default state when metadata is
+/// missing, unreadable, or malformed.
+///
+/// This compatibility wrapper does not propagate recovery diagnostics. Use
+/// [`load_recovering`] when the caller must surface preserved evidence.
 ///
 /// # Errors
 ///
-/// Returns an error if the session file exists but cannot be read or parsed.
+/// The current recovery-aware implementation does not return `Err`; the
+/// `Result` shape is retained for compatibility with existing callers.
 pub fn load(data_dir: &Path) -> Result<SessionData> {
     Ok(load_recovering(data_dir).value)
 }

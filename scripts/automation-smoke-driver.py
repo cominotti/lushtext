@@ -1021,7 +1021,7 @@ def write_json(path: Path, data) -> None:
 
 
 def assert_snapshot_baseline(snapshot: dict, fixture: Path) -> None:
-    assert snapshot["interface_version"] == 1, snapshot["interface_version"]
+    assert snapshot["interface_version"] == 2, snapshot["interface_version"]
     assert snapshot["enabled"] is True, snapshot["enabled"]
     assert snapshot["app_id"] == APP_ID, snapshot["app_id"]
     assert snapshot["idle"] is True, snapshot["idle_blocker"]

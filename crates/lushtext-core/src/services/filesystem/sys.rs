@@ -13,6 +13,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::types::FileKind;
+use super::{FileIdentity, read::BoundedFileReadError};
 
 pub(in crate::services) type File = fs::File;
 pub(in crate::services) type Metadata = fs::Metadata;
@@ -159,6 +160,66 @@ pub(in crate::services) fn read_prefix(path: &Path, byte_limit: usize) -> io::Re
     let mut bytes = Vec::new();
     limited.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+pub(in crate::services) fn read_bounded<F>(
+    path: &Path,
+    byte_limit: u64,
+    capacity_hint: u64,
+    mut cancelled: F,
+) -> Result<Vec<u8>, BoundedFileReadError>
+where
+    F: FnMut() -> bool,
+{
+    const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+    let usize_max = u64::try_from(usize::MAX).unwrap_or(u64::MAX);
+    let initial_capacity =
+        usize::try_from(capacity_hint.min(byte_limit).min(usize_max)).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(initial_capacity);
+    let mut file = fs::File::open(path).map_err(BoundedFileReadError::Io)?;
+    let mut chunk = vec![0u8; READ_CHUNK_BYTES].into_boxed_slice();
+
+    loop {
+        if cancelled() {
+            return Err(BoundedFileReadError::Cancelled);
+        }
+        let retained = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if retained == byte_limit {
+            let mut sentinel = [0u8; 1];
+            let count = file.read(&mut sentinel).map_err(BoundedFileReadError::Io)?;
+            return if count == 0 {
+                Ok(bytes)
+            } else {
+                Err(BoundedFileReadError::LimitExceeded { byte_limit })
+            };
+        }
+        let remaining = byte_limit.saturating_sub(retained);
+        let read_len =
+            usize::try_from(remaining.min(READ_CHUNK_BYTES as u64)).unwrap_or(READ_CHUNK_BYTES);
+        let count = file
+            .read(&mut chunk[..read_len])
+            .map_err(BoundedFileReadError::Io)?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+}
+
+#[cfg(unix)]
+pub(in crate::services) fn file_identity(metadata: &Metadata) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(not(unix))]
+pub(in crate::services) fn file_identity(_metadata: &Metadata) -> Option<FileIdentity> {
+    None
 }
 
 /// Return the Unix flags used to open a directory for entry traversal.

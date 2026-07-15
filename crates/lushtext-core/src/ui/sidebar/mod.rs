@@ -69,6 +69,15 @@ impl SidebarFileRowStateSnapshot {
 }
 
 impl LushtextSidebar {
+    /// Whether any section still has watcher lifecycle, mailbox, or refresh work.
+    pub(crate) fn workspace_refresh_blocks_readiness(&self) -> bool {
+        self.imp()
+            .sections
+            .borrow()
+            .iter()
+            .any(WorkspaceSection::workspace_refresh_blocks_readiness)
+    }
+
     /// Move focus to the first visible workspace file tree.
     ///
     /// This is a UI-adapter helper for keyboard and automation entry points.

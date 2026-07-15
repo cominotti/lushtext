@@ -3,21 +3,17 @@
 //! Command palette GObject implementation: template binding, search scheduling,
 //! and grouped result presentation.
 
-use crate::model::palette::{
-    PaletteFileEntry, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, SearchMode,
-    SearchResultItem,
-};
+use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode};
 use crate::services::palette::{self, FileIndex};
 use crate::ui::accessibility::{self, RowAccessibility};
 use crate::ui::command_palette::item::PaletteItem;
+use crate::ui::command_palette::runtime::CommandPaletteSearchRequest;
 use glib::prelude::*;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Owned transport type for search results that can cross thread boundaries.
@@ -25,88 +21,24 @@ use std::sync::Arc;
 /// Created on the background thread, then converted to `PaletteItem` GObjects
 /// on the main thread. Only owned display data crosses the thread boundary;
 /// GTK objects stay on the main thread.
-enum SearchHit {
-    Header {
-        label: String,
-    },
-    File {
-        display_name: String,
-        subtitle: String,
-        file_path: PathBuf,
-    },
-    Command {
-        display_name: String,
-        subtitle: String,
-        action_id: String,
-    },
-    Note {
-        display_name: String,
-        subtitle: String,
-        target: PaletteNoteTarget,
-    },
-}
-
-impl SearchHit {
-    /// Create a presentation-only source header for grouped result sections.
-    fn header(label: impl Into<String>) -> Self {
-        Self::Header {
-            label: label.into(),
-        }
-    }
-
-    /// Convert an open file-backed tab entry into the same row shape as indexed files.
-    fn from_open_file(f: &PaletteFileEntry) -> Self {
-        Self::File {
-            display_name: f.display_name.clone(),
-            subtitle: f.subtitle.clone(),
-            file_path: f.path.clone(),
-        }
-    }
-
-    fn from_file(f: &crate::model::palette::IndexedFile) -> Self {
-        Self::File {
-            display_name: f.name.clone(),
-            subtitle: f.relative_display(),
-            file_path: f.path.clone(),
-        }
-    }
-
-    fn from_command(c: &crate::model::palette::CommandDef) -> Self {
-        Self::Command {
-            display_name: c.label.to_string(),
-            subtitle: c.display_subtitle(),
-            action_id: c.id.to_string(),
-        }
-    }
-
-    fn from_note(note: &PaletteNoteEntry) -> Self {
-        Self::Note {
-            display_name: note.title.clone(),
-            subtitle: note.display_subtitle(),
-            target: note.target.clone(),
-        }
-    }
-
-    /// Convert the background-thread hit into a `PaletteItem` for the GTK list model.
-    fn into_item(self) -> PaletteItem {
-        match self {
-            Self::Header { label } => PaletteItem::new_header_raw(label),
-            Self::File {
-                display_name,
-                subtitle,
-                file_path,
-            } => PaletteItem::new_file_raw(display_name, subtitle, file_path),
-            Self::Command {
-                display_name,
-                subtitle,
-                action_id,
-            } => PaletteItem::new_command_raw(display_name, subtitle, action_id),
-            Self::Note {
-                display_name,
-                subtitle,
-                target,
-            } => PaletteItem::new_note_raw(display_name, subtitle, target),
-        }
+fn palette_row_into_item(row: PaletteSearchRow) -> PaletteItem {
+    match row {
+        PaletteSearchRow::Header { label } => PaletteItem::new_header_raw(label),
+        PaletteSearchRow::File {
+            display_name,
+            subtitle,
+            file_path,
+        } => PaletteItem::new_file_raw(display_name, subtitle, file_path),
+        PaletteSearchRow::Command {
+            display_name,
+            subtitle,
+            action_id,
+        } => PaletteItem::new_command_raw(display_name, subtitle, action_id),
+        PaletteSearchRow::Note {
+            display_name,
+            subtitle,
+            target,
+        } => PaletteItem::new_note_raw(display_name, subtitle, target),
     }
 }
 
@@ -148,7 +80,7 @@ pub struct LushtextCommandPalette {
     /// threads without copying the index.
     pub file_index: RefCell<Arc<FileIndex>>,
     /// Open file-backed tabs supplied by the window shell.
-    pub open_tabs: RefCell<Vec<PaletteFileEntry>>,
+    pub open_tabs: RefCell<Arc<[PaletteFileEntry]>>,
     /// Cached note rows supplied by the window shell after sidecar loading.
     pub note_entries: RefCell<Arc<[PaletteNoteEntry]>>,
     /// Label for the workspace-indexed file group.
@@ -157,14 +89,27 @@ pub struct LushtextCommandPalette {
     pub syncing_mode_selector: Cell<bool>,
     /// Whether a background fuzzy search is currently pending.
     pub searching: Cell<bool>,
+    /// Whether normal source updates may enqueue visible palette work.
+    pub palette_open: Cell<bool>,
+    /// One-active/one-latest query coordinator shared by direct and debounced entry points.
+    pub(super) search_runtime:
+        RefCell<palette::PaletteSearchCoordinator<CommandPaletteSearchRequest>>,
+    /// Number of workers that cooperatively observed a superseding cancellation.
+    pub observed_search_cancellations: Cell<usize>,
+    /// Candidate progress retained from the most recent cancelled worker.
+    pub last_cancelled_search_examined: Cell<usize>,
     /// Callback invoked when the user activates a result (Enter or click).
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     /// Callback invoked when the palette should close (Escape key).
     pub close_callback: RefCell<Option<CloseCallback>>,
-    /// Debounce for search queries (150ms) and async search-result freshness.
+    /// Debounce for non-empty text queries; the runtime coordinator owns freshness.
     pub search_debounce: Debounce,
     /// Queue of incremental index mutations waiting to be flushed.
     pub(super) pending_index_updates: RefCell<Vec<super::FileIndexUpdate>>,
+    /// Serializes index clone/mutation workers so results cannot overwrite out of order.
+    pub(super) index_update_worker_running: Cell<bool>,
+    /// Invalidates a worker result when a full index replacement wins meanwhile.
+    pub(super) file_index_generation: Cell<u64>,
     /// Debounce for coalescing index update flushes (75ms).
     pub(super) index_update_debounce: Debounce,
 }
@@ -179,15 +124,21 @@ impl Default for LushtextCommandPalette {
             mode: Cell::new(SearchMode::All),
             results_store: gio::ListStore::new::<PaletteItem>(),
             file_index: RefCell::new(Arc::new(FileIndex::default())),
-            open_tabs: RefCell::default(),
+            open_tabs: RefCell::new(Arc::from(Vec::<PaletteFileEntry>::new())),
             note_entries: RefCell::new(Arc::from(Vec::<PaletteNoteEntry>::new())),
             workspace_group_label: RefCell::new("All Workspaces".to_string()),
             syncing_mode_selector: Cell::new(false),
             searching: Cell::new(false),
+            palette_open: Cell::new(false),
+            search_runtime: RefCell::default(),
+            observed_search_cancellations: Cell::new(0),
+            last_cancelled_search_examined: Cell::new(0),
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
             search_debounce: Debounce::default(),
             pending_index_updates: RefCell::default(),
+            index_update_worker_running: Cell::new(false),
+            file_index_generation: Cell::new(0),
             index_update_debounce: Debounce::default(),
         }
     }
@@ -410,6 +361,9 @@ impl LushtextCommandPalette {
                 return;
             };
             let imp = obj.imp();
+            if !imp.palette_open.get() {
+                return;
+            }
             let query = entry.text().to_string();
 
             // Empty queries bypass debounce so default results update
@@ -508,59 +462,89 @@ impl LushtextCommandPalette {
 
     /// Rebuild results from an owned query snapshot.
     ///
-    /// Fuzzy matching runs on a background thread, then the main-thread
-    /// completion applies results only if its generation is still current.
+    /// Direct and debounced callers replace the same latest request. At most
+    /// one worker owns source snapshots while one compact request waits.
     pub fn rebuild_results_owned(&self, query: String) {
-        let generation = self.search_debounce.advance();
-        self.searching.set(true);
-        self.refresh_accessibility_state();
+        let _ = self.search_debounce.advance();
+        let request = CommandPaletteSearchRequest {
+            query: Arc::from(query),
+            mode: self.mode.get(),
+            index: Arc::clone(&self.file_index.borrow()),
+            open_tabs: Arc::clone(&self.open_tabs.borrow()),
+            note_entries: Arc::clone(&self.note_entries.borrow()),
+            workspace_group_label: Arc::from(self.workspace_group_label.borrow().as_str()),
+        };
+        let start = self.search_runtime.borrow_mut().submit(request);
+        if let Some(start) = start {
+            self.spawn_search(start);
+        }
+        self.refresh_searching_state();
+    }
 
-        let mode = self.mode.get();
-        let index = Arc::clone(&self.file_index.borrow());
-        let open_tabs = self.open_tabs.borrow().clone();
-        let note_entries = Arc::clone(&self.note_entries.borrow());
-        let workspace_group_label = self.workspace_group_label.borrow().clone();
-
+    fn spawn_search(&self, start: palette::PaletteSearchStart<CommandPaletteSearchRequest>) {
+        let generation = start.generation;
+        let cancellation = start.cancellation;
+        let request = start.request;
         gtk_lush_tasks::spawn_blocking_then(
             self.obj().clone(),
             move || {
-                let hits = grouped_hits(
-                    &index,
-                    &open_tabs,
-                    note_entries.as_ref(),
-                    &workspace_group_label,
-                    &query,
-                    mode,
-                    MAX_RESULTS_PER_SOURCE,
-                );
-                (hits, query)
+                let outcome =
+                    super::runtime::execute_search(&request, &cancellation, MAX_RESULTS_PER_SOURCE);
+                (outcome, request.query)
             },
-            move |obj, (hits, query)| {
+            move |obj, (outcome, query)| {
                 let imp = obj.imp();
-                if !imp.search_debounce.is_current(generation) {
-                    return; // superseded by a newer search
+                let (is_current, next) = {
+                    let mut runtime = imp.search_runtime.borrow_mut();
+                    let is_current = runtime.is_current(generation);
+                    let next = runtime.finish(generation);
+                    (is_current, next)
+                };
+
+                match outcome {
+                    palette::PaletteSearchOutcome::Complete { value, .. } if is_current => {
+                        imp.apply_search_rows(value, &query);
+                    }
+                    palette::PaletteSearchOutcome::Cancelled { metrics } => {
+                        imp.observed_search_cancellations
+                            .set(imp.observed_search_cancellations.get().saturating_add(1));
+                        imp.last_cancelled_search_examined
+                            .set(metrics.candidates_examined);
+                    }
+                    palette::PaletteSearchOutcome::Complete { .. } => {}
                 }
-                imp.searching.set(false);
 
-                let items: Vec<PaletteItem> = hits.into_iter().map(SearchHit::into_item).collect();
-
-                // splice() replaces items in a single operation (one items-changed
-                // signal) instead of N append/remove calls (N relayout passes).
-                let old_count = imp.results_store.n_items();
-                imp.results_store.splice(0, old_count, &items);
-
-                let has_results = items.iter().any(PaletteItem::is_activatable);
-                imp.no_results_label
-                    .set_visible(!has_results && !query.is_empty());
-
-                if let Some(first_result) = imp.first_activatable_position()
-                    && let Some(selection) = imp.selection_model()
-                {
-                    selection.set_selected(first_result);
+                if let Some(next) = next {
+                    imp.spawn_search(next);
                 }
-                imp.refresh_accessibility_state();
+                imp.refresh_searching_state();
             },
         );
+    }
+
+    fn apply_search_rows(&self, rows: Vec<PaletteSearchRow>, query: &str) {
+        let items: Vec<PaletteItem> = rows.into_iter().map(palette_row_into_item).collect();
+
+        // One splice keeps GTK projection work independent of the match count.
+        let old_count = self.results_store.n_items();
+        self.results_store.splice(0, old_count, &items);
+
+        let has_results = items.iter().any(PaletteItem::is_activatable);
+        self.no_results_label
+            .set_visible(!has_results && !query.is_empty());
+
+        if let Some(first_result) = self.first_activatable_position()
+            && let Some(selection) = self.selection_model()
+        {
+            selection.set_selected(first_result);
+        }
+        self.refresh_accessibility_state();
+    }
+
+    pub(super) fn refresh_searching_state(&self) {
+        let searching = self.palette_open.get() && self.search_runtime.borrow().has_work();
+        self.searching.set(searching);
+        self.refresh_accessibility_state();
     }
 
     fn move_selection(&self, delta: i32) {
@@ -748,158 +732,6 @@ pub(super) fn apply_palette_row_accessibility(
             .selected(selected)
             .position(position, set_size),
     );
-}
-
-/// Assemble GTK-ready rows from service-owned palette policy.
-///
-/// The UI controls presentation order and headers here, while command
-/// membership and Notes section rules stay in `services::palette`.
-fn grouped_hits(
-    index: &FileIndex,
-    open_tabs: &[PaletteFileEntry],
-    note_entries: &[PaletteNoteEntry],
-    workspace_group_label: &str,
-    query: &str,
-    mode: SearchMode,
-    max_per_source: usize,
-) -> Vec<SearchHit> {
-    let mut hits = Vec::new();
-    let mut seen_file_paths = HashSet::new();
-
-    match mode {
-        SearchMode::Files => {
-            append_file_groups(
-                &mut hits,
-                &mut seen_file_paths,
-                index,
-                open_tabs,
-                workspace_group_label,
-                query,
-                max_per_source,
-            );
-        }
-        SearchMode::Notes => {
-            append_note_groups(
-                &mut hits,
-                note_entries,
-                query,
-                max_per_source,
-                PaletteNoteCategory::label,
-            );
-        }
-        SearchMode::Commands => {
-            append_command_group(&mut hits, query, max_per_source);
-        }
-        SearchMode::All => {
-            append_file_groups(
-                &mut hits,
-                &mut seen_file_paths,
-                index,
-                open_tabs,
-                workspace_group_label,
-                query,
-                max_per_source,
-            );
-            append_note_groups(
-                &mut hits,
-                note_entries,
-                query,
-                max_per_source,
-                PaletteNoteCategory::all_mode_label,
-            );
-            append_group(
-                &mut hits,
-                "Commands",
-                command_hits_from_results(palette::search_commands(query, max_per_source)),
-            );
-        }
-    }
-
-    hits
-}
-
-/// Append file-oriented groups and remember open-tab paths for de-duplication.
-fn append_file_groups(
-    hits: &mut Vec<SearchHit>,
-    seen_file_paths: &mut HashSet<PathBuf>,
-    index: &FileIndex,
-    open_tabs: &[PaletteFileEntry],
-    workspace_group_label: &str,
-    query: &str,
-    max_per_source: usize,
-) {
-    let open_file_hits = palette::search_open_files(open_tabs, query, max_per_source);
-    let open_file_hits: Vec<_> = open_file_hits
-        .into_iter()
-        .filter_map(|result| match result.item {
-            SearchResultItem::OpenFile(file) => {
-                seen_file_paths.insert(file.path.clone());
-                Some(SearchHit::from_open_file(file))
-            }
-            SearchResultItem::File(_) | SearchResultItem::Command(_) => None,
-        })
-        .collect();
-    append_group(hits, "Open Tabs", open_file_hits);
-
-    let workspace_hits: Vec<_> = index
-        .search(query, max_per_source)
-        .into_iter()
-        .filter_map(|result| match result.item {
-            SearchResultItem::File(file) if !seen_file_paths.contains(&file.path) => {
-                seen_file_paths.insert(file.path.clone());
-                Some(SearchHit::from_file(file))
-            }
-            SearchResultItem::File(_)
-            | SearchResultItem::OpenFile(_)
-            | SearchResultItem::Command(_) => None,
-        })
-        .collect();
-    append_group(hits, workspace_group_label, workspace_hits);
-}
-
-/// Append all command results for dedicated `Commands` mode.
-fn append_command_group(hits: &mut Vec<SearchHit>, query: &str, max: usize) {
-    let command_hits = command_hits_from_results(palette::search_commands(query, max));
-    hits.extend(command_hits);
-}
-
-/// Append note record groups in the shared Notes taxonomy order.
-fn append_note_groups(
-    hits: &mut Vec<SearchHit>,
-    note_entries: &[PaletteNoteEntry],
-    query: &str,
-    max: usize,
-    label_for_category: impl Fn(PaletteNoteCategory) -> &'static str,
-) {
-    for category in PaletteNoteCategory::ALL {
-        let note_hits =
-            palette::search_note_entries_in_category(note_entries, category, query, max)
-                .into_iter()
-                .map(SearchHit::from_note)
-                .collect();
-        append_group(hits, label_for_category(category), note_hits);
-    }
-}
-
-fn command_hits_from_results(
-    results: Vec<crate::model::palette::ScoredResult<'static>>,
-) -> Vec<SearchHit> {
-    results
-        .into_iter()
-        .filter_map(|result| match result.item {
-            SearchResultItem::Command(command) => Some(SearchHit::from_command(command)),
-            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => None,
-        })
-        .collect()
-}
-
-/// Add a section only when that source has matching activatable rows.
-fn append_group(hits: &mut Vec<SearchHit>, label: &str, group_hits: Vec<SearchHit>) {
-    if group_hits.is_empty() {
-        return;
-    }
-    hits.push(SearchHit::header(label));
-    hits.extend(group_hits);
 }
 
 /// Maximum fuzzy matches to show from any one source group.

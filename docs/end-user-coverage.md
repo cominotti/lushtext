@@ -154,7 +154,11 @@ they are not default PR gates:
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
   timing artifacts, including worker-side Replace preview generation and
   recovery fixtures for malformed metadata, pending migrations, duplicate
-  sidecars, many local-history lineages, and first-dirty autosave persistence.
+  sidecars, many local-history lineages, first-dirty autosave persistence, and
+  bounded transient editor-load admission. The transient-load sublane also runs
+  one headless large-Unicode install and records admitted payload weight, queued
+  scalar count, GTK slice count, main-loop progress, and final editor residency;
+  see [`docs/benchmarks/transient-file-load.md`](benchmarks/transient-file-load.md).
 - Full fuzz smoke, deep property runs, full mutation, and full benchmark reports
   remain opt-in or scheduled because they are intentionally more expensive.
 

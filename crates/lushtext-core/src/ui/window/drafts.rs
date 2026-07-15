@@ -18,7 +18,10 @@ use crate::services::notifications::{
 };
 use crate::services::{draft_service, editor_io, json_store};
 use crate::ui::buffer_snapshot;
-use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::{
+    BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
+    BufferReplacementWorkflow, LushtextEditorPage,
+};
 use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
@@ -36,12 +39,15 @@ const FIRST_DIRTY_AUTOSAVE_DEBOUNCE_MS: u64 = 750;
 ///
 /// Two seconds lets restored editors consume their recovery snapshots before a
 /// background cleanup worker revalidates the same persisted artifacts.
+#[cfg(not(feature = "test-utils"))]
 const ORPHAN_CLEANUP_START_DELAY: Duration = Duration::from_secs(2);
 /// Delay for the one permitted follow-up bounded cleanup pass.
 ///
 /// Thirty seconds avoids a tight retry loop when permissions or storage remain
 /// unavailable while still making progress on a directory that exceeded the cap.
 const ORPHAN_CLEANUP_FOLLOWUP_DELAY: Duration = Duration::from_secs(30);
+/// Maximum delay between retryable orphan-cleanup attempts.
+const ORPHAN_CLEANUP_MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// Low-frequency close/readiness poll while ordered recovery work drains.
 const DRAFT_MUTATION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -63,6 +69,12 @@ static DRAFT_MANIFEST_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static DRAFT_MANIFEST_COMPLETION_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
 static DRAFT_DELETE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static ORPHAN_CLEANUP_START_DELAY_MS: AtomicU64 = AtomicU64::new(2_000);
+#[cfg(feature = "test-utils")]
+static ORPHAN_CLEANUP_FOLLOWUP_DELAY_MS: AtomicU64 = AtomicU64::new(30_000);
+#[cfg(feature = "test-utils")]
+static ORPHAN_CLEANUP_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
 static FAIL_NEXT_DRAFT_BODY: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "test-utils")]
@@ -114,6 +126,98 @@ pub fn fail_next_draft_mutations_for_test(body: bool, manifest: bool, delete: bo
     FAIL_NEXT_DRAFT_BODY.store(body, Ordering::Release);
     FAIL_NEXT_DRAFT_MANIFEST.store(manifest, Ordering::Release);
     FAIL_NEXT_DRAFT_DELETE.store(delete, Ordering::Release);
+}
+
+/// Configure orphan-cleanup timer and worker delays for deterministic widget tests.
+#[cfg(feature = "test-utils")]
+pub fn set_orphan_cleanup_delays_for_test(start_ms: u64, followup_ms: u64, worker_ms: u64) {
+    ORPHAN_CLEANUP_START_DELAY_MS.store(start_ms, Ordering::Release);
+    ORPHAN_CLEANUP_FOLLOWUP_DELAY_MS.store(followup_ms, Ordering::Release);
+    ORPHAN_CLEANUP_WORKER_DELAY_MS.store(worker_ms, Ordering::Release);
+}
+
+/// Scalar window-owned orphan-cleanup scheduling evidence.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrphanCleanupRuntimeSnapshot {
+    /// Whether a cleanup timer is armed.
+    pub timer_pending: bool,
+    /// Whether a cleanup worker is active.
+    pub worker_active: bool,
+    /// Workers started during this window lifetime.
+    pub workers_started: usize,
+    /// Peak simultaneous workers observed during this window lifetime.
+    pub workers_high_water: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrphanCleanupFollowUp {
+    Stop,
+    Schedule {
+        manifest_offset: usize,
+        delay: Duration,
+        next_failure_streak: u32,
+    },
+}
+
+fn orphan_cleanup_follow_up(
+    has_more_work: bool,
+    next_manifest_offset: Option<usize>,
+    retryable_failure: bool,
+    failure_streak: u32,
+) -> OrphanCleanupFollowUp {
+    if !has_more_work {
+        return OrphanCleanupFollowUp::Stop;
+    }
+
+    let next_failure_streak = if retryable_failure {
+        failure_streak.saturating_add(1)
+    } else {
+        0
+    };
+    let delay = if retryable_failure {
+        let exponent = next_failure_streak.saturating_sub(1).min(31);
+        ORPHAN_CLEANUP_FOLLOWUP_DELAY
+            .saturating_mul(1u32 << exponent)
+            .min(ORPHAN_CLEANUP_MAX_FAILURE_BACKOFF)
+    } else {
+        ORPHAN_CLEANUP_FOLLOWUP_DELAY
+    };
+    OrphanCleanupFollowUp::Schedule {
+        manifest_offset: next_manifest_offset.unwrap_or(0),
+        delay,
+        next_failure_streak,
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn orphan_cleanup_start_delay() -> Duration {
+    Duration::from_millis(ORPHAN_CLEANUP_START_DELAY_MS.load(Ordering::Acquire))
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn orphan_cleanup_start_delay() -> Duration {
+    ORPHAN_CLEANUP_START_DELAY
+}
+
+fn orphan_cleanup_followup_delay(delay: Duration) -> Duration {
+    #[cfg(feature = "test-utils")]
+    {
+        if delay == ORPHAN_CLEANUP_FOLLOWUP_DELAY {
+            return Duration::from_millis(ORPHAN_CLEANUP_FOLLOWUP_DELAY_MS.load(Ordering::Acquire));
+        }
+    }
+    delay
+}
+
+fn delay_orphan_cleanup_worker_for_test() {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = ORPHAN_CLEANUP_WORKER_DELAY_MS.load(Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+    }
 }
 
 /// Main-thread editor token paired with one accepted autosave snapshot.
@@ -184,6 +288,7 @@ pub enum DraftFlushError {
 }
 
 /// Complete freshness ticket shared by every asynchronous draft restore path.
+#[derive(Clone)]
 pub(super) struct DraftRestoreTicket {
     /// Exact manifest generation resolved by the background reader.
     entry: DraftEntry,
@@ -195,6 +300,12 @@ pub(super) struct DraftRestoreTicket {
     dirty_generation: u64,
     /// File-load generation that prevents restore crossing a reopen.
     load_generation: u64,
+}
+
+#[derive(Clone, Copy)]
+enum DraftRestoreTracking {
+    Ordinary,
+    Lazy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -401,7 +512,12 @@ impl super::LushtextWindow {
         if let Some(preloaded) = self.imp().drafts.preloaded.borrow_mut().remove(draft_id) {
             match preloaded {
                 PreloadedDraftRestore::Content(draft_content) => {
-                    Self::apply_draft(editor, &draft_content);
+                    self.note_draft_restore_started();
+                    self.apply_draft(
+                        &DraftRestoreTicket::capture(editor, entry),
+                        draft_content,
+                        DraftRestoreTracking::Ordinary,
+                    );
                 }
                 PreloadedDraftRestore::SkipStaleFile => {
                     tracing::warn!(
@@ -434,8 +550,7 @@ impl super::LushtextWindow {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                window.note_draft_restore_finished();
-                window.finish_draft_restore(ticket, result);
+                window.finish_draft_restore(&ticket, result, DraftRestoreTracking::Ordinary);
             },
         );
     }
@@ -479,10 +594,7 @@ impl super::LushtextWindow {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                window.imp().drafts.lazy_restore_inflight.set(false);
-                window.note_draft_restore_finished();
-                window.finish_draft_restore(candidate, result);
-                window.drive_lazy_draft_restore_queue();
+                window.finish_draft_restore(&candidate, result, DraftRestoreTracking::Lazy);
             },
         );
     }
@@ -490,16 +602,19 @@ impl super::LushtextWindow {
     /// Apply one worker result only while its complete editor and manifest ticket is current.
     fn finish_draft_restore(
         &self,
-        ticket: DraftRestoreTicket,
+        ticket: &DraftRestoreTicket,
         result: Result<FileDraftRestoreResolution>,
+        tracking: DraftRestoreTracking,
     ) {
         let Some(editor) = ticket.current_editor(self) else {
+            self.finish_draft_restore_tracking(tracking);
             return;
         };
-        let draft_id = ticket.entry.draft_id;
+        let draft_id = ticket.entry.draft_id.clone();
         match result {
             Ok(FileDraftRestoreResolution::Restore { content }) => {
-                Self::apply_draft(&editor, &content);
+                self.apply_draft(ticket, content, tracking);
+                return;
             }
             Ok(FileDraftRestoreResolution::SkipStale) => {
                 Self::show_stale_draft_skipped(&editor);
@@ -523,21 +638,64 @@ impl super::LushtextWindow {
                 });
             }
         }
+        self.finish_draft_restore_tracking(tracking);
     }
 
-    /// Apply restored draft content to the editor buffer and show the inline alert action.
-    fn apply_draft(editor: &LushtextEditorPage, content: &str) {
+    /// Install restored draft content without publishing partial recovery state.
+    fn apply_draft(
+        &self,
+        ticket: &DraftRestoreTicket,
+        content: String,
+        tracking: DraftRestoreTracking,
+    ) {
+        let Some(editor) = ticket.current_editor(self) else {
+            self.finish_draft_restore_tracking(tracking);
+            return;
+        };
+        let freshness_window = self.downgrade();
+        let terminal_window = self.downgrade();
+        let freshness_ticket = ticket.clone();
+        let terminal_ticket = ticket.clone();
+        editor.replace_buffer_bounded(BufferReplacementRequest::new(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::DraftRecovery,
+                generation: ticket.dirty_generation,
+            },
+            content,
+            move |_| {
+                freshness_window
+                    .upgrade()
+                    .and_then(|window| freshness_ticket.current_editor(&window))
+                    .is_some()
+            },
+            move |outcome| {
+                let Some(window) = terminal_window.upgrade() else {
+                    return;
+                };
+                if let BufferReplacementOutcome::Complete {
+                    ticket:
+                        BufferReplacementTicket {
+                            workflow: BufferReplacementWorkflow::DraftRecovery,
+                            generation,
+                        },
+                    body,
+                    ..
+                } = outcome
+                    && generation == terminal_ticket.dirty_generation
+                    && let Some(editor) = terminal_ticket.current_editor(&window)
+                {
+                    Self::finish_applied_draft(&editor, body);
+                }
+                window.finish_draft_restore_tracking(tracking);
+            },
+        ));
+    }
+
+    fn finish_applied_draft(editor: &LushtextEditorPage, content: String) {
         let buffer = editor.buffer();
-        // Seed local history before mutating the buffer because `set_text()`
-        // can already flip the modified state and trigger the baseline path.
-        // Restored drafts should baseline the restored work, not the stale file.
         editor.seed_local_history_from_restored_draft(content);
-        editor.set_minimap_tracking_suspended(true);
-        buffer.begin_irreversible_action();
-        buffer.set_text(content);
-        buffer.end_irreversible_action();
-        editor.set_minimap_tracking_suspended(false);
         buffer.set_modified(true);
+        editor.capture_restored_draft_baseline();
         if editor.file_path().is_some() {
             editor.mark_entire_buffer_modified();
         } else {
@@ -564,6 +722,16 @@ impl super::LushtextWindow {
                 "Save _As…".to_string()
             }),
         });
+    }
+
+    fn finish_draft_restore_tracking(&self, tracking: DraftRestoreTracking) {
+        if matches!(tracking, DraftRestoreTracking::Lazy) {
+            self.imp().drafts.lazy_restore_inflight.set(false);
+        }
+        self.note_draft_restore_finished();
+        if matches!(tracking, DraftRestoreTracking::Lazy) {
+            self.drive_lazy_draft_restore_queue();
+        }
     }
 
     /// Warn that a file-backed draft was skipped because the file changed on disk.
@@ -622,33 +790,55 @@ impl super::LushtextWindow {
     /// Cleanup is skipped when startup recovery did not trust the manifest,
     /// preventing deletion based on unsafe metadata.
     pub(super) fn schedule_orphan_cleanup(&self, cleanup_allowed: bool) {
-        let window_weak = self.downgrade();
-        // `timeout_add_local_once` schedules a main-thread callback after a
-        // delay and permits non-`Send` GTK captures through the local main loop.
-        glib::timeout_add_local_once(ORPHAN_CLEANUP_START_DELAY, move || {
-            let Some(window) = window_weak.upgrade() else {
-                return;
-            };
-            // Eager strings can be released after the ordinary restore window,
-            // but compact lazy markers must survive slow file loads so they
-            // cannot bypass the serialized admission queue.
-            release_eager_preloads(&mut window.imp().drafts.preloaded.borrow_mut());
-            if !cleanup_allowed {
-                tracing::warn!(
-                    "Skipped draft orphan cleanup because startup recovery did not trust the draft manifest"
-                );
-                return;
-            }
-            window.run_orphan_cleanup_pass(true, 0);
-        });
+        let drafts = &self.imp().drafts;
+        drafts.orphan_cleanup_failure_streak.set(0);
+        drafts.orphan_cleanup_pending_offset.set(None);
+        drafts.orphan_cleanup_timer_pending.set(true);
+        drafts.orphan_cleanup_timer.arm(
+            self,
+            orphan_cleanup_start_delay(),
+            move |window, _| {
+                window
+                    .imp()
+                    .drafts
+                    .orphan_cleanup_timer_pending
+                    .set(false);
+                // Eager strings can be released after the ordinary restore window,
+                // but compact lazy markers must survive slow file loads so they
+                // cannot bypass the serialized admission queue.
+                release_eager_preloads(&mut window.imp().drafts.preloaded.borrow_mut());
+                if !cleanup_allowed {
+                    tracing::warn!(
+                        "Skipped draft orphan cleanup because startup recovery did not trust the draft manifest"
+                    );
+                    return;
+                }
+                window.run_orphan_cleanup_pass(0);
+            },
+        );
     }
 
     /// Run one inspect/execute pass off the GTK thread and merge exact commits.
-    ///
-    /// `allow_followup` limits startup to one later bounded pass. Persistent
-    /// failures remain retryable on disk and visible in diagnostics instead of
-    /// recursively scheduling workers for as long as the app stays open.
-    fn run_orphan_cleanup_pass(&self, allow_followup: bool, manifest_offset: usize) {
+    fn run_orphan_cleanup_pass(&self, manifest_offset: usize) {
+        let drafts = &self.imp().drafts;
+        if drafts.orphan_cleanup_inflight.replace(true) {
+            drafts
+                .orphan_cleanup_pending_offset
+                .set(Some(manifest_offset));
+            return;
+        }
+        #[cfg(feature = "test-utils")]
+        {
+            drafts.orphan_cleanup_workers_started.set(
+                drafts
+                    .orphan_cleanup_workers_started
+                    .get()
+                    .saturating_add(1),
+            );
+            drafts
+                .orphan_cleanup_workers_high_water
+                .set(drafts.orphan_cleanup_workers_high_water.get().max(1));
+        }
         let data_dir = json_store::data_dir();
         // Clone GTK-owned state before dispatch so the worker receives plain
         // owned data and never borrows through the window's interior mutability.
@@ -656,6 +846,7 @@ impl super::LushtextWindow {
         spawn_blocking_then(
             self.clone(),
             move || {
+                delay_orphan_cleanup_worker_for_test();
                 draft_service::inspect_orphan_cleanup_from(&data_dir, &manifest, manifest_offset)
                     .map(|plan| {
                         let mut outcome = draft_service::execute_orphan_cleanup(&data_dir, plan);
@@ -673,42 +864,91 @@ impl super::LushtextWindow {
                         }
                     })
             },
-            move |window, result| match result {
-                Ok(result) => {
-                    let OrphanCleanupUiResult {
-                        outcome,
-                        committed_by_id,
-                    } = result;
-                    // Merge exact generations instead of replacing live state;
-                    // autosaves accepted while the worker ran must survive.
-                    draft_service::merge_committed_orphan_removals(
-                        &mut window.imp().drafts.manifest.borrow_mut(),
-                        &committed_by_id,
-                    );
-                    if !outcome.failures.is_empty() {
-                        let message = orphan_cleanup_failure_message(&outcome.failures);
+            move |window, result| {
+                window.imp().drafts.orphan_cleanup_inflight.set(false);
+                let follow_up = match result {
+                    Ok(result) => {
+                        let OrphanCleanupUiResult {
+                            outcome,
+                            committed_by_id,
+                        } = result;
+                        // Merge exact generations instead of replacing live state;
+                        // autosaves accepted while the worker ran must survive.
+                        draft_service::merge_committed_orphan_removals(
+                            &mut window.imp().drafts.manifest.borrow_mut(),
+                            &committed_by_id,
+                        );
+                        if !outcome.failures.is_empty() {
+                            let message = orphan_cleanup_failure_message(&outcome.failures);
+                            tracing::warn!("{message}");
+                            window.publish_status_message(&message, NotificationSeverity::Warning);
+                        }
+                        orphan_cleanup_follow_up(
+                            outcome.has_more_work,
+                            outcome.next_manifest_offset,
+                            !outcome.failures.is_empty(),
+                            window.imp().drafts.orphan_cleanup_failure_streak.get(),
+                        )
+                    }
+                    Err(error) => {
+                        let message = format!("Draft recovery cleanup scan failed: {error}");
                         tracing::warn!("{message}");
                         window.publish_status_message(&message, NotificationSeverity::Warning);
+                        orphan_cleanup_follow_up(
+                            true,
+                            None,
+                            true,
+                            window.imp().drafts.orphan_cleanup_failure_streak.get(),
+                        )
                     }
-                    if allow_followup && outcome.has_more_work {
-                        // Directory-cap retries have no manifest cursor, so they
-                        // restart the manifest page while directory cleanup advances.
-                        let next_manifest_offset = outcome.next_manifest_offset.unwrap_or(0);
-                        let window_weak = window.downgrade();
-                        glib::timeout_add_local_once(ORPHAN_CLEANUP_FOLLOWUP_DELAY, move || {
-                            if let Some(window) = window_weak.upgrade() {
-                                window.run_orphan_cleanup_pass(false, next_manifest_offset);
-                            }
-                        });
-                    }
-                }
-                Err(error) => {
-                    let message = format!("Draft recovery cleanup scan failed: {error}");
-                    tracing::warn!("{message}");
-                    window.publish_status_message(&message, NotificationSeverity::Warning);
-                }
+                };
+                window.finish_orphan_cleanup_pass(follow_up);
             },
         );
+    }
+
+    fn finish_orphan_cleanup_pass(&self, follow_up: OrphanCleanupFollowUp) {
+        if let Some(manifest_offset) = self.imp().drafts.orphan_cleanup_pending_offset.take() {
+            self.imp().drafts.orphan_cleanup_failure_streak.set(0);
+            self.arm_orphan_cleanup_follow_up(
+                manifest_offset,
+                orphan_cleanup_followup_delay(ORPHAN_CLEANUP_FOLLOWUP_DELAY),
+            );
+            return;
+        }
+
+        match follow_up {
+            OrphanCleanupFollowUp::Stop => {
+                self.imp().drafts.orphan_cleanup_failure_streak.set(0);
+                self.imp().drafts.orphan_cleanup_timer_pending.set(false);
+                let _ = self.imp().drafts.orphan_cleanup_timer.invalidate();
+            }
+            OrphanCleanupFollowUp::Schedule {
+                manifest_offset,
+                delay,
+                next_failure_streak,
+            } => {
+                self.imp()
+                    .drafts
+                    .orphan_cleanup_failure_streak
+                    .set(next_failure_streak);
+                self.arm_orphan_cleanup_follow_up(
+                    manifest_offset,
+                    orphan_cleanup_followup_delay(delay),
+                );
+            }
+        }
+    }
+
+    fn arm_orphan_cleanup_follow_up(&self, manifest_offset: usize, delay: Duration) {
+        self.imp().drafts.orphan_cleanup_timer_pending.set(true);
+        self.imp()
+            .drafts
+            .orphan_cleanup_timer
+            .arm(self, delay, move |window, _| {
+                window.imp().drafts.orphan_cleanup_timer_pending.set(false);
+                window.run_orphan_cleanup_pass(manifest_offset);
+            });
     }
 
     /// Start the global 5-second autosave timer.
@@ -760,6 +1000,30 @@ impl super::LushtextWindow {
     #[must_use]
     pub fn draft_pipeline_max_retained_bodies_for_test(&self) -> usize {
         self.imp().drafts.max_retained_complete_bodies.get()
+    }
+
+    /// Schedule startup orphan cleanup through the production timer owner.
+    #[cfg(feature = "test-utils")]
+    pub fn schedule_orphan_cleanup_for_test(&self, cleanup_allowed: bool) {
+        self.schedule_orphan_cleanup(cleanup_allowed);
+    }
+
+    /// Return scalar orphan-cleanup timer and worker ownership evidence.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn orphan_cleanup_runtime_snapshot_for_test(&self) -> OrphanCleanupRuntimeSnapshot {
+        OrphanCleanupRuntimeSnapshot {
+            timer_pending: self.imp().drafts.orphan_cleanup_timer_pending.get(),
+            worker_active: self.imp().drafts.orphan_cleanup_inflight.get(),
+            workers_started: self.imp().drafts.orphan_cleanup_workers_started.get(),
+            workers_high_water: self.imp().drafts.orphan_cleanup_workers_high_water.get(),
+        }
+    }
+
+    /// Exercise the same orphan-cleanup cancellation used by window disposal.
+    #[cfg(feature = "test-utils")]
+    pub fn dispose_orphan_cleanup_for_test(&self) {
+        self.imp().drafts.dispose_orphan_cleanup();
     }
 
     /// Whether one aggregate-budget draft read is currently active.
@@ -1397,8 +1661,7 @@ impl super::LushtextWindow {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                window.note_draft_restore_finished();
-                window.finish_draft_restore(ticket, result);
+                window.finish_draft_restore(&ticket, result, DraftRestoreTracking::Ordinary);
             },
         );
     }
@@ -1418,7 +1681,22 @@ impl super::LushtextWindow {
         };
         match preloaded {
             PreloadedDraftRestore::Content(draft_content) => {
-                Self::apply_draft(editor, &draft_content);
+                let Some(entry) = self
+                    .imp()
+                    .drafts
+                    .manifest
+                    .borrow()
+                    .find_by_id(&draft_id)
+                    .cloned()
+                else {
+                    return false;
+                };
+                self.note_draft_restore_started();
+                self.apply_draft(
+                    &DraftRestoreTicket::capture(editor, entry),
+                    draft_content,
+                    DraftRestoreTracking::Ordinary,
+                );
             }
             PreloadedDraftRestore::SkipStaleFile => {
                 Self::show_stale_draft_skipped(editor);
@@ -1762,6 +2040,7 @@ mod tests {
         let unrelated = entry("other", 1);
         let mut manifest = DraftManifest {
             drafts: vec![newer.clone(), unrelated.clone()],
+            cleanup_continuation: None,
         };
 
         draft_service::merge_committed_orphan_removals(
@@ -1776,11 +2055,56 @@ mod tests {
     }
 
     #[test]
+    fn orphan_cleanup_follow_up_resumes_manifest_pagination() {
+        assert_eq!(
+            orphan_cleanup_follow_up(true, Some(256), false, 4),
+            OrphanCleanupFollowUp::Schedule {
+                manifest_offset: 256,
+                delay: ORPHAN_CLEANUP_FOLLOWUP_DELAY,
+                next_failure_streak: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn orphan_cleanup_follow_up_restarts_cursorless_failure_from_zero() {
+        assert_eq!(
+            orphan_cleanup_follow_up(true, None, true, 0),
+            OrphanCleanupFollowUp::Schedule {
+                manifest_offset: 0,
+                delay: ORPHAN_CLEANUP_FOLLOWUP_DELAY,
+                next_failure_streak: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn orphan_cleanup_follow_up_caps_failure_backoff() {
+        assert_eq!(
+            orphan_cleanup_follow_up(true, Some(512), true, u32::MAX),
+            OrphanCleanupFollowUp::Schedule {
+                manifest_offset: 512,
+                delay: ORPHAN_CLEANUP_MAX_FAILURE_BACKOFF,
+                next_failure_streak: u32::MAX,
+            }
+        );
+    }
+
+    #[test]
+    fn orphan_cleanup_follow_up_stops_when_has_more_work_is_false() {
+        assert_eq!(
+            orphan_cleanup_follow_up(false, Some(256), true, 8),
+            OrphanCleanupFollowUp::Stop
+        );
+    }
+
+    #[test]
     fn cleanup_merge_removes_matching_generation_and_preserves_additions() {
         let removed = entry("removed", 1);
         let concurrent = entry("concurrent", 2);
         let mut manifest = DraftManifest {
             drafts: vec![removed.clone(), concurrent.clone()],
+            cleanup_continuation: None,
         };
 
         draft_service::merge_committed_orphan_removals(

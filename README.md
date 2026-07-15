@@ -453,8 +453,10 @@ risks that the widget harness cannot honestly prove, use the smoke lanes in
 automation, crash-recovery, portal/sandbox, accessibility, and performance
 smoke coverage.
 
-Benchmarks cover performance-sensitive service code such as fuzzy search, file
-indexing, and directory scanning:
+Benchmarks cover performance-sensitive service code such as bounded command
+palette ranking and cancellation, fuzzy search, file indexing, and directory
+scanning. The palette pipeline baseline and interpretation guide live in
+[`docs/benchmarks/search-pipeline.md`](docs/benchmarks/search-pipeline.md):
 
 ```sh
 make bench

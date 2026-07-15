@@ -33,6 +33,32 @@ pub struct DraftEntry {
 pub struct DraftManifest {
     /// Persisted entries keyed logically by draft ID; `upsert` replaces generations.
     pub drafts: Vec<DraftEntry>,
+    /// Durable bounded-cleanup cursor; absent manifests start a fresh cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_continuation: Option<DraftCleanupContinuation>,
+}
+
+/// Durable lexicographic position for bounded draft-directory cleanup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DraftCleanupContinuation {
+    /// Last filename fully inspected by the accepted cleanup pass.
+    pub last_completed_file_name: String,
+    /// Whether reaching the directory end must start one conservative wrap cycle.
+    #[serde(default)]
+    pub wraparound_pending: bool,
+}
+
+impl DraftCleanupContinuation {
+    /// Reject malformed persisted cursors before they can steer cleanup.
+    #[must_use]
+    pub fn is_trusted(&self) -> bool {
+        let name = self.last_completed_file_name.as_str();
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains(['/', '\0'])
+            && !name.contains('\\')
+    }
 }
 
 /// Preloaded draft-restore data consumed exactly once during startup restore.
@@ -137,6 +163,7 @@ mod tests {
     fn find_by_path_returns_matching_entry() {
         let manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs")), entry("def", Some("/b.rs"))],
+            cleanup_continuation: None,
         };
         assert_eq!(
             manifest.find_by_path(std::path::Path::new("/b.rs")),
@@ -148,6 +175,7 @@ mod tests {
     fn find_by_path_returns_none_for_missing() {
         let manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs"))],
+            cleanup_continuation: None,
         };
         assert_eq!(
             manifest.find_by_path(std::path::Path::new("/missing.rs")),
@@ -159,6 +187,7 @@ mod tests {
     fn find_by_id_returns_matching_entry() {
         let manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs"))],
+            cleanup_continuation: None,
         };
         assert_eq!(
             manifest.find_by_id("abc"),
@@ -170,6 +199,7 @@ mod tests {
     fn remove_by_id_removes_and_returns_true() {
         let mut manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs")), entry("def", Some("/b.rs"))],
+            cleanup_continuation: None,
         };
         assert!(manifest.remove_by_id("abc"));
         assert_eq!(manifest.drafts.len(), 1);
@@ -180,6 +210,7 @@ mod tests {
     fn remove_by_id_returns_false_for_missing() {
         let mut manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs"))],
+            cleanup_continuation: None,
         };
         assert!(!manifest.remove_by_id("missing"));
         assert_eq!(manifest.drafts.len(), 1);
@@ -189,6 +220,7 @@ mod tests {
     fn remove_by_path_removes_matching_entry() {
         let mut manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs")), entry("def", Some("/b.rs"))],
+            cleanup_continuation: None,
         };
         assert!(manifest.remove_by_path(std::path::Path::new("/a.rs")));
         assert_eq!(manifest.drafts.len(), 1);
@@ -199,6 +231,7 @@ mod tests {
     fn remove_by_path_returns_false_and_preserves_entries_when_missing() {
         let mut manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs")), entry("untitled-1", None)],
+            cleanup_continuation: None,
         };
 
         assert!(!manifest.remove_by_path(std::path::Path::new("/missing.rs")));
@@ -219,6 +252,7 @@ mod tests {
     fn upsert_replaces_existing_entry() {
         let mut manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs"))],
+            cleanup_continuation: None,
         };
         let updated = DraftEntry {
             draft_id: "abc".to_string(),
@@ -241,6 +275,7 @@ mod tests {
     fn serialization_roundtrip() {
         let manifest = DraftManifest {
             drafts: vec![entry("abc", Some("/a.rs")), entry("untitled-1", None)],
+            cleanup_continuation: None,
         };
         let json = serde_json::to_string(&manifest).expect("expected operation to succeed");
         let deserialized: DraftManifest =
@@ -249,9 +284,52 @@ mod tests {
     }
 
     #[test]
+    fn legacy_manifest_without_cleanup_continuation_stays_compatible() {
+        let deserialized: DraftManifest = serde_json::from_str(r#"{"drafts":[]}"#)
+            .expect("legacy manifest should remain readable");
+
+        assert_eq!(deserialized, DraftManifest::default());
+    }
+
+    #[test]
+    fn cleanup_continuation_roundtrips_in_the_v1_payload() {
+        let manifest = DraftManifest {
+            drafts: vec![entry("abc", Some("/a.rs"))],
+            cleanup_continuation: Some(DraftCleanupContinuation {
+                last_completed_file_name: "abc.draft".to_string(),
+                wraparound_pending: true,
+            }),
+        };
+
+        let json = serde_json::to_string(&manifest).expect("serialize continuation");
+        let deserialized =
+            serde_json::from_str::<DraftManifest>(&json).expect("deserialize continuation");
+
+        assert_eq!(deserialized, manifest);
+        assert!(
+            deserialized
+                .cleanup_continuation
+                .as_ref()
+                .is_some_and(DraftCleanupContinuation::is_trusted)
+        );
+    }
+
+    #[test]
+    fn malformed_cleanup_continuation_is_not_trusted() {
+        assert!(
+            !DraftCleanupContinuation {
+                last_completed_file_name: "../draft".to_string(),
+                wraparound_pending: true,
+            }
+            .is_trusted()
+        );
+    }
+
+    #[test]
     fn find_by_path_skips_untitled_entries() {
         let manifest = DraftManifest {
             drafts: vec![entry("untitled-1", None), entry("abc", Some("/a.rs"))],
+            cleanup_continuation: None,
         };
         assert_eq!(
             manifest.find_by_path(std::path::Path::new("/a.rs")),

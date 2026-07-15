@@ -121,6 +121,9 @@ impl LushtextEditorPage {
             let editor_weak = self.downgrade();
             let handler_id = buffer.connect_changed(move |_| {
                 if let Some(editor) = editor_weak.upgrade() {
+                    if editor.load_projection_suspended() {
+                        return;
+                    }
                     editor.center_cursor_for_focus_mode();
                 }
             });

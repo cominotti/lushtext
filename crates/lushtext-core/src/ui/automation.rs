@@ -23,12 +23,13 @@ use crate::model::automation::{
     AutomationVisualScrollAnchorSnapshot, AutomationVisualSize, AutomationVisualSurfaceSnapshot,
     AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot, AutomationWorkflowObservation,
     AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
-    READINESS_BLOCKER_COMMAND_PALETTE_INDEX, READINESS_BLOCKER_DRAFT_AUTOSAVE,
-    READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
+    READINESS_BLOCKER_COMMAND_PALETTE_INDEX, READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
+    READINESS_BLOCKER_DRAFT_AUTOSAVE, READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
 use crate::model::palette::SearchMode;
 use crate::model::workspace::WorkspaceScope;
@@ -47,7 +48,7 @@ use gtk4::prelude::*;
 use std::time::{Duration, Instant};
 
 /// Stable interface version for the first automation contract.
-pub const INTERFACE_VERSION: u32 = 1;
+pub const INTERFACE_VERSION: u32 = 2;
 /// D-Bus interface name exposed by the app-owned automation object.
 pub const INTERFACE_NAME: &str = "dev.cominotti.lushtext.Automation1";
 /// Child object path segment appended to the normal application object path.
@@ -711,7 +712,16 @@ fn window_readiness_blocker(
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.command_palette.pending_index_update_count() > 0,
+        imp.command_palette.is_searching(),
+        READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
+    ) {
+        return Some(blocker);
+    }
+    if let Some(blocker) = included_blocker(
+        predicate,
+        imp.command_palette.pending_index_update_count() > 0
+            || imp.file_index_builds.borrow().has_work()
+            || imp.command_palette_note_refreshes.borrow().has_work(),
         READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
     ) {
         return Some(blocker);
@@ -720,6 +730,13 @@ fn window_readiness_blocker(
         predicate,
         imp.search_panel.replace_preview_pending(),
         READINESS_BLOCKER_REPLACE_PREVIEW,
+    ) {
+        return Some(blocker);
+    }
+    if let Some(blocker) = included_blocker(
+        predicate,
+        imp.sidebar.workspace_refresh_blocks_readiness(),
+        READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     ) {
         return Some(blocker);
     }
@@ -888,6 +905,7 @@ fn command_palette_snapshot(window: &LushtextWindow) -> AutomationCommandPalette
 
     AutomationCommandPaletteSnapshot {
         visible: imp.palette_revealer.reveals_child(),
+        searching: imp.command_palette.is_searching(),
         query: bounded_snapshot_text(imp.command_palette.query()),
         mode: search_mode_name(imp.command_palette.mode()).to_string(),
         result_count: imp.command_palette.result_count(),
@@ -960,7 +978,7 @@ fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSn
         file_count: search_panel.total_files(),
         match_count: search_panel.total_matches(),
         result_capped: search_panel.result_capped(),
-        replace_query: bounded_snapshot_text(search_panel.replace_query()),
+        replace_query_present: !search_panel.replace_query().is_empty(),
         replace_preview_mode: search_panel.replace_preview_mode(),
         replace_preview_pending: search_panel.replace_preview_pending(),
         replace_preview_count: search_panel.replace_preview_count(),

@@ -45,15 +45,26 @@ pub use drafts::DraftFlushError;
 pub use documents::set_canonical_refresh_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use drafts::{
-    fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
-    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
-    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test,
+    OrphanCleanupRuntimeSnapshot, fail_next_draft_mutations_for_test,
+    set_automatic_draft_limit_for_test, set_draft_manifest_completion_delay_for_test,
+    set_draft_mutation_delays_for_test, set_draft_restore_delay_for_test,
+    set_first_dirty_autosave_delay_for_test, set_lazy_draft_read_delay_for_test,
+    set_orphan_cleanup_delays_for_test,
 };
 #[cfg(feature = "test-utils")]
 pub use encoding::set_lossy_encoding_analysis_delay_for_test;
 #[cfg(feature = "test-utils")]
-pub use notes::set_bookmark_excerpt_preview_delay_for_test;
+pub use local_history::{
+    LocalHistoryPreviewInstallSnapshot, local_history_preview_install_snapshot_for_test,
+    set_local_history_preview_install_delay_for_test,
+    set_local_history_preview_read_delay_for_test,
+};
+#[cfg(feature = "test-utils")]
+pub use notes::{
+    NotesBrowserRuntimeSnapshot, set_bookmark_excerpt_preview_delay_for_test,
+    set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
+    set_notes_browser_source_entry_limit_for_test,
+};
 #[cfg(feature = "test-utils")]
 pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
 

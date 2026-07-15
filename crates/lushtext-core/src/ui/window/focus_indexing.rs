@@ -7,6 +7,7 @@
 //! crosses to background work through the task adapter.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -17,10 +18,13 @@ use gtk4::prelude::*;
 use crate::model::editor_memory::{
     EditorMemoryBudgetOutcome, EditorResidency, evaluate_editor_memory_budget,
 };
-use crate::model::palette::{PaletteFileEntry, SearchMode};
-use crate::services::palette::FileIndex;
+use crate::model::palette::{
+    PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
+};
+use crate::services::palette::{FileIndexBuildOutcome, FileIndexBuildRequest, FileIndexBuildStart};
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
 
@@ -332,13 +336,7 @@ impl LushtextWindow {
                 let editor_id = editor.as_ptr() as usize;
                 let active = selected.as_ref() == Some(&page);
                 // Every uncertain or non-recoverable state stays protected.
-                let eligible_for_eviction = !active
-                    && !editor.is_evicted()
-                    && !editor.is_modified()
-                    && !editor.is_saving()
-                    && editor.load_state() == crate::ui::editor_page::EditorLoadState::Loaded
-                    && !editor.latest_load_failed()
-                    && editor.file_path().is_some();
+                let eligible_for_eviction = editor.eligible_for_memory_eviction(active);
                 snapshot.push(EditorResidency {
                     editor_id,
                     estimated_bytes: editor.estimated_live_buffer_bytes(),
@@ -425,19 +423,23 @@ impl LushtextWindow {
                 let still_current = editor.memory_access_generation()
                     == candidate.access_generation
                     && editor.memory_policy_generation() == candidate.policy_generation;
-                let still_reloadable = !still_active
-                    && !editor.is_evicted()
-                    && !editor.is_modified()
-                    && !editor.is_saving()
-                    && editor.load_state() == crate::ui::editor_page::EditorLoadState::Loaded
-                    && !editor.latest_load_failed()
-                    && editor.file_path().is_some();
+                let still_reloadable = editor.eligible_for_memory_eviction(still_active);
                 if still_attached && same_child && still_current && still_reloadable {
                     tracing::info!("Evicting tab to free memory: {}", editor.title());
                     let before = editor.estimated_live_buffer_bytes();
                     memory.applying_eviction.set(true);
                     editor.evict();
                     memory.applying_eviction.set(false);
+                    if editor.buffer_replacement_in_progress() {
+                        // A document-sized clear owns later GTK slices. Stop
+                        // this pass until its terminal memory notification
+                        // resnapshots residency and eligibility.
+                        memory
+                            .last_outcome
+                            .set(EditorMemoryBudgetOutcome::NoProgress);
+                        memory.evaluation_running.set(false);
+                        return glib::ControlFlow::Break;
+                    }
                     #[cfg(feature = "test-utils")]
                     if let Some(hook) = memory.after_eviction_hook.borrow_mut().take() {
                         hook();
@@ -515,36 +517,79 @@ impl LushtextWindow {
         self.imp().index_rebuild_debounce.schedule(
             self,
             std::time::Duration::from_millis(300),
-            move |window, token| {
-                let prev_count = window.imp().command_palette.file_index_len();
-                let folders = window.current_workspace_folder_paths();
-                let window_weak = window.downgrade();
-                spawn_blocking_then(
-                    (),
-                    move || {
-                        if prev_count == 0 {
-                            FileIndex::rebuild(&folders)
-                        } else {
-                            FileIndex::rebuild_with_hint(&folders, prev_count)
-                        }
-                    },
-                    move |(), index| {
-                        if let Some(window) = window_weak.upgrade() {
-                            if !window.imp().index_rebuild_debounce.is_current(token) {
-                                return;
-                            }
-                            let indexed_files = index.len();
-                            window.imp().command_palette.set_file_index(index);
-                            window.announce_workflow_update(
-                                AnnouncementLane::ProgressMilestone,
-                                "workspace-file-index-updated",
-                                &format!("Workspace file index updated with {indexed_files} files"),
-                            );
-                        }
-                    },
-                );
+            move |window, _| {
+                let request = FileIndexBuildRequest {
+                    workspace_folders: Arc::from(window.current_workspace_folder_paths()),
+                    capacity_hint: window.imp().command_palette.file_index_len().max(64),
+                };
+                let start = window.imp().file_index_builds.borrow_mut().submit(request);
+                if let Some(start) = start {
+                    window.start_file_index_build(start);
+                }
             },
         );
+    }
+
+    fn start_file_index_build(&self, start: FileIndexBuildStart) {
+        let FileIndexBuildStart {
+            generation,
+            request,
+            cancellation,
+        } = start;
+        let window_weak = self.downgrade();
+        spawn_blocking_then(
+            (),
+            move || {
+                crate::services::palette::FileIndex::rebuild_cancellable_with_hint(
+                    &request.workspace_folders,
+                    request.capacity_hint,
+                    &cancellation,
+                )
+            },
+            move |(), outcome| {
+                let Some(window) = window_weak.upgrade() else {
+                    retire_file_index_outcome(outcome);
+                    return;
+                };
+                window.finish_file_index_build(generation, outcome);
+            },
+        );
+    }
+
+    fn finish_file_index_build(&self, generation: u64, outcome: FileIndexBuildOutcome) {
+        let (accepted, next) = {
+            let mut builds = self.imp().file_index_builds.borrow_mut();
+            let accepted = builds.is_current(generation);
+            let next = builds.finish(generation);
+            (accepted, next)
+        };
+
+        if accepted {
+            match outcome {
+                FileIndexBuildOutcome::Complete { index, metrics } => {
+                    let indexed_files = index.len();
+                    self.imp().command_palette.set_file_index(index);
+                    self.announce_workflow_update(
+                        AnnouncementLane::ProgressMilestone,
+                        "workspace-file-index-updated",
+                        &format!("Workspace file index updated with {indexed_files} files"),
+                    );
+                    if metrics.truncation.is_some() {
+                        self.publish_status_message(
+                            &format!("Workspace file index limited to {indexed_files} entries"),
+                            MessageKind::Warning,
+                        );
+                    }
+                }
+                FileIndexBuildOutcome::Cancelled { .. } => {}
+            }
+        } else {
+            retire_file_index_outcome(outcome);
+        }
+
+        if let Some(next) = next {
+            self.start_file_index_build(next);
+        }
     }
 
     /// Refresh command-palette source metadata owned by the window shell.
@@ -572,6 +617,10 @@ impl LushtextWindow {
                     editor.title(),
                     path.display().to_string(),
                     path,
+                    editor.canonical_file_path().map_or(
+                        PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::NotResolved),
+                        PaletteFileIdentity::canonical,
+                    ),
                 ));
             }
         }
@@ -586,5 +635,11 @@ impl LushtextWindow {
         } else {
             "Selected Workspace"
         }
+    }
+}
+
+fn retire_file_index_outcome(outcome: FileIndexBuildOutcome) {
+    if let FileIndexBuildOutcome::Complete { index, .. } = outcome {
+        spawn_blocking_then((), move || drop(index), |(), ()| {});
     }
 }

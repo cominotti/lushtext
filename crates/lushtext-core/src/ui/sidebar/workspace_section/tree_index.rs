@@ -6,6 +6,7 @@
 //! behavior so rename/delete/drill-down flows do not need to interleave with
 //! cache maintenance details.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -15,6 +16,7 @@ use gtk4::{gio, glib};
 use super::super::file_tree_item::FileTreeItem;
 use super::imp::ItemLocation;
 use super::{LushtextWorkspaceSection, tree_loading};
+use crate::services::file_tree::DirectoryRowState;
 
 impl LushtextWorkspaceSection {
     pub(super) fn save_expanded_paths(&self) {
@@ -102,27 +104,44 @@ impl LushtextWorkspaceSection {
     /// Rebuild the direct-child cache for one directory from the current
     /// `ListStore` contents after a refresh splice.
     pub(super) fn recache_child_store(&self, parent_dir: &Path, store: &gio::ListStore) {
-        let old_paths = self
-            .imp()
-            .child_paths
-            .borrow_mut()
-            .remove(parent_dir)
-            .unwrap_or_default();
-        for path in old_paths {
-            self.forget_visible_path_occurrence(&path);
-        }
-        self.imp()
-            .item_locations
-            .borrow_mut()
-            .retain(|_, location| location.parent_dir.as_deref() != Some(parent_dir));
+        let rows = (0..store.n_items())
+            .filter_map(|index| store.item(index).and_downcast::<FileTreeItem>())
+            .map(|item| DirectoryRowState {
+                path: item.path(),
+                is_dir: item.is_dir(),
+                is_empty: item.is_empty(),
+                is_placeholder: item.is_placeholder(),
+            })
+            .collect::<Vec<_>>();
+        self.recache_child_rows_from_mirror(parent_dir, &rows);
+    }
 
-        for index in 0..store.n_items() {
-            if let Some(item) = store.item(index).and_downcast::<FileTreeItem>()
-                && let Some(path) = item.path()
-            {
-                self.cache_child_item(parent_dir, path, index as usize);
-            }
-        }
+    /// Rebuild direct-child path caches from the accepted plain store mirror.
+    pub(super) fn recache_child_rows_from_mirror(
+        &self,
+        parent_dir: &Path,
+        rows: &[DirectoryRowState],
+    ) {
+        let new_occurrences = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row.path.clone().map(|path| (index, path)))
+            .collect::<Vec<_>>();
+        let imp = self.imp();
+        let metrics = replace_child_cache(
+            &imp.folder_paths.borrow(),
+            &mut imp.child_paths.borrow_mut(),
+            &mut imp.visible_path_counts.borrow_mut(),
+            &mut imp.item_locations.borrow_mut(),
+            parent_dir,
+            &new_occurrences,
+        );
+        imp.refresh_runtime
+            .cache_rebuild_input_rows
+            .set(metrics.input_rows);
+        imp.refresh_runtime
+            .cache_rebuild_operations
+            .set(metrics.operations);
     }
 
     pub(super) fn rename_cached_item(&self, old_path: &Path, new_path: &Path) {
@@ -145,6 +164,11 @@ impl LushtextWorkspaceSection {
             }
         }
 
+        if let Some(parent_dir) = location.parent_dir.as_deref()
+            && let Some(store) = self.find_store_for_dir(parent_dir)
+        {
+            tree_loading::record_child_store_path_update(self, &store, location.index, new_path);
+        }
         self.forget_visible_path_occurrence(old_path);
         self.cache_item_location(new_path.to_path_buf(), location);
     }
@@ -168,6 +192,12 @@ impl LushtextWorkspaceSection {
         } else {
             store.insert(insert_pos, item);
         }
+        tree_loading::record_child_store_insert(
+            self,
+            store,
+            insert_pos as usize,
+            std::slice::from_ref(item),
+        );
 
         if let Some(path) = item.path() {
             self.cache_child_item(parent_dir, path, insert_pos as usize);
@@ -258,6 +288,7 @@ impl LushtextWorkspaceSection {
                         && idx < store.n_items() =>
                 {
                     store.remove(idx);
+                    tree_loading::record_child_store_remove(self, &store, idx as usize, 1);
                     removed_any = true;
                 }
                 _ => {}
@@ -266,7 +297,7 @@ impl LushtextWorkspaceSection {
 
         if may_have_multiple_visible_rows || !removed_any {
             if let Some(ref top_level_store) = *imp.top_level_store.borrow()
-                && remove_matching_items(top_level_store, target_path)
+                && remove_matching_items(self, top_level_store, target_path, false)
             {
                 self.recache_top_level_store(top_level_store);
                 removed_any = true;
@@ -284,7 +315,7 @@ impl LushtextWorkspaceSection {
                 .collect::<Vec<_>>();
 
             for (parent_dir, store) in child_stores {
-                if remove_matching_items(&store, target_path) {
+                if remove_matching_items(self, &store, target_path, true) {
                     self.recache_child_store(&parent_dir, &store);
                     removed_any = true;
                 }
@@ -292,7 +323,7 @@ impl LushtextWorkspaceSection {
 
             if !removed_any {
                 for (parent_dir, store) in self.visible_child_stores() {
-                    if remove_matching_items(&store, target_path) {
+                    if remove_matching_items(self, &store, target_path, true) {
                         self.recache_child_store(&parent_dir, &store);
                         removed_any = true;
                     }
@@ -478,7 +509,177 @@ impl LushtextWorkspaceSection {
     }
 }
 
-fn remove_matching_items(store: &gio::ListStore, target_path: &Path) -> bool {
+/// Atomically replace one accepted child mirror's cache projection.
+///
+/// Old and new sibling rows are each visited a bounded number of times. A
+/// duplicate path that becomes globally unique may require one linear pass over
+/// the other already-materialized rows to recover its sole location; crucially,
+/// that recovery is shared rather than repeated once per inserted row.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ChildCacheRebuildMetrics {
+    input_rows: usize,
+    operations: usize,
+}
+
+fn replace_child_cache(
+    folder_paths: &[PathBuf],
+    child_paths: &mut HashMap<PathBuf, Vec<PathBuf>>,
+    visible_path_counts: &mut HashMap<PathBuf, usize>,
+    item_locations: &mut HashMap<PathBuf, ItemLocation>,
+    parent_dir: &Path,
+    new_occurrences: &[(usize, PathBuf)],
+) -> ChildCacheRebuildMetrics {
+    let old_paths = child_paths.remove(parent_dir).unwrap_or_default();
+    let input_rows = old_paths.len().saturating_add(new_occurrences.len());
+    let mut operations = old_paths.len();
+    let new_paths = new_occurrences
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect::<Vec<_>>();
+    operations = operations.saturating_add(new_occurrences.len());
+
+    let mut old_counts = HashMap::<PathBuf, usize>::new();
+    for path in old_paths {
+        *old_counts.entry(path).or_default() += 1;
+    }
+    let mut new_counts = HashMap::<PathBuf, usize>::new();
+    for (_, path) in new_occurrences {
+        *new_counts.entry(path.clone()).or_default() += 1;
+    }
+    operations = operations.saturating_add(new_occurrences.len());
+    let affected = old_counts
+        .keys()
+        .chain(new_counts.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    for path in &affected {
+        let previous = visible_path_counts.get(path).copied().unwrap_or(0);
+        let next = previous
+            .saturating_sub(old_counts.get(path).copied().unwrap_or(0))
+            .saturating_add(new_counts.get(path).copied().unwrap_or(0));
+        if next == 0 {
+            visible_path_counts.remove(path);
+        } else {
+            visible_path_counts.insert(path.clone(), next);
+        }
+    }
+    operations = operations.saturating_add(affected.len());
+
+    for path in &affected {
+        item_locations.remove(path);
+    }
+    operations = operations.saturating_add(affected.len());
+    if !new_paths.is_empty() {
+        child_paths.insert(parent_dir.to_path_buf(), new_paths);
+    }
+
+    let mut unresolved_unique = affected
+        .into_iter()
+        .filter(|path| visible_path_counts.get(path) == Some(&1))
+        .collect::<HashSet<_>>();
+    operations = operations.saturating_add(old_counts.len().saturating_add(new_counts.len()));
+    for (index, path) in new_occurrences {
+        if unresolved_unique.remove(path) {
+            item_locations.insert(
+                path.clone(),
+                ItemLocation {
+                    parent_dir: Some(parent_dir.to_path_buf()),
+                    index: *index,
+                },
+            );
+        }
+    }
+    operations = operations.saturating_add(new_occurrences.len());
+
+    if unresolved_unique.is_empty() {
+        return ChildCacheRebuildMetrics {
+            input_rows,
+            operations,
+        };
+    }
+    for (index, path) in folder_paths.iter().enumerate() {
+        operations = operations.saturating_add(1);
+        if unresolved_unique.remove(path) {
+            item_locations.insert(
+                path.clone(),
+                ItemLocation {
+                    parent_dir: None,
+                    index,
+                },
+            );
+        }
+    }
+    for (other_parent, siblings) in child_paths.iter() {
+        if other_parent == parent_dir || unresolved_unique.is_empty() {
+            continue;
+        }
+        for (index, path) in siblings.iter().enumerate() {
+            operations = operations.saturating_add(1);
+            if unresolved_unique.remove(path) {
+                item_locations.insert(
+                    path.clone(),
+                    ItemLocation {
+                        parent_dir: Some(other_parent.clone()),
+                        index,
+                    },
+                );
+            }
+        }
+    }
+    debug_assert!(
+        unresolved_unique.is_empty(),
+        "visible occurrence counts must resolve every globally unique path"
+    );
+    ChildCacheRebuildMetrics {
+        input_rows,
+        operations,
+    }
+}
+
+pub(super) fn child_cache_rebuild_operation_evidence(row_count: usize) -> (usize, usize) {
+    let parent = PathBuf::from("/benchmark/parent");
+    let old_paths = (0..row_count)
+        .map(|index| PathBuf::from(format!("/benchmark/old-{index}")))
+        .collect::<Vec<_>>();
+    let new_occurrences = (0..row_count)
+        .map(|index| (index, PathBuf::from(format!("/benchmark/new-{index}"))))
+        .collect::<Vec<_>>();
+    let mut child_paths = HashMap::from([(parent.clone(), old_paths.clone())]);
+    let mut visible_path_counts = old_paths
+        .iter()
+        .map(|path| (path.clone(), 1usize))
+        .collect::<HashMap<_, _>>();
+    let mut item_locations = old_paths
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| {
+            (
+                path,
+                ItemLocation {
+                    parent_dir: Some(parent.clone()),
+                    index,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let metrics = replace_child_cache(
+        &[],
+        &mut child_paths,
+        &mut visible_path_counts,
+        &mut item_locations,
+        &parent,
+        &new_occurrences,
+    );
+    (metrics.input_rows, metrics.operations)
+}
+
+fn remove_matching_items(
+    section: &LushtextWorkspaceSection,
+    store: &gio::ListStore,
+    target_path: &Path,
+    child_store: bool,
+) -> bool {
     let mut removed_any = false;
     // Remove from the tail so each deletion cannot shift an unvisited row's index.
     for index in (0..store.n_items()).rev() {
@@ -486,8 +687,137 @@ fn remove_matching_items(store: &gio::ListStore, target_path: &Path) -> bool {
             && item.path().as_deref() == Some(target_path)
         {
             store.remove(index);
+            if child_store {
+                tree_loading::record_child_store_remove(section, store, index as usize, 1);
+            }
             removed_any = true;
         }
     }
     removed_any
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn test_path(id: u8) -> PathBuf {
+        PathBuf::from(format!("/workspace/path-{id}"))
+    }
+
+    fn oracle(
+        folder_paths: &[PathBuf],
+        child_rows: &[(PathBuf, Vec<(usize, PathBuf)>)],
+    ) -> (HashMap<PathBuf, usize>, HashMap<PathBuf, ItemLocation>) {
+        let mut occurrences = HashMap::<PathBuf, Vec<ItemLocation>>::new();
+        for (index, path) in folder_paths.iter().enumerate() {
+            occurrences
+                .entry(path.clone())
+                .or_default()
+                .push(ItemLocation {
+                    parent_dir: None,
+                    index,
+                });
+        }
+        for (parent, rows) in child_rows {
+            for (index, path) in rows {
+                occurrences
+                    .entry(path.clone())
+                    .or_default()
+                    .push(ItemLocation {
+                        parent_dir: Some(parent.clone()),
+                        index: *index,
+                    });
+            }
+        }
+        let counts = occurrences
+            .iter()
+            .map(|(path, locations)| (path.clone(), locations.len()))
+            .collect();
+        let locations = occurrences
+            .into_iter()
+            .filter_map(|(path, locations)| {
+                (locations.len() == 1).then(|| (path, locations[0].clone()))
+            })
+            .collect();
+        (counts, locations)
+    }
+
+    proptest! {
+        #[test]
+        fn bulk_child_cache_matches_occurrence_oracle_across_duplicates_and_reorders(
+            folder_ids in prop::collection::vec(0u8..8, 0..12),
+            other_ids in prop::collection::vec(0u8..8, 0..24),
+            old_ids in prop::collection::vec(prop::option::of(0u8..8), 0..40),
+            new_ids in prop::collection::vec(prop::option::of(0u8..8), 0..40),
+        ) {
+            let parent = PathBuf::from("/workspace/parent");
+            let other_parent = PathBuf::from("/workspace/other");
+            let folder_paths = folder_ids.into_iter().map(test_path).collect::<Vec<_>>();
+            let old_rows = old_ids
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, id)| id.map(|id| (index, test_path(id))))
+                .collect::<Vec<_>>();
+            let new_rows = new_ids
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, id)| id.map(|id| (index, test_path(id))))
+                .collect::<Vec<_>>();
+            let other_rows = other_ids
+                .into_iter()
+                .enumerate()
+                .map(|(index, id)| (index, test_path(id)))
+                .collect::<Vec<_>>();
+
+            let (mut counts, mut locations) = oracle(
+                &folder_paths,
+                &[
+                    (parent.clone(), old_rows.clone()),
+                    (other_parent.clone(), other_rows.clone()),
+                ],
+            );
+            let mut child_paths = HashMap::from([
+                (
+                    parent.clone(),
+                    old_rows.iter().map(|(_, path)| path.clone()).collect(),
+                ),
+                (
+                    other_parent.clone(),
+                    other_rows.iter().map(|(_, path)| path.clone()).collect(),
+                ),
+            ]);
+
+            replace_child_cache(
+                &folder_paths,
+                &mut child_paths,
+                &mut counts,
+                &mut locations,
+                &parent,
+                &new_rows,
+            );
+
+            let (expected_counts, expected_locations) = oracle(
+                &folder_paths,
+                &[
+                    (parent.clone(), new_rows.clone()),
+                    (other_parent.clone(), other_rows.clone()),
+                ],
+            );
+            prop_assert_eq!(counts, expected_counts);
+            prop_assert_eq!(locations, expected_locations);
+            prop_assert_eq!(
+                child_paths.get(&other_parent),
+                Some(&other_rows.iter().map(|(_, path)| path.clone()).collect::<Vec<_>>())
+            );
+            if new_rows.is_empty() {
+                prop_assert!(!child_paths.contains_key(&parent));
+            } else {
+                prop_assert_eq!(
+                    child_paths.get(&parent),
+                    Some(&new_rows.iter().map(|(_, path)| path.clone()).collect::<Vec<_>>())
+                );
+            }
+        }
+    }
 }

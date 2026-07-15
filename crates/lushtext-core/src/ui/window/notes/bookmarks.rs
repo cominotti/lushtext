@@ -23,6 +23,7 @@ use crate::ui::editor_page::{
 };
 use crate::ui::status_bar::MessageKind;
 
+use super::browser::NotesBrowserEntryExt;
 use super::{
     LushtextWindow, NOTES_BROWSER_RENDER_LIMIT, NOTES_PREVIEW_RAW_CHILD, NotesBrowserEntry,
     NotesBrowserState, browser_content_box, build_browser_dialog, build_dialog_close_button,
@@ -457,7 +458,7 @@ impl NotesBrowserState {
         entry: &NotesBrowserEntry,
         generation: u32,
     ) {
-        let PaletteNoteTarget::Bookmark { path, line, .. } = &entry.note.target else {
+        let PaletteNoteTarget::Bookmark { path, line, .. } = &entry.target else {
             return;
         };
 
@@ -511,7 +512,8 @@ impl NotesBrowserState {
         let Some(entry_index) = self.selected_entry_index() else {
             return;
         };
-        let Some(entry) = self.all_entries.get(entry_index) else {
+        let all_entries = self.all_entries.borrow();
+        let Some(entry) = all_entries.get(entry_index) else {
             return;
         };
         self.render_bookmark_excerpt_state(entry, result);
@@ -567,7 +569,10 @@ impl NotesBrowserState {
             return false;
         };
         matches!(
-            self.all_entries.get(entry_index).map(|entry| &entry.note.target),
+            self.all_entries
+                .borrow()
+                .get(entry_index)
+                .map(|entry| &entry.target),
             Some(PaletteNoteTarget::Bookmark {
                 path: selected_path,
                 line: selected_line,

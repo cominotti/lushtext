@@ -17,8 +17,8 @@ pub mod types;
 pub mod write;
 
 pub use types::{
-    DirectoryEntryInfo, DirectoryScanPolicy, FileFacts, FileKind, FileSnapshot, MutationOutcome,
-    PathStatus, WriteLabel,
+    DirectoryEntryInfo, DirectoryPage, DirectoryScanPolicy, FileFacts, FileIdentity, FileKind,
+    FileSnapshot, MutationOutcome, PathStatus, WriteLabel,
 };
 
 #[cfg(test)]
@@ -55,6 +55,48 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file_name, "visible.txt");
+    }
+
+    #[test]
+    fn directory_page_retains_only_the_next_lexicographic_rows() {
+        let dir = TempDir::new().expect("temp dir");
+        for name in ["delta", "alpha", "echo", "charlie", "bravo"] {
+            fixture::write_text(&dir.path().join(name), "");
+        }
+
+        let page = tree::scan_directory_page_after(
+            dir.path(),
+            Some("alpha"),
+            DirectoryScanPolicy {
+                max_entries: 2,
+                include_hidden: false,
+            },
+        )
+        .expect("scan directory page");
+
+        assert_eq!(
+            page.entries
+                .iter()
+                .map(|entry| entry.file_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bravo", "charlie"]
+        );
+        assert!(page.has_more);
+        assert!(!page.wrapped);
+
+        let wrapped = tree::scan_directory_page(
+            dir.path(),
+            Some("zulu"),
+            true,
+            DirectoryScanPolicy {
+                max_entries: 2,
+                include_hidden: false,
+            },
+        )
+        .expect("scan wrapped directory page");
+        assert!(wrapped.wrapped);
+        assert_eq!(wrapped.entries[0].file_name, "alpha");
+        assert!(wrapped.has_more);
     }
 
     #[test]

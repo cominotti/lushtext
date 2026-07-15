@@ -111,6 +111,13 @@ pub(super) fn setup_bookmark_projection(editor: &LushtextEditorPage) {
 /// Return a pure-model snapshot of the current live bookmark marks.
 #[must_use]
 pub(super) fn bookmark_records(editor: &LushtextEditorPage) -> Vec<BookmarkRecord> {
+    bookmark_records_bounded(editor, usize::MAX)
+}
+
+pub(super) fn bookmark_records_bounded(
+    editor: &LushtextEditorPage,
+    max_records: usize,
+) -> Vec<BookmarkRecord> {
     let mut bookmarks: Vec<BookmarkRecord> = editor
         .imp()
         .bookmarks
@@ -124,6 +131,7 @@ pub(super) fn bookmark_records(editor: &LushtextEditorPage) -> Vec<BookmarkRecor
                 record
             })
         })
+        .take(max_records)
         .collect();
     bookmarks.sort_by(|left, right| {
         left.line

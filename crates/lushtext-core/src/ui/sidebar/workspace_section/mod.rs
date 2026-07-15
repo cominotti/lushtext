@@ -575,6 +575,13 @@ pub(super) fn sync_file_row_state_for_overlay(
     apply_file_row_visual_state(overlay, state);
 }
 
+/// Exercise the production bulk child-cache reducer without constructing GTK.
+#[doc(hidden)]
+#[must_use]
+pub fn child_cache_rebuild_operation_evidence_for_benchmark(row_count: usize) -> (usize, usize) {
+    tree_index::child_cache_rebuild_operation_evidence(row_count)
+}
+
 pub(super) fn reset_file_row_state_for_overlay(overlay: &gtk4::Overlay) {
     apply_file_row_visual_state(overlay, FileRowVisualState::Ordinary);
 }

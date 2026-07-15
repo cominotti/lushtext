@@ -401,7 +401,10 @@ fn run_draft_operation(reader: &mut ScriptReader<'_>, report: &mut OperationScri
             saved_at_secs: u64::from(reader.take_byte()),
         });
     }
-    let manifest = DraftManifest { drafts };
+    let manifest = DraftManifest {
+        drafts,
+        cleanup_continuation: None,
+    };
     let json = serde_json::to_string(&manifest).expect("draft operation must serialize");
     let decoded: DraftManifest =
         serde_json::from_str(&json).expect("draft operation must deserialize");

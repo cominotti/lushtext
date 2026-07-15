@@ -7,7 +7,8 @@
 //! replace/undo behavior.
 
 use crate::model::content_search::{
-    ReplacePreviewBudget, generate_replacement_preview_with_budget_and_cancel,
+    ReplacePreviewBudget, ReplacePreviewSkipReason,
+    generate_replacement_preview_with_budget_and_cancel,
 };
 use crate::services::content_search::ReplaceUndoBackup;
 use crate::services::{json_store, search_backup};
@@ -340,14 +341,22 @@ impl LushtextSearchPanel {
         };
         let generated = outcome.replacements.len();
         let omitted = outcome.omitted_eligible;
-        let skipped = outcome.skipped_source_count();
+        let truncated = outcome
+            .skipped
+            .count(ReplacePreviewSkipReason::TruncatedSource);
+        let stale_ranges = outcome
+            .skipped
+            .count(ReplacePreviewSkipReason::RegexRangeMismatch);
+        let skipped = truncated.saturating_add(stale_ranges);
         imp.replace_all_button
             .set_label(&format!("Replace {checked} checked"));
         let summary = if generated == 0 {
-            format!("No eligible replacements; {omitted} omitted, {skipped} skipped")
+            format!(
+                "No eligible replacements; {omitted} omitted, {truncated} truncated, {stale_ranges} stale ranges"
+            )
         } else if omitted > 0 || skipped > 0 {
             format!(
-                "{generated} previewed, {checked} checked, {omitted} omitted, {skipped} skipped"
+                "{generated} previewed, {checked} checked, {omitted} omitted, {truncated} truncated, {stale_ranges} stale ranges"
             )
         } else {
             format!("{generated} previewed, {checked} checked")

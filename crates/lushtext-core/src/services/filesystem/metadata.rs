@@ -23,6 +23,8 @@ pub fn file_facts(path: &Path) -> std::io::Result<FileFacts> {
         kind: kind_from_metadata(&metadata),
         byte_size: sys::descriptor_file_len(path).unwrap_or(metadata.len()),
         modified_at_secs: modified_at_secs(&metadata),
+        modified_at_nanos: modified_at_nanos(&metadata),
+        identity: sys::file_identity(&metadata),
     })
 }
 
@@ -94,6 +96,14 @@ pub(crate) fn modified_at_secs(metadata: &sys::Metadata) -> Option<u64> {
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs())
+}
+
+pub(crate) fn modified_at_nanos(metadata: &sys::Metadata) -> Option<u128> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
 }
 
 pub(crate) fn kind_from_metadata(metadata: &sys::Metadata) -> FileKind {

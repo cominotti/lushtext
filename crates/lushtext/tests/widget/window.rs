@@ -9,7 +9,7 @@
 
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    fs_metadata, fs_mutate, fs_read, isolated_data_dir, wait_until,
+    fs_metadata, fs_mutate, fs_read, isolated_data_dir, test_application, wait_until,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
@@ -35,7 +35,7 @@ use lushtext_core::model::editor_memory::{
 };
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
-use lushtext_core::model::palette::IndexedFile;
+use lushtext_core::model::palette::{IndexedFile, PaletteFileIdentity};
 use lushtext_core::model::recent_document::RecentDocumentEntry;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
@@ -62,8 +62,9 @@ use lushtext_core::ui::automation::{
 };
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
-    EditorLoadState, EditorSaveError, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind,
-    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
+    BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
+    MinimapAvailability, MinimapMarkerKind, set_local_history_baseline_delay_for_test,
+    set_local_history_baseline_failures_for_test,
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::preferences::LushtextPreferences;
@@ -75,10 +76,15 @@ use lushtext_core::ui::window::{
     set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
     set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
     set_lazy_draft_read_delay_for_test,
-    set_lossy_encoding_analysis_delay_for_test, with_print_runner_for_test,
+    set_lossy_encoding_analysis_delay_for_test, set_orphan_cleanup_delays_for_test,
+    set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
+    set_notes_browser_source_entry_limit_for_test, with_print_runner_for_test,
+    local_history_preview_install_snapshot_for_test,
+    set_local_history_preview_install_delay_for_test,
+    set_local_history_preview_read_delay_for_test,
 };
 use sourceview5::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -102,6 +108,8 @@ struct EditorLoadDelayReset;
 impl Drop for EditorLoadDelayReset {
     fn drop(&mut self) {
         editor_io::set_load_delay_for_test(0);
+        editor_io::set_payload_load_delay_for_test(0);
+        editor_io::set_transient_weight_override_for_test(None);
     }
 }
 
@@ -141,12 +149,39 @@ impl Drop for DraftPipelinePolicyReset {
     }
 }
 
+struct OrphanCleanupPolicyReset;
+
+impl Drop for OrphanCleanupPolicyReset {
+    fn drop(&mut self) {
+        set_orphan_cleanup_delays_for_test(2_000, 30_000, 0);
+    }
+}
+
+struct NotesBrowserPolicyReset;
+
+impl Drop for NotesBrowserPolicyReset {
+    fn drop(&mut self) {
+        set_notes_browser_query_delay_for_test(0);
+        set_note_source_delay_for_test(0);
+        set_notes_browser_source_entry_limit_for_test(10_000);
+    }
+}
+
 struct LocalHistoryBaselineFaultReset;
 
 impl Drop for LocalHistoryBaselineFaultReset {
     fn drop(&mut self) {
         set_local_history_baseline_delay_for_test(0);
         set_local_history_baseline_failures_for_test(0);
+    }
+}
+
+struct LocalHistoryPreviewPolicyReset;
+
+impl Drop for LocalHistoryPreviewPolicyReset {
+    fn drop(&mut self) {
+        set_local_history_preview_read_delay_for_test(0);
+        set_local_history_preview_install_delay_for_test(0);
     }
 }
 
@@ -4224,12 +4259,22 @@ fn test_live_app_and_window_actions_match_action_catalog() {
 
 #[test]
 fn test_automation_snapshot_reports_bounded_live_window_state() {
+    const SOURCE_SENTINEL: &str = "PRIVATE-AUTOMATION-SOURCE-e913";
+    const REPLACEMENT_SENTINEL: &str = "PRIVATE-AUTOMATION-REPLACEMENT-6c4a";
     ensure_gtk_init();
     let window = test_window();
     window.new_tab();
     present_window(&window);
     let editor = active_editor(&window);
-    editor.buffer().set_text("alpha needle\nbeta needle\n");
+    editor
+        .buffer()
+        .set_text(&format!("alpha needle\nbeta needle\n{SOURCE_SENTINEL}\n"));
+    window
+        .imp()
+        .search_panel
+        .imp()
+        .replace_entry
+        .set_text(REPLACEMENT_SENTINEL);
     activate_string_action(&window, "set-search-query", "needle");
     wait_until(Duration::from_secs(2), || {
         editor
@@ -4288,6 +4333,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     assert_eq!(window_snapshot.workspace.folder_count, 0);
     assert_eq!(window_snapshot.workspace.scoped_folder_count, 0);
     assert!(!window_snapshot.command_palette.visible);
+    assert!(!window_snapshot.command_palette.searching);
     assert_eq!(window_snapshot.command_palette.mode, "all");
     assert_eq!(window_snapshot.command_palette.query, "");
     assert!(!window_snapshot.notes.active_document_file_backed);
@@ -4300,6 +4346,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     assert_eq!(window_snapshot.content_search.query, "");
     assert_eq!(window_snapshot.content_search.match_count, 0);
     assert_eq!(window_snapshot.content_search.file_count, 0);
+    assert!(window_snapshot.content_search.replace_query_present);
     assert_eq!(window_snapshot.content_search.replace_preview_count, 0);
     assert_eq!(window_snapshot.content_search.checked_replacement_count, 0);
     assert_eq!(window_snapshot.notifications.status_text, None);
@@ -4307,6 +4354,8 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         !json.contains("alpha needle"),
         "automation snapshot must not dump document text"
     );
+    assert!(!json.contains(SOURCE_SENTINEL));
+    assert!(!json.contains(REPLACEMENT_SENTINEL));
 
     // Predicate-specific waits must ignore unrelated blockers: preview
     // layout settle blocks broad idle readiness, not search completion.
@@ -4349,11 +4398,13 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     // action readiness only needs an active exported window; command-palette
     // indexing should block idle without blocking action introspection.
     let palette_folder = Arc::new(PathBuf::from("/tmp/lushtext-automation-readiness"));
+    let palette_file = palette_folder.join("existing.rs");
     window
         .imp()
         .command_palette
         .set_file_index(FileIndex::from(vec![IndexedFile::new(
-            palette_folder.join("existing.rs"),
+            palette_file.clone(),
+            PaletteFileIdentity::canonical(palette_file),
             Arc::clone(&palette_folder),
         )]));
     window
@@ -5974,6 +6025,125 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
 }
 
 #[test]
+fn test_selected_restore_tab_gets_bounded_priority_after_capacity_releases() {
+    ensure_gtk_init();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_payload_load_delay_for_test(300);
+    editor_io::set_transient_weight_override_for_test(Some(200 * 1024 * 1024));
+    let dir = tempfile::tempdir().expect("priority restore tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    let third_path = dir.path().join("third.txt");
+    fixture::write_repeated_bytes(&first_path, b"first\n", 2 * 1024 * 1024);
+    fixture::write_repeated_bytes(&second_path, b"second\n", 2 * 1024 * 1024);
+    fixture::write_repeated_bytes(&third_path, b"third\n", 2 * 1024 * 1024);
+    LushtextEditorPage::new().reset_transient_load_admission_for_test();
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document_from_session_restore_for_test(&first_path);
+    let first = active_editor(&window);
+    wait_until(Duration::from_secs(10), || {
+        first
+            .transient_load_admission_snapshot_for_test()
+            .active_count
+            == 1
+    });
+    window.open_document_from_session_restore_for_test(&second_path);
+    window.open_document_from_session_restore_for_test(&third_path);
+    let second = window
+        .imp()
+        .tab_view
+        .nth_page(1)
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("second editor");
+    let third_page = window.imp().tab_view.nth_page(2);
+    let third = third_page
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("third editor");
+    window.imp().tab_view.set_selected_page(&third_page);
+    let completion_order = Rc::new(RefCell::new(Vec::new()));
+    let order = Rc::clone(&completion_order);
+    second.connect_file_loaded(move || order.borrow_mut().push("second"));
+    let order = Rc::clone(&completion_order);
+    third.connect_file_loaded(move || order.borrow_mut().push("third"));
+
+    wait_until(Duration::from_secs(15), || {
+        !completion_order.borrow().is_empty()
+    });
+
+    assert_eq!(completion_order.borrow().first().copied(), Some("third"));
+    assert_eq!(third.load_state(), EditorLoadState::Loaded);
+    assert_eq!(second.load_state(), EditorLoadState::Loading);
+    wait_until(Duration::from_secs(15), || {
+        second.load_state() == EditorLoadState::Loaded
+    });
+    assert_eq!(&*completion_order.borrow(), &["third", "second"]);
+}
+
+#[test]
+fn test_transient_load_budget_is_shared_across_windows_and_honors_protected_residency() {
+    ensure_gtk_init();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_payload_load_delay_for_test(700);
+    editor_io::set_transient_weight_override_for_test(Some(100 * 1024 * 1024));
+    LushtextEditorPage::new().reset_transient_load_admission_for_test();
+
+    let app = test_application();
+    let first_window = LushtextWindow::new(&app);
+    let second_window = LushtextWindow::new(&app);
+    present_window(&first_window);
+    present_window(&second_window);
+
+    first_window.new_tab();
+    let protected = active_editor(&first_window);
+    protected.buffer().set_text("protected unsaved work");
+    protected.buffer().set_modified(true);
+    protected.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
+
+    let dir = tempfile::tempdir().expect("cross-window load tempdir");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_text(&first_path, "first window\n");
+    fixture::write_text(&second_path, "second window\n");
+
+    first_window.open_document(&first_path);
+    let first_editor = active_editor(&first_window);
+    wait_until(Duration::from_secs(10), || {
+        first_editor
+            .transient_load_admission_snapshot_for_test()
+            .active_count
+            == 1
+    });
+
+    second_window.open_document(&second_path);
+    let second_editor = active_editor(&second_window);
+    wait_until(Duration::from_secs(10), || {
+        let snapshot = second_editor.transient_load_admission_snapshot_for_test();
+        snapshot.active_count == 1 && snapshot.queued_count == 1
+    });
+
+    assert_eq!(first_editor.load_state(), EditorLoadState::Loading);
+    assert_eq!(second_editor.load_state(), EditorLoadState::Loading);
+    wait_until(Duration::from_secs(15), || {
+        first_editor.load_state() == EditorLoadState::Loaded
+            && second_editor.load_state() == EditorLoadState::Loaded
+    });
+    assert_eq!(editor_buffer_text(&first_editor), "first window\n");
+    assert_eq!(editor_buffer_text(&second_editor), "second window\n");
+    assert_eq!(editor_buffer_text(&protected), "protected unsaved work");
+    assert!(protected.is_modified());
+    wait_until(Duration::from_secs(5), || {
+        second_editor
+            .transient_load_admission_snapshot_for_test()
+            .active_count
+            == 0
+    });
+}
+
+#[test]
 fn test_both_sidebars_can_be_visible_together_on_wide_window() {
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
@@ -6512,6 +6682,51 @@ fn test_close_tab_is_blocked_while_save_is_in_progress() {
 
     assert_eq!(*close_confirmed.borrow(), Some(false));
     wait_until(Duration::from_secs(2), || save_done.get());
+}
+
+#[test]
+fn test_orphan_cleanup_coalesces_timers_and_serializes_workers() {
+    ensure_gtk_init();
+    let _reset = OrphanCleanupPolicyReset;
+    set_orphan_cleanup_delays_for_test(5_000, 1, 200);
+    let window = test_window();
+
+    wait_until(Duration::from_secs(10), || {
+        window
+            .orphan_cleanup_runtime_snapshot_for_test()
+            .timer_pending
+    });
+    set_orphan_cleanup_delays_for_test(0, 1, 200);
+    window.schedule_orphan_cleanup_for_test(true);
+    window.schedule_orphan_cleanup_for_test(true);
+
+    wait_until(Duration::from_secs(10), || {
+        window
+            .orphan_cleanup_runtime_snapshot_for_test()
+            .worker_active
+    });
+    window.schedule_orphan_cleanup_for_test(true);
+    wait_until(Duration::from_secs(10), || {
+        let snapshot = window.orphan_cleanup_runtime_snapshot_for_test();
+        snapshot.workers_started == 2 && !snapshot.worker_active && !snapshot.timer_pending
+    });
+
+    let snapshot = window.orphan_cleanup_runtime_snapshot_for_test();
+    assert_eq!(snapshot.workers_started, 2);
+    assert_eq!(snapshot.workers_high_water, 1);
+
+    set_orphan_cleanup_delays_for_test(100, 1, 0);
+    window.schedule_orphan_cleanup_for_test(false);
+    assert!(
+        window
+            .orphan_cleanup_runtime_snapshot_for_test()
+            .timer_pending
+    );
+    window.dispose_orphan_cleanup_for_test();
+    flush_after_delay(Duration::from_millis(150));
+    let disposed = window.orphan_cleanup_runtime_snapshot_for_test();
+    assert!(!disposed.timer_pending);
+    assert_eq!(disposed.workers_started, 2);
 }
 
 #[test]
@@ -10190,6 +10405,177 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
 }
 
 #[test]
+fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
+    ensure_gtk_init();
+    let _reset = LocalHistoryPreviewPolicyReset;
+    set_local_history_preview_read_delay_for_test(2);
+    set_local_history_preview_install_delay_for_test(200);
+    let before = local_history_preview_install_snapshot_for_test();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("preview supersession tempdir");
+    let path = dir.path().join("history-preview-supersession.txt");
+    fixture::write_text(&path, "current\n");
+    let bodies = [
+        format!("oldest 🙂 {}\n", "a".repeat(600)).repeat(2_500),
+        format!("middle é {}\n", "b".repeat(600)).repeat(2_500),
+        format!("newest 漢 {}\n", "c".repeat(600)).repeat(2_500),
+    ];
+    let data_dir = json_store::data_dir();
+    for body in &bodies {
+        local_history_service::capture_snapshot_for_path(
+            &data_dir,
+            &path,
+            body,
+            LocalHistorySnapshotOrigin::Save,
+            local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("seed large preview snapshot");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog");
+    let child = dialog.child().expect("local-history dialog child");
+    let sidebar = find_adw_sidebar(&child).expect("local-history sidebar");
+    let copy_button = find_button_by_label(&child, "Copy").expect("copy button");
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    wait_until(Duration::from_secs(5), || sidebar.item(2).is_some());
+
+    sidebar.set_selected(1);
+    sidebar.set_selected(2);
+    let main_loop_progressed = Rc::new(Cell::new(false));
+    let main_loop_progressed_clone = Rc::clone(&main_loop_progressed);
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        main_loop_progressed_clone.set(true);
+    });
+    assert!(!copy_button.is_sensitive());
+    assert!(!restore_button.is_sensitive());
+    wait_until(Duration::from_secs(15), || {
+        local_history_preview_install_snapshot_for_test().slices > before.slices
+    });
+    assert!(main_loop_progressed.get());
+    sidebar.set_selected(1);
+    assert!(!copy_button.is_sensitive());
+    assert!(!restore_button.is_sensitive());
+
+    wait_until(Duration::from_secs(30), || {
+        local_history_preview_text(&child).as_deref() == Some(bodies[1].as_str())
+            && copy_button.is_sensitive()
+            && restore_button.is_sensitive()
+    });
+    let installed = local_history_preview_install_snapshot_for_test();
+    assert!(installed.slices.saturating_sub(before.slices) > 1);
+    assert!(installed.cancellations > before.cancellations);
+    eprintln!(
+        "local-history-preview-runtime-evidence slices={} cancellations={} retained_payloads=1 main_loop_progressed={}",
+        installed.slices.saturating_sub(before.slices),
+        installed.cancellations.saturating_sub(before.cancellations),
+        main_loop_progressed.get(),
+    );
+
+    sidebar.set_selected(0);
+    wait_until(Duration::from_secs(15), || {
+        local_history_preview_install_snapshot_for_test().slices > installed.slices
+    });
+    dialog.close();
+    flush_after_delay(Duration::from_millis(250));
+    assert!(visible_sheet_dialog(&window).is_none());
+    assert!(
+        local_history_preview_install_snapshot_for_test().cancellations
+            > installed.cancellations
+    );
+}
+
+#[test]
+fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
+    ensure_gtk_init();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-bounded-restore.txt");
+    fixture::write_text(&path, "current\n");
+    let restore_target = format!("restored 🙂 {}\n", "r".repeat(500)).repeat(2_500);
+    let working_copy = format!("working é {}\n", "w".repeat(500)).repeat(2_500);
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        &restore_target,
+        LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed document-sized restore target");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    editor.set_local_history_availability_for_test(
+        local_history_service::LocalHistoryAvailability::SaveOnly,
+    );
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_for_local_history_preview_text(&child, &restore_target);
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+    restore_button.emit_clicked();
+
+    wait_until(Duration::from_secs(30), || editor_text(&editor) == restore_target);
+    assert!(editor.is_modified());
+    assert!(editor.buffer_replacement_slice_count_for_test() > 1);
+    let restore_diagnostic = editor
+        .buffer_replacement_terminal_diagnostic_for_test()
+        .expect("history restore terminal diagnostic");
+    assert_eq!(
+        restore_diagnostic.ticket.workflow,
+        BufferReplacementWorkflow::LocalHistoryRestore
+    );
+    assert_eq!(restore_diagnostic.metrics.peak_retained_bodies, 1);
+    assert!(restore_diagnostic.source_released && restore_diagnostic.guard_released);
+
+    let undo_button = find_button_by_label(
+        editor.info_bar().upcast_ref::<gtk4::Widget>(),
+        "Undo Restore",
+    )
+    .expect("undo restore button");
+    assert!(editor.has_local_history_restore_undo_for_test());
+    editor.make_buffer_replacement_stale_after_slices_for_test(1);
+    undo_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        !editor.buffer_replacement_in_progress_for_test()
+            && editor.has_local_history_restore_undo_for_test()
+    });
+    assert_eq!(editor_text(&editor), "");
+
+    undo_button.emit_clicked();
+    wait_until(Duration::from_secs(30), || editor_text(&editor) == working_copy);
+    assert!(editor.is_modified());
+    assert!(editor.source_view().is_editable());
+    assert!(editor.buffer_replacement_slice_count_for_test() > 1);
+    let undo_diagnostic = editor
+        .buffer_replacement_terminal_diagnostic_for_test()
+        .expect("history undo terminal diagnostic");
+    assert_eq!(
+        undo_diagnostic.ticket.workflow,
+        BufferReplacementWorkflow::LocalHistoryUndo
+    );
+    assert_eq!(undo_diagnostic.metrics.peak_retained_bodies, 1);
+    assert!(undo_diagnostic.source_released && undo_diagnostic.guard_released);
+}
+
+#[test]
 fn test_local_history_restore_discards_mutated_chunked_safety_snapshot() {
     ensure_gtk_init();
     let window = test_window_with_restored_size(1400, 900);
@@ -12986,6 +13372,182 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
 }
 
 #[test]
+fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let intermediate_path = left_folder.join("intermediate-note.md");
+    let latest_path = left_folder.join("latest-note.md");
+    fixture::write_text(&intermediate_path, "intermediate\n");
+    fixture::write_text(&latest_path, "latest\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &intermediate_path,
+        &RichNoteBody::new("intermediate browser body"),
+    )
+    .expect("save intermediate note");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &latest_path,
+        &RichNoteBody::new("latest browser body"),
+    )
+    .expect("save latest note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source_ready && snapshot.query.active == 0)
+    });
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    let search_entry = find_search_entry(&child).expect("notes browser search entry");
+
+    set_notes_browser_query_delay_for_test(250);
+    search_entry.set_text("intermediate browser");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.query.active == 1)
+    });
+    search_entry.set_text("latest browser");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.query.pending == 1)
+    });
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.query.active == 0 && snapshot.query.pending == 0)
+            && sidebar.items().n_items() == 1
+            && sidebar
+                .item(0)
+                .and_then(|item| item.title())
+                .is_some_and(|title| title.contains("latest-note.md"))
+    });
+    let snapshot = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("browser runtime snapshot");
+    assert_eq!(snapshot.query.active_high_water, 1);
+    assert_eq!(snapshot.query.pending_high_water, 1);
+    assert!(snapshot.query.cancellation_requests > 0);
+
+    search_entry.set_text("dispose this query");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.query.active == 1)
+    });
+    dialog.close();
+    flush_after_delay(Duration::from_millis(350));
+    assert!(window.notes_browser_runtime_snapshot_for_test().is_none());
+    assert!(visible_sheet_dialog(&window).is_none());
+}
+
+#[test]
+fn test_notes_browser_disposal_cancels_active_source_construction() {
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    set_note_source_delay_for_test(250);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("source-disposal-note.md");
+    fixture::write_text(&path, "source disposal\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("source disposal body"),
+    )
+    .expect("save source disposal note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source.active == 1 && !snapshot.source_ready)
+    });
+    let dialog = visible_sheet_dialog(&window).expect("loading notes browser dialog");
+    dialog.close();
+    flush_after_delay(Duration::from_millis(350));
+
+    assert!(window.notes_browser_runtime_snapshot_for_test().is_none());
+    assert!(visible_sheet_dialog(&window).is_none());
+}
+
+#[test]
+fn test_notes_browser_reports_source_truncation_separately() {
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    set_notes_browser_source_entry_limit_for_test(1);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    for index in 0..2 {
+        let path = left_folder.join(format!("bounded-note-{index}.md"));
+        fixture::write_text(&path, "bounded\n");
+        let body = format!("bounded body {index}");
+        document_note_service::save_for_path(
+            &json_store::data_dir(),
+            &path,
+            &RichNoteBody::new(&body),
+        )
+        .expect("save bounded note");
+    }
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source_ready && snapshot.source_truncated)
+    });
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    wait_until(Duration::from_secs(10), || {
+        find_label_by_text(
+            &child,
+            "Some later notes were omitted because the source reached its safety limits.",
+        )
+        .is_some()
+    });
+    let snapshot = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("browser runtime snapshot");
+    assert_eq!(snapshot.source_entries, 1);
+}
+
+#[test]
+fn test_notes_browser_open_editor_snapshot_respects_aggregate_limit() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let files = tempfile::tempdir().expect("open-editor snapshot tempdir");
+    let window = test_window();
+    for index in 0..2 {
+        let path = files.path().join(format!("open-{index}.rs"));
+        fixture::write_text(&path, "one\ntwo\nthree\n");
+        window.open_document(&path);
+        wait_until(Duration::from_secs(5), || {
+            active_editor(&window).file_path().as_deref() == Some(path.as_path())
+        });
+        active_editor(&window).load_bookmarks(&[
+            lushtext_core::model::bookmark::BookmarkRecord::new(0, None),
+            lushtext_core::model::bookmark::BookmarkRecord::new(1, None),
+        ]);
+    }
+
+    let (snapshots, bookmarks) = window.open_editor_note_snapshot_counts_for_test(2);
+    assert!(snapshots.saturating_add(bookmarks) <= 2);
+    assert!(bookmarks < 4, "bookmark capture must stop at the aggregate bound");
+}
+
+#[test]
 fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     ensure_gtk_init();
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
@@ -14184,6 +14746,7 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
 #[test]
 fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_folder.join("many-bookmarks.rs");
     let content = (0..510)
@@ -14232,6 +14795,37 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
             )
             .expect("notes result-limit status"),
         );
+
+    let search_entry = find_search_entry(&child).expect("notes browser search entry");
+    set_notes_browser_query_delay_for_test(250);
+    search_entry.set_text("missing performance-smoke needle");
+    wait_until(Duration::from_secs(5), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.query.active == 1)
+    });
+    let main_loop_progressed = Rc::new(Cell::new(false));
+    let main_loop_progressed_clone = Rc::clone(&main_loop_progressed);
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        main_loop_progressed_clone.set(true);
+    });
+    wait_until(Duration::from_secs(5), || main_loop_progressed.get());
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.query.active == 0)
+            && sidebar.items().n_items() == 0
+    });
+    let query = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("notes browser runtime")
+        .query;
+    eprintln!(
+        "notes-browser-runtime-evidence source_entries=510 active_high_water={} pending_high_water={} main_loop_progressed={}",
+        query.active_high_water,
+        query.pending_high_water,
+        main_loop_progressed.get(),
+    );
 }
 
 #[test]
@@ -14824,6 +15418,7 @@ fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
                 original_mtime_secs: Some(current_mtime),
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         },
     )
     .expect("save manifest");
@@ -14912,6 +15507,7 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
                 original_mtime_secs: Some(current_mtime),
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         },
     )
     .expect("save manifest");
@@ -14974,6 +15570,7 @@ fn test_startup_restore_skips_stale_file_backed_draft_once() {
                 original_mtime_secs: Some(stale_mtime),
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         },
     )
     .expect("save manifest");
@@ -15048,6 +15645,7 @@ fn test_startup_restore_keeps_untitled_draft_behavior() {
                 original_mtime_secs: None,
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         },
     )
     .expect("save manifest");
@@ -15086,6 +15684,62 @@ fn test_startup_restore_keeps_untitled_draft_behavior() {
         .editor_info_bar_view(editor.notification_owner_id())
         .expect("untitled restore notification");
     assert_eq!(notification.title, "Document Restored");
+}
+
+#[test]
+fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let content = "🙂".repeat(300_000);
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1,
+    };
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    window.imp().drafts.preloaded.borrow_mut().insert(
+        draft_id.clone(),
+        PreloadedDraftRestore::Content(content.clone()),
+    );
+
+    window.check_draft_by_id(&editor, &draft_id);
+
+    assert!(editor.buffer_replacement_in_progress_for_test());
+    assert!(!editor.is_draft_restored());
+    assert!(!editor.source_view().is_editable());
+    assert_ne!(editor_text(&editor), content);
+
+    wait_until(Duration::from_secs(10), || editor.is_draft_restored());
+
+    assert_eq!(editor_text(&editor), content);
+    assert!(editor.is_modified());
+    assert!(editor.source_view().is_editable());
+    assert!(!editor.buffer_replacement_in_progress_for_test());
+    assert!(editor.buffer_replacement_slice_count_for_test() > 1);
+    let diagnostic = editor
+        .buffer_replacement_terminal_diagnostic_for_test()
+        .expect("draft recovery terminal diagnostic");
+    assert_eq!(
+        diagnostic.ticket.workflow,
+        BufferReplacementWorkflow::DraftRecovery
+    );
+    assert!(diagnostic.metrics.slice_count > 1);
+    assert_eq!(diagnostic.metrics.peak_retained_bodies, 1);
+    assert!(diagnostic.source_released && diagnostic.guard_released);
+    assert_eq!(
+        window
+            .imp()
+            .notification_bus
+            .editor_info_bar_view(editor.notification_owner_id())
+            .expect("restored draft notification")
+            .title,
+        "Document Restored"
+    );
 }
 
 #[test]

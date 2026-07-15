@@ -216,3 +216,90 @@ The project SHALL add pure target-set tests, service integration tests, GTK widg
 - **WHEN** a performance fixture changes one target in a tree with many expanded rows
 - **THEN** target bookkeeping touches only the affected splice or row state
 - **AND** watcher construction and disposal time is excluded from the GTK main-thread interval
+
+### Requirement: Watcher event delivery uses a bounded coalescing mailbox
+The watcher backend SHALL normalize each raw tree-changing event outside GTK and merge it directly into one bounded pending notice without first retaining an app-unbounded debouncer queue or event vector. The notice SHALL contain either a capped unique path set or a conservative full-refresh marker; exceeding any retained-path bound, observing an ambiguous rename shape, or encountering producer-side lock contention MUST promote through constant-space state to full refresh rather than silently losing visible changes or creating backlog.
+
+#### Scenario: Event burst stays below the path cap
+- **WHEN** raw create, remove, and rename events produce a unique changed-path set within the configured cap
+- **THEN** the mailbox retains one deduplicated bounded path notice
+- **AND** GTK receives no access-only or duplicate paths
+
+#### Scenario: Event burst exceeds the path cap
+- **WHEN** unique tree-changing paths exceed the configured cap before GTK consumes them
+- **THEN** the pending notice becomes a full-refresh marker
+- **AND** additional raw events do not grow retained memory
+
+#### Scenario: Producer outruns GTK polling
+- **WHEN** raw backend callbacks arrive faster than the next GTK poll can consume them
+- **THEN** they merge into the same bounded notice or constant-space full-refresh latch
+- **AND** no backend debouncer vector or application channel backlog grows with event count
+
+#### Scenario: Producer cannot acquire mailbox state
+- **WHEN** a raw callback overlaps mailbox consumption and cannot immediately merge its event
+- **THEN** it records a conservative full-refresh need in constant space without blocking GTK
+- **AND** a later poll observes that refresh need
+
+#### Scenario: Error and disconnect arrive with pending changes
+- **WHEN** bounded changes, backend errors, or disconnection overlap
+- **THEN** the mailbox preserves a bounded current error/disconnect state and conservative refresh need
+- **AND** repeated identical errors do not grow retained state
+
+### Requirement: GTK consumes bounded watcher work per turn
+Each workspace-section poll callback SHALL take at most one bounded watcher notice and SHALL keep refresh-side pending paths under the same cap. A full-refresh marker MUST dominate accumulated targeted paths, while manual Refresh and current tree interaction remain available.
+
+#### Scenario: GTK consumes a path notice
+- **WHEN** the poll callback receives a bounded changed-path notice
+- **THEN** it performs work proportional to at most the configured cap
+- **AND** it returns control to the main loop without draining an unbounded producer queue
+
+#### Scenario: Targeted refresh accumulation crosses the cap
+- **WHEN** refresh debouncing accumulates more unique paths than the targeted-refresh cap
+- **THEN** the pending plan becomes one full refresh
+- **AND** the path set is released instead of continuing to grow
+
+#### Scenario: Full refresh is already pending
+- **WHEN** later targeted watcher notices arrive while a full refresh is pending
+- **THEN** those paths are not accumulated separately
+- **AND** the one pending full refresh remains authoritative
+
+### Requirement: Accepted workspace child caches rebuild in linear time
+After bounded child-store reconciliation accepts a terminal mirror, the system SHALL rebuild sibling paths, item locations, and visible-path occurrence evidence in O(n) work for that mirror. The bulk rebuild MUST preserve duplicate-path accounting and lookup behavior without invoking per-row index shifting across already cached rows.
+
+#### Scenario: Broad child store reaches the scan cap
+- **WHEN** reconciliation accepts a directory mirror near the configured 10,000-row cap
+- **THEN** cache rebuilding visits accepted and replaced cache entries only a bounded number of times
+- **AND** it does not perform one cached-location scan for each inserted row
+
+#### Scenario: Mirror contains duplicate and reordered identities
+- **WHEN** accepted rows include duplicate paths, removals, insertions, and reordering
+- **THEN** the bulk cache result matches the test-only full derivation oracle
+- **AND** visible-path reference counts neither underflow nor retain removed-only occurrences
+
+#### Scenario: Reconciliation is superseded before terminal acceptance
+- **WHEN** a newer refresh invalidates the current reconciliation before its mirror is accepted
+- **THEN** the stale mirror does not replace current cache state
+- **AND** no partial bulk-cache commit remains visible
+
+### Requirement: Large tree reconciliation applies in bounded GTK batches
+An accepted workspace-directory refresh whose reconciliation exceeds the calibrated synchronous threshold SHALL apply model changes through generation-guarded GTK batches. Reconciliation planning MUST use plain row state outside repeated GObject scans where practical, and expansion, selection, row caches, watcher targets, and readiness MUST finalize only for the complete current plan. A stale or replaced plan MUST stop without announcing refresh completion.
+
+#### Scenario: Broad expanded directory changes near the start
+- **WHEN** refresh changes a large prefix or middle range of an expanded directory containing thousands of visible rows
+- **THEN** GTK constructs and splices only a bounded row batch per main-loop turn
+- **AND** input, drawing, and manual Refresh remain schedulable between batches
+
+#### Scenario: Refresh is superseded between batches
+- **WHEN** a newer scan generation or section lifetime replaces an active reconciliation plan
+- **THEN** remaining batches from the stale plan stop
+- **AND** stale cache, expansion, selection, watcher-target, and readiness finalization do not overwrite the newer plan
+
+#### Scenario: Small reconciliation remains direct
+- **WHEN** the changed range is below the calibrated synchronous threshold
+- **THEN** the section MAY reconcile it in one GTK callback
+- **AND** it observes the same generation and terminal-finalization contract
+
+#### Scenario: Batched reconciliation completes
+- **WHEN** the final accepted batch has been applied
+- **THEN** row caches and surviving expansion and selection state are reconciled once against the completed model
+- **AND** workspace refresh readiness becomes complete exactly once

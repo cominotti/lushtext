@@ -13,6 +13,7 @@ mod editors;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_settle::Debounce;
@@ -37,10 +38,57 @@ use crate::ui::status_bar::MessageKind;
 use super::LushtextWindow;
 
 #[cfg(feature = "test-utils")]
+pub use crate::services::palette::{
+    set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
+};
+#[cfg(feature = "test-utils")]
 pub use bookmarks::set_bookmark_excerpt_preview_delay_for_test;
 
 /// Maximum note rows materialized into a browser at once.
 const NOTES_BROWSER_RENDER_LIMIT: usize = 500;
+/// Maximum rows admitted into one Browse Notes source.
+const NOTES_BROWSER_SOURCE_ENTRY_LIMIT: usize = 10_000;
+/// Maximum aggregate searchable UTF-8 bytes retained by Browse Notes.
+const NOTES_BROWSER_SOURCE_TEXT_LIMIT: usize = 64 * 1024 * 1024;
+/// Maximum sidecar candidates retained by each Browse Notes directory scan.
+const NOTES_BROWSER_SIDECAR_SCAN_LIMIT: usize = 10_000;
+/// Maximum recovery diagnostics retained by one Browse Notes load.
+const NOTES_BROWSER_DIAGNOSTIC_LIMIT: usize = 1_024;
+/// Maximum open-editor snapshots plus bookmark rows captured on GTK.
+const NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT: usize = 10_000;
+/// Browser-owned source policy passed into the shared admission engine.
+const NOTES_BROWSER_SOURCE_LIMITS: palette_service::NoteSourceLimits =
+    palette_service::NoteSourceLimits {
+        entries: NOTES_BROWSER_SOURCE_ENTRY_LIMIT,
+        searchable_text_bytes: NOTES_BROWSER_SOURCE_TEXT_LIMIT,
+        sidecar_entries: NOTES_BROWSER_SIDECAR_SCAN_LIMIT,
+        diagnostics: NOTES_BROWSER_DIAGNOSTIC_LIMIT,
+    };
+#[cfg(feature = "test-utils")]
+static NOTES_BROWSER_SOURCE_ENTRY_LIMIT_FOR_TEST: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(NOTES_BROWSER_SOURCE_ENTRY_LIMIT);
+
+#[cfg(feature = "test-utils")]
+fn notes_browser_source_limits() -> palette_service::NoteSourceLimits {
+    let entries =
+        NOTES_BROWSER_SOURCE_ENTRY_LIMIT_FOR_TEST.load(std::sync::atomic::Ordering::Acquire);
+    palette_service::NoteSourceLimits {
+        entries,
+        sidecar_entries: NOTES_BROWSER_SOURCE_LIMITS.sidecar_entries.min(entries),
+        ..NOTES_BROWSER_SOURCE_LIMITS
+    }
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn notes_browser_source_limits() -> palette_service::NoteSourceLimits {
+    NOTES_BROWSER_SOURCE_LIMITS
+}
+
+/// Override the browser source-entry policy for focused truncation tests.
+#[cfg(feature = "test-utils")]
+pub fn set_notes_browser_source_entry_limit_for_test(limit: usize) {
+    NOTES_BROWSER_SOURCE_ENTRY_LIMIT_FOR_TEST.store(limit, std::sync::atomic::Ordering::Release);
+}
 /// Stack child name for Markdown/status bookmark and note previews.
 const NOTES_PREVIEW_MARKDOWN_CHILD: &str = "markdown";
 /// Stack child name for raw-text bookmark previews.
@@ -49,12 +97,6 @@ const NOTES_PREVIEW_RAW_CHILD: &str = "raw";
 const NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP: i32 = 12;
 /// Vertical inset inside raw bookmark previews.
 const NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP: i32 = 10;
-
-/// Result of loading the unified notes browser off the GTK main thread.
-struct NotesBrowserLoadResult {
-    entries: Vec<NotesBrowserEntry>,
-    diagnostics: Vec<RecoveryDiagnostic>,
-}
 
 /// Decision for `Open Folder Note...` when the caller has not supplied an exact folder row.
 ///
@@ -82,20 +124,7 @@ enum FolderNoteOpenTarget {
 }
 
 /// One entry shown in the unified notes browser.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NotesBrowserEntry {
-    /// Shared note row produced by the GTK-free palette note source.
-    note: PaletteNoteEntry,
-}
-
-/// Lowercased search query plus a small prefix table for allocation-light matching.
-struct NotesBrowserQuery {
-    /// Query represented as Unicode scalar values so note bodies do not need to
-    /// allocate their own lowercased copies on every keystroke.
-    needle: Vec<char>,
-    /// Knuth-Morris-Pratt prefix table for streaming substring matching.
-    prefix: Vec<usize>,
-}
+type NotesBrowserEntry = PaletteNoteEntry;
 
 /// State for one open unified notes browser dialog.
 struct NotesBrowserState {
@@ -126,13 +155,39 @@ struct NotesBrowserState {
     /// Back button shown when the split view collapses.
     back_button: gtk4::Button,
     /// Complete set of notes covered by this browser session.
-    all_entries: Vec<NotesBrowserEntry>,
+    all_entries: RefCell<Arc<[NotesBrowserEntry]>>,
     /// Entry indexes currently shown in the sidebar's grouped visual order.
     filtered_indices: RefCell<Vec<usize>>,
     /// Debounce used to rebuild browser search rows after typing settles.
     search_debounce: Debounce,
+    /// One-active/one-latest ownership for background full-source matching.
+    query_runtime: RefCell<palette_service::NotesBrowserQueryCoordinator>,
+    /// Generation owner for the initial bounded source construction.
+    source_refreshes: RefCell<palette_service::NoteSourceRefreshCoordinator>,
+    /// Typed source omissions reported separately from query render truncation.
+    source_truncation: RefCell<Vec<palette_service::NoteSourceTruncationReason>>,
+    /// Whether bounded source construction has published this dialog's source.
+    source_ready: Cell<bool>,
+    /// Whether dialog teardown has invalidated all source and query publication.
+    disposed: Cell<bool>,
     /// Generation counter used to ignore stale closed-file bookmark preview loads.
     preview_generation: Cell<u32>,
+}
+
+/// Scalar bounded-source and query-ownership evidence for widget tests.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NotesBrowserRuntimeSnapshot {
+    /// Rows retained by the immutable admitted source.
+    pub source_entries: usize,
+    /// Whether source construction reported any omission reason.
+    pub source_truncated: bool,
+    /// Whether bounded source construction has completed.
+    pub source_ready: bool,
+    /// One-active/one-latest query ownership counters.
+    pub query: palette_service::PaletteSearchCoordinatorSnapshot,
+    /// Initial bounded-source ownership counters.
+    pub source: palette_service::NoteSourceRefreshCoordinatorSnapshot,
 }
 
 /// Weak handle to the currently visible unified notes browser.
@@ -197,6 +252,18 @@ impl ActiveNotesBrowser {
         }
         state.open_selected();
         true
+    }
+
+    #[cfg(feature = "test-utils")]
+    fn runtime_snapshot(&self) -> Option<NotesBrowserRuntimeSnapshot> {
+        let state = self.state.upgrade()?;
+        Some(NotesBrowserRuntimeSnapshot {
+            source_entries: state.all_entries.borrow().len(),
+            source_truncated: !state.source_truncation.borrow().is_empty(),
+            source_ready: state.source_ready.get(),
+            query: state.query_runtime.borrow().snapshot(),
+            source: state.source_refreshes.borrow().snapshot(),
+        })
     }
 }
 
@@ -471,14 +538,20 @@ impl LushtextWindow {
     /// This runs on the GTK main thread because `bookmark_records()` reads the
     /// live `GtkSourceMark` projection. Sidecar loading and identity
     /// deduplication stay in the existing background browse task.
-    fn open_editor_note_snapshots(
+    fn open_editor_note_snapshots_bounded(
         &self,
         scope_folders: &[PathBuf],
         all_workspaces: &[WorkspaceConfig],
+        max_snapshots_and_bookmarks: usize,
     ) -> Vec<PaletteOpenEditorNoteSnapshot> {
         let tab_view = &self.imp().tab_view;
         let mut snapshots = Vec::new();
+        let mut retained_bookmarks = 0usize;
         for index in 0..tab_view.n_pages() {
+            let retained_items = snapshots.len().saturating_add(retained_bookmarks);
+            if retained_items >= max_snapshots_and_bookmarks {
+                break;
+            }
             let page = tab_view.nth_page(index);
             let child = page.child();
             let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
@@ -489,9 +562,15 @@ impl LushtextWindow {
             };
             let open_tab_source = (!palette_service::path_is_in_folders(&path, scope_folders))
                 .then(|| palette_service::open_tab_source_for_path(all_workspaces, &path));
+            let bookmarks = editor.bookmark_records_bounded(
+                max_snapshots_and_bookmarks
+                    .saturating_sub(retained_items)
+                    .saturating_sub(1),
+            );
+            retained_bookmarks = retained_bookmarks.saturating_add(bookmarks.len());
             snapshots.push(PaletteOpenEditorNoteSnapshot {
                 path: path.clone(),
-                bookmarks: editor.bookmark_records(),
+                bookmarks,
                 open_tab_source,
             });
         }

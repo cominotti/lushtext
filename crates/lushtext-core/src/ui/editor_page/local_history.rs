@@ -210,6 +210,9 @@ impl LushtextEditorPage {
         let editor_weak = self.downgrade();
         let handler_id = buffer.connect_changed(move |_| {
             if let Some(editor) = editor_weak.upgrade() {
+                if editor.load_projection_suspended() {
+                    return;
+                }
                 let state = &editor.imp().local_history;
                 if let Some(snapshot) = state.periodic_snapshot.borrow().as_ref() {
                     snapshot.cancel();
@@ -229,6 +232,9 @@ impl LushtextEditorPage {
             let Some(editor) = editor_weak.upgrade() else {
                 return;
             };
+            if editor.load_projection_suspended() {
+                return;
+            }
             if editor
                 .imp()
                 .local_history
@@ -313,13 +319,13 @@ impl LushtextEditorPage {
     }
 
     /// Seed the tab's "last clean text" after a file load or reload completes.
-    pub(crate) fn seed_local_history_from_loaded_content(&self, content: &str) {
+    pub(crate) fn seed_local_history_from_loaded_content(&self, content: String) {
         let clean_text = if self.file_path().is_some()
             && self
                 .live_local_history_availability()
                 .allows_automatic_capture()
         {
-            Some(content.to_string())
+            Some(content)
         } else {
             None
         };
@@ -333,17 +339,37 @@ impl LushtextEditorPage {
     }
 
     /// Treat restored draft content as the baseline for future local-history capture.
-    pub(crate) fn seed_local_history_from_restored_draft(&self, content: &str) {
-        let clean_text = if self.file_path().is_some()
-            && self
-                .live_local_history_availability()
-                .allows_automatic_capture()
-        {
-            Some(content.to_string())
+    pub(crate) fn seed_local_history_from_restored_draft(&self, content: String) {
+        let availability = local_history_service::availability_for_utf8_bytes(content.len());
+        let clean_text = if self.file_path().is_some() && availability.allows_automatic_capture() {
+            Some(content)
         } else {
             None
         };
         self.replace_clean_baseline(clean_text);
+        self.set_local_history_restore_undo_text(None);
+        self.cancel_local_history_periodic_capture();
+    }
+
+    /// Persist the seeded restored-draft baseline after replacement publication.
+    ///
+    /// Bounded replacement suppresses intermediate buffer signals. GTK may have
+    /// already marked the buffer modified by the terminal callback, so setting
+    /// the flag to `true` again is not guaranteed to emit `modified-changed`.
+    /// Start the baseline explicitly once the complete draft is visible.
+    pub(crate) fn capture_restored_draft_baseline(&self) {
+        self.capture_local_history_baseline();
+        if self
+            .live_local_history_availability()
+            .allows_automatic_capture()
+        {
+            self.schedule_local_history_periodic_capture();
+        }
+    }
+
+    /// Release document-sized history ownership after terminal memory eviction.
+    pub(crate) fn release_local_history_residency_for_eviction(&self) {
+        self.replace_clean_baseline(None);
         self.set_local_history_restore_undo_text(None);
         self.cancel_local_history_periodic_capture();
     }
@@ -383,21 +409,9 @@ impl LushtextEditorPage {
         }
     }
 
-    /// Replace the editor buffer with history text while suppressing automatic baseline capture.
-    pub(crate) fn replace_buffer_with_local_history_text(&self, text: &str) {
-        self.imp()
-            .local_history
-            .automatic_capture_suppressed
-            .set(true);
-        self.cancel_local_history_periodic_capture();
-
+    /// Publish local-history state after one complete current replacement.
+    pub(crate) fn finish_local_history_buffer_replacement(&self) {
         let buffer = self.buffer();
-        self.set_minimap_tracking_suspended(true);
-        buffer.begin_irreversible_action();
-        buffer.set_text(text);
-        if self.size_check().undo_enabled() {
-            buffer.end_irreversible_action();
-        }
         buffer.set_modified(true);
 
         let start = buffer.start_iter();
@@ -407,15 +421,9 @@ impl LushtextEditorPage {
             .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
         buffer.delete_mark(&mark);
 
-        self.set_minimap_tracking_suspended(false);
         self.clear_modified_line_marks();
         self.refresh_minimap();
         self.notify_memory_policy_changed();
-
-        self.imp()
-            .local_history
-            .automatic_capture_suppressed
-            .set(false);
         if self
             .live_local_history_availability()
             .allows_automatic_capture()
@@ -437,6 +445,16 @@ impl LushtextEditorPage {
             .restore_undo_text
             .borrow_mut()
             .take()
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn has_local_history_restore_undo_for_test(&self) -> bool {
+        self.imp()
+            .local_history
+            .restore_undo_text
+            .borrow()
+            .is_some()
     }
 
     fn capture_local_history_baseline(&self) {

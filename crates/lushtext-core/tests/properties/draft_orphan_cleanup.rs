@@ -59,6 +59,7 @@ fn cleanup_never_reports_failed_evidence_as_removed() {
                 fixture::symlink(Path::new("loop.draft"), &drafts.join("loop.draft"));
                 let manifest = DraftManifest {
                     drafts: vec![entry("loop")],
+                    cleanup_continuation: None,
                 };
                 draft_service::save_manifest(data_dir, &manifest).expect("save status manifest");
                 (
@@ -78,6 +79,7 @@ fn cleanup_never_reports_failed_evidence_as_removed() {
             GeneratedCleanupCase::ManifestWriteFailure => {
                 let manifest = DraftManifest {
                     drafts: vec![entry("ghost")],
+                    cleanup_continuation: None,
                 };
                 draft_service::save_manifest(data_dir, &manifest).expect("save manifest");
                 let plan = draft_service::inspect_orphan_cleanup(data_dir, &manifest)

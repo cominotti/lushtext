@@ -14,7 +14,9 @@ use lushtext_core::model::workspace::{
     WorkspaceId,
 };
 use lushtext_core::services::filesystem::metadata as fs_metadata;
-use lushtext_core::services::workspace_watch::WorkspaceWatchTarget;
+use lushtext_core::services::workspace_watch::{
+    WORKSPACE_WATCH_PATH_CAP, WorkspaceWatchTarget,
+};
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 use lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection;
@@ -23,6 +25,8 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -3753,6 +3757,263 @@ fn test_stopping_section_during_slow_start_rejects_returned_handle() {
 }
 
 #[test]
+fn test_workspace_watch_batches_take_one_notice_and_bound_refresh_paths() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-bounded-paths"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(5), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+    section.pause_workspace_watch_polling_for_test();
+
+    let alpha = folder.path().join("alpha.txt");
+    let beta = folder.path().join("beta.txt");
+    let gamma = folder.path().join("gamma.txt");
+    section.merge_workspace_watch_paths_for_test(vec![
+        beta.clone(),
+        alpha,
+        beta,
+    ]);
+    section.merge_workspace_watch_paths_for_test(vec![gamma]);
+
+    let (mailbox, refresh_paths, refresh_full, _) =
+        section.workspace_watch_pressure_for_test();
+    assert_eq!(mailbox.expect("installed mailbox").retained_paths, 3);
+    assert_eq!(refresh_paths, 0);
+    assert!(!refresh_full);
+    assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
+    let (mailbox, refresh_paths, refresh_full, notices) =
+        section.workspace_watch_pressure_for_test();
+    assert_eq!(mailbox.expect("installed mailbox").retained_paths, 0);
+    assert_eq!(refresh_paths, 3);
+    assert!(!refresh_full);
+    assert_eq!(notices, 1);
+    assert_eq!(section.poll_workspace_watch_once_for_test(), 0);
+
+    section.queue_auto_refresh_for_test(
+        (0..=WORKSPACE_WATCH_PATH_CAP)
+            .map(|index| folder.path().join(format!("bulk-{index}")))
+            .collect(),
+    );
+    assert_eq!(section.refresh_pressure_for_test(), (0, true));
+    section.queue_auto_refresh_for_test(vec![folder.path().join("ignored-later")]);
+    assert_eq!(
+        section.refresh_pressure_for_test(),
+        (0, true),
+        "a pending full refresh must not retain later targeted paths"
+    );
+}
+
+#[test]
+fn test_workspace_watch_overflow_promotes_once_before_gtk_poll() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-mailbox-overflow"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(5), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+    section.pause_workspace_watch_polling_for_test();
+
+    section.merge_workspace_watch_paths_for_test(
+        (0..=WORKSPACE_WATCH_PATH_CAP)
+            .map(|index| folder.path().join(format!("storm-{index}")))
+            .collect(),
+    );
+    let (mailbox, _, _, _) = section.workspace_watch_pressure_for_test();
+    let mailbox = mailbox.expect("installed mailbox");
+    assert_eq!(mailbox.retained_paths, 0);
+    assert!(mailbox.full_refresh);
+
+    assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
+    assert_eq!(section.refresh_pressure_for_test(), (0, true));
+    assert!(section.workspace_refresh_blocks_readiness_for_test());
+    section.merge_workspace_watch_paths_for_test(vec![folder.path().join("later")]);
+    assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
+    assert_eq!(section.refresh_pressure_for_test(), (0, true));
+}
+
+#[test]
+fn test_workspace_readiness_waits_for_active_child_scan_application() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("readiness-child-scan"));
+    let path = PathBuf::from("/tmp/readiness-child-scan");
+    section
+        .imp()
+        .child_scan_tokens
+        .borrow_mut()
+        .insert(path.clone(), vec![Arc::new(AtomicBool::new(false))]);
+
+    assert!(section.workspace_refresh_blocks_readiness_for_test());
+
+    section.imp().child_scan_tokens.borrow_mut().remove(&path);
+    assert!(!section.workspace_refresh_blocks_readiness_for_test());
+}
+
+#[test]
+fn test_workspace_watch_error_disconnect_preserves_change_and_manual_recovery() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-disconnect-recovery"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let existing = folder.path().join("existing.txt");
+    fixture::write_text(&existing, "existing");
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        section.workspace_watcher_is_current_for_test() && tree_contains_path(&section, &existing)
+    });
+    section.pause_workspace_watch_polling_for_test();
+
+    let messages = Rc::new(RefCell::new(Vec::<String>::new()));
+    let messages_clone = Rc::clone(&messages);
+    section.connect_message(move |message, _| {
+        messages_clone.borrow_mut().push(message.to_string());
+    });
+    section.merge_workspace_watch_paths_for_test(vec![folder.path().join("changed.txt")]);
+    section.merge_workspace_watch_error_for_test("bounded watcher failure");
+    section.disconnect_workspace_watch_for_test();
+
+    assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
+    assert_eq!(section.refresh_pressure_for_test(), (1, false));
+    assert!(section.imp().watch_runtime.watcher.borrow().is_none());
+    assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
+    assert!(
+        messages
+            .borrow()
+            .iter()
+            .any(|message| message == "bounded watcher failure")
+    );
+    assert!(
+        messages
+            .borrow()
+            .iter()
+            .any(|message| message == "Workspace auto-refresh disconnected.")
+    );
+
+    let recovered = folder.path().join("manual-recovery.txt");
+    fixture::write_text(&recovered, "recover");
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &recovered)
+    });
+    assert!(section.imp().refresh_button.is_sensitive());
+    wait_until(Duration::from_secs(5), || {
+        !section.workspace_refresh_blocks_readiness_for_test()
+    });
+}
+
+#[test]
+fn test_disconnected_workspace_watcher_settles_as_unavailable() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-disconnect-settled"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(5), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+    section.pause_workspace_watch_polling_for_test();
+
+    section.disconnect_workspace_watch_for_test();
+    assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
+
+    assert!(section.imp().watch_runtime.watcher.borrow().is_none());
+    assert!(
+        !section.workspace_refresh_blocks_readiness_for_test(),
+        "a disconnected watcher has reported terminal unavailability and cannot remain pending"
+    );
+}
+
+#[test]
+fn test_old_watcher_disconnect_does_not_settle_new_target_generation() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-disconnect-stale"));
+    let first = tempfile::tempdir().expect("first workspace folder");
+    let second = tempfile::tempdir().expect("second workspace folder");
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("first"),
+        first.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(5), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+    section.pause_workspace_watch_polling_for_test();
+    let first_generation = section.watch_target_generation_for_test();
+
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("second"),
+        second.path().to_path_buf(),
+    )]);
+    assert_ne!(
+        section.watch_target_generation_for_test(),
+        first_generation,
+        "replacement targets must advance before the old watcher disconnects"
+    );
+    section.disconnect_workspace_watch_for_test();
+    assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
+
+    assert!(
+        !section.workspace_watcher_unavailability_is_current_for_test(),
+        "the disconnected watcher may settle only its installed generation"
+    );
+    assert!(
+        section.workspace_refresh_blocks_readiness_for_test(),
+        "the unattempted replacement generation must remain pending"
+    );
+    wait_until(Duration::from_secs(5), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+}
+
+#[test]
+fn test_hidden_workspace_watch_pressure_stays_bounded_and_retires_cleanly() {
+    ensure_gtk_init();
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("watch-hidden-retire"));
+    let folder = tempfile::tempdir().expect("workspace folder");
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(5), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+    section.set_visible(false);
+    section.pause_workspace_watch_polling_for_test();
+    section.merge_workspace_watch_paths_for_test(
+        (0..WORKSPACE_WATCH_PATH_CAP * 2)
+            .map(|index| folder.path().join(format!("hidden-{index}")))
+            .collect(),
+    );
+
+    let (mailbox, _, _, _) = section.workspace_watch_pressure_for_test();
+    let mailbox = mailbox.expect("installed mailbox");
+    assert_eq!(mailbox.retained_paths, 0);
+    assert!(mailbox.full_refresh);
+
+    section.stop_workspace_watch_for_test();
+    assert!(section.imp().watch_runtime.watcher.borrow().is_none());
+    assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
+}
+
+#[test]
 fn test_manual_refresh_reloads_each_workspace_folder_and_preserves_order() {
     ensure_gtk_init();
     let first = tempfile::tempdir().expect("first folder");
@@ -4237,6 +4498,10 @@ fn test_watcher_start_failure_surfaces_recoverable_feedback() {
         &*section.imp().file_tree_view,
         gtk4::AccessibleState::Invalid
     ));
+    assert!(
+        !section.workspace_refresh_blocks_readiness_for_test(),
+        "a terminal watcher startup failure must settle readiness as unavailable"
+    );
 
     section.load_folders(&[]);
     flush_events();
@@ -4395,6 +4660,7 @@ fn test_manual_refresh_keeps_selection_and_expansion() {
     section.load_folders(&[FolderTreeEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
+    section.stop_workspace_watch_for_test();
 
     let _window = present_section_window(&section);
     section.expand_folders();
@@ -4434,6 +4700,7 @@ fn test_refresh_updates_tree_after_external_rename() {
     section.load_folders(&[FolderTreeEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
+    section.stop_workspace_watch_for_test();
 
     let _window = present_section_window(&section);
     section.expand_folders();
@@ -4442,7 +4709,6 @@ fn test_refresh_updates_tree_after_external_rename() {
         .expect("nested directory should exist")
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &original));
-
     let renamed = nested.join("renamed.txt");
     fixture::rename(&original, &renamed);
     section.imp().refresh_button.emit_clicked();
@@ -4463,6 +4729,7 @@ fn test_refresh_updates_tree_after_external_delete() {
     section.load_folders(&[FolderTreeEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
+    section.stop_workspace_watch_for_test();
 
     let _window = present_section_window(&section);
     section.expand_folders();
@@ -4573,6 +4840,7 @@ fn test_manual_refresh_keeps_top_level_models_mounted() {
     section.load_folders(&[FolderTreeEntry::Directory {
         path: dir.path().to_path_buf(),
     }]);
+    section.stop_workspace_watch_for_test();
 
     let _window = present_section_window(&section);
     section.expand_folders();
@@ -4581,7 +4849,6 @@ fn test_manual_refresh_keeps_top_level_models_mounted() {
         .expect("nested directory should exist")
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &existing));
-
     let top_level_store_ptr = section
         .imp()
         .top_level_store
@@ -4624,6 +4891,145 @@ fn test_manual_refresh_keeps_top_level_models_mounted() {
             .as_ptr(),
         tree_model_ptr,
         "manual refresh should keep the existing tree model mounted",
+    );
+}
+
+#[test]
+fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("large reconciliation tempdir");
+    let nested = dir.path().join("nested");
+    fixture::create_dir(&nested);
+    for index in 0..500 {
+        fixture::write_text(&nested.join(format!("row-{index:05}.txt")), "");
+    }
+    let selected = nested.join("row-00450.txt");
+    let removed = nested.join("row-00100.txt");
+    let middle = nested.join("mid-00100.txt");
+    let latest = nested.join("aaa-latest.txt");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("large-reconciliation"));
+    section.load_folders(&[FolderTreeEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+    let window = present_section_window(&section);
+    // Bound only this lifecycle fixture's rendered height; production geometry
+    // retains the propagate-natural-height contract and has dedicated proof lanes.
+    section
+        .imp()
+        .inner_scrolled_window
+        .set_propagate_natural_height(false);
+    section
+        .imp()
+        .inner_scrolled_window
+        .set_max_content_height(400);
+    section.expand_folders();
+    wait_until(Duration::from_secs(10), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested directory row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(30), || {
+        tree_contains_path(&section, &nested.join("row-00499.txt"))
+            && !section.workspace_refresh_blocks_readiness_for_test()
+    });
+    section.stop_workspace_watch_for_test();
+    section.set_reconciliation_batch_delay_for_test(Duration::from_millis(20));
+    select_path(&section, &selected);
+    let (_, _, terminal_before, superseded_before, _) =
+        section.reconciliation_metrics_for_test();
+
+    for index in 100..400 {
+        fixture::remove_file(&nested.join(format!("row-{index:05}.txt")));
+        fixture::write_text(&nested.join(format!("mid-{index:05}.txt")), "");
+    }
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(30), || {
+        let (batches, max_batch, _, _, sources) = section.reconciliation_metrics_for_test();
+        batches > 0
+            && max_batch <= 256
+            && sources > 0
+            && section.workspace_refresh_blocks_readiness_for_test()
+    });
+
+    fixture::write_text(&latest, "latest");
+    section.imp().refresh_button.emit_clicked();
+    section.apply_queued_refresh_for_test();
+
+    let main_loop_progressed = Rc::new(Cell::new(false));
+    let main_loop_progressed_clone = Rc::clone(&main_loop_progressed);
+    glib::timeout_add_local_once(Duration::from_millis(1), move || {
+        main_loop_progressed_clone.set(true);
+    });
+    wait_until(Duration::from_secs(5), || main_loop_progressed.get());
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline
+        && !(tree_contains_path(&section, &latest)
+            && tree_contains_path(&section, &middle)
+            && !tree_contains_path(&section, &removed))
+    {
+        flush_after_delay(Duration::from_millis(10));
+    }
+    assert!(
+        tree_contains_path(&section, &latest)
+            && tree_contains_path(&section, &middle)
+            && !tree_contains_path(&section, &removed),
+        "latest={}, middle={}, removed={}, metrics={:?}, readiness={}",
+        tree_contains_path(&section, &latest),
+        tree_contains_path(&section, &middle),
+        tree_contains_path(&section, &removed),
+        section.reconciliation_metrics_for_test(),
+        section.workspace_refresh_blocks_readiness_for_test(),
+    );
+    wait_until(Duration::from_secs(30), || {
+        !section.workspace_refresh_blocks_readiness_for_test()
+    });
+    assert_eq!(selected_path(&section).as_deref(), Some(selected.as_path()));
+
+    let (_, max_batch, terminal_after, superseded_after, sources) =
+        section.reconciliation_metrics_for_test();
+    let (cache_input_rows, cache_operations) = section.child_cache_rebuild_metrics_for_test();
+    assert!(max_batch <= 256, "GTK changed-row batches must remain bounded");
+    assert_eq!(sources, 0, "terminal refresh must release every GLib source");
+    assert!(cache_input_rows > 0);
+    assert!(
+        cache_operations <= cache_input_rows.saturating_mul(8),
+        "terminal cache rebuild must remain linear: input={cache_input_rows}, operations={cache_operations}"
+    );
+    eprintln!(
+        "workspace-cache-runtime-evidence input_rows={cache_input_rows} operations={cache_operations}"
+    );
+    assert!(
+        terminal_after > terminal_before,
+        "the accepted latest plan must publish a terminal"
+    );
+    assert_eq!(
+        superseded_after,
+        superseded_before + 1,
+        "exactly the in-progress child plan should be superseded"
+    );
+    assert!(
+        row_for_path(&section, &nested)
+            .expect("nested directory should survive reconciliation")
+            .is_expanded()
+    );
+
+    for index in 100..400 {
+        fixture::remove_file(&nested.join(format!("mid-{index:05}.txt")));
+    }
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(30), || {
+        section.reconciliation_metrics_for_test().4 > 0
+    });
+    let section_weak = section.downgrade();
+    window.set_child(gtk4::Widget::NONE);
+    window.close();
+    drop(window);
+    drop(section);
+    flush_after_delay(Duration::from_millis(20));
+    assert!(
+        section_weak.upgrade().is_none(),
+        "disposing the section must release the active batch source's weak owner"
     );
 }
 

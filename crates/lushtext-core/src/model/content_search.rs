@@ -317,6 +317,46 @@ pub enum ReplacePreviewLimit {
     Bytes,
 }
 
+/// Non-content reason class for a Replace Preview row that cannot be confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplacePreviewSkipReason {
+    TruncatedSource,
+    RegexRangeMismatch,
+}
+
+/// Constant-shape counts for every non-content Replace Preview skip reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplacePreviewSkipCounts {
+    truncated_source: usize,
+    regex_range_mismatch: usize,
+}
+
+impl ReplacePreviewSkipCounts {
+    /// Return the saturating count for one typed reason class.
+    #[must_use]
+    pub fn count(self, reason: ReplacePreviewSkipReason) -> usize {
+        match reason {
+            ReplacePreviewSkipReason::TruncatedSource => self.truncated_source,
+            ReplacePreviewSkipReason::RegexRangeMismatch => self.regex_range_mismatch,
+        }
+    }
+
+    /// Return the saturating total across the fixed reason universe.
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.truncated_source
+            .saturating_add(self.regex_range_mismatch)
+    }
+
+    fn increment(&mut self, reason: ReplacePreviewSkipReason) {
+        let count = match reason {
+            ReplacePreviewSkipReason::TruncatedSource => &mut self.truncated_source,
+            ReplacePreviewSkipReason::RegexRangeMismatch => &mut self.regex_range_mismatch,
+        };
+        *count = count.saturating_add(1);
+    }
+}
+
 /// Bounded preview rows plus explicit accounting for every input match.
 #[derive(Debug, Clone)]
 pub struct ReplacePreviewOutcome {
@@ -326,10 +366,8 @@ pub struct ReplacePreviewOutcome {
     pub match_to_preview: Vec<Option<usize>>,
     /// Eligible matches excluded after the first row or byte limit was reached.
     pub omitted_eligible: usize,
-    /// Source-line excerpts that cannot safely participate in replacement.
-    pub skipped_truncated: usize,
-    /// Complete source rows whose regex no longer matched the recorded range.
-    pub skipped_invalid: usize,
+    /// Constant-shape, non-content reason counts for rows that cannot be confirmed.
+    pub skipped: ReplacePreviewSkipCounts,
     /// Conservative retained-payload charge for all admitted rows.
     pub charged_bytes: usize,
     /// First resource limit that prevented admission, if any.
@@ -349,7 +387,7 @@ impl ReplacePreviewOutcome {
 
     #[must_use]
     pub fn skipped_source_count(&self) -> usize {
-        self.skipped_truncated.saturating_add(self.skipped_invalid)
+        self.skipped.total()
     }
 
     #[must_use]
@@ -468,8 +506,7 @@ fn generate_replacement_preview_impl(
         replacements: Vec::with_capacity(matches.len().min(budget.max_rows)),
         match_to_preview: vec![None; matches.len()],
         omitted_eligible: 0,
-        skipped_truncated: 0,
-        skipped_invalid: 0,
+        skipped: ReplacePreviewSkipCounts::default(),
         charged_bytes: 0,
         limiting_reason: None,
     };
@@ -481,7 +518,9 @@ fn generate_replacement_preview_impl(
             break;
         }
         if m.line_truncated {
-            outcome.skipped_truncated = outcome.skipped_truncated.saturating_add(1);
+            outcome
+                .skipped
+                .increment(ReplacePreviewSkipReason::TruncatedSource);
             continue;
         }
         let original_line = m.line_content.clone();
@@ -493,7 +532,9 @@ fn generate_replacement_preview_impl(
                 .as_ref()
                 .is_some_and(|regex| regex.captures(&original_line[start..end]).is_none())
             {
-                outcome.skipped_invalid = outcome.skipped_invalid.saturating_add(1);
+                outcome
+                    .skipped
+                    .increment(ReplacePreviewSkipReason::RegexRangeMismatch);
             } else {
                 outcome.omitted_eligible = outcome.omitted_eligible.saturating_add(1);
             }
@@ -541,12 +582,9 @@ fn generate_replacement_preview_impl(
             } else {
                 // Regex didn't match the extracted range — skip this match rather
                 // than inserting unexpanded backreference syntax ($1/$2) literally.
-                tracing::warn!(
-                    "Regex did not match extracted range for line {}: {:?}",
-                    m.line_number,
-                    &original_line[start..end],
-                );
-                outcome.skipped_invalid = outcome.skipped_invalid.saturating_add(1);
+                outcome
+                    .skipped
+                    .increment(ReplacePreviewSkipReason::RegexRangeMismatch);
                 continue;
             }
         } else {
@@ -696,7 +734,59 @@ impl SavedSearch {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt;
+    use std::sync::{Arc, Mutex};
+
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Metadata, Subscriber};
+
     use super::*;
+
+    struct CapturingSubscriber {
+        output: Arc<Mutex<String>>,
+    }
+
+    impl Subscriber for CapturingSubscriber {
+        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+            matches!(
+                *metadata.level(),
+                tracing::Level::ERROR | tracing::Level::WARN
+            )
+        }
+
+        fn new_span(&self, _span: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut visitor = CapturingVisitor::default();
+            event.record(&mut visitor);
+            let mut output = self.output.lock().expect("capture lock");
+            output.push_str(&visitor.output);
+            output.push('\n');
+        }
+
+        fn enter(&self, _span: &Id) {}
+
+        fn exit(&self, _span: &Id) {}
+    }
+
+    #[derive(Default)]
+    struct CapturingVisitor {
+        output: String,
+    }
+
+    impl Visit for CapturingVisitor {
+        fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+            use fmt::Write as _;
+            let _ = write!(self.output, "{}={value:?};", field.name());
+        }
+    }
 
     fn match_in_line(line: &str, range: Range<usize>) -> SearchMatch {
         SearchMatch::new(PathBuf::from("/tmp/file.rs"), 7, line, range)
@@ -1005,10 +1095,60 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.skipped_truncated, 1);
-        assert_eq!(outcome.skipped_invalid, 2);
+        assert_eq!(
+            outcome
+                .skipped
+                .count(ReplacePreviewSkipReason::TruncatedSource),
+            1
+        );
+        assert_eq!(
+            outcome
+                .skipped
+                .count(ReplacePreviewSkipReason::RegexRangeMismatch),
+            2
+        );
         assert_eq!(outcome.skipped_source_count(), 3);
         assert!(outcome.is_empty());
+    }
+
+    #[test]
+    fn invalid_preview_diagnostics_and_typed_outcome_exclude_private_sentinels() {
+        const SOURCE_SENTINEL: &str = "PRIVATE-SOURCE-7d13f09c";
+        const REPLACEMENT_SENTINEL: &str = "PRIVATE-REPLACEMENT-2b64a811";
+        let output = Arc::new(Mutex::new(String::new()));
+        let dispatch = tracing::Dispatch::new(CapturingSubscriber {
+            output: Arc::clone(&output),
+        });
+        let invalid = match_in_line(SOURCE_SENTINEL, 0..SOURCE_SENTINEL.len());
+
+        let outcome = tracing::dispatcher::with_default(&dispatch, || {
+            generate_replacement_preview(
+                &[invalid],
+                "^(definitely-no-match)$",
+                REPLACEMENT_SENTINEL,
+                &ContentSearchOptions::new(true, true, false, true, None),
+            )
+        });
+
+        assert!(outcome.replacements.is_empty());
+        assert_eq!(
+            outcome
+                .skipped
+                .count(ReplacePreviewSkipReason::RegexRangeMismatch),
+            1
+        );
+        let captured = output.lock().expect("capture lock").clone();
+        let typed = format!("{outcome:?}");
+        for private in [SOURCE_SENTINEL, REPLACEMENT_SENTINEL] {
+            assert!(
+                !captured.contains(private),
+                "captured diagnostics leaked {private}"
+            );
+            assert!(
+                !typed.contains(private),
+                "typed invalid outcome leaked {private}"
+            );
+        }
     }
 
     #[test]

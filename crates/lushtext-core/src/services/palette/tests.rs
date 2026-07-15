@@ -10,7 +10,8 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::model::palette::{
-    CommandCategory, IndexedFile, PaletteFileEntry, SearchMode, SearchResultItem,
+    CommandCategory, IndexedFile, PaletteFileEntry, PaletteFileIdentity,
+    PaletteFileIdentityFailure, PaletteSearchRow, SearchMode, SearchResultItem,
 };
 use crate::services::filesystem::fixture;
 
@@ -23,7 +24,12 @@ fn file_names(index: &FileIndex) -> Vec<&str> {
 }
 
 fn indexed_file(folder: &Arc<PathBuf>, relative_path: &str) -> IndexedFile {
-    IndexedFile::new(folder.join(relative_path), Arc::clone(folder))
+    let path = folder.join(relative_path);
+    IndexedFile::new(
+        path.clone(),
+        PaletteFileIdentity::canonical(path),
+        Arc::clone(folder),
+    )
 }
 
 fn file_paths(index: &FileIndex) -> Vec<PathBuf> {
@@ -189,7 +195,9 @@ fn search_note_commands_only_returns_note_workflows() {
         .iter()
         .filter_map(|result| match result.item {
             SearchResultItem::Command(command) => Some(command.id),
-            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => None,
+            SearchResultItem::OpenFile(_)
+            | SearchResultItem::File(_)
+            | SearchResultItem::Note(_) => None,
         })
         .collect();
 
@@ -205,11 +213,13 @@ fn search_non_note_commands_excludes_note_workflows() {
 
     assert!(results.iter().all(|result| match result.item {
         SearchResultItem::Command(command) => !is_note_command(command),
-        SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => false,
+        SearchResultItem::OpenFile(_) | SearchResultItem::File(_) | SearchResultItem::Note(_) =>
+            false,
     }));
     assert!(results.iter().any(|result| match result.item {
         SearchResultItem::Command(command) => command.id == "win.open-file",
-        SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => false,
+        SearchResultItem::OpenFile(_) | SearchResultItem::File(_) | SearchResultItem::Note(_) =>
+            false,
     }));
 }
 
@@ -220,7 +230,9 @@ fn search_note_commands_for_section_filters_by_intent() {
         .iter()
         .filter_map(|result| match result.item {
             SearchResultItem::Command(command) => Some(command.id),
-            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => None,
+            SearchResultItem::OpenFile(_)
+            | SearchResultItem::File(_)
+            | SearchResultItem::Note(_) => None,
         })
         .collect();
 
@@ -234,7 +246,9 @@ fn search_commands_zoom_finds_all_zoom_entries() {
         .iter()
         .filter_map(|result| match &result.item {
             SearchResultItem::Command(command) => Some(command.label),
-            SearchResultItem::OpenFile(_) | SearchResultItem::File(_) => None,
+            SearchResultItem::OpenFile(_)
+            | SearchResultItem::File(_)
+            | SearchResultItem::Note(_) => None,
         })
         .collect();
     assert!(labels.contains(&"Zoom In"));
@@ -303,11 +317,13 @@ fn search_open_files_finds_active_documents_and_respects_max() {
             "main.rs".to_string(),
             "/workspace/src/main.rs".to_string(),
             PathBuf::from("/workspace/src/main.rs"),
+            PaletteFileIdentity::canonical(PathBuf::from("/workspace/src/main.rs")),
         ),
         PaletteFileEntry::new(
             "manifest.json".to_string(),
             "/workspace/manifest.json".to_string(),
             PathBuf::from("/workspace/manifest.json"),
+            PaletteFileIdentity::canonical(PathBuf::from("/workspace/manifest.json")),
         ),
     ];
 
@@ -318,7 +334,7 @@ fn search_open_files_finds_active_documents_and_respects_max() {
         SearchResultItem::OpenFile(file) => {
             assert_eq!(file.path, PathBuf::from("/workspace/src/main.rs"));
         }
-        SearchResultItem::File(_) | SearchResultItem::Command(_) => {
+        SearchResultItem::File(_) | SearchResultItem::Command(_) | SearchResultItem::Note(_) => {
             panic!("expected open-file result");
         }
     }
@@ -370,6 +386,106 @@ fn file_index_overlapping_workspace_folders_deduplicate_files() {
             1
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn file_index_canonical_alias_roots_keep_first_folder_precedence() {
+    let dir = TempDir::new().expect("temp directory");
+    let real_root = dir.path().join("real");
+    let alias_root = dir.path().join("alias");
+    fixture::create_dir(&real_root);
+    fixture::write_text(&real_root.join("main.rs"), "");
+    fixture::symlink(&real_root, &alias_root);
+
+    let index = FileIndex::rebuild(&[alias_root.clone(), real_root]);
+
+    assert_eq!(index.len(), 1);
+    assert_eq!(index.files()[0].path, alias_root.join("main.rs"));
+    assert_eq!(index.files()[0].workspace_folder.as_ref(), &alias_root);
+    assert_eq!(
+        index.files()[0].identity.canonical_path(),
+        Some(
+            crate::services::filesystem::metadata::canonical_path(&alias_root.join("main.rs"))
+                .expect("canonical alias")
+                .as_path()
+        )
+    );
+}
+
+#[test]
+fn file_index_retains_typed_identity_failure_without_cross_path_deduplication() {
+    let folder = Arc::new(PathBuf::from("/workspace"));
+    let missing_a = folder.join("missing-a.rs");
+    let missing_b = folder.join("missing-b.rs");
+    let mut index = FileIndex::default();
+
+    index.add_path(missing_a.clone(), Arc::clone(&folder));
+    index.add_path(missing_b.clone(), Arc::clone(&folder));
+
+    assert_eq!(index.len(), 2);
+    assert_eq!(file_paths(&index), vec![missing_a, missing_b]);
+    assert!(index.files().iter().all(|file| matches!(
+        file.identity,
+        PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::NotFound)
+    )));
+}
+
+#[test]
+fn grouped_search_excludes_open_identity_before_top_one_workspace_retention() {
+    let root = Arc::new(PathBuf::from("/workspace"));
+    let canonical_best = PathBuf::from("/canonical/target.rs");
+    let workspace_alias = root.join("target.rs");
+    let fallback = root.join("target_fallback.rs");
+    let index = FileIndex::from(vec![
+        IndexedFile::new(
+            workspace_alias.clone(),
+            PaletteFileIdentity::canonical(canonical_best.clone()),
+            Arc::clone(&root),
+        ),
+        IndexedFile::new(
+            fallback.clone(),
+            PaletteFileIdentity::canonical(fallback.clone()),
+            Arc::clone(&root),
+        ),
+    ]);
+    let open_tabs = vec![PaletteFileEntry::new(
+        "target.rs".to_string(),
+        "/open/alias/target.rs".to_string(),
+        PathBuf::from("/open/alias/target.rs"),
+        PaletteFileIdentity::canonical(canonical_best),
+    )];
+    let cancellation = PaletteSearchCancellation::default();
+
+    let PaletteSearchOutcome::Complete { value: rows, .. } = grouped_search(
+        GroupedSearchInput {
+            index: &index,
+            open_tabs: &open_tabs,
+            note_entries: &[],
+            workspace_group_label: "Selected Workspace",
+            query: "target",
+            mode: SearchMode::Files,
+            max_per_source: 1,
+        },
+        &cancellation,
+    ) else {
+        panic!("fresh grouped search must complete");
+    };
+
+    let file_paths: Vec<PathBuf> = rows
+        .into_iter()
+        .filter_map(|row| match row {
+            PaletteSearchRow::File { file_path, .. } => Some(file_path),
+            PaletteSearchRow::Header { .. }
+            | PaletteSearchRow::Command { .. }
+            | PaletteSearchRow::Note { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        file_paths,
+        vec![PathBuf::from("/open/alias/target.rs"), fallback]
+    );
+    assert!(!file_paths.contains(&workspace_alias));
 }
 
 #[test]
@@ -503,6 +619,78 @@ fn max_indexed_files_constant_remains_100k() {
 }
 
 #[test]
+fn file_index_flat_directory_retains_only_the_remaining_capacity() {
+    let dir = TempDir::new().expect("temp directory");
+    for index in 0..64 {
+        fixture::write_text(&dir.path().join(format!("file-{index:03}.rs")), "");
+    }
+    let cancellation = PaletteSearchCancellation::default();
+
+    let FileIndexBuildOutcome::Complete { index, metrics } =
+        FileIndex::rebuild_cancellable_for_test(&[dir.path().to_path_buf()], 8, &cancellation)
+    else {
+        panic!("fresh index build must complete");
+    };
+
+    assert_eq!(index.len(), 8);
+    assert_eq!(metrics.retained_files, 8);
+    assert_eq!(metrics.examined_directory_entries, 64);
+    assert!(metrics.peak_retained_directory_entries <= 8);
+    assert_eq!(
+        metrics.truncation,
+        Some(FileIndexTruncationReason::FileLimit)
+    );
+}
+
+#[test]
+fn file_index_cancelled_outcome_releases_partial_inventory() {
+    let dir = TempDir::new().expect("temp directory");
+    fixture::write_text(&dir.path().join("file.rs"), "");
+    let cancellation = PaletteSearchCancellation::default();
+    assert!(cancellation.cancel());
+
+    let outcome =
+        FileIndex::rebuild_cancellable_for_test(&[dir.path().to_path_buf()], 8, &cancellation);
+
+    assert!(matches!(
+        outcome,
+        FileIndexBuildOutcome::Cancelled {
+            metrics: FileIndexBuildMetrics {
+                retained_files: 0,
+                ..
+            }
+        }
+    ));
+}
+
+#[test]
+fn file_index_coordinator_retains_only_active_and_latest_compact_request() {
+    let mut coordinator = FileIndexBuildCoordinator::default();
+    let request = |name: &str| FileIndexBuildRequest {
+        workspace_folders: Arc::from([PathBuf::from(name)]),
+        capacity_hint: 64,
+    };
+    let first = coordinator
+        .submit(request("first"))
+        .expect("first request starts");
+
+    assert!(coordinator.submit(request("middle")).is_none());
+    assert!(coordinator.submit(request("latest")).is_none());
+    assert!(first.cancellation.is_cancelled());
+    assert_eq!(coordinator.snapshot().active, 1);
+    assert_eq!(coordinator.snapshot().pending, 1);
+
+    let latest = coordinator
+        .finish(first.generation)
+        .expect("latest request starts next");
+    assert_eq!(
+        latest.request.workspace_folders.as_ref(),
+        &[PathBuf::from("latest")]
+    );
+    assert_eq!(coordinator.snapshot().started, 2);
+}
+
+#[test]
 fn truncate_to_index_limit_only_truncates_when_count_exceeds_limit() {
     let folder = Arc::new(PathBuf::from("/workspace"));
     let mut below_limit = vec![
@@ -599,7 +787,11 @@ fn add_file_registers_the_file_and_workspace_folder() {
     let path = folder.join("src/main.rs");
     let mut index = FileIndex::default();
 
-    index.add_file(IndexedFile::new(path.clone(), Arc::clone(&folder)));
+    index.add_file(IndexedFile::new(
+        path.clone(),
+        PaletteFileIdentity::canonical(path.clone()),
+        Arc::clone(&folder),
+    ));
 
     assert_eq!(index.len(), 1);
     assert_eq!(index.files()[0].path, path);
@@ -610,6 +802,17 @@ fn add_file_registers_the_file_and_workspace_folder() {
             .as_ref(),
         folder.as_ref()
     );
+}
+
+#[test]
+fn add_file_replay_does_not_duplicate_an_existing_path() {
+    let folder = Arc::new(PathBuf::from("/workspace"));
+    let file = indexed_file(&folder, "src/main.rs");
+    let mut index = FileIndex::from(vec![file.clone()]);
+
+    index.add_file(file);
+
+    assert_eq!(index.len(), 1);
 }
 
 #[test]

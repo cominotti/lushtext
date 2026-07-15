@@ -69,6 +69,19 @@ pub struct FileFacts {
     pub byte_size: u64,
     /// Last modification time as seconds since the Unix epoch, if available.
     pub modified_at_secs: Option<u64>,
+    /// Full modification timestamp used by freshness-sensitive workflows.
+    pub modified_at_nanos: Option<u128>,
+    /// Stable platform identity when the backend can provide one.
+    pub identity: Option<FileIdentity>,
+}
+
+/// Stable identity for one concrete filesystem object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileIdentity {
+    /// Filesystem device identifier.
+    pub device: u64,
+    /// Inode or equivalent object identifier within the device.
+    pub inode: u64,
 }
 
 /// Bytes plus metadata captured from one file read.
@@ -89,6 +102,17 @@ pub struct DirectoryEntryInfo {
     pub file_name: String,
     /// Coarse file kind.
     pub kind: FileKind,
+}
+
+/// One lexicographically selected directory page with bounded retained rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryPage {
+    /// Entries ordered by filename and strictly after the requested cursor.
+    pub entries: Vec<DirectoryEntryInfo>,
+    /// Whether at least one additional matching entry followed this page.
+    pub has_more: bool,
+    /// Whether selection exhausted the cursor suffix and restarted at the beginning.
+    pub wrapped: bool,
 }
 
 /// Readability-first policy for directory scans.

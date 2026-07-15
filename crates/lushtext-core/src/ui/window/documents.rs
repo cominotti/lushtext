@@ -63,6 +63,32 @@ impl OpenDocumentIntent {
 }
 
 impl LushtextWindow {
+    /// Return whether this page currently owns the selected tab.
+    pub(crate) fn is_selected_editor(&self, editor: &LushtextEditorPage) -> bool {
+        self.imp().tab_view.selected_page().is_some_and(|page| {
+            page.child().as_ptr() == editor.upcast_ref::<gtk4::Widget>().as_ptr()
+        })
+    }
+
+    /// Saturating residency estimate for pages the live-memory policy protects.
+    pub(crate) fn protected_editor_residency_bytes(&self) -> u64 {
+        let tab_view = &self.imp().tab_view;
+        let selected = tab_view.selected_page();
+        (0..tab_view.n_pages()).fold(0u64, |total, index| {
+            let page = tab_view.nth_page(index);
+            let child = page.child();
+            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
+                return total;
+            };
+            let active = selected.as_ref() == Some(&page);
+            if editor.eligible_for_memory_eviction(active) {
+                total
+            } else {
+                total.saturating_add(editor.estimated_live_buffer_bytes())
+            }
+        })
+    }
+
     /// Speak a bounded workflow milestone through the shared status-bar target.
     pub(super) fn announce_workflow_update(
         &self,
@@ -189,7 +215,6 @@ impl LushtextWindow {
                     window.refresh_open_popover_rows();
                     return;
                 }
-                editor.start_file_monitor();
                 window.check_draft_on_open(&editor, &path_for_draft);
                 window.refresh_sidebar_file_row_states();
                 window.refresh_open_popover_rows();
@@ -492,6 +517,9 @@ impl LushtextWindow {
             if let Some(page) = page_weak.upgrade()
                 && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
             {
+                if editor.load_projection_suspended() {
+                    return;
+                }
                 let name = editor.title();
                 if buf.is_modified() {
                     let was_draft_dirty = editor.draft_dirty();
@@ -523,6 +551,9 @@ impl LushtextWindow {
             if let Some(page) = page_weak.upgrade()
                 && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
             {
+                if editor.load_projection_suspended() {
+                    return;
+                }
                 became_draft_dirty = !editor.draft_dirty();
                 editor.set_draft_dirty(true);
             }

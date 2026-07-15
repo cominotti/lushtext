@@ -7,11 +7,64 @@ use std::sync::Arc;
 
 use super::bookmark::BookmarkRecord;
 
+/// Canonical filesystem identity used only for palette deduplication.
+///
+/// Display and activation continue to use the caller's original path. An
+/// unavailable identity remains explicit so callers never mistake a raw path
+/// for a canonical one after metadata resolution fails.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PaletteFileIdentity {
+    /// Canonical path resolved through the filesystem boundary.
+    Canonical(PathBuf),
+    /// Canonical identity could not be resolved for this source snapshot.
+    Unavailable(PaletteFileIdentityFailure),
+}
+
+impl PaletteFileIdentity {
+    /// Build a resolved canonical identity.
+    #[must_use]
+    pub fn canonical(path: PathBuf) -> Self {
+        Self::Canonical(path)
+    }
+
+    /// Return the canonical path when identity resolution succeeded.
+    #[must_use]
+    pub fn canonical_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Canonical(path) => Some(path),
+            Self::Unavailable(_) => None,
+        }
+    }
+}
+
+/// Stable, content-free classification for palette identity failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaletteFileIdentityFailure {
+    NotResolved,
+    NotFound,
+    PermissionDenied,
+    InvalidInput,
+    Other,
+}
+
+impl From<std::io::ErrorKind> for PaletteFileIdentityFailure {
+    fn from(kind: std::io::ErrorKind) -> Self {
+        match kind {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            std::io::ErrorKind::InvalidInput => Self::InvalidInput,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// A file entry in the palette's search index.
 #[derive(Debug, Clone)]
 pub struct IndexedFile {
     /// Absolute path to the file on disk.
     pub path: PathBuf,
+    /// Canonical identity captured during background index construction.
+    pub identity: PaletteFileIdentity,
     /// File name component (pre-extracted for fast matching).
     pub name: String,
     /// The workspace folder that contains this file.
@@ -23,13 +76,18 @@ pub struct IndexedFile {
 impl IndexedFile {
     /// Create an indexed file, deriving the name from the path's last component.
     #[must_use]
-    pub fn new(path: PathBuf, workspace_folder: Arc<PathBuf>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        identity: PaletteFileIdentity,
+        workspace_folder: Arc<PathBuf>,
+    ) -> Self {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         Self {
             path,
+            identity,
             name,
             workspace_folder,
         }
@@ -59,16 +117,24 @@ pub struct PaletteFileEntry {
     pub subtitle: String,
     /// Absolute path opened when the row is activated.
     pub path: PathBuf,
+    /// Canonical identity already known by the owning editor.
+    pub identity: PaletteFileIdentity,
 }
 
 impl PaletteFileEntry {
     /// Build a file-like palette entry from already prepared display fields.
     #[must_use]
-    pub fn new(display_name: String, subtitle: String, path: PathBuf) -> Self {
+    pub fn new(
+        display_name: String,
+        subtitle: String,
+        path: PathBuf,
+        identity: PaletteFileIdentity,
+    ) -> Self {
         Self {
             display_name,
             subtitle,
             path,
+            identity,
         }
     }
 }
@@ -247,6 +313,8 @@ pub struct ScoredResult<'a> {
     pub item: SearchResultItem<'a>,
     /// Fuzzy-match score; higher scores sort earlier.
     pub score: u32,
+    /// Original ordinal in the searched source, used as the deterministic tie-break.
+    pub source_ordinal: usize,
 }
 
 /// The kind of item in a search result.
@@ -258,6 +326,8 @@ pub enum SearchResultItem<'a> {
     File(&'a IndexedFile),
     /// Static command registry entry.
     Command(&'a CommandDef),
+    /// Cached bookmark or note record.
+    Note(&'a PaletteNoteEntry),
 }
 
 /// Semantic group for note rows in the command palette and Notes browser.
@@ -327,6 +397,29 @@ pub enum PaletteNoteTarget {
     },
 }
 
+/// Owned, GTK-free row emitted by grouped command-palette search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteSearchRow {
+    Header {
+        label: String,
+    },
+    File {
+        display_name: String,
+        subtitle: String,
+        file_path: PathBuf,
+    },
+    Command {
+        display_name: String,
+        subtitle: String,
+        action_id: String,
+    },
+    Note {
+        display_name: String,
+        subtitle: String,
+        target: PaletteNoteTarget,
+    },
+}
+
 /// One searchable note row shared by the Notes browser and command palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteNoteEntry {
@@ -389,6 +482,7 @@ mod tests {
     fn test_indexed_file_relative_display() {
         let file = IndexedFile {
             path: "/home/user/project/src/main.rs".into(),
+            identity: PaletteFileIdentity::canonical("/home/user/project/src/main.rs".into()),
             name: "main.rs".to_string(),
             workspace_folder: Arc::new("/home/user/project".into()),
         };
@@ -399,6 +493,7 @@ mod tests {
     fn test_indexed_file_relative_display_fallback() {
         let file = IndexedFile {
             path: "/other/path/file.rs".into(),
+            identity: PaletteFileIdentity::canonical("/other/path/file.rs".into()),
             name: "file.rs".to_string(),
             workspace_folder: Arc::new("/home/user/project".into()),
         };
@@ -590,6 +685,7 @@ mod tests {
     fn test_indexed_file_at_workspace_folder_top_level() {
         let file = IndexedFile {
             path: "/home/user/project/Cargo.toml".into(),
+            identity: PaletteFileIdentity::canonical("/home/user/project/Cargo.toml".into()),
             name: "Cargo.toml".to_string(),
             workspace_folder: Arc::new("/home/user/project".into()),
         };

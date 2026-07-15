@@ -16,6 +16,7 @@ use gtk4::prelude::*;
 
 use crate::model::workspace::{FolderTreeEntry, WorkspaceFolderId};
 use crate::services::notifications::NotificationSeverity;
+use crate::services::workspace_watch::WORKSPACE_WATCH_PATH_CAP;
 
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
@@ -31,7 +32,12 @@ const MANUAL_REFRESH_DEBOUNCE_MS: u64 = 1;
 
 enum RefreshPlan {
     Full,
-    Directories(Vec<PathBuf>),
+    Directories(Vec<RefreshDirectory>),
+}
+
+struct RefreshDirectory {
+    path: PathBuf,
+    stores: Vec<gtk4::gio::ListStore>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,7 +60,7 @@ impl LushtextWorkspaceSection {
             .manual_refresh_announcing
             .set(true);
         self.emit_message("Refreshing workspace folders", NotificationSeverity::Info);
-        self.schedule_refresh(true, Vec::new());
+        self.schedule_refresh(true, Vec::new(), true);
     }
 
     /// Test helper for driving the automatic refresh path without filesystem events.
@@ -63,22 +69,47 @@ impl LushtextWorkspaceSection {
         self.queue_auto_refresh(changed_paths);
     }
 
+    /// Test helper for driving mailbox overflow without filesystem events.
+    #[cfg(feature = "test-utils")]
+    pub fn queue_auto_full_refresh_for_test(&self) {
+        self.queue_auto_full_refresh();
+    }
+
     /// Queue an automatic refresh from the filesystem watcher.
     pub(super) fn queue_auto_refresh(&self, changed_paths: Vec<PathBuf>) {
         if changed_paths.is_empty() {
             return;
         }
-        self.schedule_refresh(false, changed_paths);
+        self.schedule_refresh(false, changed_paths, false);
     }
 
-    fn schedule_refresh(&self, full_reload: bool, changed_paths: Vec<PathBuf>) {
+    /// Queue a conservative automatic refresh after mailbox overflow.
+    pub(super) fn queue_auto_full_refresh(&self) {
+        self.schedule_refresh(true, Vec::new(), false);
+    }
+
+    fn schedule_refresh(&self, full_reload: bool, changed_paths: Vec<PathBuf>, manual: bool) {
         let runtime = &self.imp().refresh_runtime;
         if full_reload {
-            runtime.pending_full_reload.set(true);
+            runtime.pending_paths.borrow_mut().clear();
+            if runtime.pending_full_reload.replace(true) && !manual {
+                return;
+            }
+        } else if runtime.pending_full_reload.get() {
+            return;
+        } else {
+            let mut pending_paths = runtime.pending_paths.borrow_mut();
+            for path in changed_paths {
+                pending_paths.insert(path);
+                if pending_paths.len() > WORKSPACE_WATCH_PATH_CAP {
+                    pending_paths.clear();
+                    runtime.pending_full_reload.set(true);
+                    break;
+                }
+            }
         }
-        runtime.pending_paths.borrow_mut().extend(changed_paths);
 
-        let delay = if full_reload {
+        let delay = if manual {
             MANUAL_REFRESH_DEBOUNCE_MS
         } else {
             AUTO_REFRESH_DEBOUNCE_MS
@@ -88,6 +119,57 @@ impl LushtextWorkspaceSection {
             .schedule(self, Duration::from_millis(delay), move |section, _| {
                 section.apply_queued_refresh();
             });
+    }
+
+    /// Scalar pressure state for deterministic widget assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn refresh_pressure_for_test(&self) -> (usize, bool) {
+        let runtime = &self.imp().refresh_runtime;
+        (
+            runtime.pending_paths.borrow().len(),
+            runtime.pending_full_reload.get(),
+        )
+    }
+
+    /// Scalar bounded-reconciliation evidence for widget tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn reconciliation_metrics_for_test(&self) -> (u64, usize, u64, u64, usize) {
+        let refresh = &self.imp().refresh_runtime;
+        (
+            refresh.reconcile_batch_count.get(),
+            refresh.reconcile_max_batch_rows.get(),
+            refresh.reconcile_terminal_count.get(),
+            refresh.reconcile_superseded_count.get(),
+            self.imp().child_reconcile_sources.borrow().len(),
+        )
+    }
+
+    /// Scalar terminal child-cache work evidence for linear-scale assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn child_cache_rebuild_metrics_for_test(&self) -> (usize, usize) {
+        let refresh = &self.imp().refresh_runtime;
+        (
+            refresh.cache_rebuild_input_rows.get(),
+            refresh.cache_rebuild_operations.get(),
+        )
+    }
+
+    /// Apply already-queued pressure immediately for deterministic supersession tests.
+    #[cfg(feature = "test-utils")]
+    pub fn apply_queued_refresh_for_test(&self) {
+        self.apply_queued_refresh();
+    }
+
+    /// Set the section-local batch cadence used by lifecycle-sensitive tests.
+    #[cfg(feature = "test-utils")]
+    pub fn set_reconciliation_batch_delay_for_test(&self, delay: Duration) {
+        self.imp()
+            .refresh_runtime
+            .test_reconcile_batch_delay
+            .set(delay);
     }
 
     fn apply_queued_refresh(&self) {
@@ -111,8 +193,8 @@ impl LushtextWorkspaceSection {
         match self.plan_refresh(&pending_paths) {
             RefreshPlan::Full => self.reload_current_view(),
             RefreshPlan::Directories(directories) => {
-                for dir_path in directories {
-                    self.reload_directory(&dir_path);
+                for directory in directories {
+                    self.refresh_loaded_directory(&directory.path, directory.stores);
                 }
             }
         }
@@ -146,6 +228,8 @@ impl LushtextWorkspaceSection {
     fn snapshot_refresh_state(&self) {
         self.save_expanded_paths();
         *self.imp().pending_selection.borrow_mut() = self.selected_tree_path();
+        self.imp().refresh_runtime.reconcile_batch_count.set(0);
+        self.imp().refresh_runtime.reconcile_max_batch_rows.set(0);
     }
 
     fn selected_tree_path(&self) -> Option<PathBuf> {
@@ -175,39 +259,53 @@ impl LushtextWorkspaceSection {
             return;
         }
 
-        let mut expanded_paths = self
-            .imp()
-            .expanded_paths
-            .borrow()
-            .iter()
-            .cloned()
+        let mut expanded = self
+            .expanded_store_index()
+            .into_iter()
+            .map(|(path, stores)| {
+                let stores = stores
+                    .into_iter()
+                    .map(|store| {
+                        let snapshot =
+                            super::tree_loading::snapshot_child_store_mirror(self, &store);
+                        (store, snapshot)
+                    })
+                    .collect::<Vec<_>>();
+                (path, stores)
+            })
             .collect::<Vec<_>>();
-        expanded_paths.sort_by_key(|path| path.components().count());
-
-        for dir_path in expanded_paths {
-            if self.dir_has_expanded_store(&dir_path) {
-                self.refresh_loaded_directory(&dir_path);
-            }
+        expanded.sort_by_key(|(path, _)| path.components().count());
+        for (dir_path, stores) in expanded {
+            self.refresh_loaded_directory_with_mirrors(&dir_path, stores);
         }
     }
 
-    fn reload_directory(&self, dir_path: &Path) {
-        if !self.refresh_loaded_directory(dir_path) {
-            self.reload_current_view();
-        }
+    fn refresh_loaded_directory(&self, dir_path: &Path, stores: Vec<gtk4::gio::ListStore>) {
+        let stores = stores
+            .into_iter()
+            .map(|store| {
+                let snapshot = super::tree_loading::snapshot_child_store_mirror(self, &store);
+                (store, snapshot)
+            })
+            .collect();
+        self.refresh_loaded_directory_with_mirrors(dir_path, stores);
     }
 
-    fn refresh_loaded_directory(&self, dir_path: &Path) -> bool {
-        let stores = self.expanded_stores_for_dir(dir_path);
-        if stores.is_empty() {
-            return false;
-        }
-
+    fn refresh_loaded_directory_with_mirrors(
+        &self,
+        dir_path: &Path,
+        stores: Vec<(
+            gtk4::gio::ListStore,
+            Option<super::tree_loading::ChildMirrorSnapshot>,
+        )>,
+    ) {
         super::tree_loading::clear_dir_state(self, dir_path);
-        for store in stores {
+        for (store, snapshot) in stores {
+            if let Some(snapshot) = snapshot {
+                super::tree_loading::restore_child_store_mirror(self, dir_path, &store, snapshot);
+            }
             super::tree_loading::populate_child_store(self, dir_path, &store);
         }
-        true
     }
 
     fn plan_refresh(&self, changed_paths: &HashSet<PathBuf>) -> RefreshPlan {
@@ -217,23 +315,35 @@ impl LushtextWorkspaceSection {
             .map(|entry| entry.path().to_path_buf())
             .collect();
 
+        let mut expanded_stores = self.expanded_store_index();
         let mut directories = Vec::new();
         for changed_path in changed_paths {
-            let Some(dir_path) =
-                self.refresh_directory_for_path(changed_path, &current_folder_paths)
-            else {
+            let Some(dir_path) = Self::refresh_directory_for_path(
+                changed_path,
+                &current_folder_paths,
+                &expanded_stores,
+            ) else {
                 return RefreshPlan::Full;
             };
             directories.push(dir_path);
         }
 
-        RefreshPlan::Directories(minimize_refresh_directories(directories))
+        RefreshPlan::Directories(
+            minimize_refresh_directories(directories)
+                .into_iter()
+                .filter_map(|path| {
+                    expanded_stores
+                        .remove(&path)
+                        .map(|stores| RefreshDirectory { path, stores })
+                })
+                .collect(),
+        )
     }
 
     fn refresh_directory_for_path(
-        &self,
         changed_path: &Path,
         current_folder_paths: &HashSet<PathBuf>,
+        expanded_stores: &HashMap<PathBuf, Vec<gtk4::gio::ListStore>>,
     ) -> Option<PathBuf> {
         let mut candidate = Some(changed_path);
         while let Some(path) = candidate {
@@ -241,7 +351,7 @@ impl LushtextWorkspaceSection {
             if is_workspace_folder && path == changed_path {
                 return None;
             }
-            if self.dir_has_expanded_store(path) {
+            if expanded_stores.contains_key(path) {
                 return Some(path.to_path_buf());
             }
             if is_workspace_folder {
@@ -252,16 +362,12 @@ impl LushtextWorkspaceSection {
         None
     }
 
-    fn dir_has_expanded_store(&self, dir_path: &Path) -> bool {
-        !self.expanded_stores_for_dir(dir_path).is_empty()
-    }
-
-    fn expanded_stores_for_dir(&self, dir_path: &Path) -> Vec<gtk4::gio::ListStore> {
+    fn expanded_store_index(&self) -> HashMap<PathBuf, Vec<gtk4::gio::ListStore>> {
         let Some(tree_model) = self.imp().tree_model.borrow().as_ref().cloned() else {
-            return Vec::new();
+            return HashMap::new();
         };
 
-        let mut stores = Vec::new();
+        let mut stores = HashMap::<PathBuf, Vec<gtk4::gio::ListStore>>::new();
         for index in 0..tree_model.n_items() {
             let Some(row) = tree_model.item(index).and_downcast::<gtk4::TreeListRow>() else {
                 continue;
@@ -272,16 +378,19 @@ impl LushtextWorkspaceSection {
             let Some(item) = row.item().and_downcast::<FileTreeItem>() else {
                 continue;
             };
-            if !item.is_dir() || item.path().as_deref() != Some(dir_path) {
+            if !item.is_dir() {
                 continue;
             }
+            let Some(path) = item.path() else {
+                continue;
+            };
             let Some(store) = row
                 .children()
                 .and_then(|children| children.downcast::<gtk4::gio::ListStore>().ok())
             else {
                 continue;
             };
-            stores.push(store);
+            stores.entry(path).or_default().push(store);
         }
         stores
     }
@@ -399,13 +508,14 @@ impl LushtextWorkspaceSection {
 }
 
 fn minimize_refresh_directories(mut directories: Vec<PathBuf>) -> Vec<PathBuf> {
-    directories.sort_by_key(|path| path.components().count());
+    directories.sort_unstable();
+    directories.dedup();
 
-    let mut unique = Vec::new();
+    let mut unique = Vec::<PathBuf>::new();
     for dir in directories {
         if unique
-            .iter()
-            .any(|existing: &PathBuf| dir.starts_with(existing))
+            .last()
+            .is_some_and(|existing| dir.starts_with(existing))
         {
             continue;
         }
@@ -498,4 +608,41 @@ fn common_folder_suffix_len(current: &[FolderRowState], desired: &[FolderRowStat
         .zip(desired.iter().rev())
         .take_while(|(left, right)| left == right)
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_directory_minimization_keeps_only_shallowest_ancestors() {
+        let directories = vec![
+            PathBuf::from("/workspace/zeta"),
+            PathBuf::from("/workspace/alpha/nested"),
+            PathBuf::from("/workspace/alpha"),
+            PathBuf::from("/workspace/zeta/deep/file"),
+            PathBuf::from("/workspace/alpha"),
+        ];
+
+        assert_eq!(
+            minimize_refresh_directories(directories),
+            vec![
+                PathBuf::from("/workspace/alpha"),
+                PathBuf::from("/workspace/zeta")
+            ]
+        );
+    }
+
+    #[test]
+    fn refresh_directory_minimization_handles_the_shared_path_cap() {
+        let directories = (0..WORKSPACE_WATCH_PATH_CAP)
+            .rev()
+            .map(|index| PathBuf::from(format!("/workspace/{index:04}")))
+            .collect();
+
+        let minimized = minimize_refresh_directories(directories);
+
+        assert_eq!(minimized.len(), WORKSPACE_WATCH_PATH_CAP);
+        assert!(minimized.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 }

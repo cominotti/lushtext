@@ -8,7 +8,8 @@
 //! UTF-8 files beside a JSON manifest under `$XDG_DATA_HOME/lushtext/drafts/`.
 
 use crate::model::draft::{
-    DraftEntry, DraftManifest, FileDraftRestoreResolution, PreloadedDraftRestore,
+    DraftCleanupContinuation, DraftEntry, DraftManifest, FileDraftRestoreResolution,
+    PreloadedDraftRestore,
 };
 use crate::model::session::SessionData;
 use crate::model::sidecar_identity::stable_path_hash;
@@ -66,10 +67,11 @@ pub use cleanup_types::*;
 
 /// Deterministic cleanup failure selected by test builds.
 ///
-/// This seam is gated behind the property and integration test features so
-/// ordinary production callers cannot bypass real filesystem behavior, while
-/// failure tests remain independent of process privileges.
-#[cfg(any(feature = "property-tests", feature = "test-utils"))]
+/// This seam is gated behind Rust's test configuration and the explicit
+/// property/integration test features so production callers cannot bypass real
+/// filesystem behavior while every test surface can exercise deterministic
+/// failures independently of process privileges.
+#[cfg(any(test, feature = "property-tests", feature = "test-utils"))]
 #[derive(Clone, Copy, Debug)]
 pub enum DraftOrphanCleanupFault {
     /// Fail an orphan-body deletion after its identity is revalidated.
@@ -155,14 +157,18 @@ pub fn draft_id_for_untitled(counter: u64) -> String {
     format!("untitled-{counter:016x}")
 }
 
-/// Load the draft manifest from disk. Returns an empty manifest if
-/// the file doesn't exist.
+/// Load the draft manifest, returning recovered/default state when metadata is
+/// missing, unreadable, or malformed.
 ///
 /// **Threading:** blocking I/O, call from background thread.
 ///
+/// This compatibility wrapper does not propagate recovery diagnostics. Use
+/// [`load_manifest_recovering`] when the caller must surface preserved evidence.
+///
 /// # Errors
 ///
-/// Returns an error if the manifest file exists but cannot be read or parsed.
+/// The current recovery-aware implementation does not return `Err`; the
+/// `Result` shape is retained for compatibility with existing callers.
 pub fn load_manifest(data_dir: &Path) -> Result<DraftManifest> {
     Ok(load_manifest_recovering(data_dir).value)
 }
@@ -250,9 +256,13 @@ fn load_restore_state_with_eager_limit(data_dir: &Path, eager_limit: u64) -> Res
 
     let manifest_load = load_manifest_for_restore(data_dir, &session);
     let mut manifest = manifest_load.value;
-    let orphan_cleanup_allowed = manifest_load.outcome == RecoveryLoadOutcome::Loaded
+    let orphan_cleanup_allowed = (manifest_load.outcome == RecoveryLoadOutcome::Loaded
         || (manifest_load.outcome == RecoveryLoadOutcome::MissingDefault
-            && manifest_load.diagnostics.is_empty());
+            && manifest_load.diagnostics.is_empty()))
+        && manifest
+            .cleanup_continuation
+            .as_ref()
+            .is_none_or(DraftCleanupContinuation::is_trusted);
     diagnostics.extend(manifest_load.diagnostics);
 
     let mut preloaded = HashMap::new();
@@ -798,19 +808,46 @@ pub fn inspect_orphan_cleanup_from(
     manifest_offset: usize,
 ) -> std::result::Result<DraftOrphanCleanupPlan, DraftOrphanCleanupScanError> {
     let dir = drafts_dir(data_dir);
-    let entries = match fs_metadata::path_status(&dir) {
-        Ok(PathStatus::Missing) => Vec::new(),
-        Ok(PathStatus::Directory) => fs_tree::scan_directory(
-            &dir,
-            DirectoryScanPolicy {
-                max_entries: MAX_ORPHAN_CLEANUP_DRAFT_SCAN,
-                include_hidden: false,
+    let inspected_directory_continuation = manifest.cleanup_continuation.clone();
+    if let Some(continuation) = inspected_directory_continuation.as_ref()
+        && !continuation.is_trusted()
+    {
+        return Err(DraftOrphanCleanupScanError::UntrustedContinuation {
+            file_name: continuation.last_completed_file_name.clone(),
+        });
+    }
+    let page_policy = DirectoryScanPolicy {
+        max_entries: MAX_ORPHAN_CLEANUP_DRAFT_SCAN,
+        include_hidden: false,
+    };
+    let (page, directory_wrapped) = match fs_metadata::path_status(&dir) {
+        Ok(PathStatus::Missing) => (
+            crate::services::filesystem::DirectoryPage {
+                entries: Vec::new(),
+                has_more: false,
+                wrapped: false,
             },
-        )
-        .map_err(|error| DraftOrphanCleanupScanError::Read {
-            path: dir.clone(),
-            detail: error.to_string(),
-        })?,
+            false,
+        ),
+        Ok(PathStatus::Directory) => {
+            let wrap_if_exhausted = inspected_directory_continuation
+                .as_ref()
+                .is_some_and(|continuation| continuation.wraparound_pending);
+            let page = fs_tree::scan_directory_page(
+                &dir,
+                inspected_directory_continuation
+                    .as_ref()
+                    .map(|continuation| continuation.last_completed_file_name.as_str()),
+                wrap_if_exhausted,
+                page_policy,
+            )
+            .map_err(|error| DraftOrphanCleanupScanError::Read {
+                path: dir.clone(),
+                detail: error.to_string(),
+            })?;
+            let wrapped = page.wrapped;
+            (page, wrapped)
+        }
         Ok(status) => {
             return Err(DraftOrphanCleanupScanError::NotDirectory { path: dir, status });
         }
@@ -822,6 +859,12 @@ pub fn inspect_orphan_cleanup_from(
             .into());
         }
     };
+    let next_directory_continuation = next_cleanup_continuation(
+        inspected_directory_continuation.as_ref(),
+        &page,
+        directory_wrapped,
+    );
+    let entries = page.entries;
 
     let manifest_start = manifest_offset.min(manifest.drafts.len());
     let manifest_page_len = manifest
@@ -838,14 +881,15 @@ pub fn inspect_orphan_cleanup_from(
     let next_manifest_offset = manifest_start.saturating_add(manifest_page_len);
     let manifest_has_more = next_manifest_offset < manifest.drafts.len();
     let mut plan = DraftOrphanCleanupPlan {
-        // A full-cap result cannot prove that the directory ended at the bound,
-        // so it conservatively schedules a later normal deferred opportunity.
-        has_more_work: entries.len() == MAX_ORPHAN_CLEANUP_DRAFT_SCAN || manifest_has_more,
+        has_more_work: next_directory_continuation.is_some() || manifest_has_more,
         next_manifest_offset: if manifest_has_more {
             Some(next_manifest_offset)
         } else {
             None
         },
+        inspected_directory_continuation,
+        next_directory_continuation,
+        directory_wrapped,
         ..DraftOrphanCleanupPlan::default()
     };
     let mut seen_fingerprints = HashSet::new();
@@ -960,6 +1004,36 @@ pub fn inspect_orphan_cleanup_from(
     Ok(plan)
 }
 
+fn next_cleanup_continuation(
+    current: Option<&DraftCleanupContinuation>,
+    page: &crate::services::filesystem::DirectoryPage,
+    wrapped: bool,
+) -> Option<DraftCleanupContinuation> {
+    let last_file_name = page.entries.last().map(|entry| entry.file_name.clone());
+    if wrapped {
+        return page.has_more.then(|| DraftCleanupContinuation {
+            last_completed_file_name: last_file_name.expect("non-empty page when more work exists"),
+            wraparound_pending: false,
+        });
+    }
+    let last_completed_file_name = last_file_name?;
+    match current {
+        None if page.has_more => Some(DraftCleanupContinuation {
+            last_completed_file_name,
+            wraparound_pending: true,
+        }),
+        Some(current) if page.has_more => Some(DraftCleanupContinuation {
+            last_completed_file_name,
+            wraparound_pending: current.wraparound_pending,
+        }),
+        Some(current) if current.wraparound_pending => Some(DraftCleanupContinuation {
+            last_completed_file_name,
+            wraparound_pending: true,
+        }),
+        None | Some(_) => None,
+    }
+}
+
 fn draft_body_path(data_dir: &Path, draft_id: &str) -> PathBuf {
     drafts_dir(data_dir).join(format!("{draft_id}.draft"))
 }
@@ -987,7 +1061,7 @@ pub fn execute_orphan_cleanup(
 /// The injected failure follows the same retention and retry reporting path as
 /// a real filesystem error, without relying on permissions that privileged CI
 /// users may bypass.
-#[cfg(any(feature = "property-tests", feature = "test-utils"))]
+#[cfg(any(test, feature = "property-tests", feature = "test-utils"))]
 #[must_use]
 pub fn execute_orphan_cleanup_with_fault_for_test(
     data_dir: &Path,
@@ -1024,6 +1098,9 @@ fn execute_orphan_cleanup_impl(
         failures,
         has_more_work,
         next_manifest_offset,
+        inspected_directory_continuation,
+        next_directory_continuation,
+        directory_wrapped,
     } = plan;
     let retryable_inspection_failures = !failures.is_empty();
     let mut outcome = DraftOrphanCleanupOutcome {
@@ -1031,6 +1108,7 @@ fn execute_orphan_cleanup_impl(
         failures,
         has_more_work: has_more_work || retryable_inspection_failures,
         next_manifest_offset,
+        directory_wrapped,
         ..DraftOrphanCleanupOutcome::default()
     };
 
@@ -1226,7 +1304,17 @@ fn execute_orphan_cleanup_impl(
     // manifest below; the explicit drop makes this mutation boundary visible.
     drop(latest_by_id);
 
-    if pending_manifest_removals.is_empty() {
+    let persisted_continuation_before = latest.cleanup_continuation.clone();
+    let continuation_current = persisted_continuation_before == inspected_directory_continuation;
+    if continuation_current {
+        latest.cleanup_continuation = next_directory_continuation;
+    } else {
+        outcome.has_more_work = true;
+    }
+    let continuation_changed = latest.cleanup_continuation != persisted_continuation_before;
+
+    if pending_manifest_removals.is_empty() && !continuation_changed {
+        outcome.directory_continuation = latest.cleanup_continuation.clone();
         outcome.latest_persisted_manifest = Some(latest);
         return outcome;
     }
@@ -1247,6 +1335,14 @@ fn execute_orphan_cleanup_impl(
     match manifest_result {
         Ok(()) => {
             outcome.committed_manifest_removals = pending_manifest_removals.into_values().collect();
+            if !outcome.committed_manifest_removals.is_empty()
+                && outcome.next_manifest_offset.is_some()
+            {
+                // Removing the inspected page shifts later entries left; restart
+                // the next bounded manifest page instead of skipping that prefix.
+                outcome.next_manifest_offset = Some(0);
+            }
+            outcome.directory_continuation = latest.cleanup_continuation.clone();
             outcome.latest_persisted_manifest = Some(latest);
         }
         Err(error) => {
@@ -1282,11 +1378,23 @@ fn load_trusted_manifest_for_cleanup(
         load.outcome,
         RecoveryLoadOutcome::Loaded | RecoveryLoadOutcome::MissingDefault
     ) && load.diagnostics.is_empty()
+        && load
+            .value
+            .cleanup_continuation
+            .as_ref()
+            .is_none_or(DraftCleanupContinuation::is_trusted)
     {
         return Ok(load.value);
     }
 
-    let detail = if load.diagnostics.is_empty() {
+    let detail = if load
+        .value
+        .cleanup_continuation
+        .as_ref()
+        .is_some_and(|continuation| !continuation.is_trusted())
+    {
+        "persisted cleanup continuation was not trusted".to_string()
+    } else if load.diagnostics.is_empty() {
         format!("recovery outcome {:?} was not trusted", load.outcome)
     } else {
         load.diagnostics
@@ -1461,6 +1569,7 @@ mod tests {
                 original_mtime_secs: Some(1000),
                 saved_at_secs: 2000,
             }],
+            cleanup_continuation: None,
         };
         save_manifest(dir.path(), &manifest).expect("expected operation to succeed");
         let text = fixture::read_text(&manifest_path(dir.path()));
@@ -1503,6 +1612,7 @@ mod tests {
                 original_mtime_secs: None,
                 saved_at_secs: 1,
             }],
+            cleanup_continuation: None,
         };
         save_manifest(dir.path(), &manifest).expect("save manifest");
 
@@ -1733,6 +1843,7 @@ mod tests {
                         saved_at_secs: 1,
                     },
                 ],
+                cleanup_continuation: None,
             },
         )
         .expect("save manifest");
@@ -1795,6 +1906,7 @@ mod tests {
             dir.path(),
             &DraftManifest {
                 drafts: vec![file_entry(&draft_id, &path, Some(stale_mtime))],
+                cleanup_continuation: None,
             },
         )
         .expect("expected operation to succeed");
@@ -1892,6 +2004,7 @@ mod tests {
                     original_mtime_secs: None,
                     saved_at_secs: 1,
                 }],
+                cleanup_continuation: None,
             },
         )
         .expect("save manifest");
@@ -2125,6 +2238,7 @@ mod tests {
                 },
                 keep.clone(),
             ],
+            cleanup_continuation: None,
         };
         fixture::create_dir_all(&drafts_dir(dir.path()).join(MANIFEST_FILE));
 
@@ -2151,6 +2265,7 @@ mod tests {
                 original_mtime_secs: None,
                 saved_at_secs: 1000,
             }],
+            cleanup_continuation: None,
         };
         write_draft(dir.path(), "orphan", "stale content").expect("expected operation to succeed");
 
@@ -2195,6 +2310,7 @@ mod tests {
         };
         let manifest = DraftManifest {
             drafts: vec![missing.clone(), loop_entry],
+            cleanup_continuation: None,
         };
 
         let plan = inspect_orphan_cleanup(dir.path(), &manifest)
@@ -2235,6 +2351,7 @@ mod tests {
                     saved_at_secs: 2,
                 },
             ],
+            cleanup_continuation: None,
         };
 
         let plan = inspect_orphan_cleanup(dir.path(), &manifest)
@@ -2252,7 +2369,7 @@ mod tests {
     }
 
     #[test]
-    fn orphan_inspection_reports_exact_cap_as_unfinished() {
+    fn orphan_inspection_reports_more_work_only_beyond_the_exact_cap() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let drafts = drafts_dir(dir.path());
         fixture::create_dir_all(&drafts);
@@ -2263,8 +2380,16 @@ mod tests {
         let capped = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
             .expect("bounded scan should succeed");
         assert_eq!(capped.orphan_bodies.len(), MAX_ORPHAN_CLEANUP_DRAFT_SCAN);
-        assert!(capped.has_more_work);
+        assert!(!capped.has_more_work);
 
+        fixture::write_text(&drafts.join("orphan-extra.draft"), "body");
+        let over_cap = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("over-cap scan should succeed");
+        assert_eq!(over_cap.orphan_bodies.len(), MAX_ORPHAN_CLEANUP_DRAFT_SCAN);
+        assert!(over_cap.has_more_work);
+        assert!(over_cap.next_directory_continuation.is_some());
+
+        fixture::remove_file(&drafts.join("orphan-extra.draft"));
         fixture::remove_file(&drafts.join("orphan-0000.draft"));
         let below_cap = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
             .expect("below-cap scan should succeed");
@@ -2273,6 +2398,202 @@ mod tests {
             MAX_ORPHAN_CLEANUP_DRAFT_SCAN - 1
         );
         assert!(!below_cap.has_more_work);
+    }
+
+    #[test]
+    fn durable_directory_continuation_reaches_orphans_after_a_live_prefix_and_restart() {
+        let dir = TempDir::new().expect("cleanup continuation tempdir");
+        let drafts_dir = drafts_dir(dir.path());
+        fixture::create_dir_all(&drafts_dir);
+        let manifest = DraftManifest {
+            drafts: (0..MAX_ORPHAN_CLEANUP_DRAFT_SCAN)
+                .map(|index| {
+                    let draft_id = format!("live-{index:04}");
+                    fixture::write_text(&drafts_dir.join(format!("{draft_id}.draft")), "live");
+                    DraftEntry {
+                        draft_id,
+                        original_path: None,
+                        original_mtime_secs: None,
+                        saved_at_secs: 1,
+                    }
+                })
+                .collect(),
+            cleanup_continuation: None,
+        };
+        save_manifest(dir.path(), &manifest).expect("seed live-prefix manifest");
+
+        let first_plan =
+            inspect_orphan_cleanup(dir.path(), &manifest).expect("inspect first bounded live page");
+        assert_eq!(
+            first_plan.orphan_bodies.len(),
+            0,
+            "the first page should contain only manifest-backed bodies"
+        );
+        let first_outcome = execute_orphan_cleanup(dir.path(), first_plan);
+        assert!(first_outcome.directory_continuation.is_some());
+
+        fixture::write_text(
+            &drafts_dir.join("aaa-late-orphan.draft"),
+            "late before cursor",
+        );
+        fixture::write_text(
+            &drafts_dir.join("zzz-late-orphan.draft"),
+            "late after cursor",
+        );
+        fixture::rename(
+            &drafts_dir.join("live-0000.draft"),
+            &drafts_dir.join("aab-renamed-orphan.draft"),
+        );
+        fixture::remove_file(&drafts_dir.join("live-0001.draft"));
+
+        let mut deleted = HashSet::new();
+        let mut completed = false;
+        for _ in 0..6 {
+            // Reload every page to prove that only the durable v1 payload carries progress.
+            let restarted_manifest = load_manifest(dir.path()).expect("reload manifest page");
+            let plan = inspect_orphan_cleanup(dir.path(), &restarted_manifest)
+                .expect("inspect continued cleanup page");
+            assert!(plan.orphan_bodies.len() <= MAX_ORPHAN_CLEANUP_DRAFT_SCAN);
+            let outcome = execute_orphan_cleanup(dir.path(), plan);
+            deleted.extend(outcome.deleted_files.iter().filter_map(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            }));
+            if outcome.directory_continuation.is_none() {
+                completed = true;
+                break;
+            }
+        }
+
+        assert!(completed, "the bounded wrap cycle should eventually finish");
+        assert!(deleted.contains("aaa-late-orphan.draft"));
+        assert!(deleted.contains("aab-renamed-orphan.draft"));
+        assert!(deleted.contains("zzz-late-orphan.draft"));
+        let completed_manifest = load_manifest(dir.path()).expect("reload completed manifest");
+        assert!(completed_manifest.cleanup_continuation.is_none());
+        assert!(completed_manifest.find_by_id("live-0000").is_none());
+        assert!(completed_manifest.find_by_id("live-0001").is_none());
+    }
+
+    #[test]
+    fn repeated_cleanup_faults_preserve_the_orphan_until_a_later_success() {
+        let dir = TempDir::new().expect("cleanup fault tempdir");
+        write_draft(dir.path(), "retry-orphan", "body").expect("seed retry orphan");
+
+        for _ in 0..3 {
+            let plan = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+                .expect("inspect retry orphan");
+            let outcome = execute_orphan_cleanup_with_fault_for_test(
+                dir.path(),
+                plan,
+                DraftOrphanCleanupFault::Delete,
+            );
+            assert_eq!(outcome.confirmed_cleaned_count(), 0);
+            assert!(outcome.has_more_work);
+            assert!(
+                outcome
+                    .failures
+                    .iter()
+                    .any(|failure| matches!(failure, DraftOrphanCleanupFailure::Delete(_)))
+            );
+            assert!(fixture::exists(&draft_path(dir.path(), "retry-orphan")));
+        }
+
+        let plan = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("inspect final retry");
+        let outcome = execute_orphan_cleanup(dir.path(), plan);
+        assert_eq!(outcome.deleted_files.len(), 1);
+        assert!(!fixture::exists(&draft_path(dir.path(), "retry-orphan")));
+    }
+
+    #[test]
+    fn continuation_commit_preserves_concurrent_manifest_upserts() {
+        let dir = TempDir::new().expect("concurrent continuation tempdir");
+        let drafts = drafts_dir(dir.path());
+        fixture::create_dir_all(&drafts);
+        for index in 0..=MAX_ORPHAN_CLEANUP_DRAFT_SCAN {
+            fixture::write_text(&drafts.join(format!("orphan-{index:04}.draft")), "body");
+        }
+        save_manifest(dir.path(), &DraftManifest::default()).expect("seed manifest");
+        let plan = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("inspect first continuation page");
+        assert!(plan.next_directory_continuation.is_some());
+
+        let concurrent = DraftEntry {
+            draft_id: "concurrent-autosave".to_string(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 7,
+        };
+        update_manifest(dir.path(), |manifest| manifest.upsert(concurrent.clone()))
+            .expect("commit concurrent autosave");
+        let outcome = execute_orphan_cleanup(dir.path(), plan);
+
+        assert!(outcome.directory_continuation.is_some());
+        let persisted = load_manifest(dir.path()).expect("load concurrent manifest");
+        assert_eq!(
+            persisted.find_by_id(&concurrent.draft_id),
+            Some(&concurrent)
+        );
+        assert_eq!(
+            persisted.cleanup_continuation,
+            outcome.directory_continuation
+        );
+    }
+
+    #[test]
+    fn continuation_does_not_advance_when_its_manifest_commit_fails() {
+        let dir = TempDir::new().expect("continuation commit fault tempdir");
+        let drafts = drafts_dir(dir.path());
+        fixture::create_dir_all(&drafts);
+        for index in 0..=MAX_ORPHAN_CLEANUP_DRAFT_SCAN {
+            fixture::write_text(&drafts.join(format!("orphan-{index:04}.draft")), "body");
+        }
+        save_manifest(dir.path(), &DraftManifest::default()).expect("seed manifest");
+        let plan = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("inspect continuation fault page");
+        assert!(plan.next_directory_continuation.is_some());
+
+        let outcome = execute_orphan_cleanup_with_fault_for_test(
+            dir.path(),
+            plan,
+            DraftOrphanCleanupFault::Manifest,
+        );
+
+        assert!(outcome.directory_continuation.is_none());
+        assert!(outcome.latest_persisted_manifest.is_none());
+        assert!(outcome.has_more_work);
+        assert!(outcome.failures.iter().any(|failure| matches!(
+            failure,
+            DraftOrphanCleanupFailure::Manifest(DraftOrphanCleanupManifestError::Write { .. })
+        )));
+        assert!(
+            load_manifest(dir.path())
+                .expect("reload unadvanced manifest")
+                .cleanup_continuation
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn invalid_persisted_continuation_disables_startup_cleanup() {
+        let dir = TempDir::new().expect("invalid continuation tempdir");
+        let manifest = DraftManifest {
+            drafts: Vec::new(),
+            cleanup_continuation: Some(DraftCleanupContinuation {
+                last_completed_file_name: "../outside".to_string(),
+                wraparound_pending: true,
+            }),
+        };
+        save_manifest(dir.path(), &manifest).expect("persist invalid continuation fixture");
+
+        let restore = load_restore_state(dir.path());
+
+        assert!(!restore.orphan_cleanup_allowed);
+        assert!(matches!(
+            inspect_orphan_cleanup(dir.path(), &restore.manifest),
+            Err(DraftOrphanCleanupScanError::UntrustedContinuation { .. })
+        ));
     }
 
     #[test]
@@ -2287,6 +2608,7 @@ mod tests {
                     saved_at_secs: u64::try_from(index).expect("bounded fixture index fits u64"),
                 })
                 .collect(),
+            cleanup_continuation: None,
         };
 
         let first = inspect_orphan_cleanup(dir.path(), &manifest)
@@ -2330,7 +2652,10 @@ mod tests {
             original_mtime_secs: Some(2),
             saved_at_secs: 2,
         });
-        let manifest = DraftManifest { drafts };
+        let manifest = DraftManifest {
+            drafts,
+            cleanup_continuation: None,
+        };
         save_manifest(dir.path(), &manifest).expect("seed duplicate manifest");
         let plan =
             inspect_orphan_cleanup(dir.path(), &manifest).expect("inspect first bounded page");
@@ -2395,6 +2720,7 @@ mod tests {
                 original_mtime_secs: None,
                 saved_at_secs: 1000,
             }],
+            cleanup_continuation: None,
         };
 
         let plan = inspect_orphan_cleanup(dir.path(), &manifest)

@@ -27,9 +27,11 @@ use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use super::buffer_replacement::BufferReplacementState;
 use super::minimap::{MinimapAvailability, MinimapMarker};
 use super::style_scheme::apply_color_scheme_to_editor;
 
@@ -119,6 +121,8 @@ pub struct SaveState {
     /// The modified flag stays true while this is set so close flows cannot treat
     /// an in-flight durable write as already safe.
     pub inflight: Cell<bool>,
+    /// Monotonic identity for the active save and any formatting installation.
+    pub generation: Cell<u64>,
     /// Lifecycle handle for a save snapshot that is yielding between chunks.
     pub snapshot: RefCell<Option<BufferSnapshotHandle>>,
 }
@@ -174,6 +178,29 @@ pub struct LoadState {
     /// Notes, local history, and future tab-local workflows all need the same
     /// "a real file just finished loading" hook, so this stays fan-out friendly.
     pub file_loaded_callbacks: RefCell<Vec<FileLoadedCallback>>,
+    /// Whether load installation is suppressing document-amplifying projections.
+    pub projection_suspended: Cell<bool>,
+    /// Current generation-bound chunked install session, if any.
+    pub(crate) installation: RefCell<Option<Rc<RefCell<super::load_save::ChunkedLoadInstall>>>>,
+    /// Whether signal-emitting final projection work owns the editor lifecycle.
+    ///
+    /// Reload requests are reduced to one latest pending intent while this is
+    /// set, so synchronous GTK signals cannot start a replacement halfway
+    /// through finalization or strand it behind a terminal install session.
+    pub finalizing: Cell<bool>,
+    /// Whether widget disposal interrupted signal-emitting finalization.
+    pub dispose_during_finalization: Cell<bool>,
+    /// Latest replacement request waiting for bounded cancellation cleanup.
+    pub(crate) pending_load: RefCell<Option<super::load_save::PendingFileLoad>>,
+    /// Whether cancellation discarded a partially installed file payload.
+    ///
+    /// The buffer is intentionally cleared on that path, so saving must remain
+    /// blocked until a retry installs one exact payload successfully.
+    pub installation_incomplete: Cell<bool>,
+    /// Whether bounded cleanup must publish the user-cancelled terminal state.
+    pub user_cancel_pending: Cell<bool>,
+    /// Completed main-loop slices for the newest installation.
+    pub installation_slice_count: Cell<u64>,
 }
 
 /// User-visible file-load lifecycle for one editor tab.
@@ -444,6 +471,8 @@ pub struct LushtextEditorPage {
     pub document_metadata: DocumentMetadataState,
     /// File-load lifecycle callbacks.
     pub load: LoadState,
+    /// Single active/latest whole-buffer mutation owner shared by workflows.
+    pub replacement: BufferReplacementState,
     /// Deferred cursor/scroll restoration state.
     pub restore: RestoreState,
     /// Dynamic editor overscroll scheduling state.
@@ -495,6 +524,7 @@ impl Default for LushtextEditorPage {
             save: SaveState::default(),
             document_metadata: DocumentMetadataState::default(),
             load: LoadState::default(),
+            replacement: BufferReplacementState::default(),
             restore: RestoreState::default(),
             overscroll: OverscrollState::default(),
             bookmarks: BookmarkState::default(),
@@ -532,6 +562,8 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
+        self.obj().cancel_buffer_replacement_for_dispose();
+        self.obj().dispose_load_resources();
         if let Some(snapshot) = self.save.snapshot.take() {
             snapshot.dispose();
         }
@@ -778,6 +810,9 @@ impl ObjectImpl for LushtextEditorPage {
             let editor_weak = self.obj().downgrade();
             let handler_id = buffer.connect_changed(move |_| {
                 if let Some(editor) = editor_weak.upgrade() {
+                    if editor.load_projection_suspended() {
+                        return;
+                    }
                     editor.notify_memory_policy_changed();
                 }
             });
@@ -788,6 +823,9 @@ impl ObjectImpl for LushtextEditorPage {
             let editor_weak = self.obj().downgrade();
             let handler_id = buffer.connect_modified_changed(move |_| {
                 if let Some(editor) = editor_weak.upgrade() {
+                    if editor.load_projection_suspended() {
+                        return;
+                    }
                     editor.notify_memory_policy_changed();
                 }
             });

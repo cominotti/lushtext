@@ -21,6 +21,7 @@ use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
 use crate::model::recent_document::RecentDocumentEntry;
 use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
+use crate::services::palette::{FileIndexBuildCoordinator, NoteSourceRefreshCoordinator};
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::command_palette::LushtextCommandPalette;
@@ -153,6 +154,22 @@ pub struct DraftState {
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
     /// Superseding one-shot for the first dirty draft after a clean cycle.
     pub first_dirty_autosave_timer: SupersedingTimer,
+    /// Superseding startup/follow-up timer for bounded orphan cleanup.
+    pub orphan_cleanup_timer: SupersedingTimer,
+    /// Whether one orphan-cleanup inspect/execute worker is active.
+    pub orphan_cleanup_inflight: Cell<bool>,
+    /// Latest manifest offset requested while an older cleanup worker was active.
+    pub orphan_cleanup_pending_offset: Cell<Option<usize>>,
+    /// Consecutive retryable cleanup failures used for bounded backoff.
+    pub orphan_cleanup_failure_streak: Cell<u32>,
+    /// Whether the owned orphan-cleanup timer currently has a callback armed.
+    pub orphan_cleanup_timer_pending: Cell<bool>,
+    /// Number of orphan-cleanup workers started by this window.
+    #[cfg(feature = "test-utils")]
+    pub orphan_cleanup_workers_started: Cell<usize>,
+    /// Peak simultaneous orphan-cleanup workers observed by this window.
+    #[cfg(feature = "test-utils")]
+    pub orphan_cleanup_workers_high_water: Cell<usize>,
     /// In-memory draft manifest kept in sync with disk.
     pub manifest: RefCell<DraftManifest>,
     /// Draft restore outcomes preloaded during session restore and consumed once.
@@ -191,6 +208,15 @@ pub struct DraftState {
     /// Peak complete-body count observed by the current test process.
     #[cfg(feature = "test-utils")]
     pub max_retained_complete_bodies: Cell<usize>,
+}
+
+impl DraftState {
+    /// Cancel owned orphan-cleanup scheduling during window teardown.
+    pub(super) fn dispose_orphan_cleanup(&self) {
+        self.orphan_cleanup_timer_pending.set(false);
+        self.orphan_cleanup_pending_offset.set(None);
+        let _ = self.orphan_cleanup_timer.invalidate();
+    }
 }
 
 /// Startup data-flow gate state owned by the window shell.
@@ -383,13 +409,12 @@ pub struct LushtextWindow {
     pub preview_render_debounce: Debounce,
     /// Debounce for command-palette file index rebuilds (300ms).
     pub index_rebuild_debounce: Debounce,
+    /// One-active/one-latest ownership for command-palette index traversal.
+    pub file_index_builds: RefCell<FileIndexBuildCoordinator>,
     /// Debounce for command-palette note source refreshes after bursty note edits.
     pub command_palette_notes_refresh_debounce: Debounce,
-    /// Generation for command-palette note source loads.
-    ///
-    /// Sidecar scans run off the main thread; this token prevents an older
-    /// load from replacing note rows after scope or note state has changed.
-    pub command_palette_notes_generation: Cell<u32>,
+    /// One-active/one-latest ownership for bounded palette note-source loads.
+    pub command_palette_note_refreshes: RefCell<NoteSourceRefreshCoordinator>,
     /// Focus widget saved before the command palette steals focus.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// One-tick latch for Escape already handled by a child command-palette entry.
@@ -490,8 +515,9 @@ impl Default for LushtextWindow {
             workspace_sidebar_transition_settle: SettleBurst::default(),
             preview_render_debounce: Debounce::default(),
             index_rebuild_debounce: Debounce::default(),
+            file_index_builds: RefCell::default(),
             command_palette_notes_refresh_debounce: Debounce::default(),
-            command_palette_notes_generation: Cell::new(0),
+            command_palette_note_refreshes: RefCell::default(),
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
@@ -918,9 +944,14 @@ impl ObjectImpl for LushtextWindow {
     }
 
     fn dispose(&self) {
+        self.file_index_builds.borrow_mut().invalidate();
+        self.command_palette_note_refreshes
+            .borrow_mut()
+            .invalidate();
         if let Some(source_id) = self.drafts.autosave_source_id.take() {
             source_id.remove();
         }
+        self.drafts.dispose_orphan_cleanup();
         // Chunked snapshots have later GTK slices queued. Cancel before the
         // window's workflow state is torn down so none can resume after dispose.
         if let Some(snapshot) = self.drafts.autosave_snapshot.take() {

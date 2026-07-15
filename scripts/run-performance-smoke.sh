@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/performance}"
-FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search file_index_rebuild content_search_smoke json_persistence editor_file_io replace_preview_generation replace_undo_workflows recovery_performance}"
+FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search palette_pipeline_hardening_100000 file_index_rebuild end_to_end_boundedness quality_gap_scale content_search_smoke json_persistence editor_file_io transient_file_load workspace_watch_pressure replace_preview_generation replace_undo_workflows recovery_performance}"
 SAMPLE_SIZE="${LUSHTEXT_PERFORMANCE_SMOKE_SAMPLE_SIZE:-10}"
 MEASUREMENT_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_MEASUREMENT_TIME:-1}"
 WARM_UP_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_WARM_UP_TIME:-1}"
@@ -19,8 +19,9 @@ Usage: scripts/run-performance-smoke.sh [--artifact-dir DIR] [--filter BENCH]
 
 Run small Criterion smoke passes with coarse timing artifacts. This is distinct
 from full benchmark reports and is intended as a quick sanity check. The default
-filter set covers file indexing, command-palette search, workspace-wide content
-search, persistence, editor file I/O, and replace/undo workflows.
+filter set covers file indexing, command-palette search/source construction,
+workspace-wide content search, persistence, bounded transient editor loads,
+cleanup/tree planning, and replace/undo workflows.
 EOF
 }
 
@@ -63,10 +64,15 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 
 cat >"$ARTIFACT_DIR/fixtures.txt" <<'EOF'
 file_index_search: generated command-palette indexes at representative file counts
+palette_pipeline_hardening_100000: generated 100,000-file indexes with varied hit rates, Unicode names, repeated equal-score names, bounded/reference limits, cancellation, and rapid latest-query replacement
 file_index_rebuild: generated workspace file lists at representative file counts
+end_to_end_boundedness: generated one flat 10,000-entry directory, file/note source budget and cancellation fixtures, active/latest coordinator pressure, canonical top-one exclusion, a 2,048-row cleanup page, a 10,000-row middle reconciliation, and large replacement policy input
 content_search_smoke: generated 200-file trees plus one 10k-line file
 json_persistence: generated workspace/session JSON save and load fixtures
 editor_file_io: generated text files for load, save, and Save As-equivalent explicit-path writes
+transient_file_load: generated scalar admission bursts, stale queues, an exclusive near-limit request, Unicode slice planning, and one headless chunked-install responsiveness fixture
+workspace_watch_pressure: generated duplicate/access-noise/deep Unicode event batches, varied producer/consumer rates, and cap-plus-one full-refresh promotion
+quality_gap_scale: generated a 10,000-row Notes browser source, a 4 MiB local-history preview, raw watcher ingress, a 10,000-row terminal cache rebuild, and headless main-loop/ownership fixtures
 replace_preview_generation: generated 1k and 10k in-memory match sets for worker-side Replace preview generation
 replace_undo_workflows: generated disposable files for Replace All and undo restore
 recovery_performance: generated malformed metadata, pending migration ledgers, duplicate bookmark sidecars, many local-history lineages, and first-dirty autosave persistence batches
@@ -79,9 +85,15 @@ Coarse smoke thresholds:
 - first-window readiness: target under 5s on a developer workstation; investigate over 10s
 - representative small/medium file open: target under 500ms; investigate over 2s
 - command-palette searches: target interactive-scale, not multi-second
+- command-palette bounded ranking: retained candidates must stay at or below the requested per-source limit, bounded results must equal the full-sort reference, and runtime ownership must stay at one active plus one pending latest query
+- end-to-end source construction: directory retention must stay within 100,000 rows, note admission within 10,000 entries and 64 MiB searchable text, deterministic note cancellation must stop at 256 admitted rows, and file/note coordinators must retain only one active plus one latest request
+- cleanup/tree completion: directory pages must retain at most 2,048 rows, broad reconciliation plans must stay plain until GTK applies at most 256 changed rows per turn, and widget evidence must prove main-loop progress, supersession, disposal, and readiness completion
 - workspace/content search: must complete every generated fixture without stalling
 - Replace preview generation: 10k generated matches should stay sub-second on a developer workstation; investigate multi-second results before shipping preview-flow changes
 - persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully
+- transient_file_load: admitted payload weight must stay within the scalar shared budget except for one exclusive request; the headless Unicode fixture must make main-loop progress between slices and release its permit after final editor residency is published
+- workspace_watch_pressure: retained unique paths must stay at or below 1,024, GTK consumption must stay at one bounded notice per poll, and cap overflow must promote to one conservative full refresh
+- quality_gap_scale: Notes query ownership must remain one active plus one latest, preview ownership must retain one accepted payload and install in 256 KiB UTF-8-safe slices, raw watcher ingress must stay capped, and terminal cache operations must stay at or below eight times old-plus-new rows
 - recovery_performance: malformed metadata, pending migration, duplicate sidecar, local-history lineage, and first-dirty autosave fixtures must complete every smoke sample successfully; investigate multi-second recovery timings before shipping startup or close-flow reliability changes
 
 Use make bench-report or make bench-report-full for enforceable release analysis.
@@ -146,9 +158,51 @@ for filter in $FILTERS; do
     fi
     {
         echo "## $filter"
-        grep -E "^(Benchmarking|Analyzing|[[:space:]]*time:)" "$log_path" || true
+        grep -E "^(Benchmarking|Analyzing|[[:space:]]*time:)|transient-load-policy-evidence|workspace-watch-pressure-evidence|quality-gap-scale-evidence" "$log_path" || true
         echo
     } >>"$ARTIFACT_DIR/summary.txt"
 done
+
+case " $FILTERS " in
+    *" transient_file_load "*)
+        widget_log="$ARTIFACT_DIR/widget-transient-file-load.log"
+        echo "Running headless transient file-load responsiveness proof..."
+        if ! scripts/run-widget-tests.sh --headless -- \
+            editor_page::test_large_unicode_load_installs_in_exact_bounded_slices \
+            >"$widget_log" 2>&1; then
+            tail -n 120 "$widget_log" >&2 || true
+            smoke_fail "headless transient file-load proof failed. Artifacts: $ARTIFACT_DIR"
+        fi
+        {
+            echo "## transient_file_load_headless"
+            grep -E "transient-load-runtime-evidence|test result:" "$widget_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+        ;;
+esac
+
+case " $FILTERS " in
+    *" quality_gap_scale "*)
+        widget_log="$ARTIFACT_DIR/widget-quality-gap-scale.log"
+        : >"$widget_log"
+        echo "Running headless quality-gap responsiveness and ownership proofs..."
+        for widget_filter in \
+            window::test_notes_browser_caps_large_result_sets_with_refine_notice \
+            window::test_local_history_preview_supersedes_reads_and_unicode_install_slices \
+            workspace_section::test_large_reconciliation_is_batched_supersedable_and_preserves_state
+        do
+            if ! scripts/run-widget-tests.sh --headless -- "$widget_filter" \
+                >>"$widget_log" 2>&1; then
+                tail -n 160 "$widget_log" >&2 || true
+                smoke_fail "headless quality-gap proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
+            fi
+        done
+        {
+            echo "## quality_gap_scale_headless"
+            grep -E "notes-browser-runtime-evidence|local-history-preview-runtime-evidence|workspace-cache-runtime-evidence|test result:" "$widget_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+        ;;
+esac
 
 echo "PASS: performance smoke completed for filters '$FILTERS'. Artifacts: $ARTIFACT_DIR"

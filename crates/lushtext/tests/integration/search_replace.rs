@@ -7,6 +7,10 @@
 
 use std::path::PathBuf;
 
+use lushtext_core::model::content_search::{
+    ContentSearchOptions, ReplacePreviewSkipReason, SearchMatch, SearchMatchId,
+    generate_replacement_preview,
+};
 use lushtext_core::services::{
     content_search::{ReplaceUndoBackup, ReplaceUndoEntry},
     filesystem::{fixture, metadata as fs_metadata},
@@ -17,6 +21,42 @@ use crate::common::TestContext;
 
 const JOURNAL_DIR: &str = "replace-backup-journal";
 const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
+
+#[test]
+fn replace_preview_keeps_only_valid_rows_and_reports_content_free_reason_counts() {
+    let valid = SearchMatch::new(PathBuf::from("/tmp/valid.txt"), 1, "alpha", 0..5)
+        .with_id(SearchMatchId::from_index(0));
+    let invalid_range = SearchMatch::new(
+        PathBuf::from("/tmp/invalid.txt"),
+        2,
+        "private-source-sentinel",
+        0..7,
+    )
+    .with_id(SearchMatchId::from_index(1));
+    let options = ContentSearchOptions {
+        regex: true,
+        ..ContentSearchOptions::default()
+    };
+
+    let outcome = generate_replacement_preview(
+        &[valid, invalid_range],
+        "alpha",
+        "private-replacement-sentinel",
+        &options,
+    );
+
+    assert_eq!(outcome.len(), 1);
+    assert_eq!(outcome.preview_index(SearchMatchId::from_index(0)), Some(0));
+    assert_eq!(outcome.preview_index(SearchMatchId::from_index(1)), None);
+    assert_eq!(
+        outcome
+            .skipped
+            .count(ReplacePreviewSkipReason::RegexRangeMismatch),
+        1
+    );
+    assert!(!format!("{outcome:?}").contains("private-source-sentinel"));
+    assert!(!format!("{:?}", outcome.skipped).contains("private-replacement-sentinel"));
+}
 
 #[test]
 fn interrupted_startup_cleanup_never_reactivates_replace_undo() {

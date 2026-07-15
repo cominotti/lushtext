@@ -69,7 +69,20 @@ synchronization point for agents after activating an action, opening a file,
 changing search state, or waiting for preview/search/save/workspace work. Use
 the narrowest predicate that matches the workflow under test, such as
 `file-open-complete`, `search-complete`, `save-complete`, or
-`workspace-refresh-complete`. Screenshot scenario helpers should use
+`workspace-refresh-complete`. Workspace refresh readiness includes watcher
+lifecycle work, one bounded coalescing mailbox notice, targeted/full-refresh
+debounce state, active directory scans and batched row application, persistence,
+filter animation, command-palette indexing, and bounded note-source refreshes. Current command-palette query
+work is tracked by `search-complete`, `visual-geometry-settled`,
+`accessibility-settled`, and broad `idle` readiness. Palette queries retain at
+most one active worker plus one latest request, and cancelled obsolete
+generations stop blocking readiness once their bounded completion releases
+active ownership. A watcher generation that ends in a reported startup or
+disconnect failure is settled as unavailable rather than remaining a
+permanently pending lifecycle operation.
+Workspace-search snapshots expose only whether replacement text is present;
+they never serialize the replacement template or expanded replacement content.
+Screenshot scenario helpers should use
 `visual-geometry-settled` before capture so layout, adaptive shell state,
 workspace sidebar transitions, minimap refresh/debounce, and visual workflow
 blockers have settled. Accessibility smoke captures use
