@@ -28,8 +28,8 @@ use lushtext_core::model::content_search::{
 };
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::editor_memory::{
-    EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorResidency, estimate_live_editor_bytes,
-    evaluate_editor_memory_budget,
+    EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorResidency, EditorResidencyLedger,
+    estimate_live_editor_bytes, evaluate_editor_memory_budget,
 };
 use lushtext_core::model::encoding::{DocumentEncoding, LineEnding};
 use lushtext_core::model::file_load::{
@@ -44,6 +44,14 @@ use lushtext_core::model::palette::{
     PaletteOpenEditorNoteSnapshot, SearchMode, SearchResultItem,
 };
 use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
+use lushtext_core::model::save_admission::{
+    ExternalTransientPressure, SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveAdmissionPolicy,
+    SaveAdmissionPriority, SaveAdmissionRequest,
+};
+use lushtext_core::model::search_flight::{
+    WorkspaceSearchFlight, WorkspaceSearchRequest, WorkspaceSearchSubmission,
+};
+use lushtext_core::model::search_retirement::SearchRetirementSliceBudget;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
 use lushtext_core::model::workspace::{
@@ -59,6 +67,9 @@ use lushtext_core::services::filesystem::{
     DirectoryScanPolicy, fixture, read as fs_read, tree as fs_tree,
 };
 use lushtext_core::services::json_format::KIND_LOCAL_HISTORY_INDEX;
+use lushtext_core::services::markdown_render::{
+    MARKDOWN_EVENTS_PER_PROJECTION_SLICE, plan_markdown,
+};
 use lushtext_core::services::palette::{self, FileIndex};
 use lushtext_core::services::recent_documents;
 use lushtext_core::services::recovery_metadata::{
@@ -1345,6 +1356,57 @@ fn bench_editor_file_io(c: &mut Criterion) {
         );
 
         let windows_1252_text = "café\r\n".repeat(size / 6);
+        let lossy_windows_1252_text = "café😀\n".repeat(size / 10);
+        let lossy_shift_jis_text = "日本語😀\n".repeat(size / 17);
+
+        group.bench_function(
+            BenchmarkId::new("analyze_utf16_lossless", format!("{size_mb}MB")),
+            |b| {
+                b.iter(|| {
+                    black_box(editor_io::analyze_lossy_encoding(
+                        black_box(&content),
+                        DocumentEncoding::Utf16Le,
+                    ))
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("analyze_windows1252_lossless", format!("{size_mb}MB")),
+            |b| {
+                b.iter(|| {
+                    black_box(editor_io::analyze_lossy_encoding(
+                        black_box(&windows_1252_text),
+                        DocumentEncoding::Windows1252,
+                    ))
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("analyze_windows1252_lossy", format!("{size_mb}MB")),
+            |b| {
+                b.iter(|| {
+                    black_box(editor_io::analyze_lossy_encoding(
+                        black_box(&lossy_windows_1252_text),
+                        DocumentEncoding::Windows1252,
+                    ))
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("analyze_shift_jis_lossy", format!("{size_mb}MB")),
+            |b| {
+                b.iter(|| {
+                    black_box(editor_io::analyze_lossy_encoding(
+                        black_box(&lossy_shift_jis_text),
+                        DocumentEncoding::ShiftJis,
+                    ))
+                });
+            },
+        );
+
         group.bench_function(
             BenchmarkId::new("load_text_file_windows1252", format!("{size_mb}MB")),
             |b| {
@@ -1767,6 +1829,37 @@ fn bench_editor_memory_policy(c: &mut Criterion) {
     group.bench_function("10k_tabs/bookkeeping_heavy", |b| {
         b.iter(|| evaluate_editor_memory_budget(black_box(&bookkeeping_heavy)));
     });
+
+    let incremental_pages = (0..100_000usize)
+        .map(|editor_id| EditorResidency {
+            editor_id,
+            estimated_bytes: 1024,
+            access_generation: u64::try_from(editor_id).expect("benchmark generation"),
+            policy_generation: 1,
+            eligible_for_eviction: false,
+        })
+        .collect::<Vec<_>>();
+    let mut incremental = EditorResidencyLedger::default();
+    incremental.reconcile(incremental_pages.iter().copied());
+    let edited_generation = Cell::new(1u64);
+    group.bench_function("100k_tabs/incremental_edit", |b| {
+        b.iter(|| {
+            let generation = edited_generation.get().wrapping_add(1);
+            edited_generation.set(generation);
+            black_box(incremental.upsert(EditorResidency {
+                editor_id: 50_000,
+                estimated_bytes: 1025,
+                access_generation: 50_000,
+                policy_generation: generation,
+                eligible_for_eviction: false,
+            }))
+        });
+    });
+    eprintln!(
+        "editor-memory-incremental-evidence records={} records_touched_per_edit=1 full_scans_below_threshold=0 aggregate_bytes={}",
+        incremental.len(),
+        incremental.total_bytes(),
+    );
 
     for &(label, characters, file_bytes) in &[
         ("ascii_growth", 10_000_000, Some(10_000_000)),
@@ -2687,6 +2780,151 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark GTK-free Markdown planning and emit the direct projection bounds.
+fn bench_markdown_render_planning(c: &mut Criterion) {
+    let dense = (0..10_000)
+        .map(|index| format!("paragraph {index}\n\n"))
+        .collect::<String>();
+    let dense_plan = plan_markdown(&dense);
+    assert!(dense_plan.is_complete());
+    let max_batch_events = dense_plan
+        .batches
+        .iter()
+        .map(lushtext_core::services::markdown_render::MarkdownEventBatch::len)
+        .max()
+        .unwrap_or(0);
+    assert!(max_batch_events <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
+    eprintln!(
+        "markdown-render-bound-evidence source_bytes={} events={} batches={} max_events_per_slice={} retained_bytes={} embeds={} limit=none",
+        dense_plan.metrics.source_bytes,
+        dense_plan.metrics.events,
+        dense_plan.batches.len(),
+        max_batch_events,
+        dense_plan.metrics.retained_bytes,
+        dense_plan.metrics.embed_descriptors,
+    );
+
+    let limited = (0..300).map(|_| "**x** ").collect::<String>();
+    let limited_plan = plan_markdown(&limited);
+    eprintln!(
+        "markdown-render-limited-evidence source_bytes={} events={} batches={} limit={:?}",
+        limited_plan.metrics.source_bytes,
+        limited_plan.metrics.events,
+        limited_plan.batches.len(),
+        limited_plan.limit,
+    );
+
+    let mut group = c.benchmark_group("markdown_render_planning");
+    group.sample_size(10);
+    group.bench_function("10000_paragraphs", |b| {
+        b.iter(|| black_box(plan_markdown(black_box(&dense))));
+    });
+    group.bench_function("dense_single_block_limited", |b| {
+        b.iter(|| black_box(plan_markdown(black_box(&limited))));
+    });
+    group.finish();
+}
+
+/// Benchmark compact single-flight ownership and deterministic result retirement.
+fn bench_search_interactive_policies(c: &mut Criterion) {
+    fn rapid_queries(query_count: usize) -> (usize, usize) {
+        let mut flight = WorkspaceSearchFlight::default();
+        for index in 0..query_count {
+            let submission = flight.submit(WorkspaceSearchRequest {
+                spec: lushtext_core::model::content_search::SearchQuerySpec::new(
+                    format!("query-{index}"),
+                    ContentSearchOptions::default(),
+                ),
+                folders: vec![PathBuf::from("/workspace")],
+            });
+            if index == 0 {
+                assert!(matches!(submission, WorkspaceSearchSubmission::Start(_)));
+            }
+        }
+        let snapshot = flight.snapshot();
+        (snapshot.active, snapshot.pending)
+    }
+
+    fn retire_cap() -> (usize, usize) {
+        let mut categories = [1usize, 10_000, 1, 10_000, 1];
+        let mut slices = 0usize;
+        let mut high_water = 0usize;
+        while categories.iter().any(|count| *count > 0) {
+            let mut budget = SearchRetirementSliceBudget::new(250);
+            for count in &mut categories {
+                let retired = budget.take(*count);
+                *count = count.saturating_sub(retired);
+            }
+            high_water = high_water.max(budget.retired());
+            slices = slices.saturating_add(1);
+        }
+        (slices, high_water)
+    }
+
+    let (active, pending) = rapid_queries(1_000);
+    let (retirement_slices, retirement_high_water) = retire_cap();
+    assert_eq!((active, pending), (1, 1));
+    assert!(retirement_high_water <= 250);
+    eprintln!(
+        "search-interactive-bound-evidence rapid_queries=1000 active_groups={active} pending_queries={pending} whole_result_clones=0 result_cap=10000 retirement_slices={retirement_slices} retired_rows_per_slice_high_water={retirement_high_water}",
+    );
+
+    let mut group = c.benchmark_group("search_interactive_policies");
+    group.sample_size(10);
+    group.bench_function("rapid_queries_1000", |b| {
+        b.iter(|| black_box(rapid_queries(black_box(1_000))));
+    });
+    group.bench_function("retirement_budget_arithmetic_10000", |b| {
+        b.iter(|| black_box(retire_cap()));
+    });
+    group.finish();
+}
+
+/// Benchmark compact save queue admission without constructing document payloads.
+fn bench_save_admission_policy(c: &mut Criterion) {
+    fn ordinary_burst() -> lushtext_core::model::save_admission::SaveAdmissionSnapshot {
+        let mut policy = SaveAdmissionPolicy::default();
+        let weight = SAVE_PAYLOAD_SHARED_BUDGET_BYTES / 8;
+        for request_id in 0..8u64 {
+            policy.queue(SaveAdmissionRequest {
+                request_id,
+                owner_id: request_id,
+                save_generation: 1,
+                destination_identity: request_id,
+                close_session_identity: None,
+                sequence: request_id,
+                weight,
+                priority: SaveAdmissionPriority::Ordinary,
+            });
+        }
+        while policy
+            .admit_next(ExternalTransientPressure::default())
+            .is_some()
+        {}
+        policy.snapshot()
+    }
+
+    let snapshot = ordinary_burst();
+    assert_eq!(snapshot.queued_count, 0);
+    assert_eq!(snapshot.active_count, 8);
+    assert!(snapshot.high_water_weight <= SAVE_PAYLOAD_SHARED_BUDGET_BYTES);
+    eprintln!(
+        "save-admission-bound-evidence queued_compact_saves={} active_payloads={} admitted_bytes={} admitted_bytes_high_water={} shared_budget={}",
+        snapshot.queued_count,
+        snapshot.active_count,
+        snapshot.active_weight,
+        snapshot.high_water_weight,
+        SAVE_PAYLOAD_SHARED_BUDGET_BYTES,
+    );
+
+    let mut group = c.benchmark_group("save_admission_policy");
+    group.sample_size(10);
+    group.bench_function("ordinary_burst_8", |b| {
+        b.iter(|| black_box(ordinary_burst()));
+    });
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -2718,5 +2956,8 @@ criterion_group!(
     bench_transient_file_load,
     bench_workspace_watch_pressure,
     bench_quality_gap_scale,
+    bench_markdown_render_planning,
+    bench_search_interactive_policies,
+    bench_save_admission_policy,
 );
 criterion_main!(benches);

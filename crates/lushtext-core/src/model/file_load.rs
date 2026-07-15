@@ -161,17 +161,29 @@ impl FileLoadAdmissionPolicy {
         &mut self,
         protected_residency_over_budget: bool,
     ) -> Option<FileLoadAdmissionGrant> {
+        self.admit_next_with_external(protected_residency_over_budget, 0, false)
+    }
+
+    /// Admit at most one request while accounting another transient lane.
+    pub fn admit_next_with_external(
+        &mut self,
+        protected_residency_over_budget: bool,
+        external_active_weight: u64,
+        external_exclusive_active: bool,
+    ) -> Option<FileLoadAdmissionGrant> {
         if self.queued.is_empty()
             || self.max_active == 0
             || self.active.len() >= self.max_active
             || self.exclusive_active
-            || (protected_residency_over_budget && !self.active.is_empty())
+            || external_exclusive_active
+            || (protected_residency_over_budget
+                && (!self.active.is_empty() || external_active_weight > 0))
         {
             return None;
         }
 
         let (&oldest_key, &oldest_request) = self.queued.first_key_value()?;
-        if !self.request_fits(oldest_request) {
+        if !self.request_fits(oldest_request, external_active_weight) {
             return None;
         }
         let chosen_key = if oldest_request.priority == FileLoadPriority::Normal
@@ -181,7 +193,8 @@ impl FileLoadAdmissionPolicy {
                 .iter()
                 .skip(1)
                 .find(|(_, request)| {
-                    request.priority == FileLoadPriority::Active && self.request_fits(**request)
+                    request.priority == FileLoadPriority::Active
+                        && self.request_fits(**request, external_active_weight)
                 })
                 .map_or(oldest_key, |(key, _)| *key)
         } else {
@@ -233,11 +246,14 @@ impl FileLoadAdmissionPolicy {
         }
     }
 
-    fn request_fits(&self, request: FileLoadAdmissionRequest) -> bool {
+    fn request_fits(&self, request: FileLoadAdmissionRequest, external_weight: u64) -> bool {
         if request.weight > self.budget {
-            self.active.is_empty()
+            self.active.is_empty() && external_weight == 0
         } else {
-            self.active_weight.saturating_add(request.weight) <= self.budget
+            self.active_weight
+                .saturating_add(external_weight)
+                .saturating_add(request.weight)
+                <= self.budget
         }
     }
 }
@@ -376,6 +392,18 @@ mod tests {
         assert!(policy.admit_next(true).is_none());
         assert!(policy.release(first.request_id));
         assert!(policy.admit_next(true).is_some());
+    }
+
+    #[test]
+    fn external_save_pressure_shares_capacity_and_exclusivity() {
+        let mut policy = FileLoadAdmissionPolicy::new(10, 8);
+        policy.queue(request(1, 1, 1, 6, FileLoadPriority::Active));
+        assert!(policy.admit_next_with_external(false, 5, false).is_none());
+        assert!(policy.admit_next_with_external(false, 4, false).is_some());
+
+        let mut policy = FileLoadAdmissionPolicy::new(10, 8);
+        policy.queue(request(2, 2, 2, 1, FileLoadPriority::Active));
+        assert!(policy.admit_next_with_external(false, 0, true).is_none());
     }
 
     #[test]

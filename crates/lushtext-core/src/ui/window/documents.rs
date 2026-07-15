@@ -72,21 +72,7 @@ impl LushtextWindow {
 
     /// Saturating residency estimate for pages the live-memory policy protects.
     pub(crate) fn protected_editor_residency_bytes(&self) -> u64 {
-        let tab_view = &self.imp().tab_view;
-        let selected = tab_view.selected_page();
-        (0..tab_view.n_pages()).fold(0u64, |total, index| {
-            let page = tab_view.nth_page(index);
-            let child = page.child();
-            let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
-                return total;
-            };
-            let active = selected.as_ref() == Some(&page);
-            if editor.eligible_for_memory_eviction(active) {
-                total
-            } else {
-                total.saturating_add(editor.estimated_live_buffer_bytes())
-            }
-        })
+        self.imp().editor_memory.ledger.borrow().protected_bytes()
     }
 
     /// Speak a bounded workflow milestone through the shared status-bar target.
@@ -267,8 +253,6 @@ impl LushtextWindow {
                 window.refresh_open_popover_rows();
                 return;
             }
-            editor.clear_file_path_after_failed_load();
-            window.assign_draft_id(&editor);
             if let Some(page) = page_weak.upgrade() {
                 page.set_title(&editor.title());
             }
@@ -854,7 +838,7 @@ impl LushtextWindow {
         })
     }
 
-    /// Return file identities owned by mounted, non-failed editor tabs.
+    /// Return file identities owned by mounted file-backed editor tabs.
     ///
     /// This is the source of truth for visible UI state. The `open_paths` cache
     /// can be ahead or behind during close/detach and async path refreshes, but
@@ -932,10 +916,6 @@ impl LushtextWindow {
             let Some(editor) = child.downcast_ref::<LushtextEditorPage>() else {
                 continue;
             };
-            if editor.load_state() == EditorLoadState::Failed {
-                continue;
-            }
-
             collect_open_document_identities(&mut open_identities, editor);
             if selected_page.as_ref() == Some(&page) {
                 collect_open_document_identities(&mut active_identities, editor);
@@ -1060,9 +1040,6 @@ fn collect_open_document_identities(
     identities: &mut HashSet<PathBuf>,
     editor: &LushtextEditorPage,
 ) {
-    if editor.load_state() == EditorLoadState::Failed {
-        return;
-    }
     if let Some(path) = editor.file_path() {
         identities.insert(open_path_key(&path));
     }

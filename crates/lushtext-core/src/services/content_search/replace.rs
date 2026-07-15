@@ -32,6 +32,7 @@ pub const MAX_REPLACE_UNDO_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {
     static TEST_MAX_REPLACE_UNDO_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
+    static TEST_REQUIRE_ACTIVE_JOURNAL_BEFORE_WRITE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Per-file bytes needed to safely undo a Replace All.
@@ -133,6 +134,9 @@ pub fn apply_replacements(
     cancel: &AtomicBool,
     journal_data_dir: Option<&Path>,
 ) -> anyhow::Result<ApplyReplacementsOutcome> {
+    let _journal_guard = journal_data_dir
+        .map(|_| search_backup::acquire_journal_guard())
+        .transpose()?;
     let mut by_file: BTreeMap<PathBuf, Vec<&Replacement>> = BTreeMap::new();
     for r in replacements {
         by_file.entry(r.path.clone()).or_default().push(r);
@@ -146,6 +150,8 @@ pub fn apply_replacements(
     let mut applied_paths: Vec<PathBuf> = Vec::new();
     let mut cancelled = false;
     let mut undo_payload_bytes = 0u64;
+    let mut journal_prepared = false;
+    let mut journal_armed = false;
 
     for (path, mut file_replacements) in by_file {
         if cancel.load(Ordering::Relaxed) {
@@ -234,17 +240,45 @@ pub fn apply_replacements(
         }
 
         let entry = ReplaceUndoEntry::new(original_bytes, replaced_bytes);
-        if let Some(data_dir) = journal_data_dir
-            && let Err(e) = search_backup::save_entry(data_dir, &path, &entry)
-        {
-            errors.push(format!(
-                "Failed to persist undo journal before replacing {}: {e}",
-                path.display()
-            ));
-            continue;
+        if let Some(data_dir) = journal_data_dir {
+            if !journal_prepared {
+                if let Err(e) = search_backup::begin_incremental_journal(data_dir) {
+                    errors.push(format!(
+                        "Failed to prepare undo journal before replacing {}: {e}",
+                        path.display()
+                    ));
+                    continue;
+                }
+                journal_prepared = true;
+            }
+            if let Err(e) = search_backup::save_entry(data_dir, &path, &entry) {
+                errors.push(format!(
+                    "Failed to persist undo journal before replacing {}: {e}",
+                    path.display()
+                ));
+                continue;
+            }
+            if !journal_armed {
+                if let Err(e) = search_backup::mark_incremental_journal_active(data_dir) {
+                    errors.push(format!(
+                        "Failed to activate undo journal before replacing {}: {e}",
+                        path.display()
+                    ));
+                    if let Err(cleanup_error) = search_backup::delete_entry(data_dir, &path) {
+                        errors.push(format!(
+                            "Failed to remove inactive undo entry for {}: {cleanup_error}",
+                            path.display()
+                        ));
+                    }
+                    continue;
+                }
+                journal_armed = true;
+            }
         }
         undo_payload_bytes = undo_payload_bytes.saturating_add(entry_payload_bytes);
         backup.insert(path.clone(), entry);
+
+        assert_active_journal_before_write_for_test(journal_data_dir, &path);
 
         match atomic_write(&path, &backup[&path].replaced_bytes) {
             Ok(()) => {
@@ -301,29 +335,45 @@ pub fn apply_replacements(
         ));
     }
 
+    if backup.is_empty()
+        && journal_prepared
+        && let Some(data_dir) = journal_data_dir
+        && let Err(e) = search_backup::delete(data_dir)
+    {
+        errors.push(format!("Failed to clean empty undo journal: {e}"));
+    }
+
     if files_affected == 0 && skipped_paths.is_empty() && !errors.is_empty() {
         return Err(anyhow::anyhow!("{}", errors.join("; ")));
     }
 
-    let mut result = ReplaceResult {
+    let result = ReplaceResult {
         replaced_count,
         files_affected,
         skipped_paths,
         errors,
     };
-    if let Some(data_dir) = journal_data_dir
-        && !backup.is_empty()
-        && let Err(e) = search_backup::mark_journal_active(data_dir, &backup)
-    {
-        result.errors.push(format!(
-            "Replaced files, but the undo journal could not be marked active: {e}"
-        ));
-    }
-
     Ok(ApplyReplacementsOutcome {
         result,
         undo_backup: backup,
     })
+}
+
+fn assert_active_journal_before_write_for_test(journal_data_dir: Option<&Path>, path: &Path) {
+    #[cfg(test)]
+    TEST_REQUIRE_ACTIVE_JOURNAL_BEFORE_WRITE.with(|required| {
+        if required.get() {
+            let data_dir = journal_data_dir.expect("journal data dir required by test");
+            let persisted = search_backup::load(data_dir)
+                .expect("active undo journal must be readable before target write");
+            assert!(
+                persisted.contains_key(path),
+                "target undo entry must be active before target write"
+            );
+        }
+    });
+    #[cfg(not(test))]
+    let _ = (journal_data_dir, path);
 }
 
 fn effective_max_replace_undo_bytes() -> u64 {
@@ -751,6 +801,7 @@ mod tests {
             4..10,
         )];
 
+        TEST_REQUIRE_ACTIVE_JOURNAL_BEFORE_WRITE.with(|required| required.set(true));
         let cancel = AtomicBool::new(false);
         let (_, backup) = apply_replacements(
             &replacements,
@@ -760,6 +811,7 @@ mod tests {
         )
         .expect("expected operation to succeed")
         .into_parts();
+        TEST_REQUIRE_ACTIVE_JOURNAL_BEFORE_WRITE.with(|required| required.set(false));
 
         let persisted =
             search_backup::load(journal_dir.path()).expect("expected operation to succeed");
@@ -804,6 +856,50 @@ mod tests {
 
         assert_eq!(result.result.files_affected, 1);
         assert_eq!(fixture::read_text(&file), "replaced\n");
+    }
+
+    #[test]
+    fn test_apply_replacements_waits_for_startup_journal_recovery_guard() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempdir().expect("replace target tempdir");
+        let journal_dir = tempdir().expect("replace journal tempdir");
+        let file = dir.path().join("test.rs");
+        fixture::write_text(&file, "needle\n");
+        let replacements = vec![make_replacement(&file, 1, "needle", "replaced", 0..6)];
+        let recovery_guard =
+            search_backup::acquire_journal_guard().expect("simulate startup journal recovery");
+        let journal_path = journal_dir.path().to_path_buf();
+        let (tx, rx) = mpsc::channel();
+
+        let worker = std::thread::spawn(move || {
+            let cancel = AtomicBool::new(false);
+            let result =
+                apply_replacements(&replacements, &HashSet::new(), &cancel, Some(&journal_path));
+            tx.send(result).expect("send replace result");
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "Replace All must wait while startup owns journal recovery"
+        );
+        assert_eq!(fixture::read_text(&file), "needle\n");
+
+        drop(recovery_guard);
+        let result = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replace should finish after recovery guard drops")
+            .expect("replace should succeed");
+        worker.join().expect("replace worker should join");
+
+        assert_eq!(result.result.files_affected, 1);
+        assert_eq!(fixture::read_text(&file), "replaced\n");
+        assert!(
+            search_backup::load(journal_dir.path())
+                .expect("load active journal")
+                .contains_key(&file)
+        );
     }
 
     #[test]
@@ -971,7 +1067,7 @@ mod tests {
             result
                 .expect_err("journal failure should abort before file mutation")
                 .to_string()
-                .contains("persist undo journal"),
+                .contains("undo journal"),
         );
         assert_eq!(
             fixture::read_text(&file),

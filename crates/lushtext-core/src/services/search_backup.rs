@@ -29,12 +29,13 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Pre-public single-file backup path, retained only for clean-break recovery diagnostics.
 const BACKUP_FILE: &str = "replace-backup.json";
 /// Directory containing one pre-write undo snapshot per replaced file.
 const JOURNAL_DIR: &str = "replace-backup-journal";
-/// Commit marker proving a journal run reached a complete, undoable state.
+/// Commit marker proving a journal run has active, undoable entries.
 const JOURNAL_MANIFEST_FILE: &str = "manifest.json";
 /// Inactive marker written before cleanup so interrupted deletion cannot revive undo.
 const CLEANUP_MARKER_FILE: &str = "cleanup-in-progress.json";
@@ -58,6 +59,12 @@ struct ReplaceBackupDiskEntry {
 /// Commit record listing the per-file entries that make one complete undo run.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct ReplaceJournalManifest {
+    /// Incremental manifests make every durable entry in the journal active.
+    ///
+    /// This lets Replace All arm one bounded per-file snapshot before each
+    /// target rename without rewriting an ever-growing manifest.
+    #[serde(default)]
+    incremental: bool,
     entries: Vec<ReplaceJournalManifestEntry>,
 }
 
@@ -102,6 +109,22 @@ impl ReplaceBackupRecoveryLoad {
 pub struct ReplaceBackupCleanupReport {
     /// Cleanup problems that should be logged or surfaced by higher layers.
     pub diagnostics: Vec<RecoveryDiagnostic>,
+}
+
+/// Acquire the process-wide coordinator for Replace All journal inspection and mutation.
+///
+/// Startup recovery, async panel persistence, cleanup, and the replacement
+/// writer share this guard so a snapshot-based inactive decision cannot delete
+/// a newly activated journal.
+///
+/// # Errors
+///
+/// Returns an error if a previous holder panicked while owning the coordinator.
+pub fn acquire_journal_guard() -> Result<MutexGuard<'static, ()>> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))
 }
 
 /// Load the persisted Replace All undo backup from disk.
@@ -204,6 +227,15 @@ pub fn save(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
     Ok(())
 }
 
+/// Remove any previous undo run before staging an incremental Replace All journal.
+///
+/// # Errors
+///
+/// Returns an error when prior journal state cannot be made inactive and removed.
+pub fn begin_incremental_journal(data_dir: &Path) -> Result<()> {
+    delete(data_dir)
+}
+
 /// Save one per-file undo journal entry before that file is modified.
 ///
 /// # Errors
@@ -224,6 +256,36 @@ pub fn save_entry(data_dir: &Path, path: &Path, entry: &ReplaceUndoEntry) -> Res
         tracing::warn!("{}", diagnostic.summary());
     }
     Ok(())
+}
+
+/// Arm durable per-file entries as an incrementally recoverable undo run.
+///
+/// Once this marker is durable, every valid entry in the journal directory is
+/// recovery evidence. Replace All writes each entry before its corresponding
+/// target rename, so a crash can expose an entry for an unchanged target; undo
+/// validation safely ignores that entry unless the target matches its replaced
+/// bytes.
+///
+/// # Errors
+///
+/// Returns an error when the active marker cannot be written durably.
+pub fn mark_incremental_journal_active(data_dir: &Path) -> Result<()> {
+    let journal_dir = data_dir.join(JOURNAL_DIR);
+    fs_write::create_dir_all_durable(&journal_dir)
+        .with_context(|| format!("failed to create {}", journal_dir.display()))?;
+    fs_mutate::remove_file_if_exists(&journal_dir.join(CLEANUP_MARKER_FILE)).with_context(
+        || {
+            format!(
+                "failed to clear replace journal cleanup marker in {}",
+                journal_dir.display()
+            )
+        },
+    )?;
+    let manifest = ReplaceJournalManifest {
+        incremental: true,
+        entries: Vec::new(),
+    };
+    save_journal_manifest(data_dir, &journal_dir, &manifest)
 }
 
 /// Delete one per-file journal entry. Missing entries are treated as already gone.
@@ -284,14 +346,25 @@ pub fn mark_journal_active(data_dir: &Path, backup: &ReplaceUndoBackup) -> Resul
             entry_file: entry_file_name(path),
         })
         .collect();
-    let manifest = ReplaceJournalManifest { entries };
+    let manifest = ReplaceJournalManifest {
+        incremental: false,
+        entries,
+    };
+    save_journal_manifest(data_dir, &journal_dir, &manifest)
+}
+
+fn save_journal_manifest(
+    data_dir: &Path,
+    journal_dir: &Path,
+    manifest: &ReplaceJournalManifest,
+) -> Result<()> {
     let manifest_path = journal_dir.join(JOURNAL_MANIFEST_FILE);
     let config = RecoveryLoadConfig::new(
         data_dir,
         &manifest_path,
         RecoveryMetadataClass::ReplaceAllUndoJournal,
     );
-    let diagnostics = save_enveloped_json_path(&config, KIND_REPLACE_UNDO_MANIFEST, &manifest)?;
+    let diagnostics = save_enveloped_json_path(&config, KIND_REPLACE_UNDO_MANIFEST, manifest)?;
     for diagnostic in diagnostics {
         tracing::warn!("{}", diagnostic.summary());
     }
@@ -355,6 +428,9 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
     };
 
     let mut diagnostics = manifest_load.diagnostics;
+    if manifest.incremental {
+        return load_incremental_journal(data_dir, journal_dir, diagnostics);
+    }
     if manifest.entries.len() > JOURNAL_SCAN_MAX_ENTRIES {
         diagnostics.push(RecoveryDiagnostic::repair_skipped(
             RecoveryMetadataClass::ReplaceAllUndoJournal,
@@ -476,6 +552,141 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
             active: false,
             diagnostics,
         }
+    }
+}
+
+/// Load an in-progress or completed incremental journal by scanning its bounded
+/// set of durable per-file entries.
+fn load_incremental_journal(
+    data_dir: &Path,
+    journal_dir: &Path,
+    mut diagnostics: Vec<RecoveryDiagnostic>,
+) -> ReplaceBackupRecoveryLoad {
+    let scan_cap = JOURNAL_SCAN_MAX_ENTRIES.saturating_add(3);
+    let entries = match fs_tree::scan_directory(
+        journal_dir,
+        DirectoryScanPolicy {
+            max_entries: scan_cap,
+            include_hidden: false,
+        },
+    ) {
+        Ok(entries) => entries,
+        Err(error) => {
+            diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+                journal_dir,
+                format!("failed to scan incremental replace undo journal: {error}"),
+            ));
+            return ReplaceBackupRecoveryLoad {
+                backup: ReplaceUndoBackup::new(),
+                active: false,
+                diagnostics,
+            };
+        }
+    };
+
+    if entries.len() == scan_cap {
+        diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+            journal_dir,
+            "incremental replace undo journal scan reached its entry cap",
+        ));
+    }
+
+    let mut entry_paths = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let file_name = entry.path.file_name()?.to_str()?;
+            if file_name == JOURNAL_MANIFEST_FILE || file_name == CLEANUP_MARKER_FILE {
+                return None;
+            }
+            (entry.path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+                .then_some(entry.path)
+        })
+        .collect::<Vec<_>>();
+    entry_paths.sort();
+    if entry_paths.len() > JOURNAL_SCAN_MAX_ENTRIES {
+        diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+            journal_dir,
+            format!(
+                "incremental replace undo journal has {} entries, above the {JOURNAL_SCAN_MAX_ENTRIES} entry cap",
+                entry_paths.len()
+            ),
+        ));
+    }
+
+    let mut backup = ReplaceUndoBackup::new();
+    let mut undo_payload_bytes = 0u64;
+    for entry_path in entry_paths.into_iter().take(JOURNAL_SCAN_MAX_ENTRIES) {
+        let entry_load = load_enveloped_json_optional::<ReplaceBackupDiskEntry>(
+            &RecoveryLoadConfig::new(
+                data_dir,
+                &entry_path,
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+            ),
+            KIND_REPLACE_UNDO_ENTRY,
+        );
+        let Some(disk) = entry_load.value else {
+            if entry_load.diagnostics.is_empty() {
+                diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                    RecoveryMetadataClass::ReplaceAllUndoJournal,
+                    &entry_path,
+                    "incremental replace undo journal entry could not be loaded",
+                ));
+            } else {
+                diagnostics.extend(entry_load.diagnostics);
+            }
+            continue;
+        };
+        diagnostics.extend(entry_load.diagnostics);
+        let entry_payload_bytes = replace_entry_payload_bytes(&disk);
+        if undo_payload_bytes.saturating_add(entry_payload_bytes)
+            > effective_max_replace_undo_bytes()
+        {
+            diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+                &entry_path,
+                "incremental replace undo journal exceeds the Replace All undo payload limit",
+            ));
+            break;
+        }
+        undo_payload_bytes = undo_payload_bytes.saturating_add(entry_payload_bytes);
+        let target_path = disk.path.clone();
+        if backup
+            .insert(
+                target_path.clone(),
+                ReplaceUndoEntry::new(
+                    disk.original_content.into_bytes(),
+                    disk.replaced_content.into_bytes(),
+                ),
+            )
+            .is_some()
+        {
+            diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+                target_path,
+                "incremental replace undo journal contains duplicate target paths",
+            ));
+        }
+    }
+
+    if backup.is_empty() {
+        diagnostics.push(RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+            journal_dir,
+            "incremental replace undo journal contains no usable entries",
+        ));
+    }
+    let active = diagnostics.is_empty();
+    ReplaceBackupRecoveryLoad {
+        backup: if active {
+            backup
+        } else {
+            ReplaceUndoBackup::new()
+        },
+        active,
+        diagnostics,
     }
 }
 
@@ -931,7 +1142,10 @@ mod tests {
                 entry_file: format!("{index}.json"),
             })
             .collect();
-        let manifest = ReplaceJournalManifest { entries };
+        let manifest = ReplaceJournalManifest {
+            incremental: false,
+            entries,
+        };
         let config = RecoveryLoadConfig::new(
             dir.path(),
             &manifest_path,
@@ -963,7 +1177,10 @@ mod tests {
                 entry_file: "shared-entry.json".to_string(),
             })
             .collect();
-        let manifest = ReplaceJournalManifest { entries };
+        let manifest = ReplaceJournalManifest {
+            incremental: false,
+            entries,
+        };
         let config = RecoveryLoadConfig::new(
             dir.path(),
             &manifest_path,
@@ -989,6 +1206,7 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
         let manifest = ReplaceJournalManifest {
+            incremental: false,
             entries: Vec::new(),
         };
         let config = RecoveryLoadConfig::new(

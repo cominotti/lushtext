@@ -16,7 +16,8 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::model::editor_memory::{
-    EditorMemoryBudgetOutcome, EditorResidency, evaluate_editor_memory_budget,
+    EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorMemoryBudgetOutcome, EditorResidency,
+    evaluate_editor_memory_budget,
 };
 use crate::model::palette::{
     PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
@@ -40,12 +41,13 @@ impl LushtextWindow {
     /// Wire one editor's residency transitions into the window memory policy.
     ///
     /// GTK-main-thread callbacks use weak references so tabs and the window are
-    /// not retained, and an initial aggregate evaluation is scheduled.
+    /// not retained. Attaching the page installs one scalar ledger record.
     pub(super) fn track_editor_memory(&self, editor: &LushtextEditorPage) {
         let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
         editor.connect_memory_policy_changed(move || {
-            if let Some(window) = window_weak.upgrade() {
-                window.schedule_editor_memory_evaluation();
+            if let (Some(window), Some(editor)) = (window_weak.upgrade(), editor_weak.upgrade()) {
+                window.update_editor_memory_record(&editor);
             }
         });
 
@@ -59,23 +61,91 @@ impl LushtextWindow {
             }
         });
 
-        self.schedule_editor_memory_evaluation();
+        self.update_editor_memory_record(editor);
     }
 
-    /// Schedule a fresh aggregate snapshot after an editor leaves the tab view.
-    ///
-    /// The next GTK idle pass reads only remaining live pages, so there is no
-    /// parallel per-editor accounting entry to remove.
-    pub(super) fn untrack_editor_memory(&self, _editor: &LushtextEditorPage) {
-        self.schedule_editor_memory_evaluation();
+    /// Remove one detached editor's scalar record without walking remaining tabs.
+    pub(super) fn untrack_editor_memory(&self, editor: &LushtextEditorPage) {
+        let editor_id = editor.as_ptr() as usize;
+        let state = &self.imp().editor_memory;
+        let update = state.ledger.borrow_mut().remove(editor_id);
+        if state
+            .active_editor
+            .borrow()
+            .as_ref()
+            .and_then(glib::WeakRef::upgrade)
+            .is_some_and(|active| active.as_ptr() == editor.as_ptr())
+        {
+            state.active_editor.borrow_mut().take();
+        }
+        if state.evaluation_running.get() {
+            if !state.applying_eviction.get() {
+                state.evaluation_armed.set(true);
+            }
+        } else if update.is_some_and(|update| update.total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES)
+            || state.accounting_uncertain.get()
+        {
+            self.schedule_editor_memory_evaluation();
+        } else {
+            state
+                .last_outcome
+                .set(EditorMemoryBudgetOutcome::WithinBudget);
+        }
     }
 
     /// Assign the next window-wide recency generation to one live editor.
     pub(super) fn mark_editor_memory_accessed(&self, editor: &LushtextEditorPage) {
         let state = &self.imp().editor_memory;
+        let previous = state
+            .active_editor
+            .borrow()
+            .as_ref()
+            .and_then(glib::WeakRef::upgrade);
+        if let Some(previous) = previous
+            && previous.as_ptr() != editor.as_ptr()
+        {
+            self.update_editor_memory_record(&previous);
+        }
+        let active_weak = editor.downgrade();
+        state.active_editor.replace(Some(active_weak));
         let generation = state.next_access_generation.get().wrapping_add(1);
         state.next_access_generation.set(generation);
         editor.mark_memory_accessed(generation);
+    }
+
+    /// Refresh one current scalar record and enforce only when the aggregate needs it.
+    fn update_editor_memory_record(&self, editor: &LushtextEditorPage) {
+        let state = &self.imp().editor_memory;
+        let editor_id = editor.as_ptr() as usize;
+        if !editor.is_ancestor(&*self.imp().tab_view) {
+            // A delayed callback from a detached page must not resurrect its
+            // record after the trusted detach delta removed it.
+            state.ledger.borrow_mut().remove(editor_id);
+            return;
+        }
+        let active = self.is_selected_editor(editor);
+        let update = state.ledger.borrow_mut().upsert(EditorResidency {
+            editor_id,
+            estimated_bytes: editor.estimated_live_buffer_bytes(),
+            access_generation: editor.memory_access_generation(),
+            policy_generation: editor.memory_policy_generation(),
+            eligible_for_eviction: editor.eligible_for_memory_eviction(active),
+        });
+
+        if state.evaluation_running.get() {
+            if !state.applying_eviction.get() {
+                state.evaluation_armed.set(true);
+            }
+            return;
+        }
+        if update.total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES || state.accounting_uncertain.get()
+        {
+            self.schedule_editor_memory_evaluation();
+        } else {
+            state
+                .last_outcome
+                .set(EditorMemoryBudgetOutcome::WithinBudget);
+        }
     }
 
     /// Coalesce any number of residency transitions into one next-idle pass.
@@ -310,7 +380,12 @@ impl LushtextWindow {
 
     /// Schedule the same coalesced evaluation used by live editor callbacks.
     pub(super) fn maybe_evict_background_tabs(&self) {
-        self.schedule_editor_memory_evaluation();
+        let memory = &self.imp().editor_memory;
+        if memory.ledger.borrow().total_bytes() > EDITOR_MEMORY_UPPER_BUDGET_BYTES
+            || memory.accounting_uncertain.get()
+        {
+            self.schedule_editor_memory_evaluation();
+        }
     }
 
     /// Run one GTK-main-thread aggregate memory-policy pass.
@@ -326,6 +401,9 @@ impl LushtextWindow {
         memory
             .evaluation_count
             .set(memory.evaluation_count.get().wrapping_add(1));
+        memory
+            .full_scan_count
+            .set(memory.full_scan_count.get().wrapping_add(1));
 
         let tab_view = &self.imp().tab_view;
         let selected = tab_view.selected_page();
@@ -346,6 +424,11 @@ impl LushtextWindow {
                 });
             }
         }
+        memory
+            .ledger
+            .borrow_mut()
+            .reconcile(snapshot.iter().copied());
+        memory.accounting_uncertain.set(false);
 
         let decision = evaluate_editor_memory_budget(&snapshot);
         memory.last_outcome.set(decision.outcome);
@@ -478,6 +561,44 @@ impl LushtextWindow {
     #[must_use]
     pub fn editor_memory_evaluation_count_for_test(&self) -> u64 {
         self.imp().editor_memory.evaluation_count.get()
+    }
+
+    /// Number of full tab walks used for enforcement or explicit reconciliation.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn editor_memory_full_scan_count_for_test(&self) -> u64 {
+        self.imp().editor_memory.full_scan_count.get()
+    }
+
+    /// Current saturating total maintained by constant-work editor deltas.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn editor_memory_incremental_total_for_test(&self) -> u64 {
+        self.imp().editor_memory.ledger.borrow().total_bytes()
+    }
+
+    /// Compare the incremental ledger with one explicit current GTK snapshot.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn editor_memory_reconciles_for_test(&self) -> bool {
+        let tab_view = &self.imp().tab_view;
+        let selected = tab_view.selected_page();
+        let mut current = Vec::with_capacity(usize::try_from(tab_view.n_pages()).unwrap_or(0));
+        for index in 0..tab_view.n_pages() {
+            let page = tab_view.nth_page(index);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+                current.push(EditorResidency {
+                    editor_id: editor.as_ptr() as usize,
+                    estimated_bytes: editor.estimated_live_buffer_bytes(),
+                    access_generation: editor.memory_access_generation(),
+                    policy_generation: editor.memory_policy_generation(),
+                    eligible_for_eviction: editor
+                        .eligible_for_memory_eviction(selected.as_ref() == Some(&page)),
+                });
+            }
+        }
+        current.sort_unstable_by_key(|record| record.editor_id);
+        self.imp().editor_memory.ledger.borrow().snapshot() == current
     }
 
     /// Stable result of the latest pass for protected-budget assertions.

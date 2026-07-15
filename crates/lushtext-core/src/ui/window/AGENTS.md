@@ -11,7 +11,9 @@ This folder owns the top-level application shell adapter.
 ## Local Contracts
 
 - Treat draft lifecycle and session snapshot persistence as separate workflows. Coordinate them explicitly; do not collapse them back into one catch-all module.
+- Preserve failed file-backed page identity across load errors and session snapshots; retry must keep the original path and resolve a released eager draft from durable storage before applying recovery content.
 - Keep per-draft intent allocation and wrap-safe freshness in `draft_ordering.rs`. `drafts.rs` remains the GTK driving adapter and owns the single-flight body/manifest/delete choreography; commands waiting behind document-sized work must stay compact and GTK-free.
+- Keep confirmed window-close coordination in `dialogs.rs`: reject user input across asynchronous draft/session yields, fingerprint editor identity/content generation/modified/path state, recheck active saves and freshness immediately before destruction, and restore retryable drafts on every aborted close.
 - Keep bookmark and note workflows in the private `notes/` module. `mod.rs`
   owns shared callbacks, migration coordination, and menu availability;
   `bookmarks.rs`, `editors.rs`, and `browser.rs` own their named workflows.

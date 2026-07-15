@@ -24,6 +24,7 @@ use crate::model::file_load::{
 use crate::services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadResult};
 use crate::ui::window::LushtextWindow;
 
+use super::save_runtime;
 use super::{EditorLoadState, LushtextEditorPage};
 
 thread_local! {
@@ -157,6 +158,8 @@ fn schedule_drain() {
 }
 
 fn drain() {
+    let (save_weight, save_exclusive) = save_runtime::active_pressure();
+    let close_save_pending = save_runtime::close_work_pending_or_active();
     let dispatches = COORDINATOR.with_borrow_mut(|coordinator| {
         coordinator.drain_scheduled = false;
         let stale = coordinator
@@ -185,18 +188,24 @@ fn drain() {
         let protected_over_budget =
             protected_residency_bytes(&coordinator.requests) > EDITOR_MEMORY_UPPER_BUDGET_BYTES;
         let mut dispatches = Vec::new();
-        while let Some(grant) = coordinator.policy.admit_next(protected_over_budget) {
-            let Some(request) = coordinator.requests.remove(&grant.request_id) else {
-                let _ = coordinator.policy.release(grant.request_id);
-                continue;
-            };
-            dispatches.push((
-                request,
-                TransientLoadPermit {
-                    request_id: Some(grant.request_id),
-                    weight: grant.weight,
-                },
-            ));
+        if !close_save_pending {
+            while let Some(grant) = coordinator.policy.admit_next_with_external(
+                protected_over_budget,
+                save_weight,
+                save_exclusive,
+            ) {
+                let Some(request) = coordinator.requests.remove(&grant.request_id) else {
+                    let _ = coordinator.policy.release(grant.request_id);
+                    continue;
+                };
+                dispatches.push((
+                    request,
+                    TransientLoadPermit {
+                        request_id: Some(grant.request_id),
+                        weight: grant.weight,
+                    },
+                ));
+            }
         }
         dispatches
     });
@@ -204,6 +213,7 @@ fn drain() {
     for (request, permit) in dispatches {
         dispatch(request, permit);
     }
+    save_runtime::schedule_drain_for_external_change();
 }
 
 fn dispatch(request: QueuedLoad, permit: TransientLoadPermit) {
@@ -238,7 +248,19 @@ fn release_on_main(request_id: u64) {
         COORDINATOR.with_borrow_mut(|coordinator| coordinator.policy.release(request_id));
     if released {
         schedule_drain();
+        save_runtime::schedule_drain_for_external_change();
     }
+}
+
+pub(super) fn schedule_drain_for_external_change() {
+    schedule_drain();
+}
+
+pub(super) fn active_pressure() -> (u64, bool) {
+    COORDINATOR.with_borrow(|coordinator| {
+        let snapshot = coordinator.policy.snapshot();
+        (snapshot.active_weight, snapshot.exclusive_active)
+    })
 }
 
 fn current_priority(editor: &LushtextEditorPage) -> FileLoadPriority {

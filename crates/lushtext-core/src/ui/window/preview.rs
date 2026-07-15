@@ -8,8 +8,9 @@
 //! existing meanings while the implementation avoids app-owned paned animation.
 
 use crate::config::keys;
+use crate::services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 use crate::ui::accessibility::{self, AnnouncementLane};
-use crate::ui::buffer_snapshot;
+use crate::ui::buffer_snapshot::{self, BufferSnapshotOutcome};
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -186,6 +187,10 @@ impl LushtextWindow {
             }
         }
         accessibility::set_hidden(&*imp.markdown_preview, !preview_active);
+        if !preview_active {
+            imp.markdown_preview.clear_source_snapshot();
+            imp.markdown_preview.clear();
+        }
 
         if let Some(editor) = self.active_editor_for_preview() {
             editor.set_preview_only_accessibility(preview_only);
@@ -381,17 +386,74 @@ impl LushtextWindow {
         match editor {
             Some(editor) if is_markdown(&editor) => {
                 let buffer = editor.buffer();
-                if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
-                    preview.show_placeholder("Markdown preview paused for this large document");
+                let char_count = usize::try_from(buffer.char_count()).unwrap_or(usize::MAX);
+                if char_count > MAX_MARKDOWN_SOURCE_BYTES {
+                    preview.show_placeholder(
+                        "Markdown preview paused because the source exceeds 4 MiB",
+                    );
                     return;
                 }
-                let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
                 let context = MarkdownPreviewRenderContext::new(
                     editor.file_path(),
                     self.current_workspace_folder_paths(),
                 );
-                preview.render_markdown_with_context(&text, &context);
-                preview.refresh_embedded_code_block_layouts();
+                if markdown_snapshot_requires_chunked(
+                    char_count,
+                    buffer_snapshot::buffer_requires_chunked_snapshot(&buffer),
+                ) {
+                    let window_weak = self.downgrade();
+                    let editor_weak = editor.downgrade();
+                    let expected_dirty_generation = editor.draft_dirty_generation();
+                    let expected_load_generation = editor.load_generation();
+                    let expected_path = editor.file_path();
+                    preview.show_content_placeholder("Preparing Markdown preview…");
+                    let snapshot = buffer_snapshot::snapshot_buffer_text_async_budgeted(
+                        buffer,
+                        u64::try_from(MAX_MARKDOWN_SOURCE_BYTES)
+                            .expect("Markdown source budget fits u64"),
+                        move |outcome| {
+                            let Some(window) = window_weak.upgrade() else {
+                                return;
+                            };
+                            let Some(editor) = editor_weak.upgrade() else {
+                                return;
+                            };
+                            window.imp().markdown_preview.clear_source_snapshot();
+                            if !window.imp().preview_visible.get()
+                                && !window.imp().preview_mode.get()
+                            {
+                                return;
+                            }
+                            if window.active_editor_for_preview().as_ref() != Some(&editor)
+                                || editor.draft_dirty_generation() != expected_dirty_generation
+                                || editor.load_generation() != expected_load_generation
+                                || editor.file_path() != expected_path
+                            {
+                                return;
+                            }
+                            match outcome {
+                                BufferSnapshotOutcome::Captured(text) => {
+                                    window
+                                        .imp()
+                                        .markdown_preview
+                                        .render_markdown_with_context(&text, &context);
+                                }
+                                BufferSnapshotOutcome::ExceededLimit { .. } => {
+                                    window.imp().markdown_preview.show_placeholder(
+                                        "Markdown preview paused because the source exceeds 4 MiB",
+                                    );
+                                }
+                                BufferSnapshotOutcome::Cancelled(_) => {}
+                            }
+                        },
+                    );
+                    preview.replace_source_snapshot(Some(snapshot));
+                } else {
+                    preview.clear_source_snapshot();
+                    let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
+                    preview.render_markdown_with_context(&text, &context);
+                    preview.refresh_embedded_code_block_layouts();
+                }
             }
             Some(_) => {
                 preview.show_placeholder("Not a Markdown file");
@@ -422,6 +484,13 @@ impl LushtextWindow {
             .selected_page()
             .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
     }
+}
+
+fn markdown_snapshot_requires_chunked(
+    char_count: usize,
+    buffer_policy_requires_chunking: bool,
+) -> bool {
+    buffer_policy_requires_chunking || char_count.saturating_mul(4) > MAX_MARKDOWN_SOURCE_BYTES
 }
 
 fn effective_preview_available_width(window: &LushtextWindow, window_width: i32) -> i32 {
@@ -483,4 +552,21 @@ fn is_markdown(editor: &LushtextEditorPage) -> bool {
         .buffer()
         .language()
         .is_some_and(|lang: sourceview5::Language| lang.id() == "markdown")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::markdown_snapshot_requires_chunked;
+    use crate::services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
+
+    #[test]
+    fn multibyte_sized_markdown_uses_budgeted_snapshot_before_byte_cap() {
+        let emoji_chars = MAX_MARKDOWN_SOURCE_BYTES / 2;
+
+        assert!(markdown_snapshot_requires_chunked(emoji_chars, false));
+        assert!(!markdown_snapshot_requires_chunked(
+            MAX_MARKDOWN_SOURCE_BYTES / 4,
+            false
+        ));
+    }
 }

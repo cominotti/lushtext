@@ -691,10 +691,14 @@ pub fn write_draft(data_dir: &Path, draft_id: &str, content: &str) -> Result<()>
         .with_context(|| format!("failed to create drafts dir: {}", dir.display()))?;
 
     let path = dir.join(format!("{draft_id}.draft"));
+    let identity = fs_write::resolve_target_identity(&path)
+        .with_context(|| format!("failed to resolve draft target: {}", path.display()))?;
+    let write_path = identity.as_path().to_path_buf();
+    let _target_guard = fs_write::TargetWriteGuard::from_identity(identity);
     // The shared helper owns the temp-file-then-rename ordering, the full fsync
     // contract, and identity-metadata preservation when overwriting an existing
     // draft file.
-    fs_write::atomic_replace(&path, WriteLabel::DRAFT, content.as_bytes())
+    fs_write::atomic_replace(&write_path, WriteLabel::DRAFT, content.as_bytes())
         .with_context(|| format!("failed to write draft: {}", path.display()))
 }
 
@@ -1508,6 +1512,41 @@ mod tests {
         write_draft(dir.path(), "abc123", content).expect("expected operation to succeed");
         let read = read_draft(dir.path(), "abc123").expect("expected operation to succeed");
         assert_eq!(read, Some(content.to_string()));
+    }
+
+    #[test]
+    fn draft_write_waits_for_the_orphan_cleanup_target_guard() {
+        let dir = TempDir::new().expect("draft guard tempdir");
+        write_draft(dir.path(), "guarded", "old body").expect("seed guarded draft");
+        let path = draft_path(dir.path(), "guarded");
+        let guard = fs_write::TargetWriteGuard::acquire(&path).expect("hold cleanup guard");
+        let data_dir = dir.path().to_path_buf();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal writer start");
+            let result = write_draft(&data_dir, "guarded", "new body");
+            finished_tx.send(result).expect("signal writer completion");
+        });
+        started_rx.recv().expect("writer started");
+        assert!(
+            finished_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "draft autosave must wait while orphan cleanup owns the target guard",
+        );
+
+        drop(guard);
+        finished_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("writer resumed after guard release")
+            .expect("guarded draft write succeeds");
+        writer.join().expect("writer thread joins");
+        assert_eq!(
+            read_draft(dir.path(), "guarded").expect("read guarded body"),
+            Some("new body".to_string())
+        );
     }
 
     #[test]

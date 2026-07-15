@@ -11,12 +11,23 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
-use std::path::Path;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const RESPONSE_CANCEL: &str = "cancel";
 const RESPONSE_DISCARD: &str = "discard";
 const RESPONSE_SAVE: &str = "save";
+#[cfg(feature = "test-utils")]
+static CLOSE_SAFETY_COMPLETION_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Delay final close publication so widget tests can force freshness races.
+#[cfg(feature = "test-utils")]
+pub fn set_close_safety_completion_delay_for_test(delay_ms: u64) {
+    CLOSE_SAFETY_COMPLETION_DELAY_MS.store(delay_ms, Ordering::Release);
+}
 
 impl super::LushtextWindow {
     pub fn show_open_file_dialog(&self) {
@@ -497,69 +508,99 @@ impl super::LushtextWindow {
             return;
         }
 
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "The save-changes dialog only reflects the current tab set, which cannot approach u32::MAX entries"
-        )]
-        let pending = Rc::new(std::cell::Cell::new(selected_file_backed.len() as u32));
-        let any_failed = Rc::new(std::cell::Cell::new(false));
         let saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>> = Rc::new(RefCell::new(Vec::new()));
         let discarded_editors = Rc::new(discarded_editors);
-        let on_done = Rc::new(on_done);
-        let window = self.clone();
+        let on_done: Rc<dyn Fn(bool)> = Rc::new(on_done);
+        let close_session_identity = self.begin_close_save_session();
+        self.drive_close_save_pipeline(
+            close_session_identity,
+            VecDeque::from(selected_file_backed),
+            saved_editors,
+            discarded_editors,
+            on_done,
+        );
+    }
 
-        for editor in selected_file_backed {
-            let editor_for_callback = editor.clone();
-            let pending = pending.clone();
-            let on_done = on_done.clone();
-            let window = window.clone();
-            let any_failed = any_failed.clone();
-            let saved_editors = saved_editors.clone();
-            let discarded_editors = discarded_editors.clone();
-            editor.save_file_async(move |result| {
-                if let Err(e) = result {
-                    // Abort the close on any failure. A durability-unconfirmed
-                    // result wrote the bytes but could not prove them crash-safe,
-                    // so warn rather than claim the save was lost — and still keep
-                    // the tab open so the user can re-save to confirm.
-                    any_failed.set(true);
-                    if let crate::ui::editor_page::EditorSaveError::DurabilityUnconfirmed {
-                        ..
-                    } = e
-                    {
-                        tracing::warn!("Save during close not yet durable: {e}");
-                        window.publish_status_message(
-                            "Saved during close, but durability is unconfirmed — save again",
-                            MessageKind::Warning,
-                        );
-                    } else {
-                        tracing::error!("Save failed during close: {e}");
-                        window.publish_status_message(
-                            &format!("Save failed during close: {e}"),
-                            MessageKind::Error,
-                        );
-                    }
-                } else {
-                    saved_editors.borrow_mut().push(editor_for_callback.clone());
-                }
-                let remaining = pending.get().saturating_sub(1);
-                pending.set(remaining);
-                if remaining == 0 {
-                    if any_failed.get() {
-                        on_done(false);
-                        return;
-                    }
-                    let saved = saved_editors.borrow().clone();
-                    if !saved.is_empty() {
-                        window.cleanup_drafts_for_editors(&saved);
-                    }
-                    if !discarded_editors.is_empty() {
-                        window.stage_close_discard_drafts(discarded_editors.as_ref());
-                    }
-                    on_done(true);
-                }
-            });
+    fn begin_close_save_session(&self) -> u64 {
+        let state = &self.imp().session;
+        let identity = state.next_close_save_identity.get().wrapping_add(1);
+        state.next_close_save_identity.set(identity);
+        state.active_close_save_identity.set(Some(identity));
+        identity
+    }
+
+    pub(crate) fn close_save_session_is_current(&self, identity: u64) -> bool {
+        self.imp().session.active_close_save_identity.get() == Some(identity)
+    }
+
+    fn finish_close_save_session(&self, identity: u64) {
+        if self.close_save_session_is_current(identity) {
+            self.imp().session.active_close_save_identity.set(None);
         }
+    }
+
+    fn drive_close_save_pipeline(
+        &self,
+        close_session_identity: u64,
+        mut remaining: VecDeque<LushtextEditorPage>,
+        saved_editors: Rc<RefCell<Vec<LushtextEditorPage>>>,
+        discarded_editors: Rc<Vec<LushtextEditorPage>>,
+        on_done: Rc<dyn Fn(bool)>,
+    ) {
+        if !self.close_save_session_is_current(close_session_identity) {
+            on_done(false);
+            return;
+        }
+
+        let Some(editor) = remaining.pop_front() else {
+            self.finish_close_save_session(close_session_identity);
+            let saved = saved_editors.borrow().clone();
+            if !saved.is_empty() {
+                self.cleanup_drafts_for_editors(&saved);
+            }
+            if !discarded_editors.is_empty() {
+                self.stage_close_discard_drafts(discarded_editors.as_ref());
+            }
+            on_done(true);
+            return;
+        };
+
+        let window = self.clone();
+        let saved_editor = editor.clone();
+        editor.save_file_async_for_close(close_session_identity, move |result| match result {
+            Ok(()) => {
+                saved_editors.borrow_mut().push(saved_editor);
+                window.drive_close_save_pipeline(
+                    close_session_identity,
+                    remaining,
+                    saved_editors,
+                    discarded_editors,
+                    on_done,
+                );
+            }
+            Err(error) => {
+                window.finish_close_save_session(close_session_identity);
+                // A durability-unconfirmed result wrote bytes but could not
+                // prove them crash-safe. Keep every tab and draft recoverable.
+                if matches!(
+                    error,
+                    crate::ui::editor_page::EditorSaveError::DurabilityUnconfirmed { .. }
+                ) {
+                    tracing::warn!("Save during close not yet durable: {error}");
+                    window.publish_status_message(
+                        "Saved during close, but durability is unconfirmed — save again",
+                        MessageKind::Warning,
+                    );
+                } else {
+                    tracing::error!("Save failed during close: {error}");
+                    window.publish_status_message(
+                        &format!("Save failed during close: {error}"),
+                        MessageKind::Error,
+                    );
+                }
+                on_done(false);
+            }
+        });
     }
 
     fn stage_close_discard_drafts(&self, editors: &[LushtextEditorPage]) {
@@ -603,5 +644,115 @@ impl super::LushtextWindow {
             return;
         }
         self.show_save_changes_dialog(&[(page.clone(), editor.clone())], confirm_close);
+    }
+}
+
+impl super::LushtextWindow {
+    /// Freeze a confirmed window-close transaction across asynchronous safety work.
+    pub(super) fn begin_async_close_safety(&self) {
+        // Keep the close transaction single-flight: duplicate close requests report
+        // progress while the background draft flush and ordered session save finish.
+        if self.imp().session.close_safety_inflight.get() {
+            self.publish_status_message("Finishing close safety checks…", MessageKind::Info);
+            return;
+        }
+        let fingerprint = close_safety_editor_fingerprint(self);
+        let was_sensitive = self.is_sensitive();
+        self.imp().session.close_safety_inflight.set(true);
+        self.set_sensitive(false);
+        self.imp().search_panel.close();
+        let window_for_draft = self.clone();
+        self.flush_dirty_drafts_async(move |draft_result| match draft_result {
+            Ok(()) => {
+                let window_for_session = window_for_draft.clone();
+                let window_for_destroy = window_for_draft;
+                window_for_session.save_session_for_close_async(move || {
+                    #[cfg(feature = "test-utils")]
+                    {
+                        let delay_ms = CLOSE_SAFETY_COMPLETION_DELAY_MS.load(Ordering::Acquire);
+                        if delay_ms > 0 {
+                            glib::timeout_add_local_once(
+                                std::time::Duration::from_millis(delay_ms),
+                                move || {
+                                    finish_async_close_safety(
+                                        &window_for_destroy,
+                                        &fingerprint,
+                                        was_sensitive,
+                                    );
+                                },
+                            );
+                            return;
+                        }
+                    }
+                    finish_async_close_safety(&window_for_destroy, &fingerprint, was_sensitive);
+                });
+            }
+            Err(error) => {
+                abort_async_close_safety(&window_for_draft, was_sensitive);
+                window_for_draft.publish_status_message(
+                    &format!("Draft save failed: {error}"),
+                    MessageKind::Error,
+                );
+            }
+        });
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CloseSafetyEditorFingerprint {
+    owner_id: usize,
+    draft_generation: u64,
+    modified: bool,
+    path: Option<PathBuf>,
+}
+
+fn close_safety_editor_fingerprint(
+    window: &super::LushtextWindow,
+) -> Vec<CloseSafetyEditorFingerprint> {
+    let tab_view = &window.imp().tab_view;
+    let mut fingerprint = Vec::with_capacity(usize::try_from(tab_view.n_pages()).unwrap_or(0));
+    for index in 0..tab_view.n_pages() {
+        let page = tab_view.nth_page(index);
+        if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+            fingerprint.push(CloseSafetyEditorFingerprint {
+                owner_id: editor.notification_owner_id(),
+                draft_generation: editor.draft_dirty_generation(),
+                modified: editor.is_modified(),
+                path: editor.file_path(),
+            });
+        }
+    }
+    fingerprint
+}
+
+fn finish_async_close_safety(
+    window: &super::LushtextWindow,
+    expected: &[CloseSafetyEditorFingerprint],
+    was_sensitive: bool,
+) {
+    if window.has_saving_editors() || close_safety_editor_fingerprint(window) != expected {
+        abort_async_close_safety(window, was_sensitive);
+        window.publish_status_message(
+            "Documents changed while closing; review them and close again",
+            MessageKind::Warning,
+        );
+        return;
+    }
+    window.imp().session.close_safety_inflight.set(false);
+    window.imp().session.close_safety_bypass.set(true);
+    window.destroy();
+}
+
+fn abort_async_close_safety(window: &super::LushtextWindow, was_sensitive: bool) {
+    window.imp().session.close_safety_inflight.set(false);
+    window.imp().session.close_safety_bypass.set(false);
+    window.set_sensitive(was_sensitive);
+    window.clear_close_discard_drafts();
+    let modified = window.modified_editors();
+    if !modified.is_empty() {
+        for (_, editor) in &modified {
+            editor.set_draft_dirty(true);
+        }
+        window.schedule_first_dirty_draft_autosave();
     }
 }

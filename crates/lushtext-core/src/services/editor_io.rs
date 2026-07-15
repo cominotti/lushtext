@@ -17,9 +17,12 @@ use crate::services::file_limits::{FileSizeCheck, REFUSE_TO_OPEN};
 use crate::services::filesystem::{
     FileFacts, WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write,
 };
+use encoding_rs::EncoderResult;
 use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-utils")]
+use std::sync::Mutex;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +40,10 @@ static LOAD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
 static PAYLOAD_LOAD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
+static SAVE_WRITE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static NEXT_SAVE_FAILURE: Mutex<Option<(PathBuf, SaveFailureForTest)>> = Mutex::new(None);
+#[cfg(feature = "test-utils")]
 static TRANSIENT_WEIGHT_OVERRIDE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// Configure an artificial editor-load delay for widget race tests.
@@ -49,6 +56,38 @@ pub fn set_load_delay_for_test(delay_ms: u64) {
 #[cfg(feature = "test-utils")]
 pub fn set_payload_load_delay_for_test(delay_ms: u64) {
     PAYLOAD_LOAD_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+/// Configure an artificial admitted save delay for coordinator/widget tests.
+#[cfg(feature = "test-utils")]
+pub fn set_save_write_delay_for_test(delay_ms: u64) {
+    SAVE_WRITE_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+/// Deterministic durable-write terminal injected into the next editor save.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SaveFailureForTest {
+    BeforeRename,
+    AfterRename,
+}
+
+/// Configure one path-scoped pre- or post-rename failure for widget tests.
+#[cfg(feature = "test-utils")]
+pub fn fail_next_save_for_path_for_test(path: &Path, failure: SaveFailureForTest) {
+    NEXT_SAVE_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace((path.to_path_buf(), failure));
+}
+
+/// Clear any unused path-scoped editor-save failure injection.
+#[cfg(feature = "test-utils")]
+pub fn clear_save_failure_for_test() {
+    NEXT_SAVE_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
 }
 
 /// Override planned transient weight without creating huge widget fixtures.
@@ -535,8 +574,9 @@ pub fn write_document_to_path(
     line_ending: LineEnding,
     allow_lossy: bool,
 ) -> Result<EditorWriteResult, EditorSaveError> {
+    delay_save_write_for_test();
     let normalized = normalize_line_endings(text, line_ending)?;
-    let bytes = encode_text(&normalized, encoding, allow_lossy)?;
+    let bytes = encode_text(normalized.as_ref(), encoding, allow_lossy)?;
     let bytes_written = bytes.len() as u64;
     write_bytes_to_path(path, &bytes)?;
     let mtime = fs_metadata::file_facts(path)
@@ -548,6 +588,17 @@ pub fn write_document_to_path(
     })
 }
 
+#[cfg(feature = "test-utils")]
+fn delay_save_write_for_test() {
+    let delay_ms = SAVE_WRITE_DELAY_MS.load(Ordering::Acquire);
+    if delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn delay_save_write_for_test() {}
+
 /// Apply EditorConfig save-only text rewrites before encoding and line-ending normalization.
 ///
 /// This is pure string processing and performs no filesystem work, so it can be
@@ -555,19 +606,29 @@ pub fn write_document_to_path(
 /// normalized to the active save line ending later in `write_document_to_path`.
 #[must_use]
 pub fn apply_save_formatting_overrides(text: &str, overrides: FormattingOverrides) -> String {
+    apply_save_formatting_overrides_borrowed(text, overrides).into_owned()
+}
+
+/// Borrow unchanged text and allocate only when save-only formatting rewrites it.
+#[must_use]
+pub(crate) fn apply_save_formatting_overrides_borrowed(
+    text: &str,
+    overrides: FormattingOverrides,
+) -> Cow<'_, str> {
     let mut formatted = if overrides.trim_trailing_whitespace == Some(true) {
-        trim_trailing_space_and_tabs(text)
+        Cow::Owned(trim_trailing_space_and_tabs(text))
     } else {
-        text.to_string()
+        Cow::Borrowed(text)
     };
 
     match overrides.insert_final_newline {
         Some(true) if !formatted.is_empty() && !formatted.ends_with(['\n', '\r']) => {
-            formatted.push('\n');
+            formatted.to_mut().push('\n');
         }
         Some(false) => {
-            while formatted.ends_with(['\n', '\r']) {
-                formatted.pop();
+            let keep = formatted.trim_end_matches(['\n', '\r']).len();
+            if keep != formatted.len() {
+                formatted.to_mut().truncate(keep);
             }
         }
         _ => {}
@@ -584,35 +645,52 @@ pub fn analyze_lossy_encoding(
 ) -> Option<LossyEncodingPreview> {
     if matches!(
         target_encoding,
-        DocumentEncoding::Utf8 | DocumentEncoding::Utf8Bom
+        DocumentEncoding::Utf8
+            | DocumentEncoding::Utf8Bom
+            | DocumentEncoding::Utf16Le
+            | DocumentEncoding::Utf16Be
     ) {
         return None;
     }
 
+    let mut encoder = target_encoding.codec().new_encoder();
+    let mut scratch = [0u8; 4096];
     let mut issues = Vec::new();
     let mut total_issue_count = 0usize;
     let mut line = 1usize;
     let mut column = 1usize;
+    let mut consumed = 0usize;
 
-    for character in text.chars() {
-        let char_text = character.to_string();
-        let (_, _, had_errors) = target_encoding.codec().encode(&char_text);
-        if had_errors {
-            total_issue_count += 1;
-            if issues.len() < MAX_LOSSY_PREVIEW_ISSUES {
-                issues.push(LossyEncodingIssue {
-                    line,
-                    column,
-                    character,
-                });
+    while consumed < text.len() {
+        let remaining = &text[consumed..];
+        let (result, read, _) =
+            encoder.encode_from_utf8_without_replacement(remaining, &mut scratch, true);
+        match result {
+            EncoderResult::InputEmpty => {
+                advance_source_position(&remaining[..read], &mut line, &mut column);
+                break;
             }
-        }
-
-        if character == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
+            EncoderResult::OutputFull => {
+                debug_assert!(read > 0, "encoding analysis scratch must fit one scalar");
+                advance_source_position(&remaining[..read], &mut line, &mut column);
+                consumed = consumed.saturating_add(read);
+            }
+            EncoderResult::Unmappable(character) => {
+                let character_bytes = character.len_utf8();
+                debug_assert!(read >= character_bytes);
+                let prefix_bytes = read.saturating_sub(character_bytes);
+                advance_source_position(&remaining[..prefix_bytes], &mut line, &mut column);
+                total_issue_count = total_issue_count.saturating_add(1);
+                if issues.len() < MAX_LOSSY_PREVIEW_ISSUES {
+                    issues.push(LossyEncodingIssue {
+                        line,
+                        column,
+                        character,
+                    });
+                }
+                advance_source_position(&remaining[prefix_bytes..read], &mut line, &mut column);
+                consumed = consumed.saturating_add(read);
+            }
         }
     }
 
@@ -624,6 +702,17 @@ pub fn analyze_lossy_encoding(
             total_issue_count,
             issues,
         })
+    }
+}
+
+fn advance_source_position(fragment: &str, line: &mut usize, column: &mut usize) {
+    for character in fragment.chars() {
+        if character == '\n' {
+            *line = line.saturating_add(1);
+            *column = 1;
+        } else {
+            *column = column.saturating_add(1);
+        }
     }
 }
 
@@ -925,10 +1014,16 @@ fn build_file_health(
 }
 
 /// Normalize text to the selected save-time line ending.
-fn normalize_line_endings(text: &str, line_ending: LineEnding) -> Result<String, EditorSaveError> {
+fn normalize_line_endings(
+    text: &str,
+    line_ending: LineEnding,
+) -> Result<Cow<'_, str>, EditorSaveError> {
     let Some(separator) = line_ending.separator() else {
         return Err(EditorSaveError::MixedLineEndings);
     };
+    if line_endings_already_normalized(text, line_ending) {
+        return Ok(Cow::Borrowed(text));
+    }
 
     let mut normalized = String::with_capacity(text.len() + text.len() / 16);
     let mut chars = text.chars().peekable();
@@ -944,7 +1039,27 @@ fn normalize_line_endings(text: &str, line_ending: LineEnding) -> Result<String,
             normalized.push(character);
         }
     }
-    Ok(normalized)
+    Ok(Cow::Owned(normalized))
+}
+
+fn line_endings_already_normalized(text: &str, line_ending: LineEnding) -> bool {
+    match line_ending {
+        LineEnding::Lf => !text.contains('\r'),
+        LineEnding::Cr => !text.contains('\n'),
+        LineEnding::Crlf => {
+            let bytes = text.as_bytes();
+            let mut index = 0usize;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'\r' if bytes.get(index + 1) == Some(&b'\n') => index += 2,
+                    b'\r' | b'\n' => return false,
+                    _ => index += 1,
+                }
+            }
+            true
+        }
+        LineEnding::Mixed => false,
+    }
 }
 
 /// Strip spaces and tabs immediately before line endings and at end-of-file.
@@ -977,7 +1092,7 @@ fn encode_text(
     text: &str,
     encoding: DocumentEncoding,
     allow_lossy: bool,
-) -> Result<Vec<u8>, EditorSaveError> {
+) -> Result<Cow<'_, [u8]>, EditorSaveError> {
     if !allow_lossy && let Some(preview) = analyze_lossy_encoding(text, encoding) {
         return Err(EditorSaveError::LossyEncoding {
             encoding,
@@ -989,7 +1104,10 @@ fn encode_text(
     let bytes = match encoding {
         DocumentEncoding::Utf8 => Cow::Borrowed(text.as_bytes()),
         DocumentEncoding::Utf8Bom => {
-            Cow::Owned([vec![0xEF, 0xBB, 0xBF], text.as_bytes().to_vec()].concat())
+            let mut bytes = Vec::with_capacity(text.len().saturating_add(3));
+            bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            bytes.extend_from_slice(text.as_bytes());
+            Cow::Owned(bytes)
         }
         _ => {
             let (encoded, _, _) = encoding.codec().encode(text);
@@ -1003,7 +1121,7 @@ fn encode_text(
         }
     };
 
-    Ok(bytes.into_owned())
+    Ok(bytes)
 }
 
 /// Write already-prepared bytes to disk atomically.
@@ -1016,6 +1134,25 @@ fn encode_text(
 /// means the new bytes are on disk but not yet crash-durable
 /// (`DurabilityUnconfirmed`).
 fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), EditorSaveError> {
+    #[cfg(feature = "test-utils")]
+    let injected_failure = {
+        let mut failure = NEXT_SAVE_FAILURE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if failure.as_ref().is_some_and(|(target, _)| target == path) {
+            failure.take().map(|(_, failure)| failure)
+        } else {
+            None
+        }
+    };
+    #[cfg(feature = "test-utils")]
+    if injected_failure == Some(SaveFailureForTest::BeforeRename) {
+        return Err(EditorSaveError::WriteTemp {
+            path: path.to_path_buf(),
+            source: std::io::Error::other("injected pre-rename save failure"),
+        });
+    }
+
     let identity =
         fs_write::resolve_target_identity(path).map_err(|source| EditorSaveError::WriteTemp {
             path: path.to_path_buf(),
@@ -1024,7 +1161,15 @@ fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), EditorSaveError>
     let write_path = identity.as_path().to_path_buf();
     let _path_lock = fs_write::TargetWriteGuard::from_identity(identity);
     fs_write::atomic_replace(&write_path, WriteLabel::SAVE, bytes)
-        .map_err(|error| save_error_from_durable(error, path))
+        .map_err(|error| save_error_from_durable(error, path))?;
+    #[cfg(feature = "test-utils")]
+    if injected_failure == Some(SaveFailureForTest::AfterRename) {
+        return Err(EditorSaveError::DurabilityUnconfirmed {
+            path: path.to_path_buf(),
+            source: std::io::Error::other("injected post-rename durability failure"),
+        });
+    }
+    Ok(())
 }
 
 /// Translate a classified durable-write failure into the save-facing error.
@@ -1716,6 +1861,62 @@ mod tests {
     }
 
     #[test]
+    fn analyze_lossy_encoding_short_circuits_unicode_encodings() {
+        let text = "ASCII\r\n日本語 e\u{301} 😀";
+        for encoding in [
+            DocumentEncoding::Utf8,
+            DocumentEncoding::Utf8Bom,
+            DocumentEncoding::Utf16Le,
+            DocumentEncoding::Utf16Be,
+        ] {
+            assert_eq!(analyze_lossy_encoding(text, encoding), None);
+        }
+    }
+
+    #[test]
+    fn analyze_lossy_encoding_preserves_crlf_combining_and_consecutive_positions() {
+        let preview =
+            analyze_lossy_encoding("A\r\nB\u{301}😀\n😀😀", DocumentEncoding::Windows1252)
+                .expect("expected exact Windows-1252 issues");
+
+        assert_eq!(preview.total_issue_count, 4);
+        assert_eq!(
+            preview.issues,
+            vec![
+                LossyEncodingIssue {
+                    line: 2,
+                    column: 2,
+                    character: '\u{301}',
+                },
+                LossyEncodingIssue {
+                    line: 2,
+                    column: 3,
+                    character: '😀',
+                },
+                LossyEncodingIssue {
+                    line: 3,
+                    column: 1,
+                    character: '😀',
+                },
+                LossyEncodingIssue {
+                    line: 3,
+                    column: 2,
+                    character: '😀',
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn analyze_lossy_encoding_accepts_shift_jis_boundaries_and_reports_astral() {
+        let preview = analyze_lossy_encoding("ASCII あいう 😀", DocumentEncoding::ShiftJis)
+            .expect("expected one Shift_JIS issue");
+        assert_eq!(preview.total_issue_count, 1);
+        assert_eq!(preview.issues[0].character, '😀');
+        assert_eq!(preview.issues[0].column, 11);
+    }
+
+    #[test]
     fn write_document_to_path_replaces_destination() {
         let dir = tempfile::tempdir().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
@@ -1840,6 +2041,38 @@ mod tests {
         );
 
         assert_matches!(result, Err(EditorSaveError::MixedLineEndings));
+    }
+
+    #[test]
+    fn unchanged_save_transforms_borrow_the_captured_payload() {
+        let text = "first\nsecond\n";
+        assert!(matches!(
+            apply_save_formatting_overrides_borrowed(text, FormattingOverrides::default()),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            normalize_line_endings(text, LineEnding::Lf),
+            Ok(Cow::Borrowed(_))
+        ));
+        assert!(matches!(
+            encode_text(text, DocumentEncoding::Utf8, false),
+            Ok(Cow::Borrowed(_))
+        ));
+
+        assert!(matches!(
+            normalize_line_endings(text, LineEnding::Crlf),
+            Ok(Cow::Owned(_))
+        ));
+        assert!(matches!(
+            apply_save_formatting_overrides_borrowed(
+                "text",
+                FormattingOverrides {
+                    insert_final_newline: Some(true),
+                    ..FormattingOverrides::default()
+                }
+            ),
+            Cow::Owned(_)
+        ));
     }
 
     #[test]

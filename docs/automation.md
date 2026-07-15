@@ -464,8 +464,10 @@ wrapper statuses for everyday scripts, including `ok`, `ready`, `usage-error`,
 If `WaitForReady` returns `ok=false`, read its status and detail string. If
 `WaitForIdle` returns `false`, read the detail string and the snapshot's
 `idle_blocker`. Common blockers include app startup, file loading, save work,
-draft persistence or recovery resolution, workspace persistence, workspace filter animation, workspace
-search, preview layout/code-block repair, editor search indexing, session
+draft persistence or recovery resolution, workspace persistence, workspace filter animation,
+workspace search or detached-result retirement, Markdown planning/projection/image work or
+detached-render retirement,
+preview layout/code-block repair, editor search indexing, session
 restore, command-palette index debounce, Replace All preview generation, and
 close-safety work.
 

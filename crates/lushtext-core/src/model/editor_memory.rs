@@ -6,6 +6,8 @@
 //! recently-used selection, hysteresis, and protected-work behavior fully
 //! deterministic without retaining widgets or reading document text.
 
+use std::collections::BTreeMap;
+
 /// Aggregate live-editor estimate that starts safe background eviction.
 ///
 /// 256 MiB preserves the established ceiling for keeping aggregate editor-text
@@ -58,6 +60,127 @@ pub struct EditorResidency {
     pub policy_generation: u64,
     /// Whether current content can be discarded and reloaded without data loss.
     pub eligible_for_eviction: bool,
+}
+
+/// Result of one constant-work residency-ledger mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorResidencyUpdate {
+    /// Saturating aggregate before the mutation.
+    pub previous_total_bytes: u64,
+    /// Saturating aggregate after the mutation.
+    pub total_bytes: u64,
+    /// Whether the update moved the aggregate across the enforcement threshold.
+    pub crossed_upper_threshold: bool,
+}
+
+/// Incremental scalar residency records for one application window.
+///
+/// Exact `u128` accumulators make a later decrement trustworthy even while the
+/// public aggregate is saturated at `u64::MAX`. The number of GTK editor pages
+/// cannot approach the wider integer's capacity, so ordinary mutations remain
+/// constant work relative to the open-tab count.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EditorResidencyLedger {
+    records: BTreeMap<usize, EditorResidency>,
+    exact_total_bytes: u128,
+    exact_protected_bytes: u128,
+}
+
+impl EditorResidencyLedger {
+    /// Insert or replace one current editor record using exact scalar deltas.
+    pub fn upsert(&mut self, residency: EditorResidency) -> EditorResidencyUpdate {
+        let previous_total_bytes = self.total_bytes();
+        if let Some(previous) = self.records.insert(residency.editor_id, residency) {
+            self.exact_total_bytes = self
+                .exact_total_bytes
+                .saturating_sub(u128::from(previous.estimated_bytes));
+            if !previous.eligible_for_eviction {
+                self.exact_protected_bytes = self
+                    .exact_protected_bytes
+                    .saturating_sub(u128::from(previous.estimated_bytes));
+            }
+        }
+        self.exact_total_bytes = self
+            .exact_total_bytes
+            .saturating_add(u128::from(residency.estimated_bytes));
+        if !residency.eligible_for_eviction {
+            self.exact_protected_bytes = self
+                .exact_protected_bytes
+                .saturating_add(u128::from(residency.estimated_bytes));
+        }
+        let total_bytes = self.total_bytes();
+        EditorResidencyUpdate {
+            previous_total_bytes,
+            total_bytes,
+            crossed_upper_threshold: previous_total_bytes <= EDITOR_MEMORY_UPPER_BUDGET_BYTES
+                && total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES,
+        }
+    }
+
+    /// Remove one detached editor record using the same exact delta path.
+    pub fn remove(&mut self, editor_id: usize) -> Option<EditorResidencyUpdate> {
+        let previous_total_bytes = self.total_bytes();
+        let previous = self.records.remove(&editor_id)?;
+        self.exact_total_bytes = self
+            .exact_total_bytes
+            .saturating_sub(u128::from(previous.estimated_bytes));
+        if !previous.eligible_for_eviction {
+            self.exact_protected_bytes = self
+                .exact_protected_bytes
+                .saturating_sub(u128::from(previous.estimated_bytes));
+        }
+        Some(EditorResidencyUpdate {
+            previous_total_bytes,
+            total_bytes: self.total_bytes(),
+            crossed_upper_threshold: false,
+        })
+    }
+
+    /// Replace the ledger from a freshness-checked exceptional/full scan.
+    pub fn reconcile(&mut self, records: impl IntoIterator<Item = EditorResidency>) {
+        self.records.clear();
+        self.exact_total_bytes = 0;
+        self.exact_protected_bytes = 0;
+        for record in records {
+            self.upsert(record);
+        }
+    }
+
+    /// Return whether a stable editor identity is currently tracked.
+    #[must_use]
+    pub fn contains(&self, editor_id: usize) -> bool {
+        self.records.contains_key(&editor_id)
+    }
+
+    /// Return the saturating aggregate across every tracked editor.
+    #[must_use]
+    pub fn total_bytes(&self) -> u64 {
+        u64::try_from(self.exact_total_bytes).unwrap_or(u64::MAX)
+    }
+
+    /// Return the saturating aggregate for non-evictable editor residency.
+    #[must_use]
+    pub fn protected_bytes(&self) -> u64 {
+        u64::try_from(self.exact_protected_bytes).unwrap_or(u64::MAX)
+    }
+
+    /// Copy current scalar records only when policy enforcement needs a plan.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<EditorResidency> {
+        self.records.values().copied().collect()
+    }
+
+    /// Number of scalar records, used by reconciliation evidence.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Whether the ledger currently has no editor records.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
 }
 
 /// One least-recently-used eviction selected from a scalar snapshot.
@@ -292,5 +415,55 @@ mod tests {
             estimate_live_editor_bytes(u64::MAX, Some(u64::MAX), true),
             EVICTED_EDITOR_BOOKKEEPING_BYTES
         );
+    }
+
+    #[test]
+    fn incremental_ledger_updates_one_record_and_crosses_once() {
+        let mut ledger = EditorResidencyLedger::default();
+        let first = page(1, EDITOR_MEMORY_UPPER_BUDGET_BYTES - 10, 1, false);
+        let second = page(2, 9, 2, true);
+        assert!(!ledger.upsert(first).crossed_upper_threshold);
+        assert!(!ledger.upsert(second).crossed_upper_threshold);
+
+        let crossing = ledger.upsert(page(2, 11, 2, true));
+        assert!(crossing.crossed_upper_threshold);
+        assert_eq!(crossing.total_bytes, EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1);
+        assert_eq!(ledger.protected_bytes(), first.estimated_bytes);
+
+        let later = ledger.upsert(page(2, 12, 3, false));
+        assert!(!later.crossed_upper_threshold);
+        assert_eq!(ledger.protected_bytes(), ledger.total_bytes());
+    }
+
+    #[test]
+    fn incremental_ledger_removes_and_reconciles_records() {
+        let mut ledger = EditorResidencyLedger::default();
+        ledger.upsert(page(1, 10, 1, false));
+        ledger.upsert(page(2, 20, 2, true));
+        assert_eq!(ledger.remove(1).map(|update| update.total_bytes), Some(20));
+        assert_eq!(ledger.protected_bytes(), 0);
+        assert!(ledger.remove(1).is_none());
+
+        ledger.reconcile([page(7, 30, 3, false), page(9, 40, 4, true)]);
+        assert_eq!(ledger.len(), 2);
+        assert!(ledger.contains(7));
+        assert_eq!(ledger.total_bytes(), 70);
+        assert_eq!(ledger.protected_bytes(), 30);
+    }
+
+    #[test]
+    fn incremental_ledger_recovers_below_u64_saturation_after_removal() {
+        let mut ledger = EditorResidencyLedger::default();
+        ledger.upsert(page(1, u64::MAX, 1, false));
+        ledger.upsert(page(2, u64::MAX, 2, true));
+        assert_eq!(ledger.total_bytes(), u64::MAX);
+        assert_eq!(ledger.protected_bytes(), u64::MAX);
+
+        ledger.remove(1);
+        assert_eq!(ledger.total_bytes(), u64::MAX);
+        assert_eq!(ledger.protected_bytes(), 0);
+        ledger.remove(2);
+        assert_eq!(ledger.total_bytes(), 0);
+        assert!(ledger.is_empty());
     }
 }

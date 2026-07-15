@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/performance}"
-FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search palette_pipeline_hardening_100000 file_index_rebuild end_to_end_boundedness quality_gap_scale content_search_smoke json_persistence editor_file_io transient_file_load workspace_watch_pressure replace_preview_generation replace_undo_workflows recovery_performance}"
+FILTERS="${LUSHTEXT_PERFORMANCE_SMOKE_FILTER:-file_index_search palette_pipeline_hardening_100000 file_index_rebuild end_to_end_boundedness quality_gap_scale content_search_smoke search_interactive_policies markdown_render_planning save_admission_policy editor_memory_policy json_persistence editor_file_io transient_file_load workspace_watch_pressure replace_preview_generation replace_undo_workflows recovery_performance}"
 SAMPLE_SIZE="${LUSHTEXT_PERFORMANCE_SMOKE_SAMPLE_SIZE:-10}"
 MEASUREMENT_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_MEASUREMENT_TIME:-1}"
 WARM_UP_TIME="${LUSHTEXT_PERFORMANCE_SMOKE_WARM_UP_TIME:-1}"
@@ -68,6 +68,10 @@ palette_pipeline_hardening_100000: generated 100,000-file indexes with varied hi
 file_index_rebuild: generated workspace file lists at representative file counts
 end_to_end_boundedness: generated one flat 10,000-entry directory, file/note source budget and cancellation fixtures, active/latest coordinator pressure, canonical top-one exclusion, a 2,048-row cleanup page, a 10,000-row middle reconciliation, and large replacement policy input
 content_search_smoke: generated 200-file trees plus one 10k-line file
+search_interactive_policies: generated 1,000-query latest-wins ownership and 10,000-result retirement counters
+markdown_render_planning: generated 10,000-paragraph complete and dense single-block limited plans
+save_admission_policy: generated eight compact ordinary save requests under the shared byte budget
+editor_memory_policy: generated 1k/10k/100k scalar tab sets plus one-record incremental edit evidence
 json_persistence: generated workspace/session JSON save and load fixtures
 editor_file_io: generated text files for load, save, and Save As-equivalent explicit-path writes
 transient_file_load: generated scalar admission bursts, stale queues, an exclusive near-limit request, Unicode slice planning, and one headless chunked-install responsiveness fixture
@@ -89,6 +93,10 @@ Coarse smoke thresholds:
 - end-to-end source construction: directory retention must stay within 100,000 rows, note admission within 10,000 entries and 64 MiB searchable text, deterministic note cancellation must stop at 256 admitted rows, and file/note coordinators must retain only one active plus one latest request
 - cleanup/tree completion: directory pages must retain at most 2,048 rows, broad reconciliation plans must stay plain until GTK applies at most 256 changed rows per turn, and widget evidence must prove main-loop progress, supersession, disposal, and readiness completion
 - workspace/content search: must complete every generated fixture without stalling
+- interactive search policy: active worker groups must stay at one, pending queries at one, whole-result clones at zero, and retirement turns at or below 250 rows/cache entries
+- Markdown planning: retained events must stay at or below 256 per projection batch and dense oversized blocks must publish an explicit limited terminal
+- save admission: active payload weight must stay within the shared byte budget except for one explicit exclusive overweight request; queued requests retain scalar metadata only
+- editor memory: ordinary below-threshold edits must touch one record and perform zero full scans
 - Replace preview generation: 10k generated matches should stay sub-second on a developer workstation; investigate multi-second results before shipping preview-flow changes
 - persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully
 - transient_file_load: admitted payload weight must stay within the scalar shared budget except for one exclusive request; the headless Unicode fixture must make main-loop progress between slices and release its permit after final editor residency is published
@@ -158,7 +166,7 @@ for filter in $FILTERS; do
     fi
     {
         echo "## $filter"
-        grep -E "^(Benchmarking|Analyzing|[[:space:]]*time:)|transient-load-policy-evidence|workspace-watch-pressure-evidence|quality-gap-scale-evidence" "$log_path" || true
+        grep -E "^(Benchmarking|Analyzing|[[:space:]]*time:)|[[:alnum:]-]+-evidence" "$log_path" || true
         echo
     } >>"$ARTIFACT_DIR/summary.txt"
 done

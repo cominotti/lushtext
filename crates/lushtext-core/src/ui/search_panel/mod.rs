@@ -22,9 +22,10 @@ pub use replace::{
     set_replace_preview_budget_for_test, set_replace_preview_delay_for_test,
     set_undo_backup_disk_delay_for_test,
 };
+#[cfg(feature = "test-utils")]
+pub use runtime::set_search_worker_delay_for_test;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 use crate::model::content_search::{Replacement, SearchQuerySpec};
 use crate::services::content_search::ReplaceUndoBackup;
@@ -113,11 +114,8 @@ impl LushtextSearchPanel {
 
     /// Called when the panel is being hidden.
     pub fn close(&self) {
-        if let Some(cancel) = self.imp().runtime.cancel_token.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-        self.imp().runtime.searching.set(false);
-        self.invalidate_replace_preview_request();
+        self.cancel_active_search();
+        self.clear_results(false, false);
 
         // Replace All journal files are intentionally bounded to the active
         // panel lifetime so a later session cannot inherit stale rollback state.
@@ -197,10 +195,10 @@ impl LushtextSearchPanel {
         self.imp().search_entry.text().to_string()
     }
 
-    /// Return whether the workspace search worker is currently running.
+    /// Return whether worker cancellation/search or result retirement is pending.
     #[must_use]
     pub fn is_searching(&self) -> bool {
-        self.imp().runtime.searching.get()
+        self.imp().runtime.searching.get() || self.result_retirement_pending()
     }
 
     /// Return total matches accumulated for the current workspace search.
@@ -427,7 +425,7 @@ impl LushtextSearchPanel {
     }
 
     /// Register a callback invoked when "Undo" is clicked with the backup to restore.
-    pub fn connect_undo_all<F: Fn(ReplaceUndoBackup) + 'static>(&self, f: F) {
+    pub fn connect_undo_all<F: Fn(std::sync::Arc<ReplaceUndoBackup>) + 'static>(&self, f: F) {
         self.imp()
             .callbacks
             .undo_callback

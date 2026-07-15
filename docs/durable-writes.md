@@ -83,7 +83,10 @@ directory sync succeed.
 file while inheriting the same metadata, final-sync, rename, and parent-sync
 contract as byte-slice writes. `json_store::save` uses this for pretty JSON, and
 Replace All uses per-file durable journal entries instead of repeatedly
-rewriting one growing backup.
+rewriting one growing backup. Replace All clears the prior run, writes its first
+per-file entry, and durably activates an incremental manifest before the first
+target rename; each later durable entry is therefore recovery-visible before
+its corresponding rename without quadratic manifest rewrites.
 
 ## Failure classification
 

@@ -9,6 +9,11 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::collections::HashSet;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::services::markdown_render::{
+    MAX_MARKDOWN_EVENTS, MAX_MARKDOWN_RETAINED_BYTES, MAX_MARKDOWN_SOURCE_BYTES,
+};
 
 /// Prefix for labels generated from markdown-it-style inline footnotes.
 ///
@@ -16,6 +21,69 @@ use std::ops::Range;
 /// labels, while collision checks still handle documents that intentionally use
 /// the same internal-looking name.
 const INLINE_FOOTNOTE_LABEL_PREFIX: &str = "__lush_inline_footnote_";
+const MAX_INLINE_FOOTNOTE_REPLACEMENTS: usize = MAX_MARKDOWN_EVENTS / 4;
+const LOWERING_CANCEL_CHECK_BYTES: usize = 4 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum InlineFootnoteLowering {
+    Unchanged,
+    Lowered(String),
+    Limited,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InlineFootnoteBudget {
+    retained_bytes: usize,
+    output_bytes: usize,
+}
+
+struct InlineFootnoteLimits {
+    retention: InlineFootnoteBudget,
+    close_scan_work_remaining: usize,
+}
+
+impl InlineFootnoteLimits {
+    fn new(source_bytes: usize) -> Self {
+        Self {
+            retention: InlineFootnoteBudget::new(source_bytes),
+            close_scan_work_remaining: source_bytes.saturating_mul(2),
+        }
+    }
+}
+
+impl InlineFootnoteBudget {
+    fn new(source_bytes: usize) -> Self {
+        Self {
+            retained_bytes: 0,
+            output_bytes: source_bytes.saturating_add(2),
+        }
+    }
+
+    fn admit(&mut self, label_bytes: usize, body: &str) -> bool {
+        let body_output_bytes = body
+            .lines()
+            .map(str::len)
+            .sum::<usize>()
+            .saturating_add(body.lines().count().saturating_sub(1).saturating_mul(5));
+        let retained_charge = std::mem::size_of::<InlineFootnoteReplacement>()
+            .saturating_add(label_bytes.saturating_mul(2))
+            .saturating_add(body.len());
+        let output_charge = label_bytes
+            .saturating_mul(2)
+            .saturating_add(body_output_bytes)
+            .saturating_add(10);
+        let next_retained = self.retained_bytes.saturating_add(retained_charge);
+        let next_output = self.output_bytes.saturating_add(output_charge);
+        if next_retained > MAX_MARKDOWN_RETAINED_BYTES || next_output > MAX_MARKDOWN_RETAINED_BYTES
+        {
+            return false;
+        }
+        self.retained_bytes = next_retained;
+        self.output_bytes = next_output;
+        true
+    }
+}
 
 /// One source replacement generated from an inline footnote definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,40 +107,80 @@ struct InlineFootnoteScanPlan {
     used_labels: HashSet<String>,
 }
 
+enum ScanPlanOutcome {
+    Plan(InlineFootnoteScanPlan),
+    Limited,
+    Cancelled,
+}
+
 /// Lower markdown-it-style inline footnotes into parser-native footnote syntax.
 ///
 /// The returned string is temporary preview input only; callers must continue to
 /// save and edit the original Markdown source. `None` means no eligible inline
 /// footnote was found, allowing the renderer to keep borrowing the original text.
-pub(super) fn lower_inline_footnotes(markdown: &str, options: Options) -> Option<String> {
+pub(super) fn lower_inline_footnotes(markdown: &str, options: Options) -> InlineFootnoteLowering {
+    lower_inline_footnotes_inner(markdown, options, None)
+}
+
+pub(super) fn lower_inline_footnotes_cancellable(
+    markdown: &str,
+    options: Options,
+    cancel: &AtomicBool,
+) -> InlineFootnoteLowering {
+    lower_inline_footnotes_inner(markdown, options, Some(cancel))
+}
+
+fn lower_inline_footnotes_inner(
+    markdown: &str,
+    options: Options,
+    cancel: Option<&AtomicBool>,
+) -> InlineFootnoteLowering {
+    if markdown.len() > MAX_MARKDOWN_SOURCE_BYTES {
+        return InlineFootnoteLowering::Limited;
+    }
     if !markdown.contains("^[") {
-        return None;
+        return InlineFootnoteLowering::Unchanged;
     }
 
-    let scan_plan = build_scan_plan(markdown, options);
+    let scan_plan = match build_scan_plan_cancellable(markdown, options, cancel) {
+        ScanPlanOutcome::Plan(plan) => plan,
+        ScanPlanOutcome::Limited => return InlineFootnoteLowering::Limited,
+        ScanPlanOutcome::Cancelled => return InlineFootnoteLowering::Cancelled,
+    };
     if scan_plan.eligible_ranges.is_empty() {
-        return None;
+        return InlineFootnoteLowering::Unchanged;
     }
 
     let mut replacements = Vec::new();
     let mut label_generator = InlineFootnoteLabelGenerator::new(scan_plan.used_labels);
     let protected_ranges = merge_ranges(scan_plan.protected_ranges);
+    let mut limits = InlineFootnoteLimits::new(markdown.len());
 
     for range in scan_plan.eligible_ranges {
-        collect_inline_footnote_replacements(
+        match collect_inline_footnote_replacements_bounded(
             markdown,
             range,
             &protected_ranges,
             &mut label_generator,
             &mut replacements,
-        );
+            &mut limits,
+            cancel,
+        ) {
+            LoweringScanControl::Continue => {}
+            LoweringScanControl::Limited => return InlineFootnoteLowering::Limited,
+            LoweringScanControl::Cancelled => return InlineFootnoteLowering::Cancelled,
+        }
     }
 
     if replacements.is_empty() {
-        return None;
+        return InlineFootnoteLowering::Unchanged;
     }
 
-    Some(build_lowered_markdown(markdown, &replacements))
+    InlineFootnoteLowering::Lowered(build_lowered_markdown(
+        markdown,
+        &replacements,
+        limits.retention.output_bytes,
+    ))
 }
 
 /// Collision-aware label generator for preview-only inline footnotes.
@@ -103,15 +211,42 @@ impl InlineFootnoteLabelGenerator {
 }
 
 /// Build one parser-derived scan plan for a source document.
+#[cfg(test)]
 fn build_scan_plan(markdown: &str, options: Options) -> InlineFootnoteScanPlan {
+    match build_scan_plan_cancellable(markdown, options, None) {
+        ScanPlanOutcome::Plan(plan) => plan,
+        ScanPlanOutcome::Limited => panic!("test scan unexpectedly exceeded its budget"),
+        ScanPlanOutcome::Cancelled => panic!("uncancelled inline-footnote scan cannot cancel"),
+    }
+}
+
+fn build_scan_plan_cancellable(
+    markdown: &str,
+    options: Options,
+    cancel: Option<&AtomicBool>,
+) -> ScanPlanOutcome {
     let mut plan = InlineFootnoteScanPlan::default();
     let mut protected_depth = 0usize;
     let mut current_prose_range: Option<Range<usize>> = None;
+    let mut used_label_bytes = 0usize;
 
-    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+    for (event_index, (event, range)) in Parser::new_ext(markdown, options)
+        .into_offset_iter()
+        .enumerate()
+    {
+        if event_index % 64 == 0 && cancelled(cancel) {
+            return ScanPlanOutcome::Cancelled;
+        }
+        if event_index >= MAX_MARKDOWN_EVENTS {
+            return ScanPlanOutcome::Limited;
+        }
         match &event {
             Event::Start(tag) => {
                 if let Tag::FootnoteDefinition(label) = tag {
+                    used_label_bytes = used_label_bytes.saturating_add(label.len());
+                    if used_label_bytes > MAX_MARKDOWN_RETAINED_BYTES {
+                        return ScanPlanOutcome::Limited;
+                    }
                     plan.used_labels.insert(label.to_string());
                 }
 
@@ -149,6 +284,10 @@ fn build_scan_plan(markdown: &str, options: Options) -> InlineFootnoteScanPlan {
                 );
             }
             Event::FootnoteReference(label) => {
+                used_label_bytes = used_label_bytes.saturating_add(label.len());
+                if used_label_bytes > MAX_MARKDOWN_RETAINED_BYTES {
+                    return ScanPlanOutcome::Limited;
+                }
                 plan.used_labels.insert(label.to_string());
                 if protected_depth > 0 {
                     push_non_empty_range(&mut plan.protected_ranges, range);
@@ -161,7 +300,11 @@ fn build_scan_plan(markdown: &str, options: Options) -> InlineFootnoteScanPlan {
         }
     }
 
-    plan
+    ScanPlanOutcome::Plan(plan)
+}
+
+fn cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire))
 }
 
 /// Return whether a tag opens a prose span where inline footnotes may appear.
@@ -226,6 +369,7 @@ fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
 }
 
 /// Scan one eligible source range and append every valid inline-footnote rewrite.
+#[cfg(test)]
 fn collect_inline_footnote_replacements(
     markdown: &str,
     range: Range<usize>,
@@ -233,11 +377,47 @@ fn collect_inline_footnote_replacements(
     label_generator: &mut InlineFootnoteLabelGenerator,
     replacements: &mut Vec<InlineFootnoteReplacement>,
 ) {
+    let mut limits = InlineFootnoteLimits::new(markdown.len());
+    let result = collect_inline_footnote_replacements_bounded(
+        markdown,
+        range,
+        protected_ranges,
+        label_generator,
+        replacements,
+        &mut limits,
+        None,
+    );
+    assert_eq!(result, LoweringScanControl::Continue);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoweringScanControl {
+    Continue,
+    Limited,
+    Cancelled,
+}
+
+fn collect_inline_footnote_replacements_bounded(
+    markdown: &str,
+    range: Range<usize>,
+    protected_ranges: &[Range<usize>],
+    label_generator: &mut InlineFootnoteLabelGenerator,
+    replacements: &mut Vec<InlineFootnoteReplacement>,
+    limits: &mut InlineFootnoteLimits,
+    cancel: Option<&AtomicBool>,
+) -> LoweringScanControl {
     let bytes = markdown.as_bytes();
     let mut index = range.start;
     let mut protected_index = first_relevant_protected_range(protected_ranges, index);
+    let mut next_cancel_check = index.saturating_add(LOWERING_CANCEL_CHECK_BYTES);
 
     while index + 1 < range.end {
+        if index >= next_cancel_check {
+            if cancelled(cancel) {
+                return LoweringScanControl::Cancelled;
+            }
+            next_cancel_check = index.saturating_add(LOWERING_CANCEL_CHECK_BYTES);
+        }
         while protected_index < protected_ranges.len()
             && protected_ranges[protected_index].end <= index
         {
@@ -252,17 +432,35 @@ fn collect_inline_footnote_replacements(
             }
         }
 
-        if bytes[index] == b'^'
-            && bytes.get(index + 1) == Some(&b'[')
-            && !is_escaped(bytes, index)
-            && let Some(close) =
-                find_inline_footnote_close(markdown, index + 2, range.end, protected_ranges)
+        if bytes[index] == b'^' && bytes.get(index + 1) == Some(&b'[') && !is_escaped(bytes, index)
         {
+            let close = match find_inline_footnote_close_cancellable(
+                markdown,
+                index + 2,
+                range.end,
+                protected_ranges,
+                &mut limits.close_scan_work_remaining,
+                cancel,
+            ) {
+                Ok(Some(close)) => close,
+                Ok(None) => {
+                    index += next_char_len(markdown, index);
+                    continue;
+                }
+                Err(control) => return control,
+            };
             let body = markdown[index + 2..close].trim();
             if !body.is_empty() {
+                if replacements.len() >= MAX_INLINE_FOOTNOTE_REPLACEMENTS {
+                    return LoweringScanControl::Limited;
+                }
+                let label = label_generator.next_label();
+                if !limits.retention.admit(label.len(), body) {
+                    return LoweringScanControl::Limited;
+                }
                 replacements.push(InlineFootnoteReplacement {
                     source: index..close + 1,
-                    label: label_generator.next_label(),
+                    label,
                     body: body.to_string(),
                 });
             }
@@ -272,29 +470,63 @@ fn collect_inline_footnote_replacements(
 
         index += next_char_len(markdown, index);
     }
+    if cancelled(cancel) {
+        LoweringScanControl::Cancelled
+    } else {
+        LoweringScanControl::Continue
+    }
 }
 
 /// Find the first protected range that could affect scanning at `index`.
 fn first_relevant_protected_range(protected_ranges: &[Range<usize>], index: usize) -> usize {
-    protected_ranges
-        .iter()
-        .position(|range| range.end > index)
-        .unwrap_or(protected_ranges.len())
+    protected_ranges.partition_point(|range| range.end <= index)
 }
 
 /// Find the closing bracket for one inline footnote body.
+#[cfg(test)]
 fn find_inline_footnote_close(
     markdown: &str,
     start: usize,
     end: usize,
     protected_ranges: &[Range<usize>],
 ) -> Option<usize> {
+    let mut close_scan_work_remaining = markdown.len().saturating_mul(2);
+    find_inline_footnote_close_cancellable(
+        markdown,
+        start,
+        end,
+        protected_ranges,
+        &mut close_scan_work_remaining,
+        None,
+    )
+    .expect("uncancelled inline-footnote close scan cannot cancel")
+}
+
+fn find_inline_footnote_close_cancellable(
+    markdown: &str,
+    start: usize,
+    end: usize,
+    protected_ranges: &[Range<usize>],
+    close_scan_work_remaining: &mut usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<Option<usize>, LoweringScanControl> {
     let bytes = markdown.as_bytes();
     let mut index = start;
     let mut bracket_depth = 0usize;
     let mut protected_index = first_relevant_protected_range(protected_ranges, index);
+    let mut next_cancel_check = index.saturating_add(LOWERING_CANCEL_CHECK_BYTES);
 
     while index < end {
+        let Some(remaining) = close_scan_work_remaining.checked_sub(1) else {
+            return Err(LoweringScanControl::Limited);
+        };
+        *close_scan_work_remaining = remaining;
+        if index >= next_cancel_check {
+            if cancelled(cancel) {
+                return Err(LoweringScanControl::Cancelled);
+            }
+            next_cancel_check = index.saturating_add(LOWERING_CANCEL_CHECK_BYTES);
+        }
         while protected_index < protected_ranges.len()
             && protected_ranges[protected_index].end <= index
         {
@@ -320,7 +552,7 @@ fn find_inline_footnote_close(
                 bracket_depth += 1;
                 index += 1;
             }
-            b']' if bracket_depth == 0 => return Some(index),
+            b']' if bracket_depth == 0 => return Ok(Some(index)),
             b']' => {
                 bracket_depth -= 1;
                 index += 1;
@@ -329,7 +561,11 @@ fn find_inline_footnote_close(
         }
     }
 
-    None
+    if cancelled(cancel) {
+        Err(LoweringScanControl::Cancelled)
+    } else {
+        Ok(None)
+    }
 }
 
 /// Return true when an ASCII marker is escaped by an odd number of backslashes.
@@ -351,8 +587,12 @@ fn next_char_len(markdown: &str, index: usize) -> usize {
 }
 
 /// Build the lowered Markdown string consumed by the real preview parser.
-fn build_lowered_markdown(markdown: &str, replacements: &[InlineFootnoteReplacement]) -> String {
-    let mut lowered = String::with_capacity(markdown.len() + replacements.len() * 48);
+fn build_lowered_markdown(
+    markdown: &str,
+    replacements: &[InlineFootnoteReplacement],
+    output_capacity: usize,
+) -> String {
+    let mut lowered = String::with_capacity(output_capacity.min(MAX_MARKDOWN_RETAINED_BYTES));
     let mut previous = 0usize;
 
     for replacement in replacements {
@@ -406,7 +646,42 @@ mod tests {
     }
 
     fn lower(markdown: &str) -> Option<String> {
-        lower_inline_footnotes(markdown, test_options())
+        match lower_inline_footnotes(markdown, test_options()) {
+            InlineFootnoteLowering::Lowered(lowered) => Some(lowered),
+            InlineFootnoteLowering::Unchanged => None,
+            unexpected => panic!("unexpected inline-footnote terminal: {unexpected:?}"),
+        }
+    }
+
+    #[test]
+    fn dense_inline_footnotes_stop_at_the_replacement_budget() {
+        let markdown = "x^[a] ".repeat(MAX_INLINE_FOOTNOTE_REPLACEMENTS + 1);
+
+        assert_eq!(
+            lower_inline_footnotes(&markdown, test_options()),
+            InlineFootnoteLowering::Limited
+        );
+    }
+
+    #[test]
+    fn cancellation_stops_dense_inline_footnote_scanning() {
+        let markdown = "x^[a] ".repeat(10_000);
+        let cancel = AtomicBool::new(true);
+
+        assert_eq!(
+            lower_inline_footnotes_cancellable(&markdown, test_options(), &cancel),
+            InlineFootnoteLowering::Cancelled
+        );
+    }
+
+    #[test]
+    fn dense_unclosed_inline_footnotes_stop_at_the_scan_work_budget() {
+        let markdown = "^[".repeat(10_000);
+
+        assert_eq!(
+            lower_inline_footnotes(&markdown, test_options()),
+            InlineFootnoteLowering::Limited
+        );
     }
 
     #[test]

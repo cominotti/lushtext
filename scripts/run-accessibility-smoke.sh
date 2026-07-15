@@ -1255,7 +1255,7 @@ chmod 600 "$FIXTURE" || true
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor_prefix "editor-failed-load" "editor error" "alert" "Could Not Open File:"
 assert_anchor "editor-failed-load" "editor error" "button" "Retry"
-assert_anchor "editor-failed-load" "editor" "text" "Editor for Untitled"
+assert_anchor "editor-failed-load" "editor" "text" "Editor for unreadable-load-target.txt"
 fi
 
 if case_selected "editor-too-large-policy"; then
@@ -1269,7 +1269,7 @@ run_accessibility_capture "editor-too-large-policy" \
     --step wait-atspi-text:"too large to edit"
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor_prefix "editor-too-large-policy" "editor error" "alert" "Could Not Open File:"
-assert_anchor "editor-too-large-policy" "editor" "text" "Editor for Untitled"
+assert_anchor "editor-too-large-policy" "editor" "text" "Editor for too-large-accessibility-smoke.txt"
 fi
 
 if case_selected "workspace-search-no-workspace"; then

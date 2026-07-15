@@ -27,6 +27,7 @@ pub(crate) mod fuzzy;
 pub mod json_format;
 pub mod json_store;
 pub mod local_history_service;
+pub mod markdown_render;
 pub mod migration_ledger;
 mod note_storage;
 pub mod notifications;

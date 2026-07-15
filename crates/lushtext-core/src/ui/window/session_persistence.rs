@@ -14,7 +14,7 @@ use crate::services::recovery_metadata::{
     RecoveryDiagnostic, RecoveryPreservation, RecoveryProblem,
 };
 use crate::services::{draft_service, json_store, session_service};
-use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use crate::ui::editor_page::LushtextEditorPage;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
@@ -37,12 +37,10 @@ impl super::LushtextWindow {
             let page = tab_view.nth_page(i);
             if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
                 let (cursor_line, cursor_col) = editor.cursor_position();
-                let path =
-                    if editor.load_state() == EditorLoadState::Failed && !editor.is_modified() {
-                        None
-                    } else {
-                        editor.file_path()
-                    };
+                // Failed file-backed placeholders retain their original path so
+                // temporary mount or permission failures remain retryable across
+                // another session instead of being serialized as untitled tabs.
+                let path = editor.file_path();
                 let draft_id = if path.is_none() {
                     editor.draft_id()
                 } else {

@@ -13,7 +13,7 @@ use lushtext_core::config::{APP_ID, keys};
 use lushtext_core::model::encoding::DocumentEncodingState;
 use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
 use lushtext_core::model::formatting_overrides::FormattingOverrides;
-use lushtext_core::services::editor_io::{EditorLoadError, LoadResult};
+use lushtext_core::services::editor_io::{self, EditorLoadError, LoadResult};
 use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::local_history_service;
@@ -34,6 +34,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+struct SaveWriteDelayReset;
+
+impl Drop for SaveWriteDelayReset {
+    fn drop(&mut self) {
+        editor_io::set_save_write_delay_for_test(0);
+    }
+}
 
 fn button_label(button: &gtk4::Button) -> gtk4::Label {
     button
@@ -830,6 +838,9 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
     page.save_file_async(move |save_result| {
         result_for_callback.borrow_mut().replace(save_result);
     });
+    wait_until(Duration::from_secs(2), || {
+        page.save_snapshot_inflight_for_test()
+    });
     assert!(page.save_snapshot_inflight_for_test());
     assert!(!page.source_view().is_editable());
     assert!(!page.source_view().is_cursor_visible());
@@ -1397,6 +1408,8 @@ fn test_new_load_cancels_previous_token_without_reusing_identity() {
 #[test]
 fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes() {
     ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(250);
     let page = LushtextEditorPage::new();
     let buffer = page.buffer();
     let tmp = tempfile::NamedTempFile::new().expect("expected operation to succeed");
@@ -1414,6 +1427,9 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
         done_clone.set(true);
     });
 
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.is_saving() && !page.source_view().is_editable()
+    });
     assert!(page.is_saving());
     assert!(page.is_modified());
     assert!(!page.source_view().is_editable());
@@ -1526,6 +1542,8 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
 #[test]
 fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(250);
     let page = LushtextEditorPage::new();
     let tmp = tempfile::NamedTempFile::new().expect("expected operation to succeed");
 
@@ -1538,6 +1556,9 @@ fn test_save_rejects_duplicate_while_first_save_is_in_progress() {
     page.save_file_async(move |r| {
         r.expect("expected operation to succeed");
         first_done_clone.set(true);
+    });
+    wait_until(std::time::Duration::from_secs(2), || {
+        page.is_saving() && !page.source_view().is_editable()
     });
     assert!(page.is_saving());
     assert!(!page.source_view().is_editable());

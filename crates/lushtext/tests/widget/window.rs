@@ -37,6 +37,9 @@ use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::palette::{IndexedFile, PaletteFileIdentity};
 use lushtext_core::model::recent_document::RecentDocumentEntry;
+use lushtext_core::model::save_admission::{
+    SAVE_PAYLOAD_SHARED_BUDGET_BYTES, conservative_save_payload_weight,
+};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection,
@@ -46,6 +49,7 @@ use lushtext_core::services::file_limits::{
     DISABLE_SYNTAX_HIGHLIGHTING, DISABLE_UNDO_HISTORY, FileSizeCheck, REFUSE_TO_OPEN,
 };
 use lushtext_core::services::filesystem::PathStatus;
+use lushtext_core::services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 use lushtext_core::services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationOwner, NotificationPayload,
     NotificationSeverity, NotificationSurface, StatusMessage,
@@ -73,6 +77,7 @@ use lushtext_core::ui::window::{
     DraftFlushError, LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
     fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
     set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
+    set_close_safety_completion_delay_for_test,
     set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
     set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
     set_lazy_draft_read_delay_for_test,
@@ -81,7 +86,7 @@ use lushtext_core::ui::window::{
     set_notes_browser_source_entry_limit_for_test, with_print_runner_for_test,
     local_history_preview_install_snapshot_for_test,
     set_local_history_preview_install_delay_for_test,
-    set_local_history_preview_read_delay_for_test,
+    set_local_history_preview_read_delay_for_test, set_replace_reload_facts_delay_for_test,
 };
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -113,6 +118,15 @@ impl Drop for EditorLoadDelayReset {
     }
 }
 
+struct SaveWriteDelayReset;
+
+impl Drop for SaveWriteDelayReset {
+    fn drop(&mut self) {
+        editor_io::set_save_write_delay_for_test(0);
+        editor_io::clear_save_failure_for_test();
+    }
+}
+
 struct LossyEncodingAnalysisDelayReset;
 
 impl Drop for LossyEncodingAnalysisDelayReset {
@@ -134,6 +148,14 @@ struct FirstDirtyAutosaveDelayReset;
 impl Drop for FirstDirtyAutosaveDelayReset {
     fn drop(&mut self) {
         set_first_dirty_autosave_delay_for_test(750);
+    }
+}
+
+struct CloseSafetyCompletionDelayReset;
+
+impl Drop for CloseSafetyCompletionDelayReset {
+    fn drop(&mut self) {
+        set_close_safety_completion_delay_for_test(0);
     }
 }
 
@@ -190,6 +212,14 @@ struct ReplacePreviewDelayReset;
 impl Drop for ReplacePreviewDelayReset {
     fn drop(&mut self) {
         set_replace_preview_delay_for_test(0);
+    }
+}
+
+struct ReplaceReloadFactsDelayReset;
+
+impl Drop for ReplaceReloadFactsDelayReset {
+    fn drop(&mut self) {
+        set_replace_reload_facts_delay_for_test(0);
     }
 }
 
@@ -1775,6 +1805,18 @@ fn assert_readable_empty_status_dialog(
         status_size.width >= EMPTY_STATUS_PAGE_MIN_RENDERED_WIDTH,
         "{context} status page should receive a readable line length, got {status_size:?}"
     );
+}
+
+fn wait_for_empty_notes_dialog(window: &LushtextWindow) -> libadwaita::Dialog {
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(window).is_some_and(|dialog| {
+            dialog.content_width() == EMPTY_STATUS_DIALOG_TARGET_WIDTH
+                && dialog.child().is_some_and(|child| {
+                    find_label_by_text(&child, "No notes yet").is_some()
+                })
+        })
+    });
+    visible_sheet_dialog(window).expect("settled empty notes browser dialog")
 }
 
 fn has_vertical_scroll_overflow(folder: &impl IsA<gtk4::Widget>) -> bool {
@@ -4438,14 +4480,13 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         .search_panel
         .imp()
         .runtime
-        .search_matches
-        .borrow_mut()
-        .push(SearchMatch::new(
+        .accepted_matches
+        .replace(Some(Arc::new(vec![SearchMatch::new(
             PathBuf::from("/tmp/search.rs"),
             1,
             "let hello = 1;",
             4..9,
-        ));
+        )])));
     window.imp().search_panel.enter_preview_mode("goodbye");
     assert_eq!(
         current_idle_blocker(&app).as_deref(),
@@ -5557,7 +5598,7 @@ fn test_large_file_load_disables_undo_and_history_through_ui_state() {
 }
 
 #[test]
-fn test_too_large_file_refuses_to_load_and_clears_open_path_state() {
+fn test_too_large_file_refuses_to_load_but_keeps_retryable_file_identity() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("too-large-file tempdir");
     let path = dir.path().join("too-large.txt");
@@ -5582,10 +5623,89 @@ fn test_too_large_file_refuses_to_load_and_clears_open_path_state() {
     let info_bar = editor.info_bar().imp();
     assert!(info_bar.alert_revealer.reveals_child());
     assert!(info_bar.alert_body.label().contains("too large to edit"));
-    assert_eq!(editor.file_path(), None);
+    assert_eq!(editor.file_path().as_deref(), Some(path.as_path()));
     assert_eq!(editor.file_size(), None);
-    assert!(!window.imp().open_paths.borrow().contains(&path));
-    assert!(!window.imp().open_paths.borrow().contains(&canonical_path));
+    assert!(window.imp().open_paths.borrow().contains(&path));
+    assert!(window.imp().open_paths.borrow().contains(&canonical_path));
+    assert_eq!(
+        window.collect_session().tabs[0].path.as_deref(),
+        Some(path.as_path()),
+        "failed file-backed tabs must remain retryable in the next session",
+    );
+}
+
+#[test]
+fn test_failed_file_retry_reads_durable_draft_after_preload_release() {
+    ensure_gtk_init();
+    let _data_dir_guard = isolated_data_dir();
+    let dir = tempfile::tempdir().expect("failed-load draft fallback tempdir");
+    let path = dir.path().join("temporarily-unavailable.txt");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&path);
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: Some(path.clone()),
+        original_mtime_secs: None,
+        saved_at_secs: 1,
+    };
+    draft_service::write_draft(&data_dir, &draft_id, "durable recovered content\n")
+        .expect("write durable draft fallback");
+    let manifest = DraftManifest {
+        drafts: vec![entry],
+        cleanup_continuation: None,
+    };
+    draft_service::save_manifest(&data_dir, &manifest).expect("persist draft manifest");
+
+    let window = test_window();
+    present_window(&window);
+    *window.imp().drafts.manifest.borrow_mut() = manifest;
+    window.imp().drafts.preloaded.borrow_mut().clear();
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).load_state() == EditorLoadState::Failed
+    });
+    let editor = active_editor(&window);
+    assert_eq!(editor.file_path().as_deref(), Some(path.as_path()));
+    assert_eq!(
+        window.collect_session().tabs[0].path.as_deref(),
+        Some(path.as_path())
+    );
+
+    fixture::write_text(&path, "now available on disk\n");
+    editor.info_bar().imp().retry_button.emit_clicked();
+    wait_until(Duration::from_secs(5), || {
+        editor.is_draft_restored()
+            && editor_buffer_text(&editor) == "durable recovered content\n"
+    });
+
+    assert!(editor.is_modified());
+    assert_eq!(editor.file_path().as_deref(), Some(path.as_path()));
+}
+
+#[test]
+fn test_replace_reload_does_not_overwrite_edits_made_during_metadata_lookup() {
+    ensure_gtk_init();
+    let _delay_reset = ReplaceReloadFactsDelayReset;
+    let dir = tempfile::tempdir().expect("replace reload freshness tempdir");
+    let path = dir.path().join("replace-reload.txt");
+    fixture::write_text(&path, "replacement on disk\n");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(3), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+
+    set_replace_reload_facts_delay_for_test(250);
+    window.reload_affected_tabs_for_test(&std::collections::HashSet::from([path]));
+    editor.buffer().set_text("new local edit\n");
+    editor.buffer().set_modified(true);
+    flush_after_delay(Duration::from_millis(400));
+
+    assert_eq!(editor_buffer_text(&editor), "new local edit\n");
+    assert!(editor.is_modified());
 }
 
 #[test]
@@ -5652,7 +5772,7 @@ fn test_memory_pressure_evicts_background_tab_and_reloads_without_path_corruptio
 }
 
 #[test]
-fn test_memory_budget_coalesces_edit_bursts_and_keeps_protected_work() {
+fn test_memory_budget_updates_edit_bursts_incrementally_and_keeps_protected_work() {
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
@@ -5661,15 +5781,22 @@ fn test_memory_budget_coalesces_edit_bursts_and_keeps_protected_work() {
 
     let editor = active_editor(&window);
     let baseline = window.editor_memory_evaluation_count_for_test();
+    let baseline_scans = window.editor_memory_full_scan_count_for_test();
     editor.buffer().set_text("a");
     editor.buffer().set_text("ab");
     editor.buffer().set_text("abc");
     flush_events();
     assert_eq!(
         window.editor_memory_evaluation_count_for_test(),
-        baseline + 1,
-        "one edit burst should produce one aggregate scan"
+        baseline,
+        "below-threshold edits must not schedule aggregate enforcement"
     );
+    assert_eq!(
+        window.editor_memory_full_scan_count_for_test(),
+        baseline_scans,
+        "below-threshold edits must not walk the tab model"
+    );
+    assert!(window.editor_memory_reconciles_for_test());
 
     editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
     flush_events();
@@ -5690,13 +5817,49 @@ fn test_memory_budget_coalesces_edit_bursts_and_keeps_protected_work() {
     flush_events();
     assert_eq!(
         window.editor_memory_evaluation_count_for_test(),
-        no_progress_count + 1,
-        "a later residency transition should rearm evaluation"
+        no_progress_count,
+        "a below-threshold delta should settle without another full scan"
     );
     assert_eq!(
         window.editor_memory_outcome_for_test(),
         EditorMemoryBudgetOutcome::WithinBudget
     );
+    assert_eq!(window.editor_memory_incremental_total_for_test(), 12);
+    assert!(window.editor_memory_reconciles_for_test());
+}
+
+#[test]
+fn test_many_tab_unicode_edits_and_detach_reconcile_without_full_scans() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let baseline_scans = window.editor_memory_full_scan_count_for_test();
+
+    let mut last_page = None;
+    for index in 0..24 {
+        window.new_tab();
+        let editor = active_editor(&window);
+        editor.buffer().set_text(&format!("tab {index}: cafe\u{301} 🙂\n"));
+        editor.buffer().set_modified(false);
+        last_page = window.imp().tab_view.selected_page();
+    }
+    flush_events();
+
+    assert_eq!(
+        window.editor_memory_full_scan_count_for_test(),
+        baseline_scans,
+        "ordinary attach, selection, and Unicode edit deltas stay independent of tab count"
+    );
+    assert!(window.editor_memory_incremental_total_for_test() > 0);
+    assert!(window.editor_memory_reconciles_for_test());
+
+    let last_page = last_page.expect("last attached page");
+    let pages_before = window.imp().tab_view.n_pages();
+    window.imp().tab_view.close_page(&last_page);
+    flush_events();
+    assert_eq!(window.imp().tab_view.n_pages(), pages_before - 1);
+    assert_eq!(window.editor_memory_full_scan_count_for_test(), baseline_scans);
+    assert!(window.editor_memory_reconciles_for_test());
 }
 
 #[test]
@@ -9643,9 +9806,9 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
     window.open_document(&missing);
     wait_until(Duration::from_secs(3), || {
         active_editor(&window).load_state() == EditorLoadState::Failed
-            && active_editor(&window).file_path().is_none()
+            && active_editor(&window).file_path().as_deref() == Some(missing.as_path())
     });
-    assert_window_workspace_row_state(&section, &missing, false, false);
+    assert_window_workspace_row_state(&section, &missing, true, true);
     assert_window_workspace_row_state(&section, &beta, true, false);
 }
 
@@ -11570,6 +11733,45 @@ fn test_window_close_request_cancel_keeps_modified_file_tab() {
 }
 
 #[test]
+fn test_confirmed_close_rejects_input_and_aborts_on_new_content_generation() {
+    ensure_gtk_init();
+    let _close_delay_reset = CloseSafetyCompletionDelayReset;
+    let _autosave_delay_reset = FirstDirtyAutosaveDelayReset;
+    set_close_safety_completion_delay_for_test(300);
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+
+    window.close();
+    wait_until(Duration::from_secs(2), || {
+        window.imp().session.close_safety_inflight.get()
+    });
+    assert!(!window.is_sensitive(), "confirmed close rejects new user input");
+
+    editor.buffer().set_text("late content generation\n");
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(3), || {
+        !window.imp().session.close_safety_inflight.get()
+    });
+
+    assert!(window.is_visible());
+    assert!(window.is_sensitive());
+    assert!(editor.is_modified());
+    assert!(editor.draft_dirty());
+    assert_eq!(editor_buffer_text(&editor), "late content generation\n");
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Documents changed while closing"))
+    );
+    window.destroy();
+}
+
+#[test]
 fn test_window_close_request_save_persists_session_and_cleans_file_draft() {
     let (window, _dir, path, _editor) = modified_file_backed_tab("disk\n", "window saved\n");
     let draft_id = seed_file_backed_draft(&window, &path, "recoverable draft\n");
@@ -11762,6 +11964,498 @@ fn test_multi_tab_window_close_saves_checked_and_discards_unchecked_documents() 
             .is_none();
         saved_clean && discarded_clean
     });
+}
+
+#[test]
+fn test_multi_tab_close_admits_one_save_payload_at_a_time() {
+    ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(250);
+    let (_dir, files) = seed_named_tab_files(&["first.txt", "second.txt"]);
+    let window = test_window();
+    present_window(&window);
+
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 2
+    });
+    let editors = files
+        .iter()
+        .map(|path| {
+            let title = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("fixture file name");
+            find_tab_page_by_title(&window, title)
+                .child()
+                .downcast::<LushtextEditorPage>()
+                .expect("fixture editor")
+        })
+        .collect::<Vec<_>>();
+    wait_until(Duration::from_secs(5), || {
+        editors.iter().all(|editor| editor.file_size().is_some())
+    });
+
+    let residency = 8 * 1024 * 1024;
+    for (index, editor) in editors.iter().enumerate() {
+        editor.set_memory_estimate_for_test(Some(residency));
+        editor
+            .buffer()
+            .set_text(&format!("sequential close save {index}\n"));
+        editor.buffer().set_modified(true);
+    }
+    editors[0].reset_transient_save_admission_for_test();
+
+    let completed = Rc::new(Cell::new(None));
+    let completed_for_callback = Rc::clone(&completed);
+    window.save_editors_for_close(editors.clone(), Vec::new(), move |confirmed| {
+        completed_for_callback.set(Some(confirmed));
+    });
+
+    let maximum_active = Cell::new(0usize);
+    wait_until(Duration::from_secs(10), || {
+        let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+        maximum_active.set(maximum_active.get().max(snapshot.active_count));
+        completed.get().is_some()
+    });
+
+    assert_eq!(completed.get(), Some(true));
+    assert_eq!(maximum_active.get(), 1);
+    let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+    assert_eq!(snapshot.active_count, 0);
+    assert_eq!(snapshot.queued_count, 0);
+    assert_eq!(
+        snapshot.high_water_weight,
+        conservative_save_payload_weight(residency)
+    );
+    for (index, path) in files.iter().enumerate() {
+        assert_eq!(
+            fs_read::text(path).expect("sequentially saved file"),
+            format!("sequential close save {index}\n")
+        );
+    }
+}
+
+#[test]
+fn test_ordinary_save_admission_allows_bounded_concurrency() {
+    ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(250);
+    let (_dir, files) = seed_named_tab_files(&["ordinary-a.txt", "ordinary-b.txt"]);
+    let window = test_window();
+    present_window(&window);
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 2
+    });
+    let editors = ["ordinary-a.txt", "ordinary-b.txt"].map(|title| {
+        find_tab_page_by_title(&window, title)
+            .child()
+            .downcast::<LushtextEditorPage>()
+            .expect("ordinary save editor")
+    });
+    wait_until(Duration::from_secs(5), || {
+        editors.iter().all(|editor| editor.file_size().is_some())
+    });
+
+    let residency = 8 * 1024 * 1024;
+    editors[0].reset_transient_save_admission_for_test();
+    for (index, editor) in editors.iter().enumerate() {
+        editor.set_memory_estimate_for_test(Some(residency));
+        editor.buffer().set_text(&format!("ordinary {index}\n"));
+        editor.buffer().set_modified(true);
+    }
+
+    let completed = Rc::new(Cell::new(0usize));
+    for editor in &editors {
+        let completed = Rc::clone(&completed);
+        editor.save_file_async(move |result| {
+            assert!(result.is_ok(), "ordinary admitted save failed: {result:?}");
+            completed.set(completed.get().saturating_add(1));
+        });
+    }
+    let maximum_active = Cell::new(0usize);
+    wait_until(Duration::from_secs(10), || {
+        let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+        maximum_active.set(maximum_active.get().max(snapshot.active_count));
+        completed.get() == 2
+    });
+
+    assert_eq!(maximum_active.get(), 2);
+    assert_eq!(
+        editors[0]
+            .transient_save_admission_snapshot_for_test()
+            .high_water_weight,
+        conservative_save_payload_weight(residency).saturating_mul(2)
+    );
+}
+
+#[test]
+fn test_overweight_save_admission_is_process_exclusive() {
+    ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(250);
+    let (_dir, files) = seed_named_tab_files(&["overweight-a.txt", "overweight-b.txt"]);
+    let window = test_window();
+    present_window(&window);
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 2
+    });
+    let editors = ["overweight-a.txt", "overweight-b.txt"].map(|title| {
+        find_tab_page_by_title(&window, title)
+            .child()
+            .downcast::<LushtextEditorPage>()
+            .expect("overweight save editor")
+    });
+    wait_until(Duration::from_secs(5), || {
+        editors.iter().all(|editor| editor.file_size().is_some())
+    });
+
+    let residency = 40 * 1024 * 1024;
+    let weight = conservative_save_payload_weight(residency);
+    assert!(weight > SAVE_PAYLOAD_SHARED_BUDGET_BYTES);
+    editors[0].reset_transient_save_admission_for_test();
+    for (index, editor) in editors.iter().enumerate() {
+        editor.set_memory_estimate_for_test(Some(residency));
+        editor.buffer().set_text(&format!("overweight {index}\n"));
+        editor.buffer().set_modified(true);
+    }
+
+    let completed = Rc::new(Cell::new(0usize));
+    for editor in &editors {
+        let completed = Rc::clone(&completed);
+        editor.save_file_async(move |result| {
+            assert!(result.is_ok(), "overweight admitted save failed: {result:?}");
+            completed.set(completed.get().saturating_add(1));
+        });
+    }
+    let maximum_active = Cell::new(0usize);
+    let saw_exclusive = Cell::new(false);
+    wait_until(Duration::from_secs(10), || {
+        let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+        maximum_active.set(maximum_active.get().max(snapshot.active_count));
+        saw_exclusive.set(saw_exclusive.get() || snapshot.exclusive_active);
+        completed.get() == 2
+    });
+
+    assert_eq!(maximum_active.get(), 1);
+    assert!(saw_exclusive.get());
+    assert_eq!(
+        editors[0]
+            .transient_save_admission_snapshot_for_test()
+            .high_water_weight,
+        weight
+    );
+}
+
+#[test]
+fn test_admitted_save_rejects_stale_destination_completion() {
+    ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(300);
+    let (window, dir, original_path, editor) =
+        modified_file_backed_tab("disk\n", "stale save body\n");
+    let replacement_path = dir.path().join("replacement.txt");
+    editor.reset_transient_save_admission_for_test();
+
+    let result = Rc::new(RefCell::new(None));
+    let result_for_callback = Rc::clone(&result);
+    editor.save_file_async(move |save_result| {
+        result_for_callback.replace(Some(save_result));
+    });
+    wait_until(Duration::from_secs(5), || {
+        editor
+            .transient_save_admission_snapshot_for_test()
+            .active_count
+            == 1
+    });
+    editor.set_file_path(&replacement_path);
+
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+    assert!(matches!(
+        result.borrow().as_ref(),
+        Some(Err(EditorSaveError::SnapshotCancelled))
+    ));
+    assert!(editor.is_modified());
+    assert_eq!(editor.file_path().as_deref(), Some(replacement_path.as_path()));
+    assert_eq!(
+        fs_read::text(&original_path).expect("stale save destination bytes"),
+        "stale save body\n"
+    );
+    assert!(!fs_metadata::exists(&replacement_path));
+    drop(window);
+}
+
+#[test]
+fn test_queued_save_cancellation_discards_lossy_consent() {
+    ensure_gtk_init();
+    let _delay_reset = SaveWriteDelayReset;
+    editor_io::set_save_write_delay_for_test(400);
+    let (_dir, files) = seed_named_tab_files(&["blocking.txt", "queued.txt"]);
+    let window = test_window();
+    present_window(&window);
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 2
+    });
+    let blocking = find_tab_page_by_title(&window, "blocking.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("blocking editor");
+    let queued = find_tab_page_by_title(&window, "queued.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("queued editor");
+    wait_until(Duration::from_secs(5), || {
+        blocking.file_size().is_some() && queued.file_size().is_some()
+    });
+
+    blocking.reset_transient_save_admission_for_test();
+    blocking.set_memory_estimate_for_test(Some(40 * 1024 * 1024));
+    queued.set_memory_estimate_for_test(Some(8 * 1024 * 1024));
+    blocking.buffer().set_text("blocking save\n");
+    blocking.buffer().set_modified(true);
+    queued.set_save_encoding(DocumentEncoding::Windows1252);
+    queued.buffer().set_text("confirmed queued save 😀\n");
+    queued.buffer().set_modified(true);
+
+    let blocking_done = Rc::new(Cell::new(false));
+    let blocking_done_for_callback = Rc::clone(&blocking_done);
+    blocking.save_file_async(move |result| {
+        assert!(result.is_ok(), "blocking save failed: {result:?}");
+        blocking_done_for_callback.set(true);
+    });
+    wait_until(Duration::from_secs(5), || {
+        blocking
+            .transient_save_admission_snapshot_for_test()
+            .exclusive_active
+    });
+
+    let queued_result = Rc::new(RefCell::new(None));
+    let queued_result_for_callback = Rc::clone(&queued_result);
+    queued.arm_lossy_save_once();
+    queued.save_file_async(move |result| {
+        queued_result_for_callback.replace(Some(result));
+    });
+    wait_until(Duration::from_secs(5), || {
+        blocking
+            .transient_save_admission_snapshot_for_test()
+            .queued_count
+            == 1
+    });
+    let replacement_path = files[1].with_file_name("queued-renamed.txt");
+    queued.set_file_path(&replacement_path);
+
+    wait_until(Duration::from_secs(10), || {
+        blocking_done.get() && queued_result.borrow().is_some()
+    });
+    assert!(matches!(
+        queued_result.borrow().as_ref(),
+        Some(Err(EditorSaveError::SnapshotCancelled))
+    ));
+    assert!(queued.is_modified());
+    assert_eq!(
+        fs_read::text(&files[1]).expect("original queued destination"),
+        "content for queued.txt\n"
+    );
+    assert!(!fs_metadata::exists(&replacement_path));
+
+    queued.set_file_path(&files[1]);
+    queued.buffer().set_text("different later content 😀\n");
+    queued.buffer().set_modified(true);
+    let later_result = Rc::new(RefCell::new(None));
+    let later_result_for_callback = Rc::clone(&later_result);
+    queued.save_file_async(move |result| {
+        later_result_for_callback.replace(Some(result));
+    });
+    wait_until(Duration::from_secs(10), || later_result.borrow().is_some());
+    assert!(matches!(
+        later_result.borrow().as_ref(),
+        Some(Err(EditorSaveError::LossyEncoding { .. }))
+    ));
+    assert_eq!(
+        fs_read::text(&files[1]).expect("later lossy destination"),
+        "content for queued.txt\n",
+        "stale queued consent must not authorize a later lossy save",
+    );
+    let snapshot = blocking.transient_save_admission_snapshot_for_test();
+    assert_eq!(snapshot.active_count, 0);
+    assert_eq!(snapshot.queued_count, 0);
+}
+
+#[test]
+fn test_stale_close_save_cancellation_wakes_queued_loads() {
+    ensure_gtk_init();
+    let _load_delay_reset = EditorLoadDelayReset;
+    let (_dir, files) =
+        seed_named_tab_files(&["close-save.txt", "active-load.txt", "queued-load.txt"]);
+    let window = test_window();
+    present_window(&window);
+
+    window.open_document(&files[0]);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 1
+    });
+    let close_editor = find_tab_page_by_title(&window, "close-save.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("close-save editor");
+    wait_until(Duration::from_secs(5), || close_editor.file_size().is_some());
+    close_editor.buffer().set_text("close save body\n");
+    close_editor.buffer().set_modified(true);
+    close_editor.reset_transient_load_admission_for_test();
+    close_editor.reset_transient_save_admission_for_test();
+
+    editor_io::set_payload_load_delay_for_test(700);
+    editor_io::set_transient_weight_override_for_test(Some(200 * 1024 * 1024));
+    window.open_document(&files[1]);
+    wait_until(Duration::from_secs(5), || {
+        close_editor
+            .transient_load_admission_snapshot_for_test()
+            .active_count
+            == 1
+    });
+    let active_load = find_tab_page_by_title(&window, "active-load.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("active load editor");
+
+    window.open_document(&files[2]);
+    wait_until(Duration::from_secs(5), || {
+        close_editor
+            .transient_load_admission_snapshot_for_test()
+            .queued_count
+            == 1
+    });
+    let queued_load = find_tab_page_by_title(&window, "queued-load.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("queued load editor");
+
+    let close_result = Rc::new(Cell::new(None));
+    let close_result_for_callback = Rc::clone(&close_result);
+    window.save_editors_for_close(vec![close_editor.clone()], Vec::new(), move |confirmed| {
+        close_result_for_callback.set(Some(confirmed));
+    });
+    wait_until(Duration::from_secs(5), || {
+        close_editor
+            .transient_save_admission_snapshot_for_test()
+            .queued_close_count
+            == 1
+    });
+
+    // Make the close request stale while it is still blocked by the active
+    // exclusive load. Releasing that load schedules the load lane first.
+    window.imp().session.active_close_save_identity.set(None);
+
+    wait_until(Duration::from_secs(10), || {
+        close_result.get() == Some(false)
+            && active_load.file_size().is_some()
+            && queued_load.file_size().is_some()
+    });
+    let load_snapshot = close_editor.transient_load_admission_snapshot_for_test();
+    assert_eq!(load_snapshot.active_count, 0);
+    assert_eq!(load_snapshot.queued_count, 0);
+    let save_snapshot = close_editor.transient_save_admission_snapshot_for_test();
+    assert_eq!(save_snapshot.active_count, 0);
+    assert_eq!(save_snapshot.queued_count, 0);
+}
+
+fn assert_close_batch_failure_preserves_recovery(
+    failure: editor_io::SaveFailureForTest,
+    first_bytes_replaced: bool,
+) {
+    ensure_gtk_init();
+    let _failure_reset = SaveWriteDelayReset;
+    let (_dir, files) = seed_named_tab_files(&["fails-first.txt", "must-wait.txt"]);
+    let window = test_window();
+    present_window(&window);
+    for path in &files {
+        window.open_document(path);
+    }
+    wait_until(Duration::from_secs(5), || {
+        window.imp().tab_view.n_pages() == 2
+    });
+    let first = find_tab_page_by_title(&window, "fails-first.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("first close editor");
+    let second = find_tab_page_by_title(&window, "must-wait.txt")
+        .child()
+        .downcast::<LushtextEditorPage>()
+        .expect("second close editor");
+    wait_until(Duration::from_secs(5), || {
+        first.file_size().is_some() && second.file_size().is_some()
+    });
+    first.buffer().set_text("first unsaved body\n");
+    first.buffer().set_modified(true);
+    second.buffer().set_text("second unsaved body\n");
+    second.buffer().set_modified(true);
+    let first_draft = seed_file_backed_draft(&window, &files[0], "first recovery\n");
+    let second_draft = seed_file_backed_draft(&window, &files[1], "second recovery\n");
+    let data_dir = json_store::data_dir();
+    first.reset_transient_save_admission_for_test();
+    editor_io::fail_next_save_for_path_for_test(&files[0], failure);
+
+    let completed = Rc::new(Cell::new(None));
+    let completed_for_callback = Rc::clone(&completed);
+    window.save_editors_for_close(
+        vec![first.clone(), second.clone()],
+        Vec::new(),
+        move |confirmed| completed_for_callback.set(Some(confirmed)),
+    );
+    wait_until(Duration::from_secs(10), || completed.get().is_some());
+
+    assert_eq!(completed.get(), Some(false));
+    assert!(first.is_modified());
+    assert!(second.is_modified());
+    assert_eq!(
+        fs_read::text(&files[0]).expect("first close destination"),
+        if first_bytes_replaced {
+            "first unsaved body\n"
+        } else {
+            "content for fails-first.txt\n"
+        }
+    );
+    assert_eq!(
+        fs_read::text(&files[1]).expect("later close destination"),
+        "content for must-wait.txt\n"
+    );
+    assert!(
+        draft_service::read_draft(&data_dir, &first_draft)
+            .expect("first retained draft")
+            .is_some()
+    );
+    assert!(
+        draft_service::read_draft(&data_dir, &second_draft)
+            .expect("second retained draft")
+            .is_some()
+    );
+}
+
+#[test]
+fn test_close_batch_pre_rename_failure_stops_later_saves_and_keeps_drafts() {
+    assert_close_batch_failure_preserves_recovery(
+        editor_io::SaveFailureForTest::BeforeRename,
+        false,
+    );
+}
+
+#[test]
+fn test_close_batch_durability_warning_stops_later_saves_and_keeps_drafts() {
+    assert_close_batch_failure_preserves_recovery(
+        editor_io::SaveFailureForTest::AfterRename,
+        true,
+    );
 }
 
 #[test]
@@ -12346,16 +13040,33 @@ fn test_primary_menu_markdown_preview_pauses_large_markdown_buffer() {
     let dir = tempfile::tempdir().expect("large markdown preview tempdir");
     let editor = active_editor(&window);
     editor.set_file_path(&dir.path().join("large-preview.md"));
-    editor.buffer().set_text(&"x".repeat(2_500_001));
+    editor
+        .buffer()
+        .set_text(&"x".repeat(MAX_MARKDOWN_SOURCE_BYTES + 1));
+    assert_eq!(
+        editor.buffer().language().map(|language| language.id()),
+        Some(glib::GString::from("markdown"))
+    );
+    assert!(
+        usize::try_from(editor.buffer().char_count()).unwrap_or_default()
+            > MAX_MARKDOWN_SOURCE_BYTES
+    );
 
     activate_primary_menu_item(&window, "Markdown Preview");
-
-    wait_until(Duration::from_secs(2), || {
-        window.imp().preview_mode.get() && !window.imp().markdown_preview.is_showing_content()
-    });
+    flush_events();
+    assert!(window.imp().preview_mode.get());
+    assert!(
+        !window.imp().markdown_preview.is_showing_content(),
+        "oversized Markdown should use the limited placeholder, state={:?}, description={:?}",
+        window.imp().markdown_preview.render_state_for_test(),
+        window
+            .imp()
+            .markdown_preview
+            .placeholder_description_for_test(),
+    );
     assert_eq!(
         window.imp().markdown_preview.placeholder_description_for_test(),
-        Some("Markdown preview paused for this large document".to_string())
+        Some("Markdown preview paused because the source exceeds 4 MiB".to_string())
     );
 }
 
@@ -13626,7 +14337,7 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let dialog_child = dialog.child().expect("notes browser child");
     let sidebar = find_adw_sidebar(&dialog_child).expect("notes browser sidebar");
-    flush_events();
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
     assert_eq!(sidebar.items().n_items(), 1);
     assert_eq!(
         sidebar.item(0).and_then(|item| item.title()).as_deref(),
@@ -14450,9 +15161,7 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
     wait_for_workspace_consumers(&window, 2, 2);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
-
-    let dialog = visible_sheet_dialog(&window).expect("empty notes browser dialog");
+    let dialog = wait_for_empty_notes_dialog(&window);
     let child = dialog.child().expect("empty notes browser child");
     assert_readable_empty_status_dialog(&dialog, &child, "empty Browse Notes browser");
     assert!(
@@ -14471,9 +15180,9 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
     wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
 
     activate_action(&window, "show-notes");
+    let _dialog = wait_for_empty_notes_dialog(&window);
     wait_until(Duration::from_secs(5), || {
-        visible_sheet_dialog(&window).is_some()
-            && gtk4::prelude::GtkWindowExt::focus(&window).is_some()
+        gtk4::prelude::GtkWindowExt::focus(&window).is_some()
     });
     emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Escape);
     flush_events();
@@ -14492,9 +15201,7 @@ fn test_empty_notes_browser_opens_from_header_without_workspace_or_open_tab_rows
 
     // Use the menu-scoped action so this covers the header `Browse Notes…` row.
     activate_action(&window, "notes-show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
-
-    let dialog = visible_sheet_dialog(&window).expect("empty notes browser dialog");
+    let dialog = wait_for_empty_notes_dialog(&window);
     let child = dialog.child().expect("empty notes browser child");
     assert_readable_empty_status_dialog(&dialog, &child, "empty Browse Notes browser");
     assert!(

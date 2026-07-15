@@ -79,6 +79,12 @@ pub struct SecondarySurfaceState {
 /// Editor-memory accounting shared by the eviction helpers.
 #[derive(Default)]
 pub struct EditorMemoryState {
+    /// Constant-work per-editor residency records and saturating aggregates.
+    pub ledger: RefCell<crate::model::editor_memory::EditorResidencyLedger>,
+    /// Previously selected editor, retained weakly for O(1) eligibility refresh.
+    pub active_editor: RefCell<Option<glib::WeakRef<LushtextEditorPage>>>,
+    /// Exceptional lifecycle state requiring a current full reconciliation.
+    pub accounting_uncertain: Cell<bool>,
     /// Whether a next-main-loop aggregate evaluation is already queued.
     pub evaluation_armed: Cell<bool>,
     /// Guard that prevents overlapping aggregate evaluations.
@@ -89,6 +95,8 @@ pub struct EditorMemoryState {
     pub next_access_generation: Cell<u64>,
     /// Number of aggregate evaluations, retained for coalescing assertions.
     pub evaluation_count: Cell<u64>,
+    /// Full tab scans performed only for enforcement or reconciliation.
+    pub full_scan_count: Cell<u64>,
     /// Stable result of the most recently completed aggregate policy pass.
     pub last_outcome: Cell<crate::model::editor_memory::EditorMemoryBudgetOutcome>,
     /// Idle dispatches used to prove that candidate application stays bounded.
@@ -130,6 +138,10 @@ pub struct SessionState {
     pub close_safety_inflight: Cell<bool>,
     /// One-shot bypass for the final close after async safety work succeeds.
     pub close_safety_bypass: Cell<bool>,
+    /// Monotonic identity source for sequential multi-editor close saves.
+    pub next_close_save_identity: Cell<u64>,
+    /// Current close-save batch allowed to admit and publish completion.
+    pub active_close_save_identity: Cell<Option<u64>>,
 }
 
 /// Reversible shell state owned by Focus Mode.
@@ -1065,14 +1077,14 @@ impl WindowImpl for LushtextWindow {
         let modified = window.modified_editors();
 
         if modified.is_empty() {
-            begin_async_close_safety(&window);
+            window.begin_async_close_safety();
             return glib::Propagation::Stop;
         }
 
         let window_for_close = window.clone();
         window.show_save_changes_dialog(&modified, move |confirmed| {
             if confirmed {
-                begin_async_close_safety(&window_for_close);
+                window_for_close.begin_async_close_safety();
             }
         });
         glib::Propagation::Stop
@@ -1081,46 +1093,6 @@ impl WindowImpl for LushtextWindow {
 
 impl ApplicationWindowImpl for LushtextWindow {}
 impl AdwApplicationWindowImpl for LushtextWindow {}
-
-fn begin_async_close_safety(window: &super::LushtextWindow) {
-    // Keep the close transaction single-flight: duplicate close requests report
-    // progress while the background draft flush and ordered session save finish.
-    if window.imp().session.close_safety_inflight.get() {
-        window.publish_status_message("Finishing close safety checks…", MessageKind::Info);
-        return;
-    }
-    window.imp().session.close_safety_inflight.set(true);
-    window.imp().search_panel.close();
-    let window_for_draft = window.clone();
-    window.flush_dirty_drafts_async(move |draft_result| match draft_result {
-        Ok(()) => {
-            let window_for_session = window_for_draft.clone();
-            let window_for_destroy = window_for_draft;
-            window_for_session.save_session_for_close_async(move || {
-                window_for_destroy
-                    .imp()
-                    .session
-                    .close_safety_inflight
-                    .set(false);
-                window_for_destroy
-                    .imp()
-                    .session
-                    .close_safety_bypass
-                    .set(true);
-                window_for_destroy.destroy();
-            });
-        }
-        Err(error) => {
-            window_for_draft
-                .imp()
-                .session
-                .close_safety_inflight
-                .set(false);
-            window_for_draft
-                .publish_status_message(&format!("Draft save failed: {error}"), MessageKind::Error);
-        }
-    });
-}
 
 fn configure_split_views(
     workspace_split_view: &libadwaita::OverlaySplitView,

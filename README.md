@@ -454,9 +454,12 @@ automation, crash-recovery, portal/sandbox, accessibility, and performance
 smoke coverage.
 
 Benchmarks cover performance-sensitive service code such as bounded command
-palette ranking and cancellation, fuzzy search, file indexing, and directory
-scanning. The palette pipeline baseline and interpretation guide live in
-[`docs/benchmarks/search-pipeline.md`](docs/benchmarks/search-pipeline.md):
+palette ranking and cancellation, fuzzy search, file indexing, directory
+scanning, save admission, Markdown planning, workspace-search ownership,
+result retirement, editor residency, and encoding analysis. The palette guide
+lives in [`docs/benchmarks/search-pipeline.md`](docs/benchmarks/search-pipeline.md),
+and the cross-pipeline resource evidence lives in
+[`docs/benchmarks/bounded-interactive-pipelines.md`](docs/benchmarks/bounded-interactive-pipelines.md):
 
 ```sh
 make bench

@@ -23,19 +23,21 @@ use crate::model::encoding::{
     DocumentEncoding, FileHealthFinding, FileHealthFindingKind, FileHealthSeverity,
 };
 use crate::model::file_load::{SYNCHRONOUS_INSTALL_THRESHOLD_BYTES, next_install_boundary};
+use crate::model::save_admission::SaveAdmissionPriority;
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::services::{editor_io, filesystem::metadata as fs_metadata};
 use crate::ui::buffer_snapshot;
 
 use super::load_runtime::{self, TransientLoadPermit};
+use super::save_runtime::{self, SavePayloadPermit, SaveSubmission};
 use super::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
     BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
 };
 use editor_io::EditorLoadError;
 
-type SaveCallback = Box<dyn FnOnce(Result<(), EditorSaveError>)>;
+pub(super) type SaveCallback = Box<dyn FnOnce(Result<(), EditorSaveError>)>;
 
 /// Temporary view flags captured while chunked snapshotting makes the editor read-only.
 #[derive(Clone, Copy)]
@@ -45,20 +47,22 @@ struct ViewInteractivityState {
 }
 
 #[derive(Clone, Copy)]
-struct SaveFormattingTicket {
+struct SaveCompletionTicket {
     save_generation: u64,
     path_generation: u64,
     load_generation: u64,
     edit_generation: u64,
+    close_session_identity: Option<u64>,
 }
 
-impl SaveFormattingTicket {
-    fn capture(editor: &LushtextEditorPage) -> Self {
+impl SaveCompletionTicket {
+    fn capture(editor: &LushtextEditorPage, close_session_identity: Option<u64>) -> Self {
         Self {
             save_generation: editor.imp().save.generation.get(),
             path_generation: editor.imp().local_history.path_generation.get(),
             load_generation: editor.imp().load_generation.get(),
             edit_generation: editor.imp().local_history.edit_generation.get(),
+            close_session_identity,
         }
     }
 
@@ -68,7 +72,20 @@ impl SaveFormattingTicket {
             && editor.imp().local_history.path_generation.get() == self.path_generation
             && editor.imp().load_generation.get() == self.load_generation
             && editor.imp().local_history.edit_generation.get() == self.edit_generation
+            && self.close_session_identity.is_none_or(|identity| {
+                editor
+                    .root()
+                    .and_then(|root| root.downcast::<crate::ui::window::LushtextWindow>().ok())
+                    .is_some_and(|window| window.close_save_session_is_current(identity))
+            })
     }
+}
+
+/// Request-bound state that must survive snapshotting until the write consumes it.
+struct AdmittedSaveContext {
+    ticket: SaveCompletionTicket,
+    allow_lossy: bool,
+    permit: SavePayloadPermit,
 }
 
 struct SaveWriteOutcome {
@@ -78,6 +95,7 @@ struct SaveWriteOutcome {
     clean_text: Option<String>,
     formatted_text: Option<String>,
     retain_formatted_as_clean: bool,
+    _permit: Option<SavePayloadPermit>,
 }
 
 /// Projection and view flags restored after one complete or cancelled install.
@@ -895,6 +913,21 @@ impl LushtextEditorPage {
         load_runtime::reset_for_test();
     }
 
+    /// Process-wide scalar transient-save accounting for widget proofs.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn transient_save_admission_snapshot_for_test(
+        &self,
+    ) -> crate::model::save_admission::SaveAdmissionSnapshot {
+        save_runtime::snapshot_for_test()
+    }
+
+    /// Reset process-wide save admission state between isolated widget cases.
+    #[cfg(feature = "test-utils")]
+    pub fn reset_transient_save_admission_for_test(&self) {
+        save_runtime::reset_for_test();
+    }
+
     /// Number of GTK slices completed by the newest chunked installation.
     #[cfg(feature = "test-utils")]
     #[must_use]
@@ -1032,23 +1065,6 @@ impl LushtextEditorPage {
         self.refresh_accessibility_metadata();
     }
 
-    /// Clear a provisional file identity after the first load fails.
-    ///
-    /// Failed desktop activation can leave an editor visible with an inline
-    /// error, but it must not behave as if the path was successfully opened.
-    pub(crate) fn clear_file_path_after_failed_load(&self) {
-        self.advance_local_history_path_generation();
-        self.imp().file_path.replace(None);
-        self.imp().canonical_file_path.borrow_mut().take();
-        self.imp().file_size.set(None);
-        self.imp().load_state.set(EditorLoadState::Failed);
-        self.imp().latest_load_failed.set(true);
-        self.buffer().set_language(None::<&sourceview5::Language>);
-        self.schedule_minimap_refresh();
-        self.notify_memory_policy_changed();
-        self.refresh_accessibility_metadata();
-    }
-
     /// Detect and apply syntax language from the current file path.
     fn reapply_language(&self) {
         let buffer = self.buffer();
@@ -1066,7 +1082,7 @@ impl LushtextEditorPage {
             callback(Err(EditorSaveError::NoPath));
             return;
         };
-        self.save_file_async_with_load_policy(path, false, callback);
+        self.queue_save_request(path, false, SaveAdmissionPriority::Ordinary, None, callback);
     }
 
     /// Save the current buffer to an explicit path without mutating the tracked path first.
@@ -1079,13 +1095,34 @@ impl LushtextEditorPage {
         path: PathBuf,
         callback: F,
     ) {
-        self.save_file_async_with_load_policy(path, true, callback);
+        self.queue_save_request(path, true, SaveAdmissionPriority::Ordinary, None, callback);
     }
 
-    fn save_file_async_with_load_policy<F: FnOnce(Result<(), EditorSaveError>) + 'static>(
+    /// Queue a file-backed save that gates the current close session.
+    pub(crate) fn save_file_async_for_close<F: FnOnce(Result<(), EditorSaveError>) + 'static>(
+        &self,
+        close_session_identity: u64,
+        callback: F,
+    ) {
+        let Some(path) = self.imp().file_path.borrow().clone() else {
+            callback(Err(EditorSaveError::NoPath));
+            return;
+        };
+        self.queue_save_request(
+            path,
+            false,
+            SaveAdmissionPriority::Close,
+            Some(close_session_identity),
+            callback,
+        );
+    }
+
+    fn queue_save_request<F: FnOnce(Result<(), EditorSaveError>) + 'static>(
         &self,
         path: PathBuf,
         cancel_pending_load: bool,
+        priority: SaveAdmissionPriority,
+        close_session_identity: Option<u64>,
         callback: F,
     ) {
         let callback: SaveCallback = Box::new(callback);
@@ -1110,15 +1147,100 @@ impl LushtextEditorPage {
             return;
         }
 
-        self.cancel_load();
-        // Publish saving before snapshotting or yielding so an already planned
-        // memory pass revalidates this page as protected.
-        self.imp()
-            .save
-            .generation
-            .set(self.imp().save.generation.get().wrapping_add(1));
+        if cancel_pending_load {
+            self.cancel_load();
+        }
+        // Publish queued ownership before yielding so duplicate saves and an
+        // already-planned eviction pass revalidate this page as protected.
+        let generation = self.imp().save.generation.get().wrapping_add(1);
+        self.imp().save.generation.set(generation);
         self.imp().save.inflight.set(true);
         self.notify_memory_policy_changed();
+
+        // Consent belongs to this generation: cancellation must discard it
+        // instead of allowing unrelated later content to save lossily.
+        let allow_lossy = self.take_lossy_save_once();
+
+        save_runtime::submit(
+            self,
+            generation,
+            SaveSubmission {
+                path,
+                cancel_pending_load,
+                priority,
+                close_session_identity,
+                allow_lossy,
+                callback,
+            },
+        );
+    }
+
+    pub(super) fn queued_save_is_current(
+        &self,
+        generation: u64,
+        path: &Path,
+        explicit_destination: bool,
+        required_modified: bool,
+        close_session_identity: Option<u64>,
+    ) -> bool {
+        if !self.is_saving()
+            || self.imp().save.generation.get() != generation
+            || (required_modified && !self.is_modified())
+            || (!explicit_destination && self.file_path().as_deref() != Some(path))
+        {
+            return false;
+        }
+
+        close_session_identity.is_none_or(|identity| {
+            self.root()
+                .and_then(|root| root.downcast::<crate::ui::window::LushtextWindow>().ok())
+                .is_some_and(|window| window.close_save_session_is_current(identity))
+        })
+    }
+
+    pub(super) fn finish_queued_save_without_admission(&self, generation: u64) {
+        if self.imp().save.generation.get() != generation {
+            return;
+        }
+        self.imp().save.inflight.set(false);
+        self.notify_memory_policy_changed();
+        self.refresh_accessibility_metadata();
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The admitted boundary keeps every compact freshness field explicit before any document payload is captured"
+    )]
+    pub(super) fn begin_admitted_save(
+        &self,
+        generation: u64,
+        path: PathBuf,
+        cancel_pending_load: bool,
+        required_modified: bool,
+        close_session_identity: Option<u64>,
+        allow_lossy: bool,
+        permit: SavePayloadPermit,
+        callback: SaveCallback,
+    ) {
+        if !self.queued_save_is_current(
+            generation,
+            &path,
+            cancel_pending_load,
+            required_modified,
+            close_session_identity,
+        ) {
+            self.finish_queued_save_without_admission(generation);
+            callback(Err(EditorSaveError::SnapshotCancelled));
+            return;
+        }
+
+        self.cancel_load();
+        let ticket = SaveCompletionTicket::capture(self, close_session_identity);
+        let admitted = AdmittedSaveContext {
+            ticket,
+            allow_lossy,
+            permit,
+        };
         let view = self.source_view().clone();
         let restore_state = ViewInteractivityState {
             editable: view.is_editable(),
@@ -1138,7 +1260,13 @@ impl LushtextEditorPage {
                     editor.imp().save.snapshot.take();
                     match outcome {
                         buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
-                            editor.write_snapshot_async(path, text, restore_state, callback);
+                            editor.write_snapshot_async(
+                                path,
+                                text,
+                                restore_state,
+                                admitted,
+                                callback,
+                            );
                         }
                         buffer_snapshot::BufferSnapshotOutcome::Cancelled(_)
                         | buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
@@ -1152,7 +1280,7 @@ impl LushtextEditorPage {
 
         let buffer = self.buffer();
         let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
-        self.write_snapshot_async(path, text, restore_state, callback);
+        self.write_snapshot_async(path, text, restore_state, admitted, callback);
     }
 
     /// Restore the view after a chunked snapshot ends without coherent text.
@@ -1238,24 +1366,31 @@ impl LushtextEditorPage {
         path: PathBuf,
         text: String,
         restore_view_state: ViewInteractivityState,
+        admitted: AdmittedSaveContext,
         callback: SaveCallback,
     ) {
+        let AdmittedSaveContext {
+            ticket,
+            allow_lossy,
+            permit,
+        } = admitted;
         self.prepare_local_history_for_save();
         let was_modified_before_save = self.buffer().is_modified();
         let metadata = self.document_encoding_state();
         let formatting_overrides = self.formatting_overrides();
-        let allow_lossy = self.take_lossy_save_once();
         let history_availability = self.live_local_history_availability();
 
         spawn_blocking_then(
             self.clone(),
             move || {
-                let formatted_text =
-                    editor_io::apply_save_formatting_overrides(&text, formatting_overrides);
-                let should_update_buffer = formatted_text != text;
+                let formatted_text = editor_io::apply_save_formatting_overrides_borrowed(
+                    &text,
+                    formatting_overrides,
+                );
+                let should_update_buffer = formatted_text.as_ref() != text;
                 let write_result = editor_io::write_document_to_path(
                     &path,
-                    &formatted_text,
+                    formatted_text.as_ref(),
                     metadata.save_encoding,
                     metadata.save_line_ending,
                     allow_lossy,
@@ -1269,7 +1404,7 @@ impl LushtextEditorPage {
                     if let Err(error) = crate::services::local_history_service::capture_snapshot_for_path(
                         &data_dir,
                         &path,
-                        &formatted_text,
+                        formatted_text.as_ref(),
                         crate::model::local_history::LocalHistorySnapshotOrigin::Save,
                         crate::services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
                     ) {
@@ -1283,12 +1418,13 @@ impl LushtextEditorPage {
                 let retain_formatted_as_clean =
                     should_update_buffer && history_availability.allows_automatic_capture();
                 let (clean_text, formatted_text) = if should_update_buffer {
-                    (None, Some(formatted_text))
+                    (None, Some(formatted_text.into_owned()))
                 } else {
+                    drop(formatted_text);
                     (
                         history_availability
                             .allows_automatic_capture()
-                            .then_some(formatted_text),
+                            .then_some(text),
                         None,
                     )
                 };
@@ -1299,10 +1435,18 @@ impl LushtextEditorPage {
                     clean_text,
                     formatted_text,
                     retain_formatted_as_clean,
+                    _permit: Some(permit),
                 })
             },
             move |editor, result| match result {
                 Ok(mut outcome) => {
+                    if !ticket.is_current(&editor) {
+                        editor.finish_save_formatting_without_acceptance(
+                            restore_view_state,
+                            callback,
+                        );
+                        return;
+                    }
                     let Some(formatted_text) = outcome.formatted_text.take() else {
                         editor.finish_accepted_save(outcome, restore_view_state, None, callback);
                         return;
@@ -1311,7 +1455,6 @@ impl LushtextEditorPage {
                         .buffer()
                         .iter_at_mark(&editor.buffer().get_insert())
                         .offset();
-                    let ticket = SaveFormattingTicket::capture(&editor);
                     let freshness_editor = editor.downgrade();
                     let terminal_editor = editor.downgrade();
                     editor.replace_buffer_bounded(BufferReplacementRequest::new(
@@ -1360,6 +1503,13 @@ impl LushtextEditorPage {
                     ));
                 }
                 Err(error) => {
+                    if !ticket.is_current(&editor) {
+                        editor.finish_save_formatting_without_acceptance(
+                            restore_view_state,
+                            callback,
+                        );
+                        return;
+                    }
                     editor.restore_view_after_save(restore_view_state);
                     editor.buffer().set_modified(was_modified_before_save);
                     editor.complete_local_history_after_save_failure();
@@ -1392,7 +1542,7 @@ impl LushtextEditorPage {
 
     fn finish_accepted_save(
         &self,
-        outcome: SaveWriteOutcome,
+        mut outcome: SaveWriteOutcome,
         restore: ViewInteractivityState,
         cursor_offset: Option<i32>,
         callback: SaveCallback,
@@ -1449,8 +1599,12 @@ impl LushtextEditorPage {
         self.imp().monitor.last_known_mtime.set(outcome.mtime);
         self.clear_modified_line_marks();
         self.refresh_minimap();
-        self.complete_local_history_after_save_success(outcome.clean_text);
+        self.complete_local_history_after_save_success(outcome.clean_text.take());
         self.refresh_accessibility_metadata();
+        // Close-save progression may synchronously queue the next editor. The
+        // consumed payload must leave shared accounting before that callback
+        // can trigger another admission pass.
+        drop(outcome._permit.take());
         callback(Ok(()));
     }
 

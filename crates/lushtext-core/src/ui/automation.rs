@@ -691,7 +691,7 @@ fn window_readiness_blocker(
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.preview_transition_settle.pending(),
+        imp.preview_transition_settle.pending() || imp.markdown_preview.render_pending(),
         READINESS_BLOCKER_PREVIEW_ANIMATION,
     ) {
         return Some(blocker);

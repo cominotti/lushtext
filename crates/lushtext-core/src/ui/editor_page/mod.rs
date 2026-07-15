@@ -21,6 +21,7 @@ mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
+mod save_runtime;
 mod search;
 mod style_scheme;
 

@@ -5,8 +5,11 @@
 //! This file owns the thread/channel polling loop that translates pure-Rust
 //! `SearchEvent` values into GTK list-model updates.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -15,6 +18,10 @@ use gtk4::prelude::*;
 use gtk4::{self, glib};
 
 use crate::model::content_search::{SearchEvent, SearchHistoryEntry, SearchQuerySpec};
+use crate::model::search_flight::{
+    WorkspaceSearchRequest, WorkspaceSearchStart, WorkspaceSearchSubmission,
+};
+use crate::model::search_retirement::SearchRetirementSliceBudget;
 use crate::services::{content_search, json_store, search_history};
 
 use super::LushtextSearchPanel;
@@ -22,18 +29,190 @@ use super::imp::make_display_path;
 use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 
+/// Maximum GTK objects/cached rows released by one idle retirement turn.
+const SEARCH_RETIREMENT_ROWS_PER_SLICE: usize = 250;
+/// Maximum detached generations retained before latest-query backpressure applies.
+const MAX_SEARCH_RETIREMENT_GENERATIONS: usize = 2;
+#[cfg(feature = "test-utils")]
+static SEARCH_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Delay worker entry for deterministic cancellation/disconnection tests.
+#[cfg(feature = "test-utils")]
+pub fn set_search_worker_delay_for_test(delay_ms: u64) {
+    SEARCH_WORKER_DELAY_MS.store(delay_ms, Ordering::Release);
+}
+
+/// One detached result generation whose GTK-owned references are no longer visible.
+struct RetiredSearchGtkState {
+    generation: u64,
+    root_store: gtk4::gio::ListStore,
+    file_groups: BTreeMap<PathBuf, SearchFileGroup>,
+    match_rows: Vec<Option<gtk4::TreeListRow>>,
+    file_rows: BTreeMap<PathBuf, gtk4::TreeListRow>,
+    search_matches: Vec<crate::model::content_search::SearchMatch>,
+    accepted_matches: Option<Arc<Vec<crate::model::content_search::SearchMatch>>>,
+    accepted_match_rows: Vec<crate::model::content_search::SearchMatch>,
+    match_positions: Vec<SearchMatchLocation>,
+    preview_replacements: Vec<crate::model::content_search::Replacement>,
+    preview_match_map: Vec<Option<usize>>,
+    checked_match_ids: std::collections::HashSet<crate::model::content_search::SearchMatchId>,
+}
+
+impl RetiredSearchGtkState {
+    fn retire_slice(&mut self, limit: usize) -> usize {
+        let mut budget = SearchRetirementSliceBudget::new(limit);
+        while !budget.exhausted() && self.root_store.n_items() > 0 {
+            let count = u32::try_from(
+                budget.take(usize::try_from(self.root_store.n_items()).unwrap_or(usize::MAX)),
+            )
+            .unwrap_or(u32::MAX);
+            let start = self.root_store.n_items().saturating_sub(count);
+            self.root_store
+                .splice(start, count, &[] as &[SearchResultItem]);
+        }
+        while !budget.exhausted() {
+            let Some((path, group)) = self.file_groups.pop_first() else {
+                break;
+            };
+            let count = u32::try_from(
+                budget.take(usize::try_from(group.child_store.n_items()).unwrap_or(usize::MAX)),
+            )
+            .unwrap_or(u32::MAX);
+            if count > 0 {
+                let start = group.child_store.n_items().saturating_sub(count);
+                group
+                    .child_store
+                    .splice(start, count, &[] as &[SearchResultItem]);
+            }
+            if group.child_store.n_items() > 0 || budget.exhausted() {
+                self.file_groups.insert(path, group);
+                break;
+            }
+            debug_assert_eq!(budget.take(1), 1);
+        }
+        let match_row_count = budget.take(self.match_rows.len());
+        self.match_rows
+            .truncate(self.match_rows.len().saturating_sub(match_row_count));
+        while !budget.exhausted() && self.file_rows.pop_first().is_some() {
+            debug_assert_eq!(budget.take(1), 1);
+        }
+        if !budget.exhausted()
+            && let Some(accepted) = self.accepted_matches.take()
+        {
+            if Arc::strong_count(&accepted) == 1 {
+                self.accepted_match_rows =
+                    Arc::try_unwrap(accepted).expect("unique accepted search snapshot");
+            } else {
+                debug_assert_eq!(budget.take(1), 1);
+            }
+        }
+        retire_vec_tail(&mut self.search_matches, &mut budget);
+        retire_vec_tail(&mut self.accepted_match_rows, &mut budget);
+        retire_vec_tail(&mut self.match_positions, &mut budget);
+        retire_vec_tail(&mut self.preview_replacements, &mut budget);
+        retire_vec_tail(&mut self.preview_match_map, &mut budget);
+        while !budget.exhausted() {
+            let Some(match_id) = self.checked_match_ids.iter().next().copied() else {
+                break;
+            };
+            self.checked_match_ids.remove(&match_id);
+            debug_assert_eq!(budget.take(1), 1);
+        }
+        budget.retired()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.root_store.n_items() == 0
+            && self.file_groups.is_empty()
+            && self.match_rows.is_empty()
+            && self.file_rows.is_empty()
+            && self.search_matches.is_empty()
+            && self.accepted_matches.is_none()
+            && self.accepted_match_rows.is_empty()
+            && self.match_positions.is_empty()
+            && self.preview_replacements.is_empty()
+            && self.preview_match_map.is_empty()
+            && self.checked_match_ids.is_empty()
+    }
+}
+
+fn retire_vec_tail<T>(items: &mut Vec<T>, budget: &mut SearchRetirementSliceBudget) {
+    let count = budget.take(items.len());
+    items.truncate(items.len().saturating_sub(count));
+}
+
+/// Coalesced queue drained by one bounded idle callback.
+pub(super) struct SearchRetirementSession {
+    states: VecDeque<RetiredSearchGtkState>,
+}
+
 impl LushtextSearchPanel {
+    /// Detach Replace Preview payloads and release them through the shared
+    /// bounded retirement disposer without replacing the visible result model.
+    pub(super) fn retire_preview_state(
+        &self,
+        outcome: Option<crate::model::content_search::ReplacePreviewOutcome>,
+        checked_match_ids: std::collections::HashSet<crate::model::content_search::SearchMatchId>,
+    ) {
+        let (preview_replacements, preview_match_map) = outcome.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |outcome| (outcome.replacements, outcome.match_to_preview),
+        );
+        if preview_replacements.is_empty()
+            && preview_match_map.is_empty()
+            && checked_match_ids.is_empty()
+        {
+            return;
+        }
+
+        let imp = self.imp();
+        let mut retirement = imp.runtime.retirement.borrow_mut();
+        if let Some(state) = retirement
+            .as_mut()
+            .and_then(|session| session.states.back_mut())
+        {
+            state.preview_replacements.extend(preview_replacements);
+            state.preview_match_map.extend(preview_match_map);
+            state.checked_match_ids.extend(checked_match_ids);
+            return;
+        }
+        drop(retirement);
+
+        let generation = imp.runtime.retirement_generation.get().wrapping_add(1);
+        imp.runtime.retirement_generation.set(generation);
+        self.enqueue_search_retirement(RetiredSearchGtkState {
+            generation,
+            root_store: gtk4::gio::ListStore::new::<SearchResultItem>(),
+            file_groups: BTreeMap::new(),
+            match_rows: Vec::new(),
+            file_rows: BTreeMap::new(),
+            search_matches: Vec::new(),
+            accepted_matches: None,
+            accepted_match_rows: Vec::new(),
+            match_positions: Vec::new(),
+            preview_replacements,
+            preview_match_map,
+            checked_match_ids,
+        });
+    }
+
     /// Start a new search from one immutable query snapshot, cancelling any
-    /// in-flight worker first.
+    /// active worker and retaining only the latest compact superseding request.
     pub fn start_search(&self, spec: &SearchQuerySpec) {
         let imp = self.imp();
 
-        if let Some(old_cancel) = imp.runtime.cancel_token.take() {
-            let files_searched = imp.runtime.last_progress_count.get();
-            old_cancel.store(true, Ordering::Relaxed);
-            if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
-                cb(SearchProgressUpdate::Cancelled { files_searched });
-            }
+        if !spec.query.is_empty()
+            && imp
+                .runtime
+                .retirement
+                .borrow()
+                .as_ref()
+                .is_some_and(|session| session.states.len() >= MAX_SEARCH_RETIREMENT_GENERATIONS)
+        {
+            imp.runtime.deferred_search.replace(Some(spec.clone()));
+            imp.runtime.flight.borrow_mut().clear_pending();
+            self.cancel_active_token();
+            return;
         }
 
         let preserve_feedback =
@@ -43,6 +222,7 @@ impl LushtextSearchPanel {
         self.clear_results(preserve_feedback, preserve_results_body);
 
         if spec.query.is_empty() {
+            self.cancel_active_search();
             imp.count_label.set_text("");
             self.refresh_accessibility_state();
             return;
@@ -50,11 +230,66 @@ impl LushtextSearchPanel {
 
         let folders = imp.runtime.workspace_folders.borrow().clone();
         if folders.is_empty() {
+            self.cancel_active_search();
             imp.count_label.set_text("No workspace folders");
             self.reveal_results_feedback();
             self.refresh_accessibility_state();
             return;
         }
+
+        let request = WorkspaceSearchRequest {
+            spec: spec.clone(),
+            folders,
+        };
+        let submission = imp.runtime.flight.borrow_mut().submit(request);
+        match submission {
+            WorkspaceSearchSubmission::Start(start) => self.spawn_search_request(start),
+            WorkspaceSearchSubmission::Supersede { .. } => self.cancel_active_token(),
+        }
+    }
+
+    /// Cancel all pending intent and let the active worker disconnect precisely.
+    pub(super) fn cancel_active_search(&self) {
+        let imp = self.imp();
+        imp.runtime.deferred_search.take();
+        imp.runtime.flight.borrow_mut().clear_pending();
+        self.cancel_active_token();
+    }
+
+    /// Signal the one active worker without changing compact pending ownership.
+    fn cancel_active_token(&self) {
+        let imp = self.imp();
+        if let Some(cancel) = imp.runtime.cancel_token.borrow().as_ref()
+            && !cancel.swap(true, Ordering::AcqRel)
+        {
+            let files_searched = imp.runtime.last_progress_count.get();
+            if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
+                cb(SearchProgressUpdate::Cancelled { files_searched });
+            }
+        }
+        if imp.runtime.flight.borrow().snapshot().active == 0 {
+            imp.runtime.cancel_token.take();
+            imp.runtime.active_worker_groups.set(0);
+        }
+        imp.runtime
+            .searching
+            .set(imp.runtime.cancel_token.borrow().is_some());
+        self.refresh_accessibility_state();
+    }
+
+    /// Launch one request only after the previous controller/walker disconnected.
+    fn spawn_search_request(&self, start: WorkspaceSearchStart) {
+        let imp = self.imp();
+        debug_assert!(imp.runtime.cancel_token.borrow().is_none());
+        let WorkspaceSearchStart {
+            generation,
+            request,
+        } = start;
+        imp.runtime.active_worker_groups.set(1);
+        imp.runtime
+            .active_worker_groups_high_water
+            .set(imp.runtime.active_worker_groups_high_water.get().max(1));
+        let WorkspaceSearchRequest { spec, folders } = request;
 
         // A bounded channel gives the worker backpressure when GTK is busy
         // rendering results, instead of letting a huge search allocate
@@ -62,7 +297,6 @@ impl LushtextSearchPanel {
         let (tx, rx) = crossbeam_channel::bounded(1024);
         let cancel = Arc::new(AtomicBool::new(false));
         let progress_counter = Arc::new(AtomicUsize::new(0));
-        let worker_finished = Arc::new(AtomicBool::new(false));
         imp.runtime.cancel_token.replace(Some(cancel.clone()));
         imp.runtime.searching.set(true);
         imp.runtime.result_capped.set(false);
@@ -75,10 +309,17 @@ impl LushtextSearchPanel {
         imp.error_label.set_visible(false);
 
         let history_spec = spec.clone();
-        let worker_spec = spec.clone();
+        let worker_spec = spec;
         let worker_progress_counter = Arc::clone(&progress_counter);
-        let worker_finished_for_search = Arc::clone(&worker_finished);
+        let worker_finished_for_search = Arc::new(AtomicBool::new(false));
         std::thread::spawn(move || {
+            #[cfg(feature = "test-utils")]
+            {
+                let delay_ms = SEARCH_WORKER_DELAY_MS.load(Ordering::Acquire);
+                if delay_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
             let folder_refs: Vec<&Path> = folders.iter().map(PathBuf::as_path).collect();
             content_search::search(
                 &worker_spec.query,
@@ -100,11 +341,11 @@ impl LushtextSearchPanel {
                 return glib::ControlFlow::Break;
             };
 
-            if timer_cancel.load(Ordering::Relaxed) {
+            let imp = panel.imp();
+            if imp.runtime.flight.borrow().snapshot().active_generation != Some(generation) {
                 return glib::ControlFlow::Break;
             }
-
-            let imp = panel.imp();
+            let cancelled = timer_cancel.load(Ordering::Acquire);
             let mut done = false;
             let mut items_this_tick = 0;
             let workspace_folders = imp.runtime.workspace_folders.borrow().clone();
@@ -122,25 +363,32 @@ impl LushtextSearchPanel {
                 match rx.try_recv() {
                     Ok(SearchEvent::Match(search_match)) => {
                         items_this_tick += 1;
-                        append_match_result(&panel, search_match, &workspace_folders);
+                        if !cancelled {
+                            append_match_result(&panel, search_match, &workspace_folders);
+                        }
                     }
                     Ok(SearchEvent::Done) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
                         done = true;
                         break;
                     }
                     Ok(SearchEvent::ResultCap) => {
-                        imp.runtime.result_capped.set(true);
-                        imp.count_label
-                            .set_text("10,000+ results (truncated) \u{2014} narrow your search");
-                        imp.count_label.add_css_class("warning");
-                        panel.refresh_accessibility_state();
+                        if !cancelled {
+                            imp.runtime.result_capped.set(true);
+                            imp.count_label.set_text(
+                                "10,000+ results (truncated) \u{2014} narrow your search",
+                            );
+                            imp.count_label.add_css_class("warning");
+                            panel.refresh_accessibility_state();
+                        }
                     }
                     Ok(SearchEvent::Progress(_)) => {}
                     Ok(SearchEvent::Error(msg)) => {
-                        imp.error_label.set_text(&msg);
-                        imp.error_label.add_css_class("error");
-                        imp.error_label.set_visible(true);
-                        panel.refresh_accessibility_state();
+                        if !cancelled {
+                            imp.error_label.set_text(&msg);
+                            imp.error_label.add_css_class("error");
+                            imp.error_label.set_visible(true);
+                            panel.refresh_accessibility_state();
+                        }
                     }
                     Err(crossbeam_channel::TryRecvError::Empty) => break,
                 }
@@ -156,33 +404,23 @@ impl LushtextSearchPanel {
                 }
             }
 
-            if worker_finished.load(Ordering::Relaxed) && !completion_notified {
-                completion_notified = true;
-                imp.runtime.searching.set(false);
-                panel.refresh_accessibility_state();
-                if files_visited > imp.runtime.last_progress_count.get() {
-                    imp.runtime.last_progress_count.set(files_visited);
-                }
-                if let Some(ref cb) = *imp.callbacks.progress_callback.borrow() {
-                    cb(SearchProgressUpdate::Done {
-                        files_searched: imp.runtime.last_progress_count.get(),
-                    });
-                }
-            }
-
             let total = imp.runtime.total_matches.get();
             let files = imp.runtime.total_files.get();
-            if total > 0 && !imp.runtime.result_capped.get() {
+            if !cancelled && total > 0 && !imp.runtime.result_capped.get() {
                 imp.count_label
                     .set_text(&format!("{total} results in {files} files"));
                 panel.refresh_accessibility_state();
-            } else if !completion_notified && imp.runtime.searching.get() && total == 0 {
+            } else if !cancelled
+                && !completion_notified
+                && imp.runtime.searching.get()
+                && total == 0
+            {
                 imp.count_label.set_text("Searching\u{2026}");
                 panel.refresh_accessibility_state();
             }
 
             if done {
-                if !completion_notified {
+                if !cancelled && !completion_notified {
                     completion_notified = true;
                     imp.runtime.searching.set(false);
                     panel.refresh_accessibility_state();
@@ -196,19 +434,43 @@ impl LushtextSearchPanel {
                         });
                     }
                 }
-                if total == 0 {
+                if !cancelled && total == 0 {
                     imp.count_label.set_text("No results found");
                     panel.reveal_results_feedback();
                     panel.refresh_accessibility_state();
                 }
-                panel.update_replace_button_sensitivity();
+                if !cancelled {
+                    panel.update_replace_button_sensitivity();
+                    let accepted = std::mem::take(&mut *imp.runtime.search_matches.borrow_mut());
+                    imp.runtime
+                        .accepted_matches
+                        .replace(Some(Arc::new(accepted)));
+                }
 
-                if total > 0 && !imp.preview.preview_mode.get() {
+                if !cancelled && total > 0 && !imp.preview.preview_mode.get() {
                     imp.save_button.set_visible(true);
                 }
 
-                if total > 0 {
+                if !cancelled && total > 0 {
                     persist_search_history(&panel, &history_spec);
+                }
+
+                imp.runtime.cancel_token.take();
+                imp.runtime.active_worker_groups.set(0);
+                let next = imp.runtime.flight.borrow_mut().finish(generation);
+                if let Some(next) = next {
+                    if panel.current_query_spec() == next.request.spec
+                        && *imp.runtime.workspace_folders.borrow() == next.request.folders
+                    {
+                        panel.spawn_search_request(next);
+                    } else {
+                        imp.runtime.flight.borrow_mut().finish(next.generation);
+                        imp.runtime.searching.set(false);
+                        panel.refresh_accessibility_state();
+                    }
+                } else {
+                    imp.runtime.searching.set(false);
+                    panel.refresh_accessibility_state();
                 }
 
                 return glib::ControlFlow::Break;
@@ -219,7 +481,7 @@ impl LushtextSearchPanel {
     }
 
     /// Clear all results and reset state.
-    fn clear_results(&self, preserve_feedback: bool, preserve_results_body: bool) {
+    pub(super) fn clear_results(&self, preserve_feedback: bool, preserve_results_body: bool) {
         let imp = self.imp();
         if preserve_feedback {
             imp.results_feedback_revealer.set_reveal_child(true);
@@ -228,15 +490,36 @@ impl LushtextSearchPanel {
         } else {
             self.hide_results_feedback();
         }
-        imp.runtime.root_store.remove_all();
-        imp.runtime.file_groups.borrow_mut().clear();
-        imp.runtime.search_matches.borrow_mut().clear();
+        let retirement_generation = imp.runtime.retirement_generation.get().wrapping_add(1);
+        imp.runtime.retirement_generation.set(retirement_generation);
+        let old_root = imp
+            .runtime
+            .root_store
+            .replace(gtk4::gio::ListStore::new::<SearchResultItem>());
+        let preview_outcome = imp.preview.preview_outcome.take();
+        let (preview_replacements, preview_match_map) = preview_outcome.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |outcome| (outcome.replacements, outcome.match_to_preview),
+        );
+        let retired = RetiredSearchGtkState {
+            generation: retirement_generation,
+            root_store: old_root,
+            file_groups: std::mem::take(&mut *imp.runtime.file_groups.borrow_mut()),
+            match_rows: std::mem::take(&mut *imp.navigation.match_rows.borrow_mut()),
+            file_rows: std::mem::take(&mut *imp.navigation.file_rows.borrow_mut()),
+            search_matches: std::mem::take(&mut *imp.runtime.search_matches.borrow_mut()),
+            accepted_matches: imp.runtime.accepted_matches.take(),
+            accepted_match_rows: Vec::new(),
+            match_positions: std::mem::take(&mut *imp.navigation.match_positions.borrow_mut()),
+            preview_replacements,
+            preview_match_map,
+            checked_match_ids: std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
+        };
+        imp.install_results_model();
+        self.enqueue_search_retirement(retired);
         imp.runtime.total_matches.set(0);
         imp.runtime.total_files.set(0);
         imp.runtime.result_capped.set(false);
-        imp.navigation.match_positions.borrow_mut().clear();
-        imp.navigation.match_rows.borrow_mut().clear();
-        imp.navigation.file_rows.borrow_mut().clear();
         imp.navigation.current_match_index.set(None);
         imp.runtime.last_progress_count.set(0);
         imp.count_label.set_text("");
@@ -249,11 +532,130 @@ impl LushtextSearchPanel {
         imp.preview.preview_pending.set(false);
         imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_outcome.replace(None);
-        imp.preview.checked_match_ids.borrow_mut().clear();
         imp.replace_all_button.set_label("Replace All");
         self.update_replace_button_sensitivity();
         self.refresh_accessibility_state();
+    }
+
+    /// Coalesce detached generations behind one bounded GTK idle disposer.
+    fn enqueue_search_retirement(&self, state: RetiredSearchGtkState) {
+        let imp = self.imp();
+        if !state.is_empty() {
+            let mut retirement = imp.runtime.retirement.borrow_mut();
+            retirement
+                .get_or_insert_with(|| SearchRetirementSession {
+                    states: VecDeque::new(),
+                })
+                .states
+                .push_back(state);
+            let retained = retirement
+                .as_ref()
+                .map_or(0, |session| session.states.len());
+            debug_assert!(retained <= MAX_SEARCH_RETIREMENT_GENERATIONS + 1);
+            imp.runtime.retirement_generations_high_water.set(
+                imp.runtime
+                    .retirement_generations_high_water
+                    .get()
+                    .max(retained),
+            );
+        }
+        if imp.runtime.retirement.borrow().is_none() || imp.runtime.retirement_armed.replace(true) {
+            return;
+        }
+
+        let panel_weak = self.downgrade();
+        glib::idle_add_local(move || {
+            let Some(panel) = panel_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let imp = panel.imp();
+            let mut retirement = imp.runtime.retirement.borrow_mut();
+            let Some(session) = retirement.as_mut() else {
+                imp.runtime.retirement_armed.set(false);
+                return glib::ControlFlow::Break;
+            };
+            let Some(state) = session.states.front_mut() else {
+                retirement.take();
+                imp.runtime.retirement_armed.set(false);
+                panel.refresh_accessibility_state();
+                return glib::ControlFlow::Break;
+            };
+            debug_assert!(state.generation <= imp.runtime.retirement_generation.get());
+            let retired_rows = state.retire_slice(SEARCH_RETIREMENT_ROWS_PER_SLICE);
+            imp.runtime.retirement_rows_per_slice_high_water.set(
+                imp.runtime
+                    .retirement_rows_per_slice_high_water
+                    .get()
+                    .max(retired_rows),
+            );
+            if state.is_empty() {
+                session.states.pop_front();
+            }
+            let resume_spec = if session.states.len() < MAX_SEARCH_RETIREMENT_GENERATIONS {
+                imp.runtime.deferred_search.take()
+            } else {
+                None
+            };
+            let control = if session.states.is_empty() {
+                retirement.take();
+                imp.runtime.retirement_armed.set(false);
+                panel.refresh_accessibility_state();
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            };
+            drop(retirement);
+            if let Some(spec) = resume_spec {
+                panel.start_search(&spec);
+            }
+            control
+        });
+    }
+
+    /// Whether detached-generation GTK references still await bounded disposal.
+    pub(super) fn result_retirement_pending(&self) -> bool {
+        self.imp().runtime.retirement.borrow().is_some()
+    }
+
+    /// Direct single-flight and retirement counters for widget scale evidence.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn search_runtime_counters_for_test(&self) -> (u8, u8, usize, usize) {
+        let imp = self.imp();
+        (
+            imp.runtime.active_worker_groups.get(),
+            imp.runtime.active_worker_groups_high_water.get(),
+            imp.runtime.flight.borrow().snapshot().pending,
+            imp.runtime.retirement_rows_per_slice_high_water.get(),
+        )
+    }
+
+    /// Direct detached-generation backlog and configured ceiling.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn retirement_backlog_counters_for_test(&self) -> (usize, usize, usize, usize) {
+        let imp = self.imp();
+        (
+            imp.runtime
+                .retirement
+                .borrow()
+                .as_ref()
+                .map_or(0, |session| session.states.len()),
+            imp.runtime.retirement_generations_high_water.get(),
+            MAX_SEARCH_RETIREMENT_GENERATIONS + 1,
+            usize::from(imp.runtime.deferred_search.borrow().is_some()),
+        )
+    }
+
+    /// Direct immutable-sharing and prohibited deep-clone counters.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn result_snapshot_sharing_counters_for_test(&self) -> (u64, u64) {
+        let imp = self.imp();
+        (
+            imp.runtime.shared_snapshot_handoffs.get(),
+            imp.runtime.whole_result_clones.get(),
+        )
     }
 }
 
@@ -321,7 +723,7 @@ fn append_match_result(
 
     let mut file_row = None;
     if is_new_file {
-        imp.runtime.root_store.append(&file_item);
+        imp.runtime.root_store.borrow().append(&file_item);
         imp.runtime
             .total_files
             .set(imp.runtime.total_files.get() + 1);

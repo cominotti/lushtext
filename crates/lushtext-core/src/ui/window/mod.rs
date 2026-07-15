@@ -42,6 +42,8 @@ use gtk4::prelude::*;
 pub use drafts::DraftFlushError;
 
 #[cfg(feature = "test-utils")]
+pub use dialogs::set_close_safety_completion_delay_for_test;
+#[cfg(feature = "test-utils")]
 pub use documents::set_canonical_refresh_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use drafts::{
@@ -67,6 +69,8 @@ pub use notes::{
 };
 #[cfg(feature = "test-utils")]
 pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
+#[cfg(feature = "test-utils")]
+pub use search::set_replace_reload_facts_delay_for_test;
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).

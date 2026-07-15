@@ -35,7 +35,9 @@ load-generation checks.
   folder-note data.
 - `local-history/` stores per-file lineage indexes plus snapshot bodies.
 - `search-backups/` stores Replace All undo journals during the active safety
-  window.
+  window. An incremental active manifest makes each durable per-file entry
+  recovery-visible before its target rename; bounded recovery scanning validates
+  the entries and undo still verifies the target's replaced bytes before restore.
 - `migration-ledger.json` records retryable post-rename sidecar and
   local-history migration work.
 - `format-upgrade-backups/` stores user-selected format-upgrade and Start

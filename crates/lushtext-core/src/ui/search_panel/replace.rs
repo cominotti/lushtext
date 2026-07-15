@@ -15,19 +15,23 @@ use crate::services::{json_store, search_backup};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
+use std::sync::Arc;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::{Mutex, OnceLock};
 
 use super::LushtextSearchPanel;
 
 /// Latest plain-Rust preview request retained by the panel's single-flight worker.
 pub(super) struct ReplacePreviewRequest {
-    search_matches: Vec<crate::model::content_search::SearchMatch>,
+    search_matches: std::sync::Arc<Vec<crate::model::content_search::SearchMatch>>,
     query_spec: crate::model::content_search::SearchQuerySpec,
     replacement_text: String,
     generation: u32,
+}
+
+struct PersistedUndoStartupLoad {
+    active_backup: Option<ReplaceUndoBackup>,
 }
 
 impl LushtextSearchPanel {
@@ -48,28 +52,33 @@ impl LushtextSearchPanel {
     }
 
     /// Store undo backup and persist it as the current retryable journal.
-    pub fn set_undo_backup(&self, backup: &ReplaceUndoBackup) {
-        let generation = self.set_undo_backup_in_memory(backup);
-        self.save_undo_backup_on_disk(backup.clone(), generation);
+    pub fn set_undo_backup(&self, backup: ReplaceUndoBackup) {
+        let backup = Arc::new(backup);
+        let (generation, retired) = self.set_undo_backup_in_memory(Arc::clone(&backup));
+        self.save_undo_backup_on_disk(backup, retired, generation);
     }
 
     /// Store undo backup after the replace service already wrote per-file journal entries.
-    pub fn set_persisted_undo_backup(&self, backup: &ReplaceUndoBackup) {
-        self.set_undo_backup_in_memory(backup);
+    pub fn set_persisted_undo_backup(&self, backup: ReplaceUndoBackup) {
+        let (_, retired) = self.set_undo_backup_in_memory(Arc::new(backup));
+        self.retire_undo_backup_off_main(retired);
     }
 
-    fn set_undo_backup_in_memory(&self, backup: &ReplaceUndoBackup) -> u32 {
+    fn set_undo_backup_in_memory(
+        &self,
+        backup: Arc<ReplaceUndoBackup>,
+    ) -> (u32, Option<Arc<ReplaceUndoBackup>>) {
         let previous = self
             .imp()
             .preview
             .undo_backup_generation
             .fetch_add(1, Ordering::AcqRel);
-        self.imp().preview.undo_backup.replace(Some(backup.clone()));
+        let retired = self.imp().preview.undo_backup.replace(Some(backup));
         self.refresh_accessibility_state();
-        previous.wrapping_add(1)
+        (previous.wrapping_add(1), retired)
     }
 
-    /// Clear stale Replace All journal data left by a prior session.
+    /// Restore a crash-interrupted active journal, or clean inactive stale state.
     pub(crate) fn load_persisted_undo_backup(&self) {
         let data_dir = json_store::data_dir();
         let generation = self
@@ -78,32 +87,41 @@ impl LushtextSearchPanel {
             .undo_backup_generation
             .load(Ordering::Acquire);
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
+        let callback_generation_counter = generation_counter.clone();
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
-                let _disk_guard = undo_backup_disk_lock()
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))?;
+                let _disk_guard = search_backup::acquire_journal_guard()?;
                 if generation_counter.load(Ordering::Acquire) != generation {
-                    return Ok::<search_backup::ReplaceBackupCleanupReport, anyhow::Error>(
-                        search_backup::ReplaceBackupCleanupReport::default(),
-                    );
+                    return Ok(PersistedUndoStartupLoad {
+                        active_backup: None,
+                    });
                 }
-                Ok::<search_backup::ReplaceBackupCleanupReport, anyhow::Error>(
-                    search_backup::cleanup_stale(&data_dir),
-                )
+                let recovery = search_backup::load_recovering(&data_dir);
+                if recovery.active {
+                    return Ok(PersistedUndoStartupLoad {
+                        active_backup: Some(recovery.backup),
+                    });
+                }
+                let mut diagnostics = recovery.diagnostics;
+                diagnostics.extend(search_backup::cleanup_stale(&data_dir).diagnostics);
+                report_startup_diagnostics(&diagnostics);
+                Ok::<PersistedUndoStartupLoad, anyhow::Error>(PersistedUndoStartupLoad {
+                    active_backup: None,
+                })
             },
-            move |_panel, result| match result {
-                Ok(report) => {
-                    for diagnostic in report.diagnostics {
-                        tracing::warn!(
-                            "Replace undo backup cleanup diagnostic: {}",
-                            diagnostic.summary()
-                        );
+            move |panel, result| match result {
+                Ok(load) => {
+                    if callback_generation_counter.load(Ordering::Acquire) != generation {
+                        return;
+                    }
+                    if let Some(backup) = load.active_backup {
+                        panel.set_persisted_undo_backup(backup);
+                        panel.show_undo_button();
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to clear stale replace backup: {e}");
+                    tracing::warn!("Failed to load persisted replace backup: {e}");
                 }
             },
         );
@@ -117,26 +135,30 @@ impl LushtextSearchPanel {
             .undo_backup_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
-        self.imp().preview.undo_backup.replace(None);
+        let retired = self.imp().preview.undo_backup.replace(None);
         self.hide_undo_button();
-        self.delete_undo_backup_on_disk(generation);
+        self.delete_undo_backup_on_disk(generation, retired);
         self.refresh_accessibility_state();
     }
 
-    fn save_undo_backup_on_disk(&self, backup: ReplaceUndoBackup, generation: u32) {
+    fn save_undo_backup_on_disk(
+        &self,
+        backup: Arc<ReplaceUndoBackup>,
+        retired: Option<Arc<ReplaceUndoBackup>>,
+        generation: u32,
+    ) {
         let data_dir = json_store::data_dir();
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
         spawn_blocking_then(
             self.clone(),
             move || {
+                let _retired = retired;
                 delay_undo_backup_disk_for_test();
-                let _disk_guard = undo_backup_disk_lock()
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))?;
+                let _disk_guard = search_backup::acquire_journal_guard()?;
                 if generation_counter.load(Ordering::Acquire) != generation {
                     return Ok(());
                 }
-                search_backup::save(&data_dir, &backup)
+                search_backup::save(&data_dir, backup.as_ref())
             },
             move |_panel, result| {
                 if let Err(e) = result {
@@ -146,16 +168,15 @@ impl LushtextSearchPanel {
         );
     }
 
-    fn delete_undo_backup_on_disk(&self, generation: u32) {
+    fn delete_undo_backup_on_disk(&self, generation: u32, retired: Option<Arc<ReplaceUndoBackup>>) {
         let data_dir = json_store::data_dir();
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
         spawn_blocking_then(
             self.clone(),
             move || {
+                let _retired = retired;
                 delay_undo_backup_disk_for_test();
-                let _disk_guard = undo_backup_disk_lock()
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("replace undo backup disk lock poisoned"))?;
+                let _disk_guard = search_backup::acquire_journal_guard()?;
                 if generation_counter.load(Ordering::Acquire) != generation {
                     return Ok(());
                 }
@@ -169,6 +190,16 @@ impl LushtextSearchPanel {
         );
     }
 
+    fn retire_undo_backup_off_main(&self, retired: Option<Arc<ReplaceUndoBackup>>) {
+        let Some(retired) = retired else {
+            return;
+        };
+        // The map can own the full 64 MiB undo window. Hand its final reference
+        // to the blocking pool so replacing a persisted backup never releases
+        // that payload on GTK.
+        spawn_blocking_then(self.clone(), move || drop(retired), |_panel, ()| {});
+    }
+
     /// Whether the panel is in preview mode.
     #[must_use]
     pub fn is_preview_mode(&self) -> bool {
@@ -179,10 +210,9 @@ impl LushtextSearchPanel {
     /// list to show before/after with checkboxes.
     pub fn enter_preview_mode(&self, replacement_text: &str) {
         let imp = self.imp();
-        let search_matches = self.collect_search_matches();
-        if search_matches.is_empty() {
+        let Some(search_matches) = self.accepted_search_matches() else {
             return;
-        }
+        };
 
         let query_spec = self.current_query_spec();
         let generation = self.advance_preview_generation();
@@ -275,8 +305,10 @@ impl LushtextSearchPanel {
         imp.preview.preview_pending.set(false);
         imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_outcome.replace(None);
-        imp.preview.checked_match_ids.borrow_mut().clear();
+        self.retire_preview_state(
+            imp.preview.preview_outcome.take(),
+            std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
+        );
         imp.replace_all_button.set_label("Replace All");
         self.restore_search_summary();
         self.update_replace_button_sensitivity();
@@ -313,8 +345,10 @@ impl LushtextSearchPanel {
         imp.preview.preview_pending.set(false);
         imp.preview.queued_preview_request.replace(None);
         imp.preview.preview_mode.set(false);
-        imp.preview.preview_outcome.replace(None);
-        imp.preview.checked_match_ids.borrow_mut().clear();
+        self.retire_preview_state(
+            imp.preview.preview_outcome.take(),
+            std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
+        );
         imp.replace_all_button.set_label("Replace All");
         self.restore_search_summary();
         self.refresh_results_display();
@@ -393,9 +427,22 @@ impl LushtextSearchPanel {
     }
 }
 
-fn undo_backup_disk_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn report_startup_diagnostics(
+    diagnostics: &[crate::services::recovery_metadata::RecoveryDiagnostic],
+) {
+    const DETAIL_LIMIT: usize = 8;
+    for diagnostic in diagnostics.iter().take(DETAIL_LIMIT) {
+        tracing::warn!(
+            "Replace undo backup startup diagnostic: {}",
+            diagnostic.summary()
+        );
+    }
+    if diagnostics.len() > DETAIL_LIMIT {
+        tracing::warn!(
+            "Replace undo backup startup produced {} additional diagnostics",
+            diagnostics.len() - DETAIL_LIMIT
+        );
+    }
 }
 
 #[cfg(feature = "test-utils")]

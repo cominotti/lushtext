@@ -26,16 +26,28 @@ use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::{self, gdk};
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+#[cfg(any(test, feature = "fuzzing"))]
+use pulldown_cmark::Parser;
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
 use sourceview5::prelude::*;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::services::filesystem::{PathStatus, metadata as fs_metadata, read as fs_read};
+pub use crate::services::markdown_render::MarkdownRenderState;
+use crate::services::markdown_render::{
+    MAX_MARKDOWN_SOURCE_BYTES, MarkdownEventBatch, MarkdownPlanLimit, MarkdownPlanMetrics,
+    MarkdownRenderPlan, markdown_render_options, plan_markdown, plan_markdown_cancellable,
+};
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
-use gtk_lush_tasks::spawn_blocking_then;
+use gtk_lush_tasks::spawn_blocking_then_weak;
 
 use imp::{
     ALERT_BODY_LEFT_MARGIN, ALERT_BODY_RIGHT_MARGIN, DEFINITION_DEF_LEFT_MARGIN,
@@ -46,7 +58,20 @@ use imp::{
     blockquote_left_margin, blockquote_rail_prefix, ensure_blockquote_depth_tag,
     ensure_list_item_depth_tag, heading_tag_name, list_item_text_margin,
 };
-use inline_footnotes::lower_inline_footnotes;
+use inline_footnotes::{
+    InlineFootnoteLowering, lower_inline_footnotes, lower_inline_footnotes_cancellable,
+};
+
+fn inline_footnote_limited_plan(source_bytes: usize) -> MarkdownRenderPlan {
+    MarkdownRenderPlan {
+        batches: Vec::new(),
+        metrics: MarkdownPlanMetrics {
+            source_bytes,
+            ..MarkdownPlanMetrics::default()
+        },
+        limit: Some(MarkdownPlanLimit::InlineFootnotes),
+    }
+}
 
 /// Result of fuzzing Markdown preprocessing without constructing GTK widgets.
 ///
@@ -72,7 +97,12 @@ pub struct FuzzedMarkdownPreprocess {
 #[cfg(any(feature = "property-tests", feature = "fuzzing"))]
 #[must_use]
 fn lower_inline_footnotes_for_generated_test(markdown: &str) -> Option<String> {
-    lower_inline_footnotes(markdown, markdown_render_options())
+    match lower_inline_footnotes(markdown, markdown_render_options()) {
+        InlineFootnoteLowering::Lowered(lowered) => Some(lowered),
+        InlineFootnoteLowering::Unchanged
+        | InlineFootnoteLowering::Limited
+        | InlineFootnoteLowering::Cancelled => None,
+    }
 }
 
 /// Run the preview's real inline-footnote lowering for feature-gated property tests.
@@ -143,6 +173,17 @@ const MAX_PREVIEW_IMAGE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 /// 64 megapixels is intentionally above ordinary desktop images while below
 /// the point where RGB/RGBA decode buffers can spike into hundreds of MiB.
 const MAX_PREVIEW_IMAGE_SOURCE_PIXELS: i64 = 64_000_000;
+/// Maximum local-image descriptors that may own queued or active work.
+const MAX_PREVIEW_IMAGE_WORK_ITEMS: usize = 4;
+/// Conservative ownership charge for source bytes plus one bounded RGBA decode.
+const PREVIEW_IMAGE_WORK_CHARGE_BYTES: u64 = MAX_PREVIEW_IMAGE_SOURCE_BYTES.saturating_add(
+    (MAX_PREVIEW_IMAGE_WIDTH as u64)
+        .saturating_pow(2)
+        .saturating_mul(4),
+);
+/// Total conservative bytes admitted across active and compact queued image work.
+const MAX_PREVIEW_IMAGE_WORK_BYTES: u64 =
+    PREVIEW_IMAGE_WORK_CHARGE_BYTES.saturating_mul(MAX_PREVIEW_IMAGE_WORK_ITEMS as u64);
 /// Maximum literal text bytes highlighted inside one native code-block widget.
 ///
 /// GtkSourceView highlighting is excellent for excerpts, but 64 KiB keeps a
@@ -153,6 +194,16 @@ const MAX_PREVIEW_CODE_BLOCK_BYTES: usize = 64 * 1024;
 /// One thousand labels leaves room for realistic reference tables while keeping
 /// pathological CSV-like Markdown from allocating a giant widget tree at once.
 const MAX_PREVIEW_TABLE_CELLS: usize = 1_000;
+/// Inputs above this size are parsed away from GTK before bounded projection.
+const MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES: usize = 64 * 1024;
+/// Maximum detached text characters removed in one main-loop retirement turn.
+const MARKDOWN_RETIREMENT_CHARS_PER_TURN: usize = 64 * 1024;
+/// Maximum detached widget/link references released in one retirement turn.
+const MARKDOWN_RETIREMENT_ITEMS_PER_TURN: usize = 64;
+#[cfg(feature = "test-utils")]
+static IMAGE_WORK_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static MARKDOWN_PLAN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Extra render context supplied by the window when previewing a real Markdown file.
 ///
@@ -411,6 +462,48 @@ struct BufferedImage {
     destination: String,
     /// Human-readable alternative text built from the image's child events.
     alt_text: String,
+}
+
+/// Compact queued local-image work owned by one render generation.
+struct PendingImageWork {
+    generation: u64,
+    raw_target: String,
+    paths: Vec<PathBuf>,
+    container: glib::WeakRef<gtk4::Box>,
+    charge_bytes: u64,
+}
+
+/// Scalar completion identity retained while one image worker is active.
+struct ActiveImageWork {
+    generation: u64,
+    container: glib::WeakRef<gtk4::Box>,
+    charge_bytes: u64,
+}
+
+/// Latest document-sized planning request retained behind one active worker.
+struct PendingMarkdownPlan {
+    generation: u64,
+    source: String,
+    context: MarkdownPreviewRenderContext,
+}
+
+/// One detached render generation awaiting bounded main-loop cleanup.
+pub(super) struct RetiredMarkdownRender {
+    buffer: gtk4::TextBuffer,
+    embeds: VecDeque<RenderedEmbed>,
+    links: VecDeque<RenderedTextLink>,
+}
+
+impl RetiredMarkdownRender {
+    fn is_empty(&self) -> bool {
+        self.buffer.char_count() == 0 && self.embeds.is_empty() && self.links.is_empty()
+    }
+}
+
+/// Serial disposer for detached Markdown render generations.
+#[derive(Default)]
+pub(super) struct MarkdownRetirementSession {
+    states: VecDeque<RetiredMarkdownRender>,
 }
 
 impl BufferedImage {
@@ -889,15 +982,47 @@ impl LushtextMarkdownPreview {
         markdown: &str,
         context: &MarkdownPreviewRenderContext,
     ) {
-        self.show_content_view();
-        self.clear_rendered_state();
+        let generation = self.begin_render_session();
+        let context = context.clone();
 
+        if markdown.len() > MAX_MARKDOWN_SOURCE_BYTES {
+            self.start_render_plan(generation, plan_markdown(markdown), context);
+        } else if markdown.len() > MARKDOWN_BACKGROUND_PLAN_THRESHOLD_BYTES {
+            self.show_content_view();
+            self.clear_rendered_state();
+            self.imp()
+                .text_view
+                .buffer()
+                .set_text("Rendering Markdown preview…");
+            accessibility::set_description(
+                &*self.imp().text_view,
+                "Markdown preview rendering is pending",
+            );
+            self.enqueue_markdown_plan(PendingMarkdownPlan {
+                generation,
+                source: markdown.to_string(),
+                context,
+            });
+        } else {
+            let plan = match lower_inline_footnotes(markdown, markdown_render_options()) {
+                InlineFootnoteLowering::Lowered(lowered) => plan_markdown(&lowered),
+                InlineFootnoteLowering::Unchanged => plan_markdown(markdown),
+                InlineFootnoteLowering::Limited => inline_footnote_limited_plan(markdown.len()),
+                InlineFootnoteLowering::Cancelled => return,
+            };
+            self.start_render_plan(generation, plan, context);
+        }
+    }
+
+    /// Apply one complete-block event batch. State never crosses a batch
+    /// boundary, so the planner only emits boundaries at top-level depth zero.
+    fn render_event_batch(
+        &self,
+        batch: MarkdownEventBatch,
+        context: &MarkdownPreviewRenderContext,
+    ) {
         let imp = self.imp();
         let buffer = imp.text_view.buffer();
-        let options = markdown_render_options();
-        let lowered_markdown = lower_inline_footnotes(markdown, options);
-        let parser_input = lowered_markdown.as_deref().unwrap_or(markdown);
-        let parser = Parser::new_ext(parser_input, options);
         let mut iter = buffer.end_iter();
         let code_block_theme =
             CodeBlockTheme::from_settings(&gtk4::gio::Settings::new(crate::config::APP_ID));
@@ -940,7 +1065,7 @@ impl LushtextMarkdownPreview {
         let mut footnote_numbers: HashMap<String, usize> = HashMap::new();
         let mut next_footnote_number = 1usize;
 
-        for event in parser {
+        for event in batch.into_events() {
             if let Some(table) = &mut active_table {
                 match event {
                     Event::End(TagEnd::Table) => {
@@ -1366,7 +1491,297 @@ impl LushtextMarkdownPreview {
                 _ => {}
             }
         }
+    }
+
+    /// Invalidate older work and open one new generation-owned render session.
+    fn begin_render_session(&self) -> u64 {
+        let imp = self.imp();
+        self.cancel_pending_markdown_planning();
+        self.cancel_queued_image_work();
+        let generation = imp.render_session.borrow_mut().begin();
+        #[cfg(feature = "test-utils")]
+        {
+            imp.projection_dispatch_count.set(0);
+            imp.projection_high_water_events.set(0);
+            imp.image_admission.borrow_mut().reset_high_water();
+        }
+        generation
+    }
+
+    /// Keep one document-sized planner active and one replaceable latest source.
+    fn enqueue_markdown_plan(&self, request: PendingMarkdownPlan) {
+        let imp = self.imp();
+        if imp.planning_worker_running.get() {
+            if let Some(cancel) = imp.planning_cancel_token.borrow().as_ref() {
+                cancel.store(true, Ordering::Release);
+            }
+            imp.queued_plan.replace(Some(request));
+            return;
+        }
+        self.spawn_markdown_plan(request);
+    }
+
+    fn spawn_markdown_plan(&self, request: PendingMarkdownPlan) {
+        let imp = self.imp();
+        imp.planning_worker_running.set(true);
+        let cancel = Arc::new(AtomicBool::new(false));
+        imp.planning_cancel_token.replace(Some(cancel.clone()));
+        let PendingMarkdownPlan {
+            generation,
+            source,
+            context,
+        } = request;
+        spawn_blocking_then_weak(
+            self,
+            move || {
+                #[cfg(feature = "test-utils")]
+                std::thread::sleep(std::time::Duration::from_millis(
+                    MARKDOWN_PLAN_DELAY_MS.load(Ordering::Acquire),
+                ));
+                if cancel.load(Ordering::Acquire) {
+                    return None;
+                }
+                match lower_inline_footnotes_cancellable(
+                    &source,
+                    markdown_render_options(),
+                    &cancel,
+                ) {
+                    InlineFootnoteLowering::Lowered(lowered) => {
+                        plan_markdown_cancellable(&lowered, &cancel)
+                    }
+                    InlineFootnoteLowering::Unchanged => {
+                        plan_markdown_cancellable(&source, &cancel)
+                    }
+                    InlineFootnoteLowering::Limited => {
+                        Some(inline_footnote_limited_plan(source.len()))
+                    }
+                    InlineFootnoteLowering::Cancelled => None,
+                }
+            },
+            move |preview, plan| {
+                let imp = preview.imp();
+                imp.planning_worker_running.set(false);
+                imp.planning_cancel_token.take();
+                if let Some(plan) = plan
+                    && imp.render_session.borrow().is_current(generation)
+                {
+                    preview.start_render_plan(generation, plan, context);
+                }
+                let queued = imp.queued_plan.take();
+                if let Some(queued) = queued
+                    && imp.render_session.borrow().is_current(queued.generation)
+                {
+                    preview.spawn_markdown_plan(queued);
+                }
+            },
+        );
+    }
+
+    fn cancel_pending_markdown_planning(&self) {
+        let imp = self.imp();
+        if let Some(cancel) = imp.planning_cancel_token.borrow().as_ref() {
+            cancel.store(true, Ordering::Release);
+        }
+        imp.queued_plan.take();
+    }
+
+    /// Accept a current immutable plan and project at most one batch per GTK turn.
+    fn start_render_plan(
+        &self,
+        generation: u64,
+        plan: MarkdownRenderPlan,
+        context: MarkdownPreviewRenderContext,
+    ) {
+        if !self.imp().render_session.borrow().is_current(generation) {
+            return;
+        }
+        self.show_content_view();
+        self.clear_rendered_state();
+        self.imp()
+            .render_session
+            .borrow_mut()
+            .transition(generation, MarkdownRenderState::Projecting);
+
+        let MarkdownRenderPlan {
+            batches,
+            metrics: _,
+            limit,
+        } = plan;
+        let mut batches = VecDeque::from(batches);
+        // Preserve immediate small-document rendering while the planner's
+        // event-and-byte ceilings bound this initial GTK turn exactly like
+        // every deferred projection slice.
+        if let Some(batch) = batches.pop_front() {
+            self.apply_render_batch(generation, &batch);
+            self.render_event_batch(batch, &context);
+        }
+        if batches.is_empty() {
+            self.finish_render_plan(generation, limit);
+            return;
+        }
+        accessibility::set_description(
+            &*self.imp().text_view,
+            "Markdown preview projection is pending",
+        );
+
+        let preview_weak = self.downgrade();
+        glib::idle_add_local(move || {
+            let Some(preview) = preview_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !preview.imp().render_session.borrow().is_current(generation) {
+                return glib::ControlFlow::Break;
+            }
+            if let Some(batch) = batches.pop_front() {
+                preview.apply_render_batch(generation, &batch);
+                preview.render_event_batch(batch, &context);
+            }
+            if batches.is_empty() {
+                preview.finish_render_plan(generation, limit);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    /// Record direct slice evidence before applying a current batch.
+    fn apply_render_batch(&self, generation: u64, _batch: &MarkdownEventBatch) {
+        debug_assert!(self.imp().render_session.borrow().is_current(generation));
+        #[cfg(feature = "test-utils")]
+        {
+            let imp = self.imp();
+            imp.projection_dispatch_count
+                .set(imp.projection_dispatch_count.get().wrapping_add(1));
+            imp.projection_high_water_events
+                .set(imp.projection_high_water_events.get().max(_batch.len()));
+        }
+    }
+
+    /// Publish the complete or explicit limited terminal for the current generation.
+    fn finish_render_plan(&self, generation: u64, limit: Option<MarkdownPlanLimit>) {
+        let imp = self.imp();
+        if !imp.render_session.borrow().is_current(generation) {
+            return;
+        }
+        if let Some(limit) = limit {
+            let description = limit.description();
+            let buffer = imp.text_view.buffer();
+            let mut end = buffer.end_iter();
+            if end.offset() > 0 {
+                buffer.insert(&mut end, "\n\n");
+            }
+            buffer.insert(&mut end, description);
+            accessibility::set_description(&*imp.text_view, description);
+            imp.render_session
+                .borrow_mut()
+                .transition(generation, MarkdownRenderState::Limited);
+        } else {
+            accessibility::set_description(&*imp.text_view, "Rendered Markdown preview");
+            imp.render_session
+                .borrow_mut()
+                .transition(generation, MarkdownRenderState::Complete);
+        }
         self.queue_code_block_width_refresh();
+    }
+
+    /// Cancel current planning/projection work without retaining stale payloads.
+    fn cancel_render_session(&self) {
+        self.cancel_pending_markdown_planning();
+        self.cancel_queued_image_work();
+        self.imp().render_session.borrow_mut().cancel();
+    }
+
+    /// Whether current planning/projection blocks exact preview readiness.
+    #[must_use]
+    pub fn render_pending(&self) -> bool {
+        self.imp().render_session.borrow().pending()
+            || self.imp().planning_worker_running.get()
+            || self.imp().queued_plan.borrow().is_some()
+            || self.imp().current_image_work_count.get() > 0
+            || self.imp().retirement.borrow().is_some()
+    }
+
+    /// Current renderer state for deterministic widget and automation tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn render_state_for_test(&self) -> MarkdownRenderState {
+        self.imp().render_session.borrow().state()
+    }
+
+    /// Direct projection-slice counters for boundedness assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn projection_counters_for_test(&self) -> (u64, usize) {
+        let imp = self.imp();
+        (
+            imp.projection_dispatch_count.get(),
+            imp.projection_high_water_events.get(),
+        )
+    }
+
+    /// Direct one-active-plus-latest planning ownership counters.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn planning_counters_for_test(&self) -> (usize, usize) {
+        let imp = self.imp();
+        (
+            usize::from(imp.planning_worker_running.get()),
+            usize::from(imp.queued_plan.borrow().is_some()),
+        )
+    }
+
+    /// Delay Markdown planning workers for deterministic supersession tests.
+    #[cfg(feature = "test-utils")]
+    pub fn set_markdown_plan_delay_for_test(delay_ms: u64) {
+        MARKDOWN_PLAN_DELAY_MS.store(delay_ms, Ordering::Release);
+    }
+
+    /// Direct detached-render retirement high-water counters.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn retirement_counters_for_test(&self) -> (usize, usize) {
+        let imp = self.imp();
+        (
+            imp.retirement_chars_high_water.get(),
+            imp.retirement_items_high_water.get(),
+        )
+    }
+
+    /// Direct image ownership counters for count/byte bound assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn image_admission_counters_for_test(&self) -> (usize, u64, usize, u64) {
+        let snapshot = self.imp().image_admission.borrow().snapshot();
+        (
+            snapshot.owned_count,
+            snapshot.owned_bytes,
+            snapshot.high_water_count,
+            snapshot.high_water_bytes,
+        )
+    }
+
+    /// Configured image count and conservative-byte ceilings.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn image_admission_limits_for_test() -> (usize, u64) {
+        (MAX_PREVIEW_IMAGE_WORK_ITEMS, MAX_PREVIEW_IMAGE_WORK_BYTES)
+    }
+
+    /// Per-file source byte and decoded source-pixel ceilings.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn image_source_limits_for_test() -> (u64, i64) {
+        (
+            MAX_PREVIEW_IMAGE_SOURCE_BYTES,
+            MAX_PREVIEW_IMAGE_SOURCE_PIXELS,
+        )
+    }
+
+    /// Delay image workers so stale-generation completion is deterministic.
+    #[cfg(feature = "test-utils")]
+    pub fn set_image_work_delay_for_test(delay_ms: u64) {
+        IMAGE_WORK_DELAY_MS.store(delay_ms, Ordering::Release);
     }
 
     /// Register one callback that overrides the default external link launcher.
@@ -1527,6 +1942,7 @@ impl LushtextMarkdownPreview {
 
     /// Clear the rendered content and show the placeholder for non-Markdown files.
     pub fn show_placeholder(&self, description: &str) {
+        self.cancel_render_session();
         let imp = self.imp();
         imp.placeholder.set_description(Some(description));
         imp.scrolled_window.set_visible(false);
@@ -1546,6 +1962,7 @@ impl LushtextMarkdownPreview {
     /// measurement pass, otherwise a later placeholder-to-content swap can make
     /// the surrounding dialog resize by a pixel when Render is clicked.
     pub(crate) fn show_content_placeholder(&self, description: &str) {
+        self.cancel_render_session();
         self.show_content_view();
         self.clear_rendered_state();
         self.imp().text_view.buffer().set_text(description);
@@ -1553,7 +1970,20 @@ impl LushtextMarkdownPreview {
 
     /// Clear the rendered content without showing the placeholder.
     pub fn clear(&self) {
+        self.cancel_render_session();
         self.clear_rendered_state();
+    }
+
+    /// Render an accessible terminal when a caller cannot produce a plan.
+    pub fn show_render_failure(&self, description: &str) {
+        self.cancel_render_session();
+        self.show_content_view();
+        self.clear_rendered_state();
+        self.imp().text_view.buffer().set_text(description);
+        accessibility::set_description(&*self.imp().text_view, description);
+        let mut session = self.imp().render_session.borrow_mut();
+        let generation = session.generation();
+        session.transition(generation, MarkdownRenderState::Failed);
     }
 
     /// Whether the widget is currently showing rendered Markdown content.
@@ -1621,18 +2051,107 @@ impl LushtextMarkdownPreview {
         }
     }
 
-    /// Remove any previously anchored widgets and clear the backing text buffer.
+    /// Detach the visible buffer in O(1) and retire its payload in bounded turns.
     fn clear_rendered_state(&self) {
         let imp = self.imp();
-        {
-            let mut rendered_embeds = imp.rendered_embeds.borrow_mut();
-            for embed in rendered_embeds.drain(..) {
-                imp.text_view.remove(&embed.widget);
-            }
+        let old_buffer = imp.text_view.buffer();
+        let new_buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+        imp::create_or_update_tags(&new_buffer, libadwaita::StyleManager::default().is_dark());
+        imp.text_view.set_buffer(Some(&new_buffer));
+
+        let retired = RetiredMarkdownRender {
+            buffer: old_buffer,
+            embeds: std::mem::take(&mut *imp.rendered_embeds.borrow_mut()).into(),
+            links: std::mem::take(&mut *imp.text_link_targets.borrow_mut()).into(),
+        };
+        if !retired.is_empty() {
+            imp.retirement
+                .borrow_mut()
+                .get_or_insert_with(MarkdownRetirementSession::default)
+                .states
+                .push_back(retired);
+            self.arm_markdown_retirement();
         }
-        imp.text_link_targets.borrow_mut().clear();
-        imp.text_view.buffer().set_text("");
         self.advance_rendered_embed_generation();
+    }
+
+    /// Keep exactly one idle source draining detached render state.
+    fn arm_markdown_retirement(&self) {
+        let imp = self.imp();
+        if imp.retirement_armed.replace(true) {
+            return;
+        }
+        let preview_weak = self.downgrade();
+        glib::idle_add_local(move || {
+            let Some(preview) = preview_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if preview.retire_markdown_slice() {
+                glib::ControlFlow::Continue
+            } else {
+                preview.imp().retirement_armed.set(false);
+                glib::ControlFlow::Break
+            }
+        });
+    }
+
+    /// Release a bounded amount of detached text, widgets, and links.
+    fn retire_markdown_slice(&self) -> bool {
+        let imp = self.imp();
+        let mut session_slot = imp.retirement.borrow_mut();
+        let Some(session) = session_slot.as_mut() else {
+            return false;
+        };
+        let Some(state) = session.states.front_mut() else {
+            session_slot.take();
+            return false;
+        };
+
+        let mut retired_items = 0usize;
+        while retired_items < MARKDOWN_RETIREMENT_ITEMS_PER_TURN {
+            let widget = state.embeds.pop_front().map(|embed| embed.widget);
+            if let Some(widget) = widget {
+                if widget.parent().as_ref() == Some(imp.text_view.upcast_ref()) {
+                    imp.text_view.remove(&widget);
+                }
+                retired_items += 1;
+                continue;
+            }
+            if state.links.pop_front().is_some() {
+                retired_items += 1;
+                continue;
+            }
+            break;
+        }
+
+        let char_count = usize::try_from(state.buffer.char_count()).unwrap_or_default();
+        let retired_chars = char_count.min(MARKDOWN_RETIREMENT_CHARS_PER_TURN);
+        if retired_chars > 0 {
+            let mut end = state.buffer.end_iter();
+            let start_offset = end
+                .offset()
+                .saturating_sub(i32::try_from(retired_chars).unwrap_or(i32::MAX));
+            let mut start = state.buffer.iter_at_offset(start_offset);
+            state.buffer.delete(&mut start, &mut end);
+        }
+
+        #[cfg(feature = "test-utils")]
+        {
+            imp.retirement_chars_high_water
+                .set(imp.retirement_chars_high_water.get().max(retired_chars));
+            imp.retirement_items_high_water
+                .set(imp.retirement_items_high_water.get().max(retired_items));
+        }
+
+        if state.is_empty() {
+            session.states.pop_front();
+        }
+        if session.states.is_empty() {
+            session_slot.take();
+            false
+        } else {
+            true
+        }
     }
 
     /// Insert one buffered table as a native GTK grid anchored into the text flow.
@@ -1714,22 +2233,92 @@ impl LushtextMarkdownPreview {
         paths: Vec<PathBuf>,
         layout: EmbeddedBlockLayout,
     ) {
+        let generation = self.imp().render_session.borrow().generation();
+        if !self.imp().image_admission.borrow_mut().try_admit(
+            PREVIEW_IMAGE_WORK_CHARGE_BYTES,
+            MAX_PREVIEW_IMAGE_WORK_ITEMS,
+            MAX_PREVIEW_IMAGE_WORK_BYTES,
+        ) {
+            let fallback = build_image_fallback_widget(
+                "Image preview limited",
+                "Only four local images are loaded automatically per render",
+            );
+            self.insert_embedded_widget(buffer, iter, &fallback, layout);
+            return;
+        }
+
         let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.append(&build_image_fallback_widget("Loading image", raw_target));
         self.insert_embedded_widget(buffer, iter, container.upcast_ref::<gtk4::Widget>(), layout);
 
-        let raw_target = raw_target.to_string();
-        let container_weak = container.downgrade();
-        spawn_blocking_then(
-            self.clone(),
+        let imp = self.imp();
+        imp.current_image_work_count
+            .set(imp.current_image_work_count.get().saturating_add(1));
+        imp.image_queue.borrow_mut().push_back(PendingImageWork {
+            generation,
+            raw_target: raw_target.to_string(),
+            paths,
+            container: container.downgrade(),
+            charge_bytes: PREVIEW_IMAGE_WORK_CHARGE_BYTES,
+        });
+        self.start_next_image_work();
+    }
+
+    /// Start at most one decoder while queued descriptors remain payload-free.
+    fn start_next_image_work(&self) {
+        let imp = self.imp();
+        if imp.active_image.borrow().is_some() {
+            return;
+        }
+        let Some(work) = imp.image_queue.borrow_mut().pop_front() else {
+            return;
+        };
+        let PendingImageWork {
+            generation,
+            raw_target,
+            paths,
+            container,
+            charge_bytes,
+        } = work;
+        imp.active_image.replace(Some(ActiveImageWork {
+            generation,
+            container,
+            charge_bytes,
+        }));
+        spawn_blocking_then_weak(
+            self,
             move || first_loadable_ordered_image(raw_target, paths),
-            move |_preview, result| {
-                let Some(container) = container_weak.upgrade() else {
-                    return;
-                };
-                Self::replace_ordered_image_placeholder(&container, result);
-            },
+            move |preview, result| preview.finish_image_work(result),
         );
+    }
+
+    /// Release exact scalar ownership and apply only a current image completion.
+    fn finish_image_work(&self, result: OrderedImageCandidateResult) {
+        let imp = self.imp();
+        let Some(active) = imp.active_image.take() else {
+            return;
+        };
+        imp.image_admission
+            .borrow_mut()
+            .release(active.charge_bytes);
+        if imp.render_session.borrow().is_current(active.generation) {
+            imp.current_image_work_count
+                .set(imp.current_image_work_count.get().saturating_sub(1));
+            if let Some(container) = active.container.upgrade() {
+                Self::replace_ordered_image_placeholder(&container, result);
+            }
+        }
+        self.start_next_image_work();
+    }
+
+    /// Release queued descriptor ownership while an active worker drains safely.
+    fn cancel_queued_image_work(&self) {
+        let imp = self.imp();
+        let queued = imp.image_queue.borrow_mut().drain(..).collect::<Vec<_>>();
+        for work in queued {
+            imp.image_admission.borrow_mut().release(work.charge_bytes);
+        }
+        imp.current_image_work_count.set(0);
     }
 
     /// Replace an async image placeholder with the resolved image or fallback.
@@ -1928,15 +2517,7 @@ impl LushtextMarkdownPreview {
 impl DecodedImage {
     /// Decode and scale one local image on a worker thread.
     fn from_path(path: &Path) -> Result<Self, String> {
-        let facts = fs_metadata::file_facts(path).map_err(|error| error.to_string())?;
-        if facts.byte_size > MAX_PREVIEW_IMAGE_SOURCE_BYTES {
-            return Err(format!(
-                "image is too large for preview ({} bytes, limit {} bytes)",
-                facts.byte_size, MAX_PREVIEW_IMAGE_SOURCE_BYTES
-            ));
-        }
-
-        let bytes = fs_read::bytes(path).map_err(|error| error.to_string())?;
+        let bytes = read_preview_image_bytes(path)?;
         let pixbuf = decode_preview_pixbuf_from_bytes(&bytes)?;
         let (display_width, display_height) = bounded_image_size(pixbuf.width(), pixbuf.height());
         let pixbuf = if display_width != pixbuf.width() || display_height != pixbuf.height() {
@@ -1965,6 +2546,48 @@ impl DecodedImage {
             pixels: pixbuf.read_pixel_bytes().as_ref().to_vec(),
         })
     }
+}
+
+fn read_preview_image_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    read_preview_image_bytes_with_limit(path, MAX_PREVIEW_IMAGE_SOURCE_BYTES, || {})
+}
+
+fn read_preview_image_bytes_with_limit<F>(
+    path: &Path,
+    byte_limit: u64,
+    after_facts: F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnOnce(),
+{
+    let facts = fs_metadata::file_facts(path).map_err(|error| error.to_string())?;
+    if facts.byte_size > byte_limit {
+        return Err(format!(
+            "image is too large for preview ({} bytes, limit {} bytes)",
+            facts.byte_size, byte_limit
+        ));
+    }
+    after_facts();
+    let bytes =
+        fs_read::bounded_bytes(path, byte_limit, facts.byte_size, || false).map_err(|error| {
+            match error {
+                fs_read::BoundedFileReadError::LimitExceeded { .. } => {
+                    format!("image grew beyond the {byte_limit}-byte preview limit")
+                }
+                fs_read::BoundedFileReadError::Cancelled => {
+                    "image preview read was cancelled".to_string()
+                }
+                fs_read::BoundedFileReadError::Io(source) => source.to_string(),
+            }
+        })?;
+    let current = fs_metadata::file_facts(path).map_err(|error| error.to_string())?;
+    if current.identity != facts.identity
+        || current.byte_size != facts.byte_size
+        || current.modified_at_nanos != facts.modified_at_nanos
+    {
+        return Err("image changed while it was being read for preview".to_string());
+    }
+    Ok(bytes)
 }
 
 /// Decode one preview image from already-boundary-read bytes.
@@ -2003,18 +2626,6 @@ impl Default for LushtextMarkdownPreview {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Build the Markdown parser options shared by preview preprocessing and rendering.
-fn markdown_render_options() -> Options {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_TASKLISTS);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_GFM);
-    options.insert(Options::ENABLE_DEFINITION_LIST);
-    options
 }
 
 /// Derive the effective text column for an embedded block from active Markdown state.
@@ -2702,6 +3313,13 @@ fn first_loadable_ordered_image(
     raw_target: String,
     paths: Vec<PathBuf>,
 ) -> OrderedImageCandidateResult {
+    #[cfg(feature = "test-utils")]
+    {
+        let delay_ms = IMAGE_WORK_DELAY_MS.load(Ordering::Acquire);
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+    }
     let mut first_unloadable = None;
     for path in paths {
         match fs_metadata::path_status(&path) {
@@ -2834,16 +3452,21 @@ fn bounded_image_size(width: i32, height: i32) -> (i32, i32) {
         return (scaled_width.max(1), scaled_height.max(1));
     }
 
-    if width <= MAX_PREVIEW_IMAGE_WIDTH {
+    if max_dimension <= MAX_PREVIEW_IMAGE_WIDTH {
         return (width, height);
     }
 
-    let scaled_width = MAX_PREVIEW_IMAGE_WIDTH;
+    let scaled_width = i32::try_from(
+        i64::from(width).saturating_mul(i64::from(MAX_PREVIEW_IMAGE_WIDTH))
+            / i64::from(max_dimension),
+    )
+    .unwrap_or(width);
     let scaled_height = i32::try_from(
-        i64::from(height).saturating_mul(i64::from(MAX_PREVIEW_IMAGE_WIDTH)) / i64::from(width),
+        i64::from(height).saturating_mul(i64::from(MAX_PREVIEW_IMAGE_WIDTH))
+            / i64::from(max_dimension),
     )
     .unwrap_or(height);
-    (scaled_width, scaled_height.max(1))
+    (scaled_width.max(1), scaled_height.max(1))
 }
 
 /// Convert a `HeadingLevel` to a 0-based index for the tag name array.
@@ -2875,6 +3498,20 @@ mod tests {
     use crate::ui::markdown_preview::imp::list_item_text_margin;
     use pulldown_cmark::LinkType;
     use tempfile::tempdir;
+
+    #[test]
+    fn preview_image_read_rejects_growth_after_metadata_without_unbounded_read() {
+        let dir = tempdir().expect("image growth tempdir");
+        let path = dir.path().join("growing-image.bin");
+        fixture::write_bytes(&path, b"small");
+
+        let error = read_preview_image_bytes_with_limit(&path, 16, || {
+            fixture::write_repeated_bytes(&path, b"x", 17);
+        })
+        .expect_err("growth beyond the image limit must fail");
+
+        assert!(error.contains("grew beyond"));
+    }
 
     #[test]
     fn test_definition_list_parser_events_for_colon_syntax() {
@@ -3213,6 +3850,7 @@ mod tests {
     fn test_bounded_image_size_scales_down_wide_images() {
         assert_eq!(bounded_image_size(128, 128), (128, 128));
         assert_eq!(bounded_image_size(1280, 640), (640, 320));
+        assert_eq!(bounded_image_size(640, 1280), (320, 640));
         assert_eq!(bounded_image_size(16, 16), (72, 72));
         assert_eq!(bounded_image_size(0, 0), (320, 180));
     }

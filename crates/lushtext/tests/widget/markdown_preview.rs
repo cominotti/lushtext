@@ -2,14 +2,18 @@
 
 //! Tests for the LushtextMarkdownPreview widget.
 
-use crate::common::{ensure_gtk_init, fixture, fs_metadata, present_window, test_application, wait_until};
+use crate::common::{
+    ensure_gtk_init, fixture, flush_after_delay, fs_metadata, present_window, test_application,
+    wait_until,
+};
 use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
 use lushtext_core::config::{self, keys};
+use lushtext_core::services::markdown_render::MARKDOWN_EVENTS_PER_PROJECTION_SLICE;
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::markdown_preview::{
-    LushtextMarkdownPreview, MarkdownPreviewRenderContext,
+    LushtextMarkdownPreview, MarkdownPreviewRenderContext, MarkdownRenderState,
 };
 use sourceview5::prelude::*;
 use std::cell::RefCell;
@@ -17,6 +21,22 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+struct ImageWorkDelayReset;
+
+impl Drop for ImageWorkDelayReset {
+    fn drop(&mut self) {
+        LushtextMarkdownPreview::set_image_work_delay_for_test(0);
+    }
+}
+
+struct MarkdownPlanDelayReset;
+
+impl Drop for MarkdownPlanDelayReset {
+    fn drop(&mut self) {
+        LushtextMarkdownPreview::set_markdown_plan_delay_for_test(0);
+    }
+}
 
 #[test]
 fn test_new() {
@@ -207,6 +227,7 @@ fn test_clickable_preview_link_activates_external_target() {
     preview.connect_link_activated(move |uri| launched_clone.borrow_mut().push(uri.to_string()));
 
     preview.render_markdown("[click here](https://example.com)");
+    flush_after_delay(Duration::from_millis(20));
     emit_preview_click_for_text(&preview, "click here");
 
     assert_eq!(
@@ -983,6 +1004,235 @@ fn test_re_render_replaces_previous_content() {
         "Previous content should be replaced"
     );
     assert!(text.contains("Second"), "New content should be present");
+}
+
+#[test]
+fn test_dense_markdown_projects_over_bounded_main_loop_turns() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let markdown = (0..400)
+        .map(|index| format!("paragraph {index}\n\n"))
+        .collect::<String>();
+
+    preview.render_markdown(&markdown);
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Projecting);
+    wait_until(Duration::from_secs(5), || !preview.render_pending());
+
+    let (dispatches, high_water_events) = preview.projection_counters_for_test();
+    assert!(dispatches > 1, "dense Markdown should yield between batches");
+    assert!(high_water_events <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert!(preview.buffer_text().contains("paragraph 399"));
+}
+
+#[test]
+fn test_rapid_large_markdown_renders_keep_one_planner_and_latest_request() {
+    ensure_gtk_init();
+    let _delay_reset = MarkdownPlanDelayReset;
+    LushtextMarkdownPreview::set_markdown_plan_delay_for_test(250);
+    let preview = LushtextMarkdownPreview::new();
+    let source = |label: &str| {
+        (0..4_000)
+            .map(|index| format!("{label} paragraph {index}\n\n"))
+            .collect::<String>()
+    };
+
+    preview.render_markdown(&source("first"));
+    preview.render_markdown(&source("second"));
+    preview.render_markdown(&source("latest"));
+
+    assert_eq!(preview.planning_counters_for_test(), (1, 1));
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+    assert_eq!(preview.planning_counters_for_test(), (0, 0));
+    let text = preview.buffer_text();
+    assert!(text.contains("latest paragraph 3999"));
+    assert!(!text.contains("first paragraph"));
+    assert!(!text.contains("second paragraph"));
+}
+
+#[test]
+fn test_large_render_teardown_is_detached_and_retired_in_bounded_turns() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let source = (0..4_000)
+        .map(|index| format!("retired paragraph {index} with enough retained text\n\n"))
+        .collect::<String>();
+
+    preview.render_markdown(&source);
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+    assert!(preview.buffer_text().contains("retired paragraph 3999"));
+
+    preview.render_markdown("current generation");
+    assert_eq!(preview.buffer_text().trim(), "current generation");
+    assert!(preview.render_pending());
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+
+    let (retired_chars, retired_items) = preview.retirement_counters_for_test();
+    assert!(retired_chars <= 64 * 1024);
+    assert!(retired_items <= 64);
+    assert_eq!(preview.buffer_text().trim(), "current generation");
+}
+
+#[test]
+fn test_dense_single_block_uses_accessible_limited_terminal() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let markdown = (0..300).map(|_| "**x** ").collect::<String>();
+
+    preview.render_markdown(&markdown);
+
+    assert!(!preview.render_pending());
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Limited);
+    assert!(
+        preview
+            .buffer_text()
+            .contains("one block exceeds a projection slice")
+    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[gtk4::AccessibleProperty::Description])
+        .assert_on(&preview.text_view());
+}
+
+#[test]
+fn test_render_failure_is_accessible_and_terminal() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.show_render_failure("Markdown plan failed");
+
+    assert!(!preview.render_pending());
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Failed);
+    assert_eq!(preview.buffer_text(), "Markdown plan failed");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::TextBox)
+        .properties(&[gtk4::AccessibleProperty::Description])
+        .assert_on(&preview.text_view());
+}
+
+#[test]
+fn test_new_render_generation_rejects_stale_projection_slices() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let old = (0..400)
+        .map(|index| format!("obsolete {index}\n\n"))
+        .collect::<String>();
+
+    preview.render_markdown(&old);
+    preview.render_markdown("latest generation");
+    flush_after_delay(Duration::from_millis(100));
+
+    assert_eq!(preview.buffer_text().trim(), "latest generation");
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+}
+
+#[test]
+fn test_placeholder_cancels_background_markdown_plan() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let source = (0..12_000)
+        .map(|index| format!("background paragraph {index}\n\n"))
+        .collect::<String>();
+    assert!(source.len() > 64 * 1024);
+
+    preview.render_markdown(&source);
+    preview.show_placeholder("Preview closed");
+    flush_after_delay(Duration::from_millis(300));
+
+    assert!(!preview.is_showing_content());
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Cancelled);
+    assert_eq!(
+        preview.placeholder_description_for_test().as_deref(),
+        Some("Preview closed")
+    );
+}
+
+#[test]
+fn test_image_flood_keeps_one_decoder_and_bounded_compact_ownership() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let tempdir = tempfile::tempdir().expect("image flood tempdir");
+    let context = MarkdownPreviewRenderContext::new(
+        Some(tempdir.path().join("document.md")),
+        Vec::new(),
+    );
+    let markdown = (0..12)
+        .map(|index| format!("![image {index}](missing-{index}.png)\n\n"))
+        .collect::<String>();
+
+    preview.render_markdown_with_context(&markdown, &context);
+    let (count_limit, byte_limit) = LushtextMarkdownPreview::image_admission_limits_for_test();
+    let (_, _, high_count, high_bytes) = preview.image_admission_counters_for_test();
+    assert!(high_count <= count_limit);
+    assert!(high_bytes <= byte_limit);
+    assert_eq!(high_count, count_limit);
+    wait_until(Duration::from_secs(5), || !preview.render_pending());
+    let (owned_count, owned_bytes, _, _) = preview.image_admission_counters_for_test();
+    assert_eq!((owned_count, owned_bytes), (0, 0));
+    assert_eq!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback").len(),
+        12
+    );
+}
+
+#[test]
+fn test_stale_image_completion_cannot_mutate_new_render_generation() {
+    ensure_gtk_init();
+    let _delay_reset = ImageWorkDelayReset;
+    LushtextMarkdownPreview::set_image_work_delay_for_test(250);
+    let preview = LushtextMarkdownPreview::new();
+    let tempdir = tempfile::tempdir().expect("stale image tempdir");
+    let context = MarkdownPreviewRenderContext::new(
+        Some(tempdir.path().join("document.md")),
+        Vec::new(),
+    );
+
+    preview.render_markdown_with_context("![old](missing.png)", &context);
+    assert!(preview.render_pending());
+    preview.render_markdown("new generation");
+    flush_after_delay(Duration::from_millis(400));
+
+    assert_eq!(preview.buffer_text().trim(), "new generation");
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    let (owned_count, owned_bytes, _, _) = preview.image_admission_counters_for_test();
+    assert_eq!((owned_count, owned_bytes), (0, 0));
+}
+
+#[test]
+fn test_oversized_local_image_resolves_to_accessible_fallback() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let tempdir = tempfile::tempdir().expect("oversized image tempdir");
+    let image_path = tempdir.path().join("oversized.png");
+    let (source_limit, _) = LushtextMarkdownPreview::image_source_limits_for_test();
+    fixture::write_repeated_bytes(
+        &image_path,
+        b"x",
+        source_limit.saturating_add(1),
+    );
+    let context = MarkdownPreviewRenderContext::new(
+        Some(tempdir.path().join("document.md")),
+        Vec::new(),
+    );
+
+    preview.render_markdown_with_context("![oversized](oversized.png)", &context);
+    wait_until(Duration::from_secs(5), || !preview.render_pending());
+
+    assert!(find_label_with_text(&preview, "Image could not be loaded").is_some());
+    let fallback = widgets_with_css_class::<gtk4::Box>(
+        &preview,
+        "markdown-preview-image-fallback",
+    )
+    .into_iter()
+    .next()
+    .expect("oversized image fallback");
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Img)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&fallback);
 }
 
 #[test]

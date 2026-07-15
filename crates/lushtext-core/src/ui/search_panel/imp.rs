@@ -19,7 +19,7 @@ use gtk4::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32};
@@ -38,7 +38,7 @@ type ProgressCallback = Box<dyn Fn(SearchProgressUpdate)>;
 type ReplaceCallback = Box<dyn Fn(Vec<Replacement>)>;
 
 /// Callback type for Undo All: receives the backup map to restore.
-type UndoCallback = Box<dyn Fn(ReplaceUndoBackup)>;
+type UndoCallback = Box<dyn Fn(Arc<ReplaceUndoBackup>)>;
 type MessageCallback = Box<dyn Fn(&str)>;
 
 /// Delay text-entry searches long enough to batch normal typing without making
@@ -48,16 +48,40 @@ const SEARCH_INPUT_DEBOUNCE_MS: u64 = 300;
 /// Runtime state for one in-flight search and its grouped GTK result models.
 pub struct SearchRuntimeState {
     /// Root-level model: contains one file-header row per matching file.
-    pub root_store: gio::ListStore,
+    pub root_store: RefCell<gio::ListStore>,
     /// Per-file child stores keyed by absolute file path.
-    pub file_groups: RefCell<HashMap<PathBuf, SearchFileGroup>>,
+    pub file_groups: RefCell<BTreeMap<PathBuf, SearchFileGroup>>,
     /// Plain match data in arrival order for non-rendering workflows.
     ///
     /// Preview generation must not walk GTK tree models on the action path;
     /// this Rust snapshot lets the worker handoff clone service data directly.
     pub search_matches: RefCell<Vec<SearchMatch>>,
+    /// Immutable accepted generation shared by preview/apply without whole-vector clones.
+    pub accepted_matches: RefCell<Option<Arc<Vec<SearchMatch>>>>,
+    /// Count of zero-copy accepted-snapshot handoffs into Replace Preview.
+    pub shared_snapshot_handoffs: Cell<u64>,
+    /// Regression probe for any compatibility path that deep-clones accepted matches.
+    pub whole_result_clones: Cell<u64>,
     /// Cancel token for the currently running worker thread, if any.
     pub cancel_token: RefCell<Option<Arc<AtomicBool>>>,
+    /// Plain-Rust active-plus-latest ownership policy.
+    pub flight: RefCell<crate::model::search_flight::WorkspaceSearchFlight>,
+    /// Direct active-group count; the single-flight invariant keeps this at zero or one.
+    pub active_worker_groups: Cell<u8>,
+    /// High-water active-group count for deterministic concurrency evidence.
+    pub active_worker_groups_high_water: Cell<u8>,
+    /// Coalesced detached-generation GTK disposal session.
+    pub(super) retirement: RefCell<Option<super::runtime::SearchRetirementSession>>,
+    /// Replaceable latest query held while detached-generation disposal is saturated.
+    pub deferred_search: RefCell<Option<crate::model::content_search::SearchQuerySpec>>,
+    /// Whether the one bounded retirement idle callback is armed.
+    pub retirement_armed: Cell<bool>,
+    /// Monotonic identity for detached result generations.
+    pub retirement_generation: Cell<u64>,
+    /// High-water rows released by any one bounded retirement turn.
+    pub retirement_rows_per_slice_high_water: Cell<usize>,
+    /// High-water detached generations retained by the bounded disposer.
+    pub retirement_generations_high_water: Cell<usize>,
     /// Debounce for search-entry input.
     pub search_debounce: Debounce,
     /// Debounce for glob-entry input, separate from the main query.
@@ -79,10 +103,22 @@ pub struct SearchRuntimeState {
 impl Default for SearchRuntimeState {
     fn default() -> Self {
         Self {
-            root_store: gio::ListStore::new::<SearchResultItem>(),
-            file_groups: RefCell::new(HashMap::new()),
+            root_store: RefCell::new(gio::ListStore::new::<SearchResultItem>()),
+            file_groups: RefCell::new(BTreeMap::new()),
             search_matches: RefCell::new(Vec::new()),
+            accepted_matches: RefCell::new(None),
+            shared_snapshot_handoffs: Cell::new(0),
+            whole_result_clones: Cell::new(0),
             cancel_token: RefCell::new(None),
+            flight: RefCell::new(crate::model::search_flight::WorkspaceSearchFlight::default()),
+            active_worker_groups: Cell::new(0),
+            active_worker_groups_high_water: Cell::new(0),
+            retirement: RefCell::new(None),
+            deferred_search: RefCell::new(None),
+            retirement_armed: Cell::new(false),
+            retirement_generation: Cell::new(0),
+            retirement_rows_per_slice_high_water: Cell::new(0),
+            retirement_generations_high_water: Cell::new(0),
             search_debounce: Debounce::default(),
             glob_debounce: Debounce::default(),
             workspace_folders: RefCell::new(Vec::new()),
@@ -114,7 +150,7 @@ pub struct SearchPreviewState {
     /// Whether the results list currently renders preview rows with checkboxes.
     pub preview_mode: Cell<bool>,
     /// In-memory before/after file snapshots after a successful Replace All.
-    pub undo_backup: RefCell<Option<ReplaceUndoBackup>>,
+    pub undo_backup: RefCell<Option<Arc<ReplaceUndoBackup>>>,
     /// Generation counter invalidating stale backup loads and deletes.
     pub undo_backup_generation: Arc<AtomicU32>,
     /// Generation counter invalidating stale async preview generation results.
@@ -141,7 +177,7 @@ pub struct SearchNavigationState {
     /// Visible tree rows for each navigation target, captured when rows are appended.
     pub match_rows: RefCell<Vec<Option<gtk4::TreeListRow>>>,
     /// File-header rows keyed by absolute file path for direct child-row lookup.
-    pub file_rows: RefCell<HashMap<PathBuf, gtk4::TreeListRow>>,
+    pub file_rows: RefCell<BTreeMap<PathBuf, gtk4::TreeListRow>>,
     /// Current position in `match_positions` for wraparound navigation.
     pub current_match_index: Cell<Option<usize>>,
 }

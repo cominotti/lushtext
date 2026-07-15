@@ -24,6 +24,8 @@ use gtk4::prelude::*;
 use gtk4::{self, gio, glib};
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::LushtextWindow;
@@ -40,6 +42,15 @@ pub(super) const SEARCH_PANEL_TRANSITION_DELAY_MS: u64 = 260;
 /// panel prefill path runs on the GTK main thread, so keep it query-sized and
 /// skip very large selections instead of allocating a huge temporary string.
 const SEARCH_PANEL_PREFILL_CHAR_LIMIT: i32 = 1024;
+
+#[cfg(feature = "test-utils")]
+static RELOAD_FACTS_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Configure an artificial Replace All reload metadata delay for freshness tests.
+#[cfg(feature = "test-utils")]
+pub fn set_replace_reload_facts_delay_for_test(delay_ms: u64) {
+    RELOAD_FACTS_DELAY_MS.store(delay_ms, Ordering::Release);
+}
 
 fn format_search_progress_message(files_searched: usize) -> String {
     format!("Searching {files_searched} files\u{2026}")
@@ -252,7 +263,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         if backup.is_empty() {
                             imp.search_panel.clear_undo_backup();
                         } else {
-                            imp.search_panel.set_persisted_undo_backup(&backup);
+                            imp.search_panel.set_persisted_undo_backup(backup);
                             imp.search_panel.show_undo_button();
                             window.announce_workflow_update(
                                 AnnouncementLane::StatusUpdate,
@@ -284,7 +295,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
         spawn_blocking_then(
             window,
-            move || content_search::undo_replacements(&backup),
+            move || content_search::undo_replacements(backup.as_ref()),
             move |window, outcome| {
                 let restored_paths: HashSet<std::path::PathBuf> =
                     outcome.restored_paths.iter().cloned().collect();
@@ -321,7 +332,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                     window
                         .imp()
                         .search_panel
-                        .set_undo_backup(&outcome.remaining_backup);
+                        .set_undo_backup(outcome.remaining_backup);
                     window.imp().search_panel.show_undo_button();
                 }
             },
@@ -695,6 +706,7 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
             spawn_blocking_then(
                 path,
                 move || {
+                    delay_replace_reload_facts_for_test();
                     fs_metadata::file_facts(&path_for_facts)
                         .ok()
                         .and_then(|facts| facts.modified_at_secs)
@@ -703,7 +715,10 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
                     let Some(editor) = editor_weak.upgrade() else {
                         return;
                     };
-                    if editor.file_path().as_deref() != Some(path.as_path()) {
+                    if editor.file_path().as_deref() != Some(path.as_path())
+                        || editor.is_modified()
+                        || editor.is_saving()
+                    {
                         return;
                     }
                     // Update mtime before reload to suppress the file monitor's
@@ -713,6 +728,25 @@ fn reload_affected_tabs(window: &LushtextWindow, affected_paths: &HashSet<std::p
                 },
             );
         }
+    }
+}
+
+#[cfg(feature = "test-utils")]
+fn delay_replace_reload_facts_for_test() {
+    let delay_ms = RELOAD_FACTS_DELAY_MS.load(Ordering::Acquire);
+    if delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn delay_replace_reload_facts_for_test() {}
+
+/// Exercise Replace All tab reload freshness from the external widget harness.
+#[cfg(feature = "test-utils")]
+impl LushtextWindow {
+    pub fn reload_affected_tabs_for_test(&self, affected_paths: &HashSet<std::path::PathBuf>) {
+        reload_affected_tabs(self, affected_paths);
     }
 }
 

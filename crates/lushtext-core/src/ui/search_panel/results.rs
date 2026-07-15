@@ -127,8 +127,17 @@ impl LushtextSearchPanel {
     /// The search worker streams each match into this plain Rust cache as it
     /// arrives, so entering Replace preview does not have to walk GTK tree
     /// models or reconstruct original ranges from row objects.
-    pub(super) fn collect_search_matches(&self) -> Vec<crate::model::content_search::SearchMatch> {
-        self.imp().runtime.search_matches.borrow().clone()
+    pub(super) fn accepted_search_matches(
+        &self,
+    ) -> Option<std::sync::Arc<Vec<crate::model::content_search::SearchMatch>>> {
+        let imp = self.imp();
+        let accepted = imp.runtime.accepted_matches.borrow().clone();
+        if accepted.is_some() {
+            imp.runtime
+                .shared_snapshot_handoffs
+                .set(imp.runtime.shared_snapshot_handoffs.get().wrapping_add(1));
+        }
+        accepted
     }
 
     /// Trigger a visual refresh of the results list by invalidating the factory.

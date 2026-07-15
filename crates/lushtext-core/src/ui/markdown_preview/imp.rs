@@ -16,6 +16,7 @@ use gtk4::{self, CompositeTemplate, glib, pango};
 use libadwaita::prelude::*;
 use pulldown_cmark::BlockQuoteKind;
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
@@ -271,6 +272,38 @@ pub struct LushtextMarkdownPreview {
     pub global_signals: SignalBag,
     /// Active app-local source-buffer capture for note preview rendering.
     pub source_snapshot: RefCell<Option<BufferSnapshotHandle>>,
+    /// GTK-free generation, terminal, and readiness ownership state.
+    pub(super) render_session: RefCell<crate::services::markdown_render::MarkdownRenderSession>,
+    /// Whether the one document-sized Markdown planner is still draining.
+    pub(super) planning_worker_running: Cell<bool>,
+    /// Cancellation token for the active planner.
+    pub(super) planning_cancel_token:
+        RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    /// Replaceable latest request retained while the active planner disconnects.
+    pub(super) queued_plan: RefCell<Option<super::PendingMarkdownPlan>>,
+    /// Number of bounded projection turns used by the current generation.
+    #[cfg(feature = "test-utils")]
+    pub(super) projection_dispatch_count: Cell<u64>,
+    /// Largest event count observed in one projection turn.
+    #[cfg(feature = "test-utils")]
+    pub(super) projection_high_water_events: Cell<usize>,
+    /// Compact image descriptors waiting behind at most one active decoder.
+    pub(super) image_queue: RefCell<VecDeque<super::PendingImageWork>>,
+    /// Scalar identity and charge for the single active image worker.
+    pub(super) active_image: RefCell<Option<super::ActiveImageWork>>,
+    /// Current-generation image work that still blocks render readiness.
+    pub(super) current_image_work_count: Cell<usize>,
+    /// GTK-free count/byte ownership and high-water image admission state.
+    pub(super) image_admission: RefCell<crate::services::markdown_render::MarkdownImageAdmission>,
+    /// Detached buffers/widgets/links awaiting bounded main-loop retirement.
+    pub(super) retirement: RefCell<Option<super::MarkdownRetirementSession>>,
+    /// Whether the one retirement idle source is armed.
+    pub(super) retirement_armed: Cell<bool>,
+    /// Largest detached characters and object references retired in one turn.
+    #[cfg(feature = "test-utils")]
+    pub(super) retirement_chars_high_water: Cell<usize>,
+    #[cfg(feature = "test-utils")]
+    pub(super) retirement_items_high_water: Cell<usize>,
 }
 
 #[glib::object_subclass]
@@ -352,6 +385,11 @@ impl ObjectImpl for LushtextMarkdownPreview {
     }
 
     fn dispose(&self) {
+        if let Some(cancel) = self.planning_cancel_token.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.queued_plan.take();
+        self.render_session.borrow_mut().cancel();
         if let Some(snapshot) = self.source_snapshot.take() {
             snapshot.dispose();
         }
@@ -415,7 +453,7 @@ impl LushtextMarkdownPreview {
 /// If a tag already exists in the buffer's tag table, its color properties are
 /// updated rather than recreated. This preserves any text that's already been
 /// inserted with those tags — re-creating tags would orphan references.
-fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
+pub(super) fn create_or_update_tags(buffer: &gtk4::TextBuffer, is_dark: bool) {
     let accent = if is_dark { ACCENT_DARK } else { ACCENT_LIGHT };
     let code_bg = if is_dark { CODE_BG_DARK } else { CODE_BG_LIGHT };
     let dim = if is_dark { DIM_DARK } else { DIM_LIGHT };

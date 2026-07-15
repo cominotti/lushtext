@@ -20,7 +20,8 @@ use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
     LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchProgressUpdate,
     apply_search_result_row_accessibility_for_test, set_replace_preview_delay_for_test,
-    set_replace_preview_budget_for_test, set_undo_backup_disk_delay_for_test,
+    set_replace_preview_budget_for_test, set_search_worker_delay_for_test,
+    set_undo_backup_disk_delay_for_test,
 };
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
@@ -98,7 +99,7 @@ fn panel_with_one_search_match() -> LushtextSearchPanel {
     );
     let child_store = gtk4::gio::ListStore::new::<SearchResultItem>();
     child_store.append(&match_item);
-    panel.imp().runtime.root_store.append(&file_item);
+    panel.imp().runtime.root_store.borrow().append(&file_item);
     panel.imp().runtime.file_groups.borrow_mut().insert(
         std::path::PathBuf::from("/test.rs"),
         SearchFileGroup::new(file_item, child_store),
@@ -106,11 +107,68 @@ fn panel_with_one_search_match() -> LushtextSearchPanel {
     panel
         .imp()
         .runtime
-        .search_matches
-        .borrow_mut()
-        .push(search_match);
+        .accepted_matches
+        .replace(Some(Arc::new(vec![search_match])));
     panel.imp().runtime.total_matches.set(1);
     panel
+}
+
+fn populate_large_result_generation(
+    panel: &LushtextSearchPanel,
+    path: &str,
+    match_count: usize,
+) {
+    let path = PathBuf::from(path);
+    let display_path = path.display().to_string();
+    let header = SearchResultItem::new_file(
+        &display_path,
+        &display_path,
+        u32::try_from(match_count).unwrap_or(u32::MAX),
+    );
+    let child_store = gtk4::gio::ListStore::new::<SearchResultItem>();
+    let mut accepted = Vec::with_capacity(match_count);
+    for index in 0..match_count {
+        let match_id = SearchMatchId::from_index(index);
+        child_store.append(&SearchResultItem::new_match(
+            &display_path,
+            u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX),
+            "needle",
+            0,
+            6,
+            match_id,
+        ));
+        accepted.push(
+            SearchMatch::new(
+                path.clone(),
+                u64::try_from(index.saturating_add(1)).unwrap_or(u64::MAX),
+                "needle",
+                0..6,
+            )
+            .with_id(match_id),
+        );
+    }
+    panel.imp().runtime.root_store.borrow().append(&header);
+    panel.imp().runtime.file_groups.borrow_mut().insert(
+        path,
+        SearchFileGroup::new(header, child_store),
+    );
+    panel
+        .imp()
+        .runtime
+        .accepted_matches
+        .replace(Some(Arc::new(accepted)));
+    panel
+        .imp()
+        .navigation
+        .match_rows
+        .borrow_mut()
+        .resize(match_count, None);
+    panel
+        .imp()
+        .runtime
+        .total_matches
+        .set(u32::try_from(match_count).unwrap_or(u32::MAX));
+    panel.imp().runtime.total_files.set(1);
 }
 
 struct SearchPanelDelayReset;
@@ -120,6 +178,7 @@ impl Drop for SearchPanelDelayReset {
         set_undo_backup_disk_delay_for_test(0);
         set_replace_preview_delay_for_test(0);
         set_replace_preview_budget_for_test(0, 0);
+        set_search_worker_delay_for_test(0);
     }
 }
 
@@ -343,7 +402,9 @@ fn test_search_panel_accessibility_tracks_replace_preview_and_undo_state() {
     imp.preview.preview_pending.set(false);
     imp.preview
         .undo_backup
-        .replace(Some(sample_replace_backup("/tmp/undo.txt")));
+        .replace(Some(std::sync::Arc::new(sample_replace_backup(
+            "/tmp/undo.txt",
+        ))));
     imp.undo_button.set_visible(true);
     panel.refresh_accessibility_state_for_test();
     assert!(!gtk4::test_accessible_has_state(
@@ -439,6 +500,48 @@ fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
 }
 
 #[test]
+fn test_rapid_workspace_queries_keep_one_worker_and_publish_latest_generation() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    set_search_worker_delay_for_test(300);
+    let dir = tempfile::tempdir().expect("single-flight search tempdir");
+    fixture::write_text(
+        &dir.path().join("matches.txt"),
+        "first query\nsecond query\nlatest query\n",
+    );
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+
+    panel.set_query("first");
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    panel.start_search(&search_spec("first"));
+    panel.set_query("second");
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    panel.start_search(&search_spec("second"));
+    panel.set_query("latest");
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    panel.start_search(&search_spec("latest"));
+
+    let (active, high_water, pending, _) = panel.search_runtime_counters_for_test();
+    assert_eq!((active, high_water, pending), (1, 1, 1));
+    wait_until(Duration::from_secs(10), || {
+        !panel.is_searching() && panel.total_matches() == 1
+    });
+
+    let (active, high_water, pending, _) = panel.search_runtime_counters_for_test();
+    assert_eq!((active, high_water, pending), (0, 1, 0));
+    let accepted = panel
+        .imp()
+        .runtime
+        .accepted_matches
+        .borrow()
+        .clone()
+        .expect("latest accepted snapshot");
+    assert_eq!(accepted.len(), 1);
+    assert!(accepted[0].line_content.contains("latest query"));
+}
+
+#[test]
 fn test_search_panel_connect_close_requested() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
@@ -479,7 +582,7 @@ fn test_search_panel_clear_results_resets_state() {
 
     // Add a file group to root_store.
     let file_item = SearchResultItem::new_file("/test.rs", "test.rs", 3);
-    panel.imp().runtime.root_store.append(&file_item);
+    panel.imp().runtime.root_store.borrow().append(&file_item);
 
     // Trigger clear via start_search with empty query.
     panel.start_search(&search_spec(""));
@@ -487,8 +590,98 @@ fn test_search_panel_clear_results_resets_state() {
     assert_eq!(panel.imp().runtime.total_matches.get(), 0);
     assert_eq!(panel.imp().runtime.total_files.get(), 0);
     assert!(!panel.imp().runtime.result_capped.get());
-    assert_eq!(panel.imp().runtime.root_store.n_items(), 0);
+    assert_eq!(panel.imp().runtime.root_store.borrow().n_items(), 0);
     assert!(panel.imp().runtime.file_groups.borrow().is_empty());
+}
+
+#[test]
+fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
+    ensure_gtk_init();
+    let _reset = SearchPanelDelayReset;
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.set_query("needle");
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    populate_large_result_generation(&panel, "/large-results.txt", 10_000);
+    set_replace_preview_delay_for_test(300);
+    panel.enter_preview_mode("replacement");
+    assert!(panel.imp().preview.preview_pending.get());
+
+    panel.close();
+    assert!(!panel.imp().preview.preview_pending.get());
+    assert!(panel.imp().runtime.accepted_matches.borrow().is_none());
+
+    populate_large_result_generation(&panel, "/second-generation.txt", 10_000);
+    panel.start_search(&search_spec(""));
+    let live_header = SearchResultItem::new_file("/live.txt", "live.txt", 1);
+    panel
+        .imp()
+        .runtime
+        .root_store
+        .borrow()
+        .append(&live_header);
+
+    assert!(panel.is_searching());
+    wait_until(Duration::from_secs(10), || {
+        !panel.is_searching() && !panel.imp().preview.preview_worker_running.get()
+    });
+
+    let (_, _, _, retirement_high_water) = panel.search_runtime_counters_for_test();
+    assert!(retirement_high_water <= 250);
+    let (_, generation_high_water, generation_limit, deferred) =
+        panel.retirement_backlog_counters_for_test();
+    assert!(generation_high_water <= generation_limit);
+    assert_eq!(deferred, 0);
+    eprintln!(
+        "search-live-retirement-evidence results=10000 rows_per_slice_high_water={retirement_high_water} generation_high_water={generation_high_water} generation_limit={generation_limit}"
+    );
+    assert_eq!(panel.imp().runtime.root_store.borrow().n_items(), 1);
+    let current = panel
+        .imp()
+        .runtime
+        .root_store
+        .borrow()
+        .item(0)
+        .and_downcast::<SearchResultItem>()
+        .expect("new generation header remains mounted");
+    assert_eq!(current.file_path(), "/live.txt");
+}
+
+#[test]
+fn test_retirement_backpressure_retains_only_latest_query_and_bounds_generations() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("retirement backpressure tempdir");
+    fixture::write_text(&dir.path().join("latest.txt"), "latest query\n");
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+
+    populate_large_result_generation(&panel, "/retired-one.txt", 10_000);
+    panel.start_search(&search_spec(""));
+    populate_large_result_generation(&panel, "/retired-two.txt", 10_000);
+    panel.start_search(&search_spec(""));
+    populate_large_result_generation(&panel, "/visible-until-resume.txt", 10_000);
+
+    panel.start_search(&search_spec("older deferred"));
+    panel.start_search(&search_spec("latest"));
+    let (backlog, _, limit, deferred) = panel.retirement_backlog_counters_for_test();
+    assert_eq!(backlog, 2);
+    assert_eq!(limit, 3);
+    assert_eq!(deferred, 1);
+
+    wait_until(Duration::from_secs(10), || {
+        !panel.is_searching() && panel.total_matches() == 1
+    });
+    let (_, high_water, limit, deferred) = panel.retirement_backlog_counters_for_test();
+    assert!(high_water <= limit);
+    assert_eq!(deferred, 0);
+    let accepted = panel
+        .imp()
+        .runtime
+        .accepted_matches
+        .borrow()
+        .clone()
+        .expect("latest deferred search accepted");
+    assert_eq!(accepted.len(), 1);
+    assert!(accepted[0].line_content.contains("latest query"));
 }
 
 // ---------------------------------------------------------------------------
@@ -960,14 +1153,13 @@ fn test_enter_preview_mode_uses_cached_search_matches_without_gtk_rows() {
     panel
         .imp()
         .runtime
-        .search_matches
-        .borrow_mut()
-        .push(SearchMatch::new(
+        .accepted_matches
+        .replace(Some(Arc::new(vec![SearchMatch::new(
             std::path::PathBuf::from("/test.rs"),
             1,
             "let hello = 1;",
             4..9,
-        ));
+        )])));
 
     panel.enter_preview_mode("goodbye");
 
@@ -1106,9 +1298,8 @@ fn test_new_search_cancels_active_preview_before_latest_request_runs() {
     panel
         .imp()
         .runtime
-        .search_matches
-        .borrow_mut()
-        .push(
+        .accepted_matches
+        .replace(Some(Arc::new(vec![
             SearchMatch::new(
                 std::path::PathBuf::from("/test.rs"),
                 1,
@@ -1116,7 +1307,7 @@ fn test_new_search_cancels_active_preview_before_latest_request_runs() {
                 4..9,
             )
             .with_id(SearchMatchId::from_index(0)),
-        );
+        ])));
     panel.imp().runtime.total_matches.set(1);
     panel.enter_preview_mode("latest");
 
@@ -1167,7 +1358,11 @@ fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows
         )
         .with_id(SearchMatchId::from_index(2)),
     ];
-    panel.imp().runtime.search_matches.replace(matches);
+    panel
+        .imp()
+        .runtime
+        .accepted_matches
+        .replace(Some(Arc::new(matches)));
     panel.imp().runtime.total_matches.set(3);
     panel.imp().runtime.total_files.set(3);
     set_replace_preview_budget_for_test(2, u64::MAX);
@@ -1215,7 +1410,7 @@ fn test_invalid_preview_rows_report_private_free_reason_counts_and_never_confirm
     panel.imp().regex_toggle.set_active(true);
     flush_after_delay(Duration::from_millis(200));
     let _ = panel.imp().runtime.search_debounce.invalidate();
-    panel.imp().runtime.search_matches.replace(vec![
+    panel.imp().runtime.accepted_matches.replace(Some(Arc::new(vec![
         SearchMatch::new(PathBuf::from("/project/valid.rs"), 1, "abc", 0..3)
             .with_id(SearchMatchId::from_index(0)),
         SearchMatch::new(
@@ -1225,7 +1420,7 @@ fn test_invalid_preview_rows_report_private_free_reason_counts_and_never_confirm
             0..3,
         )
         .with_id(SearchMatchId::from_index(1)),
-    ]);
+    ])));
     panel.imp().runtime.total_matches.set(2);
     panel.imp().runtime.total_files.set(2);
 
@@ -1272,8 +1467,8 @@ fn test_no_eligible_preview_has_explicit_feedback_and_disabled_confirmation() {
     panel
         .imp()
         .runtime
-        .search_matches
-        .replace(vec![search_match]);
+        .accepted_matches
+        .replace(Some(Arc::new(vec![search_match])));
     panel.imp().runtime.total_matches.set(1);
     panel.imp().runtime.total_files.set(1);
 
@@ -1338,6 +1533,7 @@ fn test_large_and_empty_replacement_previews_remain_accessible() {
     panel.enter_preview_mode("");
     wait_until(Duration::from_secs(10), || panel.is_preview_mode());
     assert_eq!(panel.replace_preview_count(), 1);
+    assert_eq!(panel.result_snapshot_sharing_counters_for_test(), (2, 0));
     assert_eq!(
         panel.imp().preview.preview_outcome.borrow().as_ref().expect("preview").replacements[0]
             .replaced_line,
@@ -1354,7 +1550,7 @@ fn test_clear_results_preserves_undo_backup() {
 
     // Simulate an undo backup.
     let backup = sample_replace_backup("/test.rs");
-    panel.set_undo_backup(&backup);
+    panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
     assert!(panel.imp().preview.undo_backup.borrow().is_some());
     wait_until(Duration::from_secs(2), || {
@@ -1379,7 +1575,7 @@ fn test_clear_results_preserves_undo_backup() {
 }
 
 #[test]
-fn test_search_panel_clears_stale_persisted_undo_backup_on_construction() {
+fn test_search_panel_restores_active_persisted_undo_backup_on_construction() {
     ensure_gtk_init();
     let data_dir = json_store::data_dir();
     let _ = search_backup::delete(&data_dir);
@@ -1393,12 +1589,16 @@ fn test_search_panel_clears_stale_persisted_undo_backup_on_construction() {
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir)
-            .expect("expected operation to succeed")
-            .is_empty()
+        panel.has_undo_backup() && panel.imp().undo_button.property::<bool>("visible")
     });
-    assert!(panel.imp().preview.undo_backup.borrow().is_none());
-    assert!(!panel.imp().undo_button.property::<bool>("visible"));
+    assert_eq!(
+        panel.imp().preview.undo_backup.borrow().as_deref(),
+        Some(&backup)
+    );
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
 
     let _ = search_backup::delete(&data_dir);
 }
@@ -1411,7 +1611,7 @@ fn test_search_panel_close_clears_undo_backup() {
     let _ = search_backup::delete(&data_dir);
 
     let backup = sample_replace_backup("/persisted-close.rs");
-    panel.set_undo_backup(&backup);
+    panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
     wait_until(Duration::from_secs(2), || {
         search_backup::load(&data_dir).expect("expected operation to succeed") == backup
@@ -1454,7 +1654,7 @@ fn test_set_undo_backup_updates_ui_before_delayed_disk_save() {
     let backup = sample_replace_backup("/delayed-save.rs");
 
     set_undo_backup_disk_delay_for_test(250);
-    panel.set_undo_backup(&backup);
+    panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
 
     assert!(panel.imp().preview.undo_backup.borrow().is_some());
@@ -1481,7 +1681,7 @@ fn test_clear_undo_backup_updates_ui_before_delayed_disk_delete() {
     let _ = search_backup::delete(&data_dir);
     let backup = sample_replace_backup("/delayed-delete.rs");
 
-    panel.set_undo_backup(&backup);
+    panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
     wait_until(Duration::from_secs(2), || {
         search_backup::load(&data_dir).expect("expected operation to succeed") == backup
@@ -1514,7 +1714,7 @@ fn test_clear_after_delayed_undo_backup_save_keeps_disk_empty() {
     let backup = sample_replace_backup("/clear-after-save.rs");
 
     set_undo_backup_disk_delay_for_test(250);
-    panel.set_undo_backup(&backup);
+    panel.set_undo_backup(backup);
     panel.close();
 
     assert!(panel.imp().preview.undo_backup.borrow().is_none());
@@ -1535,14 +1735,14 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
     let old_backup = sample_replace_backup("/old-backup.rs");
     let new_backup = sample_replace_backup("/new-backup.rs");
 
-    panel.set_undo_backup(&old_backup);
+    panel.set_undo_backup(old_backup.clone());
     wait_until(Duration::from_secs(2), || {
         search_backup::load(&data_dir).expect("expected operation to succeed") == old_backup
     });
 
     set_undo_backup_disk_delay_for_test(250);
     panel.close();
-    panel.set_undo_backup(&new_backup);
+    panel.set_undo_backup(new_backup.clone());
 
     wait_until(Duration::from_secs(2), || {
         search_backup::load(&data_dir).expect("expected operation to succeed") == new_backup

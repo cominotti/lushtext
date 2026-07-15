@@ -562,6 +562,7 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
+        super::save_runtime::cancel_for_editor(&self.obj());
         self.obj().cancel_buffer_replacement_for_dispose();
         self.obj().dispose_load_resources();
         if let Some(snapshot) = self.save.snapshot.take() {

@@ -20,9 +20,9 @@ use super::item::SearchResultItem;
 use crate::ui::accessibility::{self, RowAccessibility};
 
 impl imp::LushtextSearchPanel {
-    /// Set up the `GtkTreeListModel` and `ListView` factory for grouped results.
-    pub(super) fn setup_results_list(&self) {
-        let root_store = self.runtime.root_store.clone();
+    /// Install a fresh grouped model while preserving the already-wired factory.
+    pub(super) fn install_results_model(&self) {
+        let root_store = self.runtime.root_store.borrow().clone();
         // Use WeakRef to the panel so the callback sees live file groups
         // instead of any state captured at construction time.
         let panel_weak = self.obj().downgrade();
@@ -52,6 +52,11 @@ impl imp::LushtextSearchPanel {
 
         let selection = gtk4::SingleSelection::new(Some(tree_model));
         self.results_list.set_model(Some(&selection));
+    }
+
+    /// Set up the `GtkTreeListModel` and `ListView` factory for grouped results.
+    pub(super) fn setup_results_list(&self) {
+        self.install_results_model();
 
         let factory = gtk4::SignalListItemFactory::new();
         let setup_panel_weak = self.obj().downgrade();
@@ -335,6 +340,7 @@ impl imp::LushtextSearchPanel {
                     checkbox.set_visible(false);
                     accessibility::set_hidden(&checkbox, true);
                 }
+                expander.set_list_row(None::<&gtk4::TreeListRow>);
             }
         });
 

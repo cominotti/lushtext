@@ -337,7 +337,7 @@ fn test_open_activation_close_updates_recent_popover_automation_snapshot() {
 }
 
 #[test]
-fn test_open_activation_reports_failed_paths_without_stale_bookkeeping() {
+fn test_open_activation_retains_failed_paths_without_blocking_reopen() {
     ensure_gtk_init();
     let dir = tempfile::tempdir().expect("activation tempdir");
     let missing = dir.path().join("missing.txt");
@@ -348,13 +348,13 @@ fn test_open_activation_reports_failed_paths_without_stale_bookkeeping() {
     let missing_status = missing.display().to_string();
     wait_until(Duration::from_secs(3), || {
         window.imp().tab_view.n_pages() == 1
-            && active_editor(&window).file_path().is_none()
+            && active_editor(&window).file_path().as_deref() == Some(missing.as_path())
             && active_editor(&window).load_state() == EditorLoadState::Failed
             && status_text_contains(&window, &missing_status)
     });
     assert!(
-        !window.imp().open_paths.borrow().contains(&missing),
-        "a missing activation target should not poison duplicate-tab bookkeeping",
+        window.imp().open_paths.borrow().contains(&missing),
+        "a missing activation target should retain retryable duplicate-tab bookkeeping",
     );
 
     fixture::write_text(&missing, "created after failed activation\n");
@@ -368,12 +368,13 @@ fn test_open_activation_reports_failed_paths_without_stale_bookkeeping() {
     open_files(&app, &[unreadable.as_path()]);
     let unreadable_status = unreadable.display().to_string();
     wait_until(Duration::from_secs(3), || {
-        !window.imp().open_paths.borrow().contains(&unreadable_key)
+        active_editor(&window).load_state() == EditorLoadState::Failed
+            && active_editor(&window).file_path().as_deref() == Some(unreadable.as_path())
             && status_text_contains(&window, &unreadable_status)
     });
     assert!(
-        !window.imp().open_paths.borrow().contains(&unreadable_key),
-        "an unreadable activation target should not leave a canonical open-path key",
+        window.imp().open_paths.borrow().contains(&unreadable_key),
+        "an unreadable activation target should retain its canonical retry identity",
     );
 
     fixture::remove_dir_all(&unreadable);
@@ -516,7 +517,7 @@ fn test_open_activation_modified_failed_placeholder_remains_recoverable_without_
     wait_until(Duration::from_secs(3), || {
         failed_editor.load_state() == EditorLoadState::Failed
             && failed_editor.file_path().as_deref() == Some(missing.as_path())
-            && !window.imp().open_paths.borrow().contains(&missing)
+            && window.imp().open_paths.borrow().contains(&missing)
             && status_text_contains(&window, &missing_status)
     });
     drop(load_delay);
@@ -590,7 +591,7 @@ fn test_save_after_modified_failed_placeholder_restores_duplicate_bookkeeping() 
     wait_until(Duration::from_secs(3), || {
         failed_editor.load_state() == EditorLoadState::Failed
             && failed_editor.file_path().as_deref() == Some(missing.as_path())
-            && !window.imp().open_paths.borrow().contains(&missing)
+            && window.imp().open_paths.borrow().contains(&missing)
     });
     drop(load_delay);
 

@@ -93,6 +93,9 @@ Expected screen-reader behavior includes:
   preview-only mode, or a failure state temporarily prevents editing.
 - Search fields expose names, options, invalid/no-result states, match counts,
   and debounced result announcements without announcing every keystroke.
+- Markdown preview exposes explicit pending, limited, failed, cancelled, and
+  complete descriptions; budget limits and unsupported images resolve to a
+  readable fallback instead of an unlabeled partial preview.
 - Open popover, command palette, workspace search, file tree, notes, bookmarks,
   local history, preferences, and properties rows refresh accessible metadata
   when GTK recycles row widgets.

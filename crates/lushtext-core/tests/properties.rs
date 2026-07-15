@@ -13,6 +13,8 @@ mod draft_orphan_cleanup;
 mod durable_write_metadata;
 #[path = "properties/editor_formatting.rs"]
 mod editor_formatting;
+#[path = "properties/encoding_analysis.rs"]
+mod encoding_analysis;
 #[path = "properties/encoding_sidecar.rs"]
 mod encoding_sidecar;
 #[path = "properties/file_load.rs"]
