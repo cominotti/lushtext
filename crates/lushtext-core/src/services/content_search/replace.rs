@@ -6,14 +6,19 @@
 //! locking, atomic writes, rollback on cancellation, and undo backup handling
 //! without depending on any GTK types.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(any(test, feature = "test-utils"))]
+use std::sync::{Mutex, OnceLock};
 
-use crate::model::content_search::{ReplaceResult, Replacement};
+use crate::model::content_search::{
+    BoundedDiagnosticSample, MAX_REPLACE_PREVIEW_ROWS, ReplaceResult, Replacement,
+    UndoPayloadLedger,
+};
 use crate::services::{
     filesystem::{WriteLabel, metadata as fs_metadata, read as fs_read, write as fs_write},
     search_backup,
@@ -30,11 +35,83 @@ pub const MAX_REPLACE_FILE_BYTES: u64 = 10 * 1024 * 1024;
 /// megabytes keeps rollback useful without letting one operation consume the
 /// editor's broader buffer-memory budget.
 pub const MAX_REPLACE_UNDO_BYTES: u64 = 64 * 1024 * 1024;
-#[cfg(test)]
+/// Maximum complete in-memory undo owner, including paths and table capacity.
+pub const MAX_REPLACE_UNDO_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(any(test, feature = "test-utils"))]
 thread_local! {
     static TEST_MAX_REPLACE_UNDO_BYTES: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
     static TEST_REQUIRE_ACTIVE_JOURNAL_BEFORE_WRITE: Cell<bool> = const { Cell::new(false) };
 }
+
+#[cfg(any(test, feature = "test-utils"))]
+type UndoAfterMetadataHook = Box<dyn FnOnce(&Path) + Send + 'static>;
+#[cfg(any(test, feature = "test-utils"))]
+static UNDO_AFTER_METADATA_HOOK: OnceLock<Mutex<Option<UndoAfterMetadataHook>>> = OnceLock::new();
+
+#[cfg(any(test, feature = "test-utils"))]
+static FAIL_REPLACE_BEFORE_RENAME_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+/// Override the Replace All undo-payload ceiling on the current test thread.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn set_max_replace_undo_bytes_for_test(limit: Option<u64>) {
+    TEST_MAX_REPLACE_UNDO_BYTES.with(|slot| slot.set(limit));
+}
+
+/// Fail the next Replace All target write for `path` before its rename.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn fail_next_replace_before_rename_for_path_for_test(path: &Path) {
+    let slot = FAIL_REPLACE_BEFORE_RENAME_PATH.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path.to_path_buf());
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn take_replace_before_rename_failure_for_test(path: &Path) -> bool {
+    let slot = FAIL_REPLACE_BEFORE_RENAME_PATH.get_or_init(|| Mutex::new(None));
+    let mut pending = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pending.as_deref() == Some(path) {
+        pending.take();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(not(any(test, feature = "test-utils")))]
+fn take_replace_before_rename_failure_for_test(_path: &Path) -> bool {
+    false
+}
+
+/// Install a one-shot Undo race seam after metadata but before bounded ingestion.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn set_undo_after_metadata_hook_for_test(hook: impl FnOnce(&Path) + Send + 'static) {
+    let slot = UNDO_AFTER_METADATA_HOOK.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(hook));
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn run_undo_after_metadata_hook_for_test(path: &Path) {
+    let slot = UNDO_AFTER_METADATA_HOOK.get_or_init(|| Mutex::new(None));
+    let hook = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
+#[cfg(not(any(test, feature = "test-utils")))]
+fn run_undo_after_metadata_hook_for_test(_path: &Path) {}
 
 /// Per-file bytes needed to safely undo a Replace All.
 ///
@@ -61,7 +138,62 @@ impl ReplaceUndoEntry {
 }
 
 /// In-memory Replace All undo backup keyed by absolute file path.
-pub type ReplaceUndoBackup = HashMap<PathBuf, ReplaceUndoEntry>;
+pub type ReplaceUndoBackup = BTreeMap<PathBuf, ReplaceUndoEntry>;
+
+/// Return every heap byte retained by an in-memory Replace All undo owner.
+#[must_use]
+pub fn replace_undo_retained_byte_weight(backup: &ReplaceUndoBackup) -> u64 {
+    backup.iter().fold(0u64, |total, (path, entry)| {
+        total.saturating_add(replace_undo_entry_retained_byte_weight(path, entry))
+    })
+}
+
+fn replace_undo_entry_retained_byte_weight(path: &PathBuf, entry: &ReplaceUndoEntry) -> u64 {
+    // BTreeMap gives rollback and diagnostic sampling stable path order. Charge
+    // one conservative node/link allowance per entry in addition to its graph.
+    let node_bytes = std::mem::size_of::<(PathBuf, ReplaceUndoEntry)>()
+        .saturating_add(std::mem::size_of::<usize>().saturating_mul(4));
+    u64::try_from(node_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
+        .saturating_add(u64::try_from(entry.original_bytes.capacity()).unwrap_or(u64::MAX))
+        .saturating_add(u64::try_from(entry.replaced_bytes.capacity()).unwrap_or(u64::MAX))
+}
+
+/// Direct boundedness evidence collected while Replace All constructs output.
+///
+/// Totals cover every file whose text construction ran. Metadata and undo
+/// fields are high-water marks because those are the ownership bounds that
+/// matter while one operation is live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplaceConstructionMetrics {
+    /// Source lines visited by the monotonic line-boundary cursor.
+    pub source_lines: u64,
+    /// Replacement records accepted into successfully constructed output.
+    pub accepted_replacements: usize,
+    /// Largest number of retained edit records for any one file.
+    pub retained_edit_records: usize,
+    /// Largest retained edit-vector allocation, in bytes, for any one file.
+    pub retained_edit_bytes: usize,
+    /// Total output bytes successfully constructed during this operation.
+    pub output_bytes: u64,
+    /// Largest aggregate before-and-after undo payload admitted at one time.
+    pub undo_bytes: u64,
+    /// Reversible undo bytes still live at terminal publication.
+    pub undo_live_bytes: u64,
+}
+
+impl ReplaceConstructionMetrics {
+    fn absorb_construction(&mut self, other: Self) {
+        self.source_lines = self.source_lines.saturating_add(other.source_lines);
+        self.accepted_replacements = self
+            .accepted_replacements
+            .saturating_add(other.accepted_replacements);
+        self.retained_edit_records = self.retained_edit_records.max(other.retained_edit_records);
+        self.retained_edit_bytes = self.retained_edit_bytes.max(other.retained_edit_bytes);
+        self.output_bytes = self.output_bytes.saturating_add(other.output_bytes);
+    }
+}
 
 /// GTK-free freshness token for one serialized Replace All journal transaction.
 #[derive(Clone)]
@@ -96,6 +228,8 @@ pub struct ApplyReplacementsOutcome {
     pub result: ReplaceResult,
     /// Per-file before/after bytes retained for the active undo window.
     pub undo_backup: ReplaceUndoBackup,
+    /// Direct construction and undo ownership evidence for this operation.
+    pub metrics: ReplaceConstructionMetrics,
 }
 
 impl ApplyReplacementsOutcome {
@@ -103,6 +237,12 @@ impl ApplyReplacementsOutcome {
     #[must_use]
     pub fn into_parts(self) -> (ReplaceResult, ReplaceUndoBackup) {
         (self.result, self.undo_backup)
+    }
+
+    /// Return direct boundedness evidence without consuming the result.
+    #[must_use]
+    pub fn metrics(&self) -> ReplaceConstructionMetrics {
+        self.metrics
     }
 }
 
@@ -113,13 +253,18 @@ impl ApplyReplacementsOutcome {
 /// partial success.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UndoReplaceOutcome {
-    /// Paths restored to their pre-replace bytes.
-    pub restored_paths: Vec<PathBuf>,
-    /// Paths left untouched because the current bytes no longer matched the
-    /// Replace All output snapshot.
-    pub skipped_paths: Vec<PathBuf>,
-    /// Paths that could not be read, locked, or written.
-    pub failed_paths: Vec<PathBuf>,
+    /// Exact number of paths restored to their pre-replace bytes.
+    pub restored_count: usize,
+    /// Exact number of paths left untouched because current bytes diverged.
+    pub skipped_count: usize,
+    /// Exact number of paths that could not be read, locked, or written.
+    pub failed_count: usize,
+    /// Restored paths intersected with the caller's open canonical identities.
+    pub restored_open_paths: Vec<PathBuf>,
+    /// Bounded deterministic skipped-path evidence.
+    pub skipped_sample: BoundedDiagnosticSample,
+    /// Bounded deterministic failure-path evidence.
+    pub failed_sample: BoundedDiagnosticSample,
     /// Retryable backup entries for skipped or failed paths.
     pub remaining_backup: ReplaceUndoBackup,
 }
@@ -128,7 +273,7 @@ impl UndoReplaceOutcome {
     /// Number of files restored by this undo attempt.
     #[must_use]
     pub fn restored_count(&self) -> usize {
-        self.restored_paths.len()
+        self.restored_count
     }
 
     /// Number of files still retained for a future undo attempt.
@@ -140,16 +285,16 @@ impl UndoReplaceOutcome {
 
 /// Apply replacements to files on disk.
 ///
-/// Groups replacements by file, reads each file, applies replacements in reverse order
-/// (to avoid offset shifting), and writes atomically (temp file + rename). Returns the
-/// replacement summary and a backup mapping file paths to their before/after content
-/// snapshots for undo.
+/// Groups replacements by file, streams sorted source ranges into changed output,
+/// and writes atomically (temp file + rename). Returns the replacement summary
+/// and a backup mapping file paths to their before/after content snapshots for undo.
 ///
 /// Per-file errors are collected (not early-returned) so that already-replaced files
 /// remain in the backup for undo. Only returns `Err` if zero files could be processed.
 ///
 /// `skip_paths` lists files that should NOT be replaced (e.g., open tabs with unsaved changes).
-/// Skipped files are excluded from the result count but included in `ReplaceResult::skipped_paths`.
+/// Skipped files are excluded from the result count but included in the exact
+/// count and bounded `ReplaceResult::skipped_sample` diagnostic projection.
 ///
 /// # Errors
 ///
@@ -161,15 +306,24 @@ pub fn apply_replacements(
     cancel: &AtomicBool,
     journal_data_dir: Option<&Path>,
 ) -> anyhow::Result<ApplyReplacementsOutcome> {
-    apply_replacements_inner(replacements, skip_paths, cancel, journal_data_dir, None).and_then(
-        |outcome| outcome.ok_or_else(|| anyhow::anyhow!("unguarded Replace All became stale")),
+    apply_replacements_inner(
+        replacements,
+        skip_paths,
+        &HashSet::new(),
+        cancel,
+        journal_data_dir,
+        None,
     )
+    .and_then(|outcome| {
+        outcome.ok_or_else(|| anyhow::anyhow!("unguarded Replace All became stale"))
+    })
 }
 
 /// Apply only if the UI reservation is still current after acquiring the journal lock.
 pub(crate) fn apply_replacements_if_current(
     replacements: &[Replacement],
     skip_paths: &HashSet<PathBuf>,
+    open_canonical_identities: &HashSet<PathBuf>,
     cancel: &AtomicBool,
     journal_data_dir: &Path,
     freshness: &ReplaceJournalFreshness,
@@ -177,6 +331,7 @@ pub(crate) fn apply_replacements_if_current(
     apply_replacements_inner(
         replacements,
         skip_paths,
+        open_canonical_identities,
         cancel,
         Some(journal_data_dir),
         Some(freshness),
@@ -186,10 +341,16 @@ pub(crate) fn apply_replacements_if_current(
 fn apply_replacements_inner(
     replacements: &[Replacement],
     skip_paths: &HashSet<PathBuf>,
+    open_canonical_identities: &HashSet<PathBuf>,
     cancel: &AtomicBool,
     journal_data_dir: Option<&Path>,
     freshness: Option<&ReplaceJournalFreshness>,
 ) -> anyhow::Result<Option<ApplyReplacementsOutcome>> {
+    if replacements.len() > MAX_REPLACE_PREVIEW_ROWS {
+        anyhow::bail!(
+            "Replace All selection exceeds the {MAX_REPLACE_PREVIEW_ROWS}-replacement limit"
+        );
+    }
     let _journal_guard = journal_data_dir
         .map(|_| search_backup::acquire_journal_guard())
         .transpose()?;
@@ -204,14 +365,16 @@ fn apply_replacements_inner(
         by_file.entry(r.path.clone()).or_default().push(r);
     }
 
-    let mut backup: ReplaceUndoBackup = HashMap::new();
+    let mut backup = ReplaceUndoBackup::new();
     let mut replaced_count = 0usize;
     let mut files_affected = 0usize;
-    let mut skipped_paths = Vec::new();
-    let mut errors: Vec<String> = Vec::new();
-    let mut applied_paths: Vec<PathBuf> = Vec::new();
+    let mut skipped_sample = BoundedDiagnosticSample::default();
+    let mut errors = BoundedDiagnosticSample::default();
+    let mut affected_open_paths = Vec::new();
     let mut cancelled = false;
-    let mut undo_payload_bytes = 0u64;
+    let mut undo_ledger = UndoPayloadLedger::new(effective_max_replace_undo_bytes());
+    let mut retained_undo_ledger = UndoPayloadLedger::new(MAX_REPLACE_UNDO_RETAINED_BYTES);
+    let mut metrics = ReplaceConstructionMetrics::default();
     let mut journal_prepared = false;
     let mut journal_armed = false;
 
@@ -222,7 +385,7 @@ fn apply_replacements_inner(
         }
 
         if skip_paths.contains(&path) {
-            skipped_paths.push(path);
+            skipped_sample.record_path(&path);
             continue;
         }
 
@@ -246,7 +409,7 @@ fn apply_replacements_inner(
             }
         };
         if facts.byte_size > MAX_REPLACE_FILE_BYTES {
-            skipped_paths.push(path.clone());
+            skipped_sample.record_path(&path);
             errors.push(format!(
                 "Skipped {}: file is larger than the 10 MB Replace All limit",
                 path.display()
@@ -254,13 +417,28 @@ fn apply_replacements_inner(
             continue;
         }
 
-        let original_bytes = match fs_read::bytes(&path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                errors.push(format!("Failed to read {}: {e}", path.display()));
-                continue;
-            }
-        };
+        let original_bytes =
+            match fs_read::bounded_bytes(&path, MAX_REPLACE_FILE_BYTES, facts.byte_size, || {
+                cancel.load(Ordering::Relaxed)
+            }) {
+                Ok(bytes) => bytes,
+                Err(fs_read::BoundedFileReadError::Cancelled) => {
+                    cancelled = true;
+                    break;
+                }
+                Err(fs_read::BoundedFileReadError::LimitExceeded { .. }) => {
+                    skipped_sample.record_path(&path);
+                    errors.push(format!(
+                        "Skipped {}: file is larger than the 10 MB Replace All limit",
+                        path.display()
+                    ));
+                    continue;
+                }
+                Err(fs_read::BoundedFileReadError::Io(e)) => {
+                    errors.push(format!("Failed to read {}: {e}", path.display()));
+                    continue;
+                }
+            };
 
         let original_text = match simdutf8::basic::from_utf8(&original_bytes) {
             Ok(text) => text,
@@ -270,8 +448,19 @@ fn apply_replacements_inner(
             }
         };
 
-        let text_outcome = build_replaced_text(original_text, &mut file_replacements);
-        let (new_content, file_replaced) = match text_outcome {
+        let remaining_undo_bytes = undo_ledger
+            .remaining_bytes()
+            .saturating_sub(u64::try_from(original_bytes.len()).unwrap_or(u64::MAX));
+        let undo_output_limit = usize::try_from(remaining_undo_bytes).unwrap_or(usize::MAX);
+        let file_output_limit = usize::try_from(MAX_REPLACE_FILE_BYTES).unwrap_or(usize::MAX);
+        let output_limit = undo_output_limit.min(file_output_limit);
+        let output_limited_by_file_size = file_output_limit <= undo_output_limit;
+        let text_build =
+            build_replaced_text(original_text, &mut file_replacements, output_limit, || {
+                cancel.load(Ordering::Relaxed)
+            });
+        metrics.absorb_construction(text_build.metrics);
+        let (new_content, file_replaced) = match text_build.outcome {
             ReplacementTextOutcome::Replaced {
                 new_content,
                 replacement_count,
@@ -284,16 +473,40 @@ fn apply_replacements_inner(
                 ));
                 continue;
             }
+            ReplacementTextOutcome::InvalidPreview { reason } => {
+                errors.push(format!(
+                    "Skipped {}: invalid replacement preview ({reason})",
+                    path.display(),
+                ));
+                continue;
+            }
+            ReplacementTextOutcome::OutputLimitExceeded => {
+                skipped_sample.record_path(&path);
+                if output_limited_by_file_size {
+                    errors.push(format!(
+                        "Skipped {}: replacement output would exceed the 10 MB per-file limit",
+                        path.display()
+                    ));
+                } else {
+                    errors.push(format!(
+                        "Skipped {}: undo data would exceed the 64 MB Replace All limit",
+                        path.display()
+                    ));
+                }
+                continue;
+            }
+            ReplacementTextOutcome::Cancelled => {
+                cancelled = true;
+                break;
+            }
             ReplacementTextOutcome::Unchanged => continue,
         };
         let replaced_bytes = new_content.into_bytes();
         let entry_payload_bytes = u64::try_from(original_bytes.len())
             .unwrap_or(u64::MAX)
             .saturating_add(u64::try_from(replaced_bytes.len()).unwrap_or(u64::MAX));
-        if undo_payload_bytes.saturating_add(entry_payload_bytes)
-            > effective_max_replace_undo_bytes()
-        {
-            skipped_paths.push(path.clone());
+        if !undo_ledger.try_charge(entry_payload_bytes) {
+            skipped_sample.record_path(&path);
             errors.push(format!(
                 "Skipped {}: undo data would exceed the 64 MB Replace All limit",
                 path.display()
@@ -302,6 +515,18 @@ fn apply_replacements_inner(
         }
 
         let entry = ReplaceUndoEntry::new(original_bytes, replaced_bytes);
+        let backup_path = path.clone();
+        let retained_entry_bytes = replace_undo_entry_retained_byte_weight(&backup_path, &entry);
+        if !retained_undo_ledger.try_charge(retained_entry_bytes) {
+            let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+            debug_assert_eq!(reclaimed, entry_payload_bytes);
+            skipped_sample.record_path(&path);
+            errors.push(format!(
+                "Skipped {}: complete undo state would exceed the 64 MB Replace All limit",
+                path.display()
+            ));
+            continue;
+        }
         if let Some(data_dir) = journal_data_dir {
             if !journal_prepared {
                 if let Err(e) = search_backup::begin_incremental_journal(data_dir) {
@@ -309,6 +534,10 @@ fn apply_replacements_inner(
                         "Failed to prepare undo journal before replacing {}: {e}",
                         path.display()
                     ));
+                    let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+                    debug_assert_eq!(reclaimed, entry_payload_bytes);
+                    let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
+                    debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
                     continue;
                 }
                 journal_prepared = true;
@@ -318,6 +547,16 @@ fn apply_replacements_inner(
                     "Failed to persist undo journal before replacing {}: {e}",
                     path.display()
                 ));
+                let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+                debug_assert_eq!(reclaimed, entry_payload_bytes);
+                let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
+                debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
+                if let Err(cleanup_error) = search_backup::delete_entry(data_dir, &path) {
+                    errors.push(format!(
+                        "Failed to remove incomplete undo entry for {}: {cleanup_error}",
+                        path.display()
+                    ));
+                }
                 continue;
             }
             if !journal_armed {
@@ -332,19 +571,26 @@ fn apply_replacements_inner(
                             path.display()
                         ));
                     }
+                    let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+                    debug_assert_eq!(reclaimed, entry_payload_bytes);
+                    let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
+                    debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
                     continue;
                 }
                 journal_armed = true;
             }
         }
-        undo_payload_bytes = undo_payload_bytes.saturating_add(entry_payload_bytes);
-        backup.insert(path.clone(), entry);
+        backup.insert(backup_path, entry);
+        metrics.undo_bytes = undo_ledger.high_water_bytes();
 
         assert_active_journal_before_write_for_test(journal_data_dir, &path);
 
         match atomic_write(&path, &backup[&path].replaced_bytes) {
             Ok(()) => {
-                applied_paths.push(path.clone());
+                let identity = facts.canonical_path.as_deref().unwrap_or(&path);
+                if open_canonical_identities.contains(identity) {
+                    affected_open_paths.push(path.clone());
+                }
                 record_replacement_success_counts(
                     &mut replaced_count,
                     &mut files_affected,
@@ -354,6 +600,10 @@ fn apply_replacements_inner(
             Err(ReplaceWriteError::BeforeRename(e)) => {
                 errors.push(format!("Failed to write {}: {e}", path.display()));
                 backup.remove(&path);
+                let reclaimed = undo_ledger.reclaim(entry_payload_bytes);
+                debug_assert_eq!(reclaimed, entry_payload_bytes);
+                let retained_reclaimed = retained_undo_ledger.reclaim(retained_entry_bytes);
+                debug_assert_eq!(retained_reclaimed, retained_entry_bytes);
                 if let Some(data_dir) = journal_data_dir
                     && let Err(journal_error) = search_backup::delete_entry(data_dir, &path)
                 {
@@ -369,7 +619,10 @@ fn apply_replacements_inner(
                     "Replaced {}, but durability sync failed: {e}",
                     path.display()
                 ));
-                applied_paths.push(path.clone());
+                let identity = facts.canonical_path.as_deref().unwrap_or(&path);
+                if open_canonical_identities.contains(identity) {
+                    affected_open_paths.push(path.clone());
+                }
                 record_replacement_success_counts(
                     &mut replaced_count,
                     &mut files_affected,
@@ -380,8 +633,8 @@ fn apply_replacements_inner(
     }
 
     if cancelled {
-        let rollback_errors = rollback_applied_files(&backup, &applied_paths);
-        if rollback_errors.is_empty() {
+        let rollback_errors = rollback_applied_files(&backup);
+        if rollback_errors.total_count() == 0 {
             if let Some(data_dir) = journal_data_dir
                 && let Err(e) = persist_undo_backup(data_dir, &ReplaceUndoBackup::new())
             {
@@ -392,8 +645,7 @@ fn apply_replacements_inner(
             return Err(anyhow::anyhow!("Replace cancelled"));
         }
         return Err(anyhow::anyhow!(
-            "Replace cancelled; rollback failed: {}",
-            rollback_errors.join("; ")
+            rollback_errors.summary("Replace cancelled; rollback failed")
         ));
     }
 
@@ -405,19 +657,30 @@ fn apply_replacements_inner(
         errors.push(format!("Failed to clean empty undo journal: {e}"));
     }
 
-    if files_affected == 0 && skipped_paths.is_empty() && !errors.is_empty() {
-        return Err(anyhow::anyhow!("{}", errors.join("; ")));
+    if files_affected == 0 && skipped_sample.total_count() == 0 && errors.total_count() > 0 {
+        return Err(anyhow::anyhow!(errors.summary("Replace All failed")));
     }
+
+    debug_assert_eq!(
+        retained_undo_ledger.live_bytes(),
+        replace_undo_retained_byte_weight(&backup)
+    );
+    debug_assert!(retained_undo_ledger.live_bytes() <= MAX_REPLACE_UNDO_RETAINED_BYTES);
+    metrics.undo_live_bytes = undo_ledger.live_bytes();
 
     let result = ReplaceResult {
         replaced_count,
         files_affected,
-        skipped_paths,
-        errors,
+        skipped_count: skipped_sample.total_count(),
+        error_count: errors.total_count(),
+        skipped_sample,
+        error_sample: errors,
+        affected_open_paths,
     };
     Ok(Some(ApplyReplacementsOutcome {
         result,
         undo_backup: backup,
+        metrics,
     }))
 }
 
@@ -439,7 +702,7 @@ fn assert_active_journal_before_write_for_test(journal_data_dir: Option<&Path>, 
 }
 
 fn effective_max_replace_undo_bytes() -> u64 {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     {
         if let Some(override_value) = TEST_MAX_REPLACE_UNDO_BYTES.with(Cell::get) {
             return override_value;
@@ -475,77 +738,278 @@ enum ReplacementTextOutcome {
         /// Original 1-based line number reported by the stale search result.
         line_number: u64,
     },
+    /// Preview metadata violated an invariant guaranteed by preview generation.
+    InvalidPreview {
+        /// Content-free invariant description suitable for diagnostics.
+        reason: &'static str,
+    },
+    /// Constructed output would exceed the remaining durable undo allowance.
+    OutputLimitExceeded,
+    /// The owning Replace All operation was cancelled during construction.
+    Cancelled,
+}
+
+#[derive(Debug)]
+struct ReplacementTextBuild {
+    outcome: ReplacementTextOutcome,
+    metrics: ReplaceConstructionMetrics,
+}
+
+#[derive(Debug)]
+struct PendingEdit<'a> {
+    start: usize,
+    end: usize,
+    replacement: &'a str,
+}
+
+/// Monotonic source-line cursor that never retains a whole-file line index.
+struct StreamingLineCursor<'a> {
+    bytes: &'a [u8],
+    next_line_start: usize,
+    next_line_number: u64,
+    current_line_number: Option<u64>,
+    current_span: Option<std::ops::Range<usize>>,
+    source_lines: u64,
+}
+
+impl<'a> StreamingLineCursor<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            bytes: text.as_bytes(),
+            next_line_start: 0,
+            next_line_number: 1,
+            current_line_number: None,
+            current_span: None,
+            source_lines: 0,
+        }
+    }
+
+    fn advance_to(
+        &mut self,
+        target_line: u64,
+        is_cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<Option<std::ops::Range<usize>>, ()> {
+        if self.current_line_number == Some(target_line) {
+            return Ok(self.current_span.clone());
+        }
+        if self
+            .current_line_number
+            .is_some_and(|line| target_line < line)
+        {
+            return Ok(None);
+        }
+
+        while self.next_line_start < self.bytes.len() {
+            if self.source_lines.is_multiple_of(1_024) && is_cancelled() {
+                return Err(());
+            }
+            let line_start = self.next_line_start;
+            let newline = memchr::memchr(b'\n', &self.bytes[line_start..])
+                .map(|relative| line_start + relative);
+            let line_end = match newline {
+                Some(index) if index > line_start && self.bytes[index - 1] == b'\r' => index - 1,
+                Some(index) => index,
+                None => self.bytes.len(),
+            };
+            self.next_line_start = newline.map_or(self.bytes.len(), |index| index + 1);
+            let line_number = self.next_line_number;
+            self.next_line_number = self.next_line_number.saturating_add(1);
+            self.current_line_number = Some(line_number);
+            self.current_span = Some(line_start..line_end);
+            self.source_lines = self.source_lines.saturating_add(1);
+
+            if line_number == target_line {
+                return Ok(self.current_span.clone());
+            }
+            if line_number > target_line {
+                return Ok(None);
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 /// Apply one file's replacement previews to already-loaded text.
 ///
-/// The helper owns the deterministic range clipping and reverse-order policy
+/// The helper owns deterministic range clipping and source-order construction
 /// used by the I/O command above, making that behavior property-testable
 /// without opening files or touching undo journals.
 fn build_replaced_text(
     original_text: &str,
     file_replacements: &mut [&Replacement],
-) -> ReplacementTextOutcome {
+    max_output_bytes: usize,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> ReplacementTextBuild {
+    let mut metrics = ReplaceConstructionMetrics::default();
+    let file_byte_limit = usize::try_from(MAX_REPLACE_FILE_BYTES).unwrap_or(usize::MAX);
+    if original_text.len() > file_byte_limit {
+        return ReplacementTextBuild {
+            outcome: ReplacementTextOutcome::InvalidPreview {
+                reason: "source bytes exceed the per-file limit",
+            },
+            metrics,
+        };
+    }
+    if file_replacements.len() > MAX_REPLACE_PREVIEW_ROWS {
+        return ReplacementTextBuild {
+            outcome: ReplacementTextOutcome::InvalidPreview {
+                reason: "replacement count exceeds the preview limit",
+            },
+            metrics,
+        };
+    }
+    if file_replacements.is_empty() {
+        return ReplacementTextBuild {
+            outcome: ReplacementTextOutcome::Unchanged,
+            metrics,
+        };
+    }
+
     file_replacements.sort_by(|a, b| {
         a.line_number
             .cmp(&b.line_number)
             .then(a.match_range.start.cmp(&b.match_range.start))
+            .then(a.match_range.end.cmp(&b.match_range.end))
     });
 
-    let line_spans = line_spans(original_text);
+    // Preview generation guarantees positive line numbers plus ordered,
+    // non-overlapping clipped ranges. Recheck those invariants before line
+    // discovery or output allocation because this command is a data-mutation
+    // boundary and may also be called by non-UI clients.
+    let mut previous_line = None;
+    let mut previous_end = 0usize;
+    for (index, replacement) in file_replacements.iter().enumerate() {
+        if index.is_multiple_of(1_024) && is_cancelled() {
+            return ReplacementTextBuild {
+                outcome: ReplacementTextOutcome::Cancelled,
+                metrics,
+            };
+        }
+        if replacement.line_number == 0 {
+            return ReplacementTextBuild {
+                outcome: ReplacementTextOutcome::InvalidPreview {
+                    reason: "line numbers must be one-based",
+                },
+                metrics,
+            };
+        }
+        if replacement.match_range.start > replacement.match_range.end {
+            return ReplacementTextBuild {
+                outcome: ReplacementTextOutcome::InvalidPreview {
+                    reason: "replacement range endpoints are reversed",
+                },
+                metrics,
+            };
+        }
+        let snapshot = replacement.original_line.as_ref();
+        let start = snapshot.floor_char_boundary(replacement.match_range.start.min(snapshot.len()));
+        let end = snapshot.ceil_char_boundary(replacement.match_range.end.min(snapshot.len()));
+        if previous_line == Some(replacement.line_number) && start < previous_end {
+            return ReplacementTextBuild {
+                outcome: ReplacementTextOutcome::InvalidPreview {
+                    reason: "replacement ranges overlap",
+                },
+                metrics,
+            };
+        }
+        previous_line = Some(replacement.line_number);
+        previous_end = end;
+    }
+
     let mut edits = Vec::with_capacity(file_replacements.len());
+    metrics.retained_edit_records = edits.capacity();
+    metrics.retained_edit_bytes = edits
+        .capacity()
+        .saturating_mul(std::mem::size_of::<PendingEdit<'static>>());
+    let mut line_cursor = StreamingLineCursor::new(original_text);
 
     // Validate against the original line snapshot before mutating anything so
     // stale search results skip the whole file instead of partially applying.
     for replacement in file_replacements.iter() {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Search result line numbers stay within usize indexing limits on supported editor workloads"
-        )]
-        let line_idx = replacement.line_number.saturating_sub(1) as usize;
-        let Some(line_span) = line_spans.get(line_idx).cloned() else {
-            return ReplacementTextOutcome::StaleLine {
-                line_number: replacement.line_number,
-            };
+        let line_span = match line_cursor.advance_to(replacement.line_number, &mut is_cancelled) {
+            Ok(Some(span)) => span,
+            Ok(None) => {
+                metrics.source_lines = line_cursor.source_lines;
+                return ReplacementTextBuild {
+                    outcome: ReplacementTextOutcome::StaleLine {
+                        line_number: replacement.line_number,
+                    },
+                    metrics,
+                };
+            }
+            Err(()) => {
+                metrics.source_lines = line_cursor.source_lines;
+                return ReplacementTextBuild {
+                    outcome: ReplacementTextOutcome::Cancelled,
+                    metrics,
+                };
+            }
         };
         let line = &original_text[line_span.clone()];
         if line != replacement.original_line.as_ref() {
-            return ReplacementTextOutcome::StaleLine {
-                line_number: replacement.line_number,
+            metrics.source_lines = line_cursor.source_lines;
+            return ReplacementTextBuild {
+                outcome: ReplacementTextOutcome::StaleLine {
+                    line_number: replacement.line_number,
+                },
+                metrics,
             };
         }
         let start = line.floor_char_boundary(replacement.match_range.start.min(line.len()));
         let end = line.ceil_char_boundary(replacement.match_range.end.min(line.len()));
-        if start <= end {
-            edits.push((
-                line_span.start + start,
-                line_span.start + end,
-                replacement.replacement.as_ref(),
-            ));
-        }
+        edits.push(PendingEdit {
+            start: line_span.start + start,
+            end: line_span.start + end,
+            replacement: replacement.replacement.as_ref(),
+        });
     }
+    metrics.source_lines = line_cursor.source_lines;
 
     if edits.is_empty() {
-        return ReplacementTextOutcome::Unchanged;
+        return ReplacementTextBuild {
+            outcome: ReplacementTextOutcome::Unchanged,
+            metrics,
+        };
     }
 
-    let mut new_content = String::with_capacity(replaced_capacity(original_text.len(), &edits));
+    let output_len = replaced_capacity(original_text.len(), &edits);
+    if output_len > max_output_bytes {
+        return ReplacementTextBuild {
+            outcome: ReplacementTextOutcome::OutputLimitExceeded,
+            metrics,
+        };
+    }
+
+    let mut new_content = String::with_capacity(output_len);
     let mut cursor = 0usize;
-    for (start, end, replacement) in &edits {
-        new_content.push_str(&original_text[cursor..*start]);
-        new_content.push_str(replacement);
-        cursor = *end;
+    for (index, edit) in edits.iter().enumerate() {
+        if index.is_multiple_of(1_024) && is_cancelled() {
+            return ReplacementTextBuild {
+                outcome: ReplacementTextOutcome::Cancelled,
+                metrics,
+            };
+        }
+        new_content.push_str(&original_text[cursor..edit.start]);
+        new_content.push_str(edit.replacement);
+        cursor = edit.end;
     }
     new_content.push_str(&original_text[cursor..]);
+    metrics.accepted_replacements = edits.len();
+    metrics.output_bytes = u64::try_from(new_content.len()).unwrap_or(u64::MAX);
 
-    ReplacementTextOutcome::Replaced {
-        new_content,
-        replacement_count: edits.len(),
+    ReplacementTextBuild {
+        outcome: ReplacementTextOutcome::Replaced {
+            new_content,
+            replacement_count: edits.len(),
+        },
+        metrics,
     }
 }
 
-/// Return byte ranges for each line without allocating owned line strings.
-fn line_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+/// Reference-only whole-file line index retained for equivalence tests.
+#[cfg(any(test, feature = "property-tests"))]
+fn line_spans_reference(text: &str) -> Vec<std::ops::Range<usize>> {
     let bytes = text.as_bytes();
     let mut spans = Vec::new();
     let mut line_start = 0usize;
@@ -567,12 +1031,12 @@ fn line_spans(text: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 /// Estimate final output capacity from the exact replacement ranges.
-fn replaced_capacity(original_len: usize, edits: &[(usize, usize, &str)]) -> usize {
+fn replaced_capacity(original_len: usize, edits: &[PendingEdit<'_>]) -> usize {
     let mut capacity = original_len;
-    for (start, end, replacement) in edits {
+    for edit in edits {
         capacity = capacity
-            .saturating_sub(end.saturating_sub(*start))
-            .saturating_add(replacement.len());
+            .saturating_sub(edit.end.saturating_sub(edit.start))
+            .saturating_add(edit.replacement.len());
     }
     capacity
 }
@@ -588,12 +1052,106 @@ pub fn apply_replacements_to_text_for_property_test(
     replacements: &[Replacement],
 ) -> Option<(String, usize)> {
     let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
-    match build_replaced_text(original_text, &mut file_replacements) {
+    match build_replaced_text(original_text, &mut file_replacements, usize::MAX, || false).outcome {
         ReplacementTextOutcome::Replaced {
             new_content,
             replacement_count,
         } => Some((new_content, replacement_count)),
-        ReplacementTextOutcome::Unchanged | ReplacementTextOutcome::StaleLine { .. } => None,
+        ReplacementTextOutcome::Unchanged
+        | ReplacementTextOutcome::StaleLine { .. }
+        | ReplacementTextOutcome::InvalidPreview { .. }
+        | ReplacementTextOutcome::OutputLimitExceeded
+        | ReplacementTextOutcome::Cancelled => None,
+    }
+}
+
+/// Apply preview data through the former whole-file line-index algorithm.
+///
+/// This reference is intentionally feature-only: production must never retain
+/// metadata for every source line, while property tests need an independent
+/// implementation for visible-result equivalence.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn apply_replacements_to_text_reference_for_property_test(
+    original_text: &str,
+    replacements: &[Replacement],
+) -> Option<(String, usize)> {
+    let mut file_replacements: Vec<&Replacement> = replacements.iter().collect();
+    match build_replaced_text_reference(original_text, &mut file_replacements) {
+        ReplacementTextOutcome::Replaced {
+            new_content,
+            replacement_count,
+        } => Some((new_content, replacement_count)),
+        ReplacementTextOutcome::Unchanged
+        | ReplacementTextOutcome::StaleLine { .. }
+        | ReplacementTextOutcome::InvalidPreview { .. }
+        | ReplacementTextOutcome::OutputLimitExceeded
+        | ReplacementTextOutcome::Cancelled => None,
+    }
+}
+
+#[cfg(any(test, feature = "property-tests"))]
+fn build_replaced_text_reference(
+    original_text: &str,
+    file_replacements: &mut [&Replacement],
+) -> ReplacementTextOutcome {
+    file_replacements.sort_by(|a, b| {
+        a.line_number
+            .cmp(&b.line_number)
+            .then(a.match_range.start.cmp(&b.match_range.start))
+            .then(a.match_range.end.cmp(&b.match_range.end))
+    });
+
+    let line_spans = line_spans_reference(original_text);
+    let mut edits = Vec::with_capacity(file_replacements.len());
+    for replacement in file_replacements.iter() {
+        let Some(line_index) = replacement.line_number.checked_sub(1) else {
+            return ReplacementTextOutcome::InvalidPreview {
+                reason: "line numbers must be one-based",
+            };
+        };
+        let Ok(line_index) = usize::try_from(line_index) else {
+            return ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            };
+        };
+        let Some(line_span) = line_spans.get(line_index).cloned() else {
+            return ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            };
+        };
+        let line = &original_text[line_span.clone()];
+        if line != replacement.original_line.as_ref() {
+            return ReplacementTextOutcome::StaleLine {
+                line_number: replacement.line_number,
+            };
+        }
+        let start = line.floor_char_boundary(replacement.match_range.start.min(line.len()));
+        let end = line.ceil_char_boundary(replacement.match_range.end.min(line.len()));
+        if start <= end {
+            edits.push(PendingEdit {
+                start: line_span.start + start,
+                end: line_span.start + end,
+                replacement: replacement.replacement.as_ref(),
+            });
+        }
+    }
+
+    if edits.is_empty() {
+        return ReplacementTextOutcome::Unchanged;
+    }
+
+    let mut new_content = String::with_capacity(replaced_capacity(original_text.len(), &edits));
+    let mut cursor = 0usize;
+    for edit in &edits {
+        new_content.push_str(&original_text[cursor..edit.start]);
+        new_content.push_str(edit.replacement);
+        cursor = edit.end;
+    }
+    new_content.push_str(&original_text[cursor..]);
+    ReplacementTextOutcome::Replaced {
+        new_content,
+        replacement_count: edits.len(),
     }
 }
 
@@ -604,67 +1162,121 @@ pub fn apply_replacements_to_text_for_property_test(
 /// stay in `remaining_backup` so the UI can keep undo available for retry.
 #[must_use]
 pub fn undo_replacements(backup: &ReplaceUndoBackup) -> UndoReplaceOutcome {
-    let mut restored_paths = Vec::new();
-    let mut skipped_paths = Vec::new();
-    let mut failed_paths = Vec::new();
+    undo_replacements_for_open_identities(backup, &HashSet::new())
+}
+
+/// Restore a backup and return only restored paths that intersect open tabs.
+#[must_use]
+pub fn undo_replacements_for_open_identities(
+    backup: &ReplaceUndoBackup,
+    open_canonical_identities: &HashSet<PathBuf>,
+) -> UndoReplaceOutcome {
+    let mut restored_count = 0usize;
+    let mut skipped_paths = BoundedDiagnosticSample::default();
+    let mut failed_paths = BoundedDiagnosticSample::default();
+    let mut restored_open_paths = Vec::new();
     let mut remaining_backup = ReplaceUndoBackup::new();
 
     for (path, entry) in backup {
         let Ok(_lock) = fs_write::TargetWriteGuard::acquire(path) else {
-            failed_paths.push(path.clone());
+            failed_paths.record_path(path);
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         };
 
         let Ok(current_facts) = fs_metadata::file_facts(path) else {
-            failed_paths.push(path.clone());
+            failed_paths.record_path(path);
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         };
         let original_len = u64::try_from(entry.original_bytes.len()).unwrap_or(u64::MAX);
         let replaced_len = u64::try_from(entry.replaced_bytes.len()).unwrap_or(u64::MAX);
         if current_facts.byte_size != original_len && current_facts.byte_size != replaced_len {
-            skipped_paths.push(path.clone());
+            skipped_paths.record_path(path);
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         }
         if current_facts.byte_size > MAX_REPLACE_FILE_BYTES {
-            skipped_paths.push(path.clone());
+            skipped_paths.record_path(path);
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         }
 
-        let Ok(current_bytes) = fs_read::bytes(path) else {
-            failed_paths.push(path.clone());
-            remaining_backup.insert(path.clone(), entry.clone());
-            continue;
+        run_undo_after_metadata_hook_for_test(path);
+        let current_bytes = match fs_read::bounded_bytes(
+            path,
+            MAX_REPLACE_FILE_BYTES,
+            current_facts.byte_size,
+            || false,
+        ) {
+            Ok(bytes) => bytes,
+            Err(fs_read::BoundedFileReadError::LimitExceeded { .. }) => {
+                skipped_paths.record_path(path);
+                remaining_backup.insert(path.clone(), entry.clone());
+                continue;
+            }
+            Err(fs_read::BoundedFileReadError::Cancelled) => {
+                unreachable!("Undo uses a non-cancelling bounded reader")
+            }
+            Err(fs_read::BoundedFileReadError::Io(_)) => {
+                failed_paths.record_path(path);
+                remaining_backup.insert(path.clone(), entry.clone());
+                continue;
+            }
         };
 
         if current_bytes == entry.original_bytes {
-            restored_paths.push(path.clone());
+            restored_count = restored_count.saturating_add(1);
+            record_open_path_intersection(
+                &mut restored_open_paths,
+                path,
+                current_facts.canonical_path.as_deref(),
+                open_canonical_identities,
+            );
             continue;
         }
 
         if current_bytes != entry.replaced_bytes {
-            skipped_paths.push(path.clone());
+            skipped_paths.record_path(path);
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         }
 
         if atomic_write(path, &entry.original_bytes).is_err() {
-            failed_paths.push(path.clone());
+            failed_paths.record_path(path);
             remaining_backup.insert(path.clone(), entry.clone());
             continue;
         }
 
-        restored_paths.push(path.clone());
+        restored_count = restored_count.saturating_add(1);
+        record_open_path_intersection(
+            &mut restored_open_paths,
+            path,
+            current_facts.canonical_path.as_deref(),
+            open_canonical_identities,
+        );
     }
 
     UndoReplaceOutcome {
-        restored_paths,
-        skipped_paths,
-        failed_paths,
+        restored_count,
+        skipped_count: skipped_paths.total_count(),
+        failed_count: failed_paths.total_count(),
+        restored_open_paths,
+        skipped_sample: skipped_paths,
+        failed_sample: failed_paths,
         remaining_backup,
+    }
+}
+
+fn record_open_path_intersection(
+    out: &mut Vec<PathBuf>,
+    path: &Path,
+    canonical_path: Option<&Path>,
+    open_canonical_identities: &HashSet<PathBuf>,
+) {
+    let identity = canonical_path.unwrap_or(path);
+    if open_canonical_identities.contains(identity) {
+        out.push(path.to_path_buf());
     }
 }
 
@@ -694,6 +1306,12 @@ impl std::error::Error for ReplaceWriteError {}
 /// before/after-rename failure classification as in-editor saves, instead of
 /// re-implementing the contract here.
 fn atomic_write(path: &Path, content: &[u8]) -> Result<(), ReplaceWriteError> {
+    if take_replace_before_rename_failure_for_test(path) {
+        return Err(ReplaceWriteError::BeforeRename(anyhow::anyhow!(
+            "Injected pre-rename Replace All failure for {}",
+            path.display()
+        )));
+    }
     let write_path = fs_write::resolve_target_identity(path)
         .map_err(|source| {
             ReplaceWriteError::BeforeRename(anyhow::anyhow!(
@@ -726,12 +1344,9 @@ fn persist_undo_backup(data_dir: &Path, backup: &ReplaceUndoBackup) -> anyhow::R
 }
 
 /// Restore already-written files in reverse order when cancellation interrupts a run.
-fn rollback_applied_files(backup: &ReplaceUndoBackup, applied_paths: &[PathBuf]) -> Vec<String> {
-    let mut errors = Vec::new();
-    for path in applied_paths.iter().rev() {
-        let Some(entry) = backup.get(path) else {
-            continue;
-        };
+fn rollback_applied_files(backup: &ReplaceUndoBackup) -> BoundedDiagnosticSample {
+    let mut errors = BoundedDiagnosticSample::default();
+    for (path, entry) in backup.iter().rev() {
         let Ok(_guard) = fs_write::TargetWriteGuard::acquire(path) else {
             errors.push(format!("Failed to lock {} for rollback", path.display()));
             continue;
@@ -781,6 +1396,46 @@ mod tests {
     }
 
     #[test]
+    fn undo_retained_weight_charges_table_paths_and_vector_capacities() {
+        let mut backup = ReplaceUndoBackup::new();
+        let mut path = PathBuf::from("/workspace/retained.rs");
+        path.reserve(8 * 1024);
+        let path_capacity = path.capacity();
+        let mut original_bytes = Vec::with_capacity(16 * 1024);
+        original_bytes.extend_from_slice(b"before");
+        let original_capacity = original_bytes.capacity();
+        let mut replaced_bytes = Vec::with_capacity(32 * 1024);
+        replaced_bytes.extend_from_slice(b"after");
+        let replaced_capacity = replaced_bytes.capacity();
+        backup.insert(path, ReplaceUndoEntry::new(original_bytes, replaced_bytes));
+
+        let nested_capacity = path_capacity
+            .saturating_add(original_capacity)
+            .saturating_add(replaced_capacity);
+        assert!(
+            replace_undo_retained_byte_weight(&backup)
+                > u64::try_from(nested_capacity).unwrap_or(u64::MAX),
+            "the hash table allocation must be charged in addition to nested owners"
+        );
+    }
+
+    #[test]
+    fn replacement_count_cap_is_rejected_before_any_target_mutation() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("count-cap.txt");
+        fixture::write_text(&file, "needle\n");
+        let replacement = make_replacement(&file, 1, "needle", "thread", 0..6);
+        let replacements = vec![replacement; MAX_REPLACE_PREVIEW_ROWS + 1];
+        let cancel = AtomicBool::new(false);
+
+        let error = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect_err("over-cap replacement selections must be rejected");
+
+        assert!(error.to_string().contains("replacement limit"));
+        assert_eq!(fixture::read_text(&file), "needle\n");
+    }
+
+    #[test]
     fn test_apply_replacements_literal() {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
@@ -800,7 +1455,7 @@ mod tests {
 
         assert_eq!(result.replaced_count, 2);
         assert_eq!(result.files_affected, 2);
-        assert!(result.skipped_paths.is_empty());
+        assert_eq!(result.skipped_count, 0);
 
         let content_a = fixture::read_text(&file_a);
         assert!(
@@ -881,6 +1536,28 @@ mod tests {
     }
 
     #[test]
+    fn post_rename_durability_failure_keeps_changed_bytes_and_undo_evidence() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("durability-ambiguous.txt");
+        fixture::write_text(&file, "needle\n");
+        let replacements = vec![make_replacement(&file, 1, "needle", "thread", 0..6)];
+        let cancel = AtomicBool::new(false);
+        crate::services::filesystem::write::fail_next_parent_sync_for_test();
+
+        let outcome = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
+            .expect("post-rename durability ambiguity still changed the target");
+        let (result, backup) = outcome.into_parts();
+
+        assert_eq!(fixture::read_text(&file), "thread\n");
+        assert_eq!(result.replaced_count, 1);
+        assert_eq!(result.files_affected, 1);
+        assert_eq!(result.error_count, 1);
+        assert!(result.error_sample[0].contains("durability sync failed"));
+        assert_eq!(backup[&file].original_bytes, b"needle\n");
+        assert_eq!(backup[&file].replaced_bytes, b"thread\n");
+    }
+
+    #[test]
     fn stale_reserved_apply_cannot_overwrite_newer_committed_journal_or_file() {
         let dir = tempdir().expect("replace target tempdir");
         let journal_dir = tempdir().expect("replace journal tempdir");
@@ -902,6 +1579,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let outcome = apply_replacements_if_current(
             &replacements,
+            &HashSet::new(),
             &HashSet::new(),
             &cancel,
             journal_dir.path(),
@@ -1015,8 +1693,9 @@ mod tests {
 
         assert_eq!(result.replaced_count, 0);
         assert_eq!(result.files_affected, 0);
-        assert_eq!(result.skipped_paths, vec![file]);
-        assert!(result.errors[0].contains("larger than the 10 MB"));
+        assert_eq!(result.skipped_count, 1);
+        assert_eq!(result.skipped_sample[0], file.display().to_string());
+        assert!(result.error_sample[0].contains("larger than the 10 MB"));
         assert!(backup.is_empty());
     }
 
@@ -1029,7 +1708,7 @@ mod tests {
                 .expect("replace file byte cap should fit in usize"),
         );
         fixture::write_text(&file, &original_line);
-        let replacements = vec![make_replacement(&file, 1, &original_line, "b", 0..0)];
+        let replacements = vec![make_replacement(&file, 1, &original_line, "b", 0..1)];
         let cancel = AtomicBool::new(false);
 
         let (result, backup) = apply_replacements(&replacements, &HashSet::new(), &cancel, None)
@@ -1038,13 +1717,13 @@ mod tests {
 
         assert_eq!(result.files_affected, 1);
         assert_eq!(result.replaced_count, 1);
-        assert!(result.skipped_paths.is_empty());
-        assert!(result.errors.is_empty());
+        assert_eq!(result.skipped_count, 0);
+        assert_eq!(result.error_count, 0);
         assert_eq!(
             fs_metadata::file_facts(&file)
                 .expect("stat replaced file")
                 .byte_size,
-            MAX_REPLACE_FILE_BYTES + 1
+            MAX_REPLACE_FILE_BYTES
         );
         assert!(backup.contains_key(&file));
     }
@@ -1069,8 +1748,9 @@ mod tests {
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
 
         assert_eq!(result.files_affected, 1);
-        assert_eq!(result.skipped_paths, vec![file_b.clone()]);
-        assert!(result.errors[0].contains("undo data would exceed"));
+        assert_eq!(result.skipped_count, 1);
+        assert_eq!(result.skipped_sample[0], file_b.display().to_string());
+        assert!(result.error_sample[0].contains("undo data would exceed"));
         assert_eq!(fixture::read_text(&file_a), "done-a\n");
         assert_eq!(fixture::read_text(&file_b), "needle-b\n");
         assert!(backup.contains_key(&file_a));
@@ -1095,10 +1775,78 @@ mod tests {
 
         assert_eq!(result.files_affected, 1);
         assert_eq!(result.replaced_count, 1);
-        assert!(result.skipped_paths.is_empty());
-        assert!(result.errors.is_empty());
+        assert_eq!(result.skipped_count, 0);
+        assert_eq!(result.error_count, 0);
         assert_eq!(fixture::read_text(&file), "done\n");
         assert!(backup.contains_key(&file));
+    }
+
+    #[test]
+    fn test_apply_replacements_rejects_entry_one_byte_over_undo_cap_without_write() {
+        let dir = tempdir().expect("replace tempdir");
+        let file = dir.path().join("one-over-undo.rs");
+        fixture::write_text(&file, "needle\n");
+        let replacements = vec![make_replacement(&file, 1, "needle", "done", 0..6)];
+        let exact_payload = u64::try_from("needle\n".len() + "done\n".len())
+            .expect("tiny undo payload should fit in u64");
+
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(exact_payload - 1)));
+        let outcome = apply_replacements(
+            &replacements,
+            &HashSet::new(),
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect("one-byte-over undo payload should be skipped safely");
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
+
+        assert_eq!(outcome.result.files_affected, 0);
+        assert_eq!(outcome.result.replaced_count, 0);
+        assert_eq!(outcome.result.skipped_count, 1);
+        assert_eq!(outcome.result.error_count, 1);
+        assert!(outcome.result.error_sample[0].contains("undo data would exceed"));
+        assert!(outcome.undo_backup.is_empty());
+        assert_eq!(outcome.metrics.undo_live_bytes, 0);
+        assert_eq!(fixture::read_text(&file), "needle\n");
+    }
+
+    #[test]
+    fn pre_rename_failure_reclaims_live_charge_and_allows_later_sorted_target() {
+        let dir = tempdir().expect("replace tempdir");
+        let journal_dir = tempdir().expect("journal tempdir");
+        let first = dir.path().join("a-first.txt");
+        let later = dir.path().join("b-later.txt");
+        fixture::write_text(&first, "needle\n");
+        fixture::write_text(&later, "needle\n");
+        let replacements = vec![
+            make_replacement(&first, 1, "needle", "done", 0..6),
+            make_replacement(&later, 1, "needle", "done", 0..6),
+        ];
+        let one_entry =
+            u64::try_from("needle\n".len() + "done\n".len()).expect("fixture payload fits u64");
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(one_entry)));
+        fail_next_replace_before_rename_for_path_for_test(&first);
+
+        let outcome = apply_replacements(
+            &replacements,
+            &HashSet::new(),
+            &AtomicBool::new(false),
+            Some(journal_dir.path()),
+        )
+        .expect("later target should proceed after reclaim");
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
+
+        assert_eq!(fixture::read_text(&first), "needle\n");
+        assert_eq!(fixture::read_text(&later), "done\n");
+        assert_eq!(outcome.result.files_affected, 1);
+        assert_eq!(outcome.result.error_count, 1);
+        assert_eq!(outcome.metrics.undo_live_bytes, one_entry);
+        assert_eq!(outcome.metrics.undo_bytes, one_entry);
+        assert!(!outcome.undo_backup.contains_key(&first));
+        assert!(outcome.undo_backup.contains_key(&later));
+        let persisted = search_backup::load(journal_dir.path()).expect("active journal");
+        assert!(!persisted.contains_key(&first));
+        assert!(persisted.contains_key(&later));
     }
 
     #[test]
@@ -1111,33 +1859,201 @@ mod tests {
         ];
         let mut refs: Vec<&Replacement> = replacements.iter().collect();
 
-        let outcome = build_replaced_text(original, &mut refs);
+        let build = build_replaced_text(original, &mut refs, usize::MAX, || false);
 
         assert_eq!(
-            outcome,
+            build.outcome,
             ReplacementTextOutcome::Replaced {
                 new_content: "alpha hay\r\nbeta stack\n".to_string(),
                 replacement_count: 2,
             }
         );
+        assert_eq!(build.metrics.source_lines, 2);
+        assert_eq!(build.metrics.accepted_replacements, 2);
+    }
+
+    #[test]
+    fn streaming_builder_matches_reference_for_empty_unicode_and_unterminated_lines() {
+        let path = PathBuf::from("/semantic-fixture.txt");
+        let original = "\nα needle\r\nlast🙂needle";
+        let replacements = [
+            make_replacement(&path, 1, "", "empty", 0..0),
+            make_replacement(&path, 2, "α needle", "thread", 3..9),
+            make_replacement(&path, 3, "last🙂needle", "done", 8..14),
+        ];
+        let mut streaming_refs: Vec<&Replacement> = replacements.iter().collect();
+        let mut reference_refs: Vec<&Replacement> = replacements.iter().collect();
+
+        let streaming = build_replaced_text(original, &mut streaming_refs, usize::MAX, || false);
+        let reference = build_replaced_text_reference(original, &mut reference_refs);
+
+        assert_eq!(streaming.outcome, reference);
+        assert_eq!(
+            streaming.outcome,
+            ReplacementTextOutcome::Replaced {
+                new_content: "empty\nα thread\r\nlast🙂done".to_string(),
+                replacement_count: 3,
+            }
+        );
+        assert_eq!(streaming.metrics.source_lines, 3);
+    }
+
+    #[test]
+    fn dense_short_line_fixture_retains_only_replacement_sized_metadata() {
+        let byte_limit = usize::try_from(MAX_REPLACE_FILE_BYTES)
+            .expect("Replace All file-byte limit should fit usize");
+        let source_line_count = byte_limit / 2;
+        let original = "x\n".repeat(source_line_count);
+        let path = PathBuf::from("/dense-short-lines.txt");
+        let original_line: Arc<str> = Arc::from("x");
+        let replacement_text: Arc<str> = Arc::from("y");
+        let replacements: Vec<_> = (0..MAX_REPLACE_PREVIEW_ROWS)
+            .map(|index| {
+                let line_index = index.saturating_mul(source_line_count.saturating_sub(1))
+                    / MAX_REPLACE_PREVIEW_ROWS.saturating_sub(1);
+                Replacement {
+                    match_id: crate::model::content_search::SearchMatchId::from_index(index),
+                    path: path.clone(),
+                    line_number: u64::try_from(line_index + 1)
+                        .expect("dense fixture line number should fit u64"),
+                    original_line: original_line.clone(),
+                    replaced_line: "y".to_string(),
+                    replacement: replacement_text.clone(),
+                    match_range: 0..1,
+                }
+            })
+            .collect();
+        let mut refs: Vec<&Replacement> = replacements.iter().collect();
+
+        let build = build_replaced_text(&original, &mut refs, byte_limit, || false);
+
+        let ReplacementTextOutcome::Replaced {
+            new_content,
+            replacement_count,
+        } = build.outcome
+        else {
+            panic!("near-cap dense-line fixture should construct output");
+        };
+        assert_eq!(replacement_count, MAX_REPLACE_PREVIEW_ROWS);
+        assert_eq!(new_content.len(), original.len());
+        assert_eq!(
+            build.metrics.source_lines,
+            u64::try_from(source_line_count).expect("source-line fixture count should fit u64")
+        );
+        assert_eq!(
+            build.metrics.retained_edit_records,
+            MAX_REPLACE_PREVIEW_ROWS
+        );
+        assert!(
+            build.metrics.retained_edit_records < source_line_count,
+            "retained metadata must follow replacements, not source lines"
+        );
+        assert_eq!(
+            build.metrics.retained_edit_bytes,
+            MAX_REPLACE_PREVIEW_ROWS * std::mem::size_of::<PendingEdit<'static>>()
+        );
+        assert_eq!(
+            build.metrics.output_bytes,
+            u64::try_from(original.len()).expect("output fixture bytes should fit u64")
+        );
+    }
+
+    #[test]
+    fn malformed_ranges_are_rejected_before_line_discovery_or_output_allocation() {
+        let path = PathBuf::from("/malformed.txt");
+        let mut reversed = make_replacement(&path, 1, "abcdef", "x", 2..4);
+        reversed.match_range = std::ops::Range { start: 4, end: 2 };
+        let mut reversed_refs = vec![&reversed];
+
+        let reversed_build =
+            build_replaced_text("abcdef\n", &mut reversed_refs, usize::MAX, || false);
+
+        assert_eq!(
+            reversed_build.outcome,
+            ReplacementTextOutcome::InvalidPreview {
+                reason: "replacement range endpoints are reversed",
+            }
+        );
+        assert_eq!(reversed_build.metrics.source_lines, 0);
+        assert_eq!(reversed_build.metrics.retained_edit_records, 0);
+
+        let overlapping = [
+            make_replacement(&path, 1, "abcdef", "x", 0..3),
+            make_replacement(&path, 1, "abcdef", "y", 2..5),
+        ];
+        let mut overlapping_refs: Vec<&Replacement> = overlapping.iter().collect();
+        let overlapping_build =
+            build_replaced_text("abcdef\n", &mut overlapping_refs, usize::MAX, || false);
+
+        assert_eq!(
+            overlapping_build.outcome,
+            ReplacementTextOutcome::InvalidPreview {
+                reason: "replacement ranges overlap",
+            }
+        );
+        assert_eq!(overlapping_build.metrics.source_lines, 0);
+        assert_eq!(overlapping_build.metrics.retained_edit_records, 0);
+    }
+
+    #[test]
+    fn output_limit_is_checked_before_output_allocation() {
+        let path = PathBuf::from("/output-limit.txt");
+        let replacement = make_replacement(&path, 1, "x", "expanded", 0..1);
+        let mut refs = vec![&replacement];
+
+        let build = build_replaced_text("x\n", &mut refs, 2, || false);
+
+        assert_eq!(build.outcome, ReplacementTextOutcome::OutputLimitExceeded);
+        assert_eq!(build.metrics.source_lines, 1);
+        assert_eq!(build.metrics.output_bytes, 0);
+    }
+
+    #[test]
+    fn streaming_line_discovery_observes_cancellation_between_dense_chunks() {
+        let path = PathBuf::from("/cancel-dense.txt");
+        let original = "x\n".repeat(5_000);
+        let replacement = make_replacement(&path, 5_000, "x", "y", 0..1);
+        let mut refs = vec![&replacement];
+        let cancellation_checks = Cell::new(0usize);
+
+        let build = build_replaced_text(&original, &mut refs, usize::MAX, || {
+            let next = cancellation_checks.get().saturating_add(1);
+            cancellation_checks.set(next);
+            next >= 4
+        });
+
+        assert_eq!(build.outcome, ReplacementTextOutcome::Cancelled);
+        assert!(build.metrics.source_lines < 5_000);
+        assert_eq!(build.metrics.output_bytes, 0);
     }
 
     #[test]
     fn test_line_spans_handles_leading_newline_without_underflow() {
-        assert_eq!(line_spans("\nnext"), vec![0..0, 1..5]);
-        assert_eq!(line_spans("\r\nnext"), vec![0..0, 2..6]);
+        assert_eq!(line_spans_reference("\nnext"), vec![0..0, 1..5]);
+        assert_eq!(line_spans_reference("\r\nnext"), vec![0..0, 2..6]);
     }
 
     #[test]
     fn test_line_spans_does_not_add_empty_trailing_line() {
-        assert_eq!(line_spans("first\n"), vec![0..5]);
-        assert_eq!(line_spans("first\r\n"), vec![0..5]);
-        assert_eq!(line_spans("\n"), vec![0..0]);
+        assert_eq!(line_spans_reference("first\n"), vec![0..5]);
+        assert_eq!(line_spans_reference("first\r\n"), vec![0..5]);
+        assert_eq!(line_spans_reference("\n"), vec![0..0]);
     }
 
     #[test]
     fn test_replaced_capacity_tracks_exact_growth_and_shrink() {
-        let edits = [(0, 5, "hi"), (8, 10, "there!")];
+        let edits = [
+            PendingEdit {
+                start: 0,
+                end: 5,
+                replacement: "hi",
+            },
+            PendingEdit {
+                start: 8,
+                end: 10,
+                replacement: "there!",
+            },
+        ];
 
         assert_eq!(replaced_capacity(12, &edits), 13);
     }
@@ -1214,8 +2130,8 @@ mod tests {
 
         assert_eq!(result.replaced_count, 1);
         assert_eq!(result.files_affected, 1);
-        assert_eq!(result.errors.len(), 1);
-        assert!(result.errors[0].contains("Failed to stat"));
+        assert_eq!(result.error_count, 1);
+        assert!(result.error_sample[0].contains("Failed to stat"));
         assert_eq!(fixture::read_text(&file), "replaced\n");
         assert!(backup.contains_key(&file));
         assert!(!backup.contains_key(&missing));
@@ -1254,9 +2170,12 @@ mod tests {
             ReplaceUndoEntry::new(b"before-b".to_vec(), b"after-b".to_vec()),
         );
         let outcome = UndoReplaceOutcome {
-            restored_paths: Vec::new(),
-            skipped_paths: Vec::new(),
-            failed_paths: Vec::new(),
+            restored_count: 0,
+            skipped_count: 0,
+            failed_count: 0,
+            restored_open_paths: Vec::new(),
+            skipped_sample: BoundedDiagnosticSample::default(),
+            failed_sample: BoundedDiagnosticSample::default(),
             remaining_backup,
         };
 
@@ -1299,15 +2218,15 @@ mod tests {
 
         let mut backup = ReplaceUndoBackup::new();
         backup.insert(
-            file.clone(),
+            file,
             ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
         );
 
         let outcome = undo_replacements(&backup);
 
-        assert_eq!(outcome.restored_paths, vec![file]);
-        assert!(outcome.skipped_paths.is_empty());
-        assert!(outcome.failed_paths.is_empty());
+        assert_eq!(outcome.restored_count(), 1);
+        assert_eq!(outcome.skipped_count, 0);
+        assert_eq!(outcome.failed_count, 0);
         assert!(outcome.remaining_backup.is_empty());
     }
 
@@ -1334,8 +2253,9 @@ mod tests {
         let outcome = undo_replacements(&backup);
 
         assert_eq!(outcome.restored_count(), 0);
-        assert_eq!(outcome.skipped_paths, vec![file.clone()]);
-        assert!(outcome.failed_paths.is_empty());
+        assert_eq!(outcome.skipped_count, 1);
+        assert_eq!(outcome.skipped_sample[0], file.display().to_string());
+        assert_eq!(outcome.failed_count, 0);
         assert_eq!(outcome.remaining_backup, backup);
         assert_eq!(
             fixture::read_text(&file),
@@ -1359,8 +2279,9 @@ mod tests {
         let outcome = undo_replacements(&backup);
 
         assert_eq!(outcome.restored_count(), 0);
-        assert_eq!(outcome.skipped_paths, vec![file.clone()]);
-        assert!(outcome.failed_paths.is_empty());
+        assert_eq!(outcome.skipped_count, 1);
+        assert_eq!(outcome.skipped_sample[0], file.display().to_string());
+        assert_eq!(outcome.failed_count, 0);
         assert_eq!(outcome.remaining_backup, backup);
         assert_eq!(
             fixture::read_text(&file),
@@ -1386,11 +2307,84 @@ mod tests {
 
         let outcome = undo_replacements(&backup);
 
-        assert_eq!(outcome.restored_paths, vec![file.clone()]);
-        assert!(outcome.skipped_paths.is_empty());
-        assert!(outcome.failed_paths.is_empty());
+        assert_eq!(outcome.restored_count(), 1);
+        assert_eq!(outcome.skipped_count, 0);
+        assert_eq!(outcome.failed_count, 0);
         assert!(outcome.remaining_backup.is_empty());
         assert_eq!(fixture::read_text(&file), "before\n");
+    }
+
+    #[test]
+    fn undo_growth_after_metadata_is_skipped_without_unbounded_allocation() {
+        let dir = tempdir().expect("undo growth tempdir");
+        let file = dir.path().join("grown.txt");
+        fixture::write_text(&file, "after\n");
+        let mut backup = ReplaceUndoBackup::new();
+        backup.insert(
+            file.clone(),
+            ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+        );
+        set_undo_after_metadata_hook_for_test(|path| {
+            fixture::write_repeated_bytes(path, b"x", MAX_REPLACE_FILE_BYTES + 1);
+        });
+
+        let outcome = undo_replacements(&backup);
+
+        assert_eq!(outcome.restored_count(), 0);
+        assert_eq!(outcome.skipped_count, 1);
+        assert_eq!(outcome.failed_count, 0);
+        assert_eq!(outcome.remaining_backup, backup);
+        assert_eq!(
+            fs_metadata::file_facts(&file)
+                .expect("grown target facts")
+                .byte_size,
+            MAX_REPLACE_FILE_BYTES + 1
+        );
+    }
+
+    #[test]
+    fn undo_failure_heavy_terminal_keeps_exact_totals_and_bounded_ordered_samples() {
+        let dir = tempdir().expect("undo failures tempdir");
+        let mut backup = ReplaceUndoBackup::new();
+        for index in 0..10_000 {
+            let path = dir.path().join(format!("missing-{index:05}.txt"));
+            backup.insert(
+                path,
+                ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec()),
+            );
+        }
+
+        let outcome = undo_replacements(&backup);
+
+        assert_eq!(outcome.failed_count, 10_000);
+        assert_eq!(outcome.failed_sample.entries().len(), 32);
+        assert!(outcome.failed_sample.retained_bytes() <= 32 * 1024);
+        assert!(outcome.failed_sample[0].contains("missing-00000.txt"));
+        assert!(outcome.failed_sample[31].contains("missing-00031.txt"));
+        assert_eq!(outcome.remaining_count(), 10_000);
+    }
+
+    #[test]
+    fn undo_returns_only_the_restored_open_identity_intersection() {
+        let dir = tempdir().expect("undo open intersection tempdir");
+        let open = dir.path().join("open.txt");
+        let closed = dir.path().join("closed.txt");
+        fixture::write_text(&open, "after\n");
+        fixture::write_text(&closed, "after\n");
+        let mut backup = ReplaceUndoBackup::new();
+        for path in [&open, &closed] {
+            backup.insert(
+                path.clone(),
+                ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+            );
+        }
+        let open_identity = fs_metadata::canonical_path(&open).expect("open canonical path");
+
+        let outcome =
+            undo_replacements_for_open_identities(&backup, &HashSet::from([open_identity]));
+
+        assert_eq!(outcome.restored_count(), 2);
+        assert_eq!(outcome.restored_open_paths, vec![open]);
     }
 
     #[test]
@@ -1437,9 +2431,10 @@ mod tests {
 
         let outcome = undo_replacements(&backup);
 
-        assert_eq!(outcome.restored_paths, vec![restored_file.clone()]);
-        assert_eq!(outcome.failed_paths, vec![missing_file.clone()]);
-        assert!(outcome.skipped_paths.is_empty());
+        assert_eq!(outcome.restored_count(), 1);
+        assert_eq!(outcome.failed_count, 1);
+        assert_eq!(outcome.failed_sample[0], missing_file.display().to_string());
+        assert_eq!(outcome.skipped_count, 0);
         assert_eq!(outcome.remaining_count(), 1);
         assert_eq!(
             outcome.remaining_backup.get(&missing_file),
@@ -1554,6 +2549,40 @@ mod tests {
     }
 
     #[test]
+    fn replace_all_failure_heavy_summary_is_exact_bounded_and_content_free() {
+        let dir = tempdir().expect("replace failure tempdir");
+        let private_line: Arc<str> = Arc::from("private-document-sentinel");
+        let replacement: Arc<str> = Arc::from("done");
+        let replacements = (0..MAX_REPLACE_PREVIEW_ROWS)
+            .map(|index| Replacement {
+                match_id: crate::model::content_search::SearchMatchId::from_index(index),
+                path: dir.path().join(format!("missing-{index:05}.txt")),
+                line_number: 1,
+                original_line: private_line.clone(),
+                replaced_line: "done".to_string(),
+                replacement: replacement.clone(),
+                match_range: 0..private_line.len(),
+            })
+            .collect::<Vec<_>>();
+
+        let error = apply_replacements(
+            &replacements,
+            &HashSet::new(),
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect_err("all missing targets should produce one bounded terminal error")
+        .to_string();
+
+        assert!(error.contains("Replace All failed: 10000 issue(s)"));
+        assert!(error.contains("missing-00000.txt"));
+        assert!(error.contains("9999 more omitted"));
+        assert!(!error.contains("missing-09999.txt"));
+        assert!(!error.contains(private_line.as_ref()));
+        assert!(error.len() < 1_024);
+    }
+
+    #[test]
     fn test_apply_replacements_skip_paths() {
         let dir = tempdir().expect("expected operation to succeed");
         let file_a = dir.path().join("a.rs");
@@ -1576,8 +2605,8 @@ mod tests {
 
         assert_eq!(result.replaced_count, 1, "only a.rs should be replaced");
         assert_eq!(result.files_affected, 1);
-        assert_eq!(result.skipped_paths.len(), 1);
-        assert_eq!(result.skipped_paths[0], file_b);
+        assert_eq!(result.skipped_count, 1);
+        assert_eq!(result.skipped_sample[0], file_b.display().to_string());
         assert!(backup.contains_key(&file_a));
         assert!(!backup.contains_key(&file_b));
         assert_eq!(fixture::read_text(&file_b), "needle\n");
@@ -1657,10 +2686,7 @@ mod tests {
         );
 
         let outcome = undo_replacements(&backup);
-        assert!(
-            outcome.restored_paths.contains(&file),
-            "undo should restore the file"
-        );
+        assert_eq!(outcome.restored_count(), 1, "undo should restore the file");
         let mode_after_undo = fixture::mode(&file) & 0o777;
         assert_eq!(
             mode_after_undo, 0o600,

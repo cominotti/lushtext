@@ -94,6 +94,56 @@ autosave attempt.
 - **AND** any responsiveness optimization MUST NOT weaken the existing
   close-time crash-recovery guarantee
 
+### Requirement: Session restore bounds GTK work and load planning
+The window SHALL restore persisted tabs through a generation-owned bounded coordinator. Startup session and draft loading MUST reserve bounded progress capacity that ordinary long-lived disposal owners cannot consume, and the complete measured eager-preload graph MUST fit that reservation before crossing to GTK. The coordinator MUST create no more than the configured number of pages in one GTK turn, MUST admit no more than the configured number of file-backed load-planning operations concurrently, and MUST retain remaining tabs as compact restore descriptors. Tab-derived palette, sidebar, recent-open, status, and related projections MUST remain deferred until one terminal accepted rebuild. Before those compact descriptors are available, close persistence MUST merge the bounded persisted descriptor set with current pages by stable identity rather than serialize only the not-yet-restored shell state.
+
+#### Scenario: Long-lived undo ownership fills ordinary disposal capacity
+- **WHEN** startup follows a crash-interrupted Replace All whose retained undo owner leaves too little ordinary disposal capacity for the conservative recovery preload reservation
+- **THEN** session and draft loading reserves the independent bounded progress lane and continues
+- **AND** the undo owner may remain retryable without starving startup recovery
+
+#### Scenario: Window closes before startup descriptors are available
+- **WHEN** close safety runs while startup recovery is waiting or loading before compact session descriptors have reached GTK
+- **THEN** close reloads the bounded persisted descriptors and merges current pages through a linear stable-identity index
+- **AND** the empty or partial shell state does not overwrite the unrestored session
+- **AND** any newly edited untitled tab remains represented alongside the persisted descriptors and its flushed draft body
+
+#### Scenario: Early-close session evidence cannot be preserved
+- **WHEN** close reloads pending persisted session descriptors but recovery diagnostics report that quarantine or preservation failed
+- **THEN** the original session evidence remains untouched in place
+- **AND** session replacement is rejected, the close transaction is aborted, and the window becomes usable for a later retry
+
+#### Scenario: Measured preload ownership exceeds the startup reservation
+- **WHEN** eager draft bodies fit the body-content budget but their keys and collection capacity make the complete retained graph exceed progress-lane ownership
+- **THEN** startup demotes enough eager bodies to compact lazy markers before shrinking the reservation
+- **AND** if metadata alone would exceed the reservation, startup discards only preload hints and lets restored pages use the existing serialized lazy reader
+
+#### Scenario: Large session requires several GTK turns
+- **WHEN** a valid session contains more tabs than one restore-turn budget
+- **THEN** the window creates pages over multiple scheduled GTK turns
+- **AND** input and unrelated main-loop sources can run between restore batches
+- **AND** tab order remains equal to the persisted session order
+
+#### Scenario: File-backed restore exceeds planning capacity
+- **WHEN** more file-backed tabs await restore than the configured in-flight planning limit
+- **THEN** only the admitted subset owns load-planning work
+- **AND** later descriptors remain compact until success, failure, cancellation, or editor teardown releases capacity
+
+#### Scenario: Derived projections publish once
+- **WHEN** session restoration creates file-backed and untitled tabs across several batches
+- **THEN** per-tab open paths do not rebuild aggregate palette, sidebar, recent-open, or status projections
+- **AND** one terminal current-generation rebuild publishes the complete accepted tab state
+
+#### Scenario: Restore intent survives batching
+- **WHEN** the persisted session selects a later tab or command-line activation targets an opened document while restore is in progress
+- **THEN** active-tab priority, unavailable-file retry state, cursor and scroll restoration, and lazy draft markers preserve their existing semantics
+- **AND** stale restore callbacks cannot override the accepted current selection
+
+#### Scenario: Window closes during restore
+- **WHEN** the window lifetime ends with queued descriptors or admitted plans remaining
+- **THEN** the restore generation is cancelled and all permits and projection deferral state are released exactly once
+- **AND** no later completion creates a page or publishes projections into the closed window
+
 ### Requirement: Save As path bookkeeping refreshes asynchronously
 The system SHALL avoid synchronous canonical path probes in the GTK completion
 path after a successful Save As. Save As MUST update the visible document path
@@ -374,6 +424,47 @@ The system SHALL keep filtering, installation, cache rebuilding, and destruction
 - **THEN** the index's final destruction runs on the bounded worker lane
 - **AND** generation comparison, replay ordering, and visible results remain owned by GTK
 
+### Requirement: Plain-data disposal admission never blocks GTK
+Document-sized plain-Rust payload retirement SHALL reserve non-blocking worker-destruction capacity before the value is transferred onto GTK, with explicit job-count and retained-byte bounds where payload weight is knowable. Callers with a conservative upper bound SHALL reserve before construction; data-dependent worker results SHALL remain worker-owned until their measured reservation succeeds. The reservation MUST remain attached through replaceable UI ownership so final destruction performs a guaranteed non-blocking worker handoff. Ordinary retained ownership and startup/Notes progress ownership MUST use independently bounded lanes so long-lived ordinary owners cannot permanently starve recovery or Notes browsing. When capacity is unavailable, each producer MUST retain at most one compact latest request and one retry or capacity-wakeup source, never an unreserved document-sized payload on GTK. GTK-owned objects MUST remain on GTK and retire through their existing bounded GTK paths.
+
+#### Scenario: Disposal lane is saturated from GTK
+- **WHEN** all disposal workers and reserved capacity are occupied and a GTK callback requests another document-sized plain-data operation
+- **THEN** reservation fails immediately before that value crosses onto GTK
+- **AND** only the compact latest request or worker-held result remains eligible for retry
+- **AND** the GTK callback does not wait for a worker or blocking channel send
+
+#### Scenario: Producer is superseded while disposal is full
+- **WHEN** one producer already owns a compact pending request and a newer request replaces it before capacity returns
+- **THEN** the producer retains at most one latest compact request and one wakeup source
+- **AND** any previously published document-sized value keeps its reservation until accepted transfer or final worker destruction
+- **AND** superseded data is not restored to current generation state
+
+#### Scenario: Aggregate weighted pressure drains
+- **WHEN** several preview, palette, notes, history, search, and undo producers submit weighted plain-data destruction concurrently
+- **THEN** admitted job and byte high-water marks stay within the documented lane policy, with exclusive progress for an overweight job when applicable
+- **AND** pre-admitted nested final destructors run off GTK
+- **AND** every accepted owner or compact pending request is eventually released or cancelled on owner teardown
+
+#### Scenario: Browse Notes starts while hidden palette sources fill ordinary capacity
+- **WHEN** the installed file index and command-palette note source retain enough ordinary capacity that a fresh maximum Notes source would not fit
+- **THEN** Browse Notes reserves its independently bounded progress lane and starts source construction
+- **AND** hidden palette ownership cannot leave the dialog deferred indefinitely
+
+#### Scenario: Browse Notes is activated repeatedly
+- **WHEN** Browse Notes is activated again while its dialog is still alive or waiting for progress capacity
+- **THEN** the existing dialog is re-presented instead of creating another source owner or wakeup
+- **AND** at most one 64 MiB browser source reservation remains attributable to that window
+
+#### Scenario: Live editor note metadata exceeds the deferred-request budget
+- **WHEN** open editor paths or bookmark labels would make the pre-admission Notes snapshot exceed its retained-byte limit
+- **THEN** later snapshot material is omitted before cloning it into the deferred request
+- **AND** the request remains within the documented byte bound and carries typed truncation evidence into the published source
+
+#### Scenario: Pure-drop workflows leave the shared completion lane
+- **WHEN** a `Send` payload requires only final destruction and no GTK result handling
+- **THEN** it uses the proven plain-disposal contract rather than holding a generic worker slot for a no-op GTK completion
+- **AND** lifecycle-specific blocking destructors remain on their owning worker path
+
 ### Requirement: Document-sized GTK buffer replacement yields in bounded slices
 Any workflow that clears or replaces document-sized editor content SHALL use one editor-owned bounded GTK mutation session above the synchronous threshold. The session MUST carry weak editor ownership, workflow-specific freshness identity, source ownership, projection suppression, and one typed terminal outcome. While a replacement is partial, the editor MUST remain non-editable and non-saveable, and modified, eviction, history, draft, cursor, monitor, and projection finalization MUST occur only after the complete current generation is installed or safely cancelled.
 
@@ -473,3 +564,72 @@ Search-result replacement, retirement, cache cleanup, and Replace Preview handof
 - **WHEN** a disposal slice runs after a newer generation has populated visible results or caches
 - **THEN** the slice removes only state owned by the retired generation
 - **AND** current rows, match identities, and readiness remain intact
+
+### Requirement: Document-sized rejected payloads retire outside GTK dispatch
+When Replace Preview or Markdown work becomes stale, rejected, superseded, unchecked, or otherwise unprojected, the system SHALL detach it from current generation state immediately. The final destruction of document-sized plain-Rust outcomes, plans, queued sources, and projection tails MUST run away from GTK dispatch through bounded worker ownership. GTK-owned buffers, widgets, models, tags, and links MUST remain on the GTK thread and MUST retire through bounded main-loop slices that cannot mutate the current generation.
+
+#### Scenario: Stale Replace Preview worker returns a near-limit outcome
+- **WHEN** a preview outcome becomes stale before its worker completion reaches GTK
+- **THEN** GTK rejects it without synchronously destroying its row and text payload
+- **AND** bounded worker retirement releases the final plain-data owner
+
+#### Scenario: Markdown projection is superseded with batches remaining
+- **WHEN** a newer render generation invalidates a plan with unprojected event batches
+- **THEN** the idle callback stops before applying another stale batch
+- **AND** the remaining plain-Rust batch tail is destroyed away from GTK dispatch
+
+#### Scenario: Detached Markdown GTK state drains
+- **WHEN** an old rendered buffer, embeds, or link targets are detached from the visible preview
+- **THEN** they remain GTK-owned and are released within the configured per-turn character and item budgets
+- **AND** no retirement slice changes the current rendered generation
+
+### Requirement: Markdown detached generations apply explicit backpressure
+Ordinary Markdown rerendering SHALL retain at most two detached GTK render generations and at most one latest pending render request behind retirement. When the detached-generation cap is reached, the system MUST replace older pending requests with the latest generation, MUST retire the superseded pending plain data away from GTK, and MUST defer new ordinary detachment and projection until retirement falls below the cap. Preview readiness MUST remain pending while current planning, projection, admitted image work, detached retirement, or the latest pending render request exists.
+
+#### Scenario: Rapid edits outpace Markdown retirement
+- **WHEN** repeated edits request more renders than bounded GTK retirement can drain
+- **THEN** detached render ownership never exceeds two ordinary generations
+- **AND** at most the latest pending render request is retained
+- **AND** the newest current request resumes after retirement creates capacity
+
+#### Scenario: Pending render is superseded repeatedly
+- **WHEN** several newer render requests arrive while detached state is at the cap
+- **THEN** intermediate pending sources are replaced rather than queued
+- **AND** their final plain-data destruction does not occur in the GTK callback
+
+#### Scenario: Preview closes under retirement pressure
+- **WHEN** the preview closes with planning, pending, projection, image, and detached retirement work present
+- **THEN** every obsolete generation is invalidated and releases ownership through its applicable bounded path
+- **AND** no later completion reopens or mutates the closed preview
+
+### Requirement: Workspace-search event turns count every received event
+The workspace-search GTK consumer SHALL receive and dispatch at most 250 channel events per scheduled turn. Every successfully received `Match`, `Progress`, `ResultCap`, `Error`, and `Done` event MUST consume one unit before variant-specific handling; channel disconnection MAY terminate the turn without consuming an event unit.
+
+#### Scenario: Progress burst contains no matches
+- **WHEN** more than 250 progress events are ready before one consumer turn
+- **THEN** that turn receives at most 250 events
+- **AND** remaining events wait for a later scheduled turn
+
+#### Scenario: Mixed event burst reaches the cap
+- **WHEN** match, progress, result-cap, and error events are interleaved in a ready channel
+- **THEN** their combined received count is at most 250 for the turn
+- **AND** visible result and diagnostic semantics remain unchanged
+
+#### Scenario: Terminal event is received within budget
+- **WHEN** `Done` is the next event before the turn reaches 250 received events
+- **THEN** it consumes one event unit and terminates the active search normally
+- **AND** the latest pending search may proceed through the existing flight contract
+
+### Requirement: Sliced buffer mutation is reentrancy-safe before GTK calls
+For every non-empty sliced delete or insert, the editor-owned replacement session SHALL establish mutation-started state before invoking a signal-emitting GTK mutation API. The session MUST NOT remain mutably borrowed across that GTK call, and continuation MUST revalidate session identity afterward. Synchronous reentrant cancellation or supersession MUST clean partial state exactly once, publish no successful terminal state for the invalidated generation, and leave only the accepted current content editable and saveable.
+
+#### Scenario: First changed signal supersedes replacement synchronously
+- **WHEN** the first non-empty sliced mutation emits `changed` and a synchronous handler starts a newer replacement
+- **THEN** the older session is already marked as having mutated
+- **AND** its cancellation path performs exact partial cleanup without a borrow conflict
+- **AND** final buffer content equals only the newer accepted source
+
+#### Scenario: Mutation returns after reentrant cancellation
+- **WHEN** control returns from a GTK delete or insert after the session was cancelled reentrantly
+- **THEN** the stale continuation does not record progress or schedule another slice
+- **AND** projection suppression, editability, saveability, retained text, and terminal ownership are released exactly once

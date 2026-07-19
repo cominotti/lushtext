@@ -65,7 +65,7 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 cat >"$ARTIFACT_DIR/fixtures.txt" <<'EOF'
 file_index_search: generated command-palette indexes at representative file counts
 palette_pipeline_hardening_100000: generated 100,000-file indexes with varied hit rates, Unicode names, repeated equal-score names, bounded/reference limits, cancellation, and rapid latest-query replacement
-file_index_rebuild: generated workspace file lists plus 1k/10k directory-only forests with direct retained-directory high water
+file_index_rebuild: generated common 10k-file workspace, 1k missing roots, 1k/10k directory-only forests, and a 10k long-path tree that approaches both file-index byte policies with direct build/installed high water
 end_to_end_boundedness: generated one flat 10,000-entry directory, file/note source budget and cancellation fixtures, active/latest coordinator pressure, canonical top-one exclusion, a 2,048-row cleanup page, a 10,000-row middle reconciliation, and large replacement policy input
 content_search_smoke: generated 200-file trees plus one 10k-line file
 search_interactive_policies: generated 1,000-query latest-wins ownership, 10,000-result retirement counters, and a 260-event mixed non-match turn-budget proof
@@ -76,9 +76,9 @@ json_persistence: generated workspace/session JSON save and load fixtures
 editor_file_io: generated text files for load, save, and Save As-equivalent explicit-path writes
 transient_file_load: generated scalar admission bursts, stale queues, an exclusive near-limit request, Unicode slice planning, and one headless chunked-install responsiveness fixture
 workspace_watch_pressure: generated duplicate/access-noise/deep Unicode event batches, varied producer/consumer rates, and cap-plus-one full-refresh promotion
-quality_gap_scale: generated a 10,000-row Notes browser source, a 4 MiB local-history preview, raw watcher ingress, a 10,000-row terminal cache rebuild, and headless main-loop/ownership fixtures
+quality_gap_scale: generated a 10,000-row Notes browser source, 10,000-row metadata-dominated note scoring with large bodies, a 4 MiB local-history preview, raw watcher ingress, a 10,000-row terminal cache rebuild, 10,000 rapid per-store scan requests, a 2.23 MiB sliced minimap analysis, and headless draft/session/pre-admitted-disposal/minimap/main-loop ownership fixtures
 replace_preview_generation: generated 1k and 10k in-memory match sets plus a 10k-row half-checked worker-side selection handoff
-replace_undo_workflows: generated disposable files for Replace All and undo restore
+replace_undo_workflows: generated disposable files for Replace All and undo restore, including an accepted 10 MiB short-line file with 10,000 spread replacements and direct construction ownership evidence
 recovery_performance: generated malformed metadata, pending migration ledgers, duplicate bookmark sidecars, many local-history lineages, and first-dirty autosave persistence batches
 EOF
 
@@ -90,6 +90,7 @@ Coarse smoke thresholds:
 - representative small/medium file open: target under 500ms; investigate over 2s
 - command-palette searches: target interactive-scale, not multi-second
 - command-palette bounded ranking: retained candidates must stay at or below the requested per-source limit, bounded results must equal the full-sort reference, and runtime ownership must stay at one active plus one pending latest query
+- file-index construction: complete ownership must stay at or below 128 MiB, installed output at or below 64 MiB, and common, missing-root, directory-heavy, and near-policy long-path fixtures must return a complete or typed deterministic usable partial result
 - end-to-end source construction: directory retention must stay within 100,000 rows, note admission within 10,000 entries and 64 MiB searchable text, deterministic note cancellation must stop at 256 admitted rows, and file/note coordinators must retain only one active plus one latest request
 - cleanup/tree completion: directory pages must retain at most 2,048 rows, broad reconciliation plans must stay plain until GTK applies at most 256 changed rows per turn, and widget evidence must prove main-loop progress, supersession, disposal, and readiness completion
 - workspace/content search: must complete every generated fixture without stalling
@@ -99,10 +100,10 @@ Coarse smoke thresholds:
 - editor memory: ordinary below-threshold edits must touch one record and perform zero full scans
 - Replace preview generation and selection: 10k generated matches and a 10k-row half-checked worker selection should stay sub-second on a developer workstation; preview selection must avoid whole-payload clones on GTK
 - sliced buffer replacement: a synchronous first delete or insert signal may supersede the active generation without a borrow conflict; exactly one latest body remains, editability/saveability are restored, and projection suspension clears
-- persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully
+- persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully; dense-line construction must retain no more edit records than accepted replacements while reporting source lines, retained edit bytes, output bytes, and undo bytes directly
 - transient_file_load: admitted payload weight must stay within the scalar shared budget except for one exclusive request; the headless Unicode fixture must make main-loop progress between slices and release its permit after final editor residency is published
 - workspace_watch_pressure: retained unique paths must stay at or below 1,024, GTK consumption must stay at one bounded notice per poll, and cap overflow must promote to one conservative full refresh
-- quality_gap_scale: Notes query ownership must remain one active plus one latest, preview ownership must retain one accepted payload and install in 256 KiB UTF-8-safe slices, raw watcher ingress must stay capped, and terminal cache operations must stay at or below eight times old-plus-new rows
+- quality_gap_scale: draft repair must reach a complete multi-page inventory before cleanup authority and preserve every body across two startups; session restore must create at most four pages per GTK turn with two file-plan permits and one terminal projection publication; weighted disposal must reject capacity immediately, retain only compact retry requests, pre-admit document-sized GTK owners, prove their nested final destruction off GTK, and drain within two workers, eight reserved drop slots, and 128 MiB ordinary retained weight; minimap analysis must inspect at most 32,768 characters per GTK turn and reject stale generations; note scoring must retain at most 500 rows while optimized and final-query reference results agree; Notes query ownership must remain one active plus one latest, preview ownership must retain one accepted payload and install in 256 KiB UTF-8-safe slices, raw watcher ingress must stay capped, per-store scans must stay at one active plus one weak latest request with mirror capture only at admission, and terminal cache operations must stay at or below eight times old-plus-new rows
 - recovery_performance: malformed metadata, pending migration, duplicate sidecar, local-history lineage, and first-dirty autosave fixtures must complete every smoke sample successfully; investigate multi-second recovery timings before shipping startup or close-flow reliability changes
 
 Use make bench-report or make bench-report-full for enforceable release analysis.
@@ -198,7 +199,14 @@ case " $FILTERS " in
         for widget_filter in \
             window::test_notes_browser_caps_large_result_sets_with_refine_notice \
             window::test_local_history_preview_supersedes_reads_and_unicode_install_slices \
-            workspace_section::test_large_reconciliation_is_batched_supersedable_and_preserves_state
+            window::test_bounded_session_restore_preserves_order_selection_and_one_terminal_projection \
+            window::test_session_restore_cancellation_clears_pending_permits_source_and_projection_deferral \
+            workspace_section::test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live \
+            workspace_section::test_slow_directory_refresh_churn_keeps_one_active_and_one_weak_latest_request \
+            workspace_section::test_large_reconciliation_is_batched_supersedable_and_preserves_state \
+            plain_disposal::test_aggregate_disposal_pressure_returns_immediately_and_keeps_gtk_alive \
+            editor_page::test_minimap_long_line_warning_scan_slices_large_many_short_buffer \
+            editor_page::test_minimap_mid_scan_edit_cancels_stale_generation_and_publishes_latest
         do
             if ! scripts/run-widget-tests.sh --headless -- "$widget_filter" \
                 >>"$widget_log" 2>&1; then
@@ -208,7 +216,21 @@ case " $FILTERS " in
         done
         {
             echo "## quality_gap_scale_headless"
-            grep -E "notes-browser-runtime-evidence|local-history-preview-runtime-evidence|workspace-cache-runtime-evidence|test result:" "$widget_log" || true
+            grep -E "notes-browser-runtime-evidence|local-history-preview-runtime-evidence|session-restore-(bound|cancellation)-evidence|workspace-scan-(aggregate|flight)-evidence|workspace-cache-runtime-evidence|plain-disposal-pressure-evidence|minimap-(analysis|cancellation)-evidence|test result:" "$widget_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+
+        draft_log="$ARTIFACT_DIR/integration-draft-repair-closeout.log"
+        echo "Running two-startup multi-page draft-repair survival proof..."
+        if ! cargo test -p lushtext --test integration \
+            draft::multi_start_manifest_repair_preserves_every_body_through_all_cleanup_pages \
+            -- --nocapture >"$draft_log" 2>&1; then
+            tail -n 160 "$draft_log" >&2 || true
+            smoke_fail "draft-repair closeout proof failed. Artifacts: $ARTIFACT_DIR"
+        fi
+        {
+            echo "## draft_repair_closeout"
+            grep -E "draft-repair-closeout-evidence|test result:" "$draft_log" || true
             echo
         } >>"$ARTIFACT_DIR/summary.txt"
         ;;

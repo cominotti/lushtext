@@ -15,6 +15,9 @@ pub mod editor_page;
 pub mod info_bar;
 pub mod markdown_preview;
 pub mod open_popover;
+#[cfg(feature = "test-utils")]
+pub mod plain_disposal;
+#[cfg(not(feature = "test-utils"))]
 pub(crate) mod plain_disposal;
 pub mod preferences;
 pub mod properties_panel;

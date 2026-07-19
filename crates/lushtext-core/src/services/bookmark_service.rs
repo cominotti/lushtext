@@ -280,6 +280,7 @@ fn remove_obsolete_sidecar(path: &Path) -> Result<()> {
 ///
 /// Returns an error if the sidecar directory cannot be scanned or a bookmark
 /// document cannot be read or parsed.
+#[cfg(test)]
 pub fn list_workspace_bookmarks(
     data_dir: &Path,
     workspace_folders: &[PathBuf],
@@ -292,6 +293,7 @@ pub fn list_workspace_bookmarks(
 /// # Errors
 ///
 /// Returns an error only when the sidecar directory itself cannot be scanned.
+#[cfg(test)]
 pub fn list_workspace_bookmarks_recovering(
     data_dir: &Path,
     workspace_folders: &[PathBuf],

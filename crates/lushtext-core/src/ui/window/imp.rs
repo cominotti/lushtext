@@ -16,12 +16,16 @@ use super::adaptive_shell::{
 use super::draft_ordering::{DraftMutationIntent, DraftMutationOrder};
 use super::drafts::DraftRestoreTicket;
 use super::notes::ActiveNotesBrowser;
+use super::session_restore::{SessionRestoreEvidence, SessionRestoreRuntime};
 use crate::config::{self, keys};
-use crate::model::draft::{DraftManifest, PreloadedDraftRestore};
+use crate::model::draft::{DraftManifest, DraftManifestAuthority, PreloadedDraftRestore};
 use crate::model::recent_document::RecentDocumentEntry;
 use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
-use crate::services::palette::{FileIndexBuildCoordinator, NoteSourceRefreshCoordinator};
+use crate::services::palette::{
+    FileIndexBuildCoordinator, FileIndexBuildStart, NoteSourceRefreshCoordinator,
+    NoteSourceRefreshStart,
+};
 use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::command_palette::LushtextCommandPalette;
@@ -42,6 +46,10 @@ use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Normal preview presentation: editor content with optional end preview pane.
 pub(super) const PREVIEW_LAYOUT_EDITOR: &str = "editor";
@@ -128,6 +136,22 @@ pub struct SessionState {
     pub save_debounce: Debounce,
     /// Guard flag while restoring session state from disk.
     pub restoring: Cell<bool>,
+    /// Cooperative cancellation for startup manifest/session recovery work.
+    pub restore_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    /// One paced admission wakeup before startup recovery I/O begins.
+    pub(super) restore_capacity_wakeup: crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
+    /// Active bounded GTK session-restore generation, if any.
+    pub(super) restore_runtime: RefCell<Option<SessionRestoreRuntime>>,
+    /// Monotonic identity allocated before each bounded restore generation.
+    pub(super) next_restore_generation: Cell<u64>,
+    /// Terminal or cancellation evidence retained after runtime ownership ends.
+    pub(super) last_restore_evidence: Cell<Option<SessionRestoreEvidence>>,
+    /// Aggregate tab-derived projection rebuilds, retained for boundedness proof.
+    pub(super) tab_projection_publications: Cell<u64>,
+    /// User/CLI tab-selection intent accepted since window construction.
+    pub(super) selection_generation: Cell<u64>,
+    /// Suppresses generation changes for restore-owned transient selections.
+    pub(super) applying_restore_selection: Cell<bool>,
     /// Whether the newest attempted session save failed and still needs retry.
     pub save_failed: Cell<bool>,
     /// Generation of the newest failed session save.
@@ -184,10 +208,11 @@ pub struct DraftState {
     pub orphan_cleanup_workers_high_water: Cell<usize>,
     /// In-memory draft manifest kept in sync with disk.
     pub manifest: RefCell<DraftManifest>,
+    /// Completeness and durable replacement authority for the in-memory manifest.
+    pub manifest_authority: Cell<DraftManifestAuthority>,
     /// Draft restore outcomes preloaded during session restore and consumed once.
-    pub preloaded: RefCell<HashMap<String, PreloadedDraftRestore>>,
-    /// Monotonic counter for generating unique IDs for untitled tab drafts.
-    pub next_tab_id: Cell<u64>,
+    pub preloaded:
+        RefCell<crate::ui::plain_disposal::DisposalOwned<HashMap<String, PreloadedDraftRestore>>>,
     /// Whether a draft autosave batch is currently writing draft files/manifest state.
     pub autosave_inflight: Cell<bool>,
     /// Whether another autosave pass is needed after the in-flight batch finishes.
@@ -200,6 +225,9 @@ pub struct DraftState {
     pub(super) pending_deletes: RefCell<VecDeque<DraftMutationIntent>>,
     /// IDs represented in `pending_deletes`, keeping common admission O(1).
     pub(super) pending_delete_ids: RefCell<HashSet<String>>,
+    /// Current deletion intents whose durable manifest removal may outlive a
+    /// failed body deletion and must remain explicit on a later retry.
+    pub(super) delete_tombstones: RefCell<HashMap<String, DraftMutationIntent>>,
     /// Cancellation token for the current autosave buffer copy, if any.
     pub(crate) autosave_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Cancellation token for the current close-time buffer copy, if any.
@@ -208,7 +236,7 @@ pub struct DraftState {
     /// These must not be re-written by `flush_dirty_drafts()` right before the
     /// window is destroyed.
     pub close_discard_ids: RefCell<HashSet<String>>,
-    /// Serialized startup reads skipped only by the aggregate eager budget.
+    /// Serialized non-preloaded recovery reads, including startup budget skips.
     pub(super) lazy_restore_queue: RefCell<VecDeque<DraftRestoreTicket>>,
     /// Whether one lazy draft body is currently crossing the worker boundary.
     pub(super) lazy_restore_inflight: Cell<bool>,
@@ -423,10 +451,19 @@ pub struct LushtextWindow {
     pub index_rebuild_debounce: Debounce,
     /// One-active/one-latest ownership for command-palette index traversal.
     pub file_index_builds: RefCell<FileIndexBuildCoordinator>,
+    /// Active build whose compact request is waiting for disposal replacement capacity.
+    pub file_index_admission: RefCell<Option<FileIndexBuildStart>>,
+    /// One paced capacity wakeup for a deferred file-index traversal.
+    pub(super) file_index_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// Debounce for command-palette note source refreshes after bursty note edits.
     pub command_palette_notes_refresh_debounce: Debounce,
     /// One-active/one-latest ownership for bounded palette note-source loads.
     pub command_palette_note_refreshes: RefCell<NoteSourceRefreshCoordinator>,
+    /// Active note refresh waiting to reserve replacement ownership before sidecar I/O.
+    pub command_palette_note_admission: RefCell<Option<NoteSourceRefreshStart>>,
+    /// One paced capacity wakeup for the command-palette note source.
+    pub(super) command_palette_note_capacity_wakeup:
+        crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// Focus widget saved before the command palette steals focus.
     pub saved_focus: RefCell<Option<glib::WeakRef<gtk4::Widget>>>,
     /// One-tick latch for Escape already handled by a child command-palette entry.
@@ -441,6 +478,8 @@ pub struct LushtextWindow {
     pub tab_projection_refresh_defer_depth: Cell<u32>,
     /// Editor-memory accounting used by the eviction helpers.
     pub editor_memory: EditorMemoryState,
+    /// Whether GObject disposal has begun and template callbacks must stay inert.
+    pub disposing: Cell<bool>,
     /// Session save/restore state.
     pub session: SessionState,
     /// Focus Mode reversible shell state.
@@ -528,13 +567,20 @@ impl Default for LushtextWindow {
             preview_render_debounce: Debounce::default(),
             index_rebuild_debounce: Debounce::default(),
             file_index_builds: RefCell::default(),
+            file_index_admission: RefCell::default(),
+            file_index_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup::default(
+            ),
             command_palette_notes_refresh_debounce: Debounce::default(),
             command_palette_note_refreshes: RefCell::default(),
+            command_palette_note_admission: RefCell::default(),
+            command_palette_note_capacity_wakeup:
+                crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
             saved_focus: RefCell::new(None),
             transient_child_escape_handled: Cell::new(false),
             open_paths: RefCell::new(HashSet::new()),
             tab_projection_refresh_defer_depth: Cell::new(0),
             editor_memory: EditorMemoryState::default(),
+            disposing: Cell::new(false),
             session: SessionState::default(),
             focus_mode: FocusModeState::default(),
             drafts: DraftState::default(),
@@ -920,22 +966,16 @@ impl ObjectImpl for LushtextWindow {
         self.tab_view
             .connect_notify_local(Some("selected-page"), move |_, _| {
                 if let Some(window) = window_weak.upgrade() {
-                    window.refresh_status_bar();
-                    window.refresh_sidebar_file_row_states();
-                    window.refresh_open_popover_rows();
-                    // Stamp recency before reload/evaluation so a newly active
-                    // tab invalidates any earlier LRU candidate.
-                    if let Some(editor) = window.active_editor() {
-                        window.mark_editor_memory_accessed(&editor);
+                    let session = &window.imp().session;
+                    if !session.applying_restore_selection.get() {
+                        session
+                            .selection_generation
+                            .set(session.selection_generation.get().wrapping_add(1));
                     }
-                    window.reload_if_evicted();
-                    window.maybe_evict_background_tabs();
-                    window.save_session_debounced();
-                    window.refresh_preview();
-                    window.apply_focus_mode_to_editors();
-                    if let Some(editor) = window.active_editor() {
-                        editor.refresh_minimap();
+                    if window.tab_projection_refresh_deferred() {
+                        return;
                     }
+                    window.refresh_selected_tab_model_projections();
                 }
             });
 
@@ -947,7 +987,9 @@ impl ObjectImpl for LushtextWindow {
 
         let window_weak = obj.downgrade();
         self.tab_view.connect_page_detached(move |_, page, _| {
-            if let Some(window) = window_weak.upgrade() {
+            if let Some(window) = window_weak.upgrade()
+                && !window.imp().disposing.get()
+            {
                 window.handle_tab_detached(page);
             }
         });
@@ -956,10 +998,20 @@ impl ObjectImpl for LushtextWindow {
     }
 
     fn dispose(&self) {
+        self.disposing.set(true);
+        if let Some(cancel) = self.session.restore_cancel.take() {
+            cancel.store(true, Ordering::Release);
+        }
+        self.session.restore_capacity_wakeup.cancel();
+        self.obj().cancel_session_restore_for_dispose();
         self.file_index_builds.borrow_mut().invalidate();
+        self.file_index_admission.borrow_mut().take();
+        self.file_index_capacity_wakeup.cancel();
         self.command_palette_note_refreshes
             .borrow_mut()
             .invalidate();
+        self.command_palette_note_admission.borrow_mut().take();
+        self.command_palette_note_capacity_wakeup.cancel();
         if let Some(source_id) = self.drafts.autosave_source_id.take() {
             source_id.remove();
         }

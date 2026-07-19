@@ -8,8 +8,8 @@
 //! UTF-8 files beside a JSON manifest under `$XDG_DATA_HOME/lushtext/drafts/`.
 
 use crate::model::draft::{
-    DraftCleanupContinuation, DraftEntry, DraftManifest, FileDraftRestoreResolution,
-    PreloadedDraftRestore,
+    DraftCleanupContinuation, DraftEntry, DraftManifest, DraftManifestAuthority,
+    DraftManifestCompleteness, FileDraftRestoreResolution, PreloadedDraftRestore,
 };
 use crate::model::session::SessionData;
 use crate::model::sidecar_identity::stable_path_hash;
@@ -31,7 +31,10 @@ use crate::services::{
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Groups manifest and bodies in one app-owned directory for bounded cleanup scans.
 const DRAFTS_DIR: &str = "drafts";
@@ -48,12 +51,21 @@ pub const MAX_AUTOMATIC_DRAFT_BYTES: u64 = 64 * 1024 * 1024;
 /// This separate sixty-four MiB budget protects startup peak memory. Drafts
 /// skipped only by this aggregate cap remain eligible for serialized lazy reads.
 pub const MAX_EAGER_DRAFT_PRELOAD_BYTES: u64 = 64 * 1024 * 1024;
-/// Maximum draft files inspected while rebuilding a missing or corrupt manifest.
+/// Maximum directory entries inspected while rebuilding a missing or corrupt manifest.
 ///
-/// Repair runs during startup restore, so it must be bounded. The cap is large
-/// enough for ordinary crash recovery while preventing one damaged data
-/// directory from monopolizing the background restore task.
+/// This is an aggregate inventory cap, not a page size. Hitting it preserves
+/// every body and leaves the manifest untrusted instead of publishing a subset.
 pub const MAX_MANIFEST_REPAIR_DRAFT_SCAN: usize = 2048;
+/// Maximum entries retained by one manifest-repair directory page.
+pub const MAX_MANIFEST_REPAIR_PAGE_ENTRIES: usize = 256;
+/// Maximum estimated metadata retained by one complete repaired manifest.
+pub const MAX_MANIFEST_REPAIR_METADATA_BYTES: usize = 512 * 1024;
+/// Maximum aggregate diagnostics emitted by one manifest-repair attempt.
+pub const MAX_MANIFEST_REPAIR_DIAGNOSTICS: usize = 4;
+/// Conservative fixed ownership charged for each reconstructed manifest entry.
+const MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES: usize = 96;
+/// The manifest itself shares the drafts directory but is not a draft-body entry.
+const MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE: usize = 1;
 /// Maximum draft files inspected while cleaning orphan draft bodies after restore.
 ///
 /// Matches the 2,048-entry repair bound so deferred cleanup uses the same
@@ -97,8 +109,72 @@ pub struct RestoreState {
     pub preloaded_drafts: HashMap<String, PreloadedDraftRestore>,
     /// Recovery diagnostics that should be logged or surfaced after restore.
     pub diagnostics: Vec<RecoveryDiagnostic>,
-    /// Whether it is safe to run orphan cleanup after this startup.
-    pub orphan_cleanup_allowed: bool,
+    /// Completeness and durable replacement authority for the manifest snapshot.
+    pub manifest_authority: DraftManifestAuthority,
+    /// Direct bounded-inventory evidence from startup repair, if it was needed.
+    pub manifest_repair_metrics: DraftManifestRepairMetrics,
+}
+
+/// Direct cardinality and ownership evidence for one bounded manifest repair.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DraftManifestRepairMetrics {
+    /// Directory pages admitted by the repair workflow.
+    pub pages_scanned: usize,
+    /// Raw directory entries visited during the single bounded traversal.
+    pub raw_entries_visited: usize,
+    /// Directory entries classified before terminal or bounded stop.
+    pub entries_scanned: usize,
+    /// Recognized draft bodies observed across accepted pages.
+    pub draft_bodies_seen: usize,
+    /// Entries retained in the reconstructed manifest.
+    pub manifest_entries_retained: usize,
+    /// Conservative metadata bytes retained by reconstructed entries.
+    pub retained_metadata_bytes: usize,
+    /// Aggregate diagnostics emitted for the repair attempt.
+    pub diagnostics_emitted: usize,
+    /// Whether traversal reached a stable terminal inventory.
+    pub reached_terminal_inventory: bool,
+}
+
+/// Successful manifest commit returned only after trusted reconciliation.
+#[derive(Debug)]
+pub struct DraftManifestCommit {
+    /// Complete manifest snapshot durably written by the command.
+    pub manifest: DraftManifest,
+    /// Authority established by the successful durable commit.
+    pub authority: DraftManifestAuthority,
+}
+
+/// Retryable manifest-command failure with the strongest authority still proven.
+#[derive(Debug, thiserror::Error)]
+#[error("{detail}")]
+pub struct DraftManifestUpdateError {
+    authority: DraftManifestAuthority,
+    detail: String,
+}
+
+impl DraftManifestUpdateError {
+    /// Manifest authority callers must retain after this failed command.
+    #[must_use]
+    pub const fn authority(&self) -> DraftManifestAuthority {
+        self.authority
+    }
+}
+
+#[derive(Debug)]
+struct DraftManifestInventory {
+    manifest: DraftManifest,
+    completeness: DraftManifestCompleteness,
+    metrics: DraftManifestRepairMetrics,
+    ambiguous_bodies: usize,
+    detail: Option<String>,
+}
+
+#[derive(Debug)]
+struct DraftManifestLoad {
+    load: RecoveryLoad<DraftManifest>,
+    authority: DraftManifestAuthority,
+    repair_metrics: DraftManifestRepairMetrics,
 }
 
 /// Typed failures from reading one draft body.
@@ -157,6 +233,15 @@ pub fn draft_id_for_untitled(counter: u64) -> String {
     format!("untitled-{counter:016x}")
 }
 
+/// Generate a collision-resistant draft ID for a newly created untitled tab.
+///
+/// Unlike the legacy counter-shaped helper, this remains safe before startup
+/// session descriptors have arrived and revealed IDs from an earlier process.
+#[must_use]
+pub fn new_untitled_draft_id() -> String {
+    crate::model::sidecar_identity::next_record_id("untitled")
+}
+
 /// Load the draft manifest, returning recovered/default state when metadata is
 /// missing, unreadable, or malformed.
 ///
@@ -213,8 +298,11 @@ fn save_manifest_locked(data_dir: &Path, manifest: &DraftManifest) -> Result<()>
     Ok(())
 }
 
-/// Load, mutate, and save the draft manifest under a single lock.
-/// Returns the final manifest snapshot written to disk.
+/// Reconcile, mutate, and save the draft manifest under one trusted command.
+///
+/// `known_authority` is the caller's latest window-owned state. It is never
+/// trusted by itself: the service revalidates persisted state and, when needed,
+/// completes a fresh bounded inventory while holding the write lock.
 ///
 /// # Errors
 ///
@@ -225,17 +313,131 @@ fn save_manifest_locked(data_dir: &Path, manifest: &DraftManifest) -> Result<()>
 ///
 /// Panics if the process-wide manifest write lock is poisoned by an earlier
 /// panic while the lock was held.
-pub fn update_manifest<F>(data_dir: &Path, update: F) -> Result<DraftManifest>
+pub fn update_manifest<F>(
+    data_dir: &Path,
+    session: &SessionData,
+    known_authority: DraftManifestAuthority,
+    update: F,
+) -> std::result::Result<DraftManifestCommit, DraftManifestUpdateError>
 where
     F: FnOnce(&mut DraftManifest),
 {
+    update_manifest_with_explicit_removals(
+        data_dir,
+        session,
+        known_authority,
+        &HashSet::new(),
+        update,
+    )
+}
+
+/// Remove one manifest entry while preserving its deletion intent across retries.
+///
+/// A prior attempt may already have committed the manifest removal before its
+/// body deletion failed. Passing the ID as an explicit removal prevents bounded
+/// reconciliation from reconstructing an untitled orphan or classifying a
+/// file-backed orphan as ambiguous on the retry.
+///
+/// # Errors
+///
+/// Returns an error if trusted reconciliation or the durable manifest write fails.
+pub fn remove_manifest_entry(
+    data_dir: &Path,
+    session: &SessionData,
+    known_authority: DraftManifestAuthority,
+    draft_id: &str,
+) -> std::result::Result<DraftManifestCommit, DraftManifestUpdateError> {
+    let explicitly_removed_ids = HashSet::from([draft_id.to_string()]);
+    update_manifest_with_explicit_removals(
+        data_dir,
+        session,
+        known_authority,
+        &explicitly_removed_ids,
+        |manifest| {
+            manifest.remove_by_id(draft_id);
+        },
+    )
+}
+
+fn update_manifest_with_explicit_removals<F>(
+    data_dir: &Path,
+    session: &SessionData,
+    known_authority: DraftManifestAuthority,
+    requested_removals: &HashSet<String>,
+    update: F,
+) -> std::result::Result<DraftManifestCommit, DraftManifestUpdateError>
+where
+    F: FnOnce(&mut DraftManifest),
+{
+    let cancel = AtomicBool::new(false);
     let _guard = manifest_write_lock()
         .lock()
         .expect("draft manifest write lock poisoned");
-    let mut manifest = load_manifest(data_dir)?;
+    let current = load_manifest_recovering(data_dir);
+    if !current.replacement_allowed() {
+        return Err(DraftManifestUpdateError {
+            authority: DraftManifestAuthority::default(),
+            detail: format!(
+                "draft manifest recovery evidence forbids replacement ({:?}, prior authority {:?})",
+                current.outcome, known_authority,
+            ),
+        });
+    }
+    let mut manifest = current.value;
+    if manifest
+        .cleanup_continuation
+        .as_ref()
+        .is_some_and(|continuation| !continuation.is_trusted())
+    {
+        manifest.cleanup_continuation = None;
+    }
+    let original_ids: HashSet<String> = manifest
+        .drafts
+        .iter()
+        .map(|entry| entry.draft_id.clone())
+        .collect();
     update(&mut manifest);
-    save_manifest_locked(data_dir, &manifest)?;
-    Ok(manifest)
+    let retained_ids: HashSet<&str> = manifest
+        .drafts
+        .iter()
+        .map(|entry| entry.draft_id.as_str())
+        .collect();
+    let mut explicitly_removed_ids: HashSet<String> = original_ids
+        .into_iter()
+        .filter(|draft_id| !retained_ids.contains(draft_id.as_str()))
+        .collect();
+    explicitly_removed_ids.extend(requested_removals.iter().cloned());
+    let inventory = recoverable_draft_inventory_with_candidate(
+        data_dir,
+        session,
+        &cancel,
+        DraftManifestRepairPolicy::DEFAULT,
+        manifest,
+        &explicitly_removed_ids,
+    );
+    if inventory.completeness != DraftManifestCompleteness::Complete {
+        return Err(DraftManifestUpdateError {
+            authority: DraftManifestAuthority::untrusted(inventory.completeness),
+            detail: format!(
+                "draft manifest remains untrusted after reconciliation ({:?}, prior authority {:?}): {}",
+                inventory.completeness,
+                known_authority,
+                inventory
+                    .detail
+                    .as_deref()
+                    .unwrap_or("inventory was incomplete"),
+            ),
+        });
+    }
+    let manifest = inventory.manifest;
+    save_manifest_locked(data_dir, &manifest).map_err(|error| DraftManifestUpdateError {
+        authority: DraftManifestAuthority::untrusted(DraftManifestCompleteness::Complete),
+        detail: format!("failed to persist completely reconciled draft manifest: {error}"),
+    })?;
+    Ok(DraftManifestCommit {
+        manifest,
+        authority: DraftManifestAuthority::TRUSTED,
+    })
 }
 
 /// Load the manifest, session, and any draft content needed for startup restore.
@@ -245,30 +447,45 @@ where
 /// outage into permanent session loss on the next save.
 #[must_use]
 pub fn load_restore_state(data_dir: &Path) -> RestoreState {
-    load_restore_state_with_eager_limit(data_dir, MAX_EAGER_DRAFT_PRELOAD_BYTES)
+    let cancel = AtomicBool::new(false);
+    load_restore_state_with_eager_limit_and_cancel(data_dir, MAX_EAGER_DRAFT_PRELOAD_BYTES, &cancel)
+}
+
+/// Load startup recovery state with cooperative cancellation owned by the window.
+#[must_use]
+pub fn load_restore_state_cancellable(data_dir: &Path, cancel: &AtomicBool) -> RestoreState {
+    load_restore_state_with_eager_limit_and_cancel(data_dir, MAX_EAGER_DRAFT_PRELOAD_BYTES, cancel)
 }
 
 /// Build startup state while charging bodies against a caller-supplied eager budget.
+#[cfg(test)]
 fn load_restore_state_with_eager_limit(data_dir: &Path, eager_limit: u64) -> RestoreState {
+    let cancel = AtomicBool::new(false);
+    load_restore_state_with_eager_limit_and_cancel(data_dir, eager_limit, &cancel)
+}
+
+fn load_restore_state_with_eager_limit_and_cancel(
+    data_dir: &Path,
+    eager_limit: u64,
+    cancel: &AtomicBool,
+) -> RestoreState {
     let session_load = session_service::load_recovering(data_dir);
     let session = session_load.value;
     let mut diagnostics = session_load.diagnostics;
 
-    let manifest_load = load_manifest_for_restore(data_dir, &session);
-    let mut manifest = manifest_load.value;
-    let orphan_cleanup_allowed = (manifest_load.outcome == RecoveryLoadOutcome::Loaded
-        || (manifest_load.outcome == RecoveryLoadOutcome::MissingDefault
-            && manifest_load.diagnostics.is_empty()))
-        && manifest
-            .cleanup_continuation
-            .as_ref()
-            .is_none_or(DraftCleanupContinuation::is_trusted);
-    diagnostics.extend(manifest_load.diagnostics);
+    let manifest_load = load_manifest_for_restore(data_dir, &session, cancel);
+    let mut manifest = manifest_load.load.value;
+    let mut manifest_authority = manifest_load.authority;
+    let manifest_repair_metrics = manifest_load.repair_metrics;
+    diagnostics.extend(manifest_load.load.diagnostics);
 
     let mut preloaded = HashMap::new();
     let mut stale_draft_ids = Vec::new();
     let mut preloaded_bytes = 0u64;
     for tab in &session.tabs {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
         let draft_id = match &tab.path {
             Some(path) => draft_id_for_path(path),
             None => match &tab.draft_id {
@@ -341,25 +558,81 @@ fn load_restore_state_with_eager_limit(data_dir: &Path, eager_limit: u64) -> Res
         }
     }
 
-    cleanup_stale_restore_entries(data_dir, &mut manifest, &stale_draft_ids);
+    if manifest_authority.is_trusted() {
+        manifest_authority = cleanup_stale_restore_entries(
+            data_dir,
+            &session,
+            manifest_authority,
+            &mut manifest,
+            &stale_draft_ids,
+        );
+    }
     RestoreState {
         manifest,
         session,
         preloaded_drafts: preloaded,
         diagnostics,
-        orphan_cleanup_allowed,
+        manifest_authority,
+        manifest_repair_metrics,
     }
 }
 
-/// Load the manifest through recovery repair rules used only by startup restore.
+#[derive(Clone, Copy)]
+struct DraftManifestRepairPolicy {
+    page_entries: usize,
+    max_entries: usize,
+    max_metadata_bytes: usize,
+}
+
+impl DraftManifestRepairPolicy {
+    const DEFAULT: Self = Self {
+        page_entries: MAX_MANIFEST_REPAIR_PAGE_ENTRIES,
+        max_entries: MAX_MANIFEST_REPAIR_DRAFT_SCAN,
+        max_metadata_bytes: MAX_MANIFEST_REPAIR_METADATA_BYTES,
+    };
+}
+
+struct DraftManifestRepairAttempt {
+    repair: RecoveryRepair<DraftManifest>,
+    completeness: DraftManifestCompleteness,
+    metrics: DraftManifestRepairMetrics,
+}
+
+/// Load the manifest through bounded repair and establish durable authority.
 fn load_manifest_for_restore(
     data_dir: &Path,
     session: &SessionData,
-) -> RecoveryLoad<DraftManifest> {
+    cancel: &AtomicBool,
+) -> DraftManifestLoad {
+    load_manifest_for_restore_with_persist(
+        data_dir,
+        session,
+        cancel,
+        DraftManifestRepairPolicy::DEFAULT,
+        save_manifest,
+    )
+}
+
+fn load_manifest_for_restore_with_persist<F>(
+    data_dir: &Path,
+    session: &SessionData,
+    cancel: &AtomicBool,
+    policy: DraftManifestRepairPolicy,
+    persist: F,
+) -> DraftManifestLoad
+where
+    F: Fn(&Path, &DraftManifest) -> Result<()>,
+{
     let path = manifest_path(data_dir);
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::DraftManifest);
+    let mut attempted_completeness = None;
+    let mut repair_metrics = DraftManifestRepairMetrics::default();
     let mut load = load_enveloped_json_with_repair(&config, KIND_DRAFT_MANIFEST, |context| {
-        repair_manifest_from_draft_files(data_dir, session, &context)
+        let attempt =
+            repair_manifest_from_draft_files(data_dir, session, &context, cancel, policy, false);
+        attempted_completeness = Some(attempt.completeness);
+        repair_metrics = attempt.metrics;
+        attempt.repair
     });
 
     if load.outcome == RecoveryLoadOutcome::MissingDefault {
@@ -375,128 +648,556 @@ fn load_manifest_for_restore(
             problem: &missing_problem,
             preservation: &missing_preservation,
         };
-        let repair = repair_manifest_from_draft_files(data_dir, session, &missing_context);
-        apply_manifest_repair_to_missing_load(&mut load, repair);
+        let attempt = repair_manifest_from_draft_files(
+            data_dir,
+            session,
+            &missing_context,
+            cancel,
+            policy,
+            true,
+        );
+        attempted_completeness = Some(attempt.completeness);
+        repair_metrics = attempt.metrics;
+        apply_manifest_repair_to_missing_load(&mut load, attempt.repair);
     }
 
+    // A syntactically valid manifest can still be an authoritative-looking
+    // subset left by an older bounded repair. Reconcile it against every body
+    // before granting cleanup authority so a later startup cannot delete the
+    // entries that older code omitted beyond its first scan page.
+    if load.outcome == RecoveryLoadOutcome::Loaded && load.diagnostics.is_empty() {
+        let persisted = load.value.clone();
+        let inventory = recoverable_draft_inventory_with_candidate(
+            data_dir,
+            session,
+            cancel,
+            policy,
+            persisted.clone(),
+            &HashSet::new(),
+        );
+        attempted_completeness = Some(inventory.completeness);
+        repair_metrics = inventory.metrics;
+        match inventory.completeness {
+            DraftManifestCompleteness::Complete if inventory.manifest == persisted => {}
+            DraftManifestCompleteness::Complete => {
+                load.value = inventory.manifest;
+                load.outcome = RecoveryLoadOutcome::Partial;
+                push_repair_diagnostic(
+                    &mut load.diagnostics,
+                    RecoveryDiagnostic::repaired(
+                        RecoveryMetadataClass::DraftManifest,
+                        &path,
+                        format!(
+                            "reconciled {} manifest entries against a complete {}-page draft inventory",
+                            load.value.drafts.len(),
+                            repair_metrics.pages_scanned,
+                        ),
+                    ),
+                );
+            }
+            DraftManifestCompleteness::Partial | DraftManifestCompleteness::Failed => {
+                load.value = inventory.manifest;
+                load.outcome = RecoveryLoadOutcome::Partial;
+                push_repair_diagnostic(
+                    &mut load.diagnostics,
+                    RecoveryDiagnostic::repair_skipped(
+                        RecoveryMetadataClass::DraftManifest,
+                        &path,
+                        inventory.detail.unwrap_or_else(|| {
+                            "persisted draft manifest could not be reconciled completely"
+                                .to_string()
+                        }),
+                    ),
+                );
+                if inventory.ambiguous_bodies > 0 {
+                    push_repair_diagnostic(
+                        &mut load.diagnostics,
+                        RecoveryDiagnostic::repair_skipped(
+                            RecoveryMetadataClass::DraftManifest,
+                            &path,
+                            format!(
+                                "preserved {} bodies outside the persisted manifest",
+                                inventory.ambiguous_bodies,
+                            ),
+                        ),
+                    );
+                }
+            }
+        }
+        repair_metrics.diagnostics_emitted = load.diagnostics.len();
+    }
+
+    let continuation_trusted = load
+        .value
+        .cleanup_continuation
+        .as_ref()
+        .is_none_or(DraftCleanupContinuation::is_trusted);
+    let direct_trust = manifest_load_is_directly_trusted(&load) && continuation_trusted;
+    let completeness = attempted_completeness.unwrap_or({
+        if direct_trust {
+            DraftManifestCompleteness::Complete
+        } else {
+            DraftManifestCompleteness::Failed
+        }
+    });
+    let complete_missing_empty = load.outcome == RecoveryLoadOutcome::MissingDefault
+        && load.diagnostics.is_empty()
+        && completeness == DraftManifestCompleteness::Complete
+        && repair_metrics.draft_bodies_seen == 0
+        && repair_metrics.reached_terminal_inventory;
+
+    let mut authority = if direct_trust || complete_missing_empty {
+        DraftManifestAuthority::TRUSTED
+    } else {
+        DraftManifestAuthority::untrusted(completeness)
+    };
     if load.outcome == RecoveryLoadOutcome::Partial
+        && completeness == DraftManifestCompleteness::Complete
+        && continuation_trusted
         && load.replacement_allowed()
-        && let Err(error) = save_manifest(data_dir, &load.value)
     {
-        load.diagnostics.push(RecoveryDiagnostic::repair_skipped(
-            RecoveryMetadataClass::DraftManifest,
-            &path,
-            format!("failed to write repaired manifest: {error}"),
-        ));
+        match persist(data_dir, &load.value) {
+            Ok(()) => authority = DraftManifestAuthority::TRUSTED,
+            Err(error) => {
+                push_repair_diagnostic(
+                    &mut load.diagnostics,
+                    RecoveryDiagnostic::repair_skipped(
+                        RecoveryMetadataClass::DraftManifest,
+                        &path,
+                        format!("failed to write repaired manifest: {error}"),
+                    ),
+                );
+                repair_metrics.diagnostics_emitted =
+                    load.diagnostics.len().min(MAX_MANIFEST_REPAIR_DIAGNOSTICS);
+            }
+        }
     }
 
-    load
+    DraftManifestLoad {
+        load,
+        authority,
+        repair_metrics,
+    }
 }
 
-/// Rebuild only draft manifest entries that can be proven safe from surviving draft files.
-///
-/// Untitled draft IDs are recoverable from session state or their `untitled-`
-/// prefix. File-backed hash IDs are preserved but not trusted because the
-/// original path was lost with the manifest.
+fn manifest_load_is_directly_trusted(load: &RecoveryLoad<DraftManifest>) -> bool {
+    load.outcome == RecoveryLoadOutcome::Loaded
+        && load.diagnostics.is_empty()
+        && load
+            .value
+            .cleanup_continuation
+            .as_ref()
+            .is_none_or(DraftCleanupContinuation::is_trusted)
+}
+
+/// Rebuild only entries whose untitled identity can be proven from surviving bodies.
 fn repair_manifest_from_draft_files(
     data_dir: &Path,
     session: &SessionData,
     context: &RecoveryRepairContext<'_>,
-) -> RecoveryRepair<DraftManifest> {
-    let draft_ids = match recoverable_draft_file_ids(data_dir) {
-        Ok(ids) => ids,
-        Err(error) => {
-            return RecoveryRepair::Skipped {
-                diagnostics: vec![RecoveryDiagnostic::repair_skipped(
+    cancel: &AtomicBool,
+    policy: DraftManifestRepairPolicy,
+    missing_manifest: bool,
+) -> DraftManifestRepairAttempt {
+    let inventory = recoverable_draft_inventory(data_dir, session, cancel, policy);
+    let mut diagnostics = Vec::new();
+    match inventory.completeness {
+        DraftManifestCompleteness::Complete => {
+            if !inventory.manifest.drafts.is_empty() || !missing_manifest {
+                push_repair_diagnostic(
+                    &mut diagnostics,
+                    RecoveryDiagnostic::repaired(
+                        context.class,
+                        context.path,
+                        format!(
+                            "rebuilt {} untitled draft manifest entries from a complete {}-page inventory",
+                            inventory.manifest.drafts.len(),
+                            inventory.metrics.pages_scanned,
+                        ),
+                    ),
+                );
+            }
+        }
+        DraftManifestCompleteness::Partial | DraftManifestCompleteness::Failed => {
+            push_repair_diagnostic(
+                &mut diagnostics,
+                RecoveryDiagnostic::repair_skipped(
                     context.class,
                     context.path,
-                    format!("could not scan draft files for repair: {error}"),
-                )],
-            };
+                    inventory.detail.clone().unwrap_or_else(|| {
+                        "draft manifest inventory did not reach a trusted terminal state"
+                            .to_string()
+                    }),
+                ),
+            );
         }
+    }
+    if inventory.ambiguous_bodies > 0 {
+        push_repair_diagnostic(
+            &mut diagnostics,
+            RecoveryDiagnostic::repair_skipped(
+                context.class,
+                context.path,
+                format!(
+                    "preserved {} draft bodies whose recovery metadata could not be proven safely",
+                    inventory.ambiguous_bodies,
+                ),
+            ),
+        );
+    }
+
+    let mut metrics = inventory.metrics;
+    metrics.diagnostics_emitted = diagnostics.len();
+    let repair = match inventory.completeness {
+        DraftManifestCompleteness::Complete
+            if inventory.manifest.drafts.is_empty() && missing_manifest =>
+        {
+            RecoveryRepair::Unavailable
+        }
+        DraftManifestCompleteness::Complete | DraftManifestCompleteness::Partial => {
+            RecoveryRepair::Repaired {
+                value: inventory.manifest,
+                diagnostics,
+            }
+        }
+        DraftManifestCompleteness::Failed => RecoveryRepair::Skipped { diagnostics },
     };
-
-    if draft_ids.is_empty() {
-        return RecoveryRepair::Unavailable;
-    }
-
-    let session_untitled_ids = session_untitled_draft_ids(session);
-    let mut manifest = DraftManifest::default();
-    let mut skipped = 0usize;
-    for draft_id in draft_ids {
-        if session_untitled_ids.contains(&draft_id) || draft_id.starts_with("untitled-") {
-            manifest.upsert(DraftEntry {
-                draft_id,
-                original_path: None,
-                original_mtime_secs: None,
-                saved_at_secs: editor_io::now_epoch_secs(),
-            });
-        } else {
-            skipped += 1;
-        }
-    }
-
-    let mut diagnostics = Vec::new();
-    if !manifest.drafts.is_empty() {
-        diagnostics.push(RecoveryDiagnostic::repaired(
-            context.class,
-            context.path,
-            format!(
-                "rebuilt {} untitled draft manifest entries from surviving draft files",
-                manifest.drafts.len()
-            ),
-        ));
-    }
-    if skipped > 0 {
-        diagnostics.push(RecoveryDiagnostic::repair_skipped(
-            context.class,
-            context.path,
-            format!(
-                "preserved {skipped} draft files whose original paths could not be proven safely"
-            ),
-        ));
-    }
-
-    if manifest.drafts.is_empty() {
-        RecoveryRepair::Skipped { diagnostics }
-    } else {
-        RecoveryRepair::Repaired {
-            value: manifest,
-            diagnostics,
-        }
+    DraftManifestRepairAttempt {
+        repair,
+        completeness: inventory.completeness,
+        metrics,
     }
 }
 
-/// Return draft IDs from a bounded scan that could participate in manifest repair.
-fn recoverable_draft_file_ids(data_dir: &Path) -> Result<Vec<String>> {
+fn recoverable_draft_inventory(
+    data_dir: &Path,
+    session: &SessionData,
+    cancel: &AtomicBool,
+    policy: DraftManifestRepairPolicy,
+) -> DraftManifestInventory {
+    recoverable_draft_inventory_with_candidate(
+        data_dir,
+        session,
+        cancel,
+        policy,
+        DraftManifest::default(),
+        &HashSet::new(),
+    )
+}
+
+/// Reconcile every body against the manifest state a serialized command wants
+/// to commit. Entries already present in `candidate` retain their recovery
+/// metadata; IDs removed by that same command are conservatively classified as
+/// intentional removals rather than reconstructed as orphaned bodies.
+fn recoverable_draft_inventory_with_candidate(
+    data_dir: &Path,
+    session: &SessionData,
+    cancel: &AtomicBool,
+    policy: DraftManifestRepairPolicy,
+    mut candidate: DraftManifest,
+    explicitly_removed_ids: &HashSet<String>,
+) -> DraftManifestInventory {
+    if candidate
+        .cleanup_continuation
+        .as_ref()
+        .is_some_and(|continuation| !continuation.is_trusted())
+    {
+        candidate.cleanup_continuation = None;
+    }
     let dir = drafts_dir(data_dir);
     match fs_metadata::path_status(&dir) {
-        Ok(crate::services::filesystem::PathStatus::Missing) => return Ok(Vec::new()),
-        Ok(crate::services::filesystem::PathStatus::Directory) => {}
+        Ok(PathStatus::Missing) => {
+            return DraftManifestInventory {
+                manifest: candidate,
+                completeness: DraftManifestCompleteness::Complete,
+                metrics: DraftManifestRepairMetrics {
+                    reached_terminal_inventory: true,
+                    ..DraftManifestRepairMetrics::default()
+                },
+                ambiguous_bodies: 0,
+                detail: None,
+            };
+        }
+        Ok(PathStatus::Directory) => {}
         Ok(status) => {
-            return Err(anyhow::anyhow!(
+            return failed_draft_inventory(format!(
                 "drafts path is not a directory during repair: {status:?}"
             ));
         }
         Err(error) => {
-            return Err(anyhow::anyhow!(
+            return failed_draft_inventory(format!(
                 "failed to inspect drafts directory {}: {error}",
                 dir.display()
             ));
         }
     }
 
-    let entries = fs_tree::scan_directory(
+    let initial_facts = match fs_metadata::file_facts(&dir) {
+        Ok(facts) => facts,
+        Err(error) => {
+            return failed_draft_inventory(format!(
+                "failed to capture initial drafts-directory identity: {error}"
+            ));
+        }
+    };
+    let session_untitled_ids = session_untitled_draft_ids(session);
+    let mut manifest = candidate;
+    let mut metrics = DraftManifestRepairMetrics::default();
+    if manifest.drafts.len() > policy.max_entries {
+        metrics.manifest_entries_retained = manifest.drafts.len();
+        return partial_draft_inventory(
+            manifest,
+            metrics,
+            1,
+            format!(
+                "draft manifest candidate exceeded the {}-entry inventory bound",
+                policy.max_entries,
+            ),
+        );
+    }
+    let mut ambiguous_bodies = 0usize;
+    let mut represented_ids = HashSet::new();
+    for entry in &manifest.drafts {
+        if !represented_ids.insert(entry.draft_id.clone()) {
+            return partial_draft_inventory(
+                manifest,
+                metrics,
+                1,
+                "draft manifest candidate contains duplicate identities".to_string(),
+            );
+        }
+        let retained_bytes = MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES
+            .saturating_add(entry.draft_id.len())
+            .saturating_add(
+                entry
+                    .original_path
+                    .as_ref()
+                    .map_or(0, |path| path.as_os_str().as_encoded_bytes().len()),
+            );
+        if metrics
+            .retained_metadata_bytes
+            .saturating_add(retained_bytes)
+            > policy.max_metadata_bytes
+        {
+            return partial_draft_inventory(
+                manifest,
+                metrics,
+                1,
+                format!(
+                    "draft manifest candidate exceeded the {}-byte metadata bound",
+                    policy.max_metadata_bytes,
+                ),
+            );
+        }
+        metrics.retained_metadata_bytes = metrics
+            .retained_metadata_bytes
+            .saturating_add(retained_bytes);
+    }
+    metrics.manifest_entries_retained = manifest.drafts.len();
+    let mut discovered_ids = HashSet::new();
+    let mut classification_stop = None::<String>;
+    let visit = fs_tree::visit_directory_pages_with_cancel(
         &dir,
         DirectoryScanPolicy {
-            max_entries: MAX_MANIFEST_REPAIR_DRAFT_SCAN,
+            max_entries: policy
+                .max_entries
+                .saturating_add(MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE),
             include_hidden: false,
         },
-    )?;
-    Ok(entries
-        .into_iter()
-        .filter_map(|entry| draft_id_from_draft_file_name(&entry.file_name))
-        .collect())
+        policy.page_entries,
+        || cancel.load(Ordering::Acquire),
+        |page| {
+            metrics.pages_scanned = metrics.pages_scanned.saturating_add(1);
+            for entry in page {
+                if cancel.load(Ordering::Acquire) {
+                    classification_stop = Some(
+                        "draft manifest repair was cancelled during entry classification"
+                            .to_string(),
+                    );
+                    return false;
+                }
+                if entry.file_name == MANIFEST_FILE {
+                    continue;
+                }
+                metrics.entries_scanned = metrics.entries_scanned.saturating_add(1);
+                let looks_like_draft = Path::new(&entry.file_name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("draft"));
+                let Some(draft_id) = draft_id_from_draft_file_name(&entry.file_name) else {
+                    if looks_like_draft {
+                        ambiguous_bodies = ambiguous_bodies.saturating_add(1);
+                    }
+                    continue;
+                };
+                metrics.draft_bodies_seen = metrics.draft_bodies_seen.saturating_add(1);
+                if entry.kind != FileKind::File
+                    || entry.file_name.contains('\u{fffd}')
+                    || !discovered_ids.insert(draft_id.clone())
+                {
+                    ambiguous_bodies = ambiguous_bodies.saturating_add(1);
+                    continue;
+                }
+                if represented_ids.contains(&draft_id) || explicitly_removed_ids.contains(&draft_id)
+                {
+                    continue;
+                }
+                if !(session_untitled_ids.contains(&draft_id) || draft_id.starts_with("untitled-"))
+                {
+                    ambiguous_bodies = ambiguous_bodies.saturating_add(1);
+                    continue;
+                }
+                if manifest.drafts.len() >= policy.max_entries {
+                    ambiguous_bodies = ambiguous_bodies.saturating_add(1);
+                    classification_stop = Some(format!(
+                        "draft manifest repair exceeded the {}-entry body inventory bound",
+                        policy.max_entries,
+                    ));
+                    return false;
+                }
+                let retained_bytes =
+                    MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES.saturating_add(draft_id.len());
+                if metrics
+                    .retained_metadata_bytes
+                    .saturating_add(retained_bytes)
+                    > policy.max_metadata_bytes
+                {
+                    ambiguous_bodies = ambiguous_bodies.saturating_add(1);
+                    classification_stop = Some(format!(
+                        "draft manifest repair exceeded the {}-byte metadata bound",
+                        policy.max_metadata_bytes,
+                    ));
+                    return false;
+                }
+                metrics.retained_metadata_bytes = metrics
+                    .retained_metadata_bytes
+                    .saturating_add(retained_bytes);
+                manifest.upsert(DraftEntry {
+                    draft_id: draft_id.clone(),
+                    original_path: None,
+                    original_mtime_secs: None,
+                    saved_at_secs: editor_io::now_epoch_secs(),
+                });
+                represented_ids.insert(draft_id);
+                metrics.manifest_entries_retained = manifest.drafts.len();
+            }
+            true
+        },
+    );
+    let visit = match visit {
+        Ok(visit) => visit,
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            return partial_draft_inventory(
+                manifest,
+                metrics,
+                ambiguous_bodies,
+                "draft manifest repair was cancelled during directory traversal".to_string(),
+            );
+        }
+        Err(error) => {
+            return DraftManifestInventory {
+                manifest,
+                completeness: DraftManifestCompleteness::Failed,
+                metrics,
+                ambiguous_bodies,
+                detail: Some(format!("could not scan draft files for repair: {error}")),
+            };
+        }
+    };
+    metrics.raw_entries_visited = visit.raw_entries_visited;
+    if let Some(detail) = classification_stop {
+        return partial_draft_inventory(manifest, metrics, ambiguous_bodies, detail);
+    }
+    if !visit.reached_terminal {
+        return partial_draft_inventory(
+            manifest,
+            metrics,
+            ambiguous_bodies,
+            format!(
+                "draft manifest repair exceeded the {}-entry raw inventory bound",
+                policy
+                    .max_entries
+                    .saturating_add(MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE),
+            ),
+        );
+    }
+    manifest
+        .drafts
+        .sort_unstable_by(|left, right| left.draft_id.cmp(&right.draft_id));
+
+    let final_facts = match fs_metadata::file_facts(&dir) {
+        Ok(facts) => facts,
+        Err(error) => {
+            return DraftManifestInventory {
+                manifest,
+                completeness: DraftManifestCompleteness::Failed,
+                metrics,
+                ambiguous_bodies,
+                detail: Some(format!(
+                    "failed to capture terminal drafts-directory identity: {error}"
+                )),
+            };
+        }
+    };
+    if initial_facts.identity != final_facts.identity
+        || initial_facts.modified_at_nanos != final_facts.modified_at_nanos
+        || initial_facts.byte_size != final_facts.byte_size
+    {
+        return partial_draft_inventory(
+            manifest,
+            metrics,
+            ambiguous_bodies,
+            "drafts directory changed while manifest repair was traversing".to_string(),
+        );
+    }
+    metrics.reached_terminal_inventory = true;
+    let completeness = if ambiguous_bodies == 0 {
+        DraftManifestCompleteness::Complete
+    } else {
+        DraftManifestCompleteness::Partial
+    };
+    DraftManifestInventory {
+        manifest,
+        completeness,
+        metrics,
+        ambiguous_bodies,
+        detail: (ambiguous_bodies > 0).then(|| {
+            "draft manifest inventory reached the directory end with ambiguous bodies".to_string()
+        }),
+    }
+}
+
+fn failed_draft_inventory(detail: String) -> DraftManifestInventory {
+    DraftManifestInventory {
+        manifest: DraftManifest::default(),
+        completeness: DraftManifestCompleteness::Failed,
+        metrics: DraftManifestRepairMetrics::default(),
+        ambiguous_bodies: 0,
+        detail: Some(detail),
+    }
+}
+
+fn partial_draft_inventory(
+    manifest: DraftManifest,
+    metrics: DraftManifestRepairMetrics,
+    ambiguous_bodies: usize,
+    detail: String,
+) -> DraftManifestInventory {
+    DraftManifestInventory {
+        manifest,
+        completeness: DraftManifestCompleteness::Partial,
+        metrics,
+        ambiguous_bodies,
+        detail: Some(detail),
+    }
+}
+
+fn push_repair_diagnostic(
+    diagnostics: &mut Vec<RecoveryDiagnostic>,
+    diagnostic: RecoveryDiagnostic,
+) {
+    if diagnostics.len() < MAX_MANIFEST_REPAIR_DIAGNOSTICS {
+        diagnostics.push(diagnostic);
+    }
 }
 
 fn session_untitled_draft_ids(session: &SessionData) -> HashSet<String> {
@@ -646,32 +1347,38 @@ pub fn resolve_draft_restore(
 /// backing-file mismatch.
 fn cleanup_stale_restore_entries(
     data_dir: &Path,
+    session: &SessionData,
+    authority: DraftManifestAuthority,
     manifest: &mut DraftManifest,
     stale_draft_ids: &[String],
-) {
+) -> DraftManifestAuthority {
     if stale_draft_ids.is_empty() {
-        return;
+        return authority;
     }
 
+    let mut deleted_ids = Vec::new();
     for draft_id in stale_draft_ids {
-        if let Err(e) = delete_draft_file(data_dir, draft_id) {
-            tracing::warn!("Failed to delete stale draft {draft_id}: {e}");
+        match delete_draft_file(data_dir, draft_id) {
+            Ok(()) => deleted_ids.push(draft_id.clone()),
+            Err(error) => tracing::warn!("Failed to delete stale draft {draft_id}: {error}"),
         }
     }
+    if deleted_ids.is_empty() {
+        return authority;
+    }
 
-    match update_manifest(data_dir, |manifest| {
-        for draft_id in stale_draft_ids {
+    match update_manifest(data_dir, session, authority, |manifest| {
+        for draft_id in &deleted_ids {
             manifest.remove_by_id(draft_id);
         }
     }) {
-        Ok(updated_manifest) => {
-            *manifest = updated_manifest;
+        Ok(commit) => {
+            *manifest = commit.manifest;
+            commit.authority
         }
         Err(e) => {
             tracing::warn!("Failed to persist stale draft cleanup: {e}");
-            manifest
-                .drafts
-                .retain(|entry| !stale_draft_ids.iter().any(|id| id == &entry.draft_id));
+            e.authority()
         }
     }
 }
@@ -1478,6 +2185,9 @@ mod tests {
         assert_eq!(MAX_AUTOMATIC_DRAFT_BYTES, 64 * 1024 * 1024);
         assert_eq!(MAX_EAGER_DRAFT_PRELOAD_BYTES, 64 * 1024 * 1024);
         assert_eq!(MAX_MANIFEST_REPAIR_DRAFT_SCAN, 2048);
+        assert_eq!(MAX_MANIFEST_REPAIR_PAGE_ENTRIES, 256);
+        assert_eq!(MAX_MANIFEST_REPAIR_METADATA_BYTES, 512 * 1024);
+        assert_eq!(MAX_MANIFEST_REPAIR_DIAGNOSTICS, 4);
         assert_eq!(MAX_ORPHAN_CLEANUP_DRAFT_SCAN, 2048);
     }
 
@@ -1503,6 +2213,17 @@ mod tests {
         let id = draft_id_for_untitled(42);
         assert!(id.starts_with("untitled-"));
         assert_eq!(id.len(), "untitled-".len() + 16);
+    }
+
+    #[test]
+    fn new_untitled_draft_ids_are_distinct_from_legacy_startup_ids() {
+        let first = new_untitled_draft_id();
+        let second = new_untitled_draft_id();
+
+        assert!(first.starts_with("untitled-"));
+        assert_ne!(first, second);
+        assert_ne!(first, draft_id_for_untitled(0));
+        assert_ne!(second, draft_id_for_untitled(0));
     }
 
     #[test]
@@ -1641,7 +2362,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_manifest_does_not_run_missing_manifest_repair_from_orphaned_drafts() {
+    fn loaded_manifest_reconciles_bodies_omitted_by_an_older_repair() {
         let dir = TempDir::new().expect("expected operation to succeed");
         write_draft(dir.path(), "untitled-orphan", "orphan content").expect("write orphan draft");
         let manifest = DraftManifest {
@@ -1655,11 +2376,423 @@ mod tests {
         };
         save_manifest(dir.path(), &manifest).expect("save manifest");
 
-        let load = load_manifest_for_restore(dir.path(), &SessionData::default());
+        let cancel = AtomicBool::new(false);
+        let load = load_manifest_for_restore(dir.path(), &SessionData::default(), &cancel);
 
-        assert_eq!(load.outcome, RecoveryLoadOutcome::Loaded);
-        assert_eq!(load.value, manifest);
-        assert!(load.diagnostics.is_empty());
+        assert_eq!(load.load.outcome, RecoveryLoadOutcome::Partial);
+        assert_eq!(load.load.value.drafts.len(), 2);
+        assert!(load.load.value.find_by_id("manifest-entry").is_some());
+        assert!(load.load.value.find_by_id("untitled-orphan").is_some());
+        assert!(!load.load.diagnostics.is_empty());
+        assert_eq!(load.authority, DraftManifestAuthority::TRUSTED);
+        assert_eq!(
+            load_manifest(dir.path())
+                .expect("load reconciled manifest")
+                .drafts
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn manifest_repair_reaches_terminal_inventory_across_multiple_pages() {
+        let dir = TempDir::new().expect("multi-page repair tempdir");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        for index in 0..5 {
+            fixture::write_text(
+                &draft_path(dir.path(), &format!("untitled-page-{index}")),
+                "body",
+            );
+        }
+        let cancel = AtomicBool::new(false);
+        let load = load_manifest_for_restore_with_persist(
+            dir.path(),
+            &SessionData::default(),
+            &cancel,
+            DraftManifestRepairPolicy {
+                page_entries: 2,
+                max_entries: 8,
+                max_metadata_bytes: MAX_MANIFEST_REPAIR_METADATA_BYTES,
+            },
+            save_manifest,
+        );
+
+        assert_eq!(load.authority, DraftManifestAuthority::TRUSTED);
+        assert_eq!(load.repair_metrics.pages_scanned, 3);
+        assert_eq!(load.repair_metrics.raw_entries_visited, 5);
+        assert_eq!(load.repair_metrics.entries_scanned, 5);
+        assert_eq!(load.repair_metrics.manifest_entries_retained, 5);
+        assert!(load.repair_metrics.reached_terminal_inventory);
+        assert_eq!(load.load.value.drafts.len(), 5);
+        assert_eq!(
+            load_manifest(dir.path()).expect("repaired manifest is durable"),
+            load.load.value
+        );
+    }
+
+    #[test]
+    fn manifest_repair_raw_visit_cap_is_one_pass_and_non_authoritative() {
+        let dir = TempDir::new().expect("bounded repair tempdir");
+        for index in 0..6 {
+            write_draft(dir.path(), &format!("untitled-bounded-{index}"), "body")
+                .expect("write bounded body");
+        }
+        let cancel = AtomicBool::new(false);
+        let load = load_manifest_for_restore_with_persist(
+            dir.path(),
+            &SessionData::default(),
+            &cancel,
+            DraftManifestRepairPolicy {
+                page_entries: 2,
+                max_entries: 3,
+                max_metadata_bytes: MAX_MANIFEST_REPAIR_METADATA_BYTES,
+            },
+            save_manifest,
+        );
+
+        assert_eq!(
+            load.authority.completeness,
+            DraftManifestCompleteness::Partial
+        );
+        assert!(!load.authority.is_trusted());
+        assert_eq!(load.repair_metrics.raw_entries_visited, 4);
+        assert_eq!(load.repair_metrics.entries_scanned, 4);
+        assert_eq!(load.repair_metrics.manifest_entries_retained, 3);
+        assert_eq!(load.repair_metrics.pages_scanned, 2);
+        assert!(!load.repair_metrics.reached_terminal_inventory);
+        assert!(!fixture::exists(&manifest_path(dir.path())));
+        for index in 0..6 {
+            assert!(fixture::exists(&draft_path(
+                dir.path(),
+                &format!("untitled-bounded-{index}")
+            )));
+        }
+    }
+
+    #[test]
+    fn manifest_repair_rejects_an_over_limit_candidate_without_truncating_it() {
+        let dir = TempDir::new().expect("over-limit manifest tempdir");
+        let manifest = DraftManifest {
+            drafts: (0..4)
+                .map(|index| DraftEntry {
+                    draft_id: format!("untitled-candidate-{index}"),
+                    original_path: None,
+                    original_mtime_secs: None,
+                    saved_at_secs: 1,
+                })
+                .collect(),
+            cleanup_continuation: None,
+        };
+        save_manifest(dir.path(), &manifest).expect("save over-limit manifest");
+        let cancel = AtomicBool::new(false);
+
+        let load = load_manifest_for_restore_with_persist(
+            dir.path(),
+            &SessionData::default(),
+            &cancel,
+            DraftManifestRepairPolicy {
+                page_entries: 2,
+                max_entries: 3,
+                max_metadata_bytes: MAX_MANIFEST_REPAIR_METADATA_BYTES,
+            },
+            save_manifest,
+        );
+
+        assert_eq!(
+            load.authority.completeness,
+            DraftManifestCompleteness::Partial
+        );
+        assert!(!load.authority.is_trusted());
+        assert_eq!(load.repair_metrics.manifest_entries_retained, 4);
+        assert_eq!(load.load.value, manifest);
+        assert_eq!(
+            load_manifest(dir.path()).expect("preserved over-limit manifest"),
+            manifest
+        );
+    }
+
+    #[test]
+    fn manifest_repair_scan_failure_is_failed_and_non_authoritative() {
+        let dir = TempDir::new().expect("failed repair tempdir");
+        fixture::write_text(&drafts_dir(dir.path()), "not a directory");
+        let cancel = AtomicBool::new(false);
+
+        let load = load_manifest_for_restore(dir.path(), &SessionData::default(), &cancel);
+
+        assert_eq!(
+            load.authority.completeness,
+            DraftManifestCompleteness::Failed
+        );
+        assert!(!load.authority.is_trusted());
+        assert!(!load.repair_metrics.reached_terminal_inventory);
+    }
+
+    #[test]
+    fn manifest_repair_ambiguity_preserves_body_without_writing_subset() {
+        let dir = TempDir::new().expect("ambiguous repair tempdir");
+        write_draft(dir.path(), "abcdef0123456789", "ambiguous body")
+            .expect("write ambiguous body");
+        let cancel = AtomicBool::new(false);
+
+        let load = load_manifest_for_restore(dir.path(), &SessionData::default(), &cancel);
+
+        assert_eq!(
+            load.authority.completeness,
+            DraftManifestCompleteness::Partial
+        );
+        assert!(!load.authority.is_trusted());
+        assert_eq!(load.repair_metrics.draft_bodies_seen, 1);
+        assert!(load.repair_metrics.reached_terminal_inventory);
+        assert!(!fixture::exists(&manifest_path(dir.path())));
+        assert!(fixture::exists(&draft_path(dir.path(), "abcdef0123456789")));
+    }
+
+    #[test]
+    fn manifest_repair_metadata_cap_preserves_every_body() {
+        let dir = TempDir::new().expect("metadata cap tempdir");
+        write_draft(dir.path(), "untitled-metadata-a", "a").expect("write first body");
+        write_draft(dir.path(), "untitled-metadata-b", "b").expect("write second body");
+        let cancel = AtomicBool::new(false);
+        let load = load_manifest_for_restore_with_persist(
+            dir.path(),
+            &SessionData::default(),
+            &cancel,
+            DraftManifestRepairPolicy {
+                page_entries: 2,
+                max_entries: 8,
+                max_metadata_bytes: MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES + 4,
+            },
+            save_manifest,
+        );
+
+        assert_eq!(
+            load.authority.completeness,
+            DraftManifestCompleteness::Partial
+        );
+        assert!(!load.authority.is_trusted());
+        assert!(!fixture::exists(&manifest_path(dir.path())));
+        assert!(fixture::exists(&draft_path(
+            dir.path(),
+            "untitled-metadata-a"
+        )));
+        assert!(fixture::exists(&draft_path(
+            dir.path(),
+            "untitled-metadata-b"
+        )));
+    }
+
+    #[test]
+    fn failed_repair_write_stays_untrusted_until_later_reconciliation() {
+        let dir = TempDir::new().expect("repair write failure tempdir");
+        write_draft(dir.path(), "untitled-retry", "retry body").expect("write retry body");
+        let cancel = AtomicBool::new(false);
+        let failed = load_manifest_for_restore_with_persist(
+            dir.path(),
+            &SessionData::default(),
+            &cancel,
+            DraftManifestRepairPolicy::DEFAULT,
+            |_, _| anyhow::bail!("injected repair persistence failure"),
+        );
+
+        assert_eq!(
+            failed.authority.completeness,
+            DraftManifestCompleteness::Complete
+        );
+        assert!(!failed.authority.is_trusted());
+        assert!(!fixture::exists(&manifest_path(dir.path())));
+        assert!(fixture::exists(&draft_path(dir.path(), "untitled-retry")));
+
+        let recovered = load_restore_state(dir.path());
+        assert!(recovered.manifest_authority.is_trusted());
+        assert!(recovered.manifest.find_by_id("untitled-retry").is_some());
+        assert!(fixture::exists(&draft_path(dir.path(), "untitled-retry")));
+    }
+
+    #[test]
+    fn manifest_update_cannot_publish_subset_while_ambiguous_body_survives() {
+        let dir = TempDir::new().expect("untrusted update tempdir");
+        write_draft(dir.path(), "abcdef0123456789", "ambiguous body")
+            .expect("write ambiguous body");
+        write_draft(dir.path(), "untitled-new", "new body").expect("write new body");
+        let new_entry = DraftEntry {
+            draft_id: "untitled-new".to_string(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 7,
+        };
+
+        let error = update_manifest(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::default(),
+            |manifest| manifest.upsert(new_entry.clone()),
+        )
+        .expect_err("partial inventory must reject manifest replacement");
+
+        assert!(error.to_string().contains("remains untrusted"));
+        assert!(!fixture::exists(&manifest_path(dir.path())));
+        assert!(fixture::exists(&draft_path(dir.path(), "abcdef0123456789")));
+        assert!(fixture::exists(&draft_path(dir.path(), "untitled-new")));
+
+        delete_draft_file(dir.path(), "abcdef0123456789").expect("remove ambiguity");
+        let commit = update_manifest(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::default(),
+            |manifest| manifest.upsert(new_entry.clone()),
+        )
+        .expect("later complete reconciliation may commit");
+        assert!(commit.authority.is_trusted());
+        assert_eq!(commit.manifest.find_by_id("untitled-new"), Some(&new_entry));
+    }
+
+    #[test]
+    fn explicit_untitled_removal_is_not_reconstructed_after_body_delete_failure() {
+        let dir = TempDir::new().expect("untitled removal retry tempdir");
+        let draft_id = "untitled-delete-retry";
+        write_draft(dir.path(), draft_id, "retained retry body").expect("write retry body");
+        let session = SessionData {
+            tabs: vec![crate::model::session::SessionTab {
+                path: None,
+                draft_id: Some(draft_id.to_string()),
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        };
+
+        let commit = remove_manifest_entry(
+            dir.path(),
+            &session,
+            DraftManifestAuthority::default(),
+            draft_id,
+        )
+        .expect("explicit untitled removal remains trusted");
+
+        assert!(commit.manifest.find_by_id(draft_id).is_none());
+        assert!(fixture::exists(&draft_path(dir.path(), draft_id)));
+    }
+
+    #[test]
+    fn explicit_file_backed_removal_is_not_ambiguous_after_body_delete_failure() {
+        let dir = TempDir::new().expect("file-backed removal retry tempdir");
+        let path = dir.path().join("file-backed.txt");
+        fixture::write_text(&path, "disk body\n");
+        let draft_id = draft_id_for_path(&path);
+        write_draft(dir.path(), &draft_id, "retained retry body").expect("write retry body");
+        let session = SessionData {
+            tabs: vec![crate::model::session::SessionTab {
+                path: Some(path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        };
+
+        let commit = remove_manifest_entry(
+            dir.path(),
+            &session,
+            DraftManifestAuthority::default(),
+            &draft_id,
+        )
+        .expect("explicit file-backed removal remains trusted");
+
+        assert!(commit.manifest.find_by_id(&draft_id).is_none());
+        assert!(fixture::exists(&draft_path(dir.path(), &draft_id)));
+    }
+
+    #[test]
+    fn authoritative_looking_subset_stays_untrusted_across_repeated_startup() {
+        let dir = TempDir::new().expect("legacy subset tempdir");
+        save_manifest(dir.path(), &DraftManifest::default()).expect("seed legacy subset");
+        write_draft(dir.path(), "abcdef0123456789", "omitted body")
+            .expect("write body omitted by legacy repair");
+
+        for _ in 0..2 {
+            let restored = load_restore_state(dir.path());
+            assert_eq!(
+                restored.manifest_authority.completeness,
+                DraftManifestCompleteness::Partial
+            );
+            assert!(!restored.manifest_authority.is_trusted());
+            assert!(fixture::exists(&draft_path(dir.path(), "abcdef0123456789")));
+            assert!(
+                load_manifest(dir.path())
+                    .expect("legacy manifest remains readable")
+                    .drafts
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_manifest_repair_returns_partial_non_authority() {
+        let dir = TempDir::new().expect("cancelled repair tempdir");
+        write_draft(dir.path(), "untitled-cancelled", "body").expect("write body");
+        let cancel = AtomicBool::new(true);
+
+        let load = load_manifest_for_restore(dir.path(), &SessionData::default(), &cancel);
+
+        assert_eq!(
+            load.authority.completeness,
+            DraftManifestCompleteness::Partial
+        );
+        assert!(!load.authority.is_trusted());
+        assert!(!fixture::exists(&manifest_path(dir.path())));
+        assert!(fixture::exists(&draft_path(
+            dir.path(),
+            "untitled-cancelled"
+        )));
+    }
+
+    #[test]
+    fn multi_start_multi_page_repair_preserves_all_bodies_through_cleanup() {
+        let dir = TempDir::new().expect("multi-start repair tempdir");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        for index in 0..MAX_MANIFEST_REPAIR_DRAFT_SCAN {
+            fixture::write_text(
+                &draft_path(dir.path(), &format!("untitled-scale-{index:04}")),
+                "body",
+            );
+        }
+
+        let first = load_restore_state(dir.path());
+        assert!(first.manifest_authority.is_trusted());
+        assert!(first.manifest_repair_metrics.pages_scanned > 1);
+        assert!(first.manifest_repair_metrics.reached_terminal_inventory);
+        assert_eq!(first.manifest.drafts.len(), MAX_MANIFEST_REPAIR_DRAFT_SCAN);
+
+        let second = load_restore_state(dir.path());
+        assert!(second.manifest_authority.is_trusted());
+        assert_eq!(second.manifest.drafts.len(), MAX_MANIFEST_REPAIR_DRAFT_SCAN);
+
+        let mut manifest = second.manifest;
+        let mut manifest_offset = 0usize;
+        let mut cleanup_pages = 0usize;
+        loop {
+            cleanup_pages = cleanup_pages.saturating_add(1);
+            assert!(cleanup_pages <= 16, "cleanup continuation must terminate");
+            let plan = inspect_orphan_cleanup_from(dir.path(), &manifest, manifest_offset)
+                .expect("inspect cleanup page");
+            let outcome = execute_orphan_cleanup(dir.path(), plan);
+            assert!(outcome.deleted_files.is_empty());
+            assert!(outcome.committed_manifest_removals.is_empty());
+            manifest = load_manifest(dir.path()).expect("reload cleanup manifest");
+            if !outcome.has_more_work {
+                break;
+            }
+            manifest_offset = outcome.next_manifest_offset.unwrap_or(0);
+        }
+        assert!(cleanup_pages > 1);
+        assert_eq!(manifest.drafts.len(), MAX_MANIFEST_REPAIR_DRAFT_SCAN);
+        for entry in &manifest.drafts {
+            assert!(fixture::exists(&draft_path(dir.path(), &entry.draft_id)));
+        }
     }
 
     #[test]
@@ -1670,18 +2803,23 @@ mod tests {
         let first_data_dir = data_dir.clone();
 
         let first = std::thread::spawn(move || {
-            update_manifest(&first_data_dir, |manifest| {
-                manifest.upsert(DraftEntry {
-                    draft_id: "first".into(),
-                    original_path: Some(PathBuf::from("/first.rs")),
-                    original_mtime_secs: None,
-                    saved_at_secs: 1,
-                });
-                entered_tx.send(()).expect("expected operation to succeed");
-                // Hold the read-modify-write lock long enough for the second
-                // thread to prove it waits for the first saved snapshot.
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            })
+            update_manifest(
+                &first_data_dir,
+                &SessionData::default(),
+                DraftManifestAuthority::default(),
+                |manifest| {
+                    manifest.upsert(DraftEntry {
+                        draft_id: "first".into(),
+                        original_path: Some(PathBuf::from("/first.rs")),
+                        original_mtime_secs: None,
+                        saved_at_secs: 1,
+                    });
+                    entered_tx.send(()).expect("expected operation to succeed");
+                    // Hold the read-modify-write lock long enough for the second
+                    // thread to prove it waits for the first saved snapshot.
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                },
+            )
             .expect("expected operation to succeed");
         });
 
@@ -1690,14 +2828,19 @@ mod tests {
             .expect("expected first update to enter critical section");
         let second_data_dir = data_dir.clone();
         let second = std::thread::spawn(move || {
-            update_manifest(&second_data_dir, |manifest| {
-                manifest.upsert(DraftEntry {
-                    draft_id: "second".into(),
-                    original_path: Some(PathBuf::from("/second.rs")),
-                    original_mtime_secs: None,
-                    saved_at_secs: 2,
-                });
-            })
+            update_manifest(
+                &second_data_dir,
+                &SessionData::default(),
+                DraftManifestAuthority::default(),
+                |manifest| {
+                    manifest.upsert(DraftEntry {
+                        draft_id: "second".into(),
+                        original_path: Some(PathBuf::from("/second.rs")),
+                        original_mtime_secs: None,
+                        saved_at_secs: 2,
+                    });
+                },
+            )
             .expect("expected operation to succeed");
         });
 
@@ -1985,7 +3128,7 @@ mod tests {
         let restore = load_restore_state(dir.path());
 
         assert!(
-            restore.orphan_cleanup_allowed,
+            restore.manifest_authority.is_trusted(),
             "a clean loaded manifest may participate in normal orphan cleanup"
         );
         assert!(restore.diagnostics.is_empty());
@@ -1998,7 +3141,7 @@ mod tests {
         let restore = load_restore_state(dir.path());
 
         assert!(
-            restore.orphan_cleanup_allowed,
+            restore.manifest_authority.is_trusted(),
             "a missing manifest with no surviving draft evidence may run normal orphan cleanup"
         );
         assert!(restore.manifest.drafts.is_empty());
@@ -2014,7 +3157,7 @@ mod tests {
         let restore = load_restore_state(dir.path());
 
         assert!(
-            !restore.orphan_cleanup_allowed,
+            !restore.manifest_authority.is_trusted(),
             "missing manifests with ambiguous surviving drafts must preserve evidence"
         );
         assert!(restore.manifest.drafts.is_empty());
@@ -2117,8 +3260,8 @@ mod tests {
             "repaired manifest should include the safe untitled draft"
         );
         assert!(
-            !restore.orphan_cleanup_allowed,
-            "startup cleanup stays disabled after manifest corruption"
+            restore.manifest_authority.is_trusted(),
+            "complete durable reconciliation restores cleanup authority"
         );
         assert!(restore.diagnostics.iter().any(|diagnostic| {
             diagnostic.class == RecoveryMetadataClass::DraftManifest
@@ -2173,8 +3316,8 @@ mod tests {
         );
         assert!(restore.manifest.find_by_id(draft_id).is_some());
         assert!(
-            !restore.orphan_cleanup_allowed,
-            "repaired missing manifests stay conservative until persisted state is trusted"
+            restore.manifest_authority.is_trusted(),
+            "a complete repaired manifest becomes trusted only after durable persistence"
         );
     }
 
@@ -2198,7 +3341,7 @@ mod tests {
 
         assert!(restore.manifest.drafts.is_empty());
         assert!(
-            !restore.orphan_cleanup_allowed,
+            !restore.manifest_authority.is_trusted(),
             "orphan cleanup must not delete ambiguous surviving drafts"
         );
         assert_eq!(
@@ -2257,7 +3400,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_restore_cleanup_fallback_retains_only_non_stale_entries() {
+    fn stale_restore_cleanup_failure_preserves_manifest_and_revokes_authority() {
         let dir = TempDir::new().expect("expected operation to succeed");
         write_draft(dir.path(), "stale", "stale content").expect("expected operation to succeed");
         write_draft(dir.path(), "keep", "keep content").expect("expected operation to succeed");
@@ -2281,9 +3424,18 @@ mod tests {
         };
         fixture::create_dir_all(&drafts_dir(dir.path()).join(MANIFEST_FILE));
 
-        cleanup_stale_restore_entries(dir.path(), &mut manifest, &[String::from("stale")]);
+        let authority = cleanup_stale_restore_entries(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::TRUSTED,
+            &mut manifest,
+            &[String::from("stale")],
+        );
 
-        assert_eq!(manifest.drafts, vec![keep]);
+        assert!(!authority.is_trusted());
+        assert_eq!(manifest.drafts.len(), 2);
+        assert_eq!(manifest.find_by_id("keep"), Some(&keep));
+        assert!(manifest.find_by_id("stale").is_some());
         assert_eq!(
             read_draft(dir.path(), "stale").expect("expected operation to succeed"),
             None
@@ -2564,8 +3716,14 @@ mod tests {
             original_mtime_secs: None,
             saved_at_secs: 7,
         };
-        update_manifest(dir.path(), |manifest| manifest.upsert(concurrent.clone()))
-            .expect("commit concurrent autosave");
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![concurrent.clone()],
+                cleanup_continuation: None,
+            },
+        )
+        .expect("simulate a concurrent manifest commit");
         let outcome = execute_orphan_cleanup(dir.path(), plan);
 
         assert!(outcome.directory_continuation.is_some());
@@ -2615,7 +3773,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_persisted_continuation_disables_startup_cleanup() {
+    fn invalid_persisted_continuation_is_cleared_after_complete_reconciliation() {
         let dir = TempDir::new().expect("invalid continuation tempdir");
         let manifest = DraftManifest {
             drafts: Vec::new(),
@@ -2628,11 +3786,16 @@ mod tests {
 
         let restore = load_restore_state(dir.path());
 
-        assert!(!restore.orphan_cleanup_allowed);
-        assert!(matches!(
-            inspect_orphan_cleanup(dir.path(), &restore.manifest),
-            Err(DraftOrphanCleanupScanError::UntrustedContinuation { .. })
-        ));
+        assert!(restore.manifest_authority.is_trusted());
+        assert!(restore.manifest.cleanup_continuation.is_none());
+        assert!(
+            load_manifest(dir.path())
+                .expect("load repaired continuation")
+                .cleanup_continuation
+                .is_none()
+        );
+        inspect_orphan_cleanup(dir.path(), &restore.manifest)
+            .expect("cleanup is safe after the repaired manifest is durable");
     }
 
     #[test]

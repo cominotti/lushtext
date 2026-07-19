@@ -5,18 +5,41 @@
 //! This slice keeps the tree-model and drill-down orchestration together so the
 //! public facade can stay focused on the widget API and callback surface.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, glib};
 
 use crate::model::workspace::{FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId};
+use crate::model::workspace_scan::{
+    WorkspaceScanFinish as ChildScanFinish, WorkspaceScanSubmission as ChildScanSubmission,
+    WorkspaceScanTicket as ChildScanTicket,
+};
 use crate::services;
 use crate::ui::accessibility;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 
 use super::LushtextWorkspaceSection;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) enum FolderEmptyProbeKey {
+    Stable(WorkspaceFolderId),
+    Path(PathBuf),
+}
+
+pub(super) struct ActiveFolderEmptyProbe {
+    ticket: ChildScanTicket,
+    folder_path: PathBuf,
+}
+
+pub(super) struct PendingFolderEmptyProbe {
+    ticket: ChildScanTicket,
+    store: glib::WeakRef<gio::ListStore>,
+    item: glib::WeakRef<FileTreeItem>,
+    folder_path: PathBuf,
+    initial_index: u32,
+}
 
 impl LushtextWorkspaceSection {
     /// Load workspace folder paths into the file tree.
@@ -477,18 +500,180 @@ pub(super) fn schedule_folder_empty_check(
     folder_path: std::path::PathBuf,
     initial_index: u32,
 ) {
-    let path_for_check = folder_path.clone();
+    let key = item.workspace_folder_id().map_or_else(
+        || FolderEmptyProbeKey::Path(folder_path.clone()),
+        FolderEmptyProbeKey::Stable,
+    );
+    let lifetime = section.imp().child_scan_lifetime.get();
+    let (submission, metrics) = {
+        let mut flights = section.imp().folder_empty_flights.borrow_mut();
+        let flight = flights.entry(key.clone()).or_default();
+        let submission = flight.submit(lifetime);
+        (submission, flight.metrics())
+    };
+    let refresh = &section.imp().refresh_runtime;
+    refresh.empty_probe_active_per_folder_high_water.set(
+        refresh
+            .empty_probe_active_per_folder_high_water
+            .get()
+            .max(metrics.active_high_water),
+    );
+    refresh.empty_probe_pending_per_folder_high_water.set(
+        refresh
+            .empty_probe_pending_per_folder_high_water
+            .get()
+            .max(metrics.pending_high_water),
+    );
+    let ticket = match submission {
+        ChildScanSubmission::Start(ticket) | ChildScanSubmission::QueueLatest { ticket, .. } => {
+            ticket
+        }
+    };
+    let request = PendingFolderEmptyProbe {
+        ticket,
+        store: top_level_store.downgrade(),
+        item: item.downgrade(),
+        folder_path,
+        initial_index,
+    };
+
+    match submission {
+        ChildScanSubmission::Start(_) => start_folder_empty_probe(section, key, request),
+        ChildScanSubmission::QueueLatest { cancel_active, .. } => {
+            section
+                .imp()
+                .folder_empty_pending
+                .borrow_mut()
+                .insert(key.clone(), request);
+            let cancelled_before_admission = section
+                .imp()
+                .folder_empty_admission
+                .borrow_mut()
+                .remove(&key)
+                .is_some_and(|waiting| waiting.ticket == cancel_active);
+            if cancelled_before_admission {
+                finish_folder_empty_probe(section, key, cancel_active);
+            } else {
+                super::tree_loading::sync_child_scan_busy_state(section);
+            }
+        }
+    }
+}
+
+fn start_folder_empty_probe(
+    section: &LushtextWorkspaceSection,
+    key: FolderEmptyProbeKey,
+    request: PendingFolderEmptyProbe,
+) {
+    let lifetime = section.imp().child_scan_lifetime.get();
+    let is_active = section
+        .imp()
+        .folder_empty_flights
+        .borrow()
+        .get(&key)
+        .is_some_and(|flight| flight.active() == Some(request.ticket));
+    if !is_active || request.ticket.lifetime != lifetime {
+        finish_folder_empty_probe(section, key, request.ticket);
+        return;
+    }
+    let Some(permit) = super::tree_loading::try_acquire_workspace_scan_permit() else {
+        section
+            .imp()
+            .folder_empty_admission
+            .borrow_mut()
+            .insert(key, request);
+        super::tree_loading::arm_workspace_scan_admission_retry(section);
+        super::tree_loading::sync_child_scan_busy_state(section);
+        return;
+    };
+    section
+        .imp()
+        .folder_empty_admission
+        .borrow_mut()
+        .remove(&key);
+    let Some(top_level_store) = request.store.upgrade() else {
+        drop(permit);
+        finish_folder_empty_probe(section, key, request.ticket);
+        return;
+    };
+    let Some(item) = request.item.upgrade() else {
+        drop(permit);
+        finish_folder_empty_probe(section, key, request.ticket);
+        return;
+    };
+    section.imp().folder_empty_active.borrow_mut().insert(
+        key.clone(),
+        ActiveFolderEmptyProbe {
+            ticket: request.ticket,
+            folder_path: request.folder_path.clone(),
+        },
+    );
+    super::tree_loading::sync_child_scan_busy_state(section);
+
     let section_weak = section.downgrade();
+    let path_for_check = request.folder_path.clone();
+    let ticket = request.ticket;
+    let initial_index = request.initial_index;
+    #[cfg(feature = "test-utils")]
+    let scan_delay = section.imp().refresh_runtime.test_scan_delay.get();
+    #[cfg(feature = "test-utils")]
+    let empty_probe_reads = section.imp().refresh_runtime.test_empty_probe_reads.clone();
     gtk_lush_tasks::spawn_blocking_then(
-        (top_level_store.clone(), item.clone(), folder_path),
-        move || services::file_tree::is_dir_empty(&path_for_check),
-        move |(top_level_store, item, folder_path), is_empty| {
+        (top_level_store, item, request.folder_path, permit),
+        move || {
+            let is_empty = services::file_tree::is_dir_empty(&path_for_check);
+            #[cfg(feature = "test-utils")]
+            {
+                empty_probe_reads.fetch_add(1, std::sync::atomic::Ordering::Release);
+                if !scan_delay.is_zero() {
+                    std::thread::sleep(scan_delay);
+                }
+            }
+            is_empty
+        },
+        move |(top_level_store, item, folder_path, _permit), is_empty| {
             let Some(section) = section_weak.upgrade() else {
                 return;
             };
-            if !section.imp().drilldown_stack.borrow().is_empty()
+            let current = section
+                .imp()
+                .folder_empty_flights
+                .borrow()
+                .get(&key)
+                .is_some_and(|flight| {
+                    flight.is_current(ticket, section.imp().child_scan_lifetime.get())
+                });
+            let owns_active = section
+                .imp()
+                .folder_empty_active
+                .borrow()
+                .get(&key)
+                .is_some_and(|active| active.ticket == ticket && active.folder_path == folder_path);
+            let owns_store = section
+                .imp()
+                .top_level_store
+                .borrow()
+                .as_ref()
+                .is_some_and(|owned| owned.as_ptr() == top_level_store.as_ptr());
+            if !current
+                || !owns_active
+                || !owns_store
+                || !section.imp().drilldown_stack.borrow().is_empty()
                 || item.path().as_deref() != Some(folder_path.as_path())
             {
+                section
+                    .imp()
+                    .refresh_runtime
+                    .empty_probe_stale_rejections
+                    .set(
+                        section
+                            .imp()
+                            .refresh_runtime
+                            .empty_probe_stale_rejections
+                            .get()
+                            .saturating_add(1),
+                    );
+                finish_folder_empty_probe(&section, key, ticket);
                 return;
             }
 
@@ -513,11 +698,138 @@ pub(super) fn schedule_folder_empty_check(
             };
 
             let Some(current_index) = current_index else {
+                finish_folder_empty_probe(&section, key, ticket);
                 return;
             };
 
             item.set_is_empty(Some(is_empty));
             top_level_store.splice(current_index, 1, &[item]);
+            let refresh = &section.imp().refresh_runtime;
+            refresh.empty_probe_terminal_publications.set(
+                refresh
+                    .empty_probe_terminal_publications
+                    .get()
+                    .saturating_add(1),
+            );
+            finish_folder_empty_probe(&section, key, ticket);
         },
     );
+}
+
+pub(super) fn retry_one_folder_empty_admission(section: &LushtextWorkspaceSection) -> bool {
+    let key = section
+        .imp()
+        .folder_empty_admission
+        .borrow()
+        .keys()
+        .next()
+        .cloned();
+    let Some(key) = key else {
+        return false;
+    };
+    let Some(request) = section
+        .imp()
+        .folder_empty_admission
+        .borrow_mut()
+        .remove(&key)
+    else {
+        return false;
+    };
+    start_folder_empty_probe(section, key, request);
+    true
+}
+
+fn finish_folder_empty_probe(
+    section: &LushtextWorkspaceSection,
+    key: FolderEmptyProbeKey,
+    ticket: ChildScanTicket,
+) {
+    let active_matches = section
+        .imp()
+        .folder_empty_active
+        .borrow()
+        .get(&key)
+        .is_some_and(|active| active.ticket == ticket);
+    if active_matches {
+        section.imp().folder_empty_active.borrow_mut().remove(&key);
+    }
+    let finish = section
+        .imp()
+        .folder_empty_flights
+        .borrow_mut()
+        .get_mut(&key)
+        .map_or(ChildScanFinish::Stale, |flight| flight.finish(ticket));
+    let latest = match finish {
+        ChildScanFinish::StartLatest(latest) => {
+            let request = section
+                .imp()
+                .folder_empty_pending
+                .borrow_mut()
+                .remove(&key)
+                .filter(|request| request.ticket == latest);
+            if request.is_none()
+                && let Some(flight) = section
+                    .imp()
+                    .folder_empty_flights
+                    .borrow_mut()
+                    .get_mut(&key)
+            {
+                flight.cancel_all();
+            }
+            request
+        }
+        ChildScanFinish::Stale | ChildScanFinish::Terminal => None,
+    };
+    super::tree_loading::sync_child_scan_busy_state(section);
+    if let Some(request) = latest {
+        start_folder_empty_probe(section, key, request);
+    }
+}
+
+pub(super) fn cancel_folder_empty_probes_under_roots(
+    section: &LushtextWorkspaceSection,
+    roots: &std::collections::HashSet<std::path::PathBuf>,
+) {
+    let under_removed_root =
+        |path: &Path| path.ancestors().any(|ancestor| roots.contains(ancestor));
+    let keys = section
+        .imp()
+        .folder_empty_active
+        .borrow()
+        .iter()
+        .filter_map(|(key, active)| under_removed_root(&active.folder_path).then_some(key.clone()))
+        .chain(
+            section
+                .imp()
+                .folder_empty_pending
+                .borrow()
+                .iter()
+                .filter_map(|(key, pending)| {
+                    under_removed_root(&pending.folder_path).then_some(key.clone())
+                }),
+        )
+        .chain(
+            section
+                .imp()
+                .folder_empty_admission
+                .borrow()
+                .iter()
+                .filter_map(|(key, pending)| {
+                    under_removed_root(&pending.folder_path).then_some(key.clone())
+                }),
+        )
+        .collect::<std::collections::HashSet<_>>();
+    for key in keys {
+        section.imp().folder_empty_active.borrow_mut().remove(&key);
+        section.imp().folder_empty_pending.borrow_mut().remove(&key);
+        section
+            .imp()
+            .folder_empty_admission
+            .borrow_mut()
+            .remove(&key);
+        if let Some(mut flight) = section.imp().folder_empty_flights.borrow_mut().remove(&key) {
+            flight.cancel_all();
+        }
+    }
+    super::tree_loading::sync_child_scan_busy_state(section);
 }

@@ -13,7 +13,10 @@ use std::path::PathBuf;
 use lushtext_core::model::content_search::{
     ContentSearchOptions, Replacement, SearchMatch, SearchMatchId, generate_replacement_preview,
 };
-use lushtext_core::services::content_search::apply_replacements_to_text_for_property_test;
+use lushtext_core::services::content_search::{
+    apply_replacements_to_text_for_property_test,
+    apply_replacements_to_text_reference_for_property_test,
+};
 use proptest::prelude::*;
 
 use crate::support;
@@ -40,7 +43,12 @@ proptest! {
         let expected = expected_replaced_text(&lines, line_ending, trailing_newline, &replacements);
 
         let actual = apply_replacements_to_text_for_property_test(&original_text, &replacements);
+        let reference = apply_replacements_to_text_reference_for_property_test(
+            &original_text,
+            &replacements,
+        );
 
+        prop_assert_eq!(&actual, &reference);
         prop_assert_eq!(actual, expected);
     }
 

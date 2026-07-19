@@ -20,6 +20,8 @@ use crate::services::workspace_watch::WORKSPACE_WATCH_PATH_CAP;
 
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
+#[cfg(feature = "test-utils")]
+use super::WorkspaceScanPressureEvidence;
 
 /// Short debounce for automatic refresh bursts after the watcher already
 /// coalesced backend events. This keeps rapid save/rename/remove sequences from
@@ -29,6 +31,8 @@ const AUTO_REFRESH_DEBOUNCE_MS: u64 = 120;
 /// Manual refreshes should feel immediate, but keeping a tiny timeout means the
 /// button still participates in the same generation-guarded pipeline.
 const MANUAL_REFRESH_DEBOUNCE_MS: u64 = 1;
+/// Expanded stores submitted per GTK turn before yielding to rendering/input.
+const REFRESH_SCAN_DISPATCH_BATCH: usize = 32;
 
 enum RefreshPlan {
     Full,
@@ -172,6 +176,54 @@ impl LushtextWorkspaceSection {
             .set(delay);
     }
 
+    /// Set a worker-side delay before directory and emptiness traversal.
+    #[cfg(feature = "test-utils")]
+    pub fn set_child_scan_delay_for_test(&self, delay: Duration) {
+        self.imp().refresh_runtime.test_scan_delay.set(delay);
+    }
+
+    /// Return direct active/latest ownership and terminal-publication evidence.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn child_scan_pressure_for_test(&self) -> WorkspaceScanPressureEvidence {
+        let refresh = &self.imp().refresh_runtime;
+        WorkspaceScanPressureEvidence {
+            active_scans: self.imp().child_active_scans.borrow().len(),
+            pending_scans: self.imp().child_pending_scans.borrow().len(),
+            admission_waiting_scans: self.imp().child_admission_scans.borrow().len()
+                + self.imp().folder_empty_admission.borrow().len(),
+            aggregate_active_tasks: super::tree_loading::workspace_scan_active_tasks_for_test(),
+            aggregate_task_limit: super::tree_loading::WORKSPACE_SCAN_TASK_LIMIT,
+            aggregate_task_high_water: super::tree_loading::workspace_scan_task_high_water_for_test(
+            ),
+            dispatch_queue: refresh.scan_dispatch_queue.borrow().len(),
+            dispatch_queue_high_water: refresh.scan_dispatch_queue_high_water.get(),
+            dispatch_batch_high_water: refresh.scan_dispatch_batch_high_water.get(),
+            active_per_store_high_water: refresh.scan_active_per_store_high_water.get(),
+            pending_per_store_high_water: refresh.scan_pending_per_store_high_water.get(),
+            weak_pending_high_water: refresh.scan_weak_pending_high_water.get(),
+            mirror_captures: refresh.scan_mirror_captures.get(),
+            cancellation_requests: refresh.scan_cancellation_requests.get(),
+            cancelled_terminals: refresh.scan_cancelled_terminals.get(),
+            stale_completions: refresh.scan_stale_completions.get(),
+            terminal_publications: refresh.scan_terminal_publications.get(),
+            active_empty_probes: self.imp().folder_empty_active.borrow().len(),
+            pending_empty_probes: self.imp().folder_empty_pending.borrow().len(),
+            empty_probe_stale_rejections: refresh.empty_probe_stale_rejections.get(),
+            empty_probe_terminal_publications: refresh.empty_probe_terminal_publications.get(),
+        }
+    }
+
+    /// Number of top-level emptiness reads completed inside test workers.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn empty_probe_reads_for_test(&self) -> u64 {
+        self.imp()
+            .refresh_runtime
+            .test_empty_probe_reads
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     fn apply_queued_refresh(&self) {
         let pending_paths = self.take_pending_refresh_paths();
         let pending_full = self
@@ -193,9 +245,7 @@ impl LushtextWorkspaceSection {
         match self.plan_refresh(&pending_paths) {
             RefreshPlan::Full => self.reload_current_view(),
             RefreshPlan::Directories(directories) => {
-                for directory in directories {
-                    self.refresh_loaded_directory(&directory.path, directory.stores);
-                }
+                self.queue_refresh_directories(directories);
             }
         }
     }
@@ -259,53 +309,83 @@ impl LushtextWorkspaceSection {
             return;
         }
 
-        let mut expanded = self
-            .expanded_store_index()
-            .into_iter()
-            .map(|(path, stores)| {
-                let stores = stores
-                    .into_iter()
-                    .map(|store| {
-                        let snapshot =
-                            super::tree_loading::snapshot_child_store_mirror(self, &store);
-                        (store, snapshot)
-                    })
-                    .collect::<Vec<_>>();
-                (path, stores)
-            })
-            .collect::<Vec<_>>();
+        let mut expanded = self.expanded_store_index().into_iter().collect::<Vec<_>>();
         expanded.sort_by_key(|(path, _)| path.components().count());
-        for (dir_path, stores) in expanded {
-            self.refresh_loaded_directory_with_mirrors(&dir_path, stores);
+        self.queue_refresh_directories(
+            expanded
+                .into_iter()
+                .map(|(path, stores)| RefreshDirectory { path, stores })
+                .collect(),
+        );
+    }
+
+    fn queue_refresh_directories(&self, directories: Vec<RefreshDirectory>) {
+        let runtime = &self.imp().refresh_runtime;
+        if let Some(source) = runtime.scan_dispatch_source.take() {
+            source.remove();
         }
+        let mut queue = runtime.scan_dispatch_queue.borrow_mut();
+        queue.clear();
+        queue.extend(directories.into_iter().flat_map(|directory| {
+            directory
+                .stores
+                .into_iter()
+                .map(move |store| (directory.path.clone(), store.downgrade()))
+        }));
+        runtime.scan_dispatch_queue_high_water.set(
+            runtime
+                .scan_dispatch_queue_high_water
+                .get()
+                .max(queue.len()),
+        );
+        drop(queue);
+        self.dispatch_refresh_scan_batch();
     }
 
-    fn refresh_loaded_directory(&self, dir_path: &Path, stores: Vec<gtk4::gio::ListStore>) {
-        let stores = stores
-            .into_iter()
-            .map(|store| {
-                let snapshot = super::tree_loading::snapshot_child_store_mirror(self, &store);
-                (store, snapshot)
-            })
-            .collect();
-        self.refresh_loaded_directory_with_mirrors(dir_path, stores);
-    }
-
-    fn refresh_loaded_directory_with_mirrors(
-        &self,
-        dir_path: &Path,
-        stores: Vec<(
-            gtk4::gio::ListStore,
-            Option<super::tree_loading::ChildMirrorSnapshot>,
-        )>,
-    ) {
-        super::tree_loading::clear_dir_state(self, dir_path);
-        for (store, snapshot) in stores {
-            if let Some(snapshot) = snapshot {
-                super::tree_loading::restore_child_store_mirror(self, dir_path, &store, snapshot);
+    fn dispatch_refresh_scan_batch(&self) {
+        let mut dispatched = 0usize;
+        for _ in 0..REFRESH_SCAN_DISPATCH_BATCH {
+            let Some((path, store)) = self
+                .imp()
+                .refresh_runtime
+                .scan_dispatch_queue
+                .borrow_mut()
+                .pop_front()
+            else {
+                break;
+            };
+            if let Some(store) = store.upgrade() {
+                super::tree_loading::populate_child_store(self, &path, &store);
             }
-            super::tree_loading::populate_child_store(self, dir_path, &store);
+            dispatched = dispatched.saturating_add(1);
         }
+        let refresh = &self.imp().refresh_runtime;
+        refresh
+            .scan_dispatch_batch_high_water
+            .set(refresh.scan_dispatch_batch_high_water.get().max(dispatched));
+        if self
+            .imp()
+            .refresh_runtime
+            .scan_dispatch_queue
+            .borrow()
+            .is_empty()
+        {
+            self.imp().refresh_runtime.scan_dispatch_source.take();
+            super::tree_loading::sync_child_scan_busy_state(self);
+            return;
+        }
+        let section_weak = self.downgrade();
+        let source = glib::idle_add_local_once(move || {
+            if let Some(section) = section_weak.upgrade() {
+                section.imp().refresh_runtime.scan_dispatch_source.take();
+                section.dispatch_refresh_scan_batch();
+            }
+        });
+        self.imp()
+            .refresh_runtime
+            .scan_dispatch_source
+            .replace(Some(source));
+        super::tree_loading::sync_child_scan_busy_state(self);
     }
 
     fn plan_refresh(&self, changed_paths: &HashSet<PathBuf>) -> RefreshPlan {

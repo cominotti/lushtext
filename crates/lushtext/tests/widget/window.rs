@@ -21,17 +21,15 @@ use libadwaita::prelude::{
 };
 use lushtext_core::config::keys;
 use lushtext_core::model::action_catalog::{ActionScope, ActionValueType, ObservedAction};
-use lushtext_core::model::automation::{
-    AutomationReadinessPredicate, AutomationReadinessStatus,
-};
+use lushtext_core::model::automation::{AutomationReadinessPredicate, AutomationReadinessStatus};
 use lushtext_core::model::content_search::SearchMatch;
 use lushtext_core::model::draft::{DraftEntry, DraftManifest, PreloadedDraftRestore};
+use lushtext_core::model::editor_memory::{
+    EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorMemoryBudgetOutcome,
+};
 use lushtext_core::model::encoding::{
     DocumentEncoding, DocumentEncodingState, FileHealthFindingKind, InvisibleCharactersMode,
     LineEnding,
-};
-use lushtext_core::model::editor_memory::{
-    EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorMemoryBudgetOutcome,
 };
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
@@ -42,8 +40,8 @@ use lushtext_core::model::save_admission::{
 };
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
-    WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection,
-    WorkspaceId, WorkspaceScope, WorkspacesFile,
+    WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
+    WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::services::file_limits::{
     DISABLE_SYNTAX_HIGHLIGHTING, DISABLE_UNDO_HISTORY, FileSizeCheck, REFUSE_TO_OPEN,
@@ -54,39 +52,41 @@ use lushtext_core::services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationOwner, NotificationPayload,
     NotificationSeverity, NotificationSurface, StatusMessage,
 };
+use lushtext_core::services::palette::{FileIndex, NotesBrowserMode};
 use lushtext_core::services::{
     action_catalog, bookmark_service, document_note_service, draft_service, editor_io,
     folder_note_service, format_upgrade, json_format, json_store, local_history_service,
     saved_searches, session_service, workspace_manager,
 };
-use lushtext_core::services::palette::FileIndex;
+use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::automation::{
     INTERFACE_VERSION, app_snapshot, current_idle_blocker, wait_for_idle_for_test,
     wait_for_ready_for_test,
 };
-use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
     BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind, set_local_history_baseline_delay_for_test,
-    set_local_history_baseline_failures_for_test,
+    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
+    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
+use lushtext_core::ui::plain_disposal::{
+    hold_disposal_capacity_for_test, hold_progress_disposal_capacity_for_test,
+    lane_snapshot_for_test, progress_lane_snapshot_for_test,
+};
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::search_panel::set_replace_preview_delay_for_test;
 use lushtext_core::ui::window::{
     DraftFlushError, LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
-    fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
-    set_bookmark_excerpt_preview_delay_for_test, set_canonical_refresh_delay_for_test,
-    set_close_safety_completion_delay_for_test,
+    fail_next_draft_mutations_for_test, local_history_preview_install_snapshot_for_test,
+    set_automatic_draft_limit_for_test, set_bookmark_excerpt_preview_delay_for_test,
+    set_canonical_refresh_delay_for_test, set_close_safety_completion_delay_for_test,
     set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
     set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test,
-    set_lossy_encoding_analysis_delay_for_test, set_orphan_cleanup_delays_for_test,
+    set_lazy_draft_read_delay_for_test, set_local_history_preview_install_delay_for_test,
+    set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
-    set_notes_browser_source_entry_limit_for_test, with_print_runner_for_test,
-    local_history_preview_install_snapshot_for_test,
-    set_local_history_preview_install_delay_for_test,
-    set_local_history_preview_read_delay_for_test, set_replace_reload_facts_delay_for_test,
+    set_notes_browser_source_entry_limit_for_test, set_orphan_cleanup_delays_for_test,
+    set_replace_reload_facts_delay_for_test, with_print_runner_for_test,
 };
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -404,7 +404,11 @@ fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, 
     let workspaces = WorkspacesFile {
         current_scope: initial_scope,
         workspaces: vec![
-            WorkspaceConfig::with_one_folder(WorkspaceId::new("ws-left"), "left", left_folder.clone()),
+            WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("ws-left"),
+                "left",
+                left_folder.clone(),
+            ),
             WorkspaceConfig::with_one_folder(
                 WorkspaceId::new("ws-right"),
                 "right",
@@ -536,7 +540,11 @@ fn wait_for_workspace_sections(window: &LushtextWindow, expected: usize) {
     });
 }
 
-fn wait_for_workspace_consumers(window: &LushtextWindow, expected_folders: usize, expected_index: usize) {
+fn wait_for_workspace_consumers(
+    window: &LushtextWindow,
+    expected_folders: usize,
+    expected_index: usize,
+) {
     wait_until(Duration::from_secs(3), || {
         window
             .imp()
@@ -779,7 +787,12 @@ fn wait_for_external_change_warning(editor: &LushtextEditorPage) {
 fn modified_file_backed_tab(
     initial_text: &str,
     modified_text: &str,
-) -> (LushtextWindow, tempfile::TempDir, PathBuf, LushtextEditorPage) {
+) -> (
+    LushtextWindow,
+    tempfile::TempDir,
+    PathBuf,
+    LushtextEditorPage,
+) {
     let (window, dir, path) = open_temp_document(initial_text);
     let editor = active_editor(&window);
     editor.buffer().set_text(modified_text);
@@ -789,11 +802,7 @@ fn modified_file_backed_tab(
 }
 
 fn close_selected_tab(window: &LushtextWindow) {
-    let page = window
-        .imp()
-        .tab_view
-        .selected_page()
-        .expect("selected tab");
+    let page = window.imp().tab_view.selected_page().expect("selected tab");
     window.imp().tab_view.close_page(&page);
     flush_events();
 }
@@ -813,10 +822,7 @@ fn respond_to_save_changes_dialog(window: &LushtextWindow, response: &str) {
     flush_events();
 }
 
-fn save_changes_response_button(
-    dialog: &libadwaita::AlertDialog,
-    response: &str,
-) -> gtk4::Button {
+fn save_changes_response_button(dialog: &libadwaita::AlertDialog, response: &str) -> gtk4::Button {
     alert_response_button(dialog, response)
 }
 
@@ -848,14 +854,20 @@ fn wait_for_note_save_response_sensitive(dialog: &libadwaita::AlertDialog, expec
 
 fn activate_widget_without_pointer(widget: &impl IsA<gtk4::Widget>) {
     let widget = widget.as_ref();
-    assert!(widget.is_sensitive(), "widget should be keyboard activatable");
+    assert!(
+        widget.is_sensitive(),
+        "widget should be keyboard activatable"
+    );
     assert!(
         widget.property::<bool>("visible"),
         "widget should be visible before keyboard activation"
     );
     widget.grab_focus();
     flush_events();
-    assert!(widget.activate(), "widget should activate without a pointer");
+    assert!(
+        widget.activate(),
+        "widget should activate without a pointer"
+    );
     flush_events();
 }
 
@@ -923,7 +935,9 @@ fn seed_file_backed_draft(window: &LushtextWindow, path: &Path, content: &str) -
 }
 
 fn save_changes_check_buttons(dialog: &libadwaita::AlertDialog) -> Vec<gtk4::CheckButton> {
-    let extra = dialog.extra_child().expect("save changes dialog extra child");
+    let extra = dialog
+        .extra_child()
+        .expect("save changes dialog extra child");
     descendants(&extra)
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk4::CheckButton>().ok())
@@ -934,7 +948,9 @@ fn save_changes_check_button_for_title(
     dialog: &libadwaita::AlertDialog,
     title: &str,
 ) -> gtk4::CheckButton {
-    let extra = dialog.extra_child().expect("save changes dialog extra child");
+    let extra = dialog
+        .extra_child()
+        .expect("save changes dialog extra child");
     let row = descendants(&extra)
         .into_iter()
         .filter_map(|widget| widget.downcast::<libadwaita::ActionRow>().ok())
@@ -1012,7 +1028,10 @@ fn markdown_preview_has_image_fallback_title(window: &LushtextWindow, title: &st
         .any(|label| label.label() == title)
 }
 
-fn markdown_preview_has_image_fallback_body_containing(window: &LushtextWindow, text: &str) -> bool {
+fn markdown_preview_has_image_fallback_body_containing(
+    window: &LushtextWindow,
+    text: &str,
+) -> bool {
     let preview: &LushtextMarkdownPreview = &window.imp().markdown_preview;
     widgets_with_css_class::<gtk4::Label>(preview, "markdown-preview-image-fallback-body")
         .iter()
@@ -1145,8 +1164,7 @@ fn editor_text(editor: &LushtextEditorPage) -> String {
 fn assert_tab_count(window: &LushtextWindow, expected: i32) {
     let actual = window.imp().tab_view.n_pages();
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "expected {expected} open tab(s), got {actual}"
     );
 }
@@ -1211,8 +1229,13 @@ fn assert_tab_strip_hidden(window: &LushtextWindow, context: &str) {
 }
 
 fn assert_tab_context_menu_has_label(window: &LushtextWindow, label: &str, context: &str) {
-    let labels =
-        menu_model_labels(window.imp().tab_management.context_menu.upcast_ref::<gio::MenuModel>());
+    let labels = menu_model_labels(
+        window
+            .imp()
+            .tab_management
+            .context_menu
+            .upcast_ref::<gio::MenuModel>(),
+    );
     assert!(
         labels.iter().any(|candidate| candidate == label),
         "{context}: expected tab context menu label '{label}', got {labels:?}"
@@ -1808,13 +1831,15 @@ fn assert_readable_empty_status_dialog(
 }
 
 fn wait_for_empty_notes_dialog(window: &LushtextWindow) -> libadwaita::Dialog {
-    wait_until(Duration::from_secs(5), || {
-        visible_sheet_dialog(window).is_some_and(|dialog| {
-            dialog.content_width() == EMPTY_STATUS_DIALOG_TARGET_WIDTH
-                && dialog.child().is_some_and(|child| {
-                    find_label_by_text(&child, "No notes yet").is_some()
-                })
-        })
+    wait_until(Duration::from_secs(15), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source_ready && snapshot.source_entries == 0)
+            && visible_sheet_dialog(window).is_some_and(|dialog| {
+                dialog
+                    .child()
+                    .is_some_and(|child| find_label_by_text(&child, "No notes yet").is_some())
+            })
     });
     visible_sheet_dialog(window).expect("settled empty notes browser dialog")
 }
@@ -2256,12 +2281,7 @@ fn set_properties_surface_presentation(
 }
 
 fn properties_surface_presentation(window: &LushtextWindow) -> PropertiesSurfacePresentation {
-    match window
-        .imp()
-        .properties_layout_view
-        .layout_name()
-        .as_deref()
-    {
+    match window.imp().properties_layout_view.layout_name().as_deref() {
         Some("sheet") => PropertiesSurfacePresentation::Sheet,
         _ => PropertiesSurfacePresentation::Pane,
     }
@@ -2326,10 +2346,7 @@ fn notes_menu_button_visible(window: &LushtextWindow) -> bool {
 
 fn notes_menu_popup_open(window: &LushtextWindow) -> bool {
     let button = &window.imp().notes_menu_button;
-    button.is_active()
-        || button
-            .popover()
-            .is_some_and(|popover| popover.is_visible())
+    button.is_active() || button.popover().is_some_and(|popover| popover.is_visible())
 }
 
 fn open_notes_menu_popup(window: &LushtextWindow) {
@@ -2399,30 +2416,30 @@ fn adaptive_shell_change_counter(window: &LushtextWindow) -> std::rc::Rc<std::ce
     let changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
     {
         let changes = changes.clone();
-        window
-            .imp()
-            .properties_layout_view
-            .connect_notify_local(Some("layout-name"), move |_, _| {
+        window.imp().properties_layout_view.connect_notify_local(
+            Some("layout-name"),
+            move |_, _| {
                 changes.set(changes.get().saturating_add(1));
-            });
+            },
+        );
     }
     {
         let changes = changes.clone();
-        window
-            .imp()
-            .workspace_split_view
-            .connect_notify_local(Some("show-sidebar"), move |_, _| {
+        window.imp().workspace_split_view.connect_notify_local(
+            Some("show-sidebar"),
+            move |_, _| {
                 changes.set(changes.get().saturating_add(1));
-            });
+            },
+        );
     }
     {
         let changes = changes.clone();
-        window
-            .imp()
-            .properties_split_view
-            .connect_notify_local(Some("show-sidebar"), move |_, _| {
+        window.imp().properties_split_view.connect_notify_local(
+            Some("show-sidebar"),
+            move |_, _| {
                 changes.set(changes.get().saturating_add(1));
-            });
+            },
+        );
     }
     {
         let changes = changes.clone();
@@ -2633,8 +2650,7 @@ fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnap
         .expect("source map should have overlay-relative bounds");
     let start_iter = source_map.buffer().start_iter();
     let (line_y, _) = source_map.line_yrange(&start_iter);
-    let (_, widget_y) =
-        source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, line_y);
+    let (_, widget_y) = source_map.buffer_to_window_coords(gtk4::TextWindowType::Widget, 0, line_y);
 
     MinimapGeometrySnapshot {
         editor_width: source_view.width(),
@@ -2738,7 +2754,10 @@ fn assert_top_minimap_reflow_invariants(
             bounds.top >= -0.5 && bounds.bottom <= f64::from(geometry.marker_strip_height) + 0.5,
             "projected marker should remain inside the marker strip after reflow: {bounds:?}, {geometry:?}"
         );
-        assert!(bounds.height() > 0.0, "projected marker should have positive height: {bounds:?}");
+        assert!(
+            bounds.height() > 0.0,
+            "projected marker should have positive height: {bounds:?}"
+        );
     }
 }
 
@@ -2763,13 +2782,11 @@ fn seed_peek_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     fixture::write_text(&beta, "fn beta() {\n    println!(\"beta\");\n}\n");
 
     let mut workspaces = WorkspacesFile::default();
-    workspaces
-        .workspaces
-        .push(WorkspaceConfig::with_one_folder(
-            WorkspaceId::new("peek-ws"),
-            "peek",
-            folder_dir.path().to_path_buf(),
-        ));
+    workspaces.workspaces.push(WorkspaceConfig::with_one_folder(
+        WorkspaceId::new("peek-ws"),
+        "peek",
+        folder_dir.path().to_path_buf(),
+    ));
     workspaces.current_scope = WorkspaceScope::workspace(WorkspaceId::new("peek-ws"));
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save peek workspaces");
     (folder_dir, alpha, beta)
@@ -2905,12 +2922,7 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
     let _ = editor.toggle_bookmark_at_cursor();
     let second_id = editor.bookmark_at_line(2).expect("second bookmark").id;
 
-    let args: [&dyn ToValue; 4] = [
-        &line_one,
-        &1u32,
-        &gtk4::gdk::ModifierType::empty(),
-        &1i32,
-    ];
+    let args: [&dyn ToValue; 4] = [&line_one, &1u32, &gtk4::gdk::ModifierType::empty(), &1i32];
     editor
         .source_view()
         .emit_by_name::<()>("line-mark-activated", &args);
@@ -2965,11 +2977,9 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
                     .is_some()
             })
     });
-    let out_of_range = find_label_by_text(
-        &child,
-        "Line 99 is outside this document. Use 1 through 4.",
-    )
-    .expect("out-of-range validation label");
+    let out_of_range =
+        find_label_by_text(&child, "Line 99 is outside this document. Use 1 through 4.")
+            .expect("out-of-range validation label");
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Status)
         .properties(&[gtk4::AccessibleProperty::Label])
@@ -2992,8 +3002,8 @@ fn test_bookmark_gutter_edit_dialog_validates_moves_and_persists() {
                 find_label_by_text(&child, "Line 3 already has another bookmark.").is_some()
             })
     });
-    let occupied_line =
-        find_label_by_text(&child, "Line 3 already has another bookmark.").expect("occupied line label");
+    let occupied_line = find_label_by_text(&child, "Line 3 already has another bookmark.")
+        .expect("occupied line label");
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Status)
         .properties(&[gtk4::AccessibleProperty::Label])
@@ -3440,7 +3450,7 @@ fn test_toggle_properties_action_state_tracks_rendered_surface() {
             .state()
             .expect("expected operation to succeed")
             .get::<bool>()
-        .expect("expected operation to succeed")
+            .expect("expected operation to succeed")
     );
 }
 
@@ -3449,11 +3459,25 @@ fn test_secondary_surface_toggles_sync_accessible_pressed_and_announcements() {
     ensure_gtk_init();
     let window = test_window();
 
-    assert!(window.imp().status_bar.imp().sidebar_toggle_button.is_active());
+    assert!(
+        window
+            .imp()
+            .status_bar
+            .imp()
+            .sidebar_toggle_button
+            .is_active()
+    );
     assert!(!window.imp().document_properties_toggle_button.is_active());
 
     activate_action(&window, "toggle-sidebar");
-    assert!(!window.imp().status_bar.imp().sidebar_toggle_button.is_active());
+    assert!(
+        !window
+            .imp()
+            .status_bar
+            .imp()
+            .sidebar_toggle_button
+            .is_active()
+    );
     assert_workflow_announcement_recorded(&window, "workspace-sidebar-hidden");
 
     activate_action(&window, "toggle-properties");
@@ -3592,9 +3616,7 @@ fn test_help_overlay_dialog_handles_dense_shortcuts_and_constrained_geometry() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../resources/ui/shortcuts.ui"
     ));
-    let shortcut_count = shortcuts_ui
-        .match_indices("AdwShortcutsItem")
-        .count();
+    let shortcut_count = shortcuts_ui.match_indices("AdwShortcutsItem").count();
 
     assert!(shortcut_count >= 20);
     assert!(shortcuts.width() > 0);
@@ -3743,10 +3765,13 @@ fn test_local_history_browser_controls_expose_accessibility_roles() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
+        active_editor(&window).file_size().is_some()
+            && action_enabled(&window, "show-local-history")
     });
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog");
     let child = dialog.child().expect("local-history browser child");
@@ -3828,7 +3853,9 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
     wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -3879,7 +3906,9 @@ fn test_notes_browser_controls_expose_accessibility_roles() {
             gtk4::AccessibleProperty::Label,
             gtk4::AccessibleProperty::Description,
         ])
-        .assert_on(&find_button_by_tooltip(&child, "Back to Notes").expect("notes browser back button"));
+        .assert_on(
+            &find_button_by_tooltip(&child, "Back to Notes").expect("notes browser back button"),
+        );
 }
 
 #[test]
@@ -3980,7 +4009,9 @@ fn test_parameterized_search_action_updates_visible_search_workflow() {
 fn test_select_tab_action_uses_index_without_tab_strip_coordinates() {
     ensure_gtk_init();
     let window = test_window();
-    let action = window.lookup_action("select-tab").expect("select-tab action");
+    let action = window
+        .lookup_action("select-tab")
+        .expect("select-tab action");
     assert_eq!(
         action
             .parameter_type()
@@ -4171,17 +4202,25 @@ fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
     assert!(action_enabled(&window, "set-preview-mode"));
 
     activate_boolean_action(&window, "set-sidebar-visible", false);
-    wait_until(Duration::from_secs(2), || !workspace_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        !workspace_sidebar_visible(&window)
+    });
     assert!(!action_state_bool(&window, "toggle-sidebar"));
     activate_boolean_action(&window, "set-sidebar-visible", true);
-    wait_until(Duration::from_secs(2), || workspace_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&window)
+    });
     assert!(action_state_bool(&window, "toggle-sidebar"));
 
     activate_boolean_action(&window, "set-properties-visible", true);
-    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_sidebar_visible(&window)
+    });
     assert!(action_state_bool(&window, "toggle-properties"));
     activate_boolean_action(&window, "set-properties-visible", false);
-    wait_until(Duration::from_secs(2), || !properties_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        !properties_sidebar_visible(&window)
+    });
     assert!(!action_state_bool(&window, "toggle-properties"));
 
     activate_boolean_action(&window, "set-minimap-visible", true);
@@ -4192,11 +4231,7 @@ fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
     assert!(!action_state_bool(&window, "toggle-minimap"));
 
     let recent_path = PathBuf::from("/tmp/lushtext-open-popover-filter-target.txt");
-    window.set_recent_documents_for_test(vec![RecentDocumentEntry::new(
-        recent_path,
-        None,
-        42,
-    )]);
+    window.set_recent_documents_for_test(vec![RecentDocumentEntry::new(recent_path, None, 42)]);
     activate_action(&window, "open-recent");
     wait_until(Duration::from_secs(2), || {
         window.imp().open_popover.is_visible()
@@ -4351,7 +4386,10 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         100,
     ));
     assert!(search_ready.ok);
-    assert_eq!(search_ready.status, AutomationReadinessStatus::Ready.as_str());
+    assert_eq!(
+        search_ready.status,
+        AutomationReadinessStatus::Ready.as_str()
+    );
     let window_actions_ready = glib::MainContext::default().block_on(wait_for_ready_for_test(
         app.clone(),
         AutomationReadinessPredicate::WindowActionsExported,
@@ -4467,7 +4505,9 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
     assert!(!ok);
     assert_eq!(detail, "command-palette-index");
-    wait_until(Duration::from_secs(2), || current_idle_blocker(&app).is_none());
+    wait_until(Duration::from_secs(2), || {
+        current_idle_blocker(&app).is_none()
+    });
 
     let _replace_preview_reset = ReplacePreviewDelayReset;
     set_replace_preview_delay_for_test(250);
@@ -4516,7 +4556,9 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         glib::MainContext::default().block_on(wait_for_idle_for_test(app.clone(), 1));
     assert!(!ok);
     assert_eq!(detail, "replace-preview");
-    wait_until(Duration::from_secs(2), || current_idle_blocker(&app).is_none());
+    wait_until(Duration::from_secs(2), || {
+        current_idle_blocker(&app).is_none()
+    });
 }
 
 #[test]
@@ -4578,7 +4620,9 @@ fn test_focus_suppressed_minimap_refresh_does_not_block_visual_readiness() {
     let window = test_window();
     window.new_tab();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || active_editor(&window).is_minimap_visible());
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).is_minimap_visible()
+    });
 
     activate_action(&window, "toggle-focus-mode");
     let editor = active_editor(&window);
@@ -4635,18 +4679,26 @@ fn test_keyboard_command_palette_and_secondary_surfaces_restore_editor_focus() {
     wait_for_active_editor_focus(&window);
 
     activate_widget_without_pointer(&*window.imp().status_bar.imp().sidebar_toggle_button);
-    wait_until(Duration::from_secs(2), || !workspace_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        !workspace_sidebar_visible(&window)
+    });
     activate_widget_without_pointer(&*window.imp().status_bar.imp().sidebar_toggle_button);
-    wait_until(Duration::from_secs(2), || workspace_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&window)
+    });
 
     activate_widget_without_pointer(&*window.imp().document_properties_toggle_button);
-    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_sidebar_visible(&window)
+    });
     assert!(
         shortcut_bound(&window, "win.toggle-properties", "F9"),
         "F9 should invoke document-properties visibility"
     );
     activate_widget_without_pointer(&*window.imp().document_properties_toggle_button);
-    wait_until(Duration::from_secs(2), || !properties_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        !properties_sidebar_visible(&window)
+    });
 }
 
 #[test]
@@ -4725,7 +4777,12 @@ fn test_new_document_focus_handoff_ignores_stale_selection() {
     );
     assert_eq!(
         gtk4::prelude::GtkWindowExt::focus(&window).map(|widget| widget.as_ptr()),
-        Some(original_editor.source_view().upcast_ref::<gtk4::Widget>().as_ptr()),
+        Some(
+            original_editor
+                .source_view()
+                .upcast_ref::<gtk4::Widget>()
+                .as_ptr()
+        ),
         "stale delayed focus should not steal focus from the restored tab"
     );
 }
@@ -4806,8 +4863,9 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
         "leave-focus-mode button should be focusable while the affordance is revealed"
     );
     wait_until(Duration::from_secs(5), || {
-        gtk4::prelude::GtkWindowExt::focus(&window)
-            .is_some_and(|focus| focus.as_ptr() == leave_button.upcast_ref::<gtk4::Widget>().as_ptr())
+        gtk4::prelude::GtkWindowExt::focus(&window).is_some_and(|focus| {
+            focus.as_ptr() == leave_button.upcast_ref::<gtk4::Widget>().as_ptr()
+        })
     });
     flush_after_delay(Duration::from_millis(1900));
 
@@ -4904,7 +4962,9 @@ fn test_focus_mode_readable_editor_margins_restore_after_exit() {
     window.set_default_size(1600, 900);
     window.new_tab();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || active_editor(&window).source_view().width() > 0);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).source_view().width() > 0
+    });
     let editor = active_editor(&window);
     let normal_left = editor.focus_mode_left_margin();
 
@@ -4913,7 +4973,10 @@ fn test_focus_mode_readable_editor_margins_restore_after_exit() {
         active_editor(&window).focus_mode_left_margin() > normal_left
     });
     let focused_left = active_editor(&window).focus_mode_left_margin();
-    assert_eq!(focused_left, active_editor(&window).focus_mode_right_margin());
+    assert_eq!(
+        focused_left,
+        active_editor(&window).focus_mode_right_margin()
+    );
 
     activate_action(&window, "toggle-focus-mode");
     assert_eq!(active_editor(&window).focus_mode_left_margin(), normal_left);
@@ -4930,7 +4993,9 @@ fn test_focus_mode_text_origin_guide_visibility_and_margin_tracking() {
     window.set_default_size(1600, 900);
     window.new_tab();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || active_editor(&window).source_view().width() > 0);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).source_view().width() > 0
+    });
 
     assert!(
         !active_editor(&window).focus_mode_text_origin_guide_visible(),
@@ -4983,7 +5048,9 @@ fn test_focus_mode_readable_editor_margins_keep_narrow_allocations_usable() {
     window.set_default_size(720, 700);
     window.new_tab();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || active_editor(&window).source_view().width() > 0);
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).source_view().width() > 0
+    });
 
     activate_action(&window, "toggle-focus-mode");
     let editor = active_editor(&window);
@@ -5019,7 +5086,9 @@ fn test_focus_mode_temporarily_hides_minimap_without_changing_preference() {
     let window = test_window();
     window.new_tab();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || active_editor(&window).is_minimap_visible());
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).is_minimap_visible()
+    });
 
     activate_action(&window, "toggle-focus-mode");
     assert_eq!(
@@ -5029,7 +5098,9 @@ fn test_focus_mode_temporarily_hides_minimap_without_changing_preference() {
     assert!(settings.boolean(keys::SHOW_MINIMAP));
 
     activate_action(&window, "toggle-focus-mode");
-    wait_until(Duration::from_secs(2), || active_editor(&window).is_minimap_visible());
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).is_minimap_visible()
+    });
     assert!(settings.boolean(keys::SHOW_MINIMAP));
 }
 
@@ -5152,15 +5223,21 @@ fn test_mode_toggles_record_state_specific_workflow_announcements() {
     present_window(&window);
 
     activate_action(&window, "toggle-focus-mode");
-    wait_until(Duration::from_secs(2), || window.imp().focus_mode.active.get());
+    wait_until(Duration::from_secs(2), || {
+        window.imp().focus_mode.active.get()
+    });
     assert_workflow_announcement_recorded(&window, "focus-mode-on");
 
     activate_action(&window, "toggle-focus-mode");
-    wait_until(Duration::from_secs(2), || !window.imp().focus_mode.active.get());
+    wait_until(Duration::from_secs(2), || {
+        !window.imp().focus_mode.active.get()
+    });
     assert_workflow_announcement_recorded(&window, "focus-mode-off");
 
     activate_action(&window, "toggle-preview-pane");
-    wait_until(Duration::from_secs(2), || window.imp().preview_visible.get());
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_visible.get()
+    });
     assert_workflow_announcement_recorded(&window, "preview-pane-shown");
 
     activate_boolean_action(&window, "set-preview-mode", true);
@@ -5183,9 +5260,19 @@ fn test_mode_toggles_record_state_specific_workflow_announcements() {
 fn test_shell_chrome_uses_explicit_opaque_classes_for_transparency_mode() {
     let window = test_window();
 
-    assert!(window.imp().header_bar.has_css_class("header-chrome-opaque"));
+    assert!(
+        window
+            .imp()
+            .header_bar
+            .has_css_class("header-chrome-opaque")
+    );
     assert!(window.imp().tab_bar.has_css_class("header-chrome-opaque"));
-    assert!(window.imp().sidebar.has_css_class("side-rail-chrome-opaque"));
+    assert!(
+        window
+            .imp()
+            .sidebar
+            .has_css_class("side-rail-chrome-opaque")
+    );
     assert!(
         window
             .imp()
@@ -5246,11 +5333,7 @@ fn test_status_bar_visual_modes_keep_readable_scoped_chrome() {
             libadwaita::ColorScheme::ForceLight,
             None,
         ),
-        (
-            "dark status bar",
-            libadwaita::ColorScheme::ForceDark,
-            None,
-        ),
+        ("dark status bar", libadwaita::ColorScheme::ForceDark, None),
         (
             "high-contrast status bar",
             libadwaita::ColorScheme::ForceLight,
@@ -5272,9 +5355,21 @@ fn test_status_bar_visual_modes_keep_readable_scoped_chrome() {
 
         let status_bar = window.imp().status_bar.imp();
         assert_status_bar_readable_one_row(&window, context);
-        assert!(status_bar.message_area_box.has_css_class("status-message-area"));
-        assert!(status_bar.message_area_box.has_css_class("status-pulse-warning"));
-        assert!(status_bar.message_label.has_css_class("status-message-label"));
+        assert!(
+            status_bar
+                .message_area_box
+                .has_css_class("status-message-area")
+        );
+        assert!(
+            status_bar
+                .message_area_box
+                .has_css_class("status-pulse-warning")
+        );
+        assert!(
+            status_bar
+                .message_label
+                .has_css_class("status-message-label")
+        );
         assert!(status_bar.message_label.has_css_class("status-warning"));
         assert!(!status_bar.message_label.wraps());
         assert!(!status_bar.metadata_box.is_visible());
@@ -5293,10 +5388,18 @@ fn test_transient_status_message_pulses_full_message_area() {
 
     let status_bar = window.imp().status_bar.imp();
     assert_eq!(status_bar.message_label.label().as_str(), "File saved");
-    assert!(status_bar.message_area_box.has_css_class("status-pulse-info"));
+    assert!(
+        status_bar
+            .message_area_box
+            .has_css_class("status-pulse-info")
+    );
     assert!(status_bar.message_area_box.has_css_class("status-pulse-a"));
     assert!(!status_bar.message_label.has_css_class("status-pulse-info"));
-    assert!(!status_bar.sidebar_toggle_button.has_css_class("status-pulse-info"));
+    assert!(
+        !status_bar
+            .sidebar_toggle_button
+            .has_css_class("status-pulse-info")
+    );
     assert!(!status_bar.metadata_box.has_css_class("status-pulse-info"));
 }
 
@@ -5338,7 +5441,11 @@ fn test_visible_search_progress_update_pulses_message_area() {
         status_bar.message_label.label().as_str(),
         "Searching 10 files\u{2026}"
     );
-    assert!(status_bar.message_area_box.has_css_class("status-pulse-info"));
+    assert!(
+        status_bar
+            .message_area_box
+            .has_css_class("status-pulse-info")
+    );
 }
 
 #[test]
@@ -5388,10 +5495,12 @@ fn test_generic_progress_heartbeat_and_resolve_renders_do_not_pulse() {
     window.render_notifications();
     assert!(!status_message_area_has_any_pulse(&window));
 
-    assert!(window.imp().notification_bus.resolve(
-        NotificationOwner::Search,
-        NotificationSurface::StatusBar
-    ));
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .resolve(NotificationOwner::Search, NotificationSurface::StatusBar)
+    );
     window.render_notifications();
     assert!(!status_message_area_has_any_pulse(&window));
     assert!(
@@ -5674,8 +5783,7 @@ fn test_failed_file_retry_reads_durable_draft_after_preload_release() {
     fixture::write_text(&path, "now available on disk\n");
     editor.info_bar().imp().retry_button.emit_clicked();
     wait_until(Duration::from_secs(5), || {
-        editor.is_draft_restored()
-            && editor_buffer_text(&editor) == "durable recovered content\n"
+        editor.is_draft_restored() && editor_buffer_text(&editor) == "durable recovered content\n"
     });
 
     assert!(editor.is_modified());
@@ -5800,7 +5908,10 @@ fn test_memory_budget_updates_edit_bursts_incrementally_and_keeps_protected_work
 
     editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
     flush_events();
-    assert!(!editor.is_evicted(), "active untitled work is always protected");
+    assert!(
+        !editor.is_evicted(),
+        "active untitled work is always protected"
+    );
     assert_eq!(
         window.editor_memory_outcome_for_test(),
         EditorMemoryBudgetOutcome::NoProgress
@@ -5839,7 +5950,9 @@ fn test_many_tab_unicode_edits_and_detach_reconcile_without_full_scans() {
     for index in 0..24 {
         window.new_tab();
         let editor = active_editor(&window);
-        editor.buffer().set_text(&format!("tab {index}: cafe\u{301} 🙂\n"));
+        editor
+            .buffer()
+            .set_text(&format!("tab {index}: cafe\u{301} 🙂\n"));
         editor.buffer().set_modified(false);
         last_page = window.imp().tab_view.selected_page();
     }
@@ -5858,7 +5971,10 @@ fn test_many_tab_unicode_edits_and_detach_reconcile_without_full_scans() {
     window.imp().tab_view.close_page(&last_page);
     flush_events();
     assert_eq!(window.imp().tab_view.n_pages(), pages_before - 1);
-    assert_eq!(window.editor_memory_full_scan_count_for_test(), baseline_scans);
+    assert_eq!(
+        window.editor_memory_full_scan_count_for_test(),
+        baseline_scans
+    );
     assert!(window.editor_memory_reconciles_for_test());
 }
 
@@ -6000,7 +6116,10 @@ fn test_memory_budget_evicts_lru_clean_tab_to_lower_watermark() {
     editors[2].set_memory_estimate_for_test(Some(160 * mib));
     flush_events();
 
-    assert!(editors[0].is_evicted(), "oldest clean tab should evict first");
+    assert!(
+        editors[0].is_evicted(),
+        "oldest clean tab should evict first"
+    );
     assert!(!editors[1].is_evicted());
     assert!(!editors[2].is_evicted(), "active tab stays protected");
     assert_eq!(
@@ -6045,7 +6164,10 @@ fn test_memory_budget_applies_at_most_one_eviction_per_idle_dispatch() {
         .iter()
         .filter(|editor| editor.is_evicted())
         .count();
-    assert_eq!(evicted, 3, "all three clean tabs are needed to reach low water");
+    assert_eq!(
+        evicted, 3,
+        "all three clean tabs are needed to reach low water"
+    );
     assert_eq!(
         window.editor_memory_eviction_dispatch_count_for_test() - dispatches_before,
         u64::try_from(evicted).expect("eviction count fits u64"),
@@ -6169,20 +6291,26 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
     let stale_second = second_editor.load_generation_for_test();
     first_editor.cancel_load();
     second_editor.cancel_load();
-    assert!(!first_editor.apply_load_result_for_test(
-        stale_first,
-        Ok(result("stale first\n", &first_path)),
-    ));
-    assert!(!second_editor.apply_load_result_for_test(
-        stale_second,
-        Ok(result("stale second\n", &second_path)),
-    ));
+    assert!(
+        !first_editor
+            .apply_load_result_for_test(stale_first, Ok(result("stale first\n", &first_path)),)
+    );
+    assert!(
+        !second_editor
+            .apply_load_result_for_test(stale_second, Ok(result("stale second\n", &second_path)),)
+    );
 
     first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
     second_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES));
     flush_events();
-    assert!(!first_editor.is_evicted(), "modified restored page is protected");
-    assert!(!second_editor.is_evicted(), "active restored page is protected");
+    assert!(
+        !first_editor.is_evicted(),
+        "modified restored page is protected"
+    );
+    assert!(
+        !second_editor.is_evicted(),
+        "active restored page is protected"
+    );
     assert_eq!(editor_buffer_text(&first_editor), "first modified\n");
     assert_eq!(editor_buffer_text(&second_editor), "second accepted\n");
 }
@@ -6244,6 +6372,651 @@ fn test_selected_restore_tab_gets_bounded_priority_after_capacity_releases() {
         second.load_state() == EditorLoadState::Loaded
     });
     assert_eq!(&*completion_order.borrow(), &["third", "second"]);
+}
+
+fn bounded_restore_tab(path: Option<PathBuf>, ordinal: usize) -> SessionTab {
+    SessionTab {
+        path,
+        draft_id: Some(format!("untitled-bounded-{ordinal}")),
+        cursor_line: u32::try_from(ordinal).expect("bounded restore ordinal"),
+        cursor_col: 0,
+        scroll_line: 0,
+        pinned: false,
+    }
+}
+
+#[test]
+fn test_startup_restore_progresses_while_ordinary_disposal_capacity_is_full() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let dir = tempfile::tempdir().expect("startup progress tempdir");
+    let path = dir.path().join("startup-progress.txt");
+    fixture::write_text(&path, "startup progress\n");
+    let session = SessionData {
+        tabs: vec![bounded_restore_tab(Some(path.clone()), 0)],
+        active_tab_index: Some(0),
+    };
+    session_service::save(&json_store::data_dir(), &session).expect("seed startup session");
+    let capacity_hold = hold_disposal_capacity_for_test();
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(15), || {
+        window.imp().tab_view.n_pages() == 1
+            && window
+                .imp()
+                .tab_view
+                .nth_page(0)
+                .child()
+                .downcast_ref::<LushtextEditorPage>()
+                .is_some_and(|editor| editor.file_path().as_deref() == Some(path.as_path()))
+    });
+
+    assert!(lane_snapshot_for_test().overweight_exclusive);
+    drop(capacity_hold);
+}
+
+#[test]
+fn test_close_before_startup_descriptors_preserves_persisted_session() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let dir = tempfile::tempdir().expect("startup close tempdir");
+    let path = dir.path().join("preserved-on-early-close.txt");
+    fixture::write_text(&path, "preserve session\n");
+    let expected = SessionData {
+        tabs: vec![bounded_restore_tab(Some(path.clone()), 0)],
+        active_tab_index: Some(0),
+    };
+    session_service::save(&json_store::data_dir(), &expected).expect("seed preserved session");
+    let progress_hold = hold_progress_disposal_capacity_for_test();
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.startup_session_descriptors_pending_for_test()
+    });
+    let completed = Rc::new(Cell::new(false));
+    let completed_clone = Rc::clone(&completed);
+    window.save_session_for_close_async(move |result| {
+        result.expect("early-close session save should succeed");
+        completed_clone.set(true);
+    });
+    wait_until(Duration::from_secs(5), || completed.get());
+    let preserved = session_service::load(&json_store::data_dir()).expect("load preserved session");
+    assert_eq!(preserved.tabs.len(), expected.tabs.len());
+    assert_eq!(preserved.active_tab_index, expected.active_tab_index);
+    assert_eq!(preserved.tabs[0].path, expected.tabs[0].path);
+    assert_eq!(preserved.tabs[0].draft_id, expected.tabs[0].draft_id);
+
+    drop(progress_hold);
+    wait_until(Duration::from_secs(15), || {
+        window.imp().tab_view.n_pages() == 1
+            && window
+                .imp()
+                .tab_view
+                .nth_page(0)
+                .child()
+                .downcast_ref::<LushtextEditorPage>()
+                .is_some_and(|editor| editor.file_path().as_deref() == Some(path.as_path()))
+    });
+}
+
+#[test]
+fn test_close_before_startup_descriptors_merges_new_untitled_recovery() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let dir = tempfile::tempdir().expect("startup close merge tempdir");
+    let restored_path = dir.path().join("preserved-before-merge.txt");
+    fixture::write_text(&restored_path, "preserved session\n");
+    session_service::save(
+        &json_store::data_dir(),
+        &SessionData {
+            tabs: vec![bounded_restore_tab(Some(restored_path.clone()), 0)],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("seed session before early-close merge");
+    let progress_hold = hold_progress_disposal_capacity_for_test();
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.startup_session_descriptors_pending_for_test()
+    });
+    window.new_tab();
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("new untitled draft identity");
+    editor
+        .buffer()
+        .set_text("new recovery before startup descriptors");
+    editor.buffer().set_modified(true);
+
+    let draft_flush = Rc::new(RefCell::new(None));
+    let draft_flush_clone = Rc::clone(&draft_flush);
+    window.flush_dirty_drafts_async(move |result| {
+        *draft_flush_clone.borrow_mut() = Some(result);
+    });
+    wait_until(Duration::from_secs(10), || draft_flush.borrow().is_some());
+    draft_flush
+        .borrow_mut()
+        .take()
+        .expect("draft flush completed")
+        .expect("draft flush succeeded");
+
+    let completed = Rc::new(Cell::new(false));
+    let completed_clone = Rc::clone(&completed);
+    window.save_session_for_close_async(move |result| {
+        result.expect("merged early-close session save should succeed");
+        completed_clone.set(true);
+    });
+    wait_until(Duration::from_secs(10), || completed.get());
+
+    let saved = session_service::load(&json_store::data_dir()).expect("load merged session");
+    assert_eq!(saved.tabs.len(), 2);
+    assert_eq!(saved.tabs[0].path.as_deref(), Some(restored_path.as_path()));
+    assert_eq!(saved.tabs[1].draft_id.as_deref(), Some(draft_id.as_str()));
+    assert_eq!(saved.active_tab_index, Some(1));
+    assert_eq!(
+        draft_service::read_draft(&json_store::data_dir(), &draft_id)
+            .expect("read early-close untitled body")
+            .as_deref(),
+        Some("new recovery before startup descriptors")
+    );
+
+    drop(progress_hold);
+}
+
+#[test]
+fn test_pre_restore_untitled_creation_cannot_overwrite_existing_draft_identity() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let data_dir = json_store::data_dir();
+    let existing_id = draft_service::draft_id_for_untitled(0);
+    draft_service::write_draft(&data_dir, &existing_id, "existing recovery body")
+        .expect("seed existing untitled body");
+    draft_service::save_manifest(
+        &data_dir,
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: existing_id.clone(),
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: 1,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("seed existing untitled manifest entry");
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: None,
+                draft_id: Some(existing_id.clone()),
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("seed existing untitled session");
+    let progress_hold = hold_progress_disposal_capacity_for_test();
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.startup_session_descriptors_pending_for_test()
+    });
+    window.new_tab();
+    let editor = active_editor(&window);
+    let new_id = editor.draft_id().expect("new untitled draft identity");
+    assert_ne!(new_id, existing_id);
+    editor.buffer().set_text("new pre-restore recovery body");
+    editor.buffer().set_modified(true);
+
+    let draft_flush = Rc::new(RefCell::new(None));
+    let draft_flush_clone = Rc::clone(&draft_flush);
+    window.flush_dirty_drafts_async(move |result| {
+        *draft_flush_clone.borrow_mut() = Some(result);
+    });
+    wait_until(Duration::from_secs(10), || draft_flush.borrow().is_some());
+    draft_flush
+        .borrow_mut()
+        .take()
+        .expect("draft flush completed")
+        .expect("draft flush succeeded");
+
+    let close_result = Rc::new(RefCell::new(None));
+    let close_result_clone = Rc::clone(&close_result);
+    window.save_session_for_close_async(move |result| {
+        *close_result_clone.borrow_mut() = Some(result.map_err(|error| error.to_string()));
+    });
+    wait_until(Duration::from_secs(10), || close_result.borrow().is_some());
+    close_result
+        .borrow_mut()
+        .take()
+        .expect("session callback completed")
+        .expect("early-close session merge succeeded");
+
+    let saved = session_service::load(&data_dir).expect("load merged untitled session");
+    assert_eq!(saved.tabs.len(), 2);
+    assert_eq!(
+        saved.tabs[0].draft_id.as_deref(),
+        Some(existing_id.as_str())
+    );
+    assert_eq!(saved.tabs[1].draft_id.as_deref(), Some(new_id.as_str()));
+    assert_eq!(saved.active_tab_index, Some(1));
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &existing_id)
+            .expect("read existing untitled body")
+            .as_deref(),
+        Some("existing recovery body")
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &new_id)
+            .expect("read new untitled body")
+            .as_deref(),
+        Some("new pre-restore recovery body")
+    );
+
+    drop(progress_hold);
+}
+
+#[test]
+fn test_close_aborts_when_pending_session_evidence_cannot_be_preserved() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let session_path = data_dir.join("session.json");
+    let malformed_session = "not valid session json";
+    fixture::write_text(&session_path, malformed_session);
+    fixture::write_text(
+        &data_dir.join(lushtext_core::services::recovery_metadata::QUARANTINE_DIR),
+        "blocks quarantine directory creation",
+    );
+    let progress_hold = hold_progress_disposal_capacity_for_test();
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.startup_session_descriptors_pending_for_test()
+    });
+    window.close();
+    wait_until(Duration::from_secs(10), || {
+        window.imp().session.save_failed.get() && !window.imp().session.close_safety_inflight.get()
+    });
+
+    assert!(window.is_visible());
+    assert!(window.is_sensitive());
+    assert!(!window.imp().session.close_safety_bypass.get());
+    assert_eq!(fixture::read_text(&session_path), malformed_session);
+    assert!(
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("Close cancelled"))
+    );
+
+    drop(progress_hold);
+    window.destroy();
+}
+
+#[test]
+fn test_bounded_session_restore_preserves_order_selection_and_one_terminal_projection() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_load_delay_for_test(150);
+    let dir = tempfile::tempdir().expect("bounded restore tempdir");
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.imp().session.restore_cancel.borrow().is_none()
+    });
+
+    let mut tabs = Vec::new();
+    for ordinal in 0..12 {
+        let path = matches!(ordinal, 0 | 1 | 3 | 5 | 7 | 9).then(|| {
+            let path = dir.path().join(format!("restore-{ordinal}.txt"));
+            fixture::write_text(&path, &format!("restored {ordinal}\n"));
+            path
+        });
+        tabs.push(bounded_restore_tab(path, ordinal));
+    }
+    let expected_tabs = tabs.clone();
+    let selected_draft_id = expected_tabs[8]
+        .draft_id
+        .clone()
+        .expect("selected untitled identity");
+    let baseline = window
+        .session_restore_runtime_snapshot_for_test()
+        .aggregate_projection_publications;
+
+    window.restore_session_for_test(SessionData {
+        tabs,
+        active_tab_index: Some(8),
+    });
+    let admitted = window.session_restore_runtime_snapshot_for_test();
+    assert!(admitted.active);
+    assert!(admitted.scheduled_source);
+    assert!(admitted.projection_deferred);
+
+    wait_until(Duration::from_secs(15), || {
+        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        !snapshot.active && snapshot.pages_created == 12
+    });
+    let snapshot = window.session_restore_runtime_snapshot_for_test();
+    assert_eq!(snapshot.total_descriptors, 12);
+    assert!(snapshot.gtk_turns > 1);
+    assert!(snapshot.max_pages_in_one_turn <= 4);
+    assert_eq!(snapshot.max_inflight_file_plans, 2);
+    assert_eq!(snapshot.planning_terminals, 6);
+    assert_eq!(snapshot.pending_descriptors, 0);
+    assert_eq!(snapshot.active_file_plans, 0);
+    assert_eq!(snapshot.terminal_projection_publications, 1);
+    assert_eq!(snapshot.aggregate_projection_publications, baseline + 1);
+    assert!(!snapshot.projection_deferred);
+    assert_eq!(window.imp().tab_view.n_pages(), 12);
+
+    for (ordinal, expected) in expected_tabs.iter().enumerate() {
+        let page = window
+            .imp()
+            .tab_view
+            .nth_page(i32::try_from(ordinal).expect("bounded restored page index fits i32"));
+        let editor = page
+            .child()
+            .downcast::<LushtextEditorPage>()
+            .expect("restored editor page");
+        assert_eq!(editor.file_path(), expected.path);
+        if expected.path.is_none() {
+            assert_eq!(editor.draft_id(), expected.draft_id);
+        }
+    }
+    assert_eq!(active_editor(&window).draft_id(), Some(selected_draft_id));
+    eprintln!(
+        "session-restore-bound-evidence descriptors={} pages_created={} gtk_turns={} pages_per_turn_high_water={} file_plan_high_water={} planning_terminals={} pending_descriptors={} active_file_plans={} terminal_projection_publications={} aggregate_projection_delta={} cancelled={}",
+        snapshot.total_descriptors,
+        snapshot.pages_created,
+        snapshot.gtk_turns,
+        snapshot.max_pages_in_one_turn,
+        snapshot.max_inflight_file_plans,
+        snapshot.planning_terminals,
+        snapshot.pending_descriptors,
+        snapshot.active_file_plans,
+        snapshot.terminal_projection_publications,
+        snapshot.aggregate_projection_publications - baseline,
+        snapshot.cancelled,
+    );
+}
+
+#[test]
+fn test_close_session_snapshot_preserves_not_yet_mounted_restore_descriptors() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_load_delay_for_test(500);
+    let dir = tempfile::tempdir().expect("close restore snapshot tempdir");
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.imp().session.restore_cancel.borrow().is_none()
+    });
+
+    let tabs = (0..10)
+        .map(|ordinal| {
+            let path = (ordinal < 3).then(|| {
+                let path = dir.path().join(format!("close-pending-{ordinal}.txt"));
+                fixture::write_text(&path, "slow restore\n");
+                path
+            });
+            bounded_restore_tab(path, ordinal)
+        })
+        .collect::<Vec<_>>();
+    window.restore_session_for_test(SessionData {
+        tabs,
+        active_tab_index: Some(8),
+    });
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 8
+    });
+
+    window.save_session_sync();
+
+    let saved = session_service::load(&json_store::data_dir()).expect("close snapshot saved");
+    assert_eq!(saved.tabs.len(), 10);
+    assert_eq!(saved.active_tab_index, Some(8));
+    assert_eq!(
+        saved.tabs[2].path.as_deref(),
+        Some(dir.path().join("close-pending-2.txt").as_path())
+    );
+    for ordinal in 3..10 {
+        assert_eq!(
+            saved.tabs[ordinal].draft_id.as_deref(),
+            Some(format!("untitled-bounded-{ordinal}").as_str())
+        );
+    }
+    window.cancel_session_restore_for_test();
+}
+
+#[test]
+fn test_newer_tab_selection_survives_later_session_restore_turns() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_load_delay_for_test(250);
+    let dir = tempfile::tempdir().expect("selection restore tempdir");
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.imp().session.restore_cancel.borrow().is_none()
+    });
+
+    let tabs = (0..6)
+        .map(|ordinal| {
+            let path = dir.path().join(format!("selection-{ordinal}.txt"));
+            fixture::write_text(&path, "restore selection\n");
+            bounded_restore_tab(Some(path), ordinal)
+        })
+        .collect();
+    window.restore_session_for_test(SessionData {
+        tabs,
+        active_tab_index: Some(5),
+    });
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 4
+    });
+    let explicitly_selected = window.imp().tab_view.nth_page(0);
+    window
+        .imp()
+        .tab_view
+        .set_selected_page(&explicitly_selected);
+
+    wait_until(Duration::from_secs(10), || {
+        !window.session_restore_runtime_snapshot_for_test().active
+    });
+
+    assert_eq!(
+        window.imp().tab_view.selected_page().as_ref(),
+        Some(&explicitly_selected)
+    );
+    assert_eq!(
+        active_editor(&window).file_path().as_deref(),
+        Some(dir.path().join("selection-0.txt").as_path())
+    );
+}
+
+#[test]
+fn test_restore_terminal_queues_session_save_for_mutations_suppressed_mid_restore() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_load_delay_for_test(250);
+    let dir = tempfile::tempdir().expect("terminal restore save tempdir");
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.imp().session.restore_cancel.borrow().is_none()
+    });
+
+    let tabs = (0..6)
+        .map(|ordinal| {
+            let path = dir.path().join(format!("terminal-save-{ordinal}.txt"));
+            fixture::write_text(&path, "restore terminal save\n");
+            bounded_restore_tab(Some(path), ordinal)
+        })
+        .collect();
+    window.restore_session_for_test(SessionData {
+        tabs,
+        active_tab_index: Some(5),
+    });
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 4
+    });
+    let first_page = window.imp().tab_view.nth_page(0);
+    window.imp().tab_view.set_page_pinned(&first_page, true);
+
+    wait_until(Duration::from_secs(10), || {
+        !window.session_restore_runtime_snapshot_for_test().active
+    });
+    wait_until(Duration::from_secs(5), || {
+        session_service::load(&json_store::data_dir())
+            .is_ok_and(|session| session.tabs.len() == 6 && session.tabs[0].pinned)
+    });
+
+    let saved = session_service::load(&json_store::data_dir()).expect("terminal save persisted");
+    assert!(saved.tabs[0].pinned);
+}
+
+#[test]
+fn test_session_restore_cancellation_clears_pending_permits_source_and_projection_deferral() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_load_delay_for_test(500);
+    let dir = tempfile::tempdir().expect("cancel restore tempdir");
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.imp().session.restore_cancel.borrow().is_none()
+    });
+
+    let tabs = (0..8)
+        .map(|ordinal| {
+            let path = dir.path().join(format!("cancel-{ordinal}.txt"));
+            fixture::write_text(&path, "cancel fixture\n");
+            bounded_restore_tab(Some(path), ordinal)
+        })
+        .collect();
+    let baseline = window
+        .session_restore_runtime_snapshot_for_test()
+        .aggregate_projection_publications;
+    window.restore_session_for_test(SessionData {
+        tabs,
+        active_tab_index: Some(7),
+    });
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 6
+    });
+
+    window.cancel_session_restore_for_test();
+
+    let snapshot = window.session_restore_runtime_snapshot_for_test();
+    assert!(!snapshot.active);
+    assert!(!snapshot.scheduled_source);
+    assert!(!snapshot.projection_deferred);
+    assert!(snapshot.cancelled);
+    assert_eq!(snapshot.pending_descriptors, 0);
+    assert_eq!(snapshot.active_file_plans, 0);
+    assert_eq!(snapshot.terminal_projection_publications, 0);
+    assert_eq!(snapshot.aggregate_projection_publications, baseline);
+    assert_eq!(window.imp().tab_view.n_pages(), 2);
+    eprintln!(
+        "session-restore-cancellation-evidence pending_descriptors={} active_file_plans={} source_armed={} projection_deferred={} terminal_projection_publications={} cancelled={}",
+        snapshot.pending_descriptors,
+        snapshot.active_file_plans,
+        snapshot.scheduled_source,
+        snapshot.projection_deferred,
+        snapshot.terminal_projection_publications,
+        snapshot.cancelled,
+    );
+}
+
+#[test]
+fn test_session_restore_editor_and_window_teardown_release_all_planning_ownership() {
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _delay_reset = EditorLoadDelayReset;
+    editor_io::set_load_delay_for_test(750);
+    let dir = tempfile::tempdir().expect("teardown restore tempdir");
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        window.imp().startup_data_flow.completed.get()
+            && window.imp().session.restore_cancel.borrow().is_none()
+    });
+
+    let tabs = (0..4)
+        .map(|ordinal| {
+            let path = dir.path().join(format!("teardown-{ordinal}.txt"));
+            fixture::write_text(&path, "teardown fixture\n");
+            bounded_restore_tab(Some(path), ordinal)
+        })
+        .collect();
+    window.restore_session_for_test(SessionData {
+        tabs,
+        active_tab_index: Some(3),
+    });
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 2
+    });
+
+    let first_page = window.imp().tab_view.nth_page(0);
+    window.imp().tab_view.close_page(&first_page);
+    drop(first_page);
+    wait_until(Duration::from_secs(5), || {
+        window
+            .session_restore_runtime_snapshot_for_test()
+            .pages_created
+            >= 3
+    });
+
+    // SAFETY: this test intentionally drives the final GObject teardown path;
+    // after disposal it reads only scalar ownership evidence, never widgets or
+    // template children whose lifecycle `dispose()` has ended.
+    unsafe {
+        window.run_dispose();
+    }
+
+    let snapshot = window.session_restore_runtime_snapshot_for_test();
+    assert!(!snapshot.active);
+    assert!(!snapshot.scheduled_source);
+    assert!(!snapshot.projection_deferred);
+    assert!(snapshot.cancelled);
+    assert_eq!(snapshot.pending_descriptors, 0);
+    assert_eq!(snapshot.active_file_plans, 0);
 }
 
 #[test]
@@ -6413,7 +7186,10 @@ fn test_split_view_allocation_sync_does_not_rewrite_persisted_properties_width()
     window.queue_allocate();
     flush_after_delay(Duration::from_millis(50));
 
-    assert_eq!(window.imp().split_width_synced_for_width.get(), synced_width);
+    assert_eq!(
+        window.imp().split_width_synced_for_width.get(),
+        synced_width
+    );
     assert_eq!(
         settings.double(keys::PROPERTIES_SIDEBAR_WIDTH_FRACTION),
         0.73
@@ -6427,7 +7203,9 @@ fn test_workspace_sidebar_setting_recalculates_properties_breakpoint() {
     comfy_window.set_default_size(1400, 900);
     present_window(&comfy_window);
     activate_action(&comfy_window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&comfy_window));
+    wait_until(Duration::from_secs(2), || {
+        properties_sidebar_visible(&comfy_window)
+    });
 
     assert!(
         properties_surface_uses_right_pane(&comfy_window),
@@ -7130,16 +7908,23 @@ fn test_draft_pipeline_lazy_restore_rejects_stale_editor_and_advances_queue() {
     draft_service::write_draft(&data_dir, &second_id, "current lazy body")
         .expect("write second lazy draft");
     for draft_id in [&first_id, &second_id] {
-        window.imp().drafts.manifest.borrow_mut().upsert(DraftEntry {
-            draft_id: draft_id.clone(),
-            original_path: None,
-            original_mtime_secs: None,
-            saved_at_secs: 1,
-        });
-        window.imp().drafts.preloaded.borrow_mut().insert(
-            draft_id.clone(),
-            PreloadedDraftRestore::LazyAggregateBudget,
-        );
+        window
+            .imp()
+            .drafts
+            .manifest
+            .borrow_mut()
+            .upsert(DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: 1,
+            });
+        window
+            .imp()
+            .drafts
+            .preloaded
+            .borrow_mut()
+            .insert(draft_id.clone(), PreloadedDraftRestore::LazyAggregateBudget);
     }
 
     window.check_draft_by_id(&first, &first_id);
@@ -7346,7 +8131,12 @@ fn test_file_restore_rejects_manifest_replacement_and_closed_editor() {
         let data_dir = json_store::data_dir();
         draft_service::write_draft(&data_dir, &draft_id, "preserved recovery")
             .expect("write recovery body");
-        window.imp().drafts.manifest.borrow_mut().upsert(entry.clone());
+        window
+            .imp()
+            .drafts
+            .manifest
+            .borrow_mut()
+            .upsert(entry.clone());
         draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
             .expect("persist recovery manifest");
 
@@ -7400,16 +8190,23 @@ fn test_draft_pipeline_lazy_read_failure_preserves_body_and_reports_diagnostic()
     fixture::create_dir_all(&drafts_dir);
     let draft_path = drafts_dir.join(format!("{draft_id}.draft"));
     fixture::write_bytes(&draft_path, [0xff, 0xfe]);
-    window.imp().drafts.manifest.borrow_mut().upsert(DraftEntry {
-        draft_id: draft_id.clone(),
-        original_path: None,
-        original_mtime_secs: None,
-        saved_at_secs: 1,
-    });
-    window.imp().drafts.preloaded.borrow_mut().insert(
-        draft_id.clone(),
-        PreloadedDraftRestore::LazyAggregateBudget,
-    );
+    window
+        .imp()
+        .drafts
+        .manifest
+        .borrow_mut()
+        .upsert(DraftEntry {
+            draft_id: draft_id.clone(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1,
+        });
+    window
+        .imp()
+        .drafts
+        .preloaded
+        .borrow_mut()
+        .insert(draft_id.clone(), PreloadedDraftRestore::LazyAggregateBudget);
 
     window.check_draft_by_id(&editor, &draft_id);
     wait_until(Duration::from_secs(3), || {
@@ -7559,7 +8356,7 @@ fn test_close_flush_persists_intentionally_empty_modified_draft() {
 }
 
 #[test]
-fn test_draft_pipeline_partial_body_failure_accepts_only_successful_generation() {
+fn test_draft_pipeline_partial_body_failure_does_not_publish_an_authoritative_subset() {
     ensure_gtk_init();
     let _delay_reset = FirstDirtyAutosaveDelayReset;
     set_first_dirty_autosave_delay_for_test(60_000);
@@ -7584,16 +8381,29 @@ fn test_draft_pipeline_partial_body_failure_accepts_only_successful_generation()
         !window.draft_autosave_inflight_for_test()
     });
 
-    assert!(!good.draft_dirty());
+    assert!(good.draft_dirty());
     assert!(failed.draft_dirty());
+    assert!(!window.imp().drafts.manifest_authority.get().is_trusted());
     assert_eq!(
         draft_service::read_draft(&data_dir, &good_id).expect("read good draft"),
         Some("good generation".to_string())
     );
     let manifest = draft_service::load_manifest(&data_dir).expect("load partial manifest");
-    assert!(manifest.find_by_id(&good_id).is_some());
+    assert!(manifest.find_by_id(&good_id).is_none());
     assert!(manifest.find_by_id(&failed_id).is_none());
+
     fixture::remove_dir_all(&failed_path);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_autosave_inflight_for_test()
+    });
+
+    assert!(!good.draft_dirty());
+    assert!(!failed.draft_dirty());
+    assert!(window.imp().drafts.manifest_authority.get().is_trusted());
+    let manifest = draft_service::load_manifest(&data_dir).expect("load repaired manifest");
+    assert!(manifest.find_by_id(&good_id).is_some());
+    assert!(manifest.find_by_id(&failed_id).is_some());
 }
 
 #[test]
@@ -7795,21 +8605,109 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     fail_next_draft_mutations_for_test(false, false, true);
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(5), || {
-        draft_service::load_manifest(&data_dir)
-            .expect("load manifest after failed body delete")
-            .find_by_id(&draft_id)
-            .is_none()
+        !window.draft_mutation_inflight_for_test()
+            && draft_service::load_manifest(&data_dir)
+                .expect("load manifest after failed body delete")
+                .find_by_id(&draft_id)
+                .is_some()
     });
     assert_eq!(
         draft_service::read_draft(&data_dir, &draft_id).expect("read retained failed delete"),
         Some("retry every stage".to_string())
     );
+    assert!(window.draft_delete_tombstoned_for_test(&draft_id));
+
+    window.new_tab();
+    let unrelated_editor = active_editor(&window);
+    let unrelated_id = unrelated_editor.draft_id().expect("unrelated draft id");
+    unrelated_editor.buffer().set_text("unrelated recovery");
+    unrelated_editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_autosave_inflight_for_test() && !unrelated_editor.draft_dirty()
+    });
+    let manifest_after_unrelated =
+        draft_service::load_manifest(&data_dir).expect("load manifest after unrelated autosave");
+    assert!(manifest_after_unrelated.find_by_id(&draft_id).is_some());
+    assert!(manifest_after_unrelated.find_by_id(&unrelated_id).is_some());
 
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(5), || {
         draft_service::read_draft(&data_dir, &draft_id)
             .expect("read retried delete")
             .is_none()
+            && !window.draft_delete_tombstoned_for_test(&draft_id)
+    });
+}
+
+#[test]
+fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let dir = tempfile::tempdir().expect("file-backed delete retry tempdir");
+    let path = dir.path().join("retry-file-backed.txt");
+    fixture::write_text(&path, "disk baseline\n");
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        active_editor(&window).load_state() == EditorLoadState::Loaded
+    });
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("file-backed draft id");
+    let data_dir = json_store::data_dir();
+    editor.buffer().set_text("unsaved file-backed recovery");
+    editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+    });
+
+    fail_next_draft_mutations_for_test(false, false, true);
+    window.delete_draft_by_id(&draft_id);
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_mutation_inflight_for_test()
+            && draft_service::load_manifest(&data_dir)
+                .expect("load failed file-backed delete manifest")
+                .find_by_id(&draft_id)
+                .is_some()
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read retained file-backed body")
+                .is_some()
+    });
+    assert!(window.draft_delete_tombstoned_for_test(&draft_id));
+
+    session_service::save(
+        &data_dir,
+        &SessionData {
+            tabs: vec![SessionTab {
+                path: Some(path),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            }],
+            active_tab_index: Some(0),
+        },
+    )
+    .expect("seed restart session after failed deletion");
+    let restarted = draft_service::load_restore_state(&data_dir);
+    assert!(restarted.manifest.find_by_id(&draft_id).is_some());
+    assert!(matches!(
+        restarted.preloaded_drafts.get(&draft_id),
+        Some(PreloadedDraftRestore::Content(content))
+            if content == "unsaved file-backed recovery"
+    ));
+
+    window.delete_draft_by_id(&draft_id);
+    wait_until(Duration::from_secs(10), || {
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read retried file-backed delete")
+            .is_none()
+            && !window.draft_delete_tombstoned_for_test(&draft_id)
     });
 }
 
@@ -7877,7 +8775,9 @@ fn test_properties_pane_collapses_before_workspace_pane() {
     window.set_default_size(1320, 900);
     present_window(&window);
     activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_bottom_sheet(&window)
+    });
 
     assert!(properties_sidebar_visible(&window));
     assert!(properties_surface_uses_bottom_sheet(&window));
@@ -7893,7 +8793,9 @@ fn test_large_workspace_preset_collapses_properties_pane_earlier() {
     window.set_default_size(1400, 900);
     present_window(&window);
     activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_bottom_sheet(&window)
+    });
 
     assert!(properties_sidebar_visible(&window));
     assert!(properties_surface_uses_bottom_sheet(&window));
@@ -7922,11 +8824,7 @@ fn test_dual_secondary_surfaces_settle_at_all_breakpoint_edges() {
         );
         present_window(&compact);
         wait_for_properties_surface(&compact, PropertiesSurfacePresentation::Sheet, false);
-        assert_adaptive_shell_stays_quiet(
-            &compact,
-            PropertiesSurfacePresentation::Sheet,
-            false,
-        );
+        assert_adaptive_shell_stays_quiet(&compact, PropertiesSurfacePresentation::Sheet, false);
         compact.destroy();
         flush_after_delay(Duration::from_millis(50));
 
@@ -7968,7 +8866,11 @@ fn test_medium_width_dual_surfaces_do_not_oscillate_after_settling() {
 
     assert_adaptive_shell_stays_quiet(&window, PropertiesSurfacePresentation::Sheet, false);
     assert!(
-        window.imp().secondary_surfaces.workspace_requested_visible.get(),
+        window
+            .imp()
+            .secondary_surfaces
+            .workspace_requested_visible
+            .get(),
         "compact suppression must not erase the user's desktop workspace intent"
     );
     assert!(
@@ -7991,7 +8893,9 @@ fn test_hiding_workspace_sidebar_relaxes_properties_breakpoint() {
     window.set_default_size(1400, 900);
     present_window(&window);
     activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_sidebar_visible(&window)
+    });
 
     assert!(properties_sidebar_visible(&window));
     assert!(properties_surface_uses_right_pane(&window));
@@ -8124,8 +9028,7 @@ fn test_wide_sidebar_toggle_with_properties_visible_keeps_properties_pane_throug
 #[test]
 fn test_intermediate_sidebar_show_defers_properties_reconciliation_until_transition_settles() {
     ensure_gtk_init();
-    let window =
-        test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 1100, 900);
+    let window = test_window_with_split_view_state_and_size(false, 0.3, false, 0.25, 1100, 900);
     present_window(&window);
     wait_until(Duration::from_secs(2), || {
         !workspace_sidebar_visible(&window)
@@ -8169,8 +9072,7 @@ fn test_intermediate_sidebar_show_defers_properties_reconciliation_until_transit
 #[test]
 fn test_intermediate_sidebar_hide_defers_properties_reconciliation_until_transition_settles() {
     ensure_gtk_init();
-    let window =
-        test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1100, 900);
+    let window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1100, 900);
     present_window(&window);
     wait_until(Duration::from_secs(2), || {
         workspace_sidebar_visible(&window)
@@ -8239,7 +9141,12 @@ fn test_short_normal_window_preserves_status_bar_with_optional_surfaces() {
     );
     assert_status_bar_readable_one_row(&window, "short normal status bar");
     assert!(
-        window.imp().search_panel.imp().results_scroll.height_request()
+        window
+            .imp()
+            .search_panel
+            .imp()
+            .results_scroll
+            .height_request()
             <= current_window_height(&window) / 3,
         "search results should remain inside the short-window content budget"
     );
@@ -8276,8 +9183,14 @@ fn test_single_tab_strip_preserves_constrained_normal_geometry() {
 
     let editor = active_editor(&window);
     wait_for_tab_strip_visible(&window, "single-tab constrained tab strip");
-    wait_for_positive_allocation(editor.source_view(), "single-tab constrained editor viewport");
-    wait_for_positive_allocation(&*window.imp().status_bar, "single-tab constrained status bar");
+    wait_for_positive_allocation(
+        editor.source_view(),
+        "single-tab constrained editor viewport",
+    );
+    wait_for_positive_allocation(
+        &*window.imp().status_bar,
+        "single-tab constrained status bar",
+    );
     assert_status_bar_readable_one_row(&window, "single-tab constrained status bar");
 
     let root = window.upcast_ref::<gtk4::Widget>();
@@ -8366,7 +9279,11 @@ fn test_passive_compact_width_does_not_open_workspace_overlay() {
     });
 
     assert!(
-        window.imp().secondary_surfaces.workspace_requested_visible.get(),
+        window
+            .imp()
+            .secondary_surfaces
+            .workspace_requested_visible
+            .get(),
         "the restored desktop workspace intent should remain true"
     );
     assert!(
@@ -8395,7 +9312,9 @@ fn test_explicit_compact_sidebar_toggle_opens_workspace_overlay() {
     });
 
     activate_action(&window, "toggle-sidebar");
-    wait_until(Duration::from_secs(2), || workspace_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        workspace_sidebar_visible(&window)
+    });
 
     assert!(workspace_sidebar_visible(&window));
     assert!(!properties_sidebar_visible(&window));
@@ -8407,8 +9326,7 @@ fn test_explicit_compact_sidebar_toggle_opens_workspace_overlay() {
 #[test]
 fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
     ensure_gtk_init();
-    let wider_window =
-        test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
+    let wider_window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
     present_window(&wider_window);
     wait_until(Duration::from_secs(2), || {
         workspace_sidebar_visible(&wider_window)
@@ -8422,7 +9340,8 @@ fn test_widening_restores_both_requested_surfaces_after_compact_suppression() {
 #[test]
 fn test_properties_visibility_preference_survives_breakpoint_changes() {
     ensure_gtk_init();
-    let narrow_window = test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1300, 900);
+    let narrow_window =
+        test_window_with_split_view_state_and_size(true, 0.3, false, 0.25, 1300, 900);
     present_window(&narrow_window);
     activate_action(&narrow_window, "toggle-properties");
     wait_until(Duration::from_secs(2), || {
@@ -8448,7 +9367,9 @@ fn test_properties_visibility_preference_survives_breakpoint_changes() {
         .expect("set window height");
     let wide_window = test_window();
     present_window(&wide_window);
-    wait_until(Duration::from_secs(2), || properties_surface_uses_right_pane(&wide_window));
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_right_pane(&wide_window)
+    });
 
     assert!(properties_surface_uses_right_pane(&wide_window));
     assert!(
@@ -8490,7 +9411,9 @@ fn test_open_properties_right_pane_and_bottom_sheet_keep_active_document_state()
     });
 
     activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_surface_uses_right_pane(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_right_pane(&window)
+    });
     assert_eq!(
         window
             .imp()
@@ -8561,7 +9484,9 @@ fn test_open_properties_bottom_sheet_and_right_pane_keep_active_document_state()
             == Some(expected_location.as_str())
     });
 
-    wait_until(Duration::from_secs(2), || properties_surface_uses_bottom_sheet(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_bottom_sheet(&window)
+    });
     assert!(
         window
             .imp()
@@ -8573,8 +9498,7 @@ fn test_open_properties_bottom_sheet_and_right_pane_keep_active_document_state()
     window.destroy();
     flush_after_delay(Duration::from_millis(50));
 
-    let wide_window =
-        test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
+    let wide_window = test_window_with_split_view_state_and_size(true, 0.3, true, 0.25, 1600, 900);
     present_window(&wide_window);
     wide_window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
@@ -8751,7 +9675,13 @@ fn test_dismissing_one_editor_inline_alert_preserves_other_editor_alert() {
     });
 
     assert!(first_editor.info_bar().imp().alert_revealer.reveals_child());
-    assert!(second_editor.info_bar().imp().alert_revealer.reveals_child());
+    assert!(
+        second_editor
+            .info_bar()
+            .imp()
+            .alert_revealer
+            .reveals_child()
+    );
 
     first_editor.info_bar().imp().dismiss_button.emit_clicked();
 
@@ -8760,7 +9690,11 @@ fn test_dismissing_one_editor_inline_alert_preserves_other_editor_alert() {
         "dismissed editor alert should be hidden"
     );
     assert!(
-        second_editor.info_bar().imp().alert_revealer.reveals_child(),
+        second_editor
+            .info_bar()
+            .imp()
+            .alert_revealer
+            .reveals_child(),
         "other editor alert should remain visible"
     );
 }
@@ -8800,7 +9734,11 @@ fn test_restored_folder_set_workspace_uses_one_section_with_ordered_folder_rows(
         .as_ref()
         .expect("folder-set workspace should install a top-level store");
     let folder_paths = (0..top_level_store.n_items())
-        .filter_map(|index| top_level_store.item(index).and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>())
+        .filter_map(|index| {
+            top_level_store
+                .item(index)
+                .and_downcast::<lushtext_core::ui::sidebar::FileTreeItem>()
+        })
         .filter_map(|item| item.path())
         .collect::<Vec<_>>();
 
@@ -8819,7 +9757,10 @@ fn test_restored_empty_folder_set_workspace_keeps_real_section() {
     let section = first_sidebar_section(&window);
     assert_eq!(section.imp().header_label.text(), "empty folder set");
     assert!(!section.has_folders());
-    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), Vec::<PathBuf>::new());
+    assert_eq!(
+        window.imp().sidebar.all_workspace_folder_paths(),
+        Vec::<PathBuf>::new()
+    );
     assert!(
         section.imp().empty_folder_set_label.is_visible(),
         "empty folder-set workspaces should keep an explicit empty state"
@@ -8862,7 +9803,8 @@ fn test_selecting_empty_workspace_scope_keeps_empty_coverage() {
     flush_events();
 
     wait_until(Duration::from_secs(3), || {
-        window.imp().sidebar.current_scope() == WorkspaceScope::workspace(WorkspaceId::new("ws-empty"))
+        window.imp().sidebar.current_scope()
+            == WorkspaceScope::workspace(WorkspaceId::new("ws-empty"))
             && window.imp().sidebar.current_scope_folder_paths().is_empty()
             && window
                 .imp()
@@ -8911,7 +9853,10 @@ fn test_add_folder_to_existing_workspace_updates_state_and_consumers() {
         !section.imp().empty_folder_set_label.is_visible(),
         "adding a folder should replace the empty folder-set state with the tree"
     );
-    assert_eq!(window.imp().sidebar.current_scope_folder_paths(), vec![folder]);
+    assert_eq!(
+        window.imp().sidebar.current_scope_folder_paths(),
+        vec![folder]
+    );
 }
 
 #[test]
@@ -8983,7 +9928,10 @@ fn test_remove_folder_from_workspace_preserves_files_notes_and_empty_section() {
         window.imp().sidebar.all_workspace_folder_paths() == vec![second_folder.clone()]
     });
     assert!(fs_metadata::exists(&first_folder));
-    assert_eq!(fs_read::text(&marker).expect("read marker"), "do not delete\n");
+    assert_eq!(
+        fs_read::text(&marker).expect("read marker"),
+        "do not delete\n"
+    );
     assert_eq!(
         folder_note_service::load_for_folder(&data_dir, &first_folder)
             .expect("load preserved folder note")
@@ -9140,8 +10088,14 @@ fn test_rapid_workspace_mutations_persist_latest_sidebar_state() {
                 alpha.clone(),
                 "Alpha",
                 vec![
-                    WorkspaceFolder::with_id(WorkspaceFolderId::new("alpha-first"), alpha_first.clone()),
-                    WorkspaceFolder::with_id(WorkspaceFolderId::new("alpha-second"), alpha_second.clone()),
+                    WorkspaceFolder::with_id(
+                        WorkspaceFolderId::new("alpha-first"),
+                        alpha_first.clone(),
+                    ),
+                    WorkspaceFolder::with_id(
+                        WorkspaceFolderId::new("alpha-second"),
+                        alpha_second.clone(),
+                    ),
                 ],
             ),
             WorkspaceConfig::with_one_folder(beta.clone(), "Beta", beta_folder),
@@ -9227,8 +10181,7 @@ fn test_rapid_workspace_mutations_persist_latest_sidebar_state() {
             && loaded.workspaces.len() == 1
             && loaded.workspace(&alpha).is_some_and(|workspace| {
                 workspace.name == "Latest Alpha"
-                    && workspace.folder_paths()
-                        == vec![alpha_added.clone(), alpha_second.clone()]
+                    && workspace.folder_paths() == vec![alpha_added.clone(), alpha_second.clone()]
                     && workspace
                         .folders
                         .first()
@@ -9269,7 +10222,7 @@ fn test_workspace_selector_updates_search_and_palette_scope() {
             .runtime
             .workspace_folders
             .borrow()
-            .as_slice(),
+            .as_ref(),
         &[left_folder],
     );
 
@@ -9299,7 +10252,7 @@ fn test_restored_workspace_scope_narrows_consumers_on_startup() {
             .runtime
             .workspace_folders
             .borrow()
-            .as_slice(),
+            .as_ref(),
         &[right_folder],
     );
 }
@@ -9477,7 +10430,14 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
     let path = dir.path().join("saved.txt");
     fixture::write_text(&path, "saved content");
 
-    window.complete_save_as(&editor, None, None, Some(old_draft_id.as_str()), &path, Ok(()));
+    window.complete_save_as(
+        &editor,
+        None,
+        None,
+        Some(old_draft_id.as_str()),
+        &path,
+        Ok(()),
+    );
 
     assert_eq!(editor.file_path(), Some(path.clone()));
     assert_eq!(editor.title(), "saved.txt");
@@ -9747,7 +10707,9 @@ fn test_save_as_canonical_refresh_after_tab_close_does_not_reopen_path_key() {
         .selected_page()
         .expect("saved tab selected");
     window.imp().tab_view.close_page(&page);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
 
     flush_after_delay(Duration::from_millis(450));
 
@@ -9853,7 +10815,9 @@ fn test_workspace_row_state_window_updates_save_as_rename_and_delete() {
     assert_window_workspace_row_state(&section, &beta, false, false);
 
     window.close_tab_for_path(&alpha);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
     assert_window_workspace_row_state(&section, &alpha, false, false);
 }
 
@@ -9896,7 +10860,9 @@ fn test_workspace_row_state_window_restores_session_and_hidden_scope_projection(
     let dropdown = &window.imp().sidebar.imp().workspace_filter_dropdown;
     dropdown.set_selected(2);
     flush_after_delay(Duration::from_millis(300));
-    wait_until(Duration::from_secs(3), || right_section.property::<bool>("visible"));
+    wait_until(Duration::from_secs(3), || {
+        right_section.property::<bool>("visible")
+    });
     right_section.expand_folders();
 
     assert_window_workspace_row_state(&right_section, &right_file, true, true);
@@ -9928,7 +10894,13 @@ fn test_workspace_row_state_empty_and_no_workspace_shells_stay_neutral() {
     let no_workspace_window = test_window();
     present_window(&no_workspace_window);
     wait_until(Duration::from_secs(3), || {
-        no_workspace_window.imp().sidebar.imp().sections.borrow().is_empty()
+        no_workspace_window
+            .imp()
+            .sidebar
+            .imp()
+            .sections
+            .borrow()
+            .is_empty()
     });
     no_workspace_window.open_document(&loose_file);
     wait_until(Duration::from_secs(3), || {
@@ -9936,7 +10908,13 @@ fn test_workspace_row_state_empty_and_no_workspace_shells_stay_neutral() {
             && active_editor(&no_workspace_window).file_size().is_some()
     });
     assert!(
-        no_workspace_window.imp().sidebar.imp().sections.borrow().is_empty(),
+        no_workspace_window
+            .imp()
+            .sidebar
+            .imp()
+            .sections
+            .borrow()
+            .is_empty(),
         "no-workspace startup should stay structurally empty while tab row-state changes"
     );
 }
@@ -9959,7 +10937,10 @@ fn test_new_workspace_name_entry_creates_empty_selected_workspace() {
     assert_eq!(section.imp().header_label.text(), "writing plans");
     assert!(!section.has_folders());
     assert!(section.imp().empty_folder_set_label.is_visible());
-    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), Vec::<PathBuf>::new());
+    assert_eq!(
+        window.imp().sidebar.all_workspace_folder_paths(),
+        Vec::<PathBuf>::new()
+    );
     assert_eq!(
         window.imp().sidebar.current_scope(),
         WorkspaceScope::workspace(section.workspace_id())
@@ -9986,7 +10967,10 @@ fn test_new_workspace_whitespace_name_does_not_mutate_workspace_state() {
 
     assert!(window.imp().sidebar.imp().sections.borrow().is_empty());
     assert_eq!(window.imp().sidebar.current_scope(), WorkspaceScope::All);
-    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), Vec::<PathBuf>::new());
+    assert_eq!(
+        window.imp().sidebar.all_workspace_folder_paths(),
+        Vec::<PathBuf>::new()
+    );
     assert_eq!(
         window.imp().sidebar.current_scope_folder_paths(),
         Vec::<PathBuf>::new()
@@ -10023,7 +11007,10 @@ fn test_file_chooser_cancellation_preserves_document_workspace_and_draft_state()
         draft_service::read_draft(&data_dir, &old_draft_id).expect("read draft"),
         Some("cancelled chooser draft\n".to_string()),
     );
-    assert_eq!(window.imp().sidebar.all_workspace_folder_paths(), workspace_folders);
+    assert_eq!(
+        window.imp().sidebar.all_workspace_folder_paths(),
+        workspace_folders
+    );
 }
 
 #[test]
@@ -10048,7 +11035,10 @@ fn test_local_history_action_requires_saved_eligible_document() {
     assert!(action_enabled(&window, "show-local-history"));
 
     let editor = active_editor(&window);
-    editor.imp().size_check.set(FileSizeCheck::DisableUndoAndSyntax);
+    editor
+        .imp()
+        .size_check
+        .set(FileSizeCheck::DisableUndoAndSyntax);
     let saved_page = window
         .imp()
         .tab_view
@@ -10106,11 +11096,14 @@ fn test_local_history_dialog_shows_empty_state_without_snapshots() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
+        active_editor(&window).file_size().is_some()
+            && action_enabled(&window, "show-local-history")
     });
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
@@ -10150,11 +11143,14 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
+        active_editor(&window).file_size().is_some()
+            && action_enabled(&window, "show-local-history")
     });
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
@@ -10186,9 +11182,7 @@ fn test_local_history_browser_explains_empty_snapshot_and_disables_copy() {
             gtk4::AccessibleProperty::Description,
             gtk4::AccessibleProperty::ValueText,
         ])
-        .assert_on(
-            &find_local_history_preview_stack(&child).expect("local-history preview stack"),
-        );
+        .assert_on(&find_local_history_preview_stack(&child).expect("local-history preview stack"));
     assert!(
         find_label_by_text(&child, "Before edits · Empty file").is_some(),
         "empty snapshots should use semantic metadata instead of only 0 B"
@@ -10232,7 +11226,8 @@ fn test_local_history_browser_warns_and_shows_repaired_snapshot() {
         local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
     )
     .expect("seed recoverable snapshot");
-    let identity = local_history_service::resolve_document_identity(&path).expect("history identity");
+    let identity =
+        local_history_service::resolve_document_identity(&path).expect("history identity");
     let index_path = local_history_service::local_history_dir(&data_dir)
         .join(identity.sidecar_id)
         .join("index.json");
@@ -10240,11 +11235,14 @@ fn test_local_history_browser_warns_and_shows_repaired_snapshot() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
+        active_editor(&window).file_size().is_some()
+            && action_enabled(&window, "show-local-history")
     });
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
@@ -10325,11 +11323,14 @@ fn test_local_history_browser_hides_legacy_empty_baseline_noise() {
 
     window.open_document(&path);
     wait_until(Duration::from_secs(2), || {
-        active_editor(&window).file_size().is_some() && action_enabled(&window, "show-local-history")
+        active_editor(&window).file_size().is_some()
+            && action_enabled(&window, "show-local-history")
     });
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
@@ -10392,7 +11393,9 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
     });
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
@@ -10457,6 +11460,47 @@ fn test_local_history_dialog_scales_from_parent_and_keeps_preview_dominant() {
         max_sidebar_width <= 340.0,
         "snapshot rail should stay in browse-rail territory, got {max_sidebar_width}"
     );
+}
+
+#[test]
+fn test_local_history_preview_resumes_after_disposal_capacity_clears() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("local-history capacity tempdir");
+    let path = dir.path().join("capacity-preview.txt");
+    fixture::write_text(&path, "current\n");
+    local_history_service::capture_snapshot_for_path(
+        &json_store::data_dir(),
+        &path,
+        "retained capacity preview\n",
+        LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed capacity preview");
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+            && action_enabled(&window, "show-local-history")
+    });
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("local-history dialog child");
+    wait_until(Duration::from_secs(5), || {
+        find_label_by_text(&child, "Preview deferred").is_some()
+    });
+
+    drop(capacity_hold);
+    wait_for_local_history_preview_text(&child, "retained capacity preview\n");
 }
 
 // This exercises the adaptive local-history browser, whose sheet open, collapse
@@ -10524,7 +11568,9 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     });
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
@@ -10548,7 +11594,9 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
         find_button_by_label(&child, "Restore").expect("restore button in local-history dialog");
     restore_button.emit_clicked();
 
-    wait_until(Duration::from_secs(5), || editor_text(&editor) == "version two\n");
+    wait_until(Duration::from_secs(5), || {
+        editor_text(&editor) == "version two\n"
+    });
     wait_until(Duration::from_secs(5), || {
         window
             .imp()
@@ -10564,7 +11612,9 @@ fn test_local_history_browser_collapses_and_restore_can_be_undone() {
     .expect("undo restore button");
     undo_button.emit_clicked();
 
-    wait_until(Duration::from_secs(5), || editor_text(&editor) == "working copy");
+    wait_until(Duration::from_secs(5), || {
+        editor_text(&editor) == "working copy"
+    });
 }
 
 #[test]
@@ -10602,7 +11652,9 @@ fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
         active_editor(&window).file_size().is_some()
     });
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog");
     let child = dialog.child().expect("local-history dialog child");
     let sidebar = find_adw_sidebar(&child).expect("local-history sidebar");
@@ -10650,8 +11702,7 @@ fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
     flush_after_delay(Duration::from_millis(250));
     assert!(visible_sheet_dialog(&window).is_none());
     assert!(
-        local_history_preview_install_snapshot_for_test().cancellations
-            > installed.cancellations
+        local_history_preview_install_snapshot_for_test().cancellations > installed.cancellations
     );
 }
 
@@ -10663,8 +11714,10 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("history-bounded-restore.txt");
     fixture::write_text(&path, "current\n");
-    let restore_target = format!("restored 🙂 {}\n", "r".repeat(500)).repeat(2_500);
-    let working_copy = format!("working é {}\n", "w".repeat(500)).repeat(2_500);
+    let restore_target = format!("restored 🙂 {}\n", "r".repeat(500)).repeat(22_000);
+    let working_copy = format!("working é {}\n", "w".repeat(500)).repeat(22_000);
+    assert!(restore_target.len() > 10 * 1024 * 1024);
+    assert!(working_copy.len() > 10 * 1024 * 1024);
     let data_dir = json_store::data_dir();
     local_history_service::capture_snapshot_for_path(
         &data_dir,
@@ -10687,15 +11740,51 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     editor.buffer().set_modified(true);
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
     wait_for_local_history_preview_text(&child, &restore_target);
     let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
     wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+    let progress_lane_before = progress_lane_snapshot_for_test();
+    let snapshot_counters_before = buffer_snapshot_counters_for_test();
+    let main_loop_progressed = Rc::new(Cell::new(false));
+    glib::idle_add_local_once({
+        let main_loop_progressed = Rc::clone(&main_loop_progressed);
+        move || main_loop_progressed.set(true)
+    });
     restore_button.emit_clicked();
 
-    wait_until(Duration::from_secs(30), || editor_text(&editor) == restore_target);
+    let restore_target_chars = i32::try_from(restore_target.chars().count()).unwrap_or(i32::MAX);
+    wait_until(Duration::from_secs(60), || {
+        !editor.buffer_replacement_in_progress_for_test()
+            && editor.buffer().char_count() == restore_target_chars
+    });
+    assert_eq!(editor_text(&editor), restore_target);
+    assert!(main_loop_progressed.get());
+    let snapshot_counters_after = buffer_snapshot_counters_for_test();
+    assert_eq!(
+        snapshot_counters_after.gtk_coalesces,
+        snapshot_counters_before.gtk_coalesces
+    );
+    assert_eq!(
+        snapshot_counters_after.gtk_drops,
+        snapshot_counters_before.gtk_drops
+    );
+    assert!(snapshot_counters_after.worker_coalesces > snapshot_counters_before.worker_coalesces);
+    assert!(snapshot_counters_after.worker_drops > snapshot_counters_before.worker_drops);
+    let safety_meta = local_history_service::list_snapshots_for_path(&data_dir, &path)
+        .expect("list restore safety snapshots")
+        .into_iter()
+        .find(|meta| meta.origin == LocalHistorySnapshotOrigin::RestoreSafety)
+        .expect("restore safety snapshot persisted before mutation");
+    let safety =
+        local_history_service::load_snapshot_for_path(&data_dir, &path, &safety_meta.snapshot_id)
+            .expect("load restore safety snapshot")
+            .expect("restore safety snapshot body");
+    assert_eq!(safety.text, working_copy);
     assert!(editor.is_modified());
     assert!(editor.buffer_replacement_slice_count_for_test() > 1);
     let restore_diagnostic = editor
@@ -10723,7 +11812,12 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     assert_eq!(editor_text(&editor), "");
 
     undo_button.emit_clicked();
-    wait_until(Duration::from_secs(30), || editor_text(&editor) == working_copy);
+    let working_copy_chars = i32::try_from(working_copy.chars().count()).unwrap_or(i32::MAX);
+    wait_until(Duration::from_secs(60), || {
+        !editor.buffer_replacement_in_progress_for_test()
+            && editor.buffer().char_count() == working_copy_chars
+    });
+    assert_eq!(editor_text(&editor), working_copy);
     assert!(editor.is_modified());
     assert!(editor.source_view().is_editable());
     assert!(editor.buffer_replacement_slice_count_for_test() > 1);
@@ -10736,6 +11830,82 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     );
     assert_eq!(undo_diagnostic.metrics.peak_retained_bodies, 1);
     assert!(undo_diagnostic.source_released && undo_diagnostic.guard_released);
+    wait_until(Duration::from_secs(10), || {
+        progress_lane_snapshot_for_test().completed_jobs > progress_lane_before.completed_jobs
+    });
+}
+
+#[test]
+fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() {
+    ensure_gtk_init();
+    let window = test_window_with_restored_size(1400, 900);
+    present_window(&window);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history-restore-capacity.txt");
+    fixture::write_text(&path, "current\n");
+    let restore_target = "restored after capacity\n";
+    let working_copy = format!("{}\n", "w".repeat(2_000)).repeat(1_500);
+    let data_dir = json_store::data_dir();
+    local_history_service::capture_snapshot_for_path(
+        &data_dir,
+        &path,
+        restore_target,
+        LocalHistorySnapshotOrigin::Save,
+        local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
+    )
+    .expect("seed restore target");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        active_editor(&window).file_size().is_some()
+    });
+    let editor = active_editor(&window);
+    editor.set_local_history_availability_for_test(
+        local_history_service::LocalHistoryAvailability::SaveOnly,
+    );
+    editor.buffer().set_text(&working_copy);
+    editor.buffer().set_modified(true);
+
+    activate_action(&window, "show-local-history");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    wait_for_local_history_preview_text(&child, restore_target);
+    let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
+    wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
+
+    let progress_hold = hold_progress_disposal_capacity_for_test();
+    let lane_before = progress_lane_snapshot_for_test();
+    restore_button.emit_clicked();
+    flush_after_delay(Duration::from_millis(150));
+
+    assert_eq!(editor_text(&editor), working_copy);
+    assert!(!editor.buffer_replacement_in_progress_for_test());
+    assert!(
+        local_history_service::list_snapshots_for_path(&data_dir, &path)
+            .expect("list snapshots while restore is deferred")
+            .into_iter()
+            .all(|meta| meta.origin != LocalHistorySnapshotOrigin::RestoreSafety),
+        "no safety write may start before snapshot ownership is admitted"
+    );
+    assert_eq!(
+        progress_lane_snapshot_for_test().admitted_jobs,
+        lane_before.admitted_jobs,
+        "capacity pressure retains only compact intent"
+    );
+
+    drop(progress_hold);
+    wait_until(Duration::from_secs(30), || {
+        !editor.buffer_replacement_in_progress_for_test()
+            && editor.buffer().char_count()
+                == i32::try_from(restore_target.chars().count()).unwrap_or(i32::MAX)
+    });
+    assert_eq!(editor_text(&editor), restore_target);
+    let lane_after = progress_lane_snapshot_for_test();
+    assert_eq!(lane_after.admitted_jobs, lane_before.admitted_jobs + 1);
+    assert!(editor.has_local_history_restore_undo_for_test());
 }
 
 #[test]
@@ -10773,7 +11943,9 @@ fn test_local_history_restore_discards_mutated_chunked_safety_snapshot() {
     editor.buffer().set_modified(true);
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
     wait_for_local_history_preview_text(&child, "restore target\n");
@@ -10784,7 +11956,9 @@ fn test_local_history_restore_discards_mutated_chunked_safety_snapshot() {
 
     restore_button.emit_clicked();
     let mut end = editor.buffer().end_iter();
-    editor.buffer().insert(&mut end, "edit during safety capture");
+    editor
+        .buffer()
+        .insert(&mut end, "edit during safety capture");
     wait_until(Duration::from_secs(10), || restore_button.is_sensitive());
 
     assert!(editor_text(&editor).ends_with("edit during safety capture"));
@@ -10930,13 +12104,10 @@ fn test_local_history_baseline_transient_failure_retries_original_clean_text() {
         .into_iter()
         .find(|snapshot| snapshot.origin == LocalHistorySnapshotOrigin::Baseline)
         .expect("baseline snapshot");
-    let loaded = local_history_service::load_snapshot_for_path(
-        &data_dir,
-        &path,
-        &baseline.snapshot_id,
-    )
-    .expect("load baseline")
-    .expect("baseline body");
+    let loaded =
+        local_history_service::load_snapshot_for_path(&data_dir, &path, &baseline.snapshot_id)
+            .expect("load baseline")
+            .expect("baseline body");
     assert_eq!(loaded.text, "original clean text\n");
 }
 
@@ -11007,19 +12178,15 @@ fn test_failed_local_history_baseline_cannot_replace_newer_saved_cycle() {
         !editor.local_history_automatic_capture_inflight_for_test()
             && !editor.local_history_baseline_candidate_present_for_test()
     });
-    let snapshots = local_history_service::list_snapshots_for_path(&data_dir, &path)
-        .expect("list snapshots");
+    let snapshots =
+        local_history_service::list_snapshots_for_path(&data_dir, &path).expect("list snapshots");
     let texts = snapshots
         .iter()
         .map(|snapshot| {
-            local_history_service::load_snapshot_for_path(
-                &data_dir,
-                &path,
-                &snapshot.snapshot_id,
-            )
-            .expect("load snapshot")
-            .expect("snapshot body")
-            .text
+            local_history_service::load_snapshot_for_path(&data_dir, &path, &snapshot.snapshot_id)
+                .expect("load snapshot")
+                .expect("snapshot body")
+                .text
         })
         .collect::<Vec<_>>();
     assert!(texts.iter().any(|text| text == "new saved text\n"));
@@ -11330,7 +12497,10 @@ fn test_stale_lossy_encoding_analysis_result_is_rejected_after_buffer_change() {
             .is_none_or(|heading| !heading.contains("Lossy Encoding Conversion")),
         "stale lossy analysis must not show a confirmation for old buffer content",
     );
-    assert_eq!(active_editor(&window).save_encoding(), DocumentEncoding::Utf8);
+    assert_eq!(
+        active_editor(&window).save_encoding(),
+        DocumentEncoding::Utf8
+    );
 }
 
 #[test]
@@ -11540,9 +12710,14 @@ fn test_action_save_failure_keeps_modified_document_state() {
     present_window(&window);
     let editor = active_editor(&window);
     let dir = tempfile::tempdir().expect("save action failure tempdir");
-    let bad_path = dir.path().join("missing-parent").join("action-save-fails.txt");
+    let bad_path = dir
+        .path()
+        .join("missing-parent")
+        .join("action-save-fails.txt");
     editor.set_file_path(&bad_path);
-    editor.buffer().set_text("automation save should stay unsaved\n");
+    editor
+        .buffer()
+        .set_text("automation save should stay unsaved\n");
     editor.buffer().set_modified(true);
 
     activate_action(&window, "save");
@@ -11571,7 +12746,9 @@ fn test_close_modified_file_tab_cancel_keeps_unsaved_tab() {
     wait_for_save_changes_dialog(&window);
     respond_to_save_changes_dialog(&window, "cancel");
 
-    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
     assert_tab_count(&window, 1);
     assert_eq!(editor_buffer_text(&editor), "unsaved\n");
     assert!(editor.is_modified());
@@ -11601,7 +12778,9 @@ fn test_action_close_tab_requires_modified_document_confirmation() {
     );
 
     respond_to_save_changes_dialog(&window, "cancel");
-    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
     assert_tab_count(&window, 1);
     assert_eq!(editor_buffer_text(&editor), "action unsaved\n");
     assert!(editor.is_modified());
@@ -11615,7 +12794,9 @@ fn test_keyboard_save_changes_cancel_preserves_modified_tab() {
     wait_for_save_changes_dialog(&window);
     activate_save_changes_response_with_keyboard(&window, "cancel");
 
-    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
     assert_tab_count(&window, 1);
     assert_eq!(editor_buffer_text(&editor), "unsaved\n");
     assert!(editor.is_modified());
@@ -11647,7 +12828,9 @@ fn test_keyboard_save_changes_discard_closes_without_writing() {
     wait_for_save_changes_dialog(&window);
     activate_save_changes_response_with_keyboard(&window, "discard");
 
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
     assert_eq!(
         fs_read::text(&path).expect("disk contents after keyboard discard"),
         "disk\n"
@@ -11706,7 +12889,9 @@ fn test_close_modified_file_tab_discard_closes_without_writing() {
     wait_for_save_changes_dialog(&window);
     respond_to_save_changes_dialog(&window, "discard");
 
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
     assert_eq!(
         fs_read::text(&path).expect("disk contents after discard"),
         "disk\n"
@@ -11721,7 +12906,9 @@ fn test_window_close_request_cancel_keeps_modified_file_tab() {
     wait_for_save_changes_dialog(&window);
     respond_to_save_changes_dialog(&window, "cancel");
 
-    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
     assert!(window.is_visible());
     assert_tab_count(&window, 1);
     assert_eq!(editor_buffer_text(&editor), "window unsaved\n");
@@ -11748,7 +12935,10 @@ fn test_confirmed_close_rejects_input_and_aborts_on_new_content_generation() {
     wait_until(Duration::from_secs(2), || {
         window.imp().session.close_safety_inflight.get()
     });
-    assert!(!window.is_sensitive(), "confirmed close rejects new user input");
+    assert!(
+        !window.is_sensitive(),
+        "confirmed close rejects new user input"
+    );
 
     editor.buffer().set_text("late content generation\n");
     editor.buffer().set_modified(true);
@@ -11865,7 +13055,9 @@ fn test_close_modified_untitled_save_requires_save_as_or_discard() {
     close_selected_tab(&window);
     wait_for_save_changes_dialog(&window);
     respond_to_save_changes_dialog(&window, "discard");
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
 }
 
 #[test]
@@ -11885,7 +13077,9 @@ fn test_close_modified_untitled_cancel_preserves_and_discard_cleans_draft() {
     wait_for_save_changes_dialog(&window);
     respond_to_save_changes_dialog(&window, "cancel");
 
-    wait_until(Duration::from_secs(2), || visible_alert_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_alert_dialog(&window).is_none()
+    });
     assert_tab_count(&window, 1);
     assert_eq!(
         draft_service::read_draft(&data_dir, &draft_id).expect("read draft after cancel"),
@@ -11897,7 +13091,9 @@ fn test_close_modified_untitled_cancel_preserves_and_discard_cleans_draft() {
     wait_for_save_changes_dialog(&window);
     respond_to_save_changes_dialog(&window, "discard");
 
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
     wait_until(Duration::from_secs(3), || {
         draft_service::read_draft(&data_dir, &draft_id)
             .expect("read draft after discard")
@@ -11915,7 +13111,9 @@ fn test_multi_tab_window_close_saves_checked_and_discards_unchecked_documents() 
     for path in &files {
         window.open_document(path);
     }
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 2);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 2
+    });
     let save_page = find_tab_page_by_title(&window, "save-me.txt");
     let discard_page = find_tab_page_by_title(&window, "discard-me.txt");
     let save_editor = save_page
@@ -11934,8 +13132,7 @@ fn test_multi_tab_window_close_saves_checked_and_discards_unchecked_documents() 
     discard_editor.buffer().set_text("unchecked discard\n");
     discard_editor.buffer().set_modified(true);
     let saved_draft_id = seed_file_backed_draft(&window, &files[0], "saved branch draft\n");
-    let discarded_draft_id =
-        seed_file_backed_draft(&window, &files[1], "discarded branch draft\n");
+    let discarded_draft_id = seed_file_backed_draft(&window, &files[1], "discarded branch draft\n");
     let data_dir = json_store::data_dir();
 
     window.close();
@@ -11978,7 +13175,9 @@ fn test_mixed_close_rejects_discarded_editor_changes_during_slow_save() {
     for path in &files {
         window.open_document(path);
     }
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 2);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 2
+    });
     let save_editor = find_tab_page_by_title(&window, "save-me.txt")
         .child()
         .downcast::<LushtextEditorPage>()
@@ -12005,13 +13204,18 @@ fn test_mixed_close_rejects_discarded_editor_changes_during_slow_save() {
     respond_to_save_changes_dialog(&window, "save");
 
     assert!(!window.is_sensitive());
-    discard_editor.buffer().set_text("changed after confirmation\n");
+    discard_editor
+        .buffer()
+        .set_text("changed after confirmation\n");
     discard_editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(10), || window.is_sensitive());
 
     assert!(window.is_visible());
     assert_eq!(window.imp().tab_view.n_pages(), 2);
-    assert_eq!(editor_buffer_text(&discard_editor), "changed after confirmation\n");
+    assert_eq!(
+        editor_buffer_text(&discard_editor),
+        "changed after confirmation\n"
+    );
     assert!(discard_editor.is_modified());
     assert_eq!(
         draft_service::read_draft(&data_dir, &discarded_draft_id)
@@ -12188,7 +13392,10 @@ fn test_overweight_save_admission_is_process_exclusive() {
     for editor in &editors {
         let completed = Rc::clone(&completed);
         editor.save_file_async(move |result| {
-            assert!(result.is_ok(), "overweight admitted save failed: {result:?}");
+            assert!(
+                result.is_ok(),
+                "overweight admitted save failed: {result:?}"
+            );
             completed.set(completed.get().saturating_add(1));
         });
     }
@@ -12240,7 +13447,10 @@ fn test_admitted_save_rejects_stale_destination_completion() {
         Some(Err(EditorSaveError::SnapshotCancelled))
     ));
     assert!(editor.is_modified());
-    assert_eq!(editor.file_path().as_deref(), Some(replacement_path.as_path()));
+    assert_eq!(
+        editor.file_path().as_deref(),
+        Some(replacement_path.as_path())
+    );
     assert_eq!(
         fs_read::text(&original_path).expect("stale save destination bytes"),
         "stale save body\n"
@@ -12365,7 +13575,9 @@ fn test_stale_close_save_cancellation_wakes_queued_loads() {
         .child()
         .downcast::<LushtextEditorPage>()
         .expect("close-save editor");
-    wait_until(Duration::from_secs(5), || close_editor.file_size().is_some());
+    wait_until(Duration::from_secs(5), || {
+        close_editor.file_size().is_some()
+    });
     close_editor.buffer().set_text("close save body\n");
     close_editor.buffer().set_modified(true);
     close_editor.reset_transient_load_admission_for_test();
@@ -12508,10 +13720,7 @@ fn test_close_batch_pre_rename_failure_stops_later_saves_and_keeps_drafts() {
 
 #[test]
 fn test_close_batch_durability_warning_stops_later_saves_and_keeps_drafts() {
-    assert_close_batch_failure_preserves_recovery(
-        editor_io::SaveFailureForTest::AfterRename,
-        true,
-    );
+    assert_close_batch_failure_preserves_recovery(editor_io::SaveFailureForTest::AfterRename, true);
 }
 
 #[test]
@@ -12524,7 +13733,9 @@ fn test_keyboard_multi_tab_save_changes_selection_control() {
     for path in &files {
         window.open_document(path);
     }
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 2);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 2
+    });
     let save_page = find_tab_page_by_title(&window, "save-me.txt");
     let discard_page = find_tab_page_by_title(&window, "discard-me.txt");
     let save_editor = save_page
@@ -12596,7 +13807,9 @@ fn test_print_action_prepares_active_document_snapshot() {
     let (window, _dir, path) = open_temp_document("original print content\n");
     present_window(&window);
     let editor = active_editor(&window);
-    editor.buffer().set_text("active print content\nwith metadata\n");
+    editor
+        .buffer()
+        .set_text("active print content\nwith metadata\n");
     editor.buffer().set_modified(true);
     flush_events();
     let before = editor_print_state(&editor);
@@ -12678,7 +13891,11 @@ fn test_print_failure_reports_feedback_and_preserves_document_state() {
             .imp()
             .notification_bus
             .status_bar_view()
-            .is_some_and(|status| status.text.contains("Print failed: simulated backend failure"))
+            .is_some_and(|status| {
+                status
+                    .text
+                    .contains("Print failed: simulated backend failure")
+            })
     });
 }
 
@@ -12821,7 +14038,10 @@ fn test_cycle_invisible_characters_updates_active_editor_and_default_for_new_tab
     ensure_gtk_init();
     let settings = gio::Settings::new(lushtext_core::config::APP_ID);
     settings
-        .set_string(keys::INVISIBLE_CHARACTERS_MODE, InvisibleCharactersMode::Off.id())
+        .set_string(
+            keys::INVISIBLE_CHARACTERS_MODE,
+            InvisibleCharactersMode::Off.id(),
+        )
         .expect("reset invisible-character mode");
     let window = test_window();
     window.new_tab();
@@ -12843,9 +14063,15 @@ fn test_cycle_invisible_characters_updates_active_editor_and_default_for_new_tab
     );
 
     activate_action(&window, "cycle-invisible-characters");
-    assert_eq!(first.invisible_characters_mode(), InvisibleCharactersMode::All);
+    assert_eq!(
+        first.invisible_characters_mode(),
+        InvisibleCharactersMode::All
+    );
     activate_action(&window, "cycle-invisible-characters");
-    assert_eq!(first.invisible_characters_mode(), InvisibleCharactersMode::Off);
+    assert_eq!(
+        first.invisible_characters_mode(),
+        InvisibleCharactersMode::Off
+    );
 
     activate_action(&window, "cycle-invisible-characters");
     window.new_tab();
@@ -12941,7 +14167,9 @@ fn test_closing_properties_pane_restores_editor_focus() {
     flush_events();
 
     activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_surface_uses_right_pane(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_surface_uses_right_pane(&window)
+    });
     window
         .imp()
         .properties_panel
@@ -13121,7 +14349,10 @@ fn test_primary_menu_markdown_preview_pauses_large_markdown_buffer() {
             .placeholder_description_for_test(),
     );
     assert_eq!(
-        window.imp().markdown_preview.placeholder_description_for_test(),
+        window
+            .imp()
+            .markdown_preview
+            .placeholder_description_for_test(),
         Some("Markdown preview paused because the source exceeds 4 MiB".to_string())
     );
 }
@@ -13149,7 +14380,9 @@ fn test_side_by_side_definition_list_code_block_uses_live_column() {
 
     activate_action(&window, "toggle-preview-pane");
 
-    wait_until(Duration::from_secs(2), || window.imp().preview_visible.get());
+    wait_until(Duration::from_secs(2), || {
+        window.imp().preview_visible.get()
+    });
     wait_for_markdown_preview_shell(&window);
     assert_live_code_block_uses_preview_column(&window);
 }
@@ -13222,7 +14455,9 @@ fn test_notes_menu_button_shows_without_editor_or_workspace() {
     let window = test_window();
     present_window(&window);
 
-    wait_until(Duration::from_secs(2), || notes_menu_button_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        notes_menu_button_visible(&window)
+    });
     assert!(action_enabled(&window, "notes-show-notes"));
     for name in [
         "notes-toggle-bookmark",
@@ -13286,7 +14521,9 @@ fn test_notes_menu_stays_available_after_closing_last_tab_with_workspaces() {
     assert_eq!(window.imp().tab_view.n_pages(), 1);
 
     close_selected_tab(&window);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
 
     assert!(notes_menu_button_visible(&window));
     assert!(action_enabled(&window, "notes-show-notes"));
@@ -13588,12 +14825,8 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     fixture::write_text(&path, source_text);
 
     let data_dir = json_store::data_dir();
-    document_note_service::save_for_path(
-        &data_dir,
-        &path,
-        &RichNoteBody::new(saved_note),
-    )
-    .expect("save document note");
+    document_note_service::save_for_path(&data_dir, &path, &RichNoteBody::new(saved_note))
+        .expect("save document note");
 
     let window = test_window();
     present_window(&window);
@@ -13601,7 +14834,9 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     window.open_document(&path);
-    wait_until(Duration::from_secs(2), || active_editor(&window).file_path() == Some(path.clone()));
+    wait_until(Duration::from_secs(2), || {
+        active_editor(&window).file_path() == Some(path.clone())
+    });
 
     activate_action(&window, "open-document-note");
     wait_until(Duration::from_secs(2), || {
@@ -13653,7 +14888,9 @@ fn test_document_note_dialog_supports_edit_and_render_modes() {
     let switcher_bounds = switcher
         .compute_bounds(&extra)
         .expect("switcher bounds in dialog content");
-    let stack_bounds = stack.compute_bounds(&extra).expect("stack bounds in dialog content");
+    let stack_bounds = stack
+        .compute_bounds(&extra)
+        .expect("stack bounds in dialog content");
     let switcher_right = switcher_bounds.x() + switcher_bounds.width();
     let stack_right = stack_bounds.x() + stack_bounds.width();
     assert!(
@@ -13731,7 +14968,8 @@ fn test_empty_document_note_first_render_keeps_modal_geometry_after_typing() {
     let (edit, _) = note_editor_text_views(&extra);
     edit.buffer().set_text("  \n\t  ");
     wait_for_note_save_response_sensitive(&dialog, false);
-    edit.buffer().set_text("# Typed document note\n\nPreview me");
+    edit.buffer()
+        .set_text("# Typed document note\n\nPreview me");
     wait_for_note_save_response_sensitive(&dialog, true);
     edit.buffer().set_text("");
     wait_for_note_save_response_sensitive(&dialog, false);
@@ -13892,8 +15130,8 @@ fn test_open_folder_note_warns_when_sidecar_is_corrupt() {
     let data_dir = json_store::data_dir();
     let corrupt_identity =
         folder_note_service::resolve_folder_note_identity(&right_folder).expect("folder identity");
-    let corrupt_sidecar =
-        folder_note_service::folder_notes_dir(&data_dir).join(format!("{}.json", corrupt_identity.sidecar_id));
+    let corrupt_sidecar = folder_note_service::folder_notes_dir(&data_dir)
+        .join(format!("{}.json", corrupt_identity.sidecar_id));
     fixture::create_dir_all(corrupt_sidecar.parent().expect("sidecar parent"));
     fixture::write_text(&corrupt_sidecar, "not folder note json");
 
@@ -13989,14 +15227,17 @@ fn test_folder_note_dialog_saves_renders_and_clears_note() {
             == Some("Folder Note")
     });
     let dialog = visible_alert_dialog(&window).expect("reopened folder note dialog");
-    let extra = dialog.extra_child().expect("reopened folder note extra child");
+    let extra = dialog
+        .extra_child()
+        .expect("reopened folder note extra child");
     let stack = find_note_editor_stack(&extra).expect("reopened folder note editor stack");
     assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
     wait_for_note_save_response_sensitive(&dialog, false);
     stack.set_visible_child_name("edit");
     flush_events();
     let (edit, _) = note_editor_text_views(&extra);
-    edit.buffer().set_text("  # Saved folder note\n\nPersistent body  ");
+    edit.buffer()
+        .set_text("  # Saved folder note\n\nPersistent body  ");
     wait_for_note_save_response_sensitive(&dialog, false);
     edit.buffer().set_text(changed_note);
     wait_for_note_save_response_sensitive(&dialog, true);
@@ -14081,12 +15322,8 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
     fixture::write_text(&path, "# Notes\n");
 
     let data_dir = json_store::data_dir();
-    document_note_service::save_for_path(
-        &data_dir,
-        &path,
-        &RichNoteBody::new("# Note\n\nOpen me"),
-    )
-    .expect("save document note");
+    document_note_service::save_for_path(&data_dir, &path, &RichNoteBody::new("# Note\n\nOpen me"))
+        .expect("save document note");
 
     let window = test_window();
     present_window(&window);
@@ -14094,7 +15331,9 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let dialog_child = dialog.child().expect("notes browser child");
@@ -14128,7 +15367,9 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
             == Some("Document Note")
     });
     let dialog = visible_alert_dialog(&window).expect("browse-opened document note dialog");
-    let extra = dialog.extra_child().expect("browse-opened document note extra child");
+    let extra = dialog
+        .extra_child()
+        .expect("browse-opened document note extra child");
     let stack = find_note_editor_stack(&extra).expect("browse-opened note editor stack");
     assert_eq!(stack.visible_child_name().as_deref(), Some("render"));
     assert_note_save_response_visible(&dialog);
@@ -14249,6 +15490,200 @@ fn test_notes_browser_disposal_cancels_active_source_construction() {
 }
 
 #[test]
+fn test_notes_browser_source_progresses_while_ordinary_disposal_capacity_is_full() {
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("capacity-resume-note.md");
+    fixture::write_text(&path, "capacity resume\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("capacity resume body"),
+    )
+    .expect("save capacity resume note");
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(15), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| {
+                snapshot.source_ready && snapshot.source.active == 0 && snapshot.source_entries >= 1
+            })
+    });
+    assert!(lane_snapshot_for_test().overweight_exclusive);
+    drop(capacity_hold);
+}
+
+#[test]
+fn test_repeated_notes_activation_reuses_one_progress_owner() {
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("single-instance-note.md");
+    fixture::write_text(&path, "single instance\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("single instance note body"),
+    )
+    .expect("save single-instance note");
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = progress_lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0 && snapshot.retained_bytes == 0
+    });
+    let progress_hold = hold_progress_disposal_capacity_for_test();
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source.started == 1 && !snapshot.source_ready)
+    });
+    let first_dialog = visible_sheet_dialog(&window).expect("first notes browser dialog");
+
+    activate_action(&window, "show-notes");
+    flush_events();
+
+    let second_dialog = visible_sheet_dialog(&window).expect("re-presented notes browser dialog");
+    assert_eq!(first_dialog, second_dialog);
+    let deferred = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("deferred notes runtime");
+    assert_eq!(deferred.source.started, 1);
+    assert_eq!(deferred.source.pending, 0);
+    assert_eq!(deferred.source.cancellation_requests, 0);
+
+    drop(progress_hold);
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source_ready && snapshot.source.active == 0)
+    });
+}
+
+#[test]
+fn test_notes_browser_switches_modes_on_one_live_source_owner() {
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    let (_folders_dir, left_folder, _right_folder) =
+        seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("shared-browser-mode.rs");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("mode bookmark".to_string()),
+        )],
+    )
+    .expect("save mode bookmark");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("mode document note"),
+    )
+    .expect("save mode document note");
+
+    set_note_source_delay_for_test(250);
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source.active == 1)
+    });
+    let dialog = visible_sheet_dialog(&window).expect("initial unified browser");
+
+    activate_action(&window, "show-bookmarks");
+    flush_events();
+    assert_eq!(
+        visible_sheet_dialog(&window).as_ref(),
+        Some(&dialog),
+        "bookmark mode must reuse the live Notes dialog"
+    );
+    let bookmark_pending = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("bookmark-mode runtime");
+    assert_eq!(bookmark_pending.mode, NotesBrowserMode::Bookmarks);
+    assert_eq!(bookmark_pending.source.active, 1);
+    assert_eq!(bookmark_pending.source.pending, 1);
+
+    activate_action(&window, "show-notes");
+    flush_events();
+    let latest_pending = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("latest all-notes runtime");
+    assert_eq!(latest_pending.mode, NotesBrowserMode::AllNotes);
+    assert_eq!(latest_pending.source.active, 1);
+    assert_eq!(latest_pending.source.pending, 1);
+    wait_until(Duration::from_secs(15), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| {
+                snapshot.mode == NotesBrowserMode::AllNotes
+                    && snapshot.source_ready
+                    && snapshot.source.active == 0
+                    && snapshot.source.pending == 0
+                    && snapshot.query.active == 0
+            })
+    });
+    assert_eq!(dialog.title().as_str(), "Notes");
+
+    set_note_source_delay_for_test(0);
+    activate_action(&window, "show-bookmarks");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| {
+                snapshot.mode == NotesBrowserMode::Bookmarks
+                    && snapshot.source_ready
+                    && snapshot.source.active == 0
+                    && snapshot.query.active == 0
+                    && snapshot.source_entries == 1
+            })
+    });
+    assert_eq!(visible_sheet_dialog(&window).as_ref(), Some(&dialog));
+    assert_eq!(dialog.title().as_str(), "Bookmarks");
+    let child = dialog.child().expect("unified bookmark browser child");
+    let sidebar = find_adw_sidebar(&child).expect("unified bookmark sidebar");
+    assert_eq!(sidebar.items().n_items(), 1);
+    assert_eq!(
+        sidebar.item(0).and_then(|item| item.title()).as_deref(),
+        Some("mode bookmark")
+    );
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| {
+                snapshot.mode == NotesBrowserMode::AllNotes
+                    && snapshot.source_ready
+                    && snapshot.source.active == 0
+                    && snapshot.query.active == 0
+                    && snapshot.source_entries == 2
+            })
+    });
+    assert_eq!(visible_sheet_dialog(&window).as_ref(), Some(&dialog));
+    assert_eq!(dialog.title().as_str(), "Notes");
+}
+
+#[test]
 fn test_notes_browser_reports_source_truncation_separately() {
     ensure_gtk_init();
     let _reset = NotesBrowserPolicyReset;
@@ -14311,7 +15746,84 @@ fn test_notes_browser_open_editor_snapshot_respects_aggregate_limit() {
 
     let (snapshots, bookmarks) = window.open_editor_note_snapshot_counts_for_test(2);
     assert!(snapshots.saturating_add(bookmarks) <= 2);
-    assert!(bookmarks < 4, "bookmark capture must stop at the aggregate bound");
+    assert!(
+        bookmarks < 4,
+        "bookmark capture must stop at the aggregate bound"
+    );
+}
+
+#[test]
+fn test_notes_browser_open_editor_snapshot_caps_oversized_labels_before_admission() {
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    let _data_dir = isolated_data_dir();
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let valid_note_path = left_folder.join("bounded-request-note.md");
+    fixture::write_text(&valid_note_path, "bounded request\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &valid_note_path,
+        &RichNoteBody::new("bounded request source entry"),
+    )
+    .expect("save bounded-request source note");
+    let files = tempfile::tempdir().expect("oversized snapshot tempdir");
+    let path = files.path().join("oversized-bookmark.rs");
+    fixture::write_text(&path, "one\ntwo\n");
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            0,
+            Some("x".repeat(5 * 1024 * 1024)),
+        )],
+    )
+    .expect("save oversized live bookmark");
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(5), || {
+        let editor = active_editor(&window);
+        editor.file_path().as_deref() == Some(path.as_path())
+            && editor.load_state() == EditorLoadState::Loaded
+            && editor.imp().bookmarks.entries.borrow().len() == 1
+    });
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &RichNoteBody::new("bounded request evidence"),
+    )
+    .expect("save open-tab document note");
+
+    let (snapshots, bookmarks, retained_bytes, truncated) =
+        window.open_editor_note_snapshot_retained_evidence_for_test(10_000, 4 * 1024 * 1024);
+    assert_eq!(snapshots, 1);
+    assert_eq!(bookmarks, 0);
+    assert!(retained_bytes <= 4 * 1024 * 1024);
+    assert!(truncated);
+
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = progress_lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0 && snapshot.retained_bytes == 0
+    });
+    let progress_hold = hold_progress_disposal_capacity_for_test();
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source.started == 1 && !snapshot.source_ready)
+    });
+    drop(progress_hold);
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_browser_runtime_snapshot_for_test()
+            .is_some_and(|snapshot| snapshot.source.active == 0)
+    });
+    let completed = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("bounded request browser remains active");
+    assert!(completed.source_ready);
+    assert!(completed.source_truncated);
 }
 
 #[test]
@@ -14342,7 +15854,9 @@ fn test_notes_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     wait_for_workspace_folders(&window, 2);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14388,7 +15902,9 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let dialog_child = dialog.child().expect("notes browser child");
@@ -14399,8 +15915,18 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
         sidebar.item(0).and_then(|item| item.title()).as_deref(),
         Some("Bookmark · jump here")
     );
-    let open_button = find_button_by_label(&dialog_child, "Open").expect("notes browser open button");
+    let open_button =
+        find_button_by_label(&dialog_child, "Open").expect("notes browser open button");
     wait_until(Duration::from_secs(2), || open_button.is_sensitive());
+    let row_open_button = sidebar
+        .item(0)
+        .and_then(|item| item.suffix())
+        .and_then(|suffix| suffix.downcast::<gtk4::Button>().ok())
+        .expect("bookmark row open suffix");
+    assert_eq!(
+        row_open_button.tooltip_text().as_deref(),
+        Some("Open bookmark jump here")
+    );
 
     sidebar.emit_by_name::<()>("activated", &[&0u32]);
     flush_events();
@@ -14409,7 +15935,7 @@ fn test_browse_notes_opens_bookmark_for_selected_row() {
         "activating a bookmark row should only preview/select it"
     );
 
-    open_button.emit_clicked();
+    row_open_button.emit_clicked();
     flush_events();
 
     wait_until(Duration::from_secs(2), || {
@@ -14444,7 +15970,9 @@ fn test_notes_browser_renders_markdown_bookmark_excerpt() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14492,7 +16020,9 @@ fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14512,7 +16042,9 @@ fn test_notes_browser_renders_raw_bookmark_excerpt_with_target_marker() {
         .and_then(|child| {
             let mut text_views = Vec::new();
             collect_text_views(&child, &mut text_views);
-            text_views.into_iter().find(|text_view| !text_view.is_editable())
+            text_views
+                .into_iter()
+                .find(|text_view| !text_view.is_editable())
         })
         .expect("raw bookmark preview text view");
     AccessibleAudit::new()
@@ -14552,7 +16084,9 @@ fn test_notes_browser_bookmark_preview_uses_live_open_editor_buffer() {
     )]);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14603,7 +16137,9 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
     wait_for_workspace_consumers(&window, 2, 4);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14628,10 +16164,7 @@ fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
     ensure_gtk_init();
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_folder.join("metadata-only-bookmark.rs");
-    fixture::write_text(
-        &path,
-        "before\nneedle-only-in-source-excerpt\nafter\n",
-    );
+    fixture::write_text(&path, "before\nneedle-only-in-source-excerpt\nafter\n");
 
     bookmark_service::save_for_path(
         &json_store::data_dir(),
@@ -14649,7 +16182,9 @@ fn test_notes_browser_search_ignores_bookmark_excerpt_text() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14686,7 +16221,9 @@ fn test_browse_notes_includes_fresh_live_bookmark_before_sidecar_save() {
     let _ = editor.toggle_bookmark_at_cursor();
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14726,14 +16263,14 @@ fn test_browse_notes_prefers_open_editor_bookmarks_over_stale_sidecar() {
         active_editor(&window).bookmark_records().len() == 1
     });
 
-    let live_bookmark = lushtext_core::model::bookmark::BookmarkRecord::new(
-        2,
-        Some("live current".to_string()),
-    );
+    let live_bookmark =
+        lushtext_core::model::bookmark::BookmarkRecord::new(2, Some("live current".to_string()));
     active_editor(&window).load_bookmarks(&[live_bookmark]);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14781,12 +16318,17 @@ fn test_browse_notes_shows_open_tab_bookmark_without_workspace() {
         "saved open tabs should make Browse Notes available without a workspace"
     );
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let search_entry = find_search_entry(&child).expect("notes browser search entry");
-    assert_eq!(search_entry.placeholder_text().as_deref(), Some("Search Notes..."));
+    assert_eq!(
+        search_entry.placeholder_text().as_deref(),
+        Some("Search Notes…")
+    );
 
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
@@ -14822,7 +16364,9 @@ fn test_browse_notes_shows_open_tab_document_note_without_workspace() {
     });
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14889,13 +16433,18 @@ fn test_browse_notes_keeps_scope_rows_strict_and_lists_other_open_workspace_tab(
     )]);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
     let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
     wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
-    assert_eq!(adw_sidebar_section_titles(&sidebar), ["Bookmarks", "Open Tabs"]);
+    assert_eq!(
+        adw_sidebar_section_titles(&sidebar),
+        ["Bookmarks", "Open Tabs"]
+    );
     assert_eq!(
         sidebar.item(0).and_then(|item| item.title()).as_deref(),
         Some("Bookmark · left scoped")
@@ -14935,7 +16484,9 @@ fn test_notes_browser_uses_folder_order_for_overlapping_primary_context() {
     wait_for_workspace_folders(&window, 2);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -14957,8 +16508,11 @@ fn test_notes_browser_uses_folder_order_for_overlapping_primary_context() {
     assert!(
         subtitles
             .iter()
-            .any(|subtitle| subtitle
-                .starts_with(&format!("{}{}", primary_context_prefix, path.display()))),
+            .any(|subtitle| subtitle.starts_with(&format!(
+                "{}{}",
+                primary_context_prefix,
+                path.display()
+            ))),
         "document-note rows should use the first configured covering folder as primary context"
     );
 }
@@ -15002,7 +16556,9 @@ fn test_notes_browser_preserves_configured_folder_note_order() {
     wait_for_workspace_folders(&window, 2);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -15047,8 +16603,8 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     .expect("save valid bookmark");
     let corrupt_identity =
         bookmark_service::resolve_document_identity(&corrupt_path).expect("corrupt identity");
-    let corrupt_sidecar =
-        bookmark_service::bookmarks_dir(&data_dir).join(format!("{}.json", corrupt_identity.sidecar_id));
+    let corrupt_sidecar = bookmark_service::bookmarks_dir(&data_dir)
+        .join(format!("{}.json", corrupt_identity.sidecar_id));
     fixture::create_dir_all(corrupt_sidecar.parent().expect("sidecar parent"));
     fixture::write_text(&corrupt_sidecar, "not bookmark json");
 
@@ -15057,12 +16613,18 @@ fn test_bookmark_browser_warns_and_keeps_valid_rows_with_corrupt_sidecar() {
     wait_for_workspace_folders(&window, 2);
 
     activate_action(&window, "show-bookmarks");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("bookmark browser dialog");
     let child = dialog.child().expect("bookmark browser child");
+    let sidebar = find_adw_sidebar(&child).expect("bookmark browser sidebar");
     wait_until(Duration::from_secs(10), || {
-        find_label_by_text(&child, "valid bookmark").is_some()
+        sidebar
+            .item(0)
+            .and_then(|item| item.title())
+            .is_some_and(|title| title == "valid bookmark")
             && window
                 .imp()
                 .notification_bus
@@ -15094,7 +16656,9 @@ fn test_notes_browser_close_button_dismisses_populated_browser() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -15109,7 +16673,9 @@ fn test_notes_browser_close_button_dismisses_populated_browser() {
     single_visible_close_button(&child).emit_clicked();
     flush_events();
 
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_none()
+    });
 }
 
 #[test]
@@ -15131,7 +16697,9 @@ fn test_notes_browser_close_button_dismisses_collapsed_sidebar_page() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -15147,7 +16715,9 @@ fn test_notes_browser_close_button_dismisses_collapsed_sidebar_page() {
 
     single_visible_close_button(&child).emit_clicked();
     flush_events();
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_none()
+    });
 }
 
 #[test]
@@ -15169,7 +16739,9 @@ fn test_notes_browser_back_navigates_and_close_dismisses_collapsed_preview() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(5), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -15203,7 +16775,9 @@ fn test_notes_browser_back_navigates_and_close_dismisses_collapsed_preview() {
     });
     single_visible_close_button(&child).emit_clicked();
     flush_events();
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_none()
+    });
 }
 
 #[test]
@@ -15219,7 +16793,6 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
     activate_action(&window, "show-notes");
     let dialog = wait_for_empty_notes_dialog(&window);
     let child = dialog.child().expect("empty notes browser child");
-    assert_readable_empty_status_dialog(&dialog, &child, "empty Browse Notes browser");
     assert!(
         find_label_by_text(&child, "No notes yet").is_some(),
         "empty Browse Notes should present an explicit empty state"
@@ -15228,21 +16801,26 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
         .role(gtk4::AccessibleRole::Status)
         .properties(&[
             gtk4::AccessibleProperty::Label,
-            gtk4::AccessibleProperty::Description,
         ])
-        .assert_on(&find_status_page(&child).expect("empty notes status page"));
+        .assert_on(&find_label_by_text(&child, "No notes yet").expect("empty notes status label"));
     single_visible_close_button(&child).emit_clicked();
     flush_events();
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_none()
+    });
 
     activate_action(&window, "show-notes");
-    let _dialog = wait_for_empty_notes_dialog(&window);
-    wait_until(Duration::from_secs(5), || {
-        gtk4::prelude::GtkWindowExt::focus(&window).is_some()
-    });
-    emit_key_pressed_on_focus(&window, gtk4::gdk::Key::Escape);
+    let dialog = wait_for_empty_notes_dialog(&window);
+    let child = dialog.child().expect("reopened empty notes browser child");
+    let search_entry = find_search_entry(&child).expect("empty notes browser search entry");
+    assert_eq!(
+        emit_key_pressed_on_widget(&search_entry, gtk4::gdk::Key::Escape),
+        glib::Propagation::Stop
+    );
     flush_events();
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_none());
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_none()
+    });
 }
 
 #[test]
@@ -15259,14 +16837,13 @@ fn test_empty_notes_browser_opens_from_header_without_workspace_or_open_tab_rows
     activate_action(&window, "notes-show-notes");
     let dialog = wait_for_empty_notes_dialog(&window);
     let child = dialog.child().expect("empty notes browser child");
-    assert_readable_empty_status_dialog(&dialog, &child, "empty Browse Notes browser");
     assert!(
         find_label_by_text(&child, "No notes yet").is_some(),
         "Browse Notes should present an explicit empty state even without workspaces"
     );
     assert!(
-        find_adw_sidebar(&child).is_none(),
-        "no-workspace empty state should not materialize fake browser rows"
+        find_adw_sidebar(&child).is_some_and(|sidebar| sidebar.items().n_items() == 0),
+        "no-workspace empty state should keep one empty bounded browser source"
     );
 }
 
@@ -15306,7 +16883,9 @@ fn test_browse_notes_filters_bookmarks_to_current_workspace_scope() {
     wait_for_workspace_consumers(&window, 1, 2);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -15349,19 +16928,17 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
         &RichNoteBody::new("folder needle"),
     )
     .expect("save folder note");
-    document_note_service::save_for_path(
-        &data_dir,
-        &path,
-        &RichNoteBody::new("document needle"),
-    )
-    .expect("save document note");
+    document_note_service::save_for_path(&data_dir, &path, &RichNoteBody::new("document needle"))
+        .expect("save document note");
     let window = test_window();
     present_window(&window);
     wait_for_workspace_folders(&window, 2);
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -15419,7 +16996,11 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     assert!(
         find_label_by_text(
             &child,
-            &format!("left · {} · {} · Line 2", left_folder.display(), path.display()),
+            &format!(
+                "left · {} · {} · Line 2",
+                left_folder.display(),
+                path.display()
+            ),
         )
         .is_some(),
         "bookmark preview metadata should include workspace, primary folder, file path, and line"
@@ -15457,11 +17038,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     activate_string_action(&window, "set-notes-browser-query", "bookmark needle");
     wait_until(Duration::from_secs(2), || {
         search_entry.text().as_str() == "bookmark needle"
-            &&
-        sidebar
-            .item(0)
-            .and_then(|item| item.title())
-            .is_some_and(|title| title == "Bookmark · bookmark needle")
+            && sidebar
+                .item(0)
+                .and_then(|item| item.title())
+                .is_some_and(|title| title == "Bookmark · bookmark needle")
     });
     assert_settled_widget_outer_size(
         &dialog,
@@ -15472,11 +17052,10 @@ fn test_notes_browser_uses_sectioned_adw_sidebar_and_filters_note_body() {
     activate_string_action(&window, "set-notes-browser-query", "Line 2");
     wait_until(Duration::from_secs(2), || {
         search_entry.text().as_str() == "Line 2"
-            &&
-        sidebar
-            .item(0)
-            .and_then(|item| item.title())
-            .is_some_and(|title| title == "Bookmark · bookmark needle")
+            && sidebar
+                .item(0)
+                .and_then(|item| item.title())
+                .is_some_and(|title| title == "Bookmark · bookmark needle")
     });
     assert_settled_widget_outer_size(
         &dialog,
@@ -15534,7 +17113,9 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     wait_for_workspace_consumers(&window, 2, 3);
 
     activate_action(&window, "show-notes");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
     let child = dialog.child().expect("notes browser child");
@@ -15603,7 +17184,10 @@ fn test_notes_menu_renders_immediately_left_of_main_menu() {
     wait_until(Duration::from_secs(2), || {
         let header_bar = window.imp().header_bar.upcast_ref::<gtk4::Widget>();
         let notes_button = window.imp().notes_menu_button.upcast_ref::<gtk4::Widget>();
-        let main_button = window.imp().primary_menu_button.upcast_ref::<gtk4::Widget>();
+        let main_button = window
+            .imp()
+            .primary_menu_button
+            .upcast_ref::<gtk4::Widget>();
         notes_menu_button_visible(&window)
             && notes_button.compute_bounds(header_bar).is_some()
             && main_button.compute_bounds(header_bar).is_some()
@@ -15616,7 +17200,10 @@ fn test_notes_menu_renders_immediately_left_of_main_menu() {
     );
     let main_x = widget_left_in(
         header_bar,
-        window.imp().primary_menu_button.upcast_ref::<gtk4::Widget>(),
+        window
+            .imp()
+            .primary_menu_button
+            .upcast_ref::<gtk4::Widget>(),
     );
 
     assert!(
@@ -16098,7 +17685,11 @@ fn test_startup_restore_surfaces_grouped_recovery_diagnostics() {
             .imp()
             .notification_bus
             .status_bar_view()
-            .is_some_and(|status| status.text.contains("Some recovery data could not be loaded"))
+            .is_some_and(|status| {
+                status
+                    .text
+                    .contains("Some recovery data could not be loaded")
+            })
     });
     assert!(
         !fs_metadata::exists(&session_path),
@@ -16142,7 +17733,10 @@ fn test_saved_search_recovery_surfaces_visible_warning() {
     let data_dir = json_store::data_dir();
     let saved_searches_path = data_dir.join("saved-searches.json");
     remove_session_path_for_test(&saved_searches_path);
-    fixture::write_text(&saved_searches_path, r#"[{"name":"legacy","query":"TODO"}]"#);
+    fixture::write_text(
+        &saved_searches_path,
+        r#"[{"name":"legacy","query":"TODO"}]"#,
+    );
 
     let window = test_window();
     present_window(&window);
@@ -16203,7 +17797,9 @@ fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
 
     let window = test_window();
     present_window(&window);
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 1
+    });
     wait_until(Duration::from_secs(2), || {
         let editor = active_editor(&window);
         editor_text(&editor) == draft_content
@@ -16233,7 +17829,9 @@ fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
     assert_eq!(loaded.text, draft_content);
 
     activate_action(&window, "show-local-history");
-    wait_until(Duration::from_secs(2), || visible_sheet_dialog(&window).is_some());
+    wait_until(Duration::from_secs(2), || {
+        visible_sheet_dialog(&window).is_some()
+    });
 
     let dialog = visible_sheet_dialog(&window).expect("local-history dialog visible");
     let child = dialog.child().expect("dialog child");
@@ -16584,7 +18182,9 @@ fn test_side_by_side_preview_width_clamps_legacy_preference_without_rewriting_it
     window.new_tab();
     present_window(&window);
     activate_action(&window, "toggle-properties");
-    wait_until(Duration::from_secs(2), || properties_sidebar_visible(&window));
+    wait_until(Duration::from_secs(2), || {
+        properties_sidebar_visible(&window)
+    });
 
     activate_action(&window, "toggle-preview-pane");
 

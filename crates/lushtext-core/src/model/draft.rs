@@ -9,6 +9,73 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Whether a manifest inventory was proven complete during the current workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftManifestCompleteness {
+    /// Every directory page reached a trusted terminal inventory.
+    Complete,
+    /// Bounded evidence was recovered, but at least one body remains unclassified.
+    Partial,
+    /// Inventory could not proceed because traversal or metadata inspection failed.
+    Failed,
+}
+
+/// Whether the current manifest state may replace persisted recovery metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftManifestReplacementEligibility {
+    /// The complete inventory was durably accepted or no manifest write was needed.
+    Eligible,
+    /// Replacement would forget ambiguous evidence or was not durably confirmed.
+    Ineligible,
+}
+
+/// Plain recovery authority carried from startup through every manifest writer.
+///
+/// Completeness and replacement eligibility are separate because a complete
+/// in-memory inventory is still not authoritative after a failed durable write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DraftManifestAuthority {
+    /// Completeness established by the latest accepted reconciliation.
+    pub completeness: DraftManifestCompleteness,
+    /// Whether destructive cleanup and later manifest replacement are allowed.
+    pub replacement: DraftManifestReplacementEligibility,
+}
+
+impl DraftManifestAuthority {
+    /// Authority for a complete, durably accepted manifest inventory.
+    pub const TRUSTED: Self = Self {
+        completeness: DraftManifestCompleteness::Complete,
+        replacement: DraftManifestReplacementEligibility::Eligible,
+    };
+
+    /// Build an untrusted authority value while preserving why completeness failed.
+    #[must_use]
+    pub const fn untrusted(completeness: DraftManifestCompleteness) -> Self {
+        Self {
+            completeness,
+            replacement: DraftManifestReplacementEligibility::Ineligible,
+        }
+    }
+
+    /// Return whether manifest replacement and orphan cleanup are safe.
+    #[must_use]
+    pub const fn is_trusted(self) -> bool {
+        matches!(
+            self,
+            Self {
+                completeness: DraftManifestCompleteness::Complete,
+                replacement: DraftManifestReplacementEligibility::Eligible,
+            }
+        )
+    }
+}
+
+impl Default for DraftManifestAuthority {
+    fn default() -> Self {
+        Self::untrusted(DraftManifestCompleteness::Failed)
+    }
+}
+
 /// One draft entry in the manifest. Maps a draft file on disk to the
 /// original source file and tracks metadata for conflict detection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -323,6 +390,22 @@ mod tests {
             }
             .is_trusted()
         );
+    }
+
+    #[test]
+    fn manifest_authority_requires_both_complete_inventory_and_replacement_eligibility() {
+        assert!(DraftManifestAuthority::TRUSTED.is_trusted());
+        assert!(
+            !DraftManifestAuthority::untrusted(DraftManifestCompleteness::Partial).is_trusted()
+        );
+        assert!(
+            !DraftManifestAuthority {
+                completeness: DraftManifestCompleteness::Complete,
+                replacement: DraftManifestReplacementEligibility::Ineligible,
+            }
+            .is_trusted()
+        );
+        assert!(!DraftManifestAuthority::default().is_trusted());
     }
 
     #[test]

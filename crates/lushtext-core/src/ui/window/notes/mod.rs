@@ -23,7 +23,9 @@ use gtk4::prelude::*;
 use libadwaita::prelude::AdwDialogExt;
 
 use crate::model::migration_ledger::MigrationKind;
-use crate::model::palette::{PaletteNoteEntry, PaletteOpenEditorNoteSnapshot};
+use crate::model::palette::{
+    PaletteNoteEntry, PaletteOpenEditorNoteSnapshot, PaletteOpenTabSource,
+};
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScope};
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{
@@ -56,11 +58,14 @@ const NOTES_BROWSER_SIDECAR_SCAN_LIMIT: usize = 10_000;
 const NOTES_BROWSER_DIAGNOSTIC_LIMIT: usize = 1_024;
 /// Maximum open-editor snapshots plus bookmark rows captured on GTK.
 const NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT: usize = 10_000;
+/// Maximum retained live-editor metadata cloned before note-source admission.
+const NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT: u64 = 4 * 1024 * 1024;
 /// Browser-owned source policy passed into the shared admission engine.
 const NOTES_BROWSER_SOURCE_LIMITS: palette_service::NoteSourceLimits =
     palette_service::NoteSourceLimits {
         entries: NOTES_BROWSER_SOURCE_ENTRY_LIMIT,
         searchable_text_bytes: NOTES_BROWSER_SOURCE_TEXT_LIMIT,
+        retained_bytes: palette_service::MAX_PALETTE_NOTE_RETAINED_BYTES,
         sidecar_entries: NOTES_BROWSER_SIDECAR_SCAN_LIMIT,
         diagnostics: NOTES_BROWSER_DIAGNOSTIC_LIMIT,
     };
@@ -126,6 +131,29 @@ enum FolderNoteOpenTarget {
 /// One entry shown in the unified notes browser.
 type NotesBrowserEntry = PaletteNoteEntry;
 
+/// Bounded live-editor request material plus content-free omission evidence.
+struct OpenEditorNoteSnapshots {
+    entries: Vec<PaletteOpenEditorNoteSnapshot>,
+    retained_bytes: u64,
+    truncated: bool,
+}
+
+fn open_editor_snapshot_heap_bytes(path: &PathBuf, source: Option<&PaletteOpenTabSource>) -> u64 {
+    let bytes = path.capacity().saturating_add(source.map_or(0, |source| {
+        source
+            .workspace_name
+            .as_ref()
+            .map_or(0, String::capacity)
+            .saturating_add(
+                source
+                    .workspace_folder
+                    .as_ref()
+                    .map_or(0, PathBuf::capacity),
+            )
+    }));
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
 /// State for one open unified notes browser dialog.
 struct NotesBrowserState {
     /// Window that owns the browser and receives follow-up actions.
@@ -134,6 +162,8 @@ struct NotesBrowserState {
     dialog: libadwaita::Dialog,
     /// Adaptive split view used for wide and narrow layouts.
     split_view: libadwaita::NavigationSplitView,
+    /// Navigation page whose title follows the active inventory mode.
+    sidebar_page: libadwaita::NavigationPage,
     /// Search field driving the current filtered row set.
     search_entry: gtk4::SearchEntry,
     /// Adwaita browse rail for bookmarks, folder notes, and document notes.
@@ -155,7 +185,7 @@ struct NotesBrowserState {
     /// Back button shown when the split view collapses.
     back_button: gtk4::Button,
     /// Complete set of notes covered by this browser session.
-    all_entries: RefCell<Arc<[NotesBrowserEntry]>>,
+    all_entries: RefCell<Arc<crate::ui::plain_disposal::DisposalOwned<Box<[NotesBrowserEntry]>>>>,
     /// Entry indexes currently shown in the sidebar's grouped visual order.
     filtered_indices: RefCell<Vec<usize>>,
     /// Debounce used to rebuild browser search rows after typing settles.
@@ -164,12 +194,18 @@ struct NotesBrowserState {
     query_runtime: RefCell<palette_service::NotesBrowserQueryCoordinator>,
     /// Generation owner for the initial bounded source construction.
     source_refreshes: RefCell<palette_service::NoteSourceRefreshCoordinator>,
+    /// Active compact source request waiting for disposal admission before sidecar I/O.
+    source_admission: RefCell<Option<palette_service::NoteSourceRefreshStart>>,
+    /// One paced capacity wakeup for the browser source.
+    source_capacity_wakeup: crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
     /// Typed source omissions reported separately from query render truncation.
     source_truncation: RefCell<Vec<palette_service::NoteSourceTruncationReason>>,
     /// Whether bounded source construction has published this dialog's source.
     source_ready: Cell<bool>,
     /// Whether dialog teardown has invalidated all source and query publication.
     disposed: Cell<bool>,
+    /// Inventory mode that owns the current source/query generations.
+    mode: Cell<palette_service::NotesBrowserMode>,
     /// Generation counter used to ignore stale closed-file bookmark preview loads.
     preview_generation: Cell<u32>,
 }
@@ -184,6 +220,8 @@ pub struct NotesBrowserRuntimeSnapshot {
     pub source_truncated: bool,
     /// Whether bounded source construction has completed.
     pub source_ready: bool,
+    /// Inventory mode owning the current source and query generations.
+    pub mode: palette_service::NotesBrowserMode,
     /// One-active/one-latest query ownership counters.
     pub query: palette_service::PaletteSearchCoordinatorSnapshot,
     /// Initial bounded-source ownership counters.
@@ -215,6 +253,10 @@ impl ActiveNotesBrowser {
     /// Return whether the dialog state still exists.
     fn is_alive(&self) -> bool {
         self.state.upgrade().is_some()
+    }
+
+    fn state(&self) -> Option<Rc<NotesBrowserState>> {
+        self.state.upgrade()
     }
 
     /// Filter the visible notes browser through its normal search entry.
@@ -261,6 +303,7 @@ impl ActiveNotesBrowser {
             source_entries: state.all_entries.borrow().len(),
             source_truncated: !state.source_truncation.borrow().is_empty(),
             source_ready: state.source_ready.get(),
+            mode: state.mode.get(),
             query: state.query_runtime.borrow().snapshot(),
             source: state.source_refreshes.borrow().snapshot(),
         })
@@ -543,13 +586,27 @@ impl LushtextWindow {
         scope_folders: &[PathBuf],
         all_workspaces: &[WorkspaceConfig],
         max_snapshots_and_bookmarks: usize,
-    ) -> Vec<PaletteOpenEditorNoteSnapshot> {
+        max_retained_bytes: u64,
+    ) -> OpenEditorNoteSnapshots {
         let tab_view = &self.imp().tab_view;
-        let mut snapshots = Vec::new();
+        let snapshot_size = std::mem::size_of::<PaletteOpenEditorNoteSnapshot>();
+        let byte_limited_snapshots = usize::try_from(
+            max_retained_bytes / u64::try_from(snapshot_size.max(1)).unwrap_or(u64::MAX),
+        )
+        .unwrap_or(usize::MAX);
+        let page_count = usize::try_from(tab_view.n_pages()).unwrap_or(usize::MAX);
+        let capacity = max_snapshots_and_bookmarks
+            .min(page_count)
+            .min(byte_limited_snapshots);
+        let mut snapshots = Vec::with_capacity(capacity);
+        let mut retained_bytes =
+            u64::try_from(capacity.saturating_mul(snapshot_size)).unwrap_or(u64::MAX);
         let mut retained_bookmarks = 0usize;
+        let mut truncated = false;
         for index in 0..tab_view.n_pages() {
             let retained_items = snapshots.len().saturating_add(retained_bookmarks);
-            if retained_items >= max_snapshots_and_bookmarks {
+            if retained_items >= max_snapshots_and_bookmarks || snapshots.len() == capacity {
+                truncated = true;
                 break;
             }
             let page = tab_view.nth_page(index);
@@ -562,19 +619,41 @@ impl LushtextWindow {
             };
             let open_tab_source = (!palette_service::path_is_in_folders(&path, scope_folders))
                 .then(|| palette_service::open_tab_source_for_path(all_workspaces, &path));
-            let bookmarks = editor.bookmark_records_bounded(
-                max_snapshots_and_bookmarks
-                    .saturating_sub(retained_items)
-                    .saturating_sub(1),
-            );
+            let snapshot_heap_bytes =
+                open_editor_snapshot_heap_bytes(&path, open_tab_source.as_ref());
+            if retained_bytes.saturating_add(snapshot_heap_bytes) > max_retained_bytes {
+                truncated = true;
+                break;
+            }
+            let bookmark_byte_limit = max_retained_bytes
+                .saturating_sub(retained_bytes)
+                .saturating_sub(snapshot_heap_bytes);
+            let (bookmarks, bookmark_bytes, bookmarks_truncated) = editor
+                .bookmark_records_bounded_by_retained_bytes(
+                    max_snapshots_and_bookmarks
+                        .saturating_sub(retained_items)
+                        .saturating_sub(1),
+                    bookmark_byte_limit,
+                );
             retained_bookmarks = retained_bookmarks.saturating_add(bookmarks.len());
+            retained_bytes = retained_bytes
+                .saturating_add(snapshot_heap_bytes)
+                .saturating_add(bookmark_bytes);
             snapshots.push(PaletteOpenEditorNoteSnapshot {
-                path: path.clone(),
+                path,
                 bookmarks,
                 open_tab_source,
             });
+            if bookmarks_truncated {
+                truncated = true;
+                break;
+            }
         }
-        snapshots
+        OpenEditorNoteSnapshots {
+            entries: snapshots,
+            retained_bytes,
+            truncated,
+        }
     }
     /// Find an already-open saved editor for a concrete path.
     fn open_editor_for_path(&self, path: &Path) -> Option<LushtextEditorPage> {
@@ -749,27 +828,6 @@ impl LushtextWindow {
     }
 }
 
-/// Build the base dialog used by bookmark browsers.
-fn build_browser_dialog(title: &str) -> libadwaita::Dialog {
-    let dialog = libadwaita::Dialog::builder()
-        .title(title)
-        .content_width(720)
-        .content_height(480)
-        .build();
-
-    let content = browser_content_box(&dialog);
-    let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-    let title_label = gtk4::Label::new(Some(title));
-    title_label.set_halign(gtk4::Align::Start);
-    title_label.set_hexpand(true);
-    title_label.add_css_class("title-4");
-    header.append(&title_label);
-
-    header.append(&build_dialog_close_button(&dialog));
-    content.prepend(&header);
-    dialog
-}
-
 /// Build one compact close affordance for browser-style dialogs.
 fn build_dialog_close_button(dialog: &libadwaita::Dialog) -> gtk4::Button {
     let close_button = gtk4::Button::builder()
@@ -815,31 +873,6 @@ fn focus_after_present(widget: &impl IsA<gtk4::Widget>) {
             widget.grab_focus();
         }
     });
-}
-
-/// Return the vertical content box attached to a browse dialog.
-#[must_use]
-fn browser_content_box(dialog: &libadwaita::Dialog) -> gtk4::Box {
-    if let Some(child) = dialog.child()
-        && let Ok(content) = child.downcast::<gtk4::Box>()
-    {
-        return content;
-    }
-
-    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
-    dialog.set_child(Some(&content));
-    content
-}
-
-/// Remove every child from a vertical browser rows box before rebuilding it.
-fn clear_box_children(rows_box: &gtk4::Box) {
-    while let Some(child) = rows_box.first_child() {
-        rows_box.remove(&child);
-    }
 }
 
 /// Build the empty-state label shown when a browser search has no matches.

@@ -113,6 +113,35 @@ class GtkDebugConfigurationTests(unittest.TestCase):
         ):
             self.assertIn(flag, result.stdout)
 
+    def test_atspi_text_wait_retries_consecutive_timed_out_probes_within_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact_dir = Path(directory)
+            calls = 0
+
+            def run_probe(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                nonlocal calls
+                calls += 1
+                if calls <= 2:
+                    raise subprocess.TimeoutExpired(
+                        command,
+                        MUTTER.ATSPI_TREE_PROCESS_TIMEOUT_SECONDS,
+                    )
+                output = Path(command[command.index("--output") + 1])
+                output.write_text("Preferences", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with (
+                mock.patch.object(MUTTER.subprocess, "run", side_effect=run_probe),
+                mock.patch.object(MUTTER.time, "sleep"),
+            ):
+                MUTTER.wait_for_atspi_text(artifact_dir, {}, "Preferences")
+
+            self.assertEqual(calls, 3)
+            self.assertIn(
+                "probe_timeouts=2",
+                (artifact_dir / "automation-waits.txt").read_text(encoding="utf-8"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

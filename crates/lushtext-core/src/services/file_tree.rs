@@ -7,6 +7,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use unicase::UniCase;
@@ -31,6 +32,21 @@ pub struct DirectoryEntry {
     /// and `None` means emptiness was not checked (files, or directories past
     /// the scan's lookahead budget).
     pub is_empty: Option<bool>,
+}
+
+impl Ord for DirectoryEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_entries(
+            (self.path.as_path(), self.is_dir),
+            (other.path.as_path(), other.is_dir),
+        )
+    }
+}
+
+impl PartialOrd for DirectoryEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Plain projection retained for one materialized GTK child store.
@@ -83,6 +99,8 @@ pub enum DirectoryReconciliationPlan {
         removed: usize,
         /// Desired changed rows inserted at that position.
         replacement: Vec<DirectoryRowState>,
+        /// Removed directory roots whose materialized descendant state must retire.
+        removed_directory_roots: Vec<PathBuf>,
     },
 }
 
@@ -108,10 +126,34 @@ pub fn plan_directory_reconciliation(
         .count();
     let removed = current.len().saturating_sub(prefix + suffix);
     let replacement_end = desired.len().saturating_sub(suffix);
+    let desired_paths = desired
+        .iter()
+        .filter(|row| row.is_dir)
+        .filter_map(|row| row.path.as_deref())
+        .collect::<HashSet<_>>();
+    let candidates = current[prefix..prefix.saturating_add(removed)]
+        .iter()
+        .filter(|row| row.is_dir)
+        .filter_map(|row| row.path.as_ref())
+        .filter(|path| !desired_paths.contains(path.as_path()))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut removed_directory_roots = candidates
+        .iter()
+        .filter(|path| {
+            !path
+                .ancestors()
+                .skip(1)
+                .any(|ancestor| candidates.contains(ancestor))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    removed_directory_roots.sort_unstable();
     DirectoryReconciliationPlan::Splice {
         position: prefix,
         removed,
         replacement: desired[prefix..replacement_end].to_vec(),
+        removed_directory_roots,
     }
 }
 
@@ -124,34 +166,18 @@ pub struct DirectoryScan {
     pub examined_entries: usize,
     /// Largest number of directory rows retained during bounded selection.
     pub peak_retained_entries: usize,
+    /// Complete retained heap weight of the returned entry batch.
+    pub retained_bytes: u64,
+    /// Largest conservatively charged heap weight during selection.
+    pub peak_retained_bytes: u64,
     /// True if the directory had more entries than `max_entries`.
     pub truncated: bool,
+    /// True when the caller-supplied scratch-byte ceiling omitted an entry.
+    pub byte_truncated: bool,
     /// True if the cancellation token was set during scanning.
     pub cancelled: bool,
     /// Human-readable scan error when the directory could not be read.
     pub error: Option<String>,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct SortedEntry {
-    path: PathBuf,
-    is_dir: bool,
-    is_empty: Option<bool>,
-}
-
-impl Ord for SortedEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        compare_entries(
-            (self.path.as_path(), self.is_dir),
-            (other.path.as_path(), other.is_dir),
-        )
-    }
-}
-
-impl PartialOrd for SortedEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 /// Scan a directory and return sorted entries (directories first, then alphabetical).
@@ -203,19 +229,161 @@ pub fn scan_directory_bounded_with_cancel<F>(
     dir_path: &Path,
     max_entries: usize,
     lookahead_cap: usize,
+    is_cancelled: F,
+) -> DirectoryScan
+where
+    F: FnMut() -> bool,
+{
+    scan_directory_without_byte_limit(dir_path, max_entries, lookahead_cap, is_cancelled)
+}
+
+/// Scan one directory under both row and complete retained-byte ceilings.
+pub fn scan_directory_bounded_with_cancel_and_bytes<F>(
+    dir_path: &Path,
+    max_entries: usize,
+    lookahead_cap: usize,
+    max_retained_bytes: u64,
     mut is_cancelled: F,
 ) -> DirectoryScan
 where
     F: FnMut() -> bool,
 {
-    // Keep only the best bounded rows while scanning so enormous directories do
-    // not require materializing every entry before sorting.
-    let mut heap = BinaryHeap::with_capacity(max_entries.saturating_add(1).min(256));
+    // Count-only scans do not need the file-index byte classifier's discovery
+    // pass: top-k replacement is deterministic for a fixed row limit. Keeping
+    // that common sidebar path single-pass avoids doubling directory I/O.
+    if max_retained_bytes == u64::MAX {
+        return scan_directory_without_byte_limit(
+            dir_path,
+            max_entries,
+            lookahead_cap,
+            is_cancelled,
+        );
+    }
+
+    // The backend does not promise enumeration order. First collect only scalar
+    // evidence, then select a deterministic top-k on a second bounded pass.
+    // Charging every retained row at the largest graph weight observed in the
+    // first pass makes the byte-derived capacity independent of encounter order.
+    let mut cancelled = false;
+    let mut examined_entries = 0usize;
+    let mut maximum_graph_bytes = 0u64;
+
+    let scan = fs_tree::visit_directory(
+        dir_path,
+        DirectoryScanPolicy::visible_workspace(),
+        |entry| {
+            if is_cancelled() {
+                cancelled = true;
+                return false;
+            }
+
+            match entry.kind {
+                FileKind::Directory | FileKind::File => {}
+                FileKind::Other => return true,
+            }
+            examined_entries = examined_entries.saturating_add(1);
+            maximum_graph_bytes = maximum_graph_bytes.max(directory_path_graph_bytes(&entry.path));
+            true
+        },
+    );
+
+    match scan {
+        Ok(()) => {}
+        Err(error) => {
+            let message = format!("Cannot read {}: {}", dir_path.display(), error);
+            tracing::warn!("{message}");
+            return DirectoryScan {
+                examined_entries,
+                error: Some(message),
+                ..DirectoryScan::default()
+            };
+        }
+    }
+    if cancelled {
+        return DirectoryScan {
+            examined_entries,
+            cancelled: true,
+            ..DirectoryScan::default()
+        };
+    }
+
+    let mut selector = BoundedDirectorySelector::new(
+        examined_entries,
+        max_entries,
+        max_retained_bytes,
+        maximum_graph_bytes,
+    );
+    let mut dirs_checked = 0usize;
+    let scan = fs_tree::visit_directory(
+        dir_path,
+        DirectoryScanPolicy::visible_workspace(),
+        |entry| {
+            if is_cancelled() {
+                cancelled = true;
+                return false;
+            }
+            let is_dir = match entry.kind {
+                FileKind::Directory => true,
+                FileKind::File => false,
+                FileKind::Other => return true,
+            };
+            let mut is_empty = None;
+            if is_dir && dirs_checked < lookahead_cap {
+                dirs_checked = dirs_checked.saturating_add(1);
+                is_empty = Some(is_dir_empty(&entry.path));
+            }
+            selector.consider(DirectoryEntry {
+                path: entry.path,
+                is_dir,
+                is_empty,
+            });
+            true
+        },
+    );
+    if let Err(error) = scan {
+        let message = format!("Cannot read {}: {}", dir_path.display(), error);
+        tracing::warn!("{message}");
+        return DirectoryScan {
+            examined_entries,
+            peak_retained_entries: selector.peak_retained_entries,
+            peak_retained_bytes: selector.peak_retained_bytes,
+            error: Some(message),
+            ..DirectoryScan::default()
+        };
+    }
+
+    let selection = selector.finish();
+    DirectoryScan {
+        entries: selection.entries,
+        examined_entries,
+        peak_retained_entries: selection.peak_retained_entries,
+        retained_bytes: selection.retained_bytes,
+        peak_retained_bytes: selection.peak_retained_bytes,
+        truncated: selection.truncated,
+        byte_truncated: selection.byte_truncated,
+        cancelled,
+        error: None,
+    }
+}
+
+fn scan_directory_without_byte_limit<F>(
+    dir_path: &Path,
+    max_entries: usize,
+    lookahead_cap: usize,
+    mut is_cancelled: F,
+) -> DirectoryScan
+where
+    F: FnMut() -> bool,
+{
+    let mut heap = BinaryHeap::with_capacity(max_entries.min(256));
+    let mut retained_graph_bytes = 0u64;
+    let mut retained_shell_bytes = retained_heap_shell_bytes(&heap);
     let mut truncated = false;
-    let mut dirs_checked = 0;
+    let mut dirs_checked = 0usize;
     let mut cancelled = false;
     let mut examined_entries = 0usize;
     let mut peak_retained_entries = 0usize;
+    let mut peak_retained_bytes = retained_shell_bytes;
 
     let scan = fs_tree::visit_directory(
         dir_path,
@@ -235,57 +403,180 @@ where
 
             let mut is_empty = None;
             if is_dir && dirs_checked < lookahead_cap {
-                dirs_checked += 1;
+                dirs_checked = dirs_checked.saturating_add(1);
                 is_empty = Some(is_dir_empty(&entry.path));
             }
-
-            heap.push(SortedEntry {
+            let candidate = DirectoryEntry {
                 path: entry.path,
                 is_dir,
                 is_empty,
-            });
-            if heap.len() > max_entries {
-                heap.pop();
+            };
+
+            if heap.len() == max_entries {
                 truncated = true;
+                if heap.peek().is_none_or(|worst| candidate >= *worst) {
+                    return true;
+                }
+                let removed = heap.pop().expect("nonzero full scan heap");
+                retained_graph_bytes =
+                    retained_graph_bytes.saturating_sub(directory_entry_graph_bytes(&removed));
             }
+
+            retained_graph_bytes =
+                retained_graph_bytes.saturating_add(directory_entry_graph_bytes(&candidate));
+            heap.push(candidate);
+            retained_shell_bytes = retained_heap_shell_bytes(&heap);
             peak_retained_entries = peak_retained_entries.max(heap.len());
+            peak_retained_bytes =
+                peak_retained_bytes.max(retained_shell_bytes.saturating_add(retained_graph_bytes));
             true
         },
     );
 
-    match scan {
-        Ok(()) => {}
-        Err(error) => {
-            let message = format!("Cannot read {}: {}", dir_path.display(), error);
-            tracing::warn!("{message}");
-            return DirectoryScan {
-                examined_entries,
-                peak_retained_entries,
-                error: Some(message),
-                ..DirectoryScan::default()
-            };
-        }
+    if let Err(error) = scan {
+        let message = format!("Cannot read {}: {}", dir_path.display(), error);
+        tracing::warn!("{message}");
+        return DirectoryScan {
+            examined_entries,
+            peak_retained_entries,
+            peak_retained_bytes,
+            error: Some(message),
+            ..DirectoryScan::default()
+        };
     }
 
+    let retained_bytes = retained_shell_bytes.saturating_add(retained_graph_bytes);
     DirectoryScan {
         entries: drain_sorted_entries(heap),
         examined_entries,
         peak_retained_entries,
+        retained_bytes,
+        peak_retained_bytes: peak_retained_bytes.max(retained_bytes),
         truncated,
+        byte_truncated: false,
         cancelled,
         error: None,
     }
 }
 
-fn drain_sorted_entries(heap: BinaryHeap<SortedEntry>) -> Vec<DirectoryEntry> {
+struct BoundedDirectorySelector {
+    heap: BinaryHeap<DirectoryEntry>,
+    retained_shell_bytes: u64,
+    retained_graph_bytes: u64,
+    maximum_graph_bytes: u64,
+    truncated: bool,
+    byte_truncated: bool,
+    peak_retained_entries: usize,
+    peak_retained_bytes: u64,
+}
+
+struct BoundedDirectorySelection {
+    entries: Vec<DirectoryEntry>,
+    retained_bytes: u64,
+    peak_retained_entries: usize,
+    peak_retained_bytes: u64,
+    truncated: bool,
+    byte_truncated: bool,
+}
+
+impl BoundedDirectorySelector {
+    fn new(
+        eligible_entries: usize,
+        max_entries: usize,
+        max_retained_bytes: u64,
+        maximum_graph_bytes: u64,
+    ) -> Self {
+        let row_charge = retained_u64(std::mem::size_of::<DirectoryEntry>())
+            .saturating_add(maximum_graph_bytes)
+            .max(1);
+        let byte_capacity = usize::try_from(max_retained_bytes / row_charge).unwrap_or(usize::MAX);
+        let desired_capacity = eligible_entries.min(max_entries);
+        let capacity = desired_capacity.min(byte_capacity);
+        let heap = BinaryHeap::from(Vec::with_capacity(capacity));
+        let retained_shell_bytes = retained_heap_shell_bytes(&heap);
+        Self {
+            heap,
+            retained_shell_bytes,
+            retained_graph_bytes: 0,
+            maximum_graph_bytes,
+            truncated: eligible_entries > max_entries,
+            byte_truncated: capacity < desired_capacity,
+            peak_retained_entries: 0,
+            peak_retained_bytes: retained_shell_bytes,
+        }
+    }
+
+    fn consider(&mut self, entry: DirectoryEntry) {
+        let graph_bytes = directory_entry_graph_bytes(&entry);
+        if graph_bytes > self.maximum_graph_bytes {
+            self.byte_truncated = true;
+            return;
+        }
+        if self.heap.capacity() == 0 {
+            self.byte_truncated = true;
+            return;
+        }
+        if self.heap.len() == self.heap.capacity() {
+            if self.heap.peek().is_some_and(|worst| entry < *worst) {
+                let removed = self.heap.pop().expect("full selector has a worst row");
+                self.retained_graph_bytes = self
+                    .retained_graph_bytes
+                    .saturating_sub(directory_entry_graph_bytes(&removed));
+            } else {
+                self.truncated = true;
+                return;
+            }
+            self.truncated = true;
+        }
+        self.retained_graph_bytes = self.retained_graph_bytes.saturating_add(graph_bytes);
+        self.heap.push(entry);
+        self.peak_retained_entries = self.peak_retained_entries.max(self.heap.len());
+        self.peak_retained_bytes = self.peak_retained_bytes.max(
+            self.retained_shell_bytes
+                .saturating_add(self.retained_graph_bytes),
+        );
+    }
+
+    fn finish(self) -> BoundedDirectorySelection {
+        let entries = drain_sorted_entries(self.heap);
+        let retained_bytes = self
+            .retained_shell_bytes
+            .saturating_add(self.retained_graph_bytes);
+        BoundedDirectorySelection {
+            entries,
+            retained_bytes,
+            peak_retained_entries: self.peak_retained_entries,
+            peak_retained_bytes: self.peak_retained_bytes.max(retained_bytes),
+            truncated: self.truncated,
+            byte_truncated: self.byte_truncated,
+        }
+    }
+}
+
+fn retained_u64(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+fn retained_heap_shell_bytes(heap: &BinaryHeap<DirectoryEntry>) -> u64 {
+    retained_u64(
+        heap.capacity()
+            .saturating_mul(std::mem::size_of::<DirectoryEntry>()),
+    )
+}
+
+fn directory_entry_graph_bytes(entry: &DirectoryEntry) -> u64 {
+    directory_path_graph_bytes(&entry.path)
+}
+
+fn directory_path_graph_bytes(path: &PathBuf) -> u64 {
+    retained_u64(
+        path.capacity()
+            .saturating_add(std::mem::size_of::<usize>().saturating_mul(2)),
+    )
+}
+
+fn drain_sorted_entries(heap: BinaryHeap<DirectoryEntry>) -> Vec<DirectoryEntry> {
     heap.into_sorted_vec()
-        .into_iter()
-        .map(|entry| DirectoryEntry {
-            path: entry.path,
-            is_dir: entry.is_dir,
-            is_empty: entry.is_empty,
-        })
-        .collect()
 }
 
 /// Sort order: directories before files, then case-insensitive alphabetical.
@@ -303,7 +594,9 @@ fn compare_entries(
             .file_name()
             .map(|n| n.to_string_lossy())
             .unwrap_or_default();
-        UniCase::new(a).cmp(&UniCase::new(b))
+        UniCase::new(a)
+            .cmp(&UniCase::new(b))
+            .then_with(|| path_a.cmp(path_b))
     })
 }
 
@@ -337,6 +630,13 @@ mod tests {
         }
     }
 
+    fn directory_row(name: impl Into<String>) -> DirectoryRowState {
+        DirectoryRowState {
+            is_dir: true,
+            ..row(name)
+        }
+    }
+
     fn apply_plan(
         mut current: Vec<DirectoryRowState>,
         plan: DirectoryReconciliationPlan,
@@ -345,6 +645,7 @@ mod tests {
             position,
             removed,
             replacement,
+            ..
         } = plan
         {
             current.splice(position..position + removed, replacement);
@@ -580,6 +881,79 @@ mod tests {
     }
 
     #[test]
+    fn byte_bounded_scan_accepts_its_exact_peak_and_rejects_one_byte_less() {
+        let dir = TempDir::new().expect("byte-bounded directory scan tempdir");
+        fixture::write_text(&dir.path().join("unicode-界-🙂.rs"), "");
+
+        let baseline =
+            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 1, 0, u64::MAX, || false);
+        assert_eq!(baseline.entries.len(), 1);
+        let exact_limit = baseline.peak_retained_bytes;
+
+        let exact =
+            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 1, 0, exact_limit, || false);
+        assert_eq!(names(&exact.entries), vec!["unicode-界-🙂.rs"]);
+        assert!(!exact.byte_truncated);
+        assert!(exact.peak_retained_bytes <= exact_limit);
+        assert!(exact.retained_bytes <= exact_limit);
+
+        let one_under = scan_directory_bounded_with_cancel_and_bytes(
+            dir.path(),
+            1,
+            0,
+            exact_limit.saturating_sub(1),
+            || false,
+        );
+        assert!(one_under.byte_truncated);
+        assert!(one_under.entries.is_empty());
+        assert!(one_under.peak_retained_bytes < exact_limit);
+    }
+
+    #[test]
+    fn byte_bounded_selector_is_identical_for_reversed_encounter_order() {
+        let entries = ["d.txt", "b.txt", "a.txt", "c.txt"]
+            .into_iter()
+            .map(|name| DirectoryEntry {
+                path: PathBuf::from(name),
+                is_dir: false,
+                is_empty: None,
+            })
+            .collect::<Vec<_>>();
+        let maximum_graph = entries
+            .iter()
+            .map(directory_entry_graph_bytes)
+            .max()
+            .expect("fixture entries");
+        let two_row_limit =
+            retained_u64(2usize.saturating_mul(std::mem::size_of::<DirectoryEntry>()))
+                .saturating_add(maximum_graph.saturating_mul(2));
+        let select = |input: Vec<DirectoryEntry>, limit| {
+            let mut selector =
+                BoundedDirectorySelector::new(input.len(), input.len(), limit, maximum_graph);
+            for entry in input {
+                selector.consider(entry);
+            }
+            selector.finish()
+        };
+
+        let exact_forward = select(entries.clone(), two_row_limit);
+        let exact_reverse = select(entries.iter().rev().cloned().collect(), two_row_limit);
+        assert_eq!(names(&exact_forward.entries), vec!["a.txt", "b.txt"]);
+        assert_eq!(exact_forward.entries, exact_reverse.entries);
+        assert_eq!(exact_forward.byte_truncated, exact_reverse.byte_truncated);
+
+        let one_under_forward = select(entries.clone(), two_row_limit - 1);
+        let one_under_reverse = select(entries.iter().rev().cloned().collect(), two_row_limit - 1);
+        assert_eq!(names(&one_under_forward.entries), vec!["a.txt"]);
+        assert_eq!(one_under_forward.entries, one_under_reverse.entries);
+        assert!(one_under_forward.byte_truncated);
+        assert_eq!(
+            one_under_forward.byte_truncated,
+            one_under_reverse.byte_truncated
+        );
+    }
+
+    #[test]
     fn reconciliation_plan_compacts_a_ten_thousand_row_prefix_change() {
         let current = (0..10_000)
             .map(|index| row(format!("row-{index:05}")))
@@ -596,6 +970,7 @@ mod tests {
                 position: 0,
                 removed: 0,
                 replacement: vec![row("prefix-new")],
+                removed_directory_roots: Vec::new(),
             }
         );
         assert_eq!(apply_plan(current, plan), desired);
@@ -618,6 +993,7 @@ mod tests {
             position,
             removed,
             replacement,
+            removed_directory_roots,
         } = &plan
         else {
             panic!("middle change should produce a splice");
@@ -625,6 +1001,49 @@ mod tests {
         assert_eq!(*position, 2_500);
         assert_eq!(*removed, 5_000);
         assert_eq!(replacement.len(), 5_000);
+        assert!(removed_directory_roots.is_empty());
         assert_eq!(apply_plan(current, plan), desired);
+    }
+
+    #[test]
+    fn reconciliation_plan_derives_ten_thousand_removed_roots_on_worker_data() {
+        let current = (0..10_000)
+            .map(|index| directory_row(format!("old/dir-{index:05}")))
+            .collect::<Vec<_>>();
+        let desired = (0..10_000)
+            .map(|index| directory_row(format!("new/dir-{index:05}")))
+            .collect::<Vec<_>>();
+
+        let plan = plan_directory_reconciliation(&current, &desired);
+        let DirectoryReconciliationPlan::Splice {
+            removed,
+            replacement,
+            removed_directory_roots,
+            ..
+        } = &plan
+        else {
+            panic!("full directory churn should produce one splice");
+        };
+
+        assert_eq!(*removed, 10_000);
+        assert_eq!(replacement.len(), 10_000);
+        assert_eq!(removed_directory_roots.len(), 10_000);
+        assert_eq!(apply_plan(current, plan), desired);
+    }
+
+    #[test]
+    fn reconciliation_retires_directory_state_when_same_path_becomes_a_file() {
+        let current = vec![directory_row("shared")];
+        let desired = vec![row("shared")];
+
+        let DirectoryReconciliationPlan::Splice {
+            removed_directory_roots,
+            ..
+        } = plan_directory_reconciliation(&current, &desired)
+        else {
+            panic!("kind replacement should produce a splice");
+        };
+
+        assert_eq!(removed_directory_roots, vec![PathBuf::from("shared")]);
     }
 }

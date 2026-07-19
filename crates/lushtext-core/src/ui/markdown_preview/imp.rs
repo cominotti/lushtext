@@ -280,7 +280,7 @@ pub struct LushtextMarkdownPreview {
     pub(super) planning_cancel_token:
         RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// Replaceable latest request retained while the active planner disconnects.
-    pub(super) queued_plan: RefCell<Option<super::PendingMarkdownPlan>>,
+    pub(super) queued_plan: RefCell<Option<super::GuardedPendingMarkdownPlan>>,
     /// Latest render or projection work deferred by detached-generation pressure.
     pub(super) deferred_work: RefCell<Option<super::PendingMarkdownWork>>,
     /// Atomic mirror used by workers to destroy stale plans before GTK delivery.
@@ -404,13 +404,12 @@ impl ObjectImpl for LushtextMarkdownPreview {
         if let Some(cancel) = self.planning_cancel_token.take() {
             cancel.store(true, std::sync::atomic::Ordering::Release);
         }
+        self.obj().cancel_queued_image_work();
         if let Some(retired) = self.queued_plan.take() {
-            self.obj()
-                .retire_markdown_plain_data(super::RetiredMarkdownPlainData::PlanRequest(retired));
+            self.obj().retire_guarded_markdown(retired);
         }
         if let Some(retired) = self.deferred_work.take() {
-            self.obj()
-                .retire_markdown_plain_data(super::RetiredMarkdownPlainData::Work(retired));
+            self.obj().retire_markdown_work(retired);
         }
         let generation = self.render_session.borrow_mut().cancel();
         self.render_generation

@@ -26,6 +26,11 @@ impl SearchRetirementSliceBudget {
         count
     }
 
+    /// Charge one independently owned value before its caller releases it.
+    pub fn take_one(&mut self) -> bool {
+        self.take(1) == 1
+    }
+
     #[must_use]
     pub fn exhausted(self) -> bool {
         self.remaining == 0
@@ -62,10 +67,13 @@ mod tests {
     fn zero_budget_and_large_available_counts_saturate_safely() {
         let mut empty = SearchRetirementSliceBudget::new(0);
         assert_eq!(empty.take(usize::MAX), 0);
+        assert!(!empty.take_one());
         assert!(empty.exhausted());
 
         let mut bounded = SearchRetirementSliceBudget::new(250);
-        assert_eq!(bounded.take(usize::MAX), 250);
+        assert!(bounded.take_one());
+        assert_eq!(bounded.retired(), 1);
+        assert_eq!(bounded.take(usize::MAX), 249);
         assert_eq!(bounded.retired(), 250);
         assert!(bounded.exhausted());
     }

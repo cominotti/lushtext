@@ -8,6 +8,7 @@ use crate::services::palette::{self, FileIndex};
 use crate::ui::accessibility::{self, RowAccessibility};
 use crate::ui::command_palette::item::PaletteItem;
 use crate::ui::command_palette::runtime::CommandPaletteSearchRequest;
+use crate::ui::plain_disposal::DisposalOwned;
 use glib::prelude::*;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
@@ -78,11 +79,11 @@ pub struct LushtextCommandPalette {
     pub results_store: gio::ListStore,
     /// Shared file index for fuzzy search. `Arc` allows cloning to background
     /// threads without copying the index.
-    pub file_index: RefCell<Arc<FileIndex>>,
+    pub(super) file_index: RefCell<Arc<DisposalOwned<FileIndex>>>,
     /// Open file-backed tabs supplied by the window shell.
     pub open_tabs: RefCell<Arc<[PaletteFileEntry]>>,
     /// Cached note rows supplied by the window shell after sidecar loading.
-    pub note_entries: RefCell<Arc<[PaletteNoteEntry]>>,
+    pub(super) note_entries: RefCell<Arc<DisposalOwned<Box<[PaletteNoteEntry]>>>>,
     /// Label for the workspace-indexed file group.
     pub workspace_group_label: RefCell<String>,
     /// Guard used while programmatically syncing the mode dropdown.
@@ -106,12 +107,18 @@ pub struct LushtextCommandPalette {
     pub search_debounce: Debounce,
     /// Queue of incremental index mutations waiting to be flushed.
     pub(super) pending_index_updates: RefCell<Vec<super::FileIndexUpdate>>,
+    /// Exact conservative bytes owned by the pending mutation queue.
+    pub(super) pending_index_update_bytes: Cell<u64>,
+    /// Whether bounded queue overflow requires a filesystem rebuild.
+    pub(super) index_update_rebuild_pending: Cell<bool>,
     /// Serializes index clone/mutation workers so results cannot overwrite out of order.
     pub(super) index_update_worker_running: Cell<bool>,
     /// Invalidates a worker result when a full index replacement wins meanwhile.
     pub(super) file_index_generation: Cell<u64>,
     /// Debounce for coalescing index update flushes (75ms).
     pub(super) index_update_debounce: Debounce,
+    /// One paced retry after replacement admission reports memory pressure.
+    pub(super) index_update_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
 }
 
 impl Default for LushtextCommandPalette {
@@ -123,9 +130,13 @@ impl Default for LushtextCommandPalette {
             no_results_label: TemplateChild::default(),
             mode: Cell::new(SearchMode::All),
             results_store: gio::ListStore::new::<PaletteItem>(),
-            file_index: RefCell::new(Arc::new(FileIndex::default())),
+            file_index: RefCell::new(Arc::new(DisposalOwned::small_unreserved(
+                FileIndex::default(),
+            ))),
             open_tabs: RefCell::new(Arc::from(Vec::<PaletteFileEntry>::new())),
-            note_entries: RefCell::new(Arc::from(Vec::<PaletteNoteEntry>::new())),
+            note_entries: RefCell::new(Arc::new(DisposalOwned::small_unreserved(
+                Vec::<PaletteNoteEntry>::new().into_boxed_slice(),
+            ))),
             workspace_group_label: RefCell::new("All Workspaces".to_string()),
             syncing_mode_selector: Cell::new(false),
             searching: Cell::new(false),
@@ -137,9 +148,13 @@ impl Default for LushtextCommandPalette {
             close_callback: RefCell::default(),
             search_debounce: Debounce::default(),
             pending_index_updates: RefCell::default(),
+            pending_index_update_bytes: Cell::new(0),
+            index_update_rebuild_pending: Cell::new(false),
             index_update_worker_running: Cell::new(false),
             file_index_generation: Cell::new(0),
             index_update_debounce: Debounce::default(),
+            index_update_capacity_wakeup:
+                crate::ui::plain_disposal::DisposalCapacityWakeup::default(),
         }
     }
 }
@@ -187,6 +202,10 @@ impl ObjectImpl for LushtextCommandPalette {
         self.setup_key_controller();
         self.setup_list_activation();
         self.apply_accessibility_metadata();
+    }
+
+    fn dispose(&self) {
+        self.index_update_capacity_wakeup.cancel();
     }
 }
 

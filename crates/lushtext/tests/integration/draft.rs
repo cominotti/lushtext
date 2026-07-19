@@ -612,3 +612,94 @@ fn batch_preload_skips_missing_draft_files() {
     // Missing file should be silently skipped.
     assert!(preloaded.is_empty());
 }
+
+#[test]
+fn multi_start_manifest_repair_preserves_every_body_through_all_cleanup_pages() {
+    let ctx = TestContext::new();
+    let drafts_dir = draft_service::drafts_dir(ctx.data_dir());
+    fixture::create_dir_all(&drafts_dir);
+    let mut legacy_first_page = Vec::new();
+    for index in 0..draft_service::MAX_MANIFEST_REPAIR_DRAFT_SCAN {
+        let draft_id = format!("untitled-integration-{index:04}");
+        fixture::write_text(
+            &drafts_dir.join(format!("{draft_id}.draft")),
+            "recovery body",
+        );
+        if index < draft_service::MAX_MANIFEST_REPAIR_PAGE_ENTRIES {
+            legacy_first_page.push(DraftEntry {
+                draft_id,
+                original_path: None,
+                original_mtime_secs: None,
+                saved_at_secs: 1,
+            });
+        }
+    }
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: legacy_first_page,
+            cleanup_continuation: None,
+        },
+    )
+    .expect("seed an authoritative-looking legacy first-page subset");
+
+    let first = draft_service::load_restore_state(ctx.data_dir());
+    assert!(first.manifest_authority.is_trusted());
+    assert!(first.manifest_repair_metrics.pages_scanned > 1);
+    assert!(first.manifest_repair_metrics.reached_terminal_inventory);
+    assert_eq!(
+        first.manifest.drafts.len(),
+        draft_service::MAX_MANIFEST_REPAIR_DRAFT_SCAN
+    );
+
+    let second = draft_service::load_restore_state(ctx.data_dir());
+    assert!(second.manifest_authority.is_trusted());
+    assert_eq!(
+        second.manifest.drafts.len(),
+        draft_service::MAX_MANIFEST_REPAIR_DRAFT_SCAN
+    );
+
+    let mut manifest = second.manifest;
+    let mut manifest_offset = 0usize;
+    let mut pages = 0usize;
+    loop {
+        pages = pages.saturating_add(1);
+        assert!(pages <= 16, "bounded cleanup continuation must terminate");
+        let plan =
+            draft_service::inspect_orphan_cleanup_from(ctx.data_dir(), &manifest, manifest_offset)
+                .expect("inspect cleanup page");
+        let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+        assert!(outcome.deleted_files.is_empty());
+        assert!(outcome.committed_manifest_removals.is_empty());
+        manifest = draft_service::load_manifest(ctx.data_dir()).expect("reload manifest");
+        if !outcome.has_more_work {
+            break;
+        }
+        manifest_offset = outcome.next_manifest_offset.unwrap_or(0);
+    }
+
+    assert!(pages > 1);
+    assert_eq!(
+        manifest.drafts.len(),
+        draft_service::MAX_MANIFEST_REPAIR_DRAFT_SCAN
+    );
+    for entry in &manifest.drafts {
+        assert!(fixture::exists(
+            &drafts_dir.join(format!("{}.draft", entry.draft_id))
+        ));
+    }
+    eprintln!(
+        "draft-repair-closeout-evidence startup_passes=2 repair_pages={} repair_page_entries_limit={} raw_entries_visited={} entries_scanned={} bodies_seen={} manifest_entries={} retained_metadata_bytes={} diagnostics={} terminal_inventory={} cleanup_pages={} surviving_bodies={}",
+        first.manifest_repair_metrics.pages_scanned,
+        draft_service::MAX_MANIFEST_REPAIR_PAGE_ENTRIES,
+        first.manifest_repair_metrics.raw_entries_visited,
+        first.manifest_repair_metrics.entries_scanned,
+        first.manifest_repair_metrics.draft_bodies_seen,
+        first.manifest_repair_metrics.manifest_entries_retained,
+        first.manifest_repair_metrics.retained_metadata_bytes,
+        first.manifest_repair_metrics.diagnostics_emitted,
+        first.manifest_repair_metrics.reached_terminal_inventory,
+        pages,
+        manifest.drafts.len(),
+    );
+}

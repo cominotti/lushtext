@@ -436,7 +436,7 @@ impl LushtextWindow {
                                     window
                                         .imp()
                                         .markdown_preview
-                                        .render_markdown_with_context(&text, &context);
+                                        .render_snapshot_with_context(text, context);
                                 }
                                 BufferSnapshotOutcome::ExceededLimit { .. } => {
                                     window.imp().markdown_preview.show_placeholder(

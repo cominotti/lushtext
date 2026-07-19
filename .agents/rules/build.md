@@ -145,6 +145,10 @@ reviews. It runs broad advisory Clippy groups plus selected design, numeric,
 and rustc probes, summarizes findings by lint code, and fails if a new category
 appears without a checked-in classification in
 `scripts/lint-advisory-policy.toml`.
+Blocking-candidate rules with `max_count = 0`, including
+`clippy::debug_assert_with_mut_call`, document release-safety invariants and
+must stay zero across every target; fix the call site instead of adding an
+allow/expect or widening its path scope.
 
 Direct `cargo` works too — Rust 1.90+ uses `rust-lld` by default on x86_64-linux for fast linking.
 
@@ -541,7 +545,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Report script: `scripts/bench-report.sh` — clears stale Criterion `new/` results before each run, fails closed if `cargo bench` fails, then parses fresh JSON into markdown. Requires `jq`. `--scope release` is a bounded release-safe short report; `--scope diagnostic` is for deeper scheduled/manual analysis and can be split with repeated `--filter` values.
 - Report output: `docs/benchmarks/<timestamp>.md`
 - Makefile targets: `bench`, `bench-report` (release-safe), `bench-report-full` (diagnostic), `bench-baseline`, `bench-compare`
-- Baseline workflow: `make bench-baseline` saves as "main", `make bench-compare` diffs against it
+- Baseline workflow: `make bench-baseline` saves as "main"; `make bench-compare` uses Criterion's lenient baseline comparison so every pre-existing benchmark is diffed while benchmark IDs added after the baseline are measured without aborting the run
 
 ## Runtime Warnings
 

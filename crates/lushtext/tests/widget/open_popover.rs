@@ -1086,6 +1086,37 @@ fn test_open_popover_startup_loaded_recents_visible_with_no_tabs() {
 }
 
 #[test]
+fn test_open_popover_recovers_from_recent_growth_without_losing_controls() {
+    ensure_gtk_init();
+    let data_dir = isolated_data_dir();
+    let recent_path = data_dir
+        .path()
+        .join(recent_documents::RECENT_DOCUMENTS_FILE);
+    fixture::write_text(&recent_path, r#"{"entries":[]}"#);
+    recent_documents::set_recent_after_metadata_hook_for_test(|path| {
+        fixture::write_repeated_bytes(
+            path,
+            b"x",
+            recent_documents::MAX_RECENT_DOCUMENTS_BYTES + 1,
+        );
+    });
+
+    let window = test_window();
+    present_window(&window);
+    wait_until(Duration::from_secs(5), || {
+        !window.imp().recent_documents.loading.get()
+    });
+
+    assert!(window.recent_documents_for_test().is_empty());
+    open_recent_action(&window);
+    wait_until(Duration::from_secs(2), || open_popover_open(&window));
+    assert_eq!(window.imp().open_popover.visible_row_count_for_test(), 0);
+    assert!(!window.imp().open_popover.list_visible_for_test());
+    assert!(window.imp().open_popover.search_entry_for_test().is_visible());
+    assert!(window.imp().open_popover.chooser_button_for_test().is_sensitive());
+}
+
+#[test]
 fn test_open_popover_header_button_rebuilds_startup_loaded_recents() {
     ensure_gtk_init();
     let data_dir = isolated_data_dir();

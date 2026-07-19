@@ -231,6 +231,7 @@ This is the preferred workflow over broad speculative code changes. For geometry
   - Use repeated `--window-string-action ACTION=TEXT` flags when a visible workflow exposes a string-parameter action, such as filtering Browse Notes through `set-notes-browser-query=Visual note`.
   - Use repeated `--wait-window-action` flags when a dialog action must become enabled before AT-SPI tree capture, such as `set-notes-browser-query`.
   - Use repeated `--wait-atspi-text` flags when the best readiness proof is visible dialog text, such as `No notes yet`.
+  - AT-SPI text waits keep one fixed readiness deadline and retry a timed-out bounded tree probe within it, so a slow registry handshake does not abort the whole capture while a genuinely unavailable tree still fails terminally.
   - Use repeated `--step KIND:VALUE` flags when a scenario needs interleaved
     action/readiness/action ordering, such as workspace Replace All preview
     followed by confirmation and undo proof.

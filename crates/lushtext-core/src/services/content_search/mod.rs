@@ -8,11 +8,21 @@
 mod replace;
 mod search;
 
-#[cfg(feature = "property-tests")]
-pub use replace::apply_replacements_to_text_for_property_test;
 pub use replace::{
-    ApplyReplacementsOutcome, MAX_REPLACE_FILE_BYTES, MAX_REPLACE_UNDO_BYTES, ReplaceUndoBackup,
-    ReplaceUndoEntry, UndoReplaceOutcome, apply_replacements, undo_replacements,
+    ApplyReplacementsOutcome, MAX_REPLACE_FILE_BYTES, MAX_REPLACE_UNDO_BYTES,
+    MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceConstructionMetrics, ReplaceUndoBackup,
+    ReplaceUndoEntry, UndoReplaceOutcome, apply_replacements, replace_undo_retained_byte_weight,
+    undo_replacements, undo_replacements_for_open_identities,
 };
 pub(crate) use replace::{ReplaceJournalFreshness, apply_replacements_if_current};
+#[cfg(feature = "property-tests")]
+pub use replace::{
+    apply_replacements_to_text_for_property_test,
+    apply_replacements_to_text_reference_for_property_test,
+};
+#[cfg(feature = "test-utils")]
+pub use replace::{
+    fail_next_replace_before_rename_for_path_for_test, set_max_replace_undo_bytes_for_test,
+    set_undo_after_metadata_hook_for_test,
+};
 pub use search::search;

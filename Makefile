@@ -22,6 +22,7 @@
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
+#   make test-search-retirement-release - Focused retirement proof with debug assertions disabled
 #   make test-workspace-row-states - Focused idempotent workspace file-row state widget tests
 #   make automation-smoke - Real-process D-Bus automation smoke under headless Mutter
 #   make builder-diagnostics-smoke - GtkBuilder diagnostics under debug-enabled GTK
@@ -77,7 +78,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -103,6 +104,7 @@ CARGO_TEST_INT        = cargo test --workspace --test integration
 endif
 CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh --headless
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
+CARGO_TEST_SEARCH_RETIREMENT_RELEASE = CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false ./scripts/run-widget-tests.sh --headless -- --exact search_panel::test_search_retirement_categories_release_actual_ownership_over_bounded_turns
 CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state
 CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
 CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
@@ -282,6 +284,12 @@ test-widget-headless:
 	@echo "Running widget tests under mutter --headless..."
 	$(CARGO_TEST_WIDGET_HEADLESS)
 
+# The release-safety regression keeps test instrumentation but disables debug
+# assertions so ownership progress cannot accidentally depend on assertion code.
+test-search-retirement-release:
+	@echo "Running search-retirement proof with debug assertions disabled..."
+	$(CARGO_TEST_SEARCH_RETIREMENT_RELEASE)
+
 # Focused workspace-sidebar file-row state tests. The filter is a shared test
 # name substring, so this stays narrow while still exercising section and window
 # coverage through the normal isolated widget harness.
@@ -400,10 +408,10 @@ bench-baseline:
 	@echo "Saving benchmark baseline..."
 	cargo bench -p lushtext-core --bench benchmarks -- --save-baseline main
 
-# Compare current performance against saved baseline
+# Compare current performance against saved baseline while admitting new benchmark IDs
 bench-compare:
 	@echo "Comparing against baseline..."
-	cargo bench -p lushtext-core --bench benchmarks -- --baseline main
+	cargo bench -p lushtext-core --bench benchmarks -- --baseline-lenient main
 
 # Formatting check
 check-fmt:
@@ -839,7 +847,7 @@ help:
 	@echo "  bench-report     Run + generate markdown report (short)"
 	@echo "  bench-report-full Run + generate markdown report (full)"
 	@echo "  bench-baseline   Save current results as baseline"
-	@echo "  bench-compare    Compare against saved baseline"
+	@echo "  bench-compare    Compare existing cases against baseline; admit new cases"
 	@echo ""
 	@echo "Packaging targets:"
 	@echo "  meson-build     Meson release build (installed layout)"

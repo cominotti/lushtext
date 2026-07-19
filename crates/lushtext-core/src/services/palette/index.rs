@@ -27,9 +27,14 @@ const MAX_SCAN_DEPTH: u32 = 64;
 /// starts to exceed the palette's latency budget on one CPU core.
 pub const MAX_INDEXED_FILES: usize = 100_000;
 /// Maximum number of distinct canonical directories retained by one index build.
+///
 /// This is independent from the file limit because sparse directory forests can
 /// otherwise consume unbounded traversal state while admitting almost no files.
 pub const MAX_INDEXED_DIRECTORIES: usize = 100_000;
+/// Maximum heap ownership retained by one installed file index.
+pub const MAX_FILE_INDEX_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum installed output plus traversal/deduplication ownership during build.
+pub const MAX_FILE_INDEX_BUILD_RETAINED_BYTES: u64 = 128 * 1024 * 1024;
 /// Directory names to skip during file-index scanning.
 pub(super) const IGNORED_INDEX_DIRS: &[&str] =
     &["node_modules", "target", "__pycache__", "venv", "vendor"];
@@ -39,6 +44,8 @@ pub(super) const IGNORED_INDEX_DIRS: &[&str] =
 pub enum FileIndexTruncationReason {
     FileLimit,
     DirectoryRetentionLimit,
+    RetainedByteLimit,
+    BuildByteLimit,
 }
 
 /// Retained-state and traversal evidence for one file-index build.
@@ -51,7 +58,168 @@ pub struct FileIndexBuildMetrics {
     /// Peak scan batch plus pending directory work retained at the same time.
     pub peak_retained_directory_entries: usize,
     pub identity_failures: usize,
+    /// Current conservatively charged construction bytes at terminal publication.
+    pub current_build_bytes: u64,
+    /// Peak conservatively charged construction bytes across output and scratch.
+    pub peak_build_bytes: u64,
+    /// Complete installed index graph retained by the terminal result.
+    pub retained_index_bytes: u64,
     pub truncation: Option<FileIndexTruncationReason>,
+}
+
+/// O(1) build/output byte accounting used before every retained insertion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIndexBuildLedger {
+    current_build_bytes: u64,
+    peak_build_bytes: u64,
+    installed_bytes: u64,
+    build_limit: u64,
+}
+
+/// O(1) installed-graph accounting shared across one incremental mutation batch.
+pub(crate) struct FileIndexMutationLedger {
+    retained_bytes: u64,
+    peak_retained_bytes: u64,
+    truncated: bool,
+}
+
+impl FileIndexMutationLedger {
+    fn from_index(index: &FileIndex) -> Self {
+        let retained_bytes = index.retained_byte_weight();
+        debug_assert!(retained_bytes <= MAX_FILE_INDEX_RETAINED_BYTES);
+        Self {
+            retained_bytes,
+            peak_retained_bytes: retained_bytes,
+            truncated: false,
+        }
+    }
+
+    fn try_add(&mut self, bytes: u64) -> bool {
+        let Some(next) = self.retained_bytes.checked_add(bytes) else {
+            self.truncated = true;
+            return false;
+        };
+        if next > MAX_FILE_INDEX_RETAINED_BYTES {
+            self.truncated = true;
+            return false;
+        }
+        self.retained_bytes = next;
+        self.peak_retained_bytes = self.peak_retained_bytes.max(next);
+        true
+    }
+
+    fn try_replace(&mut self, removed: u64, added: u64) -> bool {
+        let retained_without_old = self.retained_bytes.saturating_sub(removed);
+        let Some(next) = retained_without_old.checked_add(added) else {
+            self.truncated = true;
+            return false;
+        };
+        if next > MAX_FILE_INDEX_RETAINED_BYTES {
+            self.truncated = true;
+            return false;
+        }
+        self.retained_bytes = next;
+        self.peak_retained_bytes = self.peak_retained_bytes.max(next);
+        true
+    }
+
+    fn release(&mut self, bytes: u64) {
+        self.retained_bytes = self.retained_bytes.saturating_sub(bytes);
+    }
+
+    fn sync_after_nonincreasing(&mut self, index: &FileIndex) {
+        let actual = index.retained_byte_weight();
+        debug_assert!(actual <= self.retained_bytes);
+        self.retained_bytes = actual;
+    }
+
+    pub(crate) const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
+    }
+
+    pub(crate) const fn peak_retained_bytes(&self) -> u64 {
+        self.peak_retained_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+impl FileIndexBuildLedger {
+    const fn with_build_limit(build_limit: u64) -> Self {
+        Self {
+            current_build_bytes: 0,
+            peak_build_bytes: 0,
+            installed_bytes: 0,
+            build_limit,
+        }
+    }
+
+    fn try_charge_installed(&mut self, bytes: u64) -> Result<(), FileIndexTruncationReason> {
+        let Some(installed) = self.installed_bytes.checked_add(bytes) else {
+            return Err(FileIndexTruncationReason::RetainedByteLimit);
+        };
+        if installed > MAX_FILE_INDEX_RETAINED_BYTES {
+            return Err(FileIndexTruncationReason::RetainedByteLimit);
+        }
+        if !self.try_charge_build(bytes) {
+            return Err(FileIndexTruncationReason::BuildByteLimit);
+        }
+        self.installed_bytes = installed;
+        Ok(())
+    }
+
+    fn try_charge_scratch(&mut self, bytes: u64) -> bool {
+        self.try_charge_build(bytes)
+    }
+
+    fn try_charge_build(&mut self, bytes: u64) -> bool {
+        let Some(next) = self.current_build_bytes.checked_add(bytes) else {
+            return false;
+        };
+        if next > self.build_limit {
+            return false;
+        }
+        self.current_build_bytes = next;
+        self.peak_build_bytes = self.peak_build_bytes.max(next);
+        true
+    }
+
+    fn release_scratch(&mut self, bytes: u64) {
+        self.current_build_bytes = self.current_build_bytes.saturating_sub(bytes);
+    }
+
+    fn release_installed(&mut self, bytes: u64) {
+        self.installed_bytes = self.installed_bytes.saturating_sub(bytes);
+        self.current_build_bytes = self.current_build_bytes.saturating_sub(bytes);
+    }
+
+    fn observe_scratch_peak(&mut self, bytes: u64) -> bool {
+        let Some(overlap) = self.current_build_bytes.checked_add(bytes) else {
+            return false;
+        };
+        if overlap > self.build_limit {
+            return false;
+        }
+        self.peak_build_bytes = self.peak_build_bytes.max(overlap);
+        true
+    }
+
+    const fn remaining_build_bytes(self) -> u64 {
+        self.build_limit.saturating_sub(self.current_build_bytes)
+    }
+
+    const fn installed_bytes(self) -> u64 {
+        self.installed_bytes
+    }
+
+    fn publish(self, metrics: &mut FileIndexBuildMetrics, retained_index_bytes: u64) {
+        metrics.current_build_bytes = retained_index_bytes;
+        metrics.peak_build_bytes = self.peak_build_bytes.max(retained_index_bytes);
+        metrics.retained_index_bytes = retained_index_bytes;
+    }
 }
 
 /// Typed terminal result from cancellable file-index construction.
@@ -200,6 +368,19 @@ impl FileIndex {
         Self::rebuild_with_hint(workspace_folders, 10_000)
     }
 
+    /// Re-scan the folder identities already owned by this installed index.
+    ///
+    /// Incremental queue overflow uses this worker-only path so a compact scalar
+    /// rebuild request can replace an otherwise unbounded mutation backlog.
+    pub(crate) fn rebuild_current_workspace_folders(&self) -> Self {
+        let folders = self
+            .workspace_folders
+            .iter()
+            .map(|folder| folder.as_ref().clone())
+            .collect::<Vec<_>>();
+        Self::rebuild(&folders)
+    }
+
     /// Like [`Self::rebuild`], but uses `capacity_hint` for the initial `Vec` allocation.
     #[must_use]
     pub fn rebuild_with_hint(workspace_folders: &[PathBuf], capacity_hint: usize) -> Self {
@@ -224,6 +405,7 @@ impl FileIndex {
             capacity_hint,
             MAX_INDEXED_FILES,
             MAX_INDEXED_DIRECTORIES,
+            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
             cancellation,
         )
     }
@@ -233,16 +415,36 @@ impl FileIndex {
         capacity_hint: usize,
         file_limit: usize,
         directory_limit: usize,
+        build_byte_limit: u64,
         cancellation: &PaletteSearchCancellation,
     ) -> FileIndexBuildOutcome {
-        let mut files = Vec::with_capacity(capacity_hint.min(file_limit));
+        let mut ledger = FileIndexBuildLedger::with_build_limit(build_byte_limit);
+        let maximum_file_capacity = usize::try_from(MAX_FILE_INDEX_RETAINED_BYTES)
+            .unwrap_or(usize::MAX)
+            .checked_div(std::mem::size_of::<IndexedFile>().max(1))
+            .unwrap_or(0);
+        let file_capacity = capacity_hint.min(file_limit).min(maximum_file_capacity);
+        let file_shell_charge = vector_shell_bytes::<IndexedFile>(file_capacity);
+        if ledger.try_charge_installed(file_shell_charge).is_err() {
+            unreachable!("an empty file-index vector must fit its installed budget");
+        }
+        let folder_capacity = workspace_folders.len();
+        let folder_shell_charge = vector_shell_bytes::<Arc<PathBuf>>(folder_capacity);
+        if ledger.try_charge_installed(folder_shell_charge).is_err() {
+            unreachable!("workspace-folder vector shells must fit the installed budget");
+        }
+        let mut files = Vec::with_capacity(file_capacity);
         let mut visited_directories = HashSet::new();
         let mut canonical_files = HashSet::new();
-        let mut folder_arcs = Vec::new();
+        let mut folder_arcs = Vec::with_capacity(folder_capacity);
+        let mut visited_charge = 0u64;
+        let mut canonical_files_charge = 0u64;
         let mut metrics = FileIndexBuildMetrics::default();
         for folder in workspace_folders {
             if cancellation.is_cancelled() {
                 metrics.retained_files = files.len();
+                ledger.release_scratch(visited_charge.saturating_add(canonical_files_charge));
+                ledger.publish(&mut metrics, 0);
                 return FileIndexBuildOutcome::Cancelled { metrics };
             }
             if files.len() >= file_limit {
@@ -252,7 +454,18 @@ impl FileIndex {
             let Ok(canonical_folder) = fs_metadata::canonical_path(folder) else {
                 continue;
             };
+            let canonical_folder_charge = owned_path_bytes(&canonical_folder);
+            if !ledger.try_charge_scratch(canonical_folder_charge) {
+                metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+                break;
+            }
             let folder_arc = Arc::new(folder.clone());
+            let folder_graph_charge = shared_folder_graph_weight(&folder_arc);
+            if let Err(reason) = ledger.try_charge_installed(folder_graph_charge) {
+                ledger.release_scratch(canonical_folder_charge);
+                metrics.truncation = Some(reason);
+                break;
+            }
             let completed = {
                 let mut traversal = FileIndexTraversal {
                     out: &mut files,
@@ -263,27 +476,52 @@ impl FileIndex {
                     directory_limit,
                     cancellation,
                     metrics: &mut metrics,
+                    ledger: &mut ledger,
+                    visited_charge: &mut visited_charge,
+                    canonical_files_charge: &mut canonical_files_charge,
                 };
                 collect_files_bounded(folder, &folder_arc, &mut traversal)
             };
+            ledger.release_scratch(canonical_folder_charge);
             if !completed {
                 metrics.retained_files = files.len();
+                ledger.release_scratch(visited_charge.saturating_add(canonical_files_charge));
+                ledger.publish(&mut metrics, 0);
                 return FileIndexBuildOutcome::Cancelled { metrics };
             }
             folder_arcs.push(folder_arc);
+            if metrics.truncation.is_some_and(is_file_index_byte_limit) {
+                break;
+            }
         }
+        ledger.release_scratch(visited_charge.saturating_add(canonical_files_charge));
         truncate_to_index_limit(&mut files, file_limit);
         if files.len() == file_limit && metrics.truncation.is_some() {
             metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
         }
-        metrics.retained_files = files.len();
-        FileIndexBuildOutcome::Complete {
-            index: Self {
-                files,
-                workspace_folders: folder_arcs,
-            },
-            metrics,
+        if files.is_empty() {
+            files.shrink_to_fit();
+            ledger.release_installed(file_shell_charge);
         }
+        if folder_arcs.is_empty() {
+            folder_arcs.shrink_to_fit();
+            ledger.release_installed(folder_shell_charge);
+        }
+        let index = Self {
+            files,
+            workspace_folders: folder_arcs,
+        };
+        metrics.retained_files = index.files.len();
+        let retained_index_bytes = ledger.installed_bytes();
+        debug_assert_eq!(
+            retained_index_bytes,
+            index.retained_byte_weight(),
+            "incremental file-index charges must match the installed ownership graph"
+        );
+        ledger.publish(&mut metrics, retained_index_bytes);
+        debug_assert!(metrics.peak_build_bytes <= MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+        debug_assert!(retained_index_bytes <= MAX_FILE_INDEX_RETAINED_BYTES);
+        FileIndexBuildOutcome::Complete { index, metrics }
     }
 
     #[cfg(test)]
@@ -297,6 +535,7 @@ impl FileIndex {
             file_limit,
             file_limit,
             MAX_INDEXED_DIRECTORIES,
+            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
             cancellation,
         )
     }
@@ -313,6 +552,25 @@ impl FileIndex {
             file_limit,
             file_limit,
             directory_limit,
+            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+            cancellation,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn rebuild_cancellable_with_build_limit_for_test(
+        workspace_folders: &[PathBuf],
+        file_limit: usize,
+        directory_limit: usize,
+        build_byte_limit: u64,
+        cancellation: &PaletteSearchCancellation,
+    ) -> FileIndexBuildOutcome {
+        Self::rebuild_cancellable_with_limits(
+            workspace_folders,
+            0,
+            file_limit,
+            directory_limit,
+            build_byte_limit,
             cancellation,
         )
     }
@@ -332,18 +590,144 @@ impl FileIndex {
         self.files.is_empty()
     }
 
+    /// Return every heap allocation retained by this index owner.
+    #[must_use]
+    pub fn retained_byte_weight(&self) -> u64 {
+        let file_shells = retained_bytes(
+            self.files
+                .capacity()
+                .saturating_mul(std::mem::size_of::<IndexedFile>()),
+        );
+        let folder_shells = retained_bytes(
+            self.workspace_folders
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Arc<PathBuf>>()),
+        );
+        let file_graph = self.files.iter().fold(0u64, |total, file| {
+            total.saturating_add(indexed_file_graph_weight(file))
+        });
+        let folder_graph = self.workspace_folders.iter().fold(0u64, |total, folder| {
+            total.saturating_add(shared_folder_graph_weight(folder))
+        });
+        file_shells
+            .saturating_add(folder_shells)
+            .saturating_add(file_graph)
+            .saturating_add(folder_graph)
+    }
+
+    /// Truncate to a prefix whose complete retained heap graph fits the lane budget.
+    ///
+    /// Returns whether any folder identity or file row was omitted.
+    pub fn enforce_retained_byte_limit(&mut self) -> bool {
+        if self.files.is_empty() {
+            self.files.shrink_to_fit();
+        }
+        if self.workspace_folders.is_empty() {
+            self.workspace_folders.shrink_to_fit();
+        }
+        if self.retained_byte_weight() <= MAX_FILE_INDEX_RETAINED_BYTES {
+            return false;
+        }
+        let original_file_count = self.files.len();
+        let original_folder_count = self.workspace_folders.len();
+
+        let mut retained_folders = Vec::new();
+        let mut retained_folder_ptrs = HashSet::new();
+        let mut folder_graph = 0u64;
+        for folder in self.workspace_folders.drain(..) {
+            let next_graph = folder_graph
+                .saturating_add(shared_folder_graph_weight(&folder))
+                .saturating_add(retained_bytes(std::mem::size_of::<Arc<PathBuf>>()));
+            if next_graph > MAX_FILE_INDEX_RETAINED_BYTES {
+                continue;
+            }
+            folder_graph = next_graph;
+            retained_folder_ptrs.insert(Arc::as_ptr(&folder) as usize);
+            retained_folders.push(folder);
+        }
+        self.workspace_folders = retained_folders.into_boxed_slice().into_vec();
+
+        let mut retained_files = Vec::new();
+        let mut file_graph = 0u64;
+        for file in self.files.drain(..) {
+            if !retained_folder_ptrs.contains(&(Arc::as_ptr(&file.workspace_folder) as usize)) {
+                continue;
+            }
+            let next_graph = folder_graph
+                .saturating_add(file_graph)
+                .saturating_add(indexed_file_graph_weight(&file))
+                .saturating_add(retained_bytes(
+                    retained_files
+                        .len()
+                        .saturating_add(1)
+                        .saturating_mul(std::mem::size_of::<IndexedFile>()),
+                ));
+            if next_graph > MAX_FILE_INDEX_RETAINED_BYTES {
+                continue;
+            }
+            file_graph = file_graph.saturating_add(indexed_file_graph_weight(&file));
+            retained_files.push(file);
+        }
+        self.files = retained_files.into_boxed_slice().into_vec();
+
+        debug_assert!(self.retained_byte_weight() <= MAX_FILE_INDEX_RETAINED_BYTES);
+        self.files.len() != original_file_count
+            || self.workspace_folders.len() != original_folder_count
+    }
+
     /// Add a single file to the index. Used for incremental sidebar updates.
     pub fn add_file(&mut self, file: IndexedFile) {
+        let mut ledger = self.incremental_mutation_ledger();
+        self.add_file_for_bounded_batch(file, &mut ledger);
+    }
+
+    pub(crate) fn incremental_mutation_ledger(&self) -> FileIndexMutationLedger {
+        FileIndexMutationLedger::from_index(self)
+    }
+
+    pub(crate) fn add_file_for_bounded_batch(
+        &mut self,
+        file: IndexedFile,
+        ledger: &mut FileIndexMutationLedger,
+    ) -> bool {
         if self.files.len() >= MAX_INDEXED_FILES
             || self.files.iter().any(|existing| {
                 existing.path == file.path
                     || canonical_identities_match(&existing.identity, &file.identity)
             })
         {
-            return;
+            return false;
         }
-        intern_folder(&mut self.workspace_folders, &file.workspace_folder);
+        let needs_folder = !self
+            .workspace_folders
+            .iter()
+            .any(|existing| Arc::ptr_eq(existing, &file.workspace_folder));
+        let file_shell_growth = vector_shell_growth_for_one(&self.files);
+        let folder_shell_growth = if needs_folder {
+            vector_shell_growth_for_one(&self.workspace_folders)
+        } else {
+            0
+        };
+        let retained_growth = file_shell_growth
+            .saturating_add(folder_shell_growth)
+            .saturating_add(indexed_file_graph_weight(&file))
+            .saturating_add(if needs_folder {
+                shared_folder_graph_weight(&file.workspace_folder)
+            } else {
+                0
+            });
+        if !ledger.try_add(retained_growth) {
+            return false;
+        }
+        if needs_folder {
+            reserve_exactly_one(&mut self.workspace_folders);
+            self.workspace_folders
+                .push(Arc::clone(&file.workspace_folder));
+        }
+        reserve_exactly_one(&mut self.files);
         self.files.push(file);
+        debug_assert_eq!(ledger.retained_bytes(), self.retained_byte_weight());
+        true
     }
 
     /// Resolve and add one filesystem path through the metadata boundary.
@@ -353,8 +737,26 @@ impl FileIndex {
         self.add_file(indexed_file_from_path(path, workspace_folder));
     }
 
+    pub(crate) fn add_path_for_bounded_batch(
+        &mut self,
+        path: PathBuf,
+        workspace_folder: Arc<PathBuf>,
+        ledger: &mut FileIndexMutationLedger,
+    ) -> bool {
+        self.add_file_for_bounded_batch(indexed_file_from_path(path, workspace_folder), ledger)
+    }
+
     /// Remove a file (or all files under a directory) from the index.
     pub fn remove_path(&mut self, path: &Path) {
+        let mut ledger = self.incremental_mutation_ledger();
+        self.remove_path_for_bounded_batch(path, &mut ledger);
+    }
+
+    pub(crate) fn remove_path_for_bounded_batch(
+        &mut self,
+        path: &Path,
+        ledger: &mut FileIndexMutationLedger,
+    ) {
         let before = self.files.len();
         self.files
             .retain(|file| file.path != path && !file.path.starts_with(path));
@@ -366,10 +768,21 @@ impl FileIndex {
                     .any(|file| Arc::ptr_eq(&file.workspace_folder, folder))
             });
         }
+        ledger.sync_after_nonincreasing(self);
     }
 
     /// Rename a file or directory in the index.
     pub fn rename_path(&mut self, old_path: &Path, new_path: &Path) {
+        let mut ledger = self.incremental_mutation_ledger();
+        self.rename_path_for_bounded_batch(old_path, new_path, &mut ledger);
+    }
+
+    pub(crate) fn rename_path_for_bounded_batch(
+        &mut self,
+        old_path: &Path,
+        new_path: &Path,
+        ledger: &mut FileIndexMutationLedger,
+    ) {
         for file in &mut self.files {
             let replacement_path = if file.path == old_path {
                 Some(new_path.to_path_buf())
@@ -380,11 +793,24 @@ impl FileIndex {
                     .map(|suffix| new_path.join(suffix))
             };
             if let Some(replacement_path) = replacement_path {
-                *file =
+                let replacement =
                     indexed_file_from_path(replacement_path, Arc::clone(&file.workspace_folder));
+                let previous_weight = indexed_file_graph_weight(file);
+                let replacement_weight = indexed_file_graph_weight(&replacement);
+                if ledger.try_replace(previous_weight, replacement_weight) {
+                    *file = replacement;
+                } else {
+                    ledger.release(previous_weight);
+                    file.path.clear();
+                    file.name.clear();
+                    file.identity =
+                        PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::NotResolved);
+                }
             }
         }
+        self.files.retain(|file| !file.path.as_os_str().is_empty());
         deduplicate_files(&mut self.files);
+        ledger.sync_after_nonincreasing(self);
     }
 
     /// Find the workspace folder that contains the given path.
@@ -527,11 +953,82 @@ impl From<Vec<IndexedFile>> for FileIndex {
                 retained.push(file);
             }
         }
-        Self {
+        let mut index = Self {
             files: retained,
             workspace_folders,
-        }
+        };
+        index.enforce_retained_byte_limit();
+        index
     }
+}
+
+fn retained_bytes(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+fn vector_shell_bytes<T>(capacity: usize) -> u64 {
+    retained_bytes(capacity.saturating_mul(std::mem::size_of::<T>()))
+}
+
+fn vector_shell_growth_for_one<T>(values: &Vec<T>) -> u64 {
+    if values.len() < values.capacity() {
+        return 0;
+    }
+    vector_shell_bytes::<T>(next_incremental_vec_capacity(values.capacity()))
+        .saturating_sub(vector_shell_bytes::<T>(values.capacity()))
+}
+
+fn reserve_exactly_one<T>(values: &mut Vec<T>) {
+    if values.len() == values.capacity() {
+        let next_capacity = next_incremental_vec_capacity(values.capacity());
+        values.reserve_exact(next_capacity.saturating_sub(values.capacity()));
+    }
+}
+
+fn next_incremental_vec_capacity(current: usize) -> usize {
+    current.max(4).saturating_mul(2)
+}
+
+fn owned_path_bytes(path: &PathBuf) -> u64 {
+    retained_bytes(
+        std::mem::size_of::<PathBuf>()
+            .saturating_add(path.capacity())
+            .saturating_add(std::mem::size_of::<usize>().saturating_mul(2)),
+    )
+}
+
+/// Conservative per-key weight for a retained path plus its hash-table bucket,
+/// control bytes, and allocator slack. Charging per key avoids rescanning set
+/// capacity while still preceding every insertion.
+fn hashed_path_bytes(path: &PathBuf) -> u64 {
+    owned_path_bytes(path).saturating_add(retained_bytes(
+        std::mem::size_of::<PathBuf>()
+            .saturating_add(std::mem::size_of::<usize>().saturating_mul(2)),
+    ))
+}
+
+fn path_capacity(path: &PathBuf) -> usize {
+    path.capacity()
+}
+
+fn indexed_file_graph_weight(file: &IndexedFile) -> u64 {
+    let canonical_capacity = match &file.identity {
+        PaletteFileIdentity::Canonical(path) => path_capacity(path),
+        PaletteFileIdentity::Unavailable(_) => 0,
+    };
+    retained_bytes(
+        path_capacity(&file.path)
+            .saturating_add(canonical_capacity)
+            .saturating_add(file.name.capacity()),
+    )
+}
+
+fn shared_folder_graph_weight(folder: &Arc<PathBuf>) -> u64 {
+    retained_bytes(
+        std::mem::size_of::<PathBuf>()
+            .saturating_add(std::mem::size_of::<usize>().saturating_mul(2))
+            .saturating_add(path_capacity(folder.as_ref())),
+    )
 }
 
 fn intern_folder(workspace_folders: &mut Vec<Arc<PathBuf>>, folder: &Arc<PathBuf>) {
@@ -558,6 +1055,9 @@ struct FileIndexTraversal<'a> {
     directory_limit: usize,
     cancellation: &'a PaletteSearchCancellation,
     metrics: &'a mut FileIndexBuildMetrics,
+    ledger: &'a mut FileIndexBuildLedger,
+    visited_charge: &'a mut u64,
+    canonical_files_charge: &'a mut u64,
 }
 
 fn collect_files_bounded(
@@ -565,11 +1065,11 @@ fn collect_files_bounded(
     workspace_folder: &Arc<PathBuf>,
     traversal: &mut FileIndexTraversal<'_>,
 ) -> bool {
-    let Ok(canonical_root) = fs_metadata::canonical_path(dir) else {
+    let Ok(canonical_directory) = fs_metadata::canonical_path(dir) else {
         return true;
     };
-    if !canonical_root.starts_with(traversal.canonical_folder)
-        || traversal.visited_directories.contains(&canonical_root)
+    if !canonical_directory.starts_with(traversal.canonical_folder)
+        || traversal.visited_directories.contains(&canonical_directory)
     {
         return true;
     }
@@ -580,15 +1080,46 @@ fn collect_files_bounded(
             .get_or_insert(FileIndexTruncationReason::DirectoryRetentionLimit);
         return true;
     }
-    traversal.visited_directories.insert(canonical_root);
-    let mut pending = vec![(dir.to_path_buf(), 0u32)];
+    let root_visited_charge = hashed_path_bytes(&canonical_directory);
+    if !traversal.ledger.try_charge_scratch(root_visited_charge) {
+        traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+        return true;
+    }
+    *traversal.visited_charge = traversal.visited_charge.saturating_add(root_visited_charge);
+    traversal.visited_directories.insert(canonical_directory);
+
+    let root_path = dir.to_path_buf();
+    let mut pending = Vec::new();
+    let mut pending_shell_charge = 0u64;
+    let mut pending_graph_charge = 0u64;
+    if !ensure_scratch_vec_slot(&mut pending, traversal.ledger, &mut pending_shell_charge) {
+        traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+        return true;
+    }
+    let root_pending_charge = owned_path_bytes(&root_path);
+    if !traversal.ledger.try_charge_scratch(root_pending_charge) {
+        traversal.ledger.release_scratch(pending_shell_charge);
+        traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+        return true;
+    }
+    pending_graph_charge = pending_graph_charge.saturating_add(root_pending_charge);
+    pending.push((root_path, 0u32));
 
     while let Some((dir, depth)) = pending.pop() {
+        let popped_charge = owned_path_bytes(&dir);
+        pending_graph_charge = pending_graph_charge.saturating_sub(popped_charge);
+        traversal.ledger.release_scratch(popped_charge);
         if traversal.cancellation.is_cancelled() {
+            traversal
+                .ledger
+                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return false;
         }
         if traversal.out.len() >= traversal.file_limit {
             traversal.metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
+            traversal
+                .ledger
+                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return true;
         }
 
@@ -597,9 +1128,23 @@ fn collect_files_bounded(
             .peak_retained_directories
             .max(traversal.visited_directories.len());
         let remaining = traversal.file_limit.saturating_sub(traversal.out.len());
-        let scan = file_tree::scan_directory_bounded_with_cancel(&dir, remaining, 0, || {
-            traversal.cancellation.is_cancelled()
-        });
+        let scan = file_tree::scan_directory_bounded_with_cancel_and_bytes(
+            &dir,
+            remaining,
+            0,
+            traversal.ledger.remaining_build_bytes(),
+            || traversal.cancellation.is_cancelled(),
+        );
+        if !traversal
+            .ledger
+            .observe_scratch_peak(scan.peak_retained_bytes)
+        {
+            traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+            traversal
+                .ledger
+                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
+            return true;
+        }
         traversal.metrics.scanned_directories =
             traversal.metrics.scanned_directories.saturating_add(1);
         traversal.metrics.examined_directory_entries = traversal
@@ -611,6 +1156,9 @@ fn collect_files_bounded(
             .peak_retained_directory_entries
             .max(pending.len().saturating_add(scan.peak_retained_entries));
         if scan.cancelled {
+            traversal
+                .ledger
+                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return false;
         }
         if scan.truncated {
@@ -619,13 +1167,30 @@ fn collect_files_bounded(
                 .truncation
                 .get_or_insert(FileIndexTruncationReason::DirectoryRetentionLimit);
         }
+        if !traversal.ledger.try_charge_scratch(scan.retained_bytes) {
+            traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+            traversal
+                .ledger
+                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
+            return true;
+        }
+        let scan_charge = scan.retained_bytes;
+        let scan_byte_truncated = scan.byte_truncated;
 
         for entry in scan.entries {
             if traversal.cancellation.is_cancelled() {
+                traversal.ledger.release_scratch(scan_charge);
+                traversal
+                    .ledger
+                    .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
                 return false;
             }
             if traversal.out.len() >= traversal.file_limit {
                 traversal.metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
+                traversal.ledger.release_scratch(scan_charge);
+                traversal
+                    .ledger
+                    .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
                 return true;
             }
             if entry.is_dir {
@@ -655,7 +1220,27 @@ fn collect_files_bounded(
                         .get_or_insert(FileIndexTruncationReason::DirectoryRetentionLimit);
                     continue;
                 }
+                let visited_charge = hashed_path_bytes(&canonical);
+                if !traversal.ledger.try_charge_scratch(visited_charge) {
+                    traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+                    break;
+                }
+                *traversal.visited_charge = traversal.visited_charge.saturating_add(visited_charge);
                 traversal.visited_directories.insert(canonical);
+                if !ensure_scratch_vec_slot(
+                    &mut pending,
+                    traversal.ledger,
+                    &mut pending_shell_charge,
+                ) {
+                    traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+                    break;
+                }
+                let pending_charge = owned_path_bytes(&entry.path);
+                if !traversal.ledger.try_charge_scratch(pending_charge) {
+                    traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+                    break;
+                }
+                pending_graph_charge = pending_graph_charge.saturating_add(pending_charge);
                 pending.push((entry.path, child_depth));
             } else {
                 let file = indexed_file_from_path(entry.path, Arc::clone(workspace_folder));
@@ -663,15 +1248,92 @@ fn collect_files_bounded(
                     traversal.metrics.identity_failures =
                         traversal.metrics.identity_failures.saturating_add(1);
                 }
-                if file.identity.canonical_path().is_none_or(|canonical| {
-                    traversal.canonical_files.insert(canonical.to_path_buf())
-                }) {
-                    traversal.out.push(file);
+                if let Some(canonical) = file.identity.canonical_path() {
+                    if traversal.canonical_files.contains(canonical) {
+                        continue;
+                    }
+                    let canonical = canonical.to_path_buf();
+                    let canonical_charge = hashed_path_bytes(&canonical);
+                    if !traversal.ledger.try_charge_scratch(canonical_charge) {
+                        traversal.metrics.truncation =
+                            Some(FileIndexTruncationReason::BuildByteLimit);
+                        break;
+                    }
+                    *traversal.canonical_files_charge = traversal
+                        .canonical_files_charge
+                        .saturating_add(canonical_charge);
+                    let inserted = traversal.canonical_files.insert(canonical);
+                    debug_assert!(inserted, "canonical identity changed during insertion");
                 }
+                if let Err(reason) = ensure_installed_vec_slot(traversal.out, traversal.ledger) {
+                    traversal.metrics.truncation = Some(reason);
+                    break;
+                }
+                let graph_charge = indexed_file_graph_weight(&file);
+                if let Err(reason) = traversal.ledger.try_charge_installed(graph_charge) {
+                    traversal.metrics.truncation = Some(reason);
+                    break;
+                }
+                traversal.out.push(file);
             }
         }
+        traversal.ledger.release_scratch(scan_charge);
+        if scan_byte_truncated {
+            traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
+        }
+        if traversal
+            .metrics
+            .truncation
+            .is_some_and(is_file_index_byte_limit)
+        {
+            break;
+        }
     }
+    traversal
+        .ledger
+        .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
     true
+}
+
+fn ensure_scratch_vec_slot<T>(
+    values: &mut Vec<T>,
+    ledger: &mut FileIndexBuildLedger,
+    charged_shell_bytes: &mut u64,
+) -> bool {
+    if values.len() < values.capacity() {
+        return true;
+    }
+    let next_capacity = values.capacity().max(4).saturating_mul(2);
+    let next_shell_bytes = vector_shell_bytes::<T>(next_capacity);
+    let extra = next_shell_bytes.saturating_sub(*charged_shell_bytes);
+    if !ledger.try_charge_scratch(extra) {
+        return false;
+    }
+    values.reserve(next_capacity.saturating_sub(values.capacity()));
+    *charged_shell_bytes = next_shell_bytes;
+    true
+}
+
+fn ensure_installed_vec_slot<T>(
+    values: &mut Vec<T>,
+    ledger: &mut FileIndexBuildLedger,
+) -> Result<(), FileIndexTruncationReason> {
+    if values.len() < values.capacity() {
+        return Ok(());
+    }
+    let old_capacity = values.capacity();
+    let next_capacity = old_capacity.max(4).saturating_mul(2);
+    let extra = vector_shell_bytes::<T>(next_capacity.saturating_sub(old_capacity));
+    ledger.try_charge_installed(extra)?;
+    values.reserve(next_capacity.saturating_sub(old_capacity));
+    Ok(())
+}
+
+fn is_file_index_byte_limit(reason: FileIndexTruncationReason) -> bool {
+    matches!(
+        reason,
+        FileIndexTruncationReason::RetainedByteLimit | FileIndexTruncationReason::BuildByteLimit
+    )
 }
 
 fn indexed_file_from_path(path: PathBuf, workspace_folder: Arc<PathBuf>) -> IndexedFile {
@@ -701,4 +1363,98 @@ fn deduplicate_files(files: &mut Vec<IndexedFile>) {
                 .canonical_path()
                 .is_none_or(|path| canonical_paths.insert(path.to_path_buf()))
     });
+}
+
+#[cfg(test)]
+mod build_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn build_ledger_accepts_exact_limits_and_rejects_one_byte_over() {
+        let mut build = FileIndexBuildLedger::with_build_limit(MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+        assert!(build.try_charge_scratch(MAX_FILE_INDEX_BUILD_RETAINED_BYTES));
+        assert!(!build.try_charge_scratch(1));
+        build.release_scratch(MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+
+        let mut installed =
+            FileIndexBuildLedger::with_build_limit(MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+        assert_eq!(
+            installed.try_charge_installed(MAX_FILE_INDEX_RETAINED_BYTES),
+            Ok(())
+        );
+        assert_eq!(
+            installed.try_charge_installed(1),
+            Err(FileIndexTruncationReason::RetainedByteLimit)
+        );
+        assert_eq!(installed.installed_bytes, MAX_FILE_INDEX_RETAINED_BYTES);
+        assert_eq!(installed.peak_build_bytes, MAX_FILE_INDEX_RETAINED_BYTES);
+
+        let mut build_limited =
+            FileIndexBuildLedger::with_build_limit(MAX_FILE_INDEX_RETAINED_BYTES - 1);
+        assert_eq!(
+            build_limited.try_charge_installed(MAX_FILE_INDEX_RETAINED_BYTES),
+            Err(FileIndexTruncationReason::BuildByteLimit)
+        );
+        assert_eq!(build_limited.installed_bytes, 0);
+    }
+
+    #[test]
+    fn incremental_long_path_batch_never_crosses_the_installed_policy() {
+        let folder = Arc::new(PathBuf::from("/synthetic/incremental-byte-policy"));
+        let mut index = FileIndex::default();
+        let mut ledger = index.incremental_mutation_ledger();
+
+        for item in 0..512 {
+            let mut path = folder.join(format!("file-{item:05}.rs"));
+            path.reserve(256 * 1024);
+            let file = IndexedFile::new(
+                path,
+                PaletteFileIdentity::Unavailable(PaletteFileIdentityFailure::NotFound),
+                Arc::clone(&folder),
+            );
+            index.add_file_for_bounded_batch(file, &mut ledger);
+            assert!(ledger.retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
+            assert!(ledger.peak_retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
+        }
+
+        assert!(ledger.truncated());
+        assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
+        assert!(index.retained_byte_weight() <= MAX_FILE_INDEX_RETAINED_BYTES);
+
+        let long_prefix = PathBuf::from(format!("/renamed/{}", "y".repeat(256 * 1024)));
+        index.rename_path_for_bounded_batch(folder.as_path(), &long_prefix, &mut ledger);
+        assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
+        assert!(ledger.peak_retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
+        assert!(index.retained_byte_weight() <= MAX_FILE_INDEX_RETAINED_BYTES);
+    }
+
+    #[cfg(feature = "property-tests")]
+    proptest::proptest! {
+        #[test]
+        fn build_ledger_never_crosses_its_ceiling(
+            operations in proptest::collection::vec((proptest::prelude::any::<bool>(), 0u64..=4 * 1024 * 1024), 0..256),
+        ) {
+            let mut ledger = FileIndexBuildLedger::with_build_limit(
+                MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+            );
+            let mut scratch = 0u64;
+            for (charge, bytes) in operations {
+                if charge {
+                    if ledger.try_charge_scratch(bytes) {
+                        scratch = scratch.saturating_add(bytes);
+                    }
+                } else {
+                    let released = scratch.min(bytes);
+                    scratch -= released;
+                    ledger.release_scratch(released);
+                }
+                proptest::prop_assert!(
+                    ledger.current_build_bytes <= MAX_FILE_INDEX_BUILD_RETAINED_BYTES
+                );
+                proptest::prop_assert!(
+                    ledger.peak_build_bytes <= MAX_FILE_INDEX_BUILD_RETAINED_BYTES
+                );
+            }
+        }
+    }
 }

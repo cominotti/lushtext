@@ -102,6 +102,12 @@ pub fn create_new_empty_file_durable(path: &Path) -> std::io::Result<()> {
     sync_parent_dir(path)
 }
 
+/// Inject one post-rename parent-sync failure through the filesystem boundary.
+#[cfg(test)]
+pub(crate) fn fail_next_parent_sync_for_test() {
+    durable_write::fail_next_parent_sync_for_test();
+}
+
 /// Sync the parent directory of a path after a namespace mutation.
 ///
 /// # Errors

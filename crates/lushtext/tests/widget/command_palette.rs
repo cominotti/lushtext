@@ -3,7 +3,9 @@
 //! Widget and window-integration tests for command palette template wiring,
 //! grouped results, keyboard flow, click-away dismissal, and focus restoration.
 
-use crate::common::{ensure_gtk_init, fixture, flush_events, isolated_data_dir, wait_until};
+use crate::common::{
+    ensure_gtk_init, fixture, flush_after_delay, flush_events, isolated_data_dir, wait_until,
+};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::prelude::ToValue;
 use gtk4::prelude::*;
@@ -25,8 +27,11 @@ use lushtext_core::ui::command_palette::{
     set_search_delay_for_test,
 };
 use lushtext_core::ui::command_palette::item::PaletteItem;
+use lushtext_core::ui::plain_disposal::{
+    hold_disposal_capacity_for_test, lane_snapshot_for_test,
+};
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -781,6 +786,66 @@ fn test_command_palette_incremental_index_worker_publishes_then_clears_readiness
     assert!(palette_labels(&palette)
         .iter()
         .any(|label| label == "created-latest.rs"));
+}
+
+#[test]
+fn test_incremental_index_capacity_retry_is_paced_and_resumes_after_release() {
+    ensure_gtk_init();
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let full_before = lane_snapshot_for_test().full_outcomes;
+    let palette = LushtextCommandPalette::new();
+
+    palette.update_index_file_deleted(Path::new("/synthetic/deferred-delete"));
+    flush_after_delay(Duration::from_millis(200));
+
+    assert_eq!(palette.pending_index_update_count(), 1);
+    assert!(!palette.index_update_worker_running_for_test());
+    let full_after_first_attempt = lane_snapshot_for_test().full_outcomes;
+    assert_eq!(full_after_first_attempt, full_before + 1);
+    flush_after_delay(Duration::from_millis(200));
+    assert_eq!(
+        lane_snapshot_for_test().full_outcomes,
+        full_after_first_attempt,
+        "capacity polling must not rerun the whole index mutation in a tight loop"
+    );
+
+    drop(capacity_hold);
+    wait_until(Duration::from_secs(10), || {
+        palette.pending_index_update_count() == 0
+    });
+    assert!(!palette.index_update_worker_running_for_test());
+}
+
+#[test]
+fn test_incremental_index_update_queue_coalesces_overflow_to_one_rebuild() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let long_segment = "x".repeat(8 * 1024);
+
+    for index in 0..2_000 {
+        palette.update_index_file_deleted(&PathBuf::from(format!(
+            "/synthetic/{index:05}-{long_segment}"
+        )));
+    }
+
+    let (queued, bytes, rebuild_pending, count_limit, byte_limit) =
+        palette.index_update_queue_snapshot_for_test();
+    assert!(queued <= count_limit);
+    assert!(bytes <= byte_limit);
+    assert!(rebuild_pending);
+    assert_eq!(palette.pending_index_update_count(), queued + 1);
+
+    wait_until(Duration::from_secs(10), || {
+        palette.pending_index_update_count() == 0
+    });
+    assert_eq!(
+        palette.index_update_queue_snapshot_for_test(),
+        (0, 0, false, count_limit, byte_limit)
+    );
 }
 
 #[test]
@@ -1766,6 +1831,9 @@ fn test_command_palette_note_source_refresh_blocks_idle_until_terminal_finish() 
         .expect("window application")
         .downcast::<lushtext_core::app::LushtextApplication>()
         .expect("LushText application");
+    wait_until(Duration::from_secs(5), || {
+        current_idle_blocker(&app).is_none()
+    });
     let scope = WorkspacesFile {
         current_scope: WorkspaceScope::All,
         workspaces: Vec::new(),
@@ -1779,6 +1847,8 @@ fn test_command_palette_note_source_refresh_blocks_idle_until_terminal_finish() 
             data_dir: PathBuf::from("/synthetic/note-refresh"),
             scope_snapshot: scope,
             open_editor_snapshots: Arc::from([]),
+            open_editor_snapshots_truncated: false,
+            mode: lushtext_core::services::palette::NotesBrowserMode::AllNotes,
             limits: lushtext_core::services::palette::PALETTE_NOTE_SOURCE_LIMITS,
         })
         .expect("first note-source request starts");

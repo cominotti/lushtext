@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::model::draft::{DraftEntry, FileDraftRestoreResolution, PreloadedDraftRestore};
+use crate::model::draft::{
+    DraftEntry, DraftManifestAuthority, FileDraftRestoreResolution, PreloadedDraftRestore,
+};
 use crate::services::notifications::{
     InlineActionNotification, InlineNotificationStyle, NotificationSeverity,
 };
@@ -265,6 +267,30 @@ struct DraftPipelineFailures {
     body_write: Vec<String>,
 }
 
+/// Compact manifest failure returned from a worker with its proven authority.
+struct DraftManifestFailure {
+    authority: DraftManifestAuthority,
+    detail: String,
+}
+
+impl DraftManifestFailure {
+    fn injected(error: &anyhow::Error) -> Self {
+        Self {
+            authority: DraftManifestAuthority::default(),
+            detail: error.to_string(),
+        }
+    }
+}
+
+impl From<draft_service::DraftManifestUpdateError> for DraftManifestFailure {
+    fn from(error: draft_service::DraftManifestUpdateError) -> Self {
+        Self {
+            authority: error.authority(),
+            detail: error.to_string(),
+        }
+    }
+}
+
 /// Typed close-safety failure used by callers and deterministic widget tests.
 #[derive(Debug, thiserror::Error)]
 pub enum DraftFlushError {
@@ -283,8 +309,13 @@ pub enum DraftFlushError {
         body_write: usize,
     },
     /// Successful bodies could not be published through the shared manifest.
-    #[error("failed to save draft manifest on close: {0}")]
-    Manifest(String),
+    #[error("failed to save draft manifest on close: {detail}")]
+    Manifest {
+        /// Strongest manifest authority proven by the failed command.
+        authority: DraftManifestAuthority,
+        /// Bounded diagnostic text for the retryable failure.
+        detail: String,
+    },
 }
 
 /// Complete freshness ticket shared by every asynchronous draft restore path.
@@ -366,6 +397,36 @@ struct OrphanCleanupUiResult {
 }
 
 impl super::LushtextWindow {
+    /// Accept one trusted manifest commit and reapply compact pending tombstones.
+    fn accept_draft_manifest_commit(&self, mut commit: draft_service::DraftManifestCommit) {
+        let drafts = &self.imp().drafts;
+        let order = drafts.mutation_order.borrow();
+        let mut tombstones = drafts.delete_tombstones.borrow_mut();
+        tombstones.retain(|_, intent| order.is_current(intent));
+        commit
+            .manifest
+            .drafts
+            .retain(|entry| !tombstones.contains_key(entry.draft_id.as_str()));
+        drop(tombstones);
+        drop(order);
+        let became_trusted = !self.imp().drafts.manifest_authority.get().is_trusted()
+            && commit.authority.is_trusted();
+        self.imp().drafts.manifest_authority.set(commit.authority);
+        *self.imp().drafts.manifest.borrow_mut() = commit.manifest;
+        if became_trusted {
+            self.schedule_orphan_cleanup(true);
+        }
+    }
+
+    /// Revoke destructive cleanup immediately after a manifest command loses
+    /// completeness or durable replacement eligibility.
+    fn reject_draft_manifest_authority(&self, authority: DraftManifestAuthority) {
+        self.imp().drafts.manifest_authority.set(authority);
+        self.imp().drafts.orphan_cleanup_pending_offset.set(None);
+        self.imp().drafts.orphan_cleanup_timer_pending.set(false);
+        let _ = self.imp().drafts.orphan_cleanup_timer.invalidate();
+    }
+
     /// Write all dirty drafts synchronously during window close.
     ///
     /// Regular autosave uses chunked snapshots plus background writes. Close
@@ -378,7 +439,9 @@ impl super::LushtextWindow {
     /// Returns an error when any dirty draft file cannot be written or when
     /// the draft manifest cannot be updated after successful draft writes.
     pub fn flush_dirty_drafts(&self) -> Result<()> {
-        if self.imp().drafts.mutation_inflight.get() {
+        if self.imp().drafts.mutation_inflight.get()
+            || self.imp().drafts.orphan_cleanup_inflight.get()
+        {
             anyhow::bail!("draft persistence is already in progress");
         }
         let tab_view = &self.imp().tab_view;
@@ -410,7 +473,7 @@ impl super::LushtextWindow {
                 &buffer,
                 automatic_draft_limit(),
             ) {
-                buffer_snapshot::BufferSnapshotOutcome::Captured(text) => text,
+                buffer_snapshot::BufferSnapshotOutcome::Captured(text) => text.into_direct_string(),
                 buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
                     Self::show_automatic_recovery_limit(editor);
                     write_errors.push(format!(
@@ -441,12 +504,23 @@ impl super::LushtextWindow {
         }
         let had_manifest_updates = !manifest_updates.is_empty();
         if had_manifest_updates {
-            draft_service::update_manifest(&data_dir, |manifest| {
-                for entry in manifest_updates {
-                    manifest.upsert(entry);
-                }
-            })
-            .map_err(|e| anyhow::anyhow!("failed to save draft manifest on close: {e}"))?;
+            let session = self.collect_session();
+            let authority = self.imp().drafts.manifest_authority.get();
+            let commit =
+                match draft_service::update_manifest(&data_dir, &session, authority, |manifest| {
+                    for entry in manifest_updates {
+                        manifest.upsert(entry);
+                    }
+                }) {
+                    Ok(commit) => commit,
+                    Err(error) => {
+                        self.reject_draft_manifest_authority(error.authority());
+                        return Err(anyhow::anyhow!(
+                            "failed to save draft manifest on close: {error}"
+                        ));
+                    }
+                };
+            self.accept_draft_manifest_commit(commit);
         }
         if !write_errors.is_empty() {
             return Err(anyhow::anyhow!(
@@ -469,6 +543,7 @@ impl super::LushtextWindow {
     /// back on GTK after every candidate is accepted or classified.
     pub fn flush_dirty_drafts_async<F: FnOnce(Result<()>) + 'static>(&self, on_done: F) {
         if self.imp().drafts.mutation_inflight.get()
+            || self.imp().drafts.orphan_cleanup_inflight.get()
             || !self.imp().drafts.pending_deletes.borrow().is_empty()
             || self.imp().drafts.restore_inflight_count.get() > 0
         {
@@ -534,28 +609,13 @@ impl super::LushtextWindow {
             return;
         }
 
-        let ticket = DraftRestoreTicket::capture(editor, entry);
-        let data_dir = json_store::data_dir();
-        let worker_entry = ticket.entry.clone();
-        let window_weak = self.downgrade();
-        self.note_draft_restore_started();
-
-        spawn_blocking_then(
-            (),
-            move || {
-                delay_draft_restore_for_test();
-                draft_service::resolve_draft_restore(&data_dir, &worker_entry)
-            },
-            move |(), result| {
-                let Some(window) = window_weak.upgrade() else {
-                    return;
-                };
-                window.finish_draft_restore(&ticket, result, DraftRestoreTracking::Ordinary);
-            },
-        );
+        self.queue_lazy_draft_restore(editor, entry);
     }
 
-    /// Enqueue one aggregate-budget skip and start the serialized reader.
+    /// Enqueue one non-preloaded body and start the serialized reader.
+    ///
+    /// Startup aggregate-budget skips and later on-demand fallbacks share this
+    /// gate so completed 64 MiB reads cannot accumulate behind GTK installers.
     fn queue_lazy_draft_restore(&self, editor: &LushtextEditorPage, entry: DraftEntry) {
         self.imp()
             .drafts
@@ -821,6 +881,16 @@ impl super::LushtextWindow {
     /// Run one inspect/execute pass off the GTK thread and merge exact commits.
     fn run_orphan_cleanup_pass(&self, manifest_offset: usize) {
         let drafts = &self.imp().drafts;
+        if !drafts.manifest_authority.get().is_trusted() {
+            drafts.orphan_cleanup_pending_offset.set(None);
+            drafts.orphan_cleanup_timer_pending.set(false);
+            let _ = drafts.orphan_cleanup_timer.invalidate();
+            return;
+        }
+        if drafts.mutation_inflight.get() {
+            self.arm_orphan_cleanup_follow_up(manifest_offset, DRAFT_MUTATION_WAIT_POLL_INTERVAL);
+            return;
+        }
         if drafts.orphan_cleanup_inflight.replace(true) {
             drafts
                 .orphan_cleanup_pending_offset
@@ -903,6 +973,7 @@ impl super::LushtextWindow {
                     }
                 };
                 window.finish_orphan_cleanup_pass(follow_up);
+                window.drive_pending_draft_mutations();
             },
         );
     }
@@ -967,7 +1038,10 @@ impl super::LushtextWindow {
     /// Single autosave tick: collect dirty tabs and write drafts.
     fn autosave_tick(&self) {
         self.cancel_first_dirty_draft_autosave();
-        if self.imp().drafts.autosave_inflight.get() || self.imp().drafts.mutation_inflight.get() {
+        if self.imp().drafts.autosave_inflight.get()
+            || self.imp().drafts.mutation_inflight.get()
+            || self.imp().drafts.orphan_cleanup_inflight.get()
+        {
             self.imp().drafts.autosave_pending.set(true);
             return;
         }
@@ -1195,6 +1269,7 @@ impl super::LushtextWindow {
                     spawn_blocking_then(
                         (),
                         move || {
+                            let text = text.into_string_on_worker();
                             delay_draft_body_for_test();
                             fail_next_draft_body_for_test()?;
                             draft_service::write_draft(&data_dir, &draft_id, &text)?;
@@ -1290,23 +1365,49 @@ impl super::LushtextWindow {
             }
         }
         let data_dir = json_store::data_dir();
+        let session = self.collect_session();
+        let authority = self.imp().drafts.manifest_authority.get();
         let window_weak = self.downgrade();
 
         spawn_blocking_then(
             (),
             move || {
                 delay_draft_manifest_for_test();
-                fail_next_draft_manifest_for_test()
-                    .map_err(|error| DraftFlushError::Manifest(error.to_string()))?;
-                if !accepted_entries.is_empty() {
-                    draft_service::update_manifest(&data_dir, |manifest| {
-                        for entry in accepted_entries {
-                            manifest.upsert(entry);
-                        }
-                    })
-                    .map_err(|error| DraftFlushError::Manifest(error.to_string()))?;
+                if let Err(error) = fail_next_draft_manifest_for_test() {
+                    return (
+                        None,
+                        Err(DraftFlushError::Manifest {
+                            authority: DraftManifestAuthority::default(),
+                            detail: error.to_string(),
+                        }),
+                    );
                 }
-                if failures.snapshot_cancelled == 0
+                let commit = if accepted_entries.is_empty() {
+                    None
+                } else {
+                    match draft_service::update_manifest(
+                        &data_dir,
+                        &session,
+                        authority,
+                        |manifest| {
+                            for entry in accepted_entries {
+                                manifest.upsert(entry);
+                            }
+                        },
+                    ) {
+                        Ok(commit) => Some(commit),
+                        Err(error) => {
+                            return (
+                                None,
+                                Err(DraftFlushError::Manifest {
+                                    authority: error.authority(),
+                                    detail: error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                };
+                let result = if failures.snapshot_cancelled == 0
                     && failures.over_limit == 0
                     && failures.body_write.is_empty()
                 {
@@ -1320,10 +1421,17 @@ impl super::LushtextWindow {
                         over_limit: failures.over_limit,
                         body_write: failures.body_write.len(),
                     })
-                }
+                };
+                (commit, result)
             },
-            move |(), result| {
+            move |(), (commit, result)| {
                 if let Some(window) = window_weak.upgrade() {
+                    if let Some(commit) = commit {
+                        window.accept_draft_manifest_commit(commit);
+                    }
+                    if let Err(DraftFlushError::Manifest { authority, .. }) = &result {
+                        window.reject_draft_manifest_authority(*authority);
+                    }
                     if result.is_ok() {
                         window.clear_close_discard_drafts();
                     }
@@ -1412,6 +1520,7 @@ impl super::LushtextWindow {
                     spawn_blocking_then(
                         (),
                         move || {
+                            let text = text.into_string_on_worker();
                             delay_draft_body_for_test();
                             fail_next_draft_body_for_test()?;
                             let result = draft_service::write_draft(&data_dir, &draft_id, &text)
@@ -1494,39 +1603,31 @@ impl super::LushtextWindow {
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
         let entries: Vec<DraftEntry> = accepted.iter().map(|item| item.entry.clone()).collect();
+        let session = self.collect_session();
+        let authority = self.imp().drafts.manifest_authority.get();
 
         spawn_blocking_then(
             (),
             move || {
                 delay_draft_manifest_for_test();
-                fail_next_draft_manifest_for_test()?;
-                let result = draft_service::update_manifest(&data_dir, |manifest| {
-                    for entry in entries {
-                        manifest.upsert(entry);
-                    }
-                });
+                if let Err(error) = fail_next_draft_manifest_for_test() {
+                    return Err(DraftManifestFailure::injected(&error));
+                }
+                let result =
+                    draft_service::update_manifest(&data_dir, &session, authority, |manifest| {
+                        for entry in entries {
+                            manifest.upsert(entry);
+                        }
+                    })
+                    .map_err(DraftManifestFailure::from);
                 delay_draft_manifest_completion_for_test();
                 result
             },
             move |(), result| {
                 if let Some(window) = window_weak.upgrade() {
                     match result {
-                        Ok(mut manifest) => {
-                            // Delete intent is assigned before it waits behind this batch.
-                            // Keep the GTK projection tombstoned even though the older
-                            // durable upsert must finish before its queued delete runs.
-                            for pending in window.imp().drafts.pending_deletes.borrow().iter() {
-                                if window
-                                    .imp()
-                                    .drafts
-                                    .mutation_order
-                                    .borrow()
-                                    .is_current(pending)
-                                {
-                                    manifest.remove_by_id(&pending.draft_id);
-                                }
-                            }
-                            *window.imp().drafts.manifest.borrow_mut() = manifest;
+                        Ok(commit) => {
+                            window.accept_draft_manifest_commit(commit);
                             for accepted in accepted {
                                 let completion = accepted.completion;
                                 let Some(editor) = completion.editor.upgrade() else {
@@ -1551,7 +1652,8 @@ impl super::LushtextWindow {
                             }
                         }
                         Err(error) => {
-                            tracing::warn!("Failed to save draft manifest: {error}");
+                            window.reject_draft_manifest_authority(error.authority);
+                            tracing::warn!("Failed to save draft manifest: {}", error.detail);
                             window.publish_status_message(
                                 "Draft autosave could not confirm recovery metadata; changes remain retryable.",
                                 NotificationSeverity::Warning,
@@ -1645,25 +1747,7 @@ impl super::LushtextWindow {
             return;
         };
 
-        let ticket = DraftRestoreTicket::capture(editor, entry);
-        let data_dir = json_store::data_dir();
-        let worker_entry = ticket.entry.clone();
-        let window_weak = self.downgrade();
-        self.note_draft_restore_started();
-
-        spawn_blocking_then(
-            (),
-            move || {
-                delay_draft_restore_for_test();
-                draft_service::resolve_draft_restore(&data_dir, &worker_entry)
-            },
-            move |(), result| {
-                let Some(window) = window_weak.upgrade() else {
-                    return;
-                };
-                window.finish_draft_restore(&ticket, result, DraftRestoreTracking::Ordinary);
-            },
-        );
+        self.queue_lazy_draft_restore(editor, entry);
     }
 
     /// Apply startup-preloaded draft data for a path, if one was prepared.
@@ -1746,6 +1830,11 @@ impl super::LushtextWindow {
             .advance(draft_id);
         self.imp()
             .drafts
+            .delete_tombstones
+            .borrow_mut()
+            .insert(draft_id.to_string(), intent.clone());
+        self.imp()
+            .drafts
             .manifest
             .borrow_mut()
             .remove_by_id(draft_id);
@@ -1772,7 +1861,9 @@ impl super::LushtextWindow {
 
     /// Run queued compact deletes only after every earlier body/manifest command.
     fn drive_pending_draft_mutations(&self) {
-        if self.imp().drafts.mutation_inflight.get() {
+        if self.imp().drafts.mutation_inflight.get()
+            || self.imp().drafts.orphan_cleanup_inflight.get()
+        {
             return;
         }
         let Some(intent) = self.imp().drafts.pending_deletes.borrow_mut().pop_front() else {
@@ -1791,49 +1882,78 @@ impl super::LushtextWindow {
 
         let data_dir = json_store::data_dir();
         let draft_id = intent.draft_id.clone();
+        let session = self.collect_session();
+        let authority = self.imp().drafts.manifest_authority.get();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
             move || {
+                // Keep the persisted manifest as the durable retry marker until
+                // the body is gone. A failed body deletion therefore leaves a
+                // fully recoverable pre-delete state across unrelated manifest
+                // mutations and process restart.
                 delay_draft_delete_for_test();
                 let body_error = fail_next_draft_delete_for_test()
                     .and_then(|()| draft_service::delete_draft_file(&data_dir, &draft_id))
                     .err()
                     .map(|error| error.to_string());
-                delay_draft_manifest_for_test();
-                let manifest_result = fail_next_draft_manifest_for_test().and_then(|()| {
-                    draft_service::update_manifest(&data_dir, |manifest| {
-                        manifest.remove_by_id(&draft_id);
+                let manifest_result = if body_error.is_none() {
+                    delay_draft_manifest_for_test();
+                    Some(match fail_next_draft_manifest_for_test() {
+                        Ok(()) => draft_service::remove_manifest_entry(
+                            &data_dir, &session, authority, &draft_id,
+                        )
+                        .map_err(DraftManifestFailure::from),
+                        Err(error) => Err(DraftManifestFailure::injected(&error)),
                     })
-                    .map(|_| ())
-                });
+                } else {
+                    None
+                };
                 (body_error, manifest_result)
             },
             move |(), (body_error, manifest_result)| {
                 if let Some(window) = window_weak.upgrade() {
-                    if let Some(error) = body_error {
+                    let deletion_terminal =
+                        body_error.is_none() && manifest_result.as_ref().is_some_and(Result::is_ok);
+                    if let Some(error) = body_error.as_deref() {
                         tracing::warn!("Failed to delete draft file {}: {error}", intent.draft_id);
                         window.publish_status_message(
                             "Draft cleanup could not remove one recovery body; cleanup remains retryable.",
                             NotificationSeverity::Warning,
                         );
                     }
-                    if let Err(error) = manifest_result {
-                        tracing::warn!(
-                            "Failed to save manifest after draft deletion {}: {error}",
-                            intent.draft_id
-                        );
-                        window.publish_status_message(
-                            "Draft cleanup could not confirm recovery metadata; cleanup remains retryable.",
-                            NotificationSeverity::Warning,
-                        );
+                    match manifest_result {
+                        Some(Ok(commit)) => window.accept_draft_manifest_commit(commit),
+                        Some(Err(error)) => {
+                            window.reject_draft_manifest_authority(error.authority);
+                            tracing::warn!(
+                                "Failed to save manifest before draft deletion {}: {}",
+                                intent.draft_id,
+                                error.detail,
+                            );
+                            window.publish_status_message(
+                                "Draft cleanup could not confirm recovery metadata; cleanup remains retryable.",
+                                NotificationSeverity::Warning,
+                            );
+                        }
+                        None => {}
                     }
-                    window
-                        .imp()
-                        .drafts
-                        .mutation_order
-                        .borrow_mut()
-                        .retire_if_current(&intent);
+                    if deletion_terminal {
+                        let drafts = &window.imp().drafts;
+                        let tombstone_is_current =
+                            drafts.delete_tombstones.borrow().get(&intent.draft_id)
+                                == Some(&intent);
+                        if tombstone_is_current {
+                            drafts
+                                .delete_tombstones
+                                .borrow_mut()
+                                .remove(&intent.draft_id);
+                            drafts
+                                .mutation_order
+                                .borrow_mut()
+                                .retire_if_current(&intent);
+                        }
+                    }
                     window.imp().drafts.mutation_inflight.set(false);
                     window.drive_pending_draft_mutations();
                 }
@@ -1846,11 +1966,27 @@ impl super::LushtextWindow {
         let id = if let Some(ref path) = editor.file_path() {
             draft_service::draft_id_for_path(path)
         } else {
-            let counter = self.imp().drafts.next_tab_id.get();
-            self.imp().drafts.next_tab_id.set(counter.wrapping_add(1));
-            draft_service::draft_id_for_untitled(counter)
+            draft_service::new_untitled_draft_id()
         };
         editor.set_draft_id(id);
+    }
+
+    /// Whether a failed deletion still owns an explicit retry tombstone.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn draft_delete_tombstoned_for_test(&self, draft_id: &str) -> bool {
+        self.imp()
+            .drafts
+            .delete_tombstones
+            .borrow()
+            .contains_key(draft_id)
+    }
+
+    /// Whether one serialized draft body/manifest mutation still owns its worker.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn draft_mutation_inflight_for_test(&self) -> bool {
+        self.imp().drafts.mutation_inflight.get()
     }
 
     fn note_draft_restore_started(&self) {
@@ -1968,8 +2104,32 @@ fn automatic_draft_limit() -> u64 {
     }
 }
 
-fn release_eager_preloads(preloaded: &mut HashMap<String, PreloadedDraftRestore>) {
-    preloaded.retain(|_, restore| matches!(restore, PreloadedDraftRestore::LazyAggregateBudget));
+fn release_eager_preloads(
+    preloaded: &mut crate::ui::plain_disposal::DisposalOwned<
+        HashMap<String, PreloadedDraftRestore>,
+    >,
+) {
+    let guarded = std::mem::take(preloaded);
+    let (compact, retiring) = guarded.split_for_worker_retirement(detach_eager_preload_bodies);
+    *preloaded = crate::ui::plain_disposal::DisposalOwned::small_unreserved(compact);
+    drop(retiring);
+}
+
+fn detach_eager_preload_bodies(
+    preloaded: &mut HashMap<String, PreloadedDraftRestore>,
+) -> Vec<String> {
+    let mut retiring = Vec::new();
+    for restore in preloaded.values_mut() {
+        if matches!(restore, PreloadedDraftRestore::Content(_)) {
+            let PreloadedDraftRestore::Content(content) =
+                std::mem::replace(restore, PreloadedDraftRestore::LazyAggregateBudget)
+            else {
+                unreachable!("content match was checked before replacement");
+            };
+            retiring.push(content);
+        }
+    }
+    retiring
 }
 
 #[cfg(test)]
@@ -2163,14 +2323,25 @@ mod tests {
             ),
         ]);
 
-        release_eager_preloads(&mut preloaded);
+        let retired = detach_eager_preload_bodies(&mut preloaded);
 
         assert_eq!(
             preloaded,
-            HashMap::from([(
-                "lazy".to_string(),
-                PreloadedDraftRestore::LazyAggregateBudget
-            )])
+            HashMap::from([
+                (
+                    "eager".to_string(),
+                    PreloadedDraftRestore::LazyAggregateBudget
+                ),
+                (
+                    "lazy".to_string(),
+                    PreloadedDraftRestore::LazyAggregateBudget
+                ),
+                (
+                    "oversized".to_string(),
+                    PreloadedDraftRestore::SkipOversized
+                ),
+            ])
         );
+        assert_eq!(retired, vec!["body".to_string()]);
     }
 }

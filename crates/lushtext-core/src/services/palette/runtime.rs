@@ -3,12 +3,18 @@
 //! GTK-free cancellation and one-active/one-latest palette search ownership.
 
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Cooperative cancellation token scoped to one active palette generation.
 #[derive(Clone, Debug, Default)]
 pub struct PaletteSearchCancellation {
     cancelled: Arc<AtomicBool>,
+    #[cfg(test)]
+    cancel_after_checks: Arc<AtomicUsize>,
+    #[cfg(test)]
+    checks: Arc<AtomicUsize>,
 }
 
 impl PaletteSearchCancellation {
@@ -21,7 +27,27 @@ impl PaletteSearchCancellation {
     /// Return whether the owning generation has been superseded.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
+        #[cfg(test)]
+        {
+            let cancel_after = self.cancel_after_checks.load(Ordering::Relaxed);
+            if cancel_after > 0
+                && self
+                    .checks
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1)
+                    >= cancel_after
+            {
+                self.cancelled.store(true, Ordering::Relaxed);
+            }
+        }
         self.cancelled.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel_after_checks_for_test(&self, checks: usize) {
+        self.checks.store(0, Ordering::Relaxed);
+        self.cancel_after_checks
+            .store(checks.max(1), Ordering::Relaxed);
     }
 }
 
@@ -34,6 +60,12 @@ pub struct PaletteSearchMetrics {
     pub matching_candidates: usize,
     /// Largest retained candidate count in any one source selector.
     pub peak_retained_per_source: usize,
+    /// Included candidates whose non-empty query reached a scorer.
+    pub candidates_scored: usize,
+    /// Note bodies inspected after metadata eligibility work.
+    pub note_bodies_examined: usize,
+    /// Note bodies skipped because their maximum contribution could not improve the row score.
+    pub note_bodies_safely_pruned: usize,
 }
 
 impl PaletteSearchMetrics {
@@ -47,6 +79,15 @@ impl PaletteSearchMetrics {
         self.peak_retained_per_source = self
             .peak_retained_per_source
             .max(other.peak_retained_per_source);
+        self.candidates_scored = self
+            .candidates_scored
+            .saturating_add(other.candidates_scored);
+        self.note_bodies_examined = self
+            .note_bodies_examined
+            .saturating_add(other.note_bodies_examined);
+        self.note_bodies_safely_pruned = self
+            .note_bodies_safely_pruned
+            .saturating_add(other.note_bodies_safely_pruned);
     }
 }
 

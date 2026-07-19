@@ -40,9 +40,7 @@ impl LushtextWorkspaceSection {
         if refresh.pending_full_reload.get() || !refresh.pending_paths.borrow().is_empty() {
             return true;
         }
-        if !self.imp().child_scan_tokens.borrow().is_empty()
-            || !self.imp().child_reconcile_sources.borrow().is_empty()
-        {
+        if super::tree_loading::child_scan_blocks_readiness(self) {
             return true;
         }
 

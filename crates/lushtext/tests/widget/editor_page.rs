@@ -8,25 +8,28 @@ use crate::common::{
 };
 use gio::prelude::ListModelExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
+use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
-use lushtext_core::model::encoding::DocumentEncodingState;
 use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
+use lushtext_core::model::encoding::DocumentEncodingState;
 use lushtext_core::model::formatting_overrides::FormattingOverrides;
 use lushtext_core::services::editor_io::{self, EditorLoadError, LoadResult};
 use lushtext_core::services::file_limits::FileSizeCheck;
-use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::services::local_history_service;
+use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
-    BufferReplacementCancelReason, BufferReplacementWorkflow,
-    BufferSnapshotCancelReason, BufferSnapshotOutcome, BufferSnapshotStateForTest,
-    BufferSnapshotTestEdit,
+    BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
+    BufferSnapshotOutcome, BufferSnapshotStateForTest, BufferSnapshotTestEdit,
     BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind, snapshot_buffer_text_async_for_test,
+    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
+    coalesce_snapshot_payload_for_test, snapshot_buffer_text_async_for_test,
+    snapshot_payload_metrics_for_test,
 };
 use lushtext_core::ui::info_bar::inline_alert_announcement_key_for_test;
+use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, lane_snapshot_for_test};
 use sourceview5::prelude::*;
 use std::assert_matches;
 use std::cell::{Cell, RefCell};
@@ -58,6 +61,20 @@ fn editor_buffer_text(page: &LushtextEditorPage) -> String {
         .to_string()
 }
 
+fn wait_until_observing_each_dispatch(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    let context = glib::MainContext::default();
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    panic!("condition was not met within {timeout:?}");
+}
+
 fn same_widget(widget: &gtk4::Widget, target: &impl IsA<gtk4::Widget>) -> bool {
     widget.as_ptr() == target.as_ref().as_ptr()
 }
@@ -82,7 +99,10 @@ fn visible_alert_action_order(page: &LushtextEditorPage) -> Vec<&'static str> {
         } else if same_widget(&widget, &*imp.dismiss_button) {
             order.push("dismiss");
         } else {
-            panic!("unexpected visible inline-alert action: {}", widget.type_().name());
+            panic!(
+                "unexpected visible inline-alert action: {}",
+                widget.type_().name()
+            );
         }
     }
 
@@ -399,7 +419,10 @@ fn assert_marker_bounds_within_source_content(
     kind: MinimapMarkerKind,
 ) -> Vec<lushtext_core::ui::editor_page::MinimapMarkerBounds> {
     let bounds = page.minimap_marker_bounds(kind);
-    assert!(!bounds.is_empty(), "expected projected {kind:?} marker bounds");
+    assert!(
+        !bounds.is_empty(),
+        "expected projected {kind:?} marker bounds"
+    );
 
     let content_bottom = source_map_content_bottom(page);
     let strip_height = f64::from(minimap_marker_strip(page).height());
@@ -503,7 +526,10 @@ fn test_inline_alert_message_and_actions_share_row_when_wide() {
         ("save", &*imp.save_button),
         ("dismiss", &*imp.dismiss_button),
     ] {
-        assert!(button.property::<bool>("visible"), "{name} should be visible");
+        assert!(
+            button.property::<bool>("visible"),
+            "{name} should be visible"
+        );
         assert!(
             button.width() > 0 && button.height() > 0,
             "{name} should have a positive allocation"
@@ -759,7 +785,10 @@ fn test_save_file_no_path_returns_error() {
     page.save_file_async(move |r| {
         *result_clone.borrow_mut() = Some(r);
     });
-    let result = result.borrow_mut().take().expect("expected operation to succeed");
+    let result = result
+        .borrow_mut()
+        .take()
+        .expect("expected operation to succeed");
     assert_matches!(
         result,
         Err(lushtext_core::ui::editor_page::EditorSaveError::NoPath)
@@ -845,7 +874,8 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
     assert!(!page.source_view().is_editable());
     assert!(!page.source_view().is_cursor_visible());
     let mut end = page.buffer().end_iter();
-    page.buffer().insert(&mut end, "mutated during save capture");
+    page.buffer()
+        .insert(&mut end, "mutated during save capture");
     wait_until(Duration::from_secs(10), || result.borrow().is_some());
 
     assert!(matches!(
@@ -859,33 +889,231 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
     assert!(page.source_view().is_editable());
     assert!(page.source_view().is_cursor_visible());
     assert!(page.is_modified());
-    assert_eq!(fs_read::text(file.path()).expect("read original"), "old on disk");
+    assert_eq!(
+        fs_read::text(file.path()).expect("read original"),
+        "old on disk"
+    );
 }
 
 #[test]
 fn test_minimap_long_line_warning_scan_preserves_small_document_markers() {
     ensure_gtk_init();
+    enable_minimap_for_tests(true);
     let page = LushtextEditorPage::new();
-    page.buffer().set_text(&format!("short\n{}", "x".repeat(121)));
+    page.buffer()
+        .set_text(&format!("short\n{}", "x".repeat(121)));
 
+    wait_until(Duration::from_secs(2), || {
+        page.minimap_analysis_snapshot_for_test().cache_owned
+    });
     assert_eq!(page.long_line_warning_count_for_test(), 1);
 }
 
 #[test]
-fn test_minimap_long_line_warning_scan_skips_large_buffer_threshold() {
+fn test_minimap_wrapped_classifier_uses_live_estimated_bytes_without_text_scan() {
     ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
     let page = LushtextEditorPage::new();
-    page.buffer().set_text(&"x".repeat(2_500_001));
+    let threshold = 2 * 1024 * 1024;
+    let one_over_threshold_scalars =
+        usize::try_from(threshold / 4 + 1).expect("minimap threshold should fit usize");
 
-    assert_eq!(
-        page.long_line_warning_count_for_test(),
-        0,
-        "large-buffer minimap warnings should skip the full text copy/scan path"
+    page.set_memory_estimate_for_test(Some(threshold));
+    assert!(!page.wrapped_layout_analysis_required_for_test());
+    page.set_memory_estimate_for_test(Some(threshold + 1));
+    assert!(page.wrapped_layout_analysis_required_for_test());
+
+    page.source_view().set_wrap_mode(gtk4::WrapMode::None);
+    page.set_memory_estimate_for_test(Some(u64::MAX));
+    assert!(!page.wrapped_layout_analysis_required_for_test());
+    page.source_view().set_wrap_mode(gtk4::WrapMode::Word);
+    page.set_memory_estimate_for_test(None);
+
+    page.buffer()
+        .set_text(&"é".repeat(one_over_threshold_scalars));
+    assert_eq!(page.file_size(), None);
+    assert_eq!(page.estimated_live_buffer_bytes(), threshold + 4);
+    assert!(
+        page.wrapped_layout_analysis_required_for_test(),
+        "untitled multibyte content must use the conservative live estimate"
+    );
+
+    page.apply_loaded_content_for_test("tiny", threshold);
+    assert_eq!(page.estimated_live_buffer_bytes(), threshold);
+    assert!(!page.wrapped_layout_analysis_required_for_test());
+    page.apply_loaded_content_for_test("tiny", threshold + 1);
+    assert_eq!(page.estimated_live_buffer_bytes(), threshold + 1);
+    assert!(page.wrapped_layout_analysis_required_for_test());
+
+    page.buffer()
+        .set_text(&"🙂".repeat(one_over_threshold_scalars));
+    assert_eq!(page.estimated_live_buffer_bytes(), threshold + 4);
+    assert!(
+        page.wrapped_layout_analysis_required_for_test(),
+        "modified multibyte content must overtake a smaller known-file floor"
     );
 }
 
 #[test]
-fn test_minimap_wrapped_budget_skips_large_buffer_line_scan() {
+fn test_minimap_long_line_warning_scan_slices_large_many_short_buffer() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(true);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let page = LushtextEditorPage::new();
+    let text = format!("{}\n", "s".repeat(96)).repeat(23_000);
+    assert!(text.len() > 2 * 1024 * 1024);
+    page.imp().file_size.set(Some(
+        u64::try_from(text.len()).expect("test document length fits u64"),
+    ));
+    let heartbeat = Rc::new(Cell::new(false));
+    let heartbeat_for_hook = Rc::clone(&heartbeat);
+    page.set_after_minimap_analysis_slice_hook_for_test(move || {
+        glib::idle_add_local_once(move || heartbeat_for_hook.set(true));
+    });
+    page.buffer().set_text(&text);
+    let _window = present_editor_page_with_size(&page, 1000, 520);
+
+    wait_until(Duration::from_secs(10), || {
+        let snapshot = page.minimap_analysis_snapshot_for_test();
+        snapshot.cache_owned && !snapshot.active && heartbeat.get()
+    });
+    let snapshot = page.minimap_analysis_snapshot_for_test();
+
+    assert!(page.is_minimap_visible());
+    assert_eq!(page.long_line_warning_count_for_test(), 0);
+    assert!(snapshot.slices > 1);
+    assert!(
+        snapshot.chars_per_slice_high_water
+            <= LushtextEditorPage::minimap_analysis_slice_limit_for_test()
+    );
+    assert_eq!(snapshot.cached_characters, 2_231_000);
+    eprintln!(
+        "minimap-analysis-evidence cached_characters={} slices={} chars_per_slice_high_water={} slice_limit={} gtk_heartbeat={} cache_owned={} current_generation={} visible={}",
+        snapshot.cached_characters,
+        snapshot.slices,
+        snapshot.chars_per_slice_high_water,
+        LushtextEditorPage::minimap_analysis_slice_limit_for_test(),
+        heartbeat.get(),
+        snapshot.cache_owned,
+        snapshot.cache_generation == Some(snapshot.generation),
+        page.is_minimap_visible(),
+    );
+}
+
+#[test]
+fn test_minimap_mid_scan_edit_cancels_stale_generation_and_publishes_latest() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(true);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let page = LushtextEditorPage::new();
+    page.imp().file_size.set(Some(3 * 1024 * 1024));
+    let page_weak = page.downgrade();
+    page.set_after_minimap_analysis_slice_hook_for_test(move || {
+        if let Some(page) = page_weak.upgrade() {
+            let mut end = page.buffer().end_iter();
+            page.buffer()
+                .insert(&mut end, &format!("latest marker {}\n", "z".repeat(121)));
+        }
+    });
+    page.buffer().set_text(&"short\n".repeat(40_000));
+    let _window = present_editor_page_with_size(&page, 1000, 520);
+
+    wait_until(Duration::from_secs(10), || {
+        let snapshot = page.minimap_analysis_snapshot_for_test();
+        snapshot.cancellations >= 1
+            && snapshot.terminals >= 1
+            && snapshot.cache_generation == Some(snapshot.generation)
+            && !snapshot.active
+    });
+    let snapshot = page.minimap_analysis_snapshot_for_test();
+
+    assert_eq!(page.long_line_warning_count_for_test(), 1);
+    assert_eq!(
+        snapshot.cached_characters,
+        u64::try_from(page.buffer().char_count()).expect("non-negative GTK character count")
+    );
+    assert!(page.is_minimap_visible());
+    eprintln!(
+        "minimap-cancellation-evidence cancellations={} terminals={} cache_generation={:?} current_generation={} cached_characters={}",
+        snapshot.cancellations,
+        snapshot.terminals,
+        snapshot.cache_generation,
+        snapshot.generation,
+        snapshot.cached_characters,
+    );
+}
+
+#[test]
+fn test_minimap_marker_toggle_releases_marker_cache_and_reuses_layout_evidence() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(true);
+    let page = LushtextEditorPage::new();
+    page.buffer()
+        .set_text(&format!("{}\nshort\n", "m".repeat(121)));
+
+    wait_until(Duration::from_secs(2), || {
+        page.long_line_warning_count_for_test() == 1
+    });
+    let before = page.minimap_analysis_snapshot_for_test();
+    settings
+        .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, false)
+        .expect("disable markers");
+    wait_until(Duration::from_secs(2), || {
+        let snapshot = page.minimap_analysis_snapshot_for_test();
+        snapshot.cache_owned
+            && !snapshot.marker_cache_owned
+            && page.long_line_warning_count_for_test() == 0
+    });
+    let disabled = page.minimap_analysis_snapshot_for_test();
+    assert_eq!(disabled.slices, before.slices);
+
+    settings
+        .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, true)
+        .expect("re-enable markers");
+    wait_until(Duration::from_secs(2), || {
+        page.long_line_warning_count_for_test() == 1
+            && page.minimap_analysis_snapshot_for_test().marker_cache_owned
+    });
+    assert!(page.minimap_analysis_snapshot_for_test().slices > disabled.slices);
+}
+
+#[test]
+fn test_minimap_teardown_cancels_cursor_and_continuation_source() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(false);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let page = LushtextEditorPage::new();
+    page.imp().file_size.set(Some(3 * 1024 * 1024));
+    let page_weak = page.downgrade();
+    page.set_after_minimap_analysis_slice_hook_for_test(move || {
+        if let Some(page) = page_weak.upgrade() {
+            // SAFETY: the one-shot hook disposes this standalone test widget
+            // exactly once; later assertions read only plain imp counters.
+            unsafe { page.run_dispose() };
+        }
+    });
+    page.buffer().set_text(&"short\n".repeat(40_000));
+
+    wait_until(Duration::from_secs(2), || {
+        let snapshot = page.minimap_analysis_snapshot_for_test();
+        snapshot.cancellations >= 1 && !snapshot.active && !snapshot.source_armed
+    });
+    let snapshot = page.minimap_analysis_snapshot_for_test();
+    assert!(!snapshot.cache_owned);
+    assert_eq!(snapshot.terminals, 0);
+}
+
+#[test]
+fn test_minimap_wrapped_budget_stops_after_sliced_extreme_line_evidence() {
     ensure_gtk_init();
     let settings = enable_minimap_for_tests(false);
     settings
@@ -946,10 +1174,7 @@ fn test_failed_reload_restores_file_monitor_for_preserved_buffer() {
     assert!(page.imp().monitor.file_monitor.borrow().is_none());
 
     let generation = page.load_generation_for_test();
-    assert!(page.apply_reload_error_for_test(
-        generation,
-        EditorLoadError::Changed { path },
-    ));
+    assert!(page.apply_reload_error_for_test(generation, EditorLoadError::Changed { path },));
 
     assert_eq!(page.load_state(), EditorLoadState::Loaded);
     assert_eq!(editor_buffer_text(&page), "preserved buffer\n");
@@ -1102,7 +1327,10 @@ fn test_chunked_load_cancellation_clears_partial_text_and_releases_admission() {
         save_was_blocked_for_callback.set(true);
     });
     assert!(save_was_blocked.get());
-    assert_eq!(fs_read::bytes(&path).expect("original load fixture").len(), 8 * 1024 * 1024);
+    assert_eq!(
+        fs_read::bytes(&path).expect("original load fixture").len(),
+        8 * 1024 * 1024
+    );
 }
 
 #[test]
@@ -1276,8 +1504,8 @@ fn test_dispose_during_chunked_install_releases_admission() {
         weak_page.upgrade().is_none()
             && admission_probe
                 .transient_load_admission_snapshot_for_test()
-            .active_count
-            == 0
+                .active_count
+                == 0
     });
 }
 
@@ -1414,11 +1642,22 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
     let buffer = page.buffer();
     let tmp = tempfile::NamedTempFile::new().expect("expected operation to succeed");
     let path = tmp.path().to_path_buf();
-    let content = "x".repeat(70_000);
+    let content = format!("{}\n", "x".repeat(2_000)).repeat(5_500);
+    assert!(content.len() > 10 * 1024 * 1024);
 
     page.imp().file_path.replace(Some(path.clone()));
-    page.imp().file_size.set(Some(10_000_000));
+    page.imp()
+        .file_size
+        .set(Some(u64::try_from(content.len()).unwrap_or(u64::MAX)));
     buffer.set_text(&content);
+    buffer.set_modified(true);
+    page.reset_transient_save_admission_for_test();
+    let counters_before = buffer_snapshot_counters_for_test();
+    let sentinel = Rc::new(Cell::new(false));
+    glib::idle_add_local_once({
+        let sentinel = Rc::clone(&sentinel);
+        move || sentinel.set(true)
+    });
 
     let done = std::rc::Rc::new(std::cell::Cell::new(false));
     let done_clone = done.clone();
@@ -1427,7 +1666,7 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
         done_clone.set(true);
     });
 
-    wait_until(std::time::Duration::from_secs(2), || {
+    wait_until_observing_each_dispatch(std::time::Duration::from_secs(10), || {
         page.is_saving() && !page.source_view().is_editable()
     });
     assert!(page.is_saving());
@@ -1439,7 +1678,8 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
         gtk4::AccessibleState::Busy
     ));
 
-    wait_until(std::time::Duration::from_secs(2), || done.get());
+    wait_until(std::time::Duration::from_secs(30), || done.get());
+    assert!(sentinel.get());
     assert!(!page.is_saving());
     assert!(!page.is_modified());
     assert!(page.source_view().is_editable());
@@ -1448,7 +1688,19 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
         page.source_view(),
         gtk4::AccessibleState::Busy
     ));
-    assert_eq!(fs_read::text(&path).expect("expected operation to succeed"), content);
+    assert_eq!(
+        fs_read::text(&path).expect("expected operation to succeed"),
+        content
+    );
+    let admission = page.transient_save_admission_snapshot_for_test();
+    assert_eq!(admission.active_count, 0);
+    assert_eq!(admission.queued_count, 0);
+    assert!(admission.high_water_weight > 0);
+    let counters_after = buffer_snapshot_counters_for_test();
+    assert_eq!(counters_after.gtk_coalesces, counters_before.gtk_coalesces);
+    assert_eq!(counters_after.gtk_drops, counters_before.gtk_drops);
+    assert!(counters_after.worker_coalesces > counters_before.worker_coalesces);
+    assert!(counters_after.worker_drops > counters_before.worker_drops);
 }
 
 #[test]
@@ -1517,6 +1769,8 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
     });
     page.buffer().set_text(&source);
     page.make_buffer_replacement_stale_after_slices_for_test(1);
+    page.reset_transient_save_admission_for_test();
+    let disposal_before = lane_snapshot_for_test();
 
     let result = Rc::new(RefCell::new(None));
     let result_clone = Rc::clone(&result);
@@ -1537,6 +1791,52 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
         fs_read::text(tmp.path()).expect("durable write should remain exact"),
         expected_disk
     );
+    wait_until(Duration::from_secs(10), || {
+        lane_snapshot_for_test().completed_jobs > disposal_before.completed_jobs
+    });
+    let admission = page.transient_save_admission_snapshot_for_test();
+    assert_eq!(admission.active_count, 0);
+    assert_eq!(admission.queued_count, 0);
+}
+
+#[test]
+fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    let tmp = tempfile::NamedTempFile::new().expect("save teardown temp file");
+    page.set_file_path(tmp.path());
+    page.buffer().set_text(&"x".repeat(11 * 1024 * 1024));
+    page.buffer().set_modified(true);
+    page.reset_transient_save_admission_for_test();
+    let counters_before = buffer_snapshot_counters_for_test();
+    let callback_count = Rc::new(Cell::new(0));
+    let callback_count_for_save = Rc::clone(&callback_count);
+    page.save_file_async(move |_| callback_count_for_save.set(callback_count_for_save.get() + 1));
+    wait_until_observing_each_dispatch(Duration::from_secs(10), || {
+        page.save_snapshot_inflight_for_test()
+    });
+
+    // SAFETY: this standalone test page is disposed exactly once after its
+    // save snapshot starts; subsequent assertions inspect only test counters.
+    unsafe { page.run_dispose() };
+    wait_until(Duration::from_secs(10), || {
+        page.transient_save_admission_snapshot_for_test()
+            .active_count
+            == 0
+            && buffer_snapshot_counters_for_test().worker_drops > counters_before.worker_drops
+    });
+
+    assert_eq!(callback_count.get(), 0);
+    assert_eq!(
+        fs_read::bytes(tmp.path()).expect("teardown target bytes"),
+        b""
+    );
+    let admission = page.transient_save_admission_snapshot_for_test();
+    assert_eq!(admission.active_count, 0);
+    assert_eq!(admission.queued_count, 0);
+    let counters_after = buffer_snapshot_counters_for_test();
+    assert_eq!(counters_after.gtk_coalesces, counters_before.gtk_coalesces);
+    assert_eq!(counters_after.gtk_drops, counters_before.gtk_drops);
 }
 
 #[test]
@@ -1681,7 +1981,10 @@ fn assert_search_query_focused_and_selected(page: &LushtextEditorPage, expected:
     assert_eq!(entry.text().as_str(), expected);
     assert_eq!(
         entry.selection_bounds(),
-        Some((0, i32::try_from(expected.chars().count()).expect("small query"))),
+        Some((
+            0,
+            i32::try_from(expected.chars().count()).expect("small query")
+        )),
         "the complete existing query should be selected for replacement"
     );
 }
@@ -1731,7 +2034,13 @@ fn test_replace_prefill_rejects_one_over_and_large_selection_without_copying() {
     select_buffer_chars(&large_page, 0, 100_000);
     large_entry.set_text("still bounded");
     large_page.show_replace();
-    assert!(large_page.search_bar().imp().replace_mode_button.is_active());
+    assert!(
+        large_page
+            .search_bar()
+            .imp()
+            .replace_mode_button
+            .is_active()
+    );
     assert_eq!(large_entry.text().as_str(), "still bounded");
     assert_eq!(large_entry.selection_bounds(), Some((0, 13)));
 }
@@ -1845,11 +2154,87 @@ fn test_chunked_buffer_snapshot_cancels_for_edits_before_and_after_progress_mark
             )],
             "{edit:?} must reject every partial chunk"
         );
-            assert_eq!(
-                handle.state_for_test(),
-                BufferSnapshotStateForTest::default()
-            );
+        assert_eq!(
+            handle.state_for_test(),
+            BufferSnapshotStateForTest::default()
+        );
     }
+}
+
+#[test]
+fn test_chunked_buffer_snapshot_waits_for_disposal_capacity_before_copying() {
+    ensure_gtk_init();
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    buffer.set_text(&"x".repeat(200_000));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let outcomes_for_callback = Rc::clone(&outcomes);
+
+    let handle = snapshot_buffer_text_async_for_test(buffer, None, None, move |outcome| {
+        outcomes_for_callback.borrow_mut().push(outcome);
+    });
+
+    let pending = handle.state_for_test();
+    assert!(pending.active);
+    assert!(pending.admission_retry_source_live);
+    assert!(pending.callback_pending);
+    assert!(!pending.progress_mark_live);
+    assert!(!pending.changed_handler_live);
+    assert!(!pending.scheduled_source_live);
+    assert_eq!(pending.slice_count, 0);
+    assert_eq!(pending.chunk_count, 0);
+    assert_eq!(pending.captured_bytes, 0);
+    assert!(outcomes.borrow().is_empty());
+
+    drop(capacity_hold);
+    wait_until(Duration::from_secs(10), || !outcomes.borrow().is_empty());
+
+    assert!(matches!(
+        outcomes.borrow().as_slice(),
+        [BufferSnapshotOutcome::Captured(payload)]
+            if snapshot_payload_metrics_for_test(payload).captured_bytes == 200_000
+    ));
+    assert_eq!(
+        handle.state_for_test(),
+        BufferSnapshotStateForTest::default()
+    );
+}
+
+#[test]
+fn test_chunked_buffer_snapshot_capacity_wait_is_explicitly_cancellable() {
+    ensure_gtk_init();
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    buffer.set_text(&"x".repeat(200_000));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let outcomes_for_callback = Rc::clone(&outcomes);
+    let handle = snapshot_buffer_text_async_for_test(buffer, None, None, move |outcome| {
+        outcomes_for_callback.borrow_mut().push(outcome);
+    });
+
+    handle.cancel_for_test();
+    assert!(outcomes.borrow().is_empty());
+    wait_until(Duration::from_secs(5), || !outcomes.borrow().is_empty());
+
+    assert_eq!(
+        outcomes.borrow().as_slice(),
+        &[BufferSnapshotOutcome::Cancelled(
+            BufferSnapshotCancelReason::Superseded
+        )]
+    );
+    assert_eq!(
+        handle.state_for_test(),
+        BufferSnapshotStateForTest::default()
+    );
+    drop(capacity_hold);
 }
 
 #[test]
@@ -1883,6 +2268,85 @@ fn test_chunked_buffer_snapshot_rejects_final_slice_mutation_once() {
         handle.state_for_test(),
         BufferSnapshotStateForTest::default()
     );
+}
+
+#[test]
+fn test_large_ascii_and_multibyte_snapshots_use_bounded_chunks_and_worker_coalescing() {
+    ensure_gtk_init();
+
+    for (source, expected_character, expected_char_count) in [
+        ("a".repeat(11 * 1024 * 1024), 'a', 11 * 1024 * 1024),
+        ("é".repeat(6 * 1024 * 1024), 'é', 6 * 1024 * 1024),
+    ] {
+        let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+        let expected_bytes = source.len();
+        buffer.set_text(&source);
+        drop(source);
+
+        let before = buffer_snapshot_counters_for_test();
+        let sentinel_ran = Rc::new(Cell::new(false));
+        glib::idle_add_local_once({
+            let sentinel_ran = Rc::clone(&sentinel_ran);
+            move || sentinel_ran.set(true)
+        });
+        let verification = Rc::new(RefCell::new(None));
+        let verification_for_callback = Rc::clone(&verification);
+        let sentinel_for_callback = Rc::clone(&sentinel_ran);
+        let metrics = Rc::new(RefCell::new(None));
+        let metrics_for_callback = Rc::clone(&metrics);
+        let handle = snapshot_buffer_text_async_for_test(buffer, None, None, move |outcome| {
+            let BufferSnapshotOutcome::Captured(payload) = outcome else {
+                panic!("large snapshot should complete");
+            };
+            metrics_for_callback.replace(Some(snapshot_payload_metrics_for_test(&payload)));
+            spawn_blocking_then(
+                (),
+                move || {
+                    let text = coalesce_snapshot_payload_for_test(payload);
+                    (
+                        text.len() == expected_bytes
+                            && text.chars().count() == expected_char_count
+                            && text
+                                .chars()
+                                .all(|character| character == expected_character),
+                        text.len(),
+                    )
+                },
+                move |(), result| {
+                    verification_for_callback.replace(Some((
+                        result.0,
+                        result.1,
+                        sentinel_for_callback.get(),
+                    )));
+                },
+            );
+        });
+
+        wait_until(Duration::from_secs(20), || verification.borrow().is_some());
+        let (exact, actual_bytes, sentinel_before_completion) = verification
+            .borrow_mut()
+            .take()
+            .expect("worker verification");
+        assert!(exact);
+        assert_eq!(actual_bytes, expected_bytes);
+        assert!(sentinel_before_completion);
+        let metrics = metrics.borrow_mut().take().expect("snapshot metrics");
+        assert!(metrics.slice_count > 1);
+        assert_eq!(metrics.chunk_count, metrics.slice_count);
+        assert!(metrics.reserved_chunk_capacity >= metrics.chunk_count);
+        assert!(metrics.max_chunk_bytes <= 256 * 1024);
+        assert_eq!(metrics.captured_bytes, expected_bytes as u64);
+        assert_eq!(
+            handle.state_for_test(),
+            BufferSnapshotStateForTest::default()
+        );
+
+        let after = buffer_snapshot_counters_for_test();
+        assert_eq!(after.gtk_coalesces, before.gtk_coalesces);
+        assert_eq!(after.gtk_drops, before.gtk_drops);
+        assert!(after.worker_coalesces > before.worker_coalesces);
+        assert!(after.worker_drops > before.worker_drops);
+    }
 }
 
 #[test]
@@ -1932,12 +2396,10 @@ fn test_chunked_buffer_snapshot_overflow_and_disposal_are_terminal_and_leak_free
     overflow_buffer.set_text(&"x".repeat(200_000));
     let overflow_outcomes = Rc::new(RefCell::new(Vec::new()));
     let outcomes_for_callback = Rc::clone(&overflow_outcomes);
-    let overflow_handle = snapshot_buffer_text_async_for_test(
-        overflow_buffer,
-        Some(10),
-        None,
-        move |outcome| outcomes_for_callback.borrow_mut().push(outcome),
-    );
+    let overflow_handle =
+        snapshot_buffer_text_async_for_test(overflow_buffer, Some(10), None, move |outcome| {
+            outcomes_for_callback.borrow_mut().push(outcome);
+        });
     assert!(matches!(
         overflow_outcomes.borrow().as_slice(),
         [BufferSnapshotOutcome::ExceededLimit {
@@ -1954,16 +2416,16 @@ fn test_chunked_buffer_snapshot_overflow_and_disposal_are_terminal_and_leak_free
     let deleted_marks = Rc::new(Cell::new(0));
     disposed_buffer.connect_mark_deleted({
         let deleted_marks = Rc::clone(&deleted_marks);
-        move |_, _| deleted_marks.set(deleted_marks.get() + 1)
+        move |_, _| {
+            deleted_marks.set(deleted_marks.get() + 1);
+        }
     });
     let callback_count = Rc::new(Cell::new(0));
     let callback_count_for_snapshot = Rc::clone(&callback_count);
-    let disposed_handle = snapshot_buffer_text_async_for_test(
-        disposed_buffer,
-        None,
-        None,
-        move |_| callback_count_for_snapshot.set(callback_count_for_snapshot.get() + 1),
-    );
+    let disposed_handle =
+        snapshot_buffer_text_async_for_test(disposed_buffer, None, None, move |_| {
+            callback_count_for_snapshot.set(callback_count_for_snapshot.get() + 1);
+        });
     assert!(disposed_handle.state_for_test().scheduled_source_live);
 
     disposed_handle.dispose_for_test();
@@ -2169,7 +2631,8 @@ fn test_minimap_native_viewport_effect_projects_inside_source_map() {
         .set_boolean(keys::WORD_WRAP, false)
         .expect("disable word wrap");
     let page = LushtextEditorPage::new();
-    page.buffer().set_text(&minimap_test_document(120, &[], &[]));
+    page.buffer()
+        .set_text(&minimap_test_document(120, &[], &[]));
     let _window = present_editor_page_with_size(&page, 1000, 700);
     wait_for_minimap_ready(&page);
 
@@ -2216,7 +2679,8 @@ fn test_minimap_viewport_top_delta_to_first_content_row_survives_width_changes()
             .set_boolean(keys::WORD_WRAP, false)
             .expect("disable word wrap");
         let page = LushtextEditorPage::new();
-        page.buffer().set_text(&minimap_test_document(140, &[], &[]));
+        page.buffer()
+            .set_text(&minimap_test_document(140, &[], &[]));
         let _window = present_editor_page_with_size(&page, width, 700);
         wait_for_minimap_ready(&page);
 
@@ -2248,7 +2712,8 @@ fn test_minimap_native_viewport_effect_reprojects_after_mid_file_scroll() {
         .set_boolean(keys::WORD_WRAP, false)
         .expect("disable word wrap");
     let page = LushtextEditorPage::new();
-    page.buffer().set_text(&minimap_test_document(260, &[], &[]));
+    page.buffer()
+        .set_text(&minimap_test_document(260, &[], &[]));
     let _window = present_editor_page_with_size(&page, 1000, 700);
     wait_for_minimap_ready(&page);
 
@@ -2580,14 +3045,18 @@ fn test_bookmark_toggle_and_navigation() {
     let buffer = page.buffer();
     buffer.set_text("one\ntwo\nthree\nfour\nfive\n");
 
-    let line_two = buffer.iter_at_line(1).expect("expected operation to succeed");
+    let line_two = buffer
+        .iter_at_line(1)
+        .expect("expected operation to succeed");
     buffer.place_cursor(&line_two);
     assert_eq!(
         page.toggle_bookmark_at_cursor(),
         BookmarkToggleState::Added(1)
     );
 
-    let line_five = buffer.iter_at_line(4).expect("expected operation to succeed");
+    let line_five = buffer
+        .iter_at_line(4)
+        .expect("expected operation to succeed");
     buffer.place_cursor(&line_five);
     assert_eq!(
         page.toggle_bookmark_at_cursor(),
@@ -2602,7 +3071,9 @@ fn test_bookmark_toggle_and_navigation() {
         vec![1, 4]
     );
 
-    let line_one = buffer.iter_at_line(0).expect("expected operation to succeed");
+    let line_one = buffer
+        .iter_at_line(0)
+        .expect("expected operation to succeed");
     buffer.place_cursor(&line_one);
     let jumped = page
         .navigate_bookmark(BookmarkNavigationDirection::Next)
@@ -2817,17 +3288,11 @@ fn test_warning_inline_alert_wraps_titles_and_action_labels() {
     assert!(imp.alert_title.wraps(), "warning title should wrap");
     assert_eq!(imp.alert_title.wrap_mode(), gtk4::pango::WrapMode::WordChar);
     assert!(imp.alert_body.wraps(), "warning body should wrap");
-    assert_eq!(
-        imp.alert_body.wrap_mode(),
-        gtk4::pango::WrapMode::WordChar
-    );
+    assert_eq!(imp.alert_body.wrap_mode(), gtk4::pango::WrapMode::WordChar);
 
     let discard_label = button_label(&imp.discard_button);
     assert!(discard_label.wraps(), "discard action label should wrap");
-    assert_eq!(
-        discard_label.wrap_mode(),
-        gtk4::pango::WrapMode::WordChar
-    );
+    assert_eq!(discard_label.wrap_mode(), gtk4::pango::WrapMode::WordChar);
     assert_eq!(
         discard_label.justify(),
         gtk4::Justification::Center,
@@ -3394,12 +3859,7 @@ fn test_bounded_buffer_replacement_supersession_publishes_only_latest_body() {
         first_current,
         Rc::clone(&outcomes),
     );
-    page.replace_buffer_for_test(
-        latest.clone(),
-        11,
-        latest_current,
-        Rc::clone(&outcomes),
-    );
+    page.replace_buffer_for_test(latest.clone(), 11, latest_current, Rc::clone(&outcomes));
     wait_until(Duration::from_secs(10), || outcomes.borrow().len() == 2);
 
     assert_eq!(editor_buffer_text(&page), latest);
@@ -3416,7 +3876,10 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
     page.buffer().set_text(initial);
     page.buffer().set_modified(false);
     let outcomes = Rc::new(RefCell::new(Vec::new()));
-    let latest = format!("latest-{expected_first_signal}-🙂{}", "z".repeat(1024 * 1024));
+    let latest = format!(
+        "latest-{expected_first_signal}-🙂{}",
+        "z".repeat(1024 * 1024)
+    );
     let armed = Rc::new(Cell::new(true));
     let signal_count = Rc::new(Cell::new(0u64));
 
@@ -3438,7 +3901,10 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
     });
 
     page.replace_buffer_for_test(
-        format!("obsolete-{expected_first_signal}-{}", "x".repeat(1024 * 1024)),
+        format!(
+            "obsolete-{expected_first_signal}-{}",
+            "x".repeat(1024 * 1024)
+        ),
         30,
         Rc::new(Cell::new(true)),
         Rc::clone(&outcomes),

@@ -4,7 +4,7 @@
 TBD - created by archiving change data-home-persistence-contracts. Update Purpose after archive.
 ## Requirements
 ### Requirement: Dirty editors persist draft content under the app data directory
-The system SHALL persist unsaved content for modified editors under `$XDG_DATA_HOME/lushtext/drafts/`. File-backed drafts MUST store draft content as UTF-8 text plus manifest metadata that includes the original path and backing-file mtime, and untitled tabs MUST store draft content using a stable generated draft ID.
+The system SHALL persist unsaved content for modified editors under `$XDG_DATA_HOME/lushtext/drafts/`. File-backed drafts MUST store draft content as UTF-8 text plus manifest metadata that includes the original path and backing-file mtime, and untitled tabs MUST store draft content using a stable generated draft ID. A newly created untitled tab's ID MUST be collision-resistant without depending on startup session descriptors having already reached the window.
 
 #### Scenario: Autosave persists a file-backed dirty tab
 - **WHEN** a file-backed tab remains modified long enough for the background draft sweep to run
@@ -15,6 +15,11 @@ The system SHALL persist unsaved content for modified editors under `$XDG_DATA_H
 - **WHEN** an untitled tab remains modified long enough for the background draft sweep to run
 - **THEN** the system writes or updates a draft file for that tab under the drafts directory
 - **AND** the draft manifest records the untitled tab's generated draft ID without requiring a backing file path
+
+#### Scenario: Untitled tab is created before persisted descriptors arrive
+- **WHEN** startup recovery is deferred while a persisted untitled tab already owns a counter-shaped draft ID
+- **THEN** a newly created untitled tab receives an independently collision-resistant identity
+- **AND** autosave plus an early close preserve both draft bodies and both session descriptors
 
 #### Scenario: Window close flushes dirty drafts before exit
 - **WHEN** the user closes the window while modified editors still have unsaved draft state
@@ -152,6 +157,30 @@ The system SHALL attempt conservative draft manifest repair when the manifest is
 - **WHEN** the system writes a repaired draft manifest
 - **THEN** the repaired manifest is written through the durable JSON path
 - **AND** failed repair writes leave the original draft files eligible for later recovery
+
+### Requirement: Incomplete manifest repair never becomes cleanup authority
+The system SHALL distinguish a complete draft-body inventory from a bounded partial repair result. A repaired draft manifest MUST be persisted as authoritative only after directory traversal reaches a trusted terminal state and every discovered body is represented or conservatively classified. When completeness cannot be proven, every workflow that could replace the manifest MUST either complete a fresh reconciliation first or fail retryably without clearing dirty draft state, and orphan cleanup MUST remain disabled across later startups.
+
+#### Scenario: Repair spans more than one directory page
+- **WHEN** a missing or malformed manifest is repaired from more draft bodies than one bounded scan page can contain
+- **THEN** repair continues through bounded pages until it proves a complete inventory
+- **AND** any persisted repaired manifest represents every discovered body before cleanup becomes eligible
+
+#### Scenario: Repair cannot prove completeness
+- **WHEN** directory scanning, body classification, or manifest-capacity validation stops before a complete inventory is proven
+- **THEN** the system preserves every draft body and reports a bounded partial-repair diagnostic
+- **AND** it does not persist the partial subset as an authoritative clean manifest
+- **AND** later autosave, session, deletion, and cleanup paths cannot forget the untrusted state by replacing the manifest with that subset
+
+#### Scenario: Partial repair survives repeated startup
+- **WHEN** startup encounters an incomplete repair state, exits, and starts again before a complete reconciliation succeeds
+- **THEN** the later startup still treats orphan cleanup as untrusted
+- **AND** draft bodies omitted from the earlier bounded page remain undeleted and eligible for recovery
+
+#### Scenario: Complete reconciliation restores normal cleanup
+- **WHEN** a later bounded repair pass reaches a trusted terminal inventory and durably writes the complete manifest
+- **THEN** manifest writers may resume their normal serialized updates
+- **AND** orphan cleanup may resume only from that complete latest manifest with its existing fingerprint and stable-target guards
 
 ### Requirement: First-dirty draft autosave reduces the crash-loss window
 The system SHALL schedule a short first-dirty draft autosave after an editor first becomes draft-dirty in an editing cycle, in addition to the existing periodic autosave timer. The first-dirty path MUST reuse the existing chunked snapshot, background write, generation guard, and retry behavior.
@@ -493,3 +522,14 @@ The system SHALL assign monotonically ordered intent to draft autosave upserts a
 - **WHEN** a draft body, manifest upsert, or deletion operation fails
 - **THEN** the workflow reports the failure without marking an uncommitted generation protected
 - **AND** retry preserves the same intent order and the existing one-complete-body bound
+
+#### Scenario: Draft body deletion fails before manifest retirement
+- **WHEN** a requested deletion cannot remove the corresponding draft body
+- **THEN** the persisted manifest entry remains as a durable recovery marker and the window retains its current deletion tombstone
+- **AND** unrelated manifest mutations and a later startup still observe a complete recoverable pre-delete state
+- **AND** a later retry removes the body before retiring the manifest entry, without reconstructing an untitled entry or rejecting a file-backed body as ambiguous
+
+#### Scenario: Manifest retirement fails after body deletion
+- **WHEN** the body is absent but the manifest removal cannot be durably committed
+- **THEN** the current tombstone remains retryable instead of reporting deletion terminal
+- **AND** a later retry carries explicit removal intent through reconciliation until the missing-body entry is durably retired

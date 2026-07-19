@@ -8,14 +8,15 @@ use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow
 use crate::services::palette::{
     FileIndex, GroupedSearchInput, PaletteSearchCancellation, PaletteSearchOutcome, grouped_search,
 };
+use crate::ui::plain_disposal::DisposalOwned;
 
 /// One compact query plus shared source snapshots retained by the latest slot.
 pub(super) struct CommandPaletteSearchRequest {
     pub query: Arc<str>,
     pub mode: SearchMode,
-    pub index: Arc<FileIndex>,
+    pub index: Arc<DisposalOwned<FileIndex>>,
     pub open_tabs: Arc<[PaletteFileEntry]>,
-    pub note_entries: Arc<[PaletteNoteEntry]>,
+    pub note_entries: Arc<DisposalOwned<Box<[PaletteNoteEntry]>>>,
     pub workspace_group_label: Arc<str>,
 }
 
@@ -27,9 +28,9 @@ pub(super) fn execute_search(
     delay_search_for_test();
     grouped_search(
         GroupedSearchInput {
-            index: &request.index,
+            index: request.index.as_ref(),
             open_tabs: &request.open_tabs,
-            note_entries: &request.note_entries,
+            note_entries: request.note_entries.as_ref(),
             workspace_group_label: &request.workspace_group_label,
             query: &request.query,
             mode: request.mode,

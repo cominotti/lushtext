@@ -39,9 +39,11 @@ use gtk4::prelude::*;
 pub use crate::services::editor_io::EditorSaveError;
 #[cfg(feature = "test-utils")]
 pub use crate::ui::buffer_snapshot::{
-    BufferSnapshotCancelReason, BufferSnapshotHandle, BufferSnapshotOutcome,
-    BufferSnapshotStateForTest, BufferSnapshotTestEdit, BufferSnapshotTestMutation,
-    BufferSnapshotTestTrigger, snapshot_buffer_text_async_for_test,
+    BufferSnapshotCancelReason, BufferSnapshotCountersForTest, BufferSnapshotHandle,
+    BufferSnapshotMetrics, BufferSnapshotOutcome, BufferSnapshotStateForTest,
+    BufferSnapshotTestEdit, BufferSnapshotTestMutation, BufferSnapshotTestTrigger,
+    buffer_snapshot_counters_for_test, coalesce_snapshot_payload_for_test,
+    snapshot_buffer_text_async_for_test, snapshot_payload_metrics_for_test,
 };
 pub use bookmarks::{
     BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
@@ -60,6 +62,8 @@ pub use imp::{EditorLoadState, PendingWarningAction};
 pub use local_history::{
     set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
 };
+#[cfg(feature = "test-utils")]
+pub use minimap::MinimapAnalysisSnapshot;
 pub(crate) use minimap::{
     MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
 };
@@ -598,10 +602,14 @@ impl LushtextEditorPage {
         bookmarks::bookmark_records(self)
     }
 
-    /// Snapshot at most `max_records` live bookmarks for compact background requests.
+    /// Snapshot live bookmarks without exceeding a retained request-byte budget.
     #[must_use]
-    pub(crate) fn bookmark_records_bounded(&self, max_records: usize) -> Vec<BookmarkRecord> {
-        bookmarks::bookmark_records_bounded(self, max_records)
+    pub(crate) fn bookmark_records_bounded_by_retained_bytes(
+        &self,
+        max_records: usize,
+        max_retained_bytes: u64,
+    ) -> (Vec<BookmarkRecord>, u64, bool) {
+        bookmarks::bookmark_records_bounded_by_retained_bytes(self, max_records, max_retained_bytes)
     }
 
     /// Snapshot the live bookmark projection generation for async race guards.

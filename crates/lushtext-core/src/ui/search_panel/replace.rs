@@ -10,8 +10,10 @@ use crate::model::content_search::{
     ReplacePreviewBudget, ReplacePreviewOutcome, ReplacePreviewSkipReason, Replacement,
     SearchMatchId, SearchQuerySpec, generate_replacement_preview_with_budget_and_cancel,
 };
-use crate::services::content_search::ReplaceJournalFreshness;
-use crate::services::content_search::ReplaceUndoBackup;
+use crate::services::content_search::{
+    MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceJournalFreshness, ReplaceUndoBackup,
+    replace_undo_retained_byte_weight,
+};
 use crate::services::{json_store, search_backup};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
@@ -20,7 +22,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::LushtextSearchPanel;
 
@@ -33,10 +35,91 @@ pub(super) struct ReplacePreviewRequest {
 }
 
 struct PersistedUndoStartupLoad {
-    active_backup: Option<ReplaceUndoBackup>,
+    active_backup: Option<super::GuardedReplaceUndoBackup>,
+}
+
+struct PreviewRetirementTerminal(Arc<AtomicUsize>);
+
+impl Drop for PreviewRetirementTerminal {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn retained_byte_weight(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+fn preview_reservation_weight(budget: ReplacePreviewBudget) -> u64 {
+    retained_byte_weight(budget.max_bytes).saturating_add(retained_byte_weight(
+        budget.max_rows.saturating_mul(
+            std::mem::size_of::<Replacement>()
+                .saturating_add(std::mem::size_of::<Option<usize>>())
+                .saturating_add(std::mem::size_of::<SearchMatchId>()),
+        ),
+    ))
+}
+
+fn completed_preview_reservation_weight(outcome: &ReplacePreviewOutcome) -> u64 {
+    retained_byte_weight(outcome.charged_bytes)
+        .saturating_add(retained_byte_weight(
+            outcome
+                .replacements
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Replacement>()),
+        ))
+        .saturating_add(retained_byte_weight(
+            outcome
+                .match_to_preview
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Option<usize>>()),
+        ))
+}
+
+#[cfg(feature = "test-utils")]
+pub(crate) fn guard_undo_backup_on_worker(
+    backup: ReplaceUndoBackup,
+) -> Result<super::GuardedReplaceUndoBackup, ReplaceUndoBackup> {
+    let weight = replace_undo_retained_byte_weight(&backup);
+    crate::ui::plain_disposal::try_own_for_gtk(weight, backup)
+}
+
+pub(crate) fn own_reserved_undo_backup(
+    mut reservation: crate::ui::plain_disposal::DisposalReservation,
+    backup: ReplaceUndoBackup,
+) -> super::GuardedReplaceUndoBackup {
+    let retained_bytes = replace_undo_retained_byte_weight(&backup);
+    debug_assert!(retained_bytes <= MAX_REPLACE_UNDO_RETAINED_BYTES);
+    reservation.shrink_to(retained_bytes);
+    reservation.own(backup)
 }
 
 impl LushtextSearchPanel {
+    /// Reserve replacement ownership while every superseded guarded input remains installed.
+    pub(crate) fn try_reserve_undo_replacement(
+        &self,
+        transient_input_weight: Option<u64>,
+    ) -> Option<crate::ui::plain_disposal::DisposalReservation> {
+        let current_weight = self
+            .imp()
+            .preview
+            .undo_backup
+            .borrow()
+            .as_ref()
+            .and_then(|backup| backup.reservation_weight());
+        let replaces_guarded_owner = current_weight.is_some() || transient_input_weight.is_some();
+        let replaced_weight = current_weight
+            .unwrap_or(0)
+            .saturating_add(transient_input_weight.unwrap_or(0));
+        if replaces_guarded_owner {
+            crate::ui::plain_disposal::try_reserve_replacement_for_gtk(
+                MAX_REPLACE_UNDO_RETAINED_BYTES,
+                replaced_weight,
+            )
+        } else {
+            crate::ui::plain_disposal::try_reserve_for_gtk(MAX_REPLACE_UNDO_RETAINED_BYTES)
+        }
+    }
     /// Show the undo button (called after a successful replace).
     pub fn show_undo_button(&self) {
         let imp = self.imp();
@@ -54,16 +137,65 @@ impl LushtextSearchPanel {
     }
 
     /// Store undo backup and persist it as the current retryable journal.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test process has deliberately saturated disposal admission.
+    #[cfg(feature = "test-utils")]
     pub fn set_undo_backup(&self, backup: ReplaceUndoBackup) {
+        let backup = Arc::new(
+            guard_undo_backup_on_worker(backup)
+                .expect("test undo backup should fit disposal admission"),
+        );
+        let (generation, retired) = self.set_undo_backup_in_memory(Arc::clone(&backup));
+        self.save_undo_backup_on_disk(backup, retired, generation);
+    }
+
+    pub(crate) fn set_guarded_undo_backup(&self, backup: super::GuardedReplaceUndoBackup) {
         let backup = Arc::new(backup);
         let (generation, retired) = self.set_undo_backup_in_memory(Arc::clone(&backup));
         self.save_undo_backup_on_disk(backup, retired, generation);
     }
 
     /// Store undo backup after the replace service already wrote per-file journal entries.
-    pub fn set_persisted_undo_backup(&self, backup: ReplaceUndoBackup) {
+    pub(crate) fn set_persisted_guarded_undo_backup(
+        &self,
+        backup: super::GuardedReplaceUndoBackup,
+    ) {
         let (_, retired) = self.set_undo_backup_in_memory(Arc::new(backup));
         Self::retire_undo_backup_off_main(retired);
+    }
+
+    /// Install a service-persisted backup through the widget-test compatibility surface.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test process has deliberately saturated disposal admission.
+    #[cfg(feature = "test-utils")]
+    pub fn set_persisted_undo_backup(&self, backup: ReplaceUndoBackup) {
+        self.set_persisted_guarded_undo_backup(
+            guard_undo_backup_on_worker(backup)
+                .expect("test persisted undo backup should fit disposal admission"),
+        );
+    }
+
+    /// Compare the guarded in-memory journal without exposing its owner type.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn undo_backup_matches_for_test(&self, expected: &ReplaceUndoBackup) -> bool {
+        self.imp()
+            .preview
+            .undo_backup
+            .borrow()
+            .as_ref()
+            .is_some_and(|backup| &***backup == expected)
+    }
+
+    /// Return whether persisted Undo owns its single capacity-retry source.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn undo_capacity_retry_pending_for_test(&self) -> bool {
+        self.imp().preview.undo_capacity_wakeup.is_armed()
     }
 
     /// Reserve the journal generation before Replace All can commit on a worker.
@@ -127,7 +259,7 @@ impl LushtextSearchPanel {
     /// Install a service-persisted journal only for its pre-worker reservation.
     pub(crate) fn set_persisted_undo_backup_for_generation(
         &self,
-        backup: ReplaceUndoBackup,
+        backup: super::GuardedReplaceUndoBackup,
         generation: u32,
     ) -> bool {
         if self
@@ -137,7 +269,7 @@ impl LushtextSearchPanel {
             .load(Ordering::Acquire)
             != generation
         {
-            Self::retire_undo_backup_off_main(Some(Arc::new(backup)));
+            drop(backup);
             return false;
         }
         let retired = self
@@ -167,8 +299,9 @@ impl LushtextSearchPanel {
 
     fn set_undo_backup_in_memory(
         &self,
-        backup: Arc<ReplaceUndoBackup>,
-    ) -> (u32, Option<Arc<ReplaceUndoBackup>>) {
+        backup: Arc<super::GuardedReplaceUndoBackup>,
+    ) -> (u32, Option<Arc<super::GuardedReplaceUndoBackup>>) {
+        self.imp().preview.undo_capacity_wakeup.cancel();
         let previous = self
             .imp()
             .preview
@@ -181,6 +314,14 @@ impl LushtextSearchPanel {
 
     /// Restore a crash-interrupted active journal, or clean inactive stale state.
     pub(crate) fn load_persisted_undo_backup(&self) {
+        let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
+        let Some(reservation) =
+            crate::ui::plain_disposal::try_reserve_for_gtk(MAX_REPLACE_UNDO_RETAINED_BYTES)
+        else {
+            tracing::warn!("Persisted Replace All undo backup deferred by disposal capacity");
+            self.schedule_persisted_undo_backup_retry(observed_epoch);
+            return;
+        };
         let data_dir = json_store::data_dir();
         let generation = self
             .imp()
@@ -200,8 +341,10 @@ impl LushtextSearchPanel {
                 }
                 let recovery = search_backup::load_recovering(&data_dir);
                 if recovery.active {
+                    let backup = recovery.backup;
+                    let active_backup = own_reserved_undo_backup(reservation, backup);
                     return Ok(PersistedUndoStartupLoad {
-                        active_backup: Some(recovery.backup),
+                        active_backup: Some(active_backup),
                     });
                 }
                 let mut diagnostics = recovery.diagnostics;
@@ -217,7 +360,7 @@ impl LushtextSearchPanel {
                         return;
                     }
                     if let Some(backup) = load.active_backup {
-                        panel.set_persisted_undo_backup(backup);
+                        panel.set_persisted_guarded_undo_backup(backup);
                         panel.show_undo_button();
                     }
                 }
@@ -228,8 +371,21 @@ impl LushtextSearchPanel {
         );
     }
 
+    fn schedule_persisted_undo_backup_retry(&self, observed_epoch: u64) {
+        let panel_weak = self.downgrade();
+        self.imp()
+            .preview
+            .undo_capacity_wakeup
+            .arm(observed_epoch, move || {
+                if let Some(panel) = panel_weak.upgrade() {
+                    panel.load_persisted_undo_backup();
+                }
+            });
+    }
+
     /// Clear undo backup and hide the undo button.
     pub(crate) fn clear_undo_backup(&self) {
+        self.imp().preview.undo_capacity_wakeup.cancel();
         let generation = self
             .imp()
             .preview
@@ -256,6 +412,10 @@ impl LushtextSearchPanel {
     }
 
     /// Install a service-persisted backup under a test reservation.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test process has deliberately saturated disposal admission.
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn set_persisted_undo_backup_for_generation_for_test(
@@ -263,7 +423,11 @@ impl LushtextSearchPanel {
         backup: ReplaceUndoBackup,
         generation: u32,
     ) -> bool {
-        self.set_persisted_undo_backup_for_generation(backup, generation)
+        self.set_persisted_undo_backup_for_generation(
+            guard_undo_backup_on_worker(backup)
+                .expect("test persisted undo backup should fit disposal admission"),
+            generation,
+        )
     }
 
     /// Claim the production transaction gate for widget race tests.
@@ -282,8 +446,8 @@ impl LushtextSearchPanel {
 
     fn save_undo_backup_on_disk(
         &self,
-        backup: Arc<ReplaceUndoBackup>,
-        retired: Option<Arc<ReplaceUndoBackup>>,
+        backup: Arc<super::GuardedReplaceUndoBackup>,
+        retired: Option<Arc<super::GuardedReplaceUndoBackup>>,
         generation: u32,
     ) {
         let data_dir = json_store::data_dir();
@@ -297,7 +461,7 @@ impl LushtextSearchPanel {
                 if generation_counter.load(Ordering::Acquire) != generation {
                     return Ok(());
                 }
-                search_backup::save(&data_dir, backup.as_ref())
+                search_backup::save(&data_dir, &backup)
             },
             move |_panel, result| {
                 if let Err(e) = result {
@@ -307,7 +471,11 @@ impl LushtextSearchPanel {
         );
     }
 
-    fn delete_undo_backup_on_disk(&self, generation: u32, retired: Option<Arc<ReplaceUndoBackup>>) {
+    fn delete_undo_backup_on_disk(
+        &self,
+        generation: u32,
+        retired: Option<Arc<super::GuardedReplaceUndoBackup>>,
+    ) {
         let data_dir = json_store::data_dir();
         let generation_counter = self.imp().preview.undo_backup_generation.clone();
         spawn_blocking_then(
@@ -329,14 +497,11 @@ impl LushtextSearchPanel {
         );
     }
 
-    fn retire_undo_backup_off_main(retired: Option<Arc<ReplaceUndoBackup>>) {
+    fn retire_undo_backup_off_main(retired: Option<Arc<super::GuardedReplaceUndoBackup>>) {
         let Some(retired) = retired else {
             return;
         };
-        // The map can own the full 64 MiB undo window. Hand its final reference
-        // to the blocking pool so replacing a persisted backup never releases
-        // that payload on GTK.
-        crate::ui::plain_disposal::spawn(move || drop(retired));
+        drop(retired);
     }
 
     /// Whether the panel is in preview mode.
@@ -393,6 +558,14 @@ impl LushtextSearchPanel {
 
     fn spawn_preview_request(&self, request: ReplacePreviewRequest) {
         let imp = self.imp();
+        let budget = replace_preview_budget();
+        let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
+        let Some(mut reservation) =
+            crate::ui::plain_disposal::try_reserve_for_gtk(preview_reservation_weight(budget))
+        else {
+            self.arm_preview_capacity_retry(request, observed_epoch);
+            return;
+        };
         imp.preview.preview_worker_running.set(true);
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         imp.preview
@@ -404,14 +577,16 @@ impl LushtextSearchPanel {
             self.clone(),
             move || {
                 delay_replace_preview_for_test();
-                generate_replacement_preview_with_budget_and_cancel(
+                let outcome = generate_replacement_preview_with_budget_and_cancel(
                     &request.search_matches,
                     &request.query_spec.query,
                     &request.replacement_text,
                     &request.query_spec.options,
-                    replace_preview_budget(),
+                    budget,
                     || cancel.load(std::sync::atomic::Ordering::Relaxed),
-                )
+                );
+                reservation.shrink_to(completed_preview_reservation_weight(&outcome));
+                reservation.own(outcome)
             },
             move |panel, outcome| {
                 let imp = panel.imp();
@@ -439,32 +614,56 @@ impl LushtextSearchPanel {
                     panel.refresh_accessibility_state();
                     panel.finish_preview_worker();
                 } else {
-                    panel.spawn_preview_plain_retirement(Some(outcome), HashSet::new(), None);
+                    panel.spawn_guarded_preview_retirement(outcome, HashSet::new());
                 }
             },
         );
+    }
+
+    fn arm_preview_capacity_retry(&self, request: ReplacePreviewRequest, observed_epoch: u64) {
+        let imp = self.imp();
+        imp.preview.preview_worker_running.set(true);
+        imp.preview.queued_preview_request.replace(Some(request));
+        let panel_weak = self.downgrade();
+        imp.preview
+            .preview_capacity_wakeup
+            .arm(observed_epoch, move || {
+                let Some(panel) = panel_weak.upgrade() else {
+                    return;
+                };
+                let request = panel.imp().preview.queued_preview_request.take();
+                panel.imp().preview.preview_worker_running.set(false);
+                if let Some(request) = request
+                    && request.generation == panel.imp().preview.preview_generation.get()
+                    && panel.imp().preview.preview_pending.get()
+                {
+                    panel.spawn_preview_request(request);
+                }
+            });
     }
 
     /// Detach accepted preview state in O(1) and release its plain payload on
     /// the same serial worker lane used by preview generation.
     pub(super) fn retire_preview_state(
         &self,
-        outcome: Option<ReplacePreviewOutcome>,
+        outcome: Option<crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>>,
         checked_match_ids: HashSet<SearchMatchId>,
     ) {
         if outcome.is_none() && checked_match_ids.is_empty() {
             return;
         }
-        debug_assert!(!self.imp().preview.preview_worker_running.get());
-        self.imp().preview.preview_worker_running.set(true);
-        self.spawn_preview_plain_retirement(outcome, checked_match_ids, None);
+        if let Some(outcome) = outcome {
+            self.imp().preview.preview_worker_running.set(true);
+            self.spawn_guarded_preview_retirement(outcome, checked_match_ids);
+        } else {
+            drop(checked_match_ids);
+        }
     }
 
-    fn spawn_preview_plain_retirement(
+    fn spawn_guarded_preview_retirement(
         &self,
-        outcome: Option<ReplacePreviewOutcome>,
+        outcome: crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>,
         checked_match_ids: HashSet<SearchMatchId>,
-        request: Option<ReplacePreviewRequest>,
     ) {
         let imp = self.imp();
         imp.preview
@@ -472,31 +671,38 @@ impl LushtextSearchPanel {
             .set(imp.preview.preview_retirement_jobs.get().saturating_add(1));
         let retirement_pending = imp.preview.preview_retirement_pending.clone();
         retirement_pending.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        crate::ui::plain_disposal::spawn_then_main(
-            self.clone(),
-            move || {
-                drop((outcome, checked_match_ids, request));
-                retirement_pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            },
-            |panel| panel.finish_preview_worker(),
-        );
+        let terminal = PreviewRetirementTerminal(retirement_pending);
+        let panel_weak = glib::thread_guard::ThreadGuard::new(self.downgrade());
+        drop(checked_match_ids);
+        drop(outcome.with_disposal_terminal(move || {
+            drop(terminal);
+            glib::idle_add_once(move || {
+                let panel_weak = panel_weak.into_inner();
+                if let Some(panel) = panel_weak.upgrade() {
+                    panel.finish_preview_worker();
+                }
+            });
+        }));
     }
 
-    fn spawn_selected_preview_retirement(&self, selected: Vec<Replacement>) {
+    fn spawn_selected_preview_retirement(&self, selected: super::GuardedReplacements) {
         let imp = self.imp();
         imp.preview
             .preview_retirement_jobs
             .set(imp.preview.preview_retirement_jobs.get().saturating_add(1));
         let retirement_pending = imp.preview.preview_retirement_pending.clone();
         retirement_pending.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        crate::ui::plain_disposal::spawn_then_main(
-            self.clone(),
-            move || {
-                drop(selected);
-                retirement_pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            },
-            |panel| panel.finish_preview_worker(),
-        );
+        let terminal = PreviewRetirementTerminal(retirement_pending);
+        let panel_weak = glib::thread_guard::ThreadGuard::new(self.downgrade());
+        drop(selected.with_disposal_terminal(move || {
+            drop(terminal);
+            glib::idle_add_once(move || {
+                let panel_weak = panel_weak.into_inner();
+                if let Some(panel) = panel_weak.upgrade() {
+                    panel.finish_preview_worker();
+                }
+            });
+        }));
     }
 
     fn finish_preview_worker(&self) {
@@ -508,7 +714,8 @@ impl LushtextSearchPanel {
                 imp.preview.preview_worker_running.set(false);
                 self.spawn_preview_request(request);
             } else {
-                self.spawn_preview_plain_retirement(None, HashSet::new(), Some(request));
+                drop(request);
+                self.finish_preview_worker();
             }
             return;
         }
@@ -519,7 +726,7 @@ impl LushtextSearchPanel {
         &self,
         generation: u32,
         expected_query_spec: SearchQuerySpec,
-        outcome: ReplacePreviewOutcome,
+        outcome: crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>,
         checked_match_ids: HashSet<SearchMatchId>,
     ) {
         let imp = self.imp();
@@ -532,7 +739,9 @@ impl LushtextSearchPanel {
             self.clone(),
             move || {
                 delay_preview_selection_for_test();
-                outcome.into_checked_replacements(&checked_match_ids)
+                outcome.map_preserving_reservation(|outcome| {
+                    outcome.into_checked_replacements(&checked_match_ids)
+                })
             },
             move |panel, selected| {
                 let imp = panel.imp();

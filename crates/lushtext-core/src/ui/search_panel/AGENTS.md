@@ -20,6 +20,13 @@ This folder owns the workspace-wide content search panel adapter.
 - Keep undo backup lifetime bounded to one active recovery lineage. Panel hide, Escape, ordinary app close, and new searches preserve it; successful undo, explicit recovery discard, or a newly accepted Replace All journal may clear or supersede it. After a crash, startup must expose a valid active journal as retryable Undo while cleaning only inactive or malformed state.
 - Serialize Replace All apply and undo behind one panel transaction. Reserve the apply journal generation before worker launch, reject stale reservations while holding the journal coordinator before any journal preparation or file mutation, disable prior Undo during apply, and never allow two service commits to publish out of order.
 - Keep the active undo payload shared by `Arc` across callbacks and move final payload destruction off GTK when the panel replaces, clears, or consumes it; GTK may update only the small visible undo state synchronously.
+- Replace All accounting separates reversible live undo bytes from monotonic
+  high-water evidence. Every pre-rename removal reclaims its exact charge and
+  journal entry; ambiguous post-rename durability keeps both. Replace/Undo may
+  return only exact totals, deterministic 32-entry/32-KiB diagnostic samples,
+  and the affected/restored intersection of paths that were open at worker
+  submission. Undo ingestion stays bounded inside the read so growth races
+  preserve retryable backup state without an unsafe write.
 - Preserve match-navigation and progress-callback contracts with the window shell.
 
 ## Editing Rules

@@ -21,6 +21,10 @@ pub const MAX_SEARCH_MATCH_LINE_BYTES: usize = 4 * 1024;
 pub const MAX_REPLACE_PREVIEW_ROWS: usize = 10_000;
 /// Maximum conservatively charged UTF-8 bytes retained by Replace Preview.
 pub const MAX_REPLACE_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum diagnostic records retained by Replace All or Undo.
+pub const MAX_REPLACE_DIAGNOSTIC_ENTRIES: usize = 32;
+/// Maximum conservative heap bytes retained by Replace All or Undo diagnostics.
+pub const MAX_REPLACE_DIAGNOSTIC_BYTES: usize = 32 * 1024;
 /// ASCII marker added when a search-result line is shortened.
 const SEARCH_MATCH_TRUNCATION_MARKER: &str = " [truncated]";
 
@@ -419,15 +423,185 @@ impl std::ops::Deref for ReplacePreviewOutcome {
     }
 }
 
+/// Reversible byte accounting for the currently retryable Replace All payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UndoPayloadLedger {
+    limit: u64,
+    live_bytes: u64,
+    high_water_bytes: u64,
+}
+
+impl UndoPayloadLedger {
+    #[must_use]
+    pub const fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            live_bytes: 0,
+            high_water_bytes: 0,
+        }
+    }
+
+    /// Charge before retaining one reversible entry. Exact-limit ownership is valid.
+    pub fn try_charge(&mut self, bytes: u64) -> bool {
+        let Some(next) = self.live_bytes.checked_add(bytes) else {
+            return false;
+        };
+        if next > self.limit {
+            return false;
+        }
+        self.live_bytes = next;
+        self.high_water_bytes = self.high_water_bytes.max(next);
+        true
+    }
+
+    /// Reclaim bytes for an entry removed before its target rename.
+    pub fn reclaim(&mut self, bytes: u64) -> u64 {
+        let reclaimed = self.live_bytes.min(bytes);
+        self.live_bytes -= reclaimed;
+        reclaimed
+    }
+
+    #[must_use]
+    pub const fn remaining_bytes(self) -> u64 {
+        self.limit.saturating_sub(self.live_bytes)
+    }
+
+    #[must_use]
+    pub const fn live_bytes(self) -> u64 {
+        self.live_bytes
+    }
+
+    #[must_use]
+    pub const fn high_water_bytes(self) -> u64 {
+        self.high_water_bytes
+    }
+}
+
+/// Exact diagnostic totals plus a deterministic bounded sample.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BoundedDiagnosticSample {
+    total_count: usize,
+    retained_bytes: usize,
+    entries: Vec<String>,
+}
+
+impl BoundedDiagnosticSample {
+    pub fn record(&mut self, message: String) {
+        self.total_count = self.total_count.saturating_add(1);
+        if self.entries.len() == MAX_REPLACE_DIAGNOSTIC_ENTRIES {
+            return;
+        }
+        let vector_shell_charge = if self.entries.capacity() == 0 {
+            MAX_REPLACE_DIAGNOSTIC_ENTRIES.saturating_mul(std::mem::size_of::<String>())
+        } else {
+            0
+        };
+        let weight = vector_shell_charge.saturating_add(message.capacity());
+        if self.retained_bytes.saturating_add(weight) > MAX_REPLACE_DIAGNOSTIC_BYTES {
+            return;
+        }
+        if self.entries.capacity() == 0 {
+            self.entries = Vec::with_capacity(MAX_REPLACE_DIAGNOSTIC_ENTRIES);
+            debug_assert_eq!(self.entries.capacity(), MAX_REPLACE_DIAGNOSTIC_ENTRIES);
+        }
+        self.retained_bytes = self.retained_bytes.saturating_add(weight);
+        self.entries.push(message);
+    }
+
+    pub fn push(&mut self, message: String) {
+        self.record(message);
+    }
+
+    pub fn record_path(&mut self, path: &std::path::Path) {
+        self.record(path.display().to_string());
+    }
+
+    #[must_use]
+    pub const fn total_count(&self) -> usize {
+        self.total_count
+    }
+
+    #[must_use]
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
+    #[must_use]
+    pub const fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+
+    #[must_use]
+    pub const fn omitted_count(&self) -> usize {
+        self.total_count.saturating_sub(self.entries.len())
+    }
+
+    #[must_use]
+    pub fn summary(&self, prefix: &str) -> String {
+        let mut summary = format!("{prefix}: {} issue(s)", self.total_count);
+        let mut rendered_entries = 0usize;
+        if let Some(first) = self.entries.first() {
+            summary.push_str("; first: ");
+            summary.push_str(first);
+            rendered_entries = 1;
+        }
+        let unrendered_count = self.total_count.saturating_sub(rendered_entries);
+        if unrendered_count > 0 {
+            summary.push_str(&format!("; {unrendered_count} more omitted"));
+        }
+        summary
+    }
+}
+
+impl Clone for BoundedDiagnosticSample {
+    fn clone(&self) -> Self {
+        let mut entries = if self.entries.is_empty() {
+            Vec::new()
+        } else {
+            Vec::with_capacity(MAX_REPLACE_DIAGNOSTIC_ENTRIES)
+        };
+        entries.extend(self.entries.iter().cloned());
+        let retained_bytes = entries
+            .capacity()
+            .saturating_mul(std::mem::size_of::<String>())
+            .saturating_add(
+                entries
+                    .iter()
+                    .map(String::capacity)
+                    .fold(0usize, usize::saturating_add),
+            );
+        debug_assert!(retained_bytes <= MAX_REPLACE_DIAGNOSTIC_BYTES);
+        Self {
+            total_count: self.total_count,
+            retained_bytes,
+            entries,
+        }
+    }
+}
+
+impl std::ops::Deref for BoundedDiagnosticSample {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        self.entries()
+    }
+}
+
 /// Result of a Replace All operation.
 #[derive(Debug)]
 pub struct ReplaceResult {
     pub replaced_count: usize,
     pub files_affected: usize,
-    /// Paths of files that were skipped (e.g., open with unsaved modifications).
-    pub skipped_paths: Vec<PathBuf>,
-    /// Per-file errors encountered during replace (non-fatal — other files still processed).
-    pub errors: Vec<String>,
+    /// Exact number of files skipped without mutation.
+    pub skipped_count: usize,
+    /// Exact number of non-fatal failures encountered.
+    pub error_count: usize,
+    /// Bounded deterministic paths for skipped targets.
+    pub skipped_sample: BoundedDiagnosticSample,
+    /// Bounded deterministic failure messages; never includes document text.
+    pub error_sample: BoundedDiagnosticSample,
+    /// Successfully affected paths intersected with the caller's open identities.
+    pub affected_open_paths: Vec<PathBuf>,
 }
 
 /// Generate replacement previews from search matches.
@@ -1338,5 +1512,68 @@ mod tests {
         assert_eq!(json["glob"], "*.rs");
         assert!(json.get("spec").is_none());
         assert!(json.get("options").is_none());
+    }
+
+    #[test]
+    fn undo_payload_ledger_reclaims_live_bytes_without_lowering_high_water() {
+        let mut ledger = UndoPayloadLedger::new(10);
+        assert!(ledger.try_charge(4));
+        assert!(ledger.try_charge(6));
+        assert_eq!(ledger.live_bytes(), 10);
+        assert_eq!(ledger.high_water_bytes(), 10);
+        assert!(!ledger.try_charge(1));
+        assert!(!ledger.try_charge(u64::MAX));
+        assert_eq!(ledger.reclaim(4), 4);
+        assert_eq!(ledger.live_bytes(), 6);
+        assert_eq!(ledger.high_water_bytes(), 10);
+        assert!(ledger.try_charge(4));
+        assert_eq!(ledger.reclaim(99), 10);
+        assert_eq!(ledger.live_bytes(), 0);
+        assert_eq!(ledger.high_water_bytes(), 10);
+    }
+
+    #[test]
+    fn diagnostic_sample_keeps_exact_totals_under_count_and_byte_caps() {
+        let mut sample = BoundedDiagnosticSample::default();
+        for index in 0..10_000 {
+            sample.record(format!("/workspace/path-{index:05}: failed"));
+        }
+
+        assert_eq!(sample.total_count(), 10_000);
+        assert_eq!(sample.entries().len(), MAX_REPLACE_DIAGNOSTIC_ENTRIES);
+        assert!(sample.retained_bytes() <= MAX_REPLACE_DIAGNOSTIC_BYTES);
+        assert_eq!(sample.omitted_count(), 10_000 - sample.entries().len());
+        assert_eq!(
+            sample.entries().first().map(String::as_str),
+            Some("/workspace/path-00000: failed")
+        );
+
+        let vector_shell = MAX_REPLACE_DIAGNOSTIC_ENTRIES * std::mem::size_of::<String>();
+        let exact_message_capacity = MAX_REPLACE_DIAGNOSTIC_BYTES - vector_shell;
+        let exact_message = String::with_capacity(exact_message_capacity);
+        assert_eq!(exact_message.capacity(), exact_message_capacity);
+        let mut exact = BoundedDiagnosticSample::default();
+        exact.record(exact_message);
+        assert_eq!(exact.entries().len(), 1);
+        assert_eq!(exact.retained_bytes(), MAX_REPLACE_DIAGNOSTIC_BYTES);
+        let cloned = exact.clone();
+        assert_eq!(cloned.entries(), exact.entries());
+        assert!(cloned.retained_bytes() <= MAX_REPLACE_DIAGNOSTIC_BYTES);
+
+        let mut one_over = BoundedDiagnosticSample::default();
+        one_over.record(String::with_capacity(
+            exact_message_capacity.saturating_add(1),
+        ));
+        assert_eq!(one_over.total_count(), 1);
+        assert!(one_over.entries().is_empty());
+        assert_eq!(one_over.retained_bytes(), 0);
+
+        let mut hostile_capacity = String::with_capacity(MAX_REPLACE_DIAGNOSTIC_BYTES * 4);
+        hostile_capacity.push('x');
+        let mut hostile = BoundedDiagnosticSample::default();
+        hostile.record(hostile_capacity);
+        assert_eq!(hostile.total_count(), 1);
+        assert!(hostile.entries().is_empty());
+        assert_eq!(hostile.retained_bytes(), 0);
     }
 }

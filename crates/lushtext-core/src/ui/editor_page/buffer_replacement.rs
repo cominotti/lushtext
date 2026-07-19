@@ -7,6 +7,7 @@
 //! bounded clear/insert turns, supersession, and exact terminal cleanup.
 
 use std::cell::RefCell;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -22,7 +23,53 @@ use super::LushtextEditorPage;
 
 type FreshnessCheck = Box<dyn Fn(&LushtextEditorPage) -> bool>;
 type TerminalCallback = Box<dyn FnOnce(BufferReplacementOutcome)>;
-type CancelledBodyCallback = Box<dyn FnOnce(String)>;
+type CompletedGuardedBodyCallback =
+    Box<dyn FnOnce(crate::ui::plain_disposal::DisposalOwned<String>)>;
+
+enum ReplacementBody {
+    Plain(String),
+    Guarded(crate::ui::plain_disposal::DisposalOwned<String>),
+}
+
+impl Default for ReplacementBody {
+    fn default() -> Self {
+        Self::Plain(String::new())
+    }
+}
+
+impl Deref for ReplacementBody {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Plain(body) => body,
+            Self::Guarded(body) => body,
+        }
+    }
+}
+
+enum CancelledBodyCallback {
+    #[cfg(any(test, feature = "test-utils"))]
+    Plain(Box<dyn FnOnce(String)>),
+    Guarded(Box<dyn FnOnce(crate::ui::plain_disposal::DisposalOwned<String>)>),
+}
+
+impl CancelledBodyCallback {
+    fn return_body(self, body: ReplacementBody) {
+        match (self, body) {
+            #[cfg(any(test, feature = "test-utils"))]
+            (Self::Plain(callback), ReplacementBody::Plain(body)) => callback(body),
+            (Self::Guarded(callback), ReplacementBody::Guarded(body)) => callback(body),
+            #[cfg(any(test, feature = "test-utils"))]
+            (Self::Plain(callback), ReplacementBody::Guarded(body)) => {
+                callback(body.into_inner_for_current_install());
+            }
+            (Self::Guarded(_), ReplacementBody::Plain(_)) => {
+                unreachable!("guarded cancellation callback requires a guarded body")
+            }
+        }
+    }
+}
 
 /// Workflow family that owns one replacement ticket.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,10 +152,11 @@ impl BufferReplacementOutcome {
 /// One complete replacement request; pending ownership never contains GTK objects.
 pub struct BufferReplacementRequest {
     ticket: BufferReplacementTicket,
-    body: String,
+    body: ReplacementBody,
     is_current: FreshnessCheck,
     callback: TerminalCallback,
     cancelled_body: Option<CancelledBodyCallback>,
+    completed_guarded_body: Option<CompletedGuardedBodyCallback>,
 }
 
 impl BufferReplacementRequest {
@@ -120,16 +168,53 @@ impl BufferReplacementRequest {
     ) -> Self {
         Self {
             ticket,
-            body,
+            body: ReplacementBody::Plain(body),
             is_current: Box::new(is_current),
             callback: Box::new(callback),
             cancelled_body: None,
+            completed_guarded_body: None,
         }
     }
 
     /// Return the uninstalled source body immediately when this request cancels.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn return_body_on_cancel(mut self, callback: impl FnOnce(String) + 'static) -> Self {
-        self.cancelled_body = Some(Box::new(callback));
+        self.cancelled_body = Some(CancelledBodyCallback::Plain(Box::new(callback)));
+        self
+    }
+
+    /// Build a replacement whose final source owner remains pre-admitted for worker disposal.
+    pub(crate) fn new_guarded(
+        ticket: BufferReplacementTicket,
+        body: crate::ui::plain_disposal::DisposalOwned<String>,
+        is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
+        callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+    ) -> Self {
+        Self {
+            ticket,
+            body: ReplacementBody::Guarded(body),
+            is_current: Box::new(is_current),
+            callback: Box::new(callback),
+            cancelled_body: None,
+            completed_guarded_body: None,
+        }
+    }
+
+    /// Return one cancelled guarded body without releasing its disposal reservation.
+    pub(crate) fn return_guarded_body_on_cancel(
+        mut self,
+        callback: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
+    ) -> Self {
+        self.cancelled_body = Some(CancelledBodyCallback::Guarded(Box::new(callback)));
+        self
+    }
+
+    /// Preserve an installed guarded source for an accepted workflow cache.
+    pub(crate) fn return_guarded_body_on_complete(
+        mut self,
+        callback: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
+    ) -> Self {
+        self.completed_guarded_body = Some(Box::new(callback));
         self
     }
 }
@@ -157,11 +242,12 @@ pub(crate) struct BufferReplacementSession {
     editor: glib::WeakRef<LushtextEditorPage>,
     buffer: sourceview5::Buffer,
     ticket: BufferReplacementTicket,
-    body: Option<String>,
+    body: Option<ReplacementBody>,
     byte_offset: usize,
     is_current: FreshnessCheck,
     callback: Option<TerminalCallback>,
     cancelled_body: Option<CancelledBodyCallback>,
+    completed_guarded_body: Option<CompletedGuardedBodyCallback>,
     source_id: Option<glib::SourceId>,
     guard: Option<ReplacementGuard>,
     phase: ReplacementPhase,
@@ -326,7 +412,7 @@ fn run_insert_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
             let cancelled_body = state.cancelled_body.take();
             drop(state);
             if let Some(cancelled_body) = cancelled_body {
-                cancelled_body(body);
+                cancelled_body.return_body(body);
             }
             return;
         }
@@ -336,7 +422,7 @@ fn run_insert_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
             let cancelled_body = state.cancelled_body.take();
             drop(state);
             if let Some(cancelled_body) = cancelled_body {
-                cancelled_body(body);
+                cancelled_body.return_body(body);
             }
             return;
         }
@@ -382,7 +468,7 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
         let cancelled_body = state.cancelled_body.take();
         drop(state);
         if let Some(cancelled_body) = cancelled_body {
-            cancelled_body(body);
+            cancelled_body.return_body(body);
         }
         return;
     }
@@ -411,7 +497,7 @@ fn cancel_session(
         (source, state.mutation_started, body, cancelled_body)
     };
     if let (Some(body), Some(cancelled_body)) = (body, cancelled_body) {
-        cancelled_body(body);
+        cancelled_body.return_body(body);
     }
     if let Some(source) = source {
         source.remove();
@@ -451,7 +537,7 @@ fn finish_session(
     session: &Rc<RefCell<BufferReplacementSession>>,
     cancellation: Option<BufferReplacementCancelReason>,
 ) {
-    let (editor, buffer, source, guard, ticket, body, callback, metrics) = {
+    let (editor, buffer, source, guard, ticket, body, callback, completed_guarded_body, metrics) = {
         let mut state = session.borrow_mut();
         if state.terminal {
             return;
@@ -466,6 +552,7 @@ fn finish_session(
             state.ticket,
             state.body.take(),
             state.callback.take(),
+            state.completed_guarded_body.take(),
             state.metrics,
         )
     };
@@ -481,9 +568,20 @@ fn finish_session(
             metrics,
         }
     } else {
+        let body = match body.unwrap_or_default() {
+            ReplacementBody::Plain(body) => body,
+            ReplacementBody::Guarded(body) => {
+                if let Some(callback) = completed_guarded_body {
+                    callback(body);
+                } else {
+                    drop(body);
+                }
+                String::new()
+            }
+        };
         BufferReplacementOutcome::Complete {
             ticket,
-            body: body.unwrap_or_default(),
+            body,
             metrics,
         }
     };
@@ -608,7 +706,7 @@ impl LushtextEditorPage {
             }
             if let Some(replaced) = self.imp().replacement.pending.replace(Some(request)) {
                 if let Some(cancelled_body) = replaced.cancelled_body {
-                    cancelled_body(replaced.body);
+                    cancelled_body.return_body(replaced.body);
                 }
                 (replaced.callback)(BufferReplacementOutcome::Cancelled {
                     ticket: replaced.ticket,
@@ -635,6 +733,7 @@ impl LushtextEditorPage {
             is_current: request.is_current,
             callback: Some(request.callback),
             cancelled_body: request.cancelled_body,
+            completed_guarded_body: request.completed_guarded_body,
             source_id: None,
             guard: Some(guard),
             phase: ReplacementPhase::Clearing,
@@ -660,7 +759,7 @@ impl LushtextEditorPage {
     pub(crate) fn cancel_buffer_replacement_for_dispose(&self) {
         if let Some(pending) = self.imp().replacement.pending.take() {
             if let Some(cancelled_body) = pending.cancelled_body {
-                cancelled_body(pending.body);
+                cancelled_body.return_body(pending.body);
             }
             (pending.callback)(BufferReplacementOutcome::Cancelled {
                 ticket: pending.ticket,

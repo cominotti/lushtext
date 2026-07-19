@@ -65,6 +65,33 @@ pub struct WorkspaceFolderReorderHoverDecision {
     pub accepts_drop: bool,
 }
 
+/// Test-only direct ownership evidence for materialized directory scans.
+#[cfg(feature = "test-utils")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceScanPressureEvidence {
+    pub active_scans: usize,
+    pub pending_scans: usize,
+    pub admission_waiting_scans: usize,
+    pub aggregate_active_tasks: usize,
+    pub aggregate_task_limit: usize,
+    pub aggregate_task_high_water: usize,
+    pub dispatch_queue: usize,
+    pub dispatch_queue_high_water: usize,
+    pub dispatch_batch_high_water: usize,
+    pub active_per_store_high_water: usize,
+    pub pending_per_store_high_water: usize,
+    pub weak_pending_high_water: usize,
+    pub mirror_captures: u64,
+    pub cancellation_requests: u64,
+    pub cancelled_terminals: u64,
+    pub stale_completions: u64,
+    pub terminal_publications: u64,
+    pub active_empty_probes: usize,
+    pub pending_empty_probes: usize,
+    pub empty_probe_stale_rejections: u64,
+    pub empty_probe_terminal_publications: u64,
+}
+
 #[cfg(feature = "test-utils")]
 /// Test-only summary of the realized open/active decoration on one file row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

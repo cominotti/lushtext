@@ -10,6 +10,8 @@ use anyhow::Result;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(any(test, feature = "test-utils"))]
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::model::recent_document::{RecentDocumentEntry, RecentDocumentFile, RecentDocumentRow};
@@ -24,11 +26,40 @@ pub const RECENT_DOCUMENTS_FILE: &str = "recent-documents.json";
 /// Keep the full history bounded while still far exceeding the Open popover view.
 const MAX_RECENTS: usize = 200;
 /// Refuse oversized app-owned recent metadata before parsing or path probing.
-const MAX_RECENT_DOCUMENTS_BYTES: u64 = 1024 * 1024;
+pub const MAX_RECENT_DOCUMENTS_BYTES: u64 = 1024 * 1024;
 /// Bound externally modified files before filesystem status probes run.
 const MAX_RECENT_LOAD_CANDIDATES: usize = MAX_RECENTS * 2;
 /// Keep startup diagnostics useful without allocating one warning per bad row.
 const MAX_RECENT_LOAD_DIAGNOSTICS: usize = 20;
+
+#[cfg(any(test, feature = "test-utils"))]
+type RecentMetadataHook = Box<dyn FnOnce(&Path) + Send + 'static>;
+#[cfg(any(test, feature = "test-utils"))]
+static RECENT_AFTER_METADATA_HOOK: OnceLock<Mutex<Option<RecentMetadataHook>>> = OnceLock::new();
+
+/// Install a one-shot race seam after recent-file metadata but before ingestion.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn set_recent_after_metadata_hook_for_test(hook: impl FnOnce(&Path) + Send + 'static) {
+    let slot = RECENT_AFTER_METADATA_HOOK.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(hook));
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn run_recent_after_metadata_hook_for_test(path: &Path) {
+    let slot = RECENT_AFTER_METADATA_HOOK.get_or_init(|| Mutex::new(None));
+    let hook = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
+#[cfg(not(any(test, feature = "test-utils")))]
+fn run_recent_after_metadata_hook_for_test(_path: &Path) {}
 
 /// Result of loading and pruning recent-document persistence.
 #[derive(Debug, Clone)]
@@ -230,7 +261,7 @@ fn load_recent_file(path: &Path, diagnostics: &mut Vec<String>) -> (RecentDocume
         }
     }
 
-    match fs_metadata::file_facts(path) {
+    let facts = match fs_metadata::file_facts(path) {
         Ok(facts) if facts.byte_size > MAX_RECENT_DOCUMENTS_BYTES => {
             push_diagnostic(
                 diagnostics,
@@ -243,21 +274,7 @@ fn load_recent_file(path: &Path, diagnostics: &mut Vec<String>) -> (RecentDocume
             );
             return (RecentDocumentFile::default(), true);
         }
-        Ok(_) => {}
-        Err(error) => {
-            push_diagnostic(
-                diagnostics,
-                format!("recent documents ignored {}: {error}", path.display()),
-            );
-            return (RecentDocumentFile::default(), false);
-        }
-    }
-
-    let bytes = match fs_read::bytes(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return (RecentDocumentFile::default(), false);
-        }
+        Ok(facts) => facts,
         Err(error) => {
             push_diagnostic(
                 diagnostics,
@@ -266,6 +283,39 @@ fn load_recent_file(path: &Path, diagnostics: &mut Vec<String>) -> (RecentDocume
             return (RecentDocumentFile::default(), false);
         }
     };
+
+    run_recent_after_metadata_hook_for_test(path);
+
+    let bytes =
+        match fs_read::bounded_bytes(path, MAX_RECENT_DOCUMENTS_BYTES, facts.byte_size, || false) {
+            Ok(bytes) => bytes,
+            Err(fs_read::BoundedFileReadError::LimitExceeded { .. }) => {
+                push_diagnostic(
+                    diagnostics,
+                    format!(
+                        "recent documents reset: {} grew above the {} byte cap during ingestion",
+                        path.display(),
+                        MAX_RECENT_DOCUMENTS_BYTES
+                    ),
+                );
+                return (RecentDocumentFile::default(), true);
+            }
+            Err(fs_read::BoundedFileReadError::Cancelled) => {
+                unreachable!("recent metadata ingestion uses a non-cancelling bounded reader")
+            }
+            Err(fs_read::BoundedFileReadError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return (RecentDocumentFile::default(), false);
+            }
+            Err(fs_read::BoundedFileReadError::Io(error)) => {
+                push_diagnostic(
+                    diagnostics,
+                    format!("recent documents ignored {}: {error}", path.display()),
+                );
+                return (RecentDocumentFile::default(), false);
+            }
+        };
 
     match serde_json::from_slice::<RecentDocumentFile>(&bytes) {
         Ok(file) => (file, false),
@@ -835,6 +885,29 @@ mod tests {
                 .iter()
                 .all(|diagnostic| !diagnostic.contains("above the")),
             "exact-size file should not be classified as oversized: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn recent_file_growth_after_metadata_is_bounded_before_json_parsing() {
+        let dir = TempDir::new().expect("recent tempdir");
+        let recent_path = dir.path().join(RECENT_DOCUMENTS_FILE);
+        fixture::write_text(&recent_path, r#"{"entries":[]}"#);
+        set_recent_after_metadata_hook_for_test(|path| {
+            fixture::write_repeated_bytes(path, b"x", MAX_RECENT_DOCUMENTS_BYTES + 1);
+        });
+
+        let loaded = load(dir.path());
+
+        assert!(loaded.entries.is_empty());
+        assert!(loaded.pruned);
+        assert!(
+            loaded
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("grew above")),
+            "growth should be classified before parsing: {:?}",
+            loaded.diagnostics
         );
     }
 

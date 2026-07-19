@@ -287,6 +287,12 @@ the normal populated path. Cover the relevant state matrix:
 - many items, long labels, deep paths, or capped results when the surface can
   encounter them.
 
+When multiple actions select modes of one browser, reuse one live dialog and
+one bounded source/query owner. Mode is part of source, query, preview, and
+activation generation identity. Widget coverage must switch modes repeatedly
+and rapidly, prove stale completions cannot publish, preserve mode-specific
+empty/truncation/accessibility copy, and keep the shared visible-row cap.
+
 For these tests, assert the user-visible contract, not only model state: the
 right empty copy is shown, required header/menu/close controls are visible,
 item regions scroll instead of expanding the shell, critical controls are not

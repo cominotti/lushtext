@@ -100,12 +100,22 @@ The system SHALL bound Replace All memory exposure with explicit service-level c
 - **AND** already-written files remain undoable
 
 ### Requirement: Replace All builds changed text without full line-vector amplification
-The system SHALL avoid constructing a full `Vec<String>` of every line in a target file during Replace All. For accepted files, it MUST validate UTF-8 using the project's established large-file validation approach and build the replacement output in a bounded single-pass representation from the recorded replacement ranges.
+The system SHALL avoid constructing a full per-line collection of owned strings, byte ranges, or equivalent metadata during Replace All. Before line discovery, it MUST validate replacement-count and recorded-range bounds. For accepted files, it MUST validate UTF-8 using the project's established large-file validation approach and build replacement output in one source-order pass from sorted recorded replacements. Retained edit metadata MUST remain proportional to accepted replacements rather than total source-line count, while original bytes, output bytes, and durable undo bytes remain governed by their existing caps.
 
 #### Scenario: Large accepted file avoids line-vector allocation
 - **WHEN** Replace All processes a file within the per-file cap but large enough to stress allocation
-- **THEN** it does not split the entire file into a vector of owned line strings
+- **THEN** it does not split or index the entire file into a per-line vector
 - **AND** it still validates stale search results before writing
+
+#### Scenario: Dense short-line file stays within retained metadata bounds
+- **WHEN** an accepted file near the byte cap contains millions of short lines but no more than the configured replacement-count limit
+- **THEN** line discovery streams only the boundaries needed by the sorted replacements
+- **AND** retained line or edit metadata remains bounded by accepted replacement count rather than source-line count
+
+#### Scenario: Streaming construction preserves line semantics
+- **WHEN** replacements target LF, CRLF, final unterminated, Unicode, and empty lines
+- **THEN** streaming construction produces the same changed bytes and stale-line decisions as the reference behavior
+- **AND** durable journal-before-mutation and cancellation ordering remain unchanged
 
 ### Requirement: Replace All undo journal is incremental and durable per file
 The system SHALL persist Replace All undo state as incremental per-file durable entries rather than rewriting the entire growing backup after each file. Each file's undo entry MUST be written and synced before that file is modified. Cleanup on undo, search-panel close, and startup MUST remove both the new journal directory and any stale legacy backup file.
@@ -344,3 +354,27 @@ The system SHALL seal each accepted search result set into one immutable generat
 - **WHEN** a newer search result snapshot is accepted before the old preview completes
 - **THEN** the old snapshot may remain alive only for its bounded in-flight owner
 - **AND** its completion cannot replace, check, or apply matches in the newer generation
+
+### Requirement: Replace Preview confirmation and retirement stay payload-bounded
+Replace Preview SHALL keep current checked-match identity incrementally and SHALL NOT scan, filter, or synchronously destroy a near-limit preview outcome in the GTK confirmation path. Confirmation MUST detach the current immutable outcome and checked identity set, partition selected replacements away from GTK, retire unchecked or rejected payloads away from GTK, and invoke Replace All only with rows selected from the still-current preview and search generation. Replaced, invalidated, stale, and exited preview state MUST use the applicable bounded retirement path rather than final document-sized destruction on GTK.
+
+#### Scenario: User confirms a near-limit checked subset
+- **WHEN** the current preview contains near-limit replacement data and only a subset of stable match identities remains checked
+- **THEN** the GTK action captures current identity without filtering the full outcome
+- **AND** worker processing returns only the checked generated replacements to the normal Replace All callback
+- **AND** unchecked replacement payloads are destroyed away from GTK
+
+#### Scenario: Preview changes during confirmation selection
+- **WHEN** query, replacement, search result, preview, or panel generation changes while worker-side selection is active
+- **THEN** the selected stale rows are not passed to Replace All
+- **AND** their payload is retired without changing the newer preview
+
+#### Scenario: Entering a new preview replaces a visible outcome
+- **WHEN** a new preview request starts while a prior near-limit preview outcome is visible
+- **THEN** the prior outcome and checked identity detach from current state immediately
+- **AND** their GTK-owned projection and plain-data payload follow their bounded retirement paths
+
+#### Scenario: All generated rows are unchecked
+- **WHEN** every generated preview row is unchecked before confirmation
+- **THEN** no replacement enters the apply callback
+- **AND** the full rejected outcome is retired away from GTK

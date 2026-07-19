@@ -11,7 +11,10 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-use lushtext_core::model::content_search::Replacement;
+use lushtext_core::model::content_search::{
+    BoundedDiagnosticSample, MAX_REPLACE_DIAGNOSTIC_BYTES, MAX_REPLACE_DIAGNOSTIC_ENTRIES,
+    Replacement, UndoPayloadLedger,
+};
 use lushtext_core::services::content_search::{apply_replacements, undo_replacements};
 use lushtext_core::services::filesystem::{fixture, read as fs_read};
 use proptest::prelude::*;
@@ -95,21 +98,68 @@ proptest! {
 
         prop_assert_eq!(result.files_affected, expected_files);
         prop_assert_eq!(result.replaced_count, expected_files);
-        prop_assert!(result.skipped_paths.is_empty());
-        prop_assert!(result.errors.is_empty());
+        prop_assert_eq!(result.skipped_count, 0);
+        prop_assert_eq!(result.error_count, 0);
         prop_assert_eq!(backup.len(), expected_files);
 
         let outcome = undo_replacements(&backup);
 
         prop_assert_eq!(outcome.restored_count(), expected_files);
-        prop_assert!(outcome.skipped_paths.is_empty());
-        prop_assert!(outcome.failed_paths.is_empty());
+        prop_assert_eq!(outcome.skipped_count, 0);
+        prop_assert_eq!(outcome.failed_count, 0);
         prop_assert!(outcome.remaining_backup.is_empty());
 
         for (path, original_bytes) in originals {
             let restored_bytes = fs_read::bytes(&path)
                 .map_err(|error| TestCaseError::fail(format!("restore read failed: {error}")))?;
             prop_assert_eq!(restored_bytes, original_bytes);
+        }
+    }
+
+    #[test]
+    fn undo_ledger_matches_saturating_reversible_oracle(
+        limit in 0u64..=1_000_000,
+        operations in prop::collection::vec((any::<bool>(), 0u64..=2_000_000), 0..128),
+    ) {
+        let mut ledger = UndoPayloadLedger::new(limit);
+        let mut live = 0u64;
+        let mut high = 0u64;
+        for (charge, bytes) in operations {
+            if charge {
+                let accepted = live.checked_add(bytes).is_some_and(|next| next <= limit);
+                prop_assert_eq!(ledger.try_charge(bytes), accepted);
+                if accepted {
+                    live += bytes;
+                    high = high.max(live);
+                }
+            } else {
+                let reclaimed = live.min(bytes);
+                prop_assert_eq!(ledger.reclaim(bytes), reclaimed);
+                live -= reclaimed;
+            }
+            prop_assert_eq!(ledger.live_bytes(), live);
+            prop_assert_eq!(ledger.high_water_bytes(), high);
+            prop_assert!(ledger.live_bytes() <= limit);
+        }
+    }
+
+    #[test]
+    fn diagnostic_samples_preserve_totals_and_never_cross_either_cap(
+        messages in prop::collection::vec(".{0,512}", 0..256),
+    ) {
+        let mut sample = BoundedDiagnosticSample::default();
+        for message in &messages {
+            sample.record(message.clone());
+        }
+        prop_assert_eq!(sample.total_count(), messages.len());
+        prop_assert!(sample.entries().len() <= MAX_REPLACE_DIAGNOSTIC_ENTRIES);
+        prop_assert!(sample.retained_bytes() <= MAX_REPLACE_DIAGNOSTIC_BYTES);
+        prop_assert_eq!(
+            sample.omitted_count(),
+            messages.len().saturating_sub(sample.entries().len()),
+        );
+        for (retained, original) in sample.entries().iter().zip(messages.iter()) {
+            prop_assert_eq!(retained, original);
         }
     }
 }

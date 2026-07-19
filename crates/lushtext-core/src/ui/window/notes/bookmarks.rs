@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::translate::IntoGlib;
-use gtk_lush_settle::Debounce;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::pango;
 use gtk4::prelude::*;
@@ -25,9 +24,8 @@ use crate::ui::status_bar::MessageKind;
 
 use super::browser::NotesBrowserEntryExt;
 use super::{
-    LushtextWindow, NOTES_BROWSER_RENDER_LIMIT, NOTES_PREVIEW_RAW_CHILD, NotesBrowserEntry,
-    NotesBrowserState, browser_content_box, build_browser_dialog, build_dialog_close_button,
-    clear_box_children, empty_browser_label,
+    LushtextWindow, NOTES_PREVIEW_RAW_CHILD, NotesBrowserEntry, NotesBrowserState,
+    build_dialog_close_button,
 };
 
 #[cfg(feature = "test-utils")]
@@ -35,8 +33,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Debounce interval for bookmark sidecar saves.
 const NOTES_SAVE_DEBOUNCE_MS: u64 = 200;
-/// Search scope title used by the standalone workspace bookmark browser.
-const WORKSPACE_SCOPE_TITLE: &str = "Current Workspace";
 /// Text tag applied to the bookmarked row inside the raw preview surface.
 const NOTES_RAW_BOOKMARK_TARGET_TAG: &str = "bookmark-target-line";
 #[cfg(feature = "test-utils")]
@@ -290,48 +286,7 @@ impl LushtextWindow {
             );
             return;
         }
-
-        spawn_blocking_then(
-            self.clone(),
-            move || {
-                let data_dir = json_store::data_dir();
-                bookmark_service::list_workspace_bookmarks_recovering(&data_dir, &workspace_folders)
-            },
-            |window, result| match result {
-                Ok(listing) => {
-                    Self::trace_browse_recovery_diagnostics(&listing.diagnostics);
-                    if listing.bookmarks.is_empty() {
-                        if listing.diagnostics.is_empty() {
-                            window.publish_status_message(
-                                "No bookmarks exist in the current workspace",
-                                MessageKind::Info,
-                            );
-                        } else {
-                            window.publish_status_message(
-                                "Some bookmark data could not be loaded",
-                                MessageKind::Warning,
-                            );
-                        }
-                        return;
-                    }
-
-                    window.present_bookmark_browser(listing.bookmarks);
-                    if !listing.diagnostics.is_empty() {
-                        window.publish_status_message(
-                            "Some bookmark data could not be loaded",
-                            MessageKind::Warning,
-                        );
-                    }
-                }
-                Err(error) => {
-                    tracing::error!("Failed to list workspace bookmarks: {error}");
-                    window.publish_status_message(
-                        "Bookmarks could not be listed",
-                        MessageKind::Error,
-                    );
-                }
-            },
-        );
+        self.show_notes_browser_mode(crate::services::palette::NotesBrowserMode::Bookmarks);
     }
     /// Debounce bookmark persistence so one burst of edits produces one sidecar write.
     pub(super) fn save_bookmarks_debounced(&self, editor: &LushtextEditorPage) {
@@ -381,73 +336,6 @@ impl LushtextWindow {
                 }
             },
         );
-    }
-    /// Present the searchable bookmark browser dialog.
-    fn present_bookmark_browser(&self, bookmarks: Vec<bookmark_service::WorkspaceBookmark>) {
-        let dialog = build_browser_dialog("Bookmarks");
-        let content = browser_content_box(&dialog);
-        let search_entry = gtk4::SearchEntry::new();
-        search_entry.set_placeholder_text(Some(&format!("Search {WORKSPACE_SCOPE_TITLE}…")));
-        accessibility::set_labelled_description(
-            &search_entry,
-            "Search bookmarks",
-            "Filter bookmarks in the current workspace",
-        );
-        content.append(&search_entry);
-
-        let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-        accessibility::set_role(&rows_box, gtk4::AccessibleRole::List);
-        accessibility::set_labelled_description(
-            &rows_box,
-            "Bookmark results",
-            "Bookmarks in the current workspace matching the search",
-        );
-        let scroll = gtk4::ScrolledWindow::builder()
-            .vexpand(true)
-            .hexpand(true)
-            .min_content_height(320)
-            .child(&rows_box)
-            .build();
-        content.append(&scroll);
-
-        let bookmarks = Rc::new(bookmarks);
-        rebuild_bookmark_rows(self, &dialog, &rows_box, &bookmarks, "");
-
-        let window_weak = self.downgrade();
-        let dialog_weak = dialog.downgrade();
-        let rows_box_weak = rows_box.downgrade();
-        let bookmarks_for_search = bookmarks;
-        let search_debounce = Debounce::default();
-        search_entry.connect_search_changed(move |entry| {
-            let query = entry.text().to_string();
-            if query.is_empty() {
-                let _ = search_debounce.invalidate();
-                if let (Some(window), Some(dialog), Some(rows_box)) = (
-                    window_weak.upgrade(),
-                    dialog_weak.upgrade(),
-                    rows_box_weak.upgrade(),
-                ) {
-                    rebuild_bookmark_rows(&window, &dialog, &rows_box, &bookmarks_for_search, "");
-                }
-                return;
-            }
-            let window_weak = window_weak.clone();
-            let dialog_weak = dialog_weak.clone();
-            let rows_box_weak = rows_box_weak.clone();
-            let bookmarks_for_search = bookmarks_for_search.clone();
-            search_debounce.schedule(entry, Duration::from_millis(150), move |_, _| {
-                let (Some(window), Some(dialog), Some(rows_box)) = (
-                    window_weak.upgrade(),
-                    dialog_weak.upgrade(),
-                    rows_box_weak.upgrade(),
-                ) else {
-                    return;
-                };
-                rebuild_bookmark_rows(&window, &dialog, &rows_box, &bookmarks_for_search, &query);
-            });
-        });
-
-        dialog.present(Some(self));
     }
 }
 
@@ -819,132 +707,6 @@ fn clear_bookmark_edit_error(error_label: &gtk4::Label) {
     accessibility::set_hidden(error_label, true);
     accessibility::set_invalid(error_label, false);
 }
-/// Rebuild the bookmark rows that match `query`.
-fn rebuild_bookmark_rows(
-    window: &LushtextWindow,
-    dialog: &libadwaita::Dialog,
-    rows_box: &gtk4::Box,
-    bookmarks: &[bookmark_service::WorkspaceBookmark],
-    query: &str,
-) {
-    clear_box_children(rows_box);
-
-    let mut rendered = 0usize;
-    let mut truncated = false;
-
-    for bookmark in bookmarks
-        .iter()
-        .filter(|bookmark| bookmark_matches_query(bookmark, query))
-    {
-        if rendered >= NOTES_BROWSER_RENDER_LIMIT {
-            truncated = true;
-            break;
-        }
-        rendered = rendered.saturating_add(1);
-        append_bookmark_browser_row(window, dialog, rows_box, bookmark.clone());
-    }
-
-    if rendered == 0 {
-        rows_box.append(&empty_browser_label("No bookmarks match that search"));
-    }
-
-    if truncated {
-        rows_box.append(&empty_browser_label(
-            "Showing first 500 bookmark matches. Refine the search to narrow results.",
-        ));
-    }
-}
-
-fn append_bookmark_browser_row(
-    window: &LushtextWindow,
-    dialog: &libadwaita::Dialog,
-    rows_box: &gtk4::Box,
-    bookmark: bookmark_service::WorkspaceBookmark,
-) {
-    let button = gtk4::Button::new();
-    button.add_css_class("flat");
-    button.set_hexpand(true);
-    button.set_halign(gtk4::Align::Fill);
-    let bookmark_label = bookmark.display_label();
-    let bookmark_location = format!(
-        "{} · Line {}",
-        bookmark.path.display(),
-        bookmark.line.saturating_add(1)
-    );
-    button.set_child(Some(&browser_row_content(
-        &bookmark_label,
-        &bookmark_location,
-        None,
-    )));
-    button.set_tooltip_text(Some(&bookmark_location));
-    accessibility::set_labelled_description(
-        &button,
-        &format!("Open bookmark {bookmark_label}"),
-        &bookmark_location,
-    );
-
-    let window = window.clone();
-    let dialog_weak = dialog.downgrade();
-    button.connect_clicked(move |_| {
-        open_editor_at_line(&window, &bookmark.path, bookmark.line.saturating_add(1));
-        if let Some(dialog) = dialog_weak.upgrade() {
-            dialog.close();
-        }
-    });
-    rows_box.append(&button);
-}
-
-/// Build the content widget used inside bookmark browser rows.
-#[must_use]
-fn browser_row_content(title: &str, subtitle: &str, detail: Option<&str>) -> gtk4::Box {
-    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    content.set_margin_start(8);
-    content.set_margin_end(8);
-    content.set_margin_top(8);
-    content.set_margin_bottom(8);
-
-    let title_label = gtk4::Label::new(Some(title));
-    title_label.set_halign(gtk4::Align::Start);
-    title_label.set_xalign(0.0);
-    title_label.add_css_class("heading");
-    content.append(&title_label);
-
-    let subtitle_label = gtk4::Label::new(Some(subtitle));
-    subtitle_label.set_halign(gtk4::Align::Start);
-    subtitle_label.set_xalign(0.0);
-    subtitle_label.set_wrap(true);
-    subtitle_label.add_css_class("dim-label");
-    content.append(&subtitle_label);
-
-    if let Some(detail) = detail {
-        let detail_label = gtk4::Label::new(Some(detail));
-        detail_label.set_halign(gtk4::Align::Start);
-        detail_label.set_xalign(0.0);
-        detail_label.set_wrap(true);
-        detail_label.add_css_class("caption");
-        content.append(&detail_label);
-    }
-
-    content
-}
-/// Filter bookmark rows by label, path, or 1-based line number.
-#[must_use]
-fn bookmark_matches_query(bookmark: &bookmark_service::WorkspaceBookmark, query: &str) -> bool {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-
-    bookmark.display_label().to_lowercase().contains(&query)
-        || bookmark
-            .path
-            .display()
-            .to_string()
-            .to_lowercase()
-            .contains(&query)
-        || bookmark.line.saturating_add(1).to_string().contains(&query)
-}
-
 /// Open a file at a specific 1-based line number and focus the editor.
 pub(super) fn open_editor_at_line(window: &LushtextWindow, path: &Path, line: u32) {
     window.open_document(path);

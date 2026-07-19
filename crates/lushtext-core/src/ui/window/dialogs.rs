@@ -687,7 +687,15 @@ impl super::LushtextWindow {
             Ok(()) => {
                 let window_for_session = window_for_draft.clone();
                 let window_for_destroy = window_for_draft;
-                window_for_session.save_session_for_close_async(move || {
+                window_for_session.save_session_for_close_async(move |result| {
+                    if let Err(error) = result {
+                        abort_async_close_safety(&window_for_destroy, was_sensitive);
+                        window_for_destroy.publish_status_message(
+                            &format!("Close cancelled because session recovery state could not be saved: {error}"),
+                            MessageKind::Error,
+                        );
+                        return;
+                    }
                     #[cfg(feature = "test-utils")]
                     {
                         let delay_ms = CLOSE_SAFETY_COMPLETION_DELAY_MS.load(Ordering::Acquire);

@@ -6,16 +6,18 @@ use crate::common::{ensure_gtk_init, fixture, flush_after_delay, flush_events, w
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::content_search::{
-    ContentSearchOptions, ReplaceResult, Replacement, SavedSearch, SearchEvent, SearchHistoryEntry,
-    SearchMatch, SearchMatchId, SearchQuerySpec, generate_replacement_preview,
+    BoundedDiagnosticSample, ContentSearchOptions, ReplaceResult, Replacement, SavedSearch,
+    SearchEvent, SearchHistoryEntry, SearchMatch, SearchMatchId, SearchQuerySpec,
+    generate_replacement_preview,
 };
+use lushtext_core::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
 use lushtext_core::services::notifications::{
     NotificationBus, NotificationOwner, NotificationPayload, NotificationSeverity,
     NotificationSurface, StatusMessage,
 };
-use lushtext_core::services::content_search::{ReplaceUndoBackup, ReplaceUndoEntry};
 use lushtext_core::services::{json_store, search_backup};
 use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
+use lushtext_core::ui::plain_disposal::hold_disposal_capacity_for_test;
 use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
     LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchProgressUpdate,
@@ -113,11 +115,7 @@ fn panel_with_one_search_match() -> LushtextSearchPanel {
     panel
 }
 
-fn populate_large_result_generation(
-    panel: &LushtextSearchPanel,
-    path: &str,
-    match_count: usize,
-) {
+fn populate_large_result_generation(panel: &LushtextSearchPanel, path: &str, match_count: usize) {
     let path = PathBuf::from(path);
     let display_path = path.display().to_string();
     let header = SearchResultItem::new_file(
@@ -148,10 +146,12 @@ fn populate_large_result_generation(
         );
     }
     panel.imp().runtime.root_store.borrow().append(&header);
-    panel.imp().runtime.file_groups.borrow_mut().insert(
-        path,
-        SearchFileGroup::new(header, child_store),
-    );
+    panel
+        .imp()
+        .runtime
+        .file_groups
+        .borrow_mut()
+        .insert(path, SearchFileGroup::new(header, child_store));
     panel
         .imp()
         .runtime
@@ -169,6 +169,147 @@ fn populate_large_result_generation(
         .total_matches
         .set(u32::try_from(match_count).unwrap_or(u32::MAX));
     panel.imp().runtime.total_files.set(1);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RetirementFixtureCategory {
+    RootRows,
+    FileGroups,
+    ChildRows,
+    CachedMatchRows,
+    CachedFileRows,
+    StreamedMatches,
+    AcceptedMatches,
+    Positions,
+}
+
+fn retirement_fixture_match(path: &str, index: usize) -> SearchMatch {
+    SearchMatch::new(
+        PathBuf::from(path),
+        u64::try_from(index.saturating_add(1)).unwrap_or(u64::MAX),
+        "needle",
+        0..6,
+    )
+}
+
+fn retirement_fixture_tree_rows(count: usize) -> Vec<gtk4::TreeListRow> {
+    let store = gtk4::gio::ListStore::new::<SearchResultItem>();
+    for index in 0..count {
+        let path = format!("/cached-row-{index}.txt");
+        store.append(&SearchResultItem::new_file(&path, &path, 0));
+    }
+    let model = gtk4::TreeListModel::new(store, false, false, |_| None::<gtk4::gio::ListModel>);
+    (0..count)
+        .map(|index| {
+            model
+                .item(u32::try_from(index).unwrap_or(u32::MAX))
+                .and_downcast::<gtk4::TreeListRow>()
+                .expect("fixture tree row")
+        })
+        .collect()
+}
+
+fn populate_retirement_category(
+    panel: &LushtextSearchPanel,
+    category: RetirementFixtureCategory,
+    count: usize,
+) {
+    match category {
+        RetirementFixtureCategory::RootRows => {
+            let store = panel.imp().runtime.root_store.borrow();
+            for index in 0..count {
+                let path = format!("/retired-root-{index}.txt");
+                store.append(&SearchResultItem::new_file(&path, &path, 0));
+            }
+        }
+        RetirementFixtureCategory::FileGroups => {
+            let mut groups = panel.imp().runtime.file_groups.borrow_mut();
+            for index in 0..count {
+                let path = PathBuf::from(format!("/retired-group-{index}.txt"));
+                let display = path.display().to_string();
+                let header = SearchResultItem::new_file(&display, &display, 0);
+                groups.insert(
+                    path,
+                    SearchFileGroup::new(header, gtk4::gio::ListStore::new::<SearchResultItem>()),
+                );
+            }
+        }
+        RetirementFixtureCategory::ChildRows => {
+            let path = PathBuf::from("/retired-child-group.txt");
+            let header = SearchResultItem::new_file("/retired-child-group.txt", "child", 0);
+            let children = gtk4::gio::ListStore::new::<SearchResultItem>();
+            for index in 0..count {
+                children.append(&SearchResultItem::new_match(
+                    "/retired-child-group.txt",
+                    u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX),
+                    "needle",
+                    0,
+                    6,
+                    SearchMatchId::from_index(index),
+                ));
+            }
+            panel
+                .imp()
+                .runtime
+                .file_groups
+                .borrow_mut()
+                .insert(path, SearchFileGroup::new(header, children));
+        }
+        RetirementFixtureCategory::CachedMatchRows => panel
+            .imp()
+            .navigation
+            .match_rows
+            .borrow_mut()
+            .extend(retirement_fixture_tree_rows(count).into_iter().map(Some)),
+        RetirementFixtureCategory::CachedFileRows => {
+            let mut file_rows = panel.imp().navigation.file_rows.borrow_mut();
+            for (index, row) in retirement_fixture_tree_rows(count).into_iter().enumerate() {
+                file_rows.insert(PathBuf::from(format!("/cached-file-{index}.txt")), row);
+            }
+        }
+        RetirementFixtureCategory::StreamedMatches => {
+            panel.imp().runtime.search_matches.borrow_mut().extend(
+                (0..count).map(|index| retirement_fixture_match("/retired-streamed.txt", index)),
+            );
+        }
+        RetirementFixtureCategory::AcceptedMatches => {
+            let matches = (0..count)
+                .map(|index| retirement_fixture_match("/retired-accepted.txt", index))
+                .collect();
+            panel
+                .imp()
+                .runtime
+                .accepted_matches
+                .replace(Some(Arc::new(matches)));
+        }
+        RetirementFixtureCategory::Positions => panel
+            .imp()
+            .navigation
+            .match_positions
+            .borrow_mut()
+            .extend((0..count).map(|index| {
+                SearchMatchLocation::new(
+                    PathBuf::from("/retired-position.txt"),
+                    u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX),
+                )
+            })),
+    }
+}
+
+fn released_for_category(
+    released: lushtext_core::ui::search_panel::SearchRetirementOwnership,
+    category: RetirementFixtureCategory,
+) -> usize {
+    match category {
+        RetirementFixtureCategory::RootRows => released.root_rows,
+        RetirementFixtureCategory::FileGroups => released.file_groups,
+        RetirementFixtureCategory::ChildRows => released.child_rows,
+        RetirementFixtureCategory::CachedMatchRows => released.cached_match_rows,
+        RetirementFixtureCategory::CachedFileRows => released.cached_file_rows,
+        RetirementFixtureCategory::StreamedMatches => released.streamed_matches,
+        RetirementFixtureCategory::AcceptedMatches => released.accepted_matches,
+        RetirementFixtureCategory::Positions => released.positions,
+    }
 }
 
 struct SearchPanelDelayReset;
@@ -393,19 +534,12 @@ fn test_search_panel_accessibility_tracks_replace_preview_and_undo_state() {
     imp.replace_all_button.set_sensitive(false);
     panel.refresh_accessibility_state_for_test();
     AccessibleAudit::new()
-        .states(&[
-            gtk4::AccessibleState::Busy,
-            gtk4::AccessibleState::Disabled,
-        ])
+        .states(&[gtk4::AccessibleState::Busy, gtk4::AccessibleState::Disabled])
         .properties(&[gtk4::AccessibleProperty::ValueText])
         .assert_on(&*imp.replace_all_button);
 
     imp.preview.preview_pending.set(false);
-    imp.preview
-        .undo_backup
-        .replace(Some(std::sync::Arc::new(sample_replace_backup(
-            "/tmp/undo.txt",
-        ))));
+    panel.set_persisted_undo_backup(sample_replace_backup("/tmp/undo.txt"));
     imp.undo_button.set_visible(true);
     panel.refresh_accessibility_state_for_test();
     assert!(!gtk4::test_accessible_has_state(
@@ -476,8 +610,8 @@ fn test_search_panel_set_workspace_folders() {
     ];
     panel.set_workspace_folders(workspace_folders.clone());
     assert_eq!(
-        *panel.imp().runtime.workspace_folders.borrow(),
-        workspace_folders
+        panel.imp().runtime.workspace_folders.borrow().as_ref(),
+        workspace_folders.as_slice()
     );
 }
 
@@ -596,6 +730,55 @@ fn test_search_panel_clear_results_resets_state() {
 }
 
 #[test]
+fn test_search_retirement_categories_release_actual_ownership_over_bounded_turns() {
+    ensure_gtk_init();
+    const ITEM_COUNT: usize = 300;
+    let categories = [
+        RetirementFixtureCategory::RootRows,
+        RetirementFixtureCategory::FileGroups,
+        RetirementFixtureCategory::ChildRows,
+        RetirementFixtureCategory::CachedMatchRows,
+        RetirementFixtureCategory::CachedFileRows,
+        RetirementFixtureCategory::StreamedMatches,
+        RetirementFixtureCategory::AcceptedMatches,
+        RetirementFixtureCategory::Positions,
+    ];
+
+    for category in categories {
+        let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+        populate_retirement_category(&panel, category, ITEM_COUNT);
+        panel.close();
+        wait_until(Duration::from_secs(10), || {
+            panel.retirement_backlog_counters_for_test().0 == 0
+        });
+
+        let observations = panel.retirement_observations_for_test();
+        assert!(
+            observations.len() > 1,
+            "{category:?} must span multiple bounded turns"
+        );
+        for observation in &observations {
+            let actual_release = observation.released.total();
+            assert_eq!(observation.charged, actual_release, "{category:?}");
+            assert!((1..=250).contains(&actual_release), "{category:?}");
+            assert!(observation.before.total() > observation.after.total());
+            assert_eq!(observation.pending, !observation.terminal_drain);
+        }
+        let category_release = observations
+            .iter()
+            .map(|observation| released_for_category(observation.released, category))
+            .sum::<usize>();
+        assert_eq!(category_release, ITEM_COUNT, "{category:?}");
+        let terminal = observations
+            .last()
+            .expect("terminal retirement observation");
+        assert!(terminal.terminal_drain, "{category:?}");
+        assert!(!terminal.pending, "{category:?}");
+        assert_eq!(terminal.after.total(), 0, "{category:?}");
+    }
+}
+
+#[test]
 fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
@@ -614,12 +797,7 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
     populate_large_result_generation(&panel, "/second-generation.txt", 10_000);
     panel.start_search(&search_spec(""));
     let live_header = SearchResultItem::new_file("/live.txt", "live.txt", 1);
-    panel
-        .imp()
-        .runtime
-        .root_store
-        .borrow()
-        .append(&live_header);
+    panel.imp().runtime.root_store.borrow().append(&live_header);
 
     assert!(panel.is_searching());
     wait_until(Duration::from_secs(10), || {
@@ -628,6 +806,17 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
 
     let (_, _, _, retirement_high_water) = panel.search_runtime_counters_for_test();
     assert!(retirement_high_water <= 250);
+    let observations = panel.retirement_observations_for_test();
+    assert!(observations.len() > 1);
+    assert!(observations.iter().all(|observation| {
+        let actual_release = observation.released.total();
+        observation.charged == actual_release && (1..=250).contains(&actual_release)
+    }));
+    assert!(
+        observations
+            .last()
+            .is_some_and(|observation| observation.terminal_drain && !observation.pending)
+    );
     let (_, generation_high_water, generation_limit, deferred) =
         panel.retirement_backlog_counters_for_test();
     assert!(generation_high_water <= generation_limit);
@@ -760,7 +949,10 @@ fn test_toggle_search_panel_action_exists_and_enabled() {
     let window = test_window();
     let action = window.lookup_action("toggle-search-panel");
     assert!(action.is_some(), "toggle-search-panel action must exist");
-    assert!(action.expect("expected operation to succeed").is_enabled(), "action must be enabled");
+    assert!(
+        action.expect("expected operation to succeed").is_enabled(),
+        "action must be enabled"
+    );
 }
 
 #[test]
@@ -1011,13 +1203,17 @@ fn test_shift_f4_shortcut_bound_search_prev_match() {
 fn test_search_navigation_actions_start_disabled() {
     ensure_gtk_init();
     let window = test_window();
-    let next = window.lookup_action("search-next-match").expect("expected operation to succeed");
+    let next = window
+        .lookup_action("search-next-match")
+        .expect("expected operation to succeed");
     assert!(
         !next.is_enabled(),
         "search-next-match should start disabled"
     );
 
-    let prev = window.lookup_action("search-prev-match").expect("expected operation to succeed");
+    let prev = window
+        .lookup_action("search-prev-match")
+        .expect("expected operation to succeed");
     assert!(
         !prev.is_enabled(),
         "search-prev-match should start disabled"
@@ -1166,7 +1362,10 @@ fn test_enter_preview_mode_uses_cached_search_matches_without_gtk_rows() {
 
     wait_until(Duration::from_secs(10), || panel.is_preview_mode());
     assert_eq!(panel.replace_preview_count(), 1);
-    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 1 checked"));
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Replace 1 checked")
+    );
 }
 
 #[test]
@@ -1198,12 +1397,18 @@ fn test_enter_preview_mode_shows_pending_until_worker_finishes() {
     assert!(panel.imp().preview.preview_pending.get());
     assert!(!panel.is_preview_mode());
     assert!(!panel.imp().replace_all_button.is_sensitive());
-    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Preparing Preview…"));
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Preparing Preview…")
+    );
 
     wait_until(Duration::from_secs(10), || {
         panel.is_preview_mode() && !panel.imp().preview.preview_pending.get()
     });
-    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 1 checked"));
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Replace 1 checked")
+    );
 }
 
 #[test]
@@ -1222,7 +1427,10 @@ fn test_stale_replace_preview_result_is_rejected_after_replacement_change() {
     assert!(!panel.imp().preview.preview_pending.get());
     assert!(!panel.is_preview_mode());
     assert!(panel.imp().preview.preview_outcome.borrow().is_none());
-    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace All"));
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Replace All")
+    );
 
     std::thread::sleep(Duration::from_millis(350));
     flush_events();
@@ -1422,17 +1630,21 @@ fn test_invalid_preview_rows_report_private_free_reason_counts_and_never_confirm
     panel.imp().regex_toggle.set_active(true);
     flush_after_delay(Duration::from_millis(200));
     let _ = panel.imp().runtime.search_debounce.invalidate();
-    panel.imp().runtime.accepted_matches.replace(Some(Arc::new(vec![
-        SearchMatch::new(PathBuf::from("/project/valid.rs"), 1, "abc", 0..3)
-            .with_id(SearchMatchId::from_index(0)),
-        SearchMatch::new(
-            PathBuf::from("/project/stale.rs"),
-            2,
-            &format!("123 {SOURCE_SENTINEL}"),
-            0..3,
-        )
-        .with_id(SearchMatchId::from_index(1)),
-    ])));
+    panel
+        .imp()
+        .runtime
+        .accepted_matches
+        .replace(Some(Arc::new(vec![
+            SearchMatch::new(PathBuf::from("/project/valid.rs"), 1, "abc", 0..3)
+                .with_id(SearchMatchId::from_index(0)),
+            SearchMatch::new(
+                PathBuf::from("/project/stale.rs"),
+                2,
+                &format!("123 {SOURCE_SENTINEL}"),
+                0..3,
+            )
+            .with_id(SearchMatchId::from_index(1)),
+        ])));
     panel.imp().runtime.total_matches.set(2);
     panel.imp().runtime.total_files.set(2);
 
@@ -1600,7 +1812,10 @@ fn test_no_eligible_preview_has_explicit_feedback_and_disabled_confirmation() {
         "No eligible replacements; 0 omitted, 1 truncated, 0 stale ranges"
     );
     assert!(!panel.imp().replace_all_button.is_sensitive());
-    assert_eq!(panel.imp().replace_all_button.label().as_deref(), Some("Replace 0 checked"));
+    assert_eq!(
+        panel.imp().replace_all_button.label().as_deref(),
+        Some("Replace 0 checked")
+    );
 
     panel.clamp_results_height(0);
     assert_eq!(panel.imp().results_scroll.height_request(), 0);
@@ -1652,7 +1867,14 @@ fn test_large_and_empty_replacement_previews_remain_accessible() {
     assert_eq!(panel.replace_preview_count(), 1);
     assert_eq!(panel.result_snapshot_sharing_counters_for_test(), (2, 0));
     assert_eq!(
-        panel.imp().preview.preview_outcome.borrow().as_ref().expect("preview").replacements[0]
+        panel
+            .imp()
+            .preview
+            .preview_outcome
+            .borrow()
+            .as_ref()
+            .expect("preview")
+            .replacements[0]
             .replaced_line,
         "let  = 1;"
     );
@@ -1708,14 +1930,64 @@ fn test_search_panel_restores_active_persisted_undo_backup_on_construction() {
     wait_until(Duration::from_secs(2), || {
         panel.has_undo_backup() && panel.imp().undo_button.property::<bool>("visible")
     });
-    assert_eq!(
-        panel.imp().preview.undo_backup.borrow().as_deref(),
-        Some(&backup)
-    );
+    assert!(panel.undo_backup_matches_for_test(&backup));
     assert_eq!(
         search_backup::load(&data_dir).expect("expected operation to succeed"),
         backup
     );
+
+    let _ = search_backup::delete(&data_dir);
+}
+
+#[test]
+fn test_clearing_persisted_undo_cancels_capacity_retry_before_it_can_reload() {
+    ensure_gtk_init();
+    let data_dir = json_store::data_dir();
+    let _ = search_backup::delete(&data_dir);
+    let backup = sample_replace_backup("/persisted-capacity.rs");
+    search_backup::save(&data_dir, &backup).expect("save persisted undo fixture");
+    let capacity_hold = hold_disposal_capacity_for_test();
+
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    wait_until(Duration::from_secs(2), || {
+        panel.undo_capacity_retry_pending_for_test()
+    });
+    assert!(!panel.has_undo_backup());
+
+    panel.clear_undo_backup_for_test();
+    assert!(!panel.undo_capacity_retry_pending_for_test());
+    drop(capacity_hold);
+    flush_after_delay(Duration::from_millis(350));
+
+    assert!(!panel.has_undo_backup());
+    assert!(!panel.undo_capacity_retry_pending_for_test());
+    wait_until(Duration::from_secs(2), || {
+        search_backup::load(&data_dir)
+            .expect("load cleared persisted undo")
+            .is_empty()
+    });
+}
+
+#[test]
+fn test_persisted_undo_load_resumes_after_disposal_capacity_clears() {
+    ensure_gtk_init();
+    let data_dir = json_store::data_dir();
+    let _ = search_backup::delete(&data_dir);
+    let backup = sample_replace_backup("/persisted-capacity-resume.rs");
+    search_backup::save(&data_dir, &backup).expect("save persisted undo fixture");
+    let capacity_hold = hold_disposal_capacity_for_test();
+
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    wait_until(Duration::from_secs(2), || {
+        panel.undo_capacity_retry_pending_for_test()
+    });
+    assert!(!panel.has_undo_backup());
+
+    drop(capacity_hold);
+    wait_until(Duration::from_secs(5), || {
+        panel.has_undo_backup() && panel.undo_backup_matches_for_test(&backup)
+    });
+    assert!(!panel.undo_capacity_retry_pending_for_test());
 
     let _ = search_backup::delete(&data_dir);
 }
@@ -1736,7 +2008,7 @@ fn test_search_panel_close_preserves_durable_undo_backup() {
 
     panel.close();
 
-    assert_eq!(panel.imp().preview.undo_backup.borrow().as_deref(), Some(&backup));
+    assert!(panel.undo_backup_matches_for_test(&backup));
     assert!(panel.imp().undo_button.property::<bool>("visible"));
     assert_eq!(
         search_backup::load(&data_dir).expect("expected operation to succeed"),
@@ -1751,7 +2023,11 @@ fn test_search_panel_close_cancels_active_search() {
     ensure_gtk_init();
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     let cancel = Arc::new(AtomicBool::new(false));
-    panel.imp().runtime.cancel_token.replace(Some(cancel.clone()));
+    panel
+        .imp()
+        .runtime
+        .cancel_token
+        .replace(Some(cancel.clone()));
     panel.imp().runtime.searching.set(true);
 
     panel.close();
@@ -1885,16 +2161,14 @@ fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
     panel.clear_undo_backup_for_test();
     let reserved = panel.reserve_undo_backup_generation_for_test();
     search_backup::save(&data_dir, &new_backup).expect("simulate committed Replace All journal");
-    assert!(
-        panel.set_persisted_undo_backup_for_generation_for_test(new_backup.clone(), reserved)
-    );
+    assert!(panel.set_persisted_undo_backup_for_generation_for_test(new_backup.clone(), reserved));
 
     flush_after_delay(Duration::from_millis(400));
     assert_eq!(
         search_backup::load(&data_dir).expect("load current journal"),
         new_backup
     );
-    assert_eq!(panel.imp().preview.undo_backup.borrow().as_deref(), Some(&new_backup));
+    assert!(panel.undo_backup_matches_for_test(&new_backup));
 }
 
 #[test]
@@ -1949,12 +2223,19 @@ fn test_replacement_and_replace_result_construction() {
     let result = ReplaceResult {
         replaced_count: 5,
         files_affected: 2,
-        skipped_paths: vec![std::path::PathBuf::from("/skip.rs")],
-        errors: vec![],
+        skipped_count: 1,
+        error_count: 0,
+        skipped_sample: {
+            let mut sample = BoundedDiagnosticSample::default();
+            sample.record_path(std::path::Path::new("/skip.rs"));
+            sample
+        },
+        error_sample: BoundedDiagnosticSample::default(),
+        affected_open_paths: Vec::new(),
     };
     assert_eq!(result.replaced_count, 5);
     assert_eq!(result.files_affected, 2);
-    assert_eq!(result.skipped_paths.len(), 1);
+    assert_eq!(result.skipped_count, 1);
 }
 
 #[test]
@@ -2044,7 +2325,9 @@ fn test_search_navigation_actions_enabled_lifecycle() {
     let window = test_window();
 
     // 1. Start: disabled (no tabs, no panel, no results).
-    let next = window.lookup_action("search-next-match").expect("expected operation to succeed");
+    let next = window
+        .lookup_action("search-next-match")
+        .expect("expected operation to succeed");
     assert!(!next.is_enabled(), "should start disabled");
 
     // 2. Open a tab — still disabled (panel not visible, no results).
@@ -2263,7 +2546,8 @@ fn test_saved_search_serialization_roundtrip() {
         ),
     );
     let json = serde_json::to_string(&entry).expect("expected operation to succeed");
-    let deserialized: SavedSearch = serde_json::from_str(&json).expect("expected operation to succeed");
+    let deserialized: SavedSearch =
+        serde_json::from_str(&json).expect("expected operation to succeed");
     assert_eq!(entry, deserialized);
 }
 

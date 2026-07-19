@@ -92,10 +92,10 @@ struct SaveWriteOutcome {
     size: u64,
     mtime: Option<u64>,
     canonical_path: Option<PathBuf>,
-    clean_text: Option<String>,
-    formatted_text: Option<String>,
+    clean_text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
+    formatted_text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
     retain_formatted_as_clean: bool,
-    _permit: Option<SavePayloadPermit>,
+    permit: Option<SavePayloadPermit>,
 }
 
 /// Projection and view flags restored after one complete or cancelled install.
@@ -111,6 +111,15 @@ struct LoadInstallationState {
 pub(crate) struct PendingFileLoad {
     path: PathBuf,
     reopen_as: Option<DocumentEncoding>,
+    planning_terminal: Option<Box<dyn FnOnce()>>,
+}
+
+impl PendingFileLoad {
+    fn finish_planning(mut self) {
+        if let Some(callback) = self.planning_terminal.take() {
+            callback();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -409,7 +418,11 @@ fn run_cancelled_clear_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     let pending = editor.imp().load.pending_load.take();
     drop(permit);
     if let Some(pending) = pending {
-        editor.load_file_async_with_encoding(&pending.path, pending.reopen_as);
+        editor.load_file_async_with_encoding_and_planning_terminal(
+            &pending.path,
+            pending.reopen_as,
+            pending.planning_terminal,
+        );
     }
 }
 
@@ -433,25 +446,52 @@ impl LushtextEditorPage {
     /// Start loading a file asynchronously. Sets the file path immediately
     /// so duplicate detection works before content arrives.
     pub fn load_file_async(&self, path: &Path) {
-        self.load_file_async_with_encoding(path, None);
+        self.load_file_async_with_encoding_and_planning_terminal(path, None, None);
     }
 
     /// Start loading a file asynchronously, optionally forcing a reopen encoding.
     pub fn load_file_async_with_encoding(&self, path: &Path, reopen_as: Option<DocumentEncoding>) {
+        self.load_file_async_with_encoding_and_planning_terminal(path, reopen_as, None);
+    }
+
+    /// Start one load whose background planning admission is owned externally.
+    pub(crate) fn load_file_async_with_planning_terminal<F>(&self, path: &Path, on_terminal: F)
+    where
+        F: FnOnce() + 'static,
+    {
+        self.load_file_async_with_encoding_and_planning_terminal(
+            path,
+            None,
+            Some(Box::new(on_terminal)),
+        );
+    }
+
+    fn load_file_async_with_encoding_and_planning_terminal(
+        &self,
+        path: &Path,
+        reopen_as: Option<DocumentEncoding>,
+        planning_terminal: Option<Box<dyn FnOnce()>>,
+    ) {
         if self.imp().load.finalizing.get() {
-            self.imp().load.pending_load.replace(Some(PendingFileLoad {
+            if let Some(replaced) = self.imp().load.pending_load.replace(Some(PendingFileLoad {
                 path: path.to_path_buf(),
                 reopen_as,
-            }));
+                planning_terminal,
+            })) {
+                replaced.finish_planning();
+            }
             self.cancel_noninstall_load_resources();
             return;
         }
         let installation = self.imp().load.installation.borrow().clone();
         if let Some(session) = installation {
-            self.imp().load.pending_load.replace(Some(PendingFileLoad {
+            if let Some(replaced) = self.imp().load.pending_load.replace(Some(PendingFileLoad {
                 path: path.to_path_buf(),
                 reopen_as,
-            }));
+                planning_terminal,
+            })) {
+                replaced.finish_planning();
+            }
             self.imp()
                 .cancel_token
                 .borrow()
@@ -468,6 +508,10 @@ impl LushtextEditorPage {
             EditorLoadState::Failed
         };
         self.cancel_noninstall_load_resources();
+        self.imp()
+            .load
+            .planning_terminal_callback
+            .replace(planning_terminal);
         self.imp().file_path.replace(Some(file_path.clone()));
         self.imp().canonical_file_path.borrow_mut().take();
         self.imp().file_size.set(None);
@@ -492,6 +536,7 @@ impl LushtextEditorPage {
                     return;
                 };
                 if !editor.load_request_is_current(load_generation, &cancel) {
+                    editor.finish_load_planning();
                     return;
                 }
                 match result {
@@ -511,6 +556,7 @@ impl LushtextEditorPage {
                         );
                     }
                 }
+                editor.finish_load_planning();
             },
         );
     }
@@ -647,6 +693,7 @@ impl LushtextEditorPage {
     }
 
     fn begin_load_installation(&self, suspend_minimap_projection: bool) -> LoadInstallationState {
+        self.invalidate_minimap_analysis_content();
         let imp = self.imp();
         let view = self.source_view();
         let restore = LoadInstallationState {
@@ -810,12 +857,16 @@ impl LushtextEditorPage {
             // Final projection owns the main thread and has no cancellable
             // payload work left. A cancel can still withdraw a reload queued
             // reentrantly by an earlier callback.
-            self.imp().load.pending_load.take();
+            if let Some(pending) = self.imp().load.pending_load.take() {
+                pending.finish_planning();
+            }
             return;
         }
         let was_loading = self.imp().load_state.get() == EditorLoadState::Loading;
         let installation_active = self.imp().load.installation.borrow().is_some();
-        self.imp().load.pending_load.take();
+        if let Some(pending) = self.imp().load.pending_load.take() {
+            pending.finish_planning();
+        }
         self.imp()
             .load
             .user_cancel_pending
@@ -851,7 +902,9 @@ impl LushtextEditorPage {
         if self.imp().load.finalizing.get() {
             self.imp().load.dispose_during_finalization.set(true);
         }
-        self.imp().load.pending_load.take();
+        if let Some(pending) = self.imp().load.pending_load.take() {
+            pending.finish_planning();
+        }
         self.imp().load.user_cancel_pending.set(false);
         self.cancel_current_load_resources(AbortDisposition::Dispose);
         self.imp()
@@ -865,6 +918,13 @@ impl LushtextEditorPage {
             .borrow()
             .store(true, Ordering::Release);
         load_runtime::cancel_for_editor(self);
+        self.finish_load_planning();
+    }
+
+    fn finish_load_planning(&self) {
+        if let Some(callback) = self.imp().load.planning_terminal_callback.take() {
+            callback();
+        }
     }
 
     fn cancel_current_load_resources(&self, disposition: AbortDisposition) {
@@ -1279,7 +1339,9 @@ impl LushtextEditorPage {
         }
 
         let buffer = self.buffer();
-        let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
+        let text = buffer_snapshot::BufferSnapshotPayload::direct(
+            buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+        );
         self.write_snapshot_async(path, text, restore_state, admitted, callback);
     }
 
@@ -1364,7 +1426,7 @@ impl LushtextEditorPage {
     fn write_snapshot_async(
         &self,
         path: PathBuf,
-        text: String,
+        text: buffer_snapshot::BufferSnapshotPayload,
         restore_view_state: ViewInteractivityState,
         admitted: AdmittedSaveContext,
         callback: SaveCallback,
@@ -1383,11 +1445,12 @@ impl LushtextEditorPage {
         spawn_blocking_then(
             self.clone(),
             move || {
+                let text = text.into_guarded_string_on_worker();
                 let formatted_text = editor_io::apply_save_formatting_overrides_borrowed(
-                    &text,
+                    text.as_str(),
                     formatting_overrides,
                 );
-                let should_update_buffer = formatted_text.as_ref() != text;
+                let should_update_buffer = formatted_text.as_ref() != text.as_str();
                 let write_result = editor_io::write_document_to_path(
                     &path,
                     formatted_text.as_ref(),
@@ -1418,15 +1481,19 @@ impl LushtextEditorPage {
                 let retain_formatted_as_clean =
                     should_update_buffer && history_availability.allows_automatic_capture();
                 let (clean_text, formatted_text) = if should_update_buffer {
-                    (None, Some(formatted_text.into_owned()))
+                    let formatted_text = formatted_text.into_owned();
+                    (
+                        None,
+                        Some(text.map_preserving_reservation(|_| formatted_text)),
+                    )
                 } else {
                     drop(formatted_text);
-                    (
-                        history_availability
-                            .allows_automatic_capture()
-                            .then_some(text),
-                        None,
-                    )
+                    if history_availability.allows_automatic_capture() {
+                        (Some(text), None)
+                    } else {
+                        drop(text.into_inner_on_worker());
+                        (None, None)
+                    }
                 };
                 Ok::<_, EditorSaveError>(SaveWriteOutcome {
                     size,
@@ -1435,7 +1502,7 @@ impl LushtextEditorPage {
                     clean_text,
                     formatted_text,
                     retain_formatted_as_clean,
-                    _permit: Some(permit),
+                    permit: Some(permit),
                 })
             },
             move |editor, result| match result {
@@ -1457,50 +1524,58 @@ impl LushtextEditorPage {
                         .offset();
                     let freshness_editor = editor.downgrade();
                     let terminal_editor = editor.downgrade();
-                    editor.replace_buffer_bounded(BufferReplacementRequest::new(
-                        BufferReplacementTicket {
-                            workflow: BufferReplacementWorkflow::SaveFormatting,
-                            generation: ticket.save_generation,
-                        },
-                        formatted_text,
-                        move |_| {
-                            freshness_editor
-                                .upgrade()
-                                .is_some_and(|editor| ticket.is_current(&editor))
-                        },
-                        move |replacement| {
-                            let Some(editor) = terminal_editor.upgrade() else {
-                                return;
-                            };
-                            match replacement {
-                                BufferReplacementOutcome::Complete {
-                                    ticket:
-                                        BufferReplacementTicket {
-                                            workflow: BufferReplacementWorkflow::SaveFormatting,
-                                            generation,
-                                        },
-                                    body,
-                                    ..
-                                } if generation == ticket.save_generation
-                                    && ticket.is_current(&editor) =>
-                                {
-                                    if outcome.retain_formatted_as_clean {
-                                        outcome.clean_text = Some(body);
+                    let completed_body = Rc::new(RefCell::new(None));
+                    let completed_body_for_request = Rc::clone(&completed_body);
+                    let completed_body_for_terminal = Rc::clone(&completed_body);
+                    editor.replace_buffer_bounded(
+                        BufferReplacementRequest::new_guarded(
+                            BufferReplacementTicket {
+                                workflow: BufferReplacementWorkflow::SaveFormatting,
+                                generation: ticket.save_generation,
+                            },
+                            formatted_text,
+                            move |_| {
+                                freshness_editor
+                                    .upgrade()
+                                    .is_some_and(|editor| ticket.is_current(&editor))
+                            },
+                            move |replacement| {
+                                let Some(editor) = terminal_editor.upgrade() else {
+                                    return;
+                                };
+                                match replacement {
+                                    BufferReplacementOutcome::Complete {
+                                        ticket:
+                                            BufferReplacementTicket {
+                                                workflow: BufferReplacementWorkflow::SaveFormatting,
+                                                generation,
+                                            },
+                                        ..
+                                    } if generation == ticket.save_generation
+                                        && ticket.is_current(&editor) =>
+                                    {
+                                        if outcome.retain_formatted_as_clean {
+                                            outcome.clean_text =
+                                                completed_body_for_terminal.borrow_mut().take();
+                                        }
+                                        editor.finish_accepted_save(
+                                            outcome,
+                                            restore_view_state,
+                                            Some(cursor_offset),
+                                            callback,
+                                        );
                                     }
-                                    editor.finish_accepted_save(
-                                        outcome,
+                                    _ => editor.finish_save_formatting_without_acceptance(
                                         restore_view_state,
-                                        Some(cursor_offset),
                                         callback,
-                                    );
+                                    ),
                                 }
-                                _ => editor.finish_save_formatting_without_acceptance(
-                                    restore_view_state,
-                                    callback,
-                                ),
-                            }
-                        },
-                    ));
+                            },
+                        )
+                        .return_guarded_body_on_complete(move |body| {
+                            completed_body_for_request.replace(Some(body));
+                        }),
+                    );
                 }
                 Err(error) => {
                     if !ticket.is_current(&editor) {
@@ -1604,7 +1679,7 @@ impl LushtextEditorPage {
         // Close-save progression may synchronously queue the next editor. The
         // consumed payload must leave shared accounting before that callback
         // can trigger another admission pass.
-        drop(outcome._permit.take());
+        drop(outcome.permit.take());
         callback(Ok(()));
     }
 

@@ -12,6 +12,7 @@ use notify_debouncer_full::notify::event::{AccessKind, AccessMode, CreateKind};
 use notify_debouncer_full::notify::{Event, EventKind};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
+use std::fmt::Write as _;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,7 +25,8 @@ use lushtext_core::model::buffer_replacement::{
     BufferReplacementPlan, REPLACEMENT_CLEAR_SLICE_CHARS, REPLACEMENT_INSERT_SLICE_BYTES,
 };
 use lushtext_core::model::content_search::{
-    ContentSearchOptions, Replacement, SearchMatch, SearchMatchId, generate_replacement_preview,
+    ContentSearchOptions, MAX_REPLACE_PREVIEW_ROWS, Replacement, SearchMatch, SearchMatchId,
+    generate_replacement_preview,
 };
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::editor_memory::{
@@ -39,9 +41,12 @@ use lushtext_core::model::file_load::{
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
 use lushtext_core::model::migration_ledger::MigrationKind;
+use lushtext_core::model::minimap_analysis::{
+    MinimapAnalysisAccumulator, MinimapAnalysisPolicy, MinimapAnalysisResult,
+};
 use lushtext_core::model::palette::{
     IndexedFile, PaletteFileIdentity, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
-    PaletteOpenEditorNoteSnapshot, SearchMode, SearchResultItem,
+    PaletteOpenEditorNoteSnapshot, PaletteSearchRow, SearchMode, SearchResultItem,
 };
 use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
 use lushtext_core::model::save_admission::{
@@ -57,6 +62,7 @@ use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, s
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
+use lushtext_core::model::workspace_scan::WorkspaceScanFlight;
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
@@ -207,6 +213,22 @@ fn make_directory_only_tree(directory_count: usize) -> TempDir {
     let dir = TempDir::new().expect("expected operation to succeed");
     for index in 0..directory_count {
         fixture::create_dir(&dir.path().join(format!("empty_{index:05}")));
+    }
+    dir
+}
+
+/// Create a real tree whose complete raw/canonical path graph approaches the
+/// installed and build-byte policies without requiring six-figure file counts.
+fn make_near_policy_long_path_tree(file_count: usize) -> TempDir {
+    let dir = TempDir::new().expect("near-policy file-index tempdir");
+    let mut parent = dir.path().to_path_buf();
+    for depth in 0..16 {
+        parent = parent.join(format!("segment-{depth:02}-{}", "x".repeat(165)));
+        fixture::create_dir(&parent);
+    }
+    for index in 0..file_count {
+        let name = format!("source-{index:05}-{}-界.rs", "n".repeat(96));
+        fixture::write_text(&parent.join(name), "");
     }
     dir
 }
@@ -447,6 +469,35 @@ fn make_replace_all_10mb_fixture() -> (TempDir, Vec<Replacement>) {
             match_range: 7..13,
         }],
     )
+}
+
+/// Create a near-cap file of short lines with the maximum accepted replacements.
+fn make_replace_all_dense_10mb_fixture() -> (TempDir, Vec<Replacement>, usize) {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let path = dir.path().join("accepted-10mb-dense-lines.txt");
+    let byte_limit = usize::try_from(content_search::MAX_REPLACE_FILE_BYTES)
+        .expect("Replace All file-byte limit should fit usize");
+    let source_lines = byte_limit / 2;
+    fixture::write_text(&path, &"x\n".repeat(source_lines));
+    let original_line: Arc<str> = Arc::from("x");
+    let replacement_text: Arc<str> = Arc::from("y");
+    let replacements = (0..MAX_REPLACE_PREVIEW_ROWS)
+        .map(|index| {
+            let line_index = index.saturating_mul(source_lines.saturating_sub(1))
+                / MAX_REPLACE_PREVIEW_ROWS.saturating_sub(1);
+            Replacement {
+                match_id: SearchMatchId::from_index(index),
+                path: path.clone(),
+                line_number: u64::try_from(line_index + 1)
+                    .expect("dense fixture line number should fit u64"),
+                original_line: original_line.clone(),
+                replaced_line: "y".to_string(),
+                replacement: replacement_text.clone(),
+                match_range: 0..1,
+            }
+        })
+        .collect();
+    (dir, replacements, source_lines)
 }
 
 /// Create one sparse file just over the Replace All cap so the benchmark tracks skip cost.
@@ -875,6 +926,103 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
         palette::MAX_INDEXED_DIRECTORIES,
     );
 
+    let common = make_temp_dir_tree(10_000);
+    let common_outcome = FileIndex::rebuild_cancellable_with_hint(
+        &[common.path().to_path_buf()],
+        10_000,
+        &palette::PaletteSearchCancellation::default(),
+    );
+    let palette::FileIndexBuildOutcome::Complete {
+        index: common_index,
+        metrics: common_metrics,
+    } = common_outcome
+    else {
+        panic!("fresh common file-index evidence must complete");
+    };
+    assert_eq!(common_index.len(), 10_000);
+    assert!(common_metrics.peak_build_bytes <= palette::MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+    assert!(common_metrics.retained_index_bytes <= palette::MAX_FILE_INDEX_RETAINED_BYTES);
+
+    let missing_parent = TempDir::new().expect("file-index missing-root tempdir");
+    let missing_roots = (0..1_000)
+        .map(|index| missing_parent.path().join(format!("removed-{index:04}")))
+        .collect::<Vec<_>>();
+    let missing_outcome = FileIndex::rebuild_cancellable_with_hint(
+        &missing_roots,
+        0,
+        &palette::PaletteSearchCancellation::default(),
+    );
+    let palette::FileIndexBuildOutcome::Complete {
+        index: missing_index,
+        ..
+    } = missing_outcome
+    else {
+        panic!("fresh missing-root file-index evidence must complete");
+    };
+    assert!(missing_index.is_empty());
+
+    let near_policy = make_near_policy_long_path_tree(10_000);
+    let near_policy_outcome = FileIndex::rebuild_cancellable_with_hint(
+        &[near_policy.path().to_path_buf()],
+        10_000,
+        &palette::PaletteSearchCancellation::default(),
+    );
+    let palette::FileIndexBuildOutcome::Complete {
+        index: near_policy_index,
+        metrics: near_policy_metrics,
+    } = near_policy_outcome
+    else {
+        panic!("fresh near-policy file-index evidence must complete");
+    };
+    assert!(!near_policy_index.is_empty());
+    assert!(
+        near_policy_metrics.retained_index_bytes
+            >= palette::MAX_FILE_INDEX_RETAINED_BYTES.saturating_mul(3) / 4
+    );
+    assert!(
+        near_policy_metrics.peak_build_bytes
+            >= palette::MAX_FILE_INDEX_BUILD_RETAINED_BYTES.saturating_mul(3) / 4
+    );
+    assert!(near_policy_metrics.peak_build_bytes <= palette::MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+    assert!(near_policy_metrics.retained_index_bytes <= palette::MAX_FILE_INDEX_RETAINED_BYTES);
+    eprintln!(
+        "file-index-near-policy-evidence fixture_files=10000 retained_files={} retained_index_bytes={} installed_limit={} peak_build_bytes={} build_limit={} truncation={:?}",
+        near_policy_index.len(),
+        near_policy_metrics.retained_index_bytes,
+        palette::MAX_FILE_INDEX_RETAINED_BYTES,
+        near_policy_metrics.peak_build_bytes,
+        palette::MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+        near_policy_metrics.truncation,
+    );
+
+    group.bench_function("common_mixed/10000", |b| {
+        b.iter(|| {
+            FileIndex::rebuild_cancellable_with_hint(
+                black_box(&[common.path().to_path_buf()]),
+                10_000,
+                &palette::PaletteSearchCancellation::default(),
+            )
+        });
+    });
+    group.bench_function("missing_workspace_folders/1000", |b| {
+        b.iter(|| {
+            FileIndex::rebuild_cancellable_with_hint(
+                black_box(&missing_roots),
+                0,
+                &palette::PaletteSearchCancellation::default(),
+            )
+        });
+    });
+    group.bench_function("near_policy_long_paths/10000", |b| {
+        b.iter(|| {
+            FileIndex::rebuild_cancellable_with_hint(
+                black_box(&[near_policy.path().to_path_buf()]),
+                10_000,
+                &palette::PaletteSearchCancellation::default(),
+            )
+        });
+    });
+
     for file_count in [50, 500, 1_000, 5_000, 10_000, 100_000] {
         group.bench_function(BenchmarkId::from_parameter(file_count), |b| {
             b.iter_batched(
@@ -1019,6 +1167,8 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
         data_dir: flat.path().to_path_buf(),
         scope_snapshot,
         open_editor_snapshots: Arc::from(Vec::<PaletteOpenEditorNoteSnapshot>::new()),
+        open_editor_snapshots_truncated: false,
+        mode: palette::NotesBrowserMode::AllNotes,
         limits: palette::PALETTE_NOTE_SOURCE_LIMITS,
     };
     let mut note_coordinator = palette::NoteSourceRefreshCoordinator::default();
@@ -1538,6 +1688,44 @@ fn bench_line_ending_detection(c: &mut Criterion) {
 }
 
 fn bench_replace_undo_workflows(c: &mut Criterion) {
+    if std::env::args().any(|argument| argument.contains("replace_undo_workflows")) {
+        let (evidence_dir, evidence_replacements, source_lines) =
+            make_replace_all_dense_10mb_fixture();
+        let evidence_cancel = AtomicBool::new(false);
+        let evidence = content_search::apply_replacements(
+            &evidence_replacements,
+            &HashSet::new(),
+            &evidence_cancel,
+            Some(evidence_dir.path()),
+        )
+        .expect("dense-line Replace All evidence should complete");
+        let evidence_metrics = evidence.metrics();
+        assert_eq!(
+            evidence_metrics.source_lines,
+            u64::try_from(source_lines).expect("dense fixture line count should fit u64")
+        );
+        assert_eq!(
+            evidence_metrics.accepted_replacements,
+            MAX_REPLACE_PREVIEW_ROWS
+        );
+        assert_eq!(
+            evidence_metrics.retained_edit_records,
+            MAX_REPLACE_PREVIEW_ROWS
+        );
+        assert!(evidence_metrics.retained_edit_records < source_lines);
+        eprintln!(
+            "replace-all-streaming-evidence source_lines={} accepted_replacements={} retained_edit_records={} retained_edit_bytes={} output_bytes={} undo_bytes={} replacement_cap={} file_byte_cap={}",
+            evidence_metrics.source_lines,
+            evidence_metrics.accepted_replacements,
+            evidence_metrics.retained_edit_records,
+            evidence_metrics.retained_edit_bytes,
+            evidence_metrics.output_bytes,
+            evidence_metrics.undo_bytes,
+            MAX_REPLACE_PREVIEW_ROWS,
+            content_search::MAX_REPLACE_FILE_BYTES,
+        );
+    }
+
     let mut group = c.benchmark_group("replace_undo_workflows");
     group.sample_size(10);
 
@@ -1608,6 +1796,33 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
         );
     });
 
+    group.bench_function("replace_all/accepted_10mb_dense_short_lines", |b| {
+        b.iter_batched(
+            make_replace_all_dense_10mb_fixture,
+            |(dir, replacements, source_lines)| {
+                let cancel = AtomicBool::new(false);
+                let outcome = content_search::apply_replacements(
+                    black_box(&replacements),
+                    black_box(&HashSet::new()),
+                    black_box(&cancel),
+                    Some(dir.path()),
+                )
+                .expect("expected operation to succeed");
+                let metrics = outcome.metrics();
+                black_box((
+                    metrics.source_lines,
+                    metrics.accepted_replacements,
+                    metrics.retained_edit_records,
+                    metrics.output_bytes,
+                    metrics.undo_bytes,
+                    source_lines,
+                    dir,
+                ));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
     group.bench_function("replace_all/skipped_over_cap_file", |b| {
         b.iter_batched(
             make_replace_all_over_cap_fixture,
@@ -1621,7 +1836,7 @@ fn bench_replace_undo_workflows(c: &mut Criterion) {
                 )
                 .expect("expected operation to succeed")
                 .into_parts();
-                black_box((result.skipped_paths.len(), backup.len(), dir));
+                black_box((result.skipped_count, backup.len(), dir));
             },
             BatchSize::SmallInput,
         );
@@ -2173,15 +2388,32 @@ fn bench_recovery_performance(c: &mut Criterion) {
             |(dir, workspace)| {
                 let restore = draft_service::load_restore_state(black_box(dir.path()));
                 let ledger = migration_ledger::load_recovering(black_box(dir.path()));
-                let bookmarks = bookmark_service::list_workspace_bookmarks_recovering(
+                let scope_snapshot = WorkspacesFile {
+                    current_scope: WorkspaceScope::All,
+                    workspaces: vec![WorkspaceConfig {
+                        id: WorkspaceId::new("recovery-benchmark"),
+                        name: "Recovery Benchmark".to_string(),
+                        folders: vec![WorkspaceFolder::new(workspace)],
+                    }],
+                }
+                .current_scope_snapshot();
+                let bookmarks = palette::load_note_entries_bounded_for_scope(
                     black_box(dir.path()),
-                    black_box(&[workspace]),
+                    black_box(&scope_snapshot),
+                    &[],
+                    false,
+                    palette::NotesBrowserMode::Bookmarks,
+                    palette::PALETTE_NOTE_SOURCE_LIMITS,
+                    &palette::PaletteSearchCancellation::default(),
                 )
                 .expect("expected operation to succeed");
+                let palette::PaletteNoteSourceOutcome::Complete { load, .. } = bookmarks else {
+                    panic!("fresh recovery benchmark cannot cancel");
+                };
                 black_box((
                     restore.diagnostics.len(),
                     ledger.diagnostics.len(),
-                    bookmarks.diagnostics.len(),
+                    load.diagnostics.len(),
                     dir,
                 ));
             },
@@ -2708,6 +2940,48 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     const NOTE_RENDER_CAP: usize = 500;
     const PREVIEW_BYTES: usize = 4 * 1024 * 1024;
     const CACHE_ROWS: usize = 10_000;
+    const MINIMAP_ANALYSIS_SLICE_CHARS: usize = 32 * 1024;
+    const MINIMAP_SHORT_LINE_CHARS: usize = 96;
+    const MINIMAP_SHORT_LINES: usize = 23_000;
+
+    fn workspace_scan_pressure(
+        requests: usize,
+    ) -> lushtext_core::model::workspace_scan::WorkspaceScanFlightMetrics {
+        let mut flight = WorkspaceScanFlight::default();
+        for _ in 0..requests {
+            let _ = flight.submit(1);
+        }
+        let first = flight
+            .active()
+            .expect("pressure fixture should own an active scan");
+        let _ = flight.finish(first);
+        if let Some(latest) = flight.active() {
+            let _ = flight.finish(latest);
+        }
+        flight.metrics()
+    }
+
+    fn minimap_analysis(text: &str) -> (MinimapAnalysisResult, usize, usize) {
+        let policy = MinimapAnalysisPolicy {
+            warning_line_chars: 120,
+            wrapped_line_chars: 8_000,
+            marker_limit: 2_000,
+        };
+        let mut analysis = MinimapAnalysisAccumulator::new(policy, true);
+        let mut characters = text.chars();
+        let mut slices = 0usize;
+        let mut slice_high_water = 0usize;
+        loop {
+            let inspected =
+                analysis.inspect_slice(characters.by_ref(), MINIMAP_ANALYSIS_SLICE_CHARS);
+            if inspected == 0 {
+                break;
+            }
+            slices = slices.saturating_add(1);
+            slice_high_water = slice_high_water.max(inspected);
+        }
+        (analysis.finish(), slices, slice_high_water)
+    }
 
     let note_entries = synthetic_notes_browser_entries(NOTE_ROWS);
     let note_bytes = note_entries
@@ -2721,6 +2995,7 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
         .sum::<usize>();
     let note_request = palette::NotesBrowserQueryRequest {
         query: "needle that is absent".to_string(),
+        mode: palette::NotesBrowserMode::AllNotes,
     };
     let note_outcome = palette::query_notes_browser_source(
         &note_entries,
@@ -2729,6 +3004,101 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
         &palette::PaletteSearchCancellation::default(),
     );
     let note_metrics = note_outcome.metrics();
+    let large_scoring_body = format!("{} trailing calibration needle", "x".repeat(4 * 1024 + 128));
+    let note_scoring_entries = (0..NOTE_ROWS)
+        .map(|index| PaletteNoteEntry {
+            category: PaletteNoteCategory::DocumentNotes,
+            title: format!("Calibration needle {index:05}"),
+            subtitle: format!("Workspace / scoring-{index:05}.md"),
+            detail: None,
+            note_text: Some(large_scoring_body.clone()),
+            target: PaletteNoteTarget::DocumentNote {
+                path: PathBuf::from(format!("/benchmark/scoring-{index:05}.md")),
+                workspace_folders: vec![PathBuf::from("/benchmark")],
+            },
+        })
+        .collect::<Vec<_>>();
+    let empty_index = FileIndex::default();
+    let run_note_scoring = |query: &str| {
+        palette::grouped_search(
+            palette::GroupedSearchInput {
+                index: &empty_index,
+                open_tabs: &[],
+                note_entries: &note_scoring_entries,
+                workspace_group_label: "All Workspaces",
+                query,
+                mode: SearchMode::Notes,
+                max_per_source: NOTE_RENDER_CAP,
+            },
+            &palette::PaletteSearchCancellation::default(),
+        )
+    };
+    let direct_note_scoring = run_note_scoring("calibration needle");
+    let direct_note_scoring_metrics = direct_note_scoring.metrics();
+    let palette::PaletteSearchOutcome::Complete {
+        value: direct_note_rows,
+        ..
+    } = direct_note_scoring
+    else {
+        panic!("fresh scoring benchmark must complete");
+    };
+    let retained_note_rows = direct_note_rows
+        .iter()
+        .filter(|row| matches!(row, PaletteSearchRow::Note { .. }))
+        .count();
+    assert_eq!(direct_note_scoring_metrics.candidates_scored, NOTE_ROWS);
+    assert_eq!(direct_note_scoring_metrics.note_bodies_examined, 0);
+    assert_eq!(
+        direct_note_scoring_metrics.note_bodies_safely_pruned,
+        NOTE_ROWS
+    );
+    assert_eq!(retained_note_rows, NOTE_RENDER_CAP);
+
+    let mut scoring_coordinator = palette::NotesBrowserQueryCoordinator::default();
+    let first_scoring = scoring_coordinator
+        .submit(palette::NotesBrowserQueryRequest {
+            query: "obsolete-0".to_string(),
+            mode: palette::NotesBrowserMode::AllNotes,
+        })
+        .expect("first scoring request starts");
+    for index in 1..32 {
+        let _ = scoring_coordinator.submit(palette::NotesBrowserQueryRequest {
+            query: format!("obsolete-{index}"),
+            mode: palette::NotesBrowserMode::AllNotes,
+        });
+    }
+    let _ = scoring_coordinator.submit(palette::NotesBrowserQueryRequest {
+        query: "calibration needle".to_string(),
+        mode: palette::NotesBrowserMode::AllNotes,
+    });
+    let scoring_ownership = scoring_coordinator.snapshot();
+    let latest_scoring = scoring_coordinator
+        .finish(first_scoring.generation)
+        .expect("latest scoring request starts");
+    let latest_note_scoring = run_note_scoring(&latest_scoring.request.query);
+    let palette::PaletteSearchOutcome::Complete {
+        value: latest_note_rows,
+        ..
+    } = latest_note_scoring
+    else {
+        panic!("fresh latest scoring benchmark must complete");
+    };
+    let final_query_equivalent = latest_note_rows == direct_note_rows;
+    assert!(final_query_equivalent);
+    eprintln!(
+        "note-scoring-pruning-evidence source_rows={} candidates_scored={} bodies_examined={} bodies_safely_pruned={} retained_results={} active_queries={} pending_queries={} active_high_water={} pending_high_water={} cancellation_requests={} final_query_equivalent={}",
+        note_scoring_entries.len(),
+        direct_note_scoring_metrics.candidates_scored,
+        direct_note_scoring_metrics.note_bodies_examined,
+        direct_note_scoring_metrics.note_bodies_safely_pruned,
+        retained_note_rows,
+        scoring_ownership.active,
+        scoring_ownership.pending,
+        scoring_ownership.active_high_water,
+        scoring_ownership.pending_high_water,
+        scoring_ownership.cancellation_requests,
+        final_query_equivalent,
+    );
     let mut note_coordinator = palette::NotesBrowserQueryCoordinator::default();
     let active_note = note_coordinator
         .submit(note_request.clone())
@@ -2736,6 +3106,7 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     for index in 0..32 {
         let _ = note_coordinator.submit(palette::NotesBrowserQueryRequest {
             query: format!("latest-{index}"),
+            mode: palette::NotesBrowserMode::AllNotes,
         });
     }
     let note_ownership = note_coordinator.snapshot();
@@ -2803,14 +3174,37 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     let (cache_input_rows, cache_operations) =
         child_cache_rebuild_operation_evidence_for_benchmark(CACHE_ROWS);
     assert!(cache_operations <= cache_input_rows.saturating_mul(8));
+    let scan_flight_metrics = workspace_scan_pressure(10_000);
+    assert_eq!(scan_flight_metrics.active_high_water, 1);
+    assert_eq!(scan_flight_metrics.pending_high_water, 1);
+    assert_eq!(scan_flight_metrics.starts, 2);
+    let minimap_text =
+        format!("{}\n", "s".repeat(MINIMAP_SHORT_LINE_CHARS)).repeat(MINIMAP_SHORT_LINES);
+    let (minimap_result, minimap_slices, minimap_slice_high_water) =
+        minimap_analysis(&minimap_text);
+    assert_eq!(
+        minimap_result.characters_examined,
+        minimap_text.chars().count() as u64
+    );
+    assert!(minimap_slices > 1);
+    assert!(minimap_slice_high_water <= MINIMAP_ANALYSIS_SLICE_CHARS);
+    assert!(!minimap_result.wrapped_layout_too_large);
+    assert!(minimap_result.long_line_lines.is_empty());
 
     eprintln!(
-        "quality-gap-scale-evidence notes_entries={} notes_searchable_bytes={} notes_examined={} notes_active={} notes_pending={} preview_bytes={} preview_slices={} preview_retained_payloads=1 preview_active={} preview_pending={} raw_watcher_events={} watcher_retained_paths={} cache_input_rows={} cache_operations={}",
+        "quality-gap-scale-evidence notes_entries={} notes_searchable_bytes={} notes_examined={} notes_active={} notes_pending={} note_scoring_candidates={} note_bodies_examined={} note_bodies_safely_pruned={} note_retained_results={} note_scoring_active={} note_scoring_pending={} note_final_query_equivalent={} preview_bytes={} preview_slices={} preview_retained_payloads=1 preview_active={} preview_pending={} raw_watcher_events={} watcher_retained_paths={} cache_input_rows={} cache_operations={} scan_requests=10000 scan_active_high_water={} scan_pending_high_water={} scan_starts={} scan_pending_replacements={} scan_terminals={} minimap_bytes={} minimap_characters={} minimap_lines={} minimap_slices={} minimap_slice_high_water={} minimap_marker_rows={}",
         note_entries.len(),
         note_bytes,
         note_metrics.candidates_examined,
         note_ownership.active,
         note_ownership.pending,
+        direct_note_scoring_metrics.candidates_scored,
+        direct_note_scoring_metrics.note_bodies_examined,
+        direct_note_scoring_metrics.note_bodies_safely_pruned,
+        retained_note_rows,
+        scoring_ownership.active,
+        scoring_ownership.pending,
+        final_query_equivalent,
         preview.text.len(),
         preview_slices,
         preview_ownership.active,
@@ -2819,6 +3213,17 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
         watcher_snapshot.retained_paths,
         cache_input_rows,
         cache_operations,
+        scan_flight_metrics.active_high_water,
+        scan_flight_metrics.pending_high_water,
+        scan_flight_metrics.starts,
+        scan_flight_metrics.pending_replacements,
+        scan_flight_metrics.terminals,
+        minimap_text.len(),
+        minimap_result.characters_examined,
+        minimap_result.lines_examined,
+        minimap_slices,
+        minimap_slice_high_water,
+        minimap_result.long_line_lines.len(),
     );
 
     let mut group = c.benchmark_group("quality_gap_scale");
@@ -2832,6 +3237,9 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
                 &palette::PaletteSearchCancellation::default(),
             ))
         });
+    });
+    group.bench_function("note_scoring/metadata_dominates_large_bodies_10000", |b| {
+        b.iter(|| black_box(run_note_scoring(black_box("calibration needle"))));
     });
     group.bench_function("local_history_preview/read_4_mib", |b| {
         b.iter(|| {
@@ -2853,14 +3261,21 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
             ))
         });
     });
+    group.bench_function("workspace_scan_flight/rapid_10000", |b| {
+        b.iter(|| black_box(workspace_scan_pressure(black_box(10_000))));
+    });
+    group.bench_function("minimap_analysis/many_short_lines_2_mib", |b| {
+        b.iter(|| black_box(minimap_analysis(black_box(&minimap_text))));
+    });
     group.finish();
 }
 
 /// Benchmark GTK-free Markdown planning and emit the direct projection bounds.
 fn bench_markdown_render_planning(c: &mut Criterion) {
-    let dense = (0..10_000)
-        .map(|index| format!("paragraph {index}\n\n"))
-        .collect::<String>();
+    let mut dense = String::new();
+    for index in 0..10_000 {
+        writeln!(dense, "paragraph {index}\n").expect("write Markdown benchmark fixture");
+    }
     let dense_plan = plan_markdown(&dense);
     assert!(dense_plan.is_complete());
     let max_batch_events = dense_plan
@@ -2911,7 +3326,7 @@ fn bench_search_interactive_policies(c: &mut Criterion) {
                     format!("query-{index}"),
                     ContentSearchOptions::default(),
                 ),
-                folders: vec![PathBuf::from("/workspace")],
+                folders: Arc::from([PathBuf::from("/workspace")]),
             });
             if index == 0 {
                 assert!(matches!(submission, WorkspaceSearchSubmission::Start(_)));

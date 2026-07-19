@@ -620,6 +620,153 @@ fn max_indexed_files_constant_remains_100k() {
 }
 
 #[test]
+fn empty_file_index_releases_a_large_reused_capacity_hint() {
+    let index = FileIndex::rebuild_with_hint(&[], MAX_INDEXED_FILES);
+
+    assert!(index.is_empty());
+    assert_eq!(index.retained_byte_weight(), 0);
+}
+
+#[test]
+fn file_index_retained_weight_charges_path_capacities_and_canonical_identity() {
+    let mut raw_path = PathBuf::from("/workspace/src/main.rs");
+    raw_path.reserve(8 * 1024);
+    let mut canonical_path = PathBuf::from("/canonical/workspace/src/main.rs");
+    canonical_path.reserve(16 * 1024);
+    let mut folder_path = PathBuf::from("/workspace");
+    folder_path.reserve(4 * 1024);
+    let raw_capacity = raw_path.capacity();
+    let canonical_capacity = canonical_path.capacity();
+    let folder_capacity = folder_path.capacity();
+    let folder = Arc::new(folder_path);
+    let index = FileIndex::from(vec![IndexedFile::new(
+        raw_path,
+        PaletteFileIdentity::canonical(canonical_path),
+        folder,
+    )]);
+
+    let retained = index.retained_byte_weight();
+    let required_path_bytes = raw_capacity
+        .saturating_add(canonical_capacity)
+        .saturating_add(folder_capacity);
+    assert!(retained >= u64::try_from(required_path_bytes).unwrap_or(u64::MAX));
+    assert!(retained <= MAX_FILE_INDEX_RETAINED_BYTES);
+}
+
+#[test]
+fn file_index_build_metrics_bound_unicode_paths_and_complete_installed_graph() {
+    let dir = TempDir::new().expect("file-index byte-metric tempdir");
+    let mut parent = dir.path().to_path_buf();
+    for depth in 0..24 {
+        parent = parent.join(format!("unicode-界🙂-{depth:02}"));
+        fixture::create_dir(&parent);
+        fixture::write_text(&parent.join(format!("source-界-{depth:02}.rs")), "");
+    }
+    let cancellation = PaletteSearchCancellation::default();
+
+    let FileIndexBuildOutcome::Complete { index, metrics } =
+        FileIndex::rebuild_cancellable_with_hint(&[dir.path().to_path_buf()], 1, &cancellation)
+    else {
+        panic!("fresh byte-bounded index should complete");
+    };
+
+    assert_eq!(index.len(), 24);
+    assert_eq!(metrics.retained_index_bytes, index.retained_byte_weight());
+    assert_eq!(metrics.current_build_bytes, metrics.retained_index_bytes);
+    assert!(metrics.retained_index_bytes <= super::MAX_FILE_INDEX_RETAINED_BYTES);
+    assert!(metrics.peak_build_bytes <= super::MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
+    assert!(metrics.peak_build_bytes >= metrics.retained_index_bytes);
+}
+
+#[test]
+fn file_index_build_limit_accepts_exact_peak_and_truncates_deterministically_one_under() {
+    let dir = TempDir::new().expect("file-index build-limit tempdir");
+    let mut parent = dir.path().to_path_buf();
+    for depth in 0..16 {
+        parent = parent.join(format!("long-unicode-界🙂-{depth:02}"));
+        fixture::create_dir(&parent);
+        fixture::write_text(&parent.join(format!("source-界🙂-{depth:02}.rs")), "");
+    }
+    let roots = [dir.path().to_path_buf()];
+    let cancellation = PaletteSearchCancellation::default();
+    let FileIndexBuildOutcome::Complete {
+        metrics: baseline, ..
+    } = FileIndex::rebuild_cancellable_with_build_limit_for_test(
+        &roots,
+        64,
+        64,
+        super::MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+        &cancellation,
+    )
+    else {
+        panic!("fresh build-limit baseline should complete");
+    };
+    let exact_limit = baseline.peak_build_bytes;
+
+    let FileIndexBuildOutcome::Complete {
+        index: exact,
+        metrics: exact_metrics,
+    } = FileIndex::rebuild_cancellable_with_build_limit_for_test(
+        &roots,
+        64,
+        64,
+        exact_limit,
+        &PaletteSearchCancellation::default(),
+    )
+    else {
+        panic!("exact build-byte limit should complete");
+    };
+    assert_eq!(exact.len(), 16);
+    assert_eq!(exact_metrics.truncation, None);
+    assert!(exact_metrics.peak_build_bytes <= exact_limit);
+
+    let run_one_under = || {
+        FileIndex::rebuild_cancellable_with_build_limit_for_test(
+            &roots,
+            64,
+            64,
+            exact_limit.saturating_sub(1),
+            &PaletteSearchCancellation::default(),
+        )
+    };
+    let FileIndexBuildOutcome::Complete {
+        index: first,
+        metrics: first_metrics,
+    } = run_one_under()
+    else {
+        panic!("one-under build-byte run should return its usable prefix");
+    };
+    let FileIndexBuildOutcome::Complete {
+        index: second,
+        metrics: second_metrics,
+    } = run_one_under()
+    else {
+        panic!("repeated one-under run should return its usable prefix");
+    };
+
+    assert_eq!(
+        first_metrics.truncation,
+        Some(FileIndexTruncationReason::BuildByteLimit)
+    );
+    assert_eq!(second_metrics.truncation, first_metrics.truncation);
+    assert!(first_metrics.peak_build_bytes < exact_limit);
+    assert!(second_metrics.peak_build_bytes < exact_limit);
+    assert_eq!(
+        first
+            .files()
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>(),
+        second
+            .files()
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(first.len() < exact.len());
+}
+
+#[test]
 fn file_index_directory_limit_is_independent_from_file_limit() {
     let dir = TempDir::new().expect("temp directory");
     for index in 0..8 {
@@ -768,22 +915,24 @@ fn file_index_deep_wide_traversal_accounts_for_the_global_pending_worklist() {
 #[test]
 fn file_index_cancelled_outcome_releases_partial_inventory() {
     let dir = TempDir::new().expect("temp directory");
-    fixture::write_text(&dir.path().join("file.rs"), "");
+    for index in 0..64 {
+        fixture::write_text(&dir.path().join(format!("file-{index:02}.rs")), "");
+    }
     let cancellation = PaletteSearchCancellation::default();
-    assert!(cancellation.cancel());
+    cancellation.cancel_after_checks_for_test(140);
 
     let outcome =
-        FileIndex::rebuild_cancellable_for_test(&[dir.path().to_path_buf()], 8, &cancellation);
+        FileIndex::rebuild_cancellable_for_test(&[dir.path().to_path_buf()], 64, &cancellation);
 
-    assert!(matches!(
-        outcome,
-        FileIndexBuildOutcome::Cancelled {
-            metrics: FileIndexBuildMetrics {
-                retained_files: 0,
-                ..
-            }
-        }
-    ));
+    let FileIndexBuildOutcome::Cancelled { metrics } = outcome else {
+        panic!("mid-traversal cancellation must not publish a partial index");
+    };
+    assert!(metrics.retained_files > 0);
+    assert!(metrics.retained_files < 64);
+    assert_eq!(metrics.current_build_bytes, 0);
+    assert_eq!(metrics.retained_index_bytes, 0);
+    assert!(metrics.peak_build_bytes > 0);
+    assert!(metrics.peak_build_bytes <= super::MAX_FILE_INDEX_BUILD_RETAINED_BYTES);
 }
 
 #[test]

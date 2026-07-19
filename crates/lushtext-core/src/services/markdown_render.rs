@@ -440,12 +440,14 @@ fn event_retained_bytes(event: &Event<'_>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     #[test]
     fn ordinary_blocks_are_packed_without_splitting() {
-        let markdown = (0..400)
-            .map(|index| format!("paragraph {index}\n\n"))
-            .collect::<String>();
+        let mut markdown = String::new();
+        for index in 0..400 {
+            writeln!(markdown, "paragraph {index}\n").expect("write paragraph fixture");
+        }
         let plan = plan_markdown(&markdown);
         assert!(plan.is_complete());
         assert!(plan.batches.len() > 1);
@@ -472,9 +474,10 @@ mod tests {
 
     #[test]
     fn image_flood_stops_at_descriptor_budget() {
-        let markdown = (0..=MAX_MARKDOWN_EMBED_DESCRIPTORS)
-            .map(|index| format!("![image](image-{index}.png)\n\n"))
-            .collect::<String>();
+        let mut markdown = String::new();
+        for index in 0..=MAX_MARKDOWN_EMBED_DESCRIPTORS {
+            writeln!(markdown, "![image](image-{index}.png)\n").expect("write image-flood fixture");
+        }
         let plan = plan_markdown(&markdown);
         assert_eq!(plan.limit, Some(MarkdownPlanLimit::EmbedDescriptors));
         assert_eq!(

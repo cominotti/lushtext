@@ -121,6 +121,7 @@ derive_partial_eq_without_eq  = "deny"
 unused_self                   = "deny"
 allow_attributes              = "deny"
 allow_attributes_without_reason = "deny"
+debug_assert_with_mut_call    = "deny"
 
 # --- Edition 2024 idioms ---
 uninlined_format_args         = "deny"

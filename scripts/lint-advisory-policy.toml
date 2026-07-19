@@ -62,6 +62,12 @@ max_count = 0
 rationale = "Promoted into the blocking lint table after wildcard imports are replaced with explicit prelude imports."
 
 [[rules]]
+code = "clippy::debug_assert_with_mut_call"
+classification = "blocking_candidate"
+max_count = 0
+rationale = "Mutating calls must execute before debug assertions because release builds elide the assertion expression and every side effect inside it."
+
+[[rules]]
 code = "clippy::doc_markdown"
 classification = "accepted_advisory"
 rationale = "Pedantic Markdown spelling/backtick style is useful review signal but not a blocking LushText policy."

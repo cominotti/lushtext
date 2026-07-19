@@ -68,6 +68,68 @@ pub fn set_search_worker_delay_for_test(delay_ms: u64) {
     SEARCH_WORKER_DELAY_MS.store(delay_ms, Ordering::Release);
 }
 
+/// Actual detached ownership held before or after one bounded retirement turn.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SearchRetirementOwnership {
+    pub root_rows: usize,
+    pub file_groups: usize,
+    pub child_rows: usize,
+    pub cached_match_rows: usize,
+    pub cached_file_rows: usize,
+    pub accepted_snapshot_refs: usize,
+    pub streamed_matches: usize,
+    pub accepted_matches: usize,
+    pub positions: usize,
+}
+
+#[cfg(feature = "test-utils")]
+impl SearchRetirementOwnership {
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.root_rows
+            .saturating_add(self.file_groups)
+            .saturating_add(self.child_rows)
+            .saturating_add(self.cached_match_rows)
+            .saturating_add(self.cached_file_rows)
+            .saturating_add(self.accepted_snapshot_refs)
+            .saturating_add(self.streamed_matches)
+            .saturating_add(self.accepted_matches)
+            .saturating_add(self.positions)
+    }
+
+    fn released_to(self, after: Self) -> Self {
+        Self {
+            root_rows: self.root_rows.saturating_sub(after.root_rows),
+            file_groups: self.file_groups.saturating_sub(after.file_groups),
+            child_rows: self.child_rows.saturating_sub(after.child_rows),
+            cached_match_rows: self
+                .cached_match_rows
+                .saturating_sub(after.cached_match_rows),
+            cached_file_rows: self.cached_file_rows.saturating_sub(after.cached_file_rows),
+            accepted_snapshot_refs: self
+                .accepted_snapshot_refs
+                .saturating_sub(after.accepted_snapshot_refs),
+            streamed_matches: self.streamed_matches.saturating_sub(after.streamed_matches),
+            accepted_matches: self.accepted_matches.saturating_sub(after.accepted_matches),
+            positions: self.positions.saturating_sub(after.positions),
+        }
+    }
+}
+
+/// Compact evidence from one actual GTK retirement turn.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchRetirementSliceObservation {
+    pub generation: u64,
+    pub before: SearchRetirementOwnership,
+    pub after: SearchRetirementOwnership,
+    pub released: SearchRetirementOwnership,
+    pub charged: usize,
+    pub pending: bool,
+    pub terminal_drain: bool,
+}
+
 /// One detached result generation whose GTK-owned references are no longer visible.
 struct RetiredSearchGtkState {
     generation: u64,
@@ -111,22 +173,27 @@ impl RetiredSearchGtkState {
                 self.file_groups.insert(path, group);
                 break;
             }
-            debug_assert_eq!(budget.take(1), 1);
+            let group_charged = budget.take_one();
+            debug_assert!(group_charged);
         }
         let match_row_count = budget.take(self.match_rows.len());
         self.match_rows
             .truncate(self.match_rows.len().saturating_sub(match_row_count));
-        while !budget.exhausted() && self.file_rows.pop_first().is_some() {
-            debug_assert_eq!(budget.take(1), 1);
+        while !budget.exhausted() && !self.file_rows.is_empty() {
+            let row_charged = budget.take_one();
+            debug_assert!(row_charged);
+            let removed = self.file_rows.pop_first();
+            debug_assert!(removed.is_some());
         }
-        if !budget.exhausted()
-            && let Some(accepted) = self.accepted_matches.take()
-        {
+        let accepted_charged =
+            !budget.exhausted() && self.accepted_matches.is_some() && budget.take_one();
+        if accepted_charged {
+            let accepted = self.accepted_matches.take();
+            debug_assert!(accepted.is_some());
+            let accepted = accepted.expect("accepted snapshot checked before retirement charge");
             if Arc::strong_count(&accepted) == 1 {
                 self.accepted_match_rows =
                     Arc::try_unwrap(accepted).expect("unique accepted search snapshot");
-            } else {
-                debug_assert_eq!(budget.take(1), 1);
             }
         }
         retire_vec_tail(&mut self.search_matches, &mut budget);
@@ -144,6 +211,36 @@ impl RetiredSearchGtkState {
             && self.accepted_matches.is_none()
             && self.accepted_match_rows.is_empty()
             && self.match_positions.is_empty()
+    }
+
+    #[cfg(feature = "test-utils")]
+    fn ownership(&self) -> SearchRetirementOwnership {
+        let accepted_snapshot_refs = usize::from(self.accepted_matches.is_some());
+        let uniquely_owned_accepted = self.accepted_matches.as_ref().map_or(0, |accepted| {
+            if Arc::strong_count(accepted) == 1 {
+                accepted.len()
+            } else {
+                0
+            }
+        });
+        SearchRetirementOwnership {
+            root_rows: usize::try_from(self.root_store.n_items()).unwrap_or(usize::MAX),
+            file_groups: self.file_groups.len(),
+            child_rows: self.file_groups.values().fold(0usize, |total, group| {
+                total.saturating_add(
+                    usize::try_from(group.child_store.n_items()).unwrap_or(usize::MAX),
+                )
+            }),
+            cached_match_rows: self.match_rows.len(),
+            cached_file_rows: self.file_rows.len(),
+            accepted_snapshot_refs,
+            streamed_matches: self.search_matches.len(),
+            accepted_matches: self
+                .accepted_match_rows
+                .len()
+                .saturating_add(uniquely_owned_accepted),
+            positions: self.match_positions.len(),
+        }
     }
 }
 
@@ -190,7 +287,7 @@ impl LushtextSearchPanel {
             return;
         }
 
-        let folders = imp.runtime.workspace_folders.borrow().clone();
+        let folders = Arc::clone(&imp.runtime.workspace_folders.borrow());
         if folders.is_empty() {
             self.cancel_active_search();
             imp.count_label.set_text("No workspace folders");
@@ -272,6 +369,7 @@ impl LushtextSearchPanel {
 
         let history_spec = spec.clone();
         let worker_spec = spec;
+        let worker_folders = Arc::clone(&folders);
         let worker_progress_counter = Arc::clone(&progress_counter);
         let worker_finished_for_search = Arc::new(AtomicBool::new(false));
         std::thread::spawn(move || {
@@ -282,7 +380,7 @@ impl LushtextSearchPanel {
                     std::thread::sleep(Duration::from_millis(delay_ms));
                 }
             }
-            let folder_refs: Vec<&Path> = folders.iter().map(PathBuf::as_path).collect();
+            let folder_refs: Vec<&Path> = worker_folders.iter().map(PathBuf::as_path).collect();
             content_search::search(
                 &worker_spec.query,
                 &folder_refs,
@@ -310,8 +408,6 @@ impl LushtextSearchPanel {
             let cancelled = timer_cancel.load(Ordering::Acquire);
             let mut done = false;
             let mut items_this_tick = 0;
-            let workspace_folders = imp.runtime.workspace_folders.borrow().clone();
-
             // Keep each GTK tick bounded so a large streaming search cannot
             // monopolize the main loop while thousands of matches arrive. The
             // 250-event cap drains bursts quickly without starving input and
@@ -320,7 +416,7 @@ impl LushtextSearchPanel {
                 match receive_search_event(&rx, &mut items_this_tick) {
                     SearchEventPoll::Event(SearchEvent::Match(search_match)) => {
                         if !cancelled {
-                            append_match_result(&panel, search_match, &workspace_folders);
+                            append_match_result(&panel, search_match, &folders);
                         }
                     }
                     SearchEventPoll::Event(SearchEvent::Done) | SearchEventPoll::Disconnected => {
@@ -531,7 +627,26 @@ impl LushtextSearchPanel {
                 return glib::ControlFlow::Break;
             };
             debug_assert!(state.generation <= imp.runtime.retirement_generation.get());
+            #[cfg(feature = "test-utils")]
+            let before = state.ownership();
             let retired_rows = state.retire_slice(SEARCH_RETIREMENT_ROWS_PER_SLICE);
+            #[cfg(feature = "test-utils")]
+            {
+                let after = state.ownership();
+                let released = before.released_to(after);
+                debug_assert_eq!(released.total(), retired_rows);
+                imp.runtime.retirement_observations.borrow_mut().push(
+                    SearchRetirementSliceObservation {
+                        generation: state.generation,
+                        before,
+                        after,
+                        released,
+                        charged: retired_rows,
+                        pending: !state.is_empty(),
+                        terminal_drain: state.is_empty(),
+                    },
+                );
+            }
             imp.runtime.retirement_rows_per_slice_high_water.set(
                 imp.runtime
                     .retirement_rows_per_slice_high_water
@@ -595,6 +710,13 @@ impl LushtextSearchPanel {
             MAX_SEARCH_RETIREMENT_GENERATIONS + 1,
             usize::from(imp.runtime.deferred_search.borrow().is_some()),
         )
+    }
+
+    /// Actual before/after ownership observed for every bounded retirement turn.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn retirement_observations_for_test(&self) -> Vec<SearchRetirementSliceObservation> {
+        self.imp().runtime.retirement_observations.borrow().clone()
     }
 
     /// Direct immutable-sharing and prohibited deep-clone counters.

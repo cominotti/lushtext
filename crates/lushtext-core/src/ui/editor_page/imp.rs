@@ -32,7 +32,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use super::buffer_replacement::BufferReplacementState;
-use super::minimap::{MinimapAvailability, MinimapMarker};
+use super::minimap::{
+    MinimapAnalysisCache, MinimapAnalysisSession, MinimapAvailability, MinimapMarker,
+};
 use super::style_scheme::apply_color_scheme_to_editor;
 
 /// Callback for notifying the window when residency or eviction safety changes.
@@ -41,6 +43,7 @@ type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
 type LoadCompletedCallback = Box<dyn FnOnce()>;
 type LoadFailedCallback = Box<dyn FnOnce(String)>;
 type FileLoadedCallback = Box<dyn Fn()>;
+type LoadPlanningTerminalCallback = Box<dyn FnOnce()>;
 type NotesChangedCallback = Box<dyn Fn()>;
 type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
 
@@ -166,6 +169,8 @@ pub struct DocumentMetadataState {
 /// File-load lifecycle callbacks that need to survive repeated reloads.
 #[derive(Default)]
 pub struct LoadState {
+    /// One-shot owner callback released when file planning reaches any terminal path.
+    pub planning_terminal_callback: RefCell<Option<LoadPlanningTerminalCallback>>,
     /// One-shot callback fired after the first successful file load.
     pub load_completed_callback: RefCell<Option<LoadCompletedCallback>>,
     /// One-shot callback fired after the first failed file load.
@@ -284,11 +289,31 @@ pub struct MinimapState {
     pub modified_marks: RefCell<Vec<sourceview5::Mark>>,
     /// Current availability state for the minimap on this tab.
     pub availability: Cell<MinimapAvailability>,
-    /// Cached answer for whether wrapped minimap layout would be too expensive.
-    ///
-    /// Estimating long-line wrapping can scan the buffer once after edits. Caching
-    /// keeps resize-driven refreshes from repeatedly walking large documents.
-    pub wrapped_layout_too_large: Cell<Option<bool>>,
+    /// Monotonic identity invalidating every stale minimap analysis slice.
+    pub analysis_generation: Cell<u64>,
+    /// Editor lifetime identity checked before another analysis slice or publication.
+    pub analysis_lifetime: Cell<u64>,
+    /// Current bounded GTK-buffer cursor, when content analysis is required.
+    pub(super) analysis_session: RefCell<Option<MinimapAnalysisSession>>,
+    /// Accepted content evidence shared by wrapped layout and long-line markers.
+    pub(super) analysis_cache: RefCell<Option<MinimapAnalysisCache>>,
+    /// Sole idle source allowed to resume the current analysis generation.
+    pub analysis_source_id: RefCell<Option<glib::SourceId>>,
+    /// Number of bounded analysis slices dispatched by this editor.
+    #[cfg(feature = "test-utils")]
+    pub analysis_slices: Cell<usize>,
+    /// Largest character count inspected by any one analysis slice.
+    #[cfg(feature = "test-utils")]
+    pub analysis_chars_per_slice_high_water: Cell<usize>,
+    /// Analysis generations cancelled by edits, preferences, or teardown.
+    #[cfg(feature = "test-utils")]
+    pub analysis_cancellations: Cell<usize>,
+    /// Current generations that published accepted cache evidence.
+    #[cfg(feature = "test-utils")]
+    pub analysis_terminals: Cell<usize>,
+    /// One transition injected after a bounded slice for stale-generation tests.
+    #[cfg(feature = "test-utils")]
+    pub analysis_after_slice_hook: RefCell<Option<Box<dyn FnOnce()>>>,
     /// Debounce for coalescing expensive marker refresh work.
     pub refresh_debounce: Debounce,
     /// Whether a debounced minimap refresh callback is still waiting to run.
@@ -336,7 +361,7 @@ pub struct FocusModeEditorState {
 #[derive(Default)]
 pub struct LocalHistoryState {
     /// Last clean saved text used to capture the "before edits" baseline snapshot.
-    pub last_clean_text: RefCell<Option<String>>,
+    pub last_clean_text: RefCell<Option<crate::ui::plain_disposal::DisposalOwned<String>>>,
     /// Generation of the clean baseline currently owned by this editor/path cycle.
     pub clean_baseline_generation: Cell<u64>,
     /// One automatic retry admission for the current clean baseline generation.
@@ -359,8 +384,8 @@ pub struct LocalHistoryState {
     pub(crate) baseline_retry_pending: Cell<bool>,
     /// Suppresses automatic capture while save or restore changes the buffer programmatically.
     pub automatic_capture_suppressed: Cell<bool>,
-    /// One-shot text used by the browser's immediate undo-restore action.
-    pub restore_undo_text: RefCell<Option<String>>,
+    /// One-shot undo body whose final destruction is pre-admitted off GTK.
+    pub restore_undo_text: RefCell<Option<crate::ui::plain_disposal::DisposalOwned<String>>>,
     /// Buffer signal lifetimes that drive automatic local-history capture.
     pub buffer_signals: SignalBag,
     /// Deterministic policy seam for widget tests without allocating huge buffers.
@@ -574,6 +599,7 @@ impl ObjectImpl for LushtextEditorPage {
         if let Some(snapshot) = self.local_history.periodic_snapshot.take() {
             snapshot.dispose();
         }
+        self.obj().dispose_minimap_analysis();
         let _ = self.local_history.periodic_timer.invalidate();
         self.local_history.periodic_timer_token.set(None);
         self.local_history
@@ -681,6 +707,7 @@ impl ObjectImpl for LushtextEditorPage {
         let editor_weak: glib::WeakRef<super::LushtextEditorPage> = self.obj().downgrade();
         let id = settings.connect_changed(Some(keys::WORD_WRAP), move |_, _| {
             if let Some(editor) = editor_weak.upgrade() {
+                editor.invalidate_minimap_analysis_request(false);
                 editor.sync_minimap_wrap_mode();
                 editor.schedule_minimap_refresh();
             }
@@ -725,6 +752,7 @@ impl ObjectImpl for LushtextEditorPage {
             let editor_weak = self.obj().downgrade();
             let id = settings.connect_changed(Some(keys::SHOW_MINIMAP), move |_, _| {
                 if let Some(editor) = editor_weak.upgrade() {
+                    editor.invalidate_minimap_analysis_request(false);
                     editor.schedule_minimap_refresh();
                 }
             });
@@ -736,6 +764,7 @@ impl ObjectImpl for LushtextEditorPage {
                 Some(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE),
                 move |_, _| {
                     if let Some(editor) = editor_weak.upgrade() {
+                        editor.invalidate_minimap_analysis_request(true);
                         editor.schedule_minimap_refresh();
                     }
                 },

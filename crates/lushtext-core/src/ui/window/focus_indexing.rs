@@ -22,7 +22,10 @@ use crate::model::editor_memory::{
 use crate::model::palette::{
     PaletteFileEntry, PaletteFileIdentity, PaletteFileIdentityFailure, SearchMode,
 };
-use crate::services::palette::{FileIndexBuildOutcome, FileIndexBuildRequest, FileIndexBuildStart};
+use crate::services::palette::{
+    FileIndex, FileIndexBuildMetrics, FileIndexBuildOutcome, FileIndexBuildRequest,
+    FileIndexBuildStart,
+};
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::status_bar::MessageKind;
@@ -36,6 +39,14 @@ const EDITOR_FOCUS_RETRY_INTERVAL: Duration = Duration::from_millis(30);
 /// Maximum retry count for editor focus handoffs before giving control back to
 /// GTK's normal focus model. Six attempts covers roughly 180ms of settling.
 const EDITOR_FOCUS_MAX_ATTEMPTS: u8 = 6;
+
+enum GuardedFileIndexBuildOutcome {
+    Complete {
+        index: crate::ui::plain_disposal::DisposalOwned<FileIndex>,
+        metrics: FileIndexBuildMetrics,
+    },
+    Cancelled,
+}
 
 impl LushtextWindow {
     /// Wire one editor's residency transitions into the window memory policy.
@@ -646,12 +657,51 @@ impl LushtextWindow {
                 let start = window.imp().file_index_builds.borrow_mut().submit(request);
                 if let Some(start) = start {
                     window.start_file_index_build(start);
+                } else {
+                    window.finish_cancelled_file_index_admission();
                 }
             },
         );
     }
 
     fn start_file_index_build(&self, start: FileIndexBuildStart) {
+        if start.cancellation.is_cancelled() {
+            self.finish_file_index_build(start.generation, GuardedFileIndexBuildOutcome::Cancelled);
+            return;
+        }
+        let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
+        let weight = crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES;
+        let reservation = self
+            .imp()
+            .command_palette
+            .file_index_reservation_weight()
+            .map_or_else(
+                || crate::ui::plain_disposal::try_reserve_for_gtk(weight),
+                |current_weight| {
+                    crate::ui::plain_disposal::try_reserve_replacement_for_gtk(
+                        weight,
+                        current_weight,
+                    )
+                },
+            );
+        let Some(reservation) = reservation else {
+            debug_assert!(self.imp().file_index_admission.borrow().is_none());
+            self.imp().file_index_admission.replace(Some(start));
+            let window_weak = self.downgrade();
+            self.imp()
+                .file_index_capacity_wakeup
+                .arm(observed_epoch, move || {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.retry_file_index_admission();
+                    }
+                });
+            self.publish_status_message(
+                "Workspace file index update deferred by memory pressure",
+                MessageKind::Warning,
+            );
+            return;
+        };
+
         let FileIndexBuildStart {
             generation,
             request,
@@ -661,11 +711,29 @@ impl LushtextWindow {
         spawn_blocking_then(
             (),
             move || {
-                crate::services::palette::FileIndex::rebuild_cancellable_with_hint(
+                let outcome = FileIndex::rebuild_cancellable_with_hint(
                     &request.workspace_folders,
                     request.capacity_hint,
                     &cancellation,
-                )
+                );
+                match outcome {
+                    FileIndexBuildOutcome::Complete { index, metrics } => {
+                        let retained_bytes = index.retained_byte_weight();
+                        debug_assert!(
+                            retained_bytes
+                                <= crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES
+                        );
+                        let mut reservation = reservation;
+                        reservation.shrink_to(retained_bytes);
+                        GuardedFileIndexBuildOutcome::Complete {
+                            index: reservation.own(index),
+                            metrics,
+                        }
+                    }
+                    FileIndexBuildOutcome::Cancelled { .. } => {
+                        GuardedFileIndexBuildOutcome::Cancelled
+                    }
+                }
             },
             move |(), outcome| {
                 let Some(window) = window_weak.upgrade() else {
@@ -677,7 +745,31 @@ impl LushtextWindow {
         );
     }
 
-    fn finish_file_index_build(&self, generation: u64, outcome: FileIndexBuildOutcome) {
+    fn retry_file_index_admission(&self) {
+        let Some(start) = self.imp().file_index_admission.borrow_mut().take() else {
+            return;
+        };
+        self.start_file_index_build(start);
+    }
+
+    fn finish_cancelled_file_index_admission(&self) {
+        let cancelled = self
+            .imp()
+            .file_index_admission
+            .borrow()
+            .as_ref()
+            .is_some_and(|start| start.cancellation.is_cancelled());
+        if !cancelled {
+            return;
+        }
+        self.imp().file_index_capacity_wakeup.cancel();
+        let start = self.imp().file_index_admission.borrow_mut().take();
+        if let Some(start) = start {
+            self.finish_file_index_build(start.generation, GuardedFileIndexBuildOutcome::Cancelled);
+        }
+    }
+
+    fn finish_file_index_build(&self, generation: u64, outcome: GuardedFileIndexBuildOutcome) {
         let (accepted, next) = {
             let mut builds = self.imp().file_index_builds.borrow_mut();
             let accepted = builds.is_current(generation);
@@ -687,9 +779,9 @@ impl LushtextWindow {
 
         if accepted {
             match outcome {
-                FileIndexBuildOutcome::Complete { index, metrics } => {
+                GuardedFileIndexBuildOutcome::Complete { index, metrics } => {
                     let indexed_files = index.len();
-                    self.imp().command_palette.set_file_index(index);
+                    self.imp().command_palette.set_guarded_file_index(index);
                     self.announce_workflow_update(
                         AnnouncementLane::ProgressMilestone,
                         "workspace-file-index-updated",
@@ -702,7 +794,7 @@ impl LushtextWindow {
                         );
                     }
                 }
-                FileIndexBuildOutcome::Cancelled { .. } => {}
+                GuardedFileIndexBuildOutcome::Cancelled => {}
             }
         } else {
             retire_file_index_outcome(outcome);
@@ -759,8 +851,8 @@ impl LushtextWindow {
     }
 }
 
-fn retire_file_index_outcome(outcome: FileIndexBuildOutcome) {
-    if let FileIndexBuildOutcome::Complete { index, .. } = outcome {
-        spawn_blocking_then((), move || drop(index), |(), ()| {});
+fn retire_file_index_outcome(outcome: GuardedFileIndexBuildOutcome) {
+    if let GuardedFileIndexBuildOutcome::Complete { index, .. } = outcome {
+        drop(index);
     }
 }

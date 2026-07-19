@@ -10,10 +10,15 @@ use gio::prelude::ListModelExt;
 use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
 use lushtext_core::config::{self, keys};
-use lushtext_core::services::markdown_render::MARKDOWN_EVENTS_PER_PROJECTION_SLICE;
+use lushtext_core::services::markdown_render::{
+    MARKDOWN_EVENTS_PER_PROJECTION_SLICE, MAX_MARKDOWN_SOURCE_BYTES,
+};
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::markdown_preview::{
     LushtextMarkdownPreview, MarkdownPreviewRenderContext, MarkdownRenderState,
+};
+use lushtext_core::ui::plain_disposal::{
+    hold_disposal_capacity_for_test, lane_snapshot_for_test,
 };
 use sourceview5::prelude::*;
 use std::cell::RefCell;
@@ -27,6 +32,7 @@ struct ImageWorkDelayReset;
 impl Drop for ImageWorkDelayReset {
     fn drop(&mut self) {
         LushtextMarkdownPreview::set_image_work_delay_for_test(0);
+        LushtextMarkdownPreview::set_image_post_decode_delay_for_test(0);
     }
 }
 
@@ -1059,6 +1065,73 @@ fn test_rapid_large_markdown_renders_keep_one_planner_and_latest_request() {
 }
 
 #[test]
+fn test_markdown_capacity_pressure_copies_only_after_admission() {
+    ensure_gtk_init();
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let preview = LushtextMarkdownPreview::new();
+    let source = format!(
+        "# Admitted preview\n\n{}",
+        "bounded source text\n\n".repeat(4_000)
+    );
+    let copies_before = LushtextMarkdownPreview::markdown_source_copies_for_test();
+
+    preview.render_markdown(&source);
+    preview.render_markdown(&source);
+    preview.render_markdown(&source);
+    wait_until(Duration::from_secs(5), || !preview.render_pending());
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Failed);
+    assert!(preview.buffer_text().contains("memory pressure"));
+    assert_eq!(
+        LushtextMarkdownPreview::markdown_source_copies_for_test(),
+        copies_before,
+        "capacity rejection must retain no unguarded Markdown source"
+    );
+
+    drop(capacity_hold);
+    preview.render_markdown(&source);
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert!(preview.buffer_text().contains("Admitted preview"));
+    assert!(preview.buffer_text().contains("bounded source text"));
+    assert_eq!(
+        LushtextMarkdownPreview::markdown_source_copies_for_test(),
+        copies_before + 1
+    );
+}
+
+#[test]
+fn test_snapshot_markdown_capacity_and_source_limit_publish_compact_terminals() {
+    ensure_gtk_init();
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_snapshot_for_test("guarded snapshot source".repeat(8_000));
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Failed);
+    assert!(preview.buffer_text().contains("memory pressure"));
+
+    preview.render_snapshot_for_test("x".repeat(MAX_MARKDOWN_SOURCE_BYTES + 1));
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Limited);
+    assert!(
+        preview
+            .buffer_text()
+            .contains("source exceeds 4 MiB")
+    );
+
+    drop(capacity_hold);
+}
+
+#[test]
 fn test_rapid_rerenders_cap_detached_generations_and_keep_latest_work() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
@@ -1292,12 +1365,15 @@ fn test_image_flood_keeps_one_decoder_and_bounded_compact_ownership() {
 fn test_stale_image_completion_cannot_mutate_new_render_generation() {
     ensure_gtk_init();
     let _delay_reset = ImageWorkDelayReset;
+    LushtextMarkdownPreview::reset_image_work_observations_for_test();
     LushtextMarkdownPreview::set_image_work_delay_for_test(250);
     let preview = LushtextMarkdownPreview::new();
     let tempdir = tempfile::tempdir().expect("stale image tempdir");
     let context = MarkdownPreviewRenderContext::new(
         Some(tempdir.path().join("document.md")),
-        Vec::new(),
+        (0..1_000)
+            .map(|index| tempdir.path().join(format!("folder-{index:04}")))
+            .collect(),
     );
 
     preview.render_markdown_with_context("![old](missing.png)", &context);
@@ -1309,6 +1385,47 @@ fn test_stale_image_completion_cannot_mutate_new_render_generation() {
     assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
     let (owned_count, owned_bytes, _, _) = preview.image_admission_counters_for_test();
     assert_eq!((owned_count, owned_bytes), (0, 0));
+    let (inspected, cancelled, decoded, _, _) =
+        LushtextMarkdownPreview::image_work_observations_for_test();
+    assert_eq!(inspected, 0, "superseded work must stop before candidate I/O");
+    assert!(cancelled >= 1);
+    assert_eq!(decoded, 0);
+}
+
+#[test]
+fn test_superseded_decoded_image_pixels_retire_off_the_gtk_thread() {
+    ensure_gtk_init();
+    let _delay_reset = ImageWorkDelayReset;
+    LushtextMarkdownPreview::reset_image_work_observations_for_test();
+    LushtextMarkdownPreview::set_image_post_decode_delay_for_test(250);
+    let preview = LushtextMarkdownPreview::new();
+    let tempdir = tempfile::tempdir().expect("stale decoded image tempdir");
+    fixture::write_text(
+        &tempdir.path().join("image.svg"),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2e7d32"/></svg>"##,
+    );
+    let context = MarkdownPreviewRenderContext::new(
+        Some(tempdir.path().join("document.md")),
+        Vec::new(),
+    );
+
+    preview.render_markdown_with_context("![old](image.svg)", &context);
+    wait_until(Duration::from_secs(5), || {
+        LushtextMarkdownPreview::image_work_observations_for_test().2 == 1
+    });
+    preview.render_markdown("new generation");
+    wait_until(Duration::from_secs(5), || !preview.render_pending());
+    wait_until(Duration::from_secs(5), || {
+        LushtextMarkdownPreview::image_work_observations_for_test().3 >= 1
+    });
+
+    assert_eq!(preview.buffer_text().trim(), "new generation");
+    let (_, cancelled, decoded, pixel_drops, gtk_pixel_drops) =
+        LushtextMarkdownPreview::image_work_observations_for_test();
+    assert!(cancelled >= 1);
+    assert_eq!(decoded, 1);
+    assert_eq!(pixel_drops, 1);
+    assert_eq!(gtk_pixel_drops, 0);
 }
 
 #[test]

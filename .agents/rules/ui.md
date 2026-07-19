@@ -411,12 +411,18 @@ Markdown preview, minimap long-line markers, encoding-warning previews, and
 draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
 
 - Use the shared `ui::buffer_snapshot` helper for any full-buffer text capture.
+  Large captures remain independent UTF-8 chunks on GTK; coalesce, transform,
+  and finally destroy their complete body only on a worker under the caller's
+  payload admission guard.
 - Large Markdown buffers should show a clear paused/limited preview state unless
   rendering has been split into bounded main-loop snapshots plus worker-side
   preprocessing.
-- Minimap long-line markers are optional; skip the full-buffer marker scan when
-  the shared snapshot policy says the buffer is too large for a synchronous
-  copy. Ordinary small-document marker behavior must remain covered by tests.
+- Minimap wrapped-layout analysis eligibility comes from the O(1) live-buffer
+  byte estimate: wrapping disabled and exact 2 MiB skip that analysis, while one
+  byte over requests it. Classification must not scan or copy text; multibyte,
+  modified, untitled, known-file-floor, saturation, cancellation, and
+  stale-generation behavior remain covered by tests. Optional long-line marker
+  collection stays sliced, cancellable, and generation-bound.
 - Replace-preview rows and other large derived result sets should be generated
   from owned data on a worker, with a pending state and stale-result rejection
   keyed by generation counters.

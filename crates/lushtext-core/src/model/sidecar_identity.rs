@@ -67,11 +67,12 @@ pub fn stable_bytes_hash(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-/// Generate a stable-enough record ID for bookmark and note entries.
+/// Generate a collision-resistant ID for newly persisted records.
 ///
 /// The timestamp keeps IDs roughly time ordered for debugging, while the
 /// monotonic counter avoids collisions when several records are created in the
-/// same system-time tick.
+/// same system-time tick. Callers use the requested prefix to keep bookmark,
+/// note, history, and untitled-draft identities recognizable and filesystem-safe.
 #[must_use]
 pub fn next_record_id(prefix: &str) -> String {
     static NEXT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);

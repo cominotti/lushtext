@@ -115,6 +115,23 @@ pub struct DirectoryPage {
     pub wrapped: bool,
 }
 
+/// Bounded one-pass directory pagination evidence.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirectoryPageVisitMetrics {
+    /// Raw backend entries that reached the boundary visitor.
+    pub raw_entries_visited: usize,
+    /// Filtered entries delivered to page callbacks.
+    pub entries_delivered: usize,
+    /// Non-empty pages delivered to the caller.
+    pub pages_delivered: usize,
+    /// Whether traversal reached the directory's natural terminal entry.
+    pub reached_terminal: bool,
+    /// Whether the raw or filtered entry ceiling stopped traversal.
+    pub stopped_by_limit: bool,
+    /// Whether the caller stopped after a delivered page.
+    pub stopped_by_visitor: bool,
+}
+
 /// Readability-first policy for directory scans.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DirectoryScanPolicy {

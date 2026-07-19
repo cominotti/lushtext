@@ -10,9 +10,8 @@
 use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::model::content_search::{
-    ReplacePreviewOutcome, Replacement, SavedSearch, SearchHistoryEntry, SearchMatch, SearchMatchId,
+    ReplacePreviewOutcome, SavedSearch, SearchHistoryEntry, SearchMatch, SearchMatchId,
 };
-use crate::services::content_search::ReplaceUndoBackup;
 use crate::ui::accessibility;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
@@ -35,10 +34,10 @@ type NavigateCallback = Box<dyn Fn(&Path, u32)>;
 type ProgressCallback = Box<dyn Fn(SearchProgressUpdate)>;
 
 /// Callback type for Replace All execution: receives checked replacements.
-type ReplaceCallback = Box<dyn Fn(Vec<Replacement>)>;
+type ReplaceCallback = Box<dyn Fn(super::GuardedReplacements)>;
 
 /// Callback type for Undo All: receives the backup map to restore.
-type UndoCallback = Box<dyn Fn(Arc<ReplaceUndoBackup>)>;
+type UndoCallback = Box<dyn Fn(Arc<super::GuardedReplaceUndoBackup>)>;
 type MessageCallback = Box<dyn Fn(&str)>;
 
 /// Delay text-entry searches long enough to batch normal typing without making
@@ -80,6 +79,9 @@ pub struct SearchRuntimeState {
     pub retirement_generation: Cell<u64>,
     /// High-water rows released by any one bounded retirement turn.
     pub retirement_rows_per_slice_high_water: Cell<usize>,
+    /// Test-only before/after ownership evidence from each retirement turn.
+    #[cfg(feature = "test-utils")]
+    pub retirement_observations: RefCell<Vec<super::runtime::SearchRetirementSliceObservation>>,
     /// High-water detached generations retained by the bounded disposer.
     pub retirement_generations_high_water: Cell<usize>,
     /// Debounce for search-entry input.
@@ -87,7 +89,7 @@ pub struct SearchRuntimeState {
     /// Debounce for glob-entry input, separate from the main query.
     pub glob_debounce: Debounce,
     /// Workspace folders to search. Updated by the window when workspaces change.
-    pub workspace_folders: RefCell<Vec<PathBuf>>,
+    pub workspace_folders: RefCell<Arc<[PathBuf]>>,
     /// Running total of matches in the current search.
     pub total_matches: Cell<u32>,
     /// Running total of files that currently have at least one match.
@@ -118,10 +120,12 @@ impl Default for SearchRuntimeState {
             retirement_armed: Cell::new(false),
             retirement_generation: Cell::new(0),
             retirement_rows_per_slice_high_water: Cell::new(0),
+            #[cfg(feature = "test-utils")]
+            retirement_observations: RefCell::new(Vec::new()),
             retirement_generations_high_water: Cell::new(0),
             search_debounce: Debounce::default(),
             glob_debounce: Debounce::default(),
-            workspace_folders: RefCell::new(Vec::new()),
+            workspace_folders: RefCell::new(Arc::from([])),
             total_matches: Cell::new(0),
             total_files: Cell::new(0),
             searching: Cell::new(false),
@@ -150,9 +154,11 @@ pub struct SearchPreviewState {
     /// Whether the results list currently renders preview rows with checkboxes.
     pub preview_mode: Cell<bool>,
     /// In-memory before/after file snapshots after a successful Replace All.
-    pub undo_backup: RefCell<Option<Arc<ReplaceUndoBackup>>>,
+    pub undo_backup: RefCell<Option<Arc<super::GuardedReplaceUndoBackup>>>,
     /// Generation counter invalidating stale backup loads and deletes.
     pub undo_backup_generation: Arc<AtomicU32>,
+    /// One paced wakeup while an on-disk undo journal awaits disposal capacity.
+    pub(super) undo_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// Whether one Replace All apply or undo transaction owns journal mutation.
     pub replace_transaction_pending: Cell<bool>,
     /// Reserved generation awaiting handoff from preview selection to file apply.
@@ -167,8 +173,11 @@ pub struct SearchPreviewState {
     pub preview_cancel_token: RefCell<Option<Arc<AtomicBool>>>,
     /// Latest superseding request retained while the single worker is active.
     pub(super) queued_preview_request: RefCell<Option<super::replace::ReplacePreviewRequest>>,
+    /// One paced capacity wakeup for the latest preview request.
+    pub(super) preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// Accepted bounded preview plus its dense generation-scoped identity map.
-    pub preview_outcome: RefCell<Option<ReplacePreviewOutcome>>,
+    pub preview_outcome:
+        RefCell<Option<crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>>>,
     /// Stable identities of generated preview rows the user chose to apply.
     pub checked_match_ids: RefCell<HashSet<SearchMatchId>>,
     /// Number of document-sized preview outcomes handed to worker retirement.
@@ -444,10 +453,10 @@ impl ObjectImpl for LushtextSearchPanel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if let Some(retired) = self.preview.undo_backup.take() {
-            // The durable journal survives app close; only its potentially large
-            // in-memory projection is released, and its final drop stays off GTK.
-            crate::ui::plain_disposal::spawn(move || drop(retired));
+            drop(retired);
         }
+        self.preview.preview_capacity_wakeup.cancel();
+        self.preview.undo_capacity_wakeup.cancel();
         // Unparent the programmatically-parented popover to avoid leak warnings.
         self.history_popover.unparent();
     }

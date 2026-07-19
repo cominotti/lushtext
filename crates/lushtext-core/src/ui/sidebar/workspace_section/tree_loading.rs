@@ -7,6 +7,10 @@
 //! scan itself still lives in `services::file_tree` as plain Rust data.
 
 use super::LushtextWorkspaceSection;
+use crate::model::workspace_scan::{
+    WorkspaceScanFinish as ChildScanFinish, WorkspaceScanSubmission as ChildScanSubmission,
+    WorkspaceScanTicket as ChildScanTicket,
+};
 use crate::services;
 use crate::services::file_tree::{
     DirectoryReconciliationPlan, DirectoryRowState, plan_directory_reconciliation,
@@ -19,11 +23,11 @@ use gtk4::{gio, glib};
 #[cfg(feature = "test-utils")]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use super::super::file_tree_item::FileTreeItem;
@@ -35,17 +39,25 @@ struct ChildScanResult {
     plan: Option<DirectoryReconciliationPlan>,
 }
 
+pub(super) struct ActiveChildScan {
+    ticket: ChildScanTicket,
+    path: PathBuf,
+    token: Arc<AtomicBool>,
+}
+
+pub(super) struct PendingChildScan {
+    ticket: ChildScanTicket,
+    path: PathBuf,
+    store: glib::WeakRef<gio::ListStore>,
+    lookahead_cap: usize,
+}
+
 struct ChildReconcileProgress {
     position: usize,
     remove_remaining: usize,
     inserted: usize,
     replacement: VecDeque<DirectoryRowState>,
     mirror_generation: u64,
-}
-
-pub(super) struct ChildMirrorSnapshot {
-    rows: Vec<DirectoryRowState>,
-    generation: u64,
 }
 
 /// Maximum directory entries before truncation. A single `gio::ListStore`
@@ -57,6 +69,41 @@ const MAX_DIR_ENTRIES: usize = 10_000;
 const CHILD_APPEND_BATCH_SIZE: usize = 256;
 /// Changed rows at or below one batch retain the calibrated direct splice path.
 const CHILD_RECONCILE_DIRECT_ROWS: usize = CHILD_APPEND_BATCH_SIZE;
+/// Process-wide child/emptiness tasks allowed to retain admitted scan payloads.
+pub(super) const WORKSPACE_SCAN_TASK_LIMIT: usize = 4;
+/// Compact admission retries share one frame-paced source per section.
+const WORKSPACE_SCAN_ADMISSION_RETRY: Duration = Duration::from_millis(16);
+
+static ACTIVE_WORKSPACE_SCAN_TASKS: AtomicUsize = AtomicUsize::new(0);
+static WORKSPACE_SCAN_TASK_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+
+pub(super) struct WorkspaceScanPermit;
+
+impl Drop for WorkspaceScanPermit {
+    fn drop(&mut self) {
+        ACTIVE_WORKSPACE_SCAN_TASKS.fetch_sub(1, Ordering::Release);
+    }
+}
+
+pub(super) fn try_acquire_workspace_scan_permit() -> Option<WorkspaceScanPermit> {
+    let admitted = ACTIVE_WORKSPACE_SCAN_TASKS
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            (active < WORKSPACE_SCAN_TASK_LIMIT).then_some(active + 1)
+        })
+        .ok()?;
+    WORKSPACE_SCAN_TASK_HIGH_WATER.fetch_max(admitted + 1, Ordering::AcqRel);
+    Some(WorkspaceScanPermit)
+}
+
+#[cfg(feature = "test-utils")]
+pub(super) fn workspace_scan_active_tasks_for_test() -> usize {
+    ACTIVE_WORKSPACE_SCAN_TASKS.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "test-utils")]
+pub(super) fn workspace_scan_task_high_water_for_test() -> usize {
+    WORKSPACE_SCAN_TASK_HIGH_WATER.load(Ordering::Acquire)
+}
 
 #[cfg(feature = "test-utils")]
 thread_local! {
@@ -123,41 +170,145 @@ pub(super) fn populate_child_store(
     dir_path: &Path,
     store: &gio::ListStore,
 ) {
-    let store = store.clone();
     let path = dir_path.to_path_buf();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let store_key = child_store_key(&store);
-    ensure_child_store_identity(section, &store);
+    let store_key = child_store_key(store);
+    ensure_child_store_identity(section, store);
     section
         .imp()
         .child_store_paths
         .borrow_mut()
         .insert(store_key, path.clone());
-    cancel_store_reconciliation(section, store_key);
-    if let Some(previous) = section
-        .imp()
-        .child_store_tokens
-        .borrow_mut()
-        .insert(store_key, Arc::clone(&cancel))
-    {
-        previous.store(true, Ordering::Release);
-    }
     section
         .imp()
         .dir_stores
         .borrow_mut()
         .insert(path.clone(), store.downgrade());
+    let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
+        .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP)
+        as usize;
+    let lifetime = section.imp().child_scan_lifetime.get();
+    let (submission, flight_metrics) = {
+        let mut flights = section.imp().child_scan_flights.borrow_mut();
+        let flight = flights.entry(store_key).or_default();
+        let submission = flight.submit(lifetime);
+        (submission, flight.metrics())
+    };
+    let refresh = &section.imp().refresh_runtime;
+    refresh.scan_active_per_store_high_water.set(
+        refresh
+            .scan_active_per_store_high_water
+            .get()
+            .max(flight_metrics.active_high_water),
+    );
+    refresh.scan_pending_per_store_high_water.set(
+        refresh
+            .scan_pending_per_store_high_water
+            .get()
+            .max(flight_metrics.pending_high_water),
+    );
+    let ticket = match submission {
+        ChildScanSubmission::Start(ticket) | ChildScanSubmission::QueueLatest { ticket, .. } => {
+            ticket
+        }
+    };
+    let request = PendingChildScan {
+        ticket,
+        path,
+        store: store.downgrade(),
+        lookahead_cap,
+    };
 
-    // Each expanded row gets its own scan token. Paths are not unique in the
-    // flattened model when a workspace includes overlapping folders.
+    match submission {
+        ChildScanSubmission::Start(_) => start_child_scan(section, store_key, request),
+        ChildScanSubmission::QueueLatest {
+            cancel_active,
+            replaced_pending: _,
+            ..
+        } => {
+            section
+                .imp()
+                .child_pending_scans
+                .borrow_mut()
+                .insert(store_key, request);
+            refresh.scan_weak_pending_high_water.set(1);
+            refresh
+                .scan_cancellation_requests
+                .set(refresh.scan_cancellation_requests.get().saturating_add(1));
+            let cancelled_before_admission = section
+                .imp()
+                .child_admission_scans
+                .borrow_mut()
+                .remove(&store_key)
+                .is_some_and(|waiting| waiting.ticket == cancel_active);
+            if cancelled_before_admission {
+                finish_child_scan(section, store_key, cancel_active);
+            } else {
+                if let Some(active) = section.imp().child_active_scans.borrow().get(&store_key)
+                    && active.ticket == cancel_active
+                {
+                    active.token.store(true, Ordering::Release);
+                }
+                let reconciliation_cancelled = cancel_store_reconciliation(section, store_key);
+                if reconciliation_cancelled {
+                    finish_child_scan(section, store_key, cancel_active);
+                } else {
+                    sync_child_scan_busy_state(section);
+                }
+            }
+        }
+    }
+}
+
+/// Admit one compact request, upgrading its weak store and capturing the mirror now.
+fn start_child_scan(
+    section: &LushtextWorkspaceSection,
+    store_key: usize,
+    request: PendingChildScan,
+) {
+    let lifetime = section.imp().child_scan_lifetime.get();
+    let is_active = section
+        .imp()
+        .child_scan_flights
+        .borrow()
+        .get(&store_key)
+        .is_some_and(|flight| flight.active() == Some(request.ticket));
+    if !is_active
+        || request.ticket.lifetime != lifetime
+        || section
+            .imp()
+            .child_store_paths
+            .borrow()
+            .get(&store_key)
+            .is_none_or(|path| path != &request.path)
+    {
+        finish_child_scan(section, store_key, request.ticket);
+        return;
+    }
+    let Some(permit) = try_acquire_workspace_scan_permit() else {
+        section
+            .imp()
+            .child_admission_scans
+            .borrow_mut()
+            .insert(store_key, request);
+        arm_workspace_scan_admission_retry(section);
+        sync_child_scan_busy_state(section);
+        return;
+    };
     section
         .imp()
-        .child_scan_tokens
+        .child_admission_scans
         .borrow_mut()
-        .entry(path.clone())
-        .or_default()
-        .push(Arc::clone(&cancel));
-    sync_child_scan_busy_state(section);
+        .remove(&store_key);
+    let Some(store) = request.store.upgrade() else {
+        drop(permit);
+        finish_child_scan(section, store_key, request.ticket);
+        return;
+    };
+    if !child_store_identity_matches(section, store_key, &store) {
+        drop(permit);
+        finish_child_scan(section, store_key, request.ticket);
+        return;
+    }
 
     let (current_rows, mirror_generation) = {
         let mut mirrors = section.imp().child_row_mirrors.borrow_mut();
@@ -173,16 +324,35 @@ pub(super) fn populate_child_store(
             .or_default();
         (rows, generation)
     };
+    let refresh = &section.imp().refresh_runtime;
+    refresh.scan_active_per_store_high_water.set(1);
+    refresh
+        .scan_mirror_captures
+        .set(refresh.scan_mirror_captures.get().saturating_add(1));
+    let cancel = Arc::new(AtomicBool::new(false));
+    section.imp().child_active_scans.borrow_mut().insert(
+        store_key,
+        ActiveChildScan {
+            ticket: request.ticket,
+            path: request.path.clone(),
+            token: Arc::clone(&cancel),
+        },
+    );
+    sync_child_scan_busy_state(section);
 
     let section_weak = section.downgrade();
-    let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
-        .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP)
-        as usize;
-    // Move only the store handle, path, and cancel token across the worker
-    // boundary; the callback revalidates the token before touching visible GTK state.
+    let path = request.path;
+    let ticket = request.ticket;
+    let lookahead_cap = request.lookahead_cap;
+    #[cfg(feature = "test-utils")]
+    let scan_delay = section.imp().refresh_runtime.test_scan_delay.get();
     gtk_lush_tasks::spawn_blocking_then(
-        (store, path.clone(), Arc::clone(&cancel)),
+        (store, path.clone(), Arc::clone(&cancel), permit),
         move || {
+            #[cfg(feature = "test-utils")]
+            if !scan_delay.is_zero() {
+                std::thread::sleep(scan_delay);
+            }
             let scan = services::file_tree::scan_directory_bounded(
                 &path,
                 MAX_DIR_ENTRIES,
@@ -202,147 +372,169 @@ pub(super) fn populate_child_store(
                 plan,
             }
         },
-        move |(store, path, cancel), scan| {
-            if scan.cancelled {
-                if let Some(section) = section_weak.upgrade() {
-                    finish_child_scan(&section, &path, &cancel);
-                }
-                return;
-            }
-
+        move |(store, path, cancel, _permit), scan| {
             let Some(section) = section_weak.upgrade() else {
                 return;
             };
-
-            if !child_scan_is_active(&section, &path, &store, &cancel) {
+            if scan.cancelled {
+                let refresh = &section.imp().refresh_runtime;
+                refresh
+                    .scan_cancelled_terminals
+                    .set(refresh.scan_cancelled_terminals.get().saturating_add(1));
+                finish_child_scan(&section, store_key, ticket);
+                return;
+            }
+            if !child_scan_is_active(&section, store_key, ticket, &store, &cancel) {
+                let refresh = &section.imp().refresh_runtime;
+                refresh
+                    .scan_stale_completions
+                    .set(refresh.scan_stale_completions.get().saturating_add(1));
+                finish_child_scan(&section, store_key, ticket);
                 return;
             }
 
             if let Some(error) = scan.error {
                 section.report_refresh_error(&format!("Workspace refresh failed: {error}"));
                 section.recache_child_store(&path, &store);
-                finish_child_scan(&section, &path, &cancel);
+                finish_child_scan(&section, store_key, ticket);
                 return;
             }
 
             let Some(plan) = scan.plan else {
-                finish_child_scan(&section, &path, &cancel);
+                finish_child_scan(&section, store_key, ticket);
                 return;
             };
             apply_scanned_children(
                 &section,
-                store,
-                path,
-                cancel,
-                mirror_generation,
-                plan,
-                scan.truncated,
+                ScannedChildrenPlan {
+                    store,
+                    dir_path: path,
+                    token: cancel,
+                    ticket,
+                    mirror_generation,
+                    plan,
+                    truncated: scan.truncated,
+                },
             );
         },
     );
 }
 
-pub(super) fn snapshot_child_store_mirror(
-    section: &LushtextWorkspaceSection,
-    store: &gio::ListStore,
-) -> Option<ChildMirrorSnapshot> {
-    let store_key = child_store_key(store);
-    let rows = section
+pub(super) fn arm_workspace_scan_admission_retry(section: &LushtextWorkspaceSection) {
+    if section
         .imp()
-        .child_row_mirrors
+        .workspace_scan_admission_source
         .borrow()
-        .get(&store_key)
-        .cloned()?;
-    let generation = section
+        .is_some()
+    {
+        return;
+    }
+    let section_weak = section.downgrade();
+    let source = glib::timeout_add_local(WORKSPACE_SCAN_ADMISSION_RETRY, move || {
+        let Some(section) = section_weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        retry_workspace_scan_admission(&section)
+    });
+    section
         .imp()
-        .child_row_mirror_generations
-        .borrow()
-        .get(&store_key)
-        .copied()
-        .unwrap_or(0);
-    Some(ChildMirrorSnapshot { rows, generation })
+        .workspace_scan_admission_source
+        .replace(Some(source));
 }
 
-pub(super) fn restore_child_store_mirror(
-    section: &LushtextWorkspaceSection,
-    dir_path: &Path,
-    store: &gio::ListStore,
-    snapshot: ChildMirrorSnapshot,
-) {
-    let store_key = child_store_key(store);
-    ensure_child_store_identity(section, store);
-    section
-        .imp()
-        .child_store_paths
-        .borrow_mut()
-        .insert(store_key, dir_path.to_path_buf());
-    section
-        .imp()
-        .child_row_mirrors
-        .borrow_mut()
-        .insert(store_key, snapshot.rows);
-    section
-        .imp()
-        .child_row_mirror_generations
-        .borrow_mut()
-        .insert(store_key, snapshot.generation);
+fn retry_workspace_scan_admission(section: &LushtextWorkspaceSection) -> glib::ControlFlow {
+    for _ in 0..WORKSPACE_SCAN_TASK_LIMIT {
+        let child_key = section
+            .imp()
+            .child_admission_scans
+            .borrow()
+            .keys()
+            .next()
+            .copied();
+        let child = child_key.and_then(|key| {
+            section
+                .imp()
+                .child_admission_scans
+                .borrow_mut()
+                .remove(&key)
+                .map(|request| (key, request))
+        });
+        if let Some((store_key, request)) = child {
+            start_child_scan(section, store_key, request);
+        } else if !super::folders::retry_one_folder_empty_admission(section) {
+            break;
+        }
+        if ACTIVE_WORKSPACE_SCAN_TASKS.load(Ordering::Acquire) >= WORKSPACE_SCAN_TASK_LIMIT {
+            break;
+        }
+    }
+
+    let waiting = !section.imp().child_admission_scans.borrow().is_empty()
+        || !section.imp().folder_empty_admission.borrow().is_empty();
+    if waiting {
+        glib::ControlFlow::Continue
+    } else {
+        section.imp().workspace_scan_admission_source.take();
+        glib::ControlFlow::Break
+    }
 }
 
 /// Drop cached rows, child stores, and in-flight scans for one directory subtree.
 pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Path) {
+    clear_dir_states(section, &HashSet::from([dir_path.to_path_buf()]));
+}
+
+/// Retire any number of removed directory roots with one pass per state map.
+fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>) {
+    if roots.is_empty() {
+        return;
+    }
+    let under_removed_root =
+        |path: &Path| path.ancestors().any(|ancestor| roots.contains(ancestor));
+    super::folders::cancel_folder_empty_probes_under_roots(section, roots);
     let removed_store_keys = section
         .imp()
         .child_store_paths
         .borrow()
         .iter()
-        .filter_map(|(key, path)| {
-            (path.as_path() == dir_path || path.starts_with(dir_path)).then_some(*key)
-        })
-        .collect::<Vec<_>>();
-    for store_key in removed_store_keys {
-        if let Some(token) = section
-            .imp()
-            .child_store_tokens
-            .borrow_mut()
-            .remove(&store_key)
-        {
-            token.store(true, Ordering::Release);
-        }
-        cancel_store_reconciliation(section, store_key);
-        section
-            .imp()
-            .child_row_mirrors
-            .borrow_mut()
-            .remove(&store_key);
-        section
-            .imp()
-            .child_row_mirror_generations
-            .borrow_mut()
-            .remove(&store_key);
-        section
-            .imp()
-            .child_store_paths
-            .borrow_mut()
-            .remove(&store_key);
-        section
-            .imp()
-            .child_store_refs
-            .borrow_mut()
-            .remove(&store_key);
+        .filter_map(|(key, path)| under_removed_root(path).then_some(*key))
+        .collect::<HashSet<_>>();
+    for store_key in &removed_store_keys {
+        cancel_child_store_runtime(section, *store_key);
     }
+    section
+        .imp()
+        .child_row_mirrors
+        .borrow_mut()
+        .retain(|key, _| !removed_store_keys.contains(key));
+    section
+        .imp()
+        .child_row_mirror_generations
+        .borrow_mut()
+        .retain(|key, _| !removed_store_keys.contains(key));
+    section
+        .imp()
+        .child_store_paths
+        .borrow_mut()
+        .retain(|key, _| !removed_store_keys.contains(key));
+    section
+        .imp()
+        .child_store_refs
+        .borrow_mut()
+        .retain(|key, _| !removed_store_keys.contains(key));
     let removed_child_paths = section
         .imp()
         .child_paths
         .borrow()
         .iter()
-        .filter(|(path, _)| path.as_path() == dir_path || path.starts_with(dir_path))
+        .filter(|(path, _)| under_removed_root(path))
         .flat_map(|(_, paths)| paths.clone())
         .collect::<Vec<_>>();
     section
         .imp()
         .child_paths
         .borrow_mut()
-        .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
+        .retain(|path, _| !under_removed_root(path));
     for path in removed_child_paths {
         section.forget_visible_path_occurrence(&path);
     }
@@ -351,37 +543,55 @@ pub(super) fn clear_dir_state(section: &LushtextWorkspaceSection, dir_path: &Pat
         .imp()
         .dir_rows
         .borrow_mut()
-        .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
+        .retain(|path, _| !under_removed_root(path));
     section
         .imp()
         .dir_stores
         .borrow_mut()
-        .retain(|path, _| path != dir_path && !path.starts_with(dir_path));
+        .retain(|path, _| !under_removed_root(path));
     section
         .imp()
         .item_locations
         .borrow_mut()
-        .retain(|path, _| path.as_path() == dir_path || !path.starts_with(dir_path));
+        .retain(|path, _| roots.contains(path) || !under_removed_root(path));
 
-    let cancelled: Vec<_> = {
-        let mut tokens = section.imp().child_scan_tokens.borrow_mut();
-        // Remove matching tokens while collecting them so callbacks see the
-        // subtree as inactive before their cancellation flags are flipped.
-        tokens
-            .extract_if(|path, _| path.as_path() == dir_path || path.starts_with(dir_path))
-            .flat_map(|(_, tokens)| tokens)
-            .collect()
-    };
-
-    for token in cancelled {
-        token.store(true, Ordering::Release);
-        retire_store_runtime_for_token(section, &token);
-    }
     sync_child_scan_busy_state(section);
 }
 
 /// Clear all cached tree-loading state before reloading the workspace folders.
 pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
+    section
+        .imp()
+        .child_scan_lifetime
+        .set(section.imp().child_scan_lifetime.get().wrapping_add(1));
+    for active in section.imp().child_active_scans.borrow_mut().drain() {
+        active.1.token.store(true, Ordering::Release);
+    }
+    for flight in section.imp().child_scan_flights.borrow_mut().values_mut() {
+        flight.cancel_all();
+    }
+    section.imp().child_scan_flights.borrow_mut().clear();
+    section.imp().child_pending_scans.borrow_mut().clear();
+    section.imp().child_admission_scans.borrow_mut().clear();
+    section.imp().folder_empty_active.borrow_mut().clear();
+    section.imp().folder_empty_pending.borrow_mut().clear();
+    section.imp().folder_empty_admission.borrow_mut().clear();
+    if let Some(source) = section.imp().workspace_scan_admission_source.take() {
+        source.remove();
+    }
+    for flight in section.imp().folder_empty_flights.borrow_mut().values_mut() {
+        flight.cancel_all();
+    }
+    section.imp().folder_empty_flights.borrow_mut().clear();
+    section
+        .imp()
+        .refresh_runtime
+        .scan_dispatch_queue
+        .borrow_mut()
+        .clear();
+    if let Some(source) = section.imp().refresh_runtime.scan_dispatch_source.take() {
+        source.remove();
+    }
     section.imp().dir_rows.borrow_mut().clear();
     section.imp().dir_stores.borrow_mut().clear();
     section.imp().child_paths.borrow_mut().clear();
@@ -398,49 +608,61 @@ pub(super) fn clear_all_dir_state(section: &LushtextWorkspaceSection) {
         .child_row_mirror_generations
         .borrow_mut()
         .clear();
-    section.imp().child_store_tokens.borrow_mut().clear();
-
-    let cancelled: Vec<_> = section
-        .imp()
-        .child_scan_tokens
-        .borrow_mut()
-        .drain()
-        .flat_map(|(_, tokens)| tokens)
-        .collect();
-    for token in cancelled {
-        token.store(true, Ordering::Release);
-    }
     sync_child_scan_busy_state(section);
 }
 
-/// Drop the active scan token for `dir_path` if it still matches `token`.
-fn finish_child_scan(section: &LushtextWorkspaceSection, dir_path: &Path, token: &Arc<AtomicBool>) {
-    let mut tokens = section.imp().child_scan_tokens.borrow_mut();
-    let Some(active_tokens) = tokens.get_mut(dir_path) else {
-        return;
+/// Release one active scan and admit only its latest weak pending request.
+fn finish_child_scan(
+    section: &LushtextWorkspaceSection,
+    store_key: usize,
+    ticket: ChildScanTicket,
+) {
+    let active = {
+        let mut active_scans = section.imp().child_active_scans.borrow_mut();
+        let matches = active_scans
+            .get(&store_key)
+            .is_some_and(|active| active.ticket == ticket);
+        matches.then(|| active_scans.remove(&store_key)).flatten()
     };
-    active_tokens.retain(|active| !Arc::ptr_eq(active, token));
-    if active_tokens.is_empty() {
-        tokens.remove(dir_path);
+    if let Some(active) = active.as_ref() {
+        cancel_store_reconciliation_if_token(section, store_key, &active.token);
     }
-    drop(tokens);
-    let store_keys = section
+    let finish = section
         .imp()
-        .child_store_tokens
-        .borrow()
-        .iter()
-        .filter_map(|(key, active)| Arc::ptr_eq(active, token).then_some(*key))
-        .collect::<Vec<_>>();
-    for key in store_keys {
-        section.imp().child_store_tokens.borrow_mut().remove(&key);
-        cancel_store_reconciliation_if_token(section, key, token);
-    }
+        .child_scan_flights
+        .borrow_mut()
+        .get_mut(&store_key)
+        .map_or(ChildScanFinish::Stale, |flight| flight.finish(ticket));
+    let latest = match finish {
+        ChildScanFinish::StartLatest(latest) => {
+            let request = section
+                .imp()
+                .child_pending_scans
+                .borrow_mut()
+                .remove(&store_key)
+                .filter(|request| request.ticket == latest);
+            if request.is_none()
+                && let Some(flight) = section
+                    .imp()
+                    .child_scan_flights
+                    .borrow_mut()
+                    .get_mut(&store_key)
+            {
+                flight.cancel_all();
+            }
+            request
+        }
+        ChildScanFinish::Stale | ChildScanFinish::Terminal => None,
+    };
     sync_child_scan_busy_state(section);
+    if let Some(request) = latest {
+        start_child_scan(section, store_key, request);
+    }
 }
 
 /// Mirror child directory scan activity into the tree's accessible busy state.
-fn sync_child_scan_busy_state(section: &LushtextWorkspaceSection) {
-    let busy = !section.imp().child_scan_tokens.borrow().is_empty();
+pub(super) fn sync_child_scan_busy_state(section: &LushtextWorkspaceSection) {
+    let busy = child_scan_blocks_readiness(section);
     accessibility::set_busy(&*section.imp().file_tree_view, busy);
     if !busy
         && section
@@ -453,32 +675,68 @@ fn sync_child_scan_busy_state(section: &LushtextWorkspaceSection) {
     }
 }
 
+pub(super) fn child_scan_blocks_readiness(section: &LushtextWorkspaceSection) -> bool {
+    !section.imp().child_active_scans.borrow().is_empty()
+        || !section.imp().child_pending_scans.borrow().is_empty()
+        || !section.imp().child_admission_scans.borrow().is_empty()
+        || !section.imp().child_reconcile_sources.borrow().is_empty()
+        || !section.imp().folder_empty_active.borrow().is_empty()
+        || !section.imp().folder_empty_pending.borrow().is_empty()
+        || !section.imp().folder_empty_admission.borrow().is_empty()
+        || !section
+            .imp()
+            .refresh_runtime
+            .scan_dispatch_queue
+            .borrow()
+            .is_empty()
+        || section
+            .imp()
+            .refresh_runtime
+            .scan_dispatch_source
+            .borrow()
+            .is_some()
+}
+
 /// Check whether a pending child-scan callback still belongs to the current expanded row.
 fn child_scan_is_active(
     section: &LushtextWorkspaceSection,
-    dir_path: &Path,
+    store_key: usize,
+    ticket: ChildScanTicket,
     store: &gio::ListStore,
     token: &Arc<AtomicBool>,
 ) -> bool {
     if token.load(Ordering::Acquire) {
-        finish_child_scan(section, dir_path, token);
         return false;
     }
-
-    let store_key = child_store_key(store);
-    let owns_store = section
+    if child_store_key(store) != store_key
+        || !child_store_identity_matches(section, store_key, store)
+    {
+        return false;
+    }
+    let lifetime = section.imp().child_scan_lifetime.get();
+    let owns_current_flight = section
         .imp()
-        .child_store_tokens
+        .child_scan_flights
         .borrow()
         .get(&store_key)
-        .is_some_and(|active| Arc::ptr_eq(active, token));
-    if !owns_store {
-        token.store(true, Ordering::Release);
-        finish_child_scan(section, dir_path, token);
-        return false;
-    }
-
-    true
+        .is_some_and(|flight| flight.is_current(ticket, lifetime));
+    let current_path = section
+        .imp()
+        .child_store_paths
+        .borrow()
+        .get(&store_key)
+        .cloned();
+    let owns_active_payload = section
+        .imp()
+        .child_active_scans
+        .borrow()
+        .get(&store_key)
+        .is_some_and(|active| {
+            active.ticket == ticket
+                && current_path.as_ref() == Some(&active.path)
+                && Arc::ptr_eq(&active.token, token)
+        });
+    owns_current_flight && owns_active_payload
 }
 
 fn child_store_key(store: &gio::ListStore) -> usize {
@@ -488,31 +746,11 @@ fn child_store_key(store: &gio::ListStore) -> usize {
 /// Reject state left behind when GLib reuses a released store's raw address.
 fn ensure_child_store_identity(section: &LushtextWorkspaceSection, store: &gio::ListStore) {
     let store_key = child_store_key(store);
-    let identity_matches = section
-        .imp()
-        .child_store_refs
-        .borrow()
-        .get(&store_key)
-        .and_then(glib::WeakRef::upgrade)
-        .is_some_and(|registered| registered.as_ptr() == store.as_ptr());
-    if identity_matches {
+    if child_store_identity_matches(section, store_key, store) {
         return;
     }
 
-    if let Some(token) = section
-        .imp()
-        .child_store_tokens
-        .borrow_mut()
-        .remove(&store_key)
-    {
-        token.store(true, Ordering::Release);
-        let mut scan_tokens = section.imp().child_scan_tokens.borrow_mut();
-        scan_tokens.retain(|_, tokens| {
-            tokens.retain(|active| !Arc::ptr_eq(active, &token));
-            !tokens.is_empty()
-        });
-    }
-    cancel_store_reconciliation(section, store_key);
+    cancel_child_store_runtime(section, store_key);
     section
         .imp()
         .child_row_mirrors
@@ -534,6 +772,50 @@ fn ensure_child_store_identity(section: &LushtextWorkspaceSection, store: &gio::
         .borrow_mut()
         .insert(store_key, store.downgrade());
     sync_child_scan_busy_state(section);
+}
+
+fn child_store_identity_matches(
+    section: &LushtextWorkspaceSection,
+    store_key: usize,
+    store: &gio::ListStore,
+) -> bool {
+    section
+        .imp()
+        .child_store_refs
+        .borrow()
+        .get(&store_key)
+        .and_then(glib::WeakRef::upgrade)
+        .is_some_and(|registered| registered.as_ptr() == store.as_ptr())
+}
+
+fn cancel_child_store_runtime(section: &LushtextWorkspaceSection, store_key: usize) {
+    section
+        .imp()
+        .child_pending_scans
+        .borrow_mut()
+        .remove(&store_key);
+    section
+        .imp()
+        .child_admission_scans
+        .borrow_mut()
+        .remove(&store_key);
+    if let Some(active) = section
+        .imp()
+        .child_active_scans
+        .borrow_mut()
+        .remove(&store_key)
+    {
+        active.token.store(true, Ordering::Release);
+    }
+    if let Some(mut flight) = section
+        .imp()
+        .child_scan_flights
+        .borrow_mut()
+        .remove(&store_key)
+    {
+        flight.cancel_all();
+    }
+    cancel_store_reconciliation(section, store_key);
 }
 
 fn child_mirror_generation(section: &LushtextWorkspaceSection, store: &gio::ListStore) -> u64 {
@@ -652,7 +934,7 @@ fn row_state_from_item(item: &FileTreeItem) -> DirectoryRowState {
     }
 }
 
-fn cancel_store_reconciliation(section: &LushtextWorkspaceSection, store_key: usize) {
+fn cancel_store_reconciliation(section: &LushtextWorkspaceSection, store_key: usize) -> bool {
     if let Some((_, source)) = section
         .imp()
         .child_reconcile_sources
@@ -664,6 +946,9 @@ fn cancel_store_reconciliation(section: &LushtextWorkspaceSection, store_key: us
         refresh
             .reconcile_superseded_count
             .set(refresh.reconcile_superseded_count.get().saturating_add(1));
+        true
+    } else {
+        false
     }
 }
 
@@ -683,86 +968,64 @@ fn cancel_store_reconciliation_if_token(
     }
 }
 
-fn retire_store_runtime_for_token(section: &LushtextWorkspaceSection, token: &Arc<AtomicBool>) {
-    let store_keys = section
-        .imp()
-        .child_store_tokens
-        .borrow()
-        .iter()
-        .filter_map(|(key, active)| Arc::ptr_eq(active, token).then_some(*key))
-        .collect::<Vec<_>>();
-    for store_key in store_keys {
-        section
-            .imp()
-            .child_store_tokens
-            .borrow_mut()
-            .remove(&store_key);
-        cancel_store_reconciliation_if_token(section, store_key, token);
-        section
-            .imp()
-            .child_row_mirrors
-            .borrow_mut()
-            .remove(&store_key);
-        section
-            .imp()
-            .child_row_mirror_generations
-            .borrow_mut()
-            .remove(&store_key);
-        section
-            .imp()
-            .child_store_paths
-            .borrow_mut()
-            .remove(&store_key);
-        section
-            .imp()
-            .child_store_refs
-            .borrow_mut()
-            .remove(&store_key);
-    }
-}
-
 fn truncated_directory_label() -> String {
     format!("{MAX_DIR_ENTRIES}+ items - showing first {MAX_DIR_ENTRIES}")
 }
 
-/// Apply one worker-computed plan through the direct or bounded GTK path.
-fn apply_scanned_children(
-    section: &LushtextWorkspaceSection,
+/// Owned worker result needed by one current direct or bounded GTK application.
+struct ScannedChildrenPlan {
     store: gio::ListStore,
     dir_path: PathBuf,
     token: Arc<AtomicBool>,
+    ticket: ChildScanTicket,
     mirror_generation: u64,
     plan: DirectoryReconciliationPlan,
     truncated: bool,
-) {
+}
+
+/// Apply one worker-computed plan through the direct or bounded GTK path.
+fn apply_scanned_children(section: &LushtextWorkspaceSection, scanned: ScannedChildrenPlan) {
+    let ScannedChildrenPlan {
+        store,
+        dir_path,
+        token,
+        ticket,
+        mirror_generation,
+        plan,
+        truncated,
+    } = scanned;
     if truncated {
         tracing::warn!("Directory truncated to {MAX_DIR_ENTRIES} entries");
     }
 
-    if !child_scan_is_active(section, &dir_path, &store, &token)
+    let store_key = child_store_key(&store);
+    if !child_scan_is_active(section, store_key, ticket, &store, &token)
         || child_mirror_generation(section, &store) != mirror_generation
     {
-        finish_child_scan(section, &dir_path, &token);
+        finish_child_scan(section, store_key, ticket);
         return;
     }
+    retire_removed_child_subtrees(section, &plan);
 
     match plan {
         DirectoryReconciliationPlan::Unchanged => {
-            finish_child_reconciliation(section, &store, &dir_path, &token);
+            finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
         }
         DirectoryReconciliationPlan::Splice {
             position,
             removed,
             replacement,
+            ..
         } if removed.saturating_add(replacement.len()) <= CHILD_RECONCILE_DIRECT_ROWS => {
             let items = build_child_items(&replacement);
             splice_child_store(section, &store, position, removed, &replacement, &items);
-            finish_child_reconciliation(section, &store, &dir_path, &token);
+            finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
         }
         DirectoryReconciliationPlan::Splice {
             position,
             removed,
             replacement,
+            ..
         } => {
             let progress = Rc::new(RefCell::new(ChildReconcileProgress {
                 position,
@@ -771,9 +1034,24 @@ fn apply_scanned_children(
                 replacement: VecDeque::from(replacement),
                 mirror_generation,
             }));
-            apply_next_reconcile_batch(section, store, dir_path, token, progress);
+            apply_next_reconcile_batch(section, store, dir_path, token, ticket, progress);
         }
     }
+}
+
+/// Cancel materialized descendants that disappear from an accepted parent splice.
+fn retire_removed_child_subtrees(
+    section: &LushtextWorkspaceSection,
+    plan: &DirectoryReconciliationPlan,
+) {
+    let DirectoryReconciliationPlan::Splice {
+        removed_directory_roots,
+        ..
+    } = plan
+    else {
+        return;
+    };
+    clear_dir_states(section, &removed_directory_roots.iter().cloned().collect());
 }
 
 fn apply_next_reconcile_batch(
@@ -781,13 +1059,15 @@ fn apply_next_reconcile_batch(
     store: gio::ListStore,
     dir_path: PathBuf,
     token: Arc<AtomicBool>,
+    ticket: ChildScanTicket,
     progress: Rc<RefCell<ChildReconcileProgress>>,
 ) {
     let expected_generation = progress.borrow().mirror_generation;
-    if !child_scan_is_active(section, &dir_path, &store, &token)
+    let store_key = child_store_key(&store);
+    if !child_scan_is_active(section, store_key, ticket, &store, &token)
         || child_mirror_generation(section, &store) != expected_generation
     {
-        finish_child_scan(section, &dir_path, &token);
+        finish_child_scan(section, store_key, ticket);
         return;
     }
 
@@ -819,10 +1099,10 @@ fn apply_next_reconcile_batch(
         progress.remove_remaining == 0 && progress.replacement.is_empty()
     };
     if complete {
-        finish_child_reconciliation(section, &store, &dir_path, &token);
+        finish_child_reconciliation(section, &store, &dir_path, &token, ticket);
         return;
     }
-    schedule_next_reconcile_batch(section, store, dir_path, token, progress);
+    schedule_next_reconcile_batch(section, store, dir_path, token, ticket, progress);
 }
 
 fn schedule_next_reconcile_batch(
@@ -830,6 +1110,7 @@ fn schedule_next_reconcile_batch(
     store: gio::ListStore,
     dir_path: PathBuf,
     token: Arc<AtomicBool>,
+    ticket: ChildScanTicket,
     progress: Rc<RefCell<ChildReconcileProgress>>,
 ) {
     let store_key = child_store_key(&store);
@@ -868,7 +1149,7 @@ fn schedule_next_reconcile_batch(
             .child_reconcile_sources
             .borrow_mut()
             .remove(&store_key);
-        apply_next_reconcile_batch(&section, store, dir_path, callback_token, progress);
+        apply_next_reconcile_batch(&section, store, dir_path, callback_token, ticket, progress);
     });
     if let Some((_, previous)) = section
         .imp()
@@ -885,9 +1166,11 @@ fn finish_child_reconciliation(
     store: &gio::ListStore,
     dir_path: &Path,
     token: &Arc<AtomicBool>,
+    ticket: ChildScanTicket,
 ) {
-    if !child_scan_is_active(section, dir_path, store, token) {
-        finish_child_scan(section, dir_path, token);
+    let store_key = child_store_key(store);
+    if !child_scan_is_active(section, store_key, ticket, store, token) {
+        finish_child_scan(section, store_key, ticket);
         return;
     }
     let recached = {
@@ -898,7 +1181,7 @@ fn finish_child_reconciliation(
         })
     };
     if !recached {
-        finish_child_scan(section, dir_path, token);
+        finish_child_scan(section, store_key, ticket);
         return;
     }
     schedule_child_state_restore(section);
@@ -907,7 +1190,10 @@ fn finish_child_reconciliation(
     refresh
         .reconcile_terminal_count
         .set(refresh.reconcile_terminal_count.get().saturating_add(1));
-    finish_child_scan(section, dir_path, token);
+    refresh
+        .scan_terminal_publications
+        .set(refresh.scan_terminal_publications.get().saturating_add(1));
+    finish_child_scan(section, store_key, ticket);
 }
 
 /// Snapshot only when adopting a pre-existing store without a mirror.

@@ -92,7 +92,10 @@ fn baseline_capture_is_current(
 
 enum BaselineCaptureOutcome {
     Captured,
-    Failed { detail: String, text: String },
+    Failed {
+        detail: String,
+        text: crate::ui::plain_disposal::DisposalOwned<String>,
+    },
 }
 
 impl AutomaticHistoryCapturePermit {
@@ -308,7 +311,10 @@ impl LushtextEditorPage {
             .set(state.path_generation.get().wrapping_add(1));
     }
 
-    fn replace_clean_baseline(&self, text: Option<String>) {
+    fn replace_clean_baseline(
+        &self,
+        text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
+    ) {
         let state = &self.imp().local_history;
         let has_text = text.is_some();
         state.last_clean_text.replace(text);
@@ -325,7 +331,9 @@ impl LushtextEditorPage {
                 .live_local_history_availability()
                 .allows_automatic_capture()
         {
-            Some(content)
+            Some(crate::ui::plain_disposal::DisposalOwned::small_unreserved(
+                content,
+            ))
         } else {
             None
         };
@@ -342,7 +350,9 @@ impl LushtextEditorPage {
     pub(crate) fn seed_local_history_from_restored_draft(&self, content: String) {
         let availability = local_history_service::availability_for_utf8_bytes(content.len());
         let clean_text = if self.file_path().is_some() && availability.allows_automatic_capture() {
-            Some(content)
+            Some(crate::ui::plain_disposal::DisposalOwned::small_unreserved(
+                content,
+            ))
         } else {
             None
         };
@@ -384,7 +394,10 @@ impl LushtextEditorPage {
     }
 
     /// Finalize automatic-capture state after a successful save or Save As.
-    pub(crate) fn complete_local_history_after_save_success(&self, clean_text: Option<String>) {
+    pub(crate) fn complete_local_history_after_save_success(
+        &self,
+        clean_text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
+    ) {
         self.replace_clean_baseline(clean_text);
         self.set_local_history_restore_undo_text(None);
         self.imp()
@@ -432,14 +445,19 @@ impl LushtextEditorPage {
         }
     }
 
-    /// Record or clear the one-shot text used by the browser's undo-restore affordance.
-    pub(crate) fn set_local_history_restore_undo_text(&self, text: Option<String>) {
+    /// Record or clear the guarded body used by the browser's undo-restore affordance.
+    pub(crate) fn set_local_history_restore_undo_text(
+        &self,
+        text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
+    ) {
         self.imp().local_history.restore_undo_text.replace(text);
     }
 
-    /// Consume the pending undo-restore text after the user activates it.
+    /// Consume the pending undo-restore body without releasing its worker-drop guard.
     #[must_use]
-    pub(crate) fn take_local_history_restore_undo_text(&self) -> Option<String> {
+    pub(crate) fn take_local_history_restore_undo_text(
+        &self,
+    ) -> Option<crate::ui::plain_disposal::DisposalOwned<String>> {
         self.imp()
             .local_history
             .restore_undo_text
@@ -491,11 +509,14 @@ impl LushtextEditorPage {
                 match local_history_service::capture_snapshot_for_path(
                     &data_dir,
                     &path,
-                    &clean_text,
+                    clean_text.as_str(),
                     LocalHistorySnapshotOrigin::Baseline,
                     local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
                 ) {
-                    Ok(_) => BaselineCaptureOutcome::Captured,
+                    Ok(_) => {
+                        drop(clean_text.into_inner_on_worker());
+                        BaselineCaptureOutcome::Captured
+                    }
                     Err(error) => BaselineCaptureOutcome::Failed {
                         detail: error.to_string(),
                         text: clean_text,
@@ -713,7 +734,7 @@ impl LushtextEditorPage {
     fn persist_periodic_snapshot_if_current(
         &self,
         ticket: PeriodicCaptureTicket,
-        text: String,
+        text: buffer_snapshot::BufferSnapshotPayload,
         permit: AutomaticHistoryCapturePermit,
     ) {
         if !periodic_capture_is_current(&ticket, &self.periodic_capture_facts()) {
@@ -726,6 +747,7 @@ impl LushtextEditorPage {
         spawn_blocking_then(
             (self.downgrade(), permit),
             move || {
+                let text = text.into_string_on_worker();
                 let data_dir = json_store::data_dir();
                 local_history_service::capture_snapshot_for_path(
                     &data_dir,

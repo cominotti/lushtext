@@ -411,3 +411,87 @@ The project SHALL maintain runnable policy, integration, GTK/widget, and benchma
 - **WHEN** benchmarks and property fixtures analyze lossless and lossy UTF-16, Windows-1252, and Shift_JIS inputs at representative sizes
 - **THEN** optimized results remain semantically equivalent to actual encoding
 - **AND** benchmark evidence records throughput without per-scalar allocation/setup amplification
+
+### Requirement: Reviewed safety and boundedness closeout has direct evidence
+The project SHALL maintain deterministic service, policy, integration, headless GTK/widget, and benchmark evidence for incomplete draft repair, multi-turn session restore, dense-line Replace All construction, per-store workspace scan ownership, aggregate plain-data disposal, large minimap analysis, and note-score pruning. Evidence MUST assert the applicable survivor set, count, byte, generation, worker, pending-owner, or GTK-turn bound directly rather than relying only on elapsed time.
+
+#### Scenario: Multi-page repair survives two startups
+- **WHEN** a missing or malformed manifest is paired with more recoverable draft bodies than one repair page and the app performs two recovery cycles plus every eligible cleanup page
+- **THEN** evidence shows every body survives until represented by a complete trusted manifest
+- **AND** no incomplete inventory authorizes deletion or a successful clean outcome
+
+#### Scenario: High-tab restore publishes bounded projections
+- **WHEN** a scale fixture restores more mixed tabs than one GTK page batch and more file tabs than the load-planning limit
+- **THEN** evidence records page creations per turn, planning high-water, compact pending descriptors, cancellation, and one terminal projection rebuild
+- **AND** final tab order, active intent, and retry state match the session contract
+
+#### Scenario: Dense-line replacement records retained metadata
+- **WHEN** Replace All processes a near-cap file made primarily of short lines with a bounded set of replacements
+- **THEN** evidence records source bytes, source-line count, accepted replacements, retained edit metadata, output bytes, and undo bytes
+- **AND** retained metadata scales with replacements rather than line count
+
+#### Scenario: Refresh churn retains one latest request
+- **WHEN** a controlled slow scan receives repeated watcher and manual refresh requests and its store is later replaced
+- **THEN** evidence records one active scan, at most one compact pending request, weak queued ownership, mirror captures at admission, and stale emptiness rejection
+- **AND** only the latest live store reaches terminal readiness
+
+#### Scenario: Aggregate disposal pressure does not block GTK
+- **WHEN** weighted producer pressure fills worker, reserved-job, and retained-byte disposal capacity while a pre-admitted document-sized owner reaches its final drop
+- **THEN** evidence records immediate small-job full outcomes, compact pending and retry high-water, reservation bounds, eventual drain, and exact teardown cancellation
+- **AND** the pre-admitted owner's nested final destructor runs on a disposal worker
+- **AND** a GTK heartbeat or turn counter continues while the lane is saturated
+
+#### Scenario: Reserved progress survives long-lived ordinary ownership
+- **WHEN** deterministic retained owners fill the ordinary disposal lane
+- **THEN** policy and widget evidence shows startup recovery and Notes source construction still admit through their separately bounded progress lane
+- **AND** close-before-descriptor coverage proves persisted descriptors and a newly edited untitled recovery are merged without loss
+- **AND** preload evidence proves the complete measured graph is demoted to fit its reservation
+- **AND** repeated Notes activation and oversized live bookmark metadata retain one browser owner and one byte-bounded request
+
+#### Scenario: Many-short-line minimap analysis remains sliced
+- **WHEN** an enabled wrapped minimap analyzes a supported multi-megabyte many-short-line document and an edit supersedes it
+- **THEN** evidence records characters or items per slice, main-loop progress, generation cancellation, cache ownership, and terminal current projection
+- **AND** no single GTK turn performs the complete analysis
+
+#### Scenario: Note pruning matches the reference at scale
+- **WHEN** a maximum admitted note corpus contains large bodies, metadata-only hits, body-only hits, Unicode, ties, empty queries, and rapid supersession
+- **THEN** optimized and unpruned reference rows and ordering are identical
+- **AND** evidence reports bodies examined, bodies safely pruned, candidates scored, active and pending queries, and retained top results
+
+#### Scenario: Routine and deep closeout evidence remain tiered
+- **WHEN** default validation and performance diagnostics run
+- **THEN** deterministic safety and representative policy or widget regressions stay in routine lanes
+- **AND** near-limit memory, throughput, and aggregate-pressure fixtures remain in Criterion or performance smoke with artifact context
+
+### Requirement: Traversal and retirement closeout has direct boundedness evidence
+The project SHALL maintain deterministic pure, policy, GTK/widget, responsiveness, and benchmark evidence for directory-only palette traversal, Replace Preview selection and retirement, Markdown plan/projection/retirement churn, mixed workspace-search event dispatch, and synchronous sliced-replacement reentrancy. Evidence MUST measure the applicable count, byte, generation, event, worker, or GTK-slice high-water bound directly and MUST preserve private-text diagnostic rules.
+
+#### Scenario: Directory-only index fixture exceeds the directory cap
+- **WHEN** a generated or virtual fixture offers more directory identities than the configured build budget with few files
+- **THEN** tests record admitted, scanned, retained, cancelled, and truncation state
+- **AND** retained directory ownership stays within the documented cap
+
+#### Scenario: Near-limit Replace Preview is replaced and confirmed
+- **WHEN** a near-limit preview is first superseded and then a current checked subset is confirmed
+- **THEN** evidence records GTK work, worker selection, retirement ownership, and final selected identities
+- **AND** no document-sized outcome is cloned, filtered, or finally destroyed in one GTK action turn
+
+#### Scenario: Dense Markdown generations churn faster than retirement
+- **WHEN** planning and projection fixtures rapidly supersede dense near-limit Markdown renders
+- **THEN** evidence records plan, pending request, detached generation, projection-slice, image, and retirement high-water marks
+- **AND** only the newest current generation reaches its exact rendered or limited terminal state
+
+#### Scenario: Mixed search events exceed one turn
+- **WHEN** a deterministic channel fixture makes more than 250 mixed event variants ready
+- **THEN** each GTK consumer turn records no more than 250 received events
+- **AND** all events eventually reach the same visible terminal semantics
+
+#### Scenario: First sliced mutation reenters replacement
+- **WHEN** a widget-test `changed` handler synchronously supersedes the first delete or insert slice
+- **THEN** evidence observes exact cancellation and ownership cleanup for the old session
+- **AND** the editor's final text, modified state, projection state, editability, and saveability match the accepted replacement
+
+#### Scenario: Routine and deep evidence stay tiered
+- **WHEN** default validation and performance diagnostics run
+- **THEN** bounded policy and representative widget fixtures remain suitable for routine feedback
+- **AND** near-limit memory and throughput diagnostics stay in the existing benchmark or performance-smoke lanes with fixture and environment context

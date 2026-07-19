@@ -17,15 +17,19 @@ mod replace;
 mod results;
 mod runtime;
 
+pub(crate) use replace::own_reserved_undo_backup;
 #[cfg(feature = "test-utils")]
 pub use replace::{
     set_preview_selection_delay_for_test, set_replace_preview_budget_for_test,
     set_replace_preview_delay_for_test, set_undo_backup_disk_delay_for_test,
 };
 #[cfg(feature = "test-utils")]
-pub use runtime::set_search_worker_delay_for_test;
+pub use runtime::{
+    SearchRetirementOwnership, SearchRetirementSliceObservation, set_search_worker_delay_for_test,
+};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::model::content_search::{Replacement, SearchQuerySpec};
 use crate::services::content_search::ReplaceUndoBackup;
@@ -36,6 +40,10 @@ use gtk4::prelude::*;
 use gtk4::{self, gio};
 
 use self::item::SearchResultItem;
+
+pub(crate) type GuardedReplaceUndoBackup =
+    crate::ui::plain_disposal::DisposalOwned<ReplaceUndoBackup>;
+pub(crate) type GuardedReplacements = crate::ui::plain_disposal::DisposalOwned<Vec<Replacement>>;
 
 glib::wrapper! {
     /// Workspace search and Replace All panel owned by the main window shell.
@@ -317,10 +325,14 @@ impl LushtextSearchPanel {
     /// Return source-truncated or invalid matches skipped by the current preview.
     #[must_use]
     pub fn skipped_replacement_count(&self) -> u32 {
-        u32::try_from(self.imp().preview.preview_outcome.borrow().as_ref().map_or(
-            0,
-            crate::model::content_search::ReplacePreviewOutcome::skipped_source_count,
-        ))
+        u32::try_from(
+            self.imp()
+                .preview
+                .preview_outcome
+                .borrow()
+                .as_ref()
+                .map_or(0, |outcome| outcome.skipped_source_count()),
+        )
         .unwrap_or(u32::MAX)
     }
 
@@ -389,7 +401,10 @@ impl LushtextSearchPanel {
 
     /// Update the workspace folders to search. Called when workspaces change.
     pub fn set_workspace_folders(&self, folders: Vec<PathBuf>) {
-        self.imp().runtime.workspace_folders.replace(folders);
+        self.imp()
+            .runtime
+            .workspace_folders
+            .replace(Arc::from(folders));
         self.refresh_accessibility_state();
     }
 
@@ -429,19 +444,40 @@ impl LushtextSearchPanel {
     }
 
     /// Register a callback invoked when "Confirm Replace" is clicked with checked replacements.
-    pub fn connect_replace_all<F: Fn(Vec<Replacement>) + 'static>(&self, f: F) {
+    pub(crate) fn connect_guarded_replace_all<F: Fn(GuardedReplacements) + 'static>(&self, f: F) {
         self.imp()
             .callbacks
             .replace_callback
             .replace(Some(Box::new(f)));
     }
 
+    /// Register the raw-vector callback used by the external widget harness.
+    #[cfg(feature = "test-utils")]
+    pub fn connect_replace_all<F: Fn(Vec<Replacement>) + 'static>(&self, f: F) {
+        self.connect_guarded_replace_all(move |replacements| {
+            f(replacements.into_inner_for_current_install());
+        });
+    }
+
     /// Register a callback invoked when "Undo" is clicked with the backup to restore.
-    pub fn connect_undo_all<F: Fn(std::sync::Arc<ReplaceUndoBackup>) + 'static>(&self, f: F) {
+    pub(crate) fn connect_guarded_undo_all<
+        F: Fn(std::sync::Arc<GuardedReplaceUndoBackup>) + 'static,
+    >(
+        &self,
+        f: F,
+    ) {
         self.imp()
             .callbacks
             .undo_callback
             .replace(Some(Box::new(f)));
+    }
+
+    /// Register the raw backup callback used by the external widget harness.
+    #[cfg(feature = "test-utils")]
+    pub fn connect_undo_all<F: Fn(std::sync::Arc<ReplaceUndoBackup>) + 'static>(&self, f: F) {
+        self.connect_guarded_undo_all(move |backup| {
+            f(std::sync::Arc::new((**backup).clone()));
+        });
     }
 
     /// Register a callback for pushing status messages to the window's status bar.

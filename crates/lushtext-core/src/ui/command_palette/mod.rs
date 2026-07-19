@@ -9,7 +9,7 @@ pub mod item;
 mod runtime;
 
 use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, SearchMode};
-use crate::services::palette::FileIndex;
+use crate::services::palette::{FileIndex, FileIndexMutationLedger};
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
@@ -47,20 +47,6 @@ static ACCEPTED_INCREMENTAL_RETIREMENTS: std::sync::atomic::AtomicUsize =
 #[cfg(feature = "test-utils")]
 static REJECTED_INCREMENTAL_RETIREMENTS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-
-/// Transfer possible final destruction of a large index to the bounded worker lane.
-fn retire_file_index(index: Arc<FileIndex>, kind: FileIndexRetirementKind) {
-    let last_owned = Arc::strong_count(&index) == 1;
-    let reached_policy_cap = index.len() == crate::services::palette::MAX_INDEXED_FILES;
-    gtk_lush_tasks::spawn_blocking_then(
-        (),
-        move || {
-            drop(index);
-            record_file_index_retirement(kind, last_owned && reached_policy_cap);
-        },
-        |(), ()| {},
-    );
-}
 
 #[cfg(feature = "test-utils")]
 fn record_file_index_retirement(kind: FileIndexRetirementKind, last_owned: bool) {
@@ -130,17 +116,50 @@ pub(super) enum FileIndexUpdate {
 }
 
 impl FileIndexUpdate {
-    fn apply(&self, index: &mut FileIndex) {
+    fn apply(&self, index: &mut FileIndex, ledger: &mut FileIndexMutationLedger) {
         match self {
             Self::Create {
                 path,
                 workspace_folder,
-            } => index.add_path(path.clone(), Arc::clone(workspace_folder)),
-            Self::Delete(path) => index.remove_path(path),
-            Self::Rename { old_path, new_path } => index.rename_path(old_path, new_path),
+            } => {
+                index.add_path_for_bounded_batch(
+                    path.clone(),
+                    Arc::clone(workspace_folder),
+                    ledger,
+                );
+            }
+            Self::Delete(path) => index.remove_path_for_bounded_batch(path, ledger),
+            Self::Rename { old_path, new_path } => {
+                index.rename_path_for_bounded_batch(old_path, new_path, ledger);
+            }
         }
     }
+
+    fn retained_byte_weight(&self) -> u64 {
+        let path_bytes = |path: &PathBuf| u64::try_from(path.capacity()).unwrap_or(u64::MAX);
+        u64::try_from(std::mem::size_of::<Self>())
+            .unwrap_or(u64::MAX)
+            .saturating_add(match self {
+                Self::Create { path, .. } | Self::Delete(path) => path_bytes(path),
+                Self::Rename { old_path, new_path } => {
+                    path_bytes(old_path).saturating_add(path_bytes(new_path))
+                }
+            })
+    }
 }
+
+enum FileIndexUpdateBatch {
+    Incremental(Vec<FileIndexUpdate>),
+    Rebuild(Vec<FileIndexUpdate>),
+}
+
+enum AppliedFileIndexUpdateBatch {
+    Incremental,
+    Rebuild,
+}
+
+const MAX_PENDING_INDEX_UPDATES: usize = 1_024;
+const MAX_PENDING_INDEX_UPDATE_BYTES: u64 = 4 * 1024 * 1024;
 
 // glib::wrapper! generates the public wrapper type for this widget.
 // @extends declares the GTK class hierarchy; @implements lists interfaces.
@@ -161,10 +180,19 @@ impl LushtextCommandPalette {
     }
 
     /// Replace the file index. Called when workspace folders change.
-    pub fn set_file_index(&self, index: FileIndex) {
+    pub(crate) fn set_guarded_file_index(
+        &self,
+        index: crate::ui::plain_disposal::DisposalOwned<FileIndex>,
+    ) {
         let imp = self.imp();
         let previous = std::mem::replace(&mut *imp.file_index.borrow_mut(), Arc::new(index));
-        retire_file_index(previous, FileIndexRetirementKind::FullReplacement);
+        let last_owned = Arc::strong_count(&previous) == 1;
+        let reached_policy_cap = previous.len() == crate::services::palette::MAX_INDEXED_FILES;
+        drop(previous);
+        record_file_index_retirement(
+            FileIndexRetirementKind::FullReplacement,
+            last_owned && reached_policy_cap,
+        );
         imp.file_index_generation
             .set(imp.file_index_generation.get().wrapping_add(1));
         // Re-run search if the palette is currently showing results
@@ -172,6 +200,19 @@ impl LushtextCommandPalette {
             let query = self.imp().search_entry.text();
             self.imp().rebuild_results(&query);
         }
+    }
+
+    /// Install an in-memory index through the widget-test compatibility surface.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test process has deliberately saturated disposal admission.
+    #[cfg(feature = "test-utils")]
+    pub fn set_file_index(&self, index: FileIndex) {
+        let weight = index.retained_byte_weight();
+        let index = crate::ui::plain_disposal::try_own_for_gtk(weight, index)
+            .expect("widget-test file index should fit disposal admission");
+        self.set_guarded_file_index(index);
     }
 
     /// Replace the open file-backed tab source used by grouped file results.
@@ -184,18 +225,41 @@ impl LushtextCommandPalette {
     }
 
     /// Replace the cached note rows used by Notes and All mode.
-    pub fn set_note_entries(&self, note_entries: Vec<PaletteNoteEntry>) {
+    pub(crate) fn set_guarded_note_entries(
+        &self,
+        note_entries: crate::ui::plain_disposal::DisposalOwned<Box<[PaletteNoteEntry]>>,
+    ) {
         let previous = std::mem::replace(
             &mut *self.imp().note_entries.borrow_mut(),
-            Arc::from(note_entries),
+            Arc::new(note_entries),
         );
-        gtk_lush_tasks::spawn_blocking_then((), move || drop(previous), |(), ()| {});
+        drop(previous);
         if self.imp().palette_open.get()
             && matches!(self.mode(), SearchMode::All | SearchMode::Notes)
         {
             let query = self.imp().search_entry.text();
             self.imp().rebuild_results(&query);
         }
+    }
+
+    /// Install in-memory note rows through the widget-test compatibility surface.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test process has deliberately saturated disposal admission.
+    #[cfg(feature = "test-utils")]
+    pub fn set_note_entries(&self, note_entries: Vec<PaletteNoteEntry>) {
+        let entries = note_entries.into_boxed_slice();
+        let retained = crate::model::palette::palette_note_entries_retained_byte_weight(&entries);
+        let entries = crate::ui::plain_disposal::try_own_for_gtk(retained, entries)
+            .expect("widget-test note rows should fit disposal admission");
+        self.set_guarded_note_entries(entries);
+    }
+
+    pub(crate) fn clear_note_entries(&self) {
+        self.set_guarded_note_entries(crate::ui::plain_disposal::DisposalOwned::small_unreserved(
+            Vec::<PaletteNoteEntry>::new().into_boxed_slice(),
+        ));
     }
 
     /// Set the label for the workspace-indexed file group.
@@ -297,6 +361,18 @@ impl LushtextCommandPalette {
         self.imp().file_index.borrow().len()
     }
 
+    /// Byte credit held by the currently installed guarded file index.
+    #[must_use]
+    pub(crate) fn file_index_reservation_weight(&self) -> Option<u64> {
+        self.imp().file_index.borrow().reservation_weight()
+    }
+
+    /// Byte credit held by the currently installed guarded note source.
+    #[must_use]
+    pub(crate) fn note_source_reservation_weight(&self) -> Option<u64> {
+        self.imp().note_entries.borrow().reservation_weight()
+    }
+
     /// Number of open file-backed tabs supplied by the window shell.
     #[must_use]
     pub fn open_tab_source_count(&self) -> usize {
@@ -316,6 +392,7 @@ impl LushtextCommandPalette {
             .pending_index_updates
             .borrow()
             .len()
+            .saturating_add(usize::from(self.imp().index_update_rebuild_pending.get()))
             .saturating_add(usize::from(self.imp().index_update_worker_running.get()))
     }
 
@@ -324,6 +401,20 @@ impl LushtextCommandPalette {
     /// Report whether the serialized incremental index worker is active.
     pub fn index_update_worker_running_for_test(&self) -> bool {
         self.imp().index_update_worker_running.get()
+    }
+
+    /// Direct retained queue evidence for incremental-index pressure tests.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn index_update_queue_snapshot_for_test(&self) -> (usize, u64, bool, usize, u64) {
+        let imp = self.imp();
+        (
+            imp.pending_index_updates.borrow().len(),
+            imp.pending_index_update_bytes.get(),
+            imp.index_update_rebuild_pending.get(),
+            MAX_PENDING_INDEX_UPDATES,
+            MAX_PENDING_INDEX_UPDATE_BYTES,
+        )
     }
 
     /// Whether the visible palette owns active or latest query work.
@@ -385,8 +476,47 @@ impl LushtextCommandPalette {
     }
 
     fn enqueue_index_update(&self, update: FileIndexUpdate) {
-        self.imp().pending_index_updates.borrow_mut().push(update);
+        self.retain_bounded_index_update(update);
         self.schedule_index_update_flush();
+    }
+
+    fn retain_bounded_index_update(&self, update: FileIndexUpdate) {
+        let imp = self.imp();
+        if imp.index_update_rebuild_pending.get() {
+            return;
+        }
+        let mut pending = imp.pending_index_updates.borrow_mut();
+        let shell_growth = if pending.len() == pending.capacity() {
+            let next_capacity = pending.capacity().max(4).saturating_mul(2);
+            u64::try_from(
+                next_capacity
+                    .saturating_sub(pending.capacity())
+                    .saturating_mul(std::mem::size_of::<FileIndexUpdate>()),
+            )
+            .unwrap_or(u64::MAX)
+        } else {
+            0
+        };
+        let update_bytes = update.retained_byte_weight();
+        let next_bytes = imp
+            .pending_index_update_bytes
+            .get()
+            .checked_add(shell_growth)
+            .and_then(|bytes| bytes.checked_add(update_bytes));
+        if pending.len() >= MAX_PENDING_INDEX_UPDATES
+            || next_bytes.is_none_or(|bytes| bytes > MAX_PENDING_INDEX_UPDATE_BYTES)
+        {
+            imp.index_update_rebuild_pending.set(true);
+            return;
+        }
+        if shell_growth > 0 {
+            let next_capacity = pending.capacity().max(4).saturating_mul(2);
+            let additional = next_capacity.saturating_sub(pending.capacity());
+            pending.reserve_exact(additional);
+        }
+        pending.push(update);
+        imp.pending_index_update_bytes
+            .set(next_bytes.expect("bounded update byte sum was checked"));
     }
 
     fn schedule_index_update_flush(&self) {
@@ -399,11 +529,42 @@ impl LushtextCommandPalette {
 
     fn flush_index_updates(&self) {
         let imp = self.imp();
-        if imp.index_update_worker_running.get() || imp.pending_index_updates.borrow().is_empty() {
+        if imp.index_update_worker_running.get()
+            || (imp.pending_index_updates.borrow().is_empty()
+                && !imp.index_update_rebuild_pending.get())
+        {
             return;
         }
 
+        let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
+        let replacement_weight = crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES;
+        let reservation = imp.file_index.borrow().reservation_weight().map_or_else(
+            || crate::ui::plain_disposal::try_reserve_for_gtk(replacement_weight),
+            |current_weight| {
+                crate::ui::plain_disposal::try_reserve_replacement_for_gtk(
+                    replacement_weight,
+                    current_weight,
+                )
+            },
+        );
+        let Some(reservation) = reservation else {
+            let palette_weak = self.downgrade();
+            imp.index_update_capacity_wakeup
+                .arm(observed_epoch, move || {
+                    if let Some(palette) = palette_weak.upgrade() {
+                        palette.flush_index_updates();
+                    }
+                });
+            return;
+        };
+
         let updates = std::mem::take(&mut *imp.pending_index_updates.borrow_mut());
+        imp.pending_index_update_bytes.set(0);
+        let batch = if imp.index_update_rebuild_pending.replace(false) {
+            FileIndexUpdateBatch::Rebuild(updates)
+        } else {
+            FileIndexUpdateBatch::Incremental(updates)
+        };
         let base = Arc::clone(&imp.file_index.borrow());
         let base_generation = imp.file_index_generation.get();
         imp.index_update_worker_running.set(true);
@@ -411,19 +572,49 @@ impl LushtextCommandPalette {
             self.clone(),
             move || {
                 delay_index_update_for_test();
-                let mut index = (*base).clone();
-                for update in &updates {
-                    update.apply(&mut index);
-                }
-                (index, updates)
+                let (index, applied_batch) = match batch {
+                    FileIndexUpdateBatch::Incremental(updates) => {
+                        let mut index = (**base).clone();
+                        let mut ledger = index.incremental_mutation_ledger();
+                        for update in &updates {
+                            update.apply(&mut index, &mut ledger);
+                        }
+                        debug_assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
+                        debug_assert!(
+                            ledger.peak_retained_bytes()
+                                <= crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES
+                        );
+                        drop(updates);
+                        (index, AppliedFileIndexUpdateBatch::Incremental)
+                    }
+                    FileIndexUpdateBatch::Rebuild(discarded_updates) => {
+                        drop(discarded_updates);
+                        (
+                            (**base).rebuild_current_workspace_folders(),
+                            AppliedFileIndexUpdateBatch::Rebuild,
+                        )
+                    }
+                };
+                let retained_bytes = index.retained_byte_weight();
+                let mut reservation = reservation;
+                reservation.shrink_to(retained_bytes);
+                let index = reservation.own(index);
+                (index, applied_batch)
             },
-            move |palette, (index, applied_updates)| {
+            move |palette, (index, applied_batch)| {
                 let imp = palette.imp();
                 imp.index_update_worker_running.set(false);
                 if imp.file_index_generation.get() == base_generation {
                     let previous =
                         std::mem::replace(&mut *imp.file_index.borrow_mut(), Arc::new(index));
-                    retire_file_index(previous, FileIndexRetirementKind::AcceptedIncremental);
+                    let last_owned = Arc::strong_count(&previous) == 1;
+                    let reached_policy_cap =
+                        previous.len() == crate::services::palette::MAX_INDEXED_FILES;
+                    drop(previous);
+                    record_file_index_retirement(
+                        FileIndexRetirementKind::AcceptedIncremental,
+                        last_owned && reached_policy_cap,
+                    );
                     imp.file_index_generation
                         .set(base_generation.wrapping_add(1));
                     if imp.palette_open.get() {
@@ -431,18 +622,22 @@ impl LushtextCommandPalette {
                         imp.rebuild_results(&query);
                     }
                 } else {
-                    retire_file_index(
-                        Arc::new(index),
+                    let at_cap = index.len() == crate::services::palette::MAX_INDEXED_FILES;
+                    drop(index);
+                    record_file_index_retirement(
                         FileIndexRetirementKind::RejectedIncremental,
+                        at_cap,
                     );
                     // A full replacement won the race. Replay this worker's
                     // mutations before newer queued ones so neither source of
                     // truth is silently lost.
-                    imp.pending_index_updates
-                        .borrow_mut()
-                        .splice(0..0, applied_updates);
+                    let _ = applied_batch;
+                    imp.index_update_rebuild_pending.set(true);
+                    palette.schedule_index_update_flush();
                 }
-                palette.flush_index_updates();
+                if !imp.pending_index_updates.borrow().is_empty() {
+                    palette.schedule_index_update_flush();
+                }
             },
         );
     }

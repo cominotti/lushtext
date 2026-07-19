@@ -16,8 +16,9 @@ use lushtext_core::model::palette::{
 use lushtext_core::model::workspace::{WorkspaceScope, WorkspacesFile};
 use lushtext_core::services::palette::{
     FileIndex, GroupedSearchInput, NoteSourceRefreshCoordinator, NoteSourceRefreshRequest,
-    NotesBrowserQueryCoordinator, NotesBrowserQueryRequest, PaletteSearchCancellation,
-    PaletteSearchOutcome, grouped_search, merge_sorted_for_property_test,
+    NotesBrowserMode, NotesBrowserQueryCoordinator, NotesBrowserQueryRequest,
+    PaletteSearchCancellation, PaletteSearchOutcome, grouped_search,
+    merge_sorted_for_property_test, note_scoring_equivalence_for_property_test,
     open_file_selection_equivalence_for_property_test,
 };
 use proptest::prelude::*;
@@ -114,6 +115,8 @@ proptest! {
                 data_dir: PathBuf::from(format!("request-{index}")),
                 scope_snapshot: scope.clone(),
                 open_editor_snapshots: Arc::from([]),
+                open_editor_snapshots_truncated: false,
+                mode: NotesBrowserMode::AllNotes,
                 limits: lushtext_core::services::palette::PALETTE_NOTE_SOURCE_LIMITS,
             });
             if let Some(start) = start {
@@ -147,6 +150,7 @@ proptest! {
         for index in 0..request_count {
             let start = coordinator.submit(NotesBrowserQueryRequest {
                 query: format!("query-{index}"),
+                mode: NotesBrowserMode::AllNotes,
             });
             if let Some(start) = start {
                 active_generation = Some(start.generation);
@@ -164,6 +168,59 @@ proptest! {
             prop_assert_eq!(
                 next.expect("latest query starts").request.query,
                 format!("query-{}", request_count - 1)
+            );
+        }
+    }
+
+    #[test]
+    fn optimized_note_scoring_matches_unpruned_reference_after_rapid_supersession(
+        cases in note_scoring_cases(),
+        queries in note_query_sequence(),
+        max in 0usize..=support::MAX_VECTOR_LEN * 2,
+        category_selector in 0usize..=PaletteNoteCategory::ALL.len(),
+    ) {
+        let entries = generated_note_entries(cases);
+        let category = (category_selector < PaletteNoteCategory::ALL.len())
+            .then(|| PaletteNoteCategory::ALL[category_selector]);
+        let mut coordinator = NotesBrowserQueryCoordinator::default();
+        let mut first_start = None;
+        for query in &queries {
+            if let Some(start) = coordinator.submit(NotesBrowserQueryRequest {
+                query: query.clone(),
+                mode: NotesBrowserMode::AllNotes,
+            }) {
+                first_start = Some(start);
+            }
+            let snapshot = coordinator.snapshot();
+            prop_assert!(snapshot.active <= 1);
+            prop_assert!(snapshot.pending <= 1);
+        }
+
+        let first = first_start.expect("non-empty query sequence starts one generation");
+        let final_request = if queries.len() == 1 {
+            first.request
+        } else {
+            coordinator
+                .finish(first.generation)
+                .expect("latest superseding query starts")
+                .request
+        };
+        prop_assert_eq!(&final_request.query, queries.last().expect("non-empty queries"));
+
+        let evidence = note_scoring_equivalence_for_property_test(
+            &entries,
+            category,
+            &final_request.query,
+            max,
+        );
+        prop_assert_eq!(&evidence.optimized, &evidence.unpruned_reference);
+        prop_assert!(evidence.optimized.len() <= max);
+        prop_assert!(evidence.optimized_metrics.peak_retained_per_source <= max);
+        if !final_request.query.trim().is_empty() {
+            prop_assert_eq!(
+                evidence.optimized_metrics.note_bodies_examined
+                    + evidence.optimized_metrics.note_bodies_safely_pruned,
+                evidence.optimized_metrics.candidates_scored,
             );
         }
     }
@@ -304,6 +361,58 @@ fn palette_query() -> impl Strategy<Value = String> {
         "ab".to_string(),
         "missing".to_string(),
     ])
+}
+
+fn note_query_sequence() -> impl Strategy<Value = Vec<String>> {
+    prop::collection::vec(palette_query(), 1..=support::MAX_VECTOR_LEN.min(8))
+}
+
+fn note_scoring_cases() -> impl Strategy<Value = Vec<(usize, String, String, bool)>> {
+    let token = prop::sample::select(vec![
+        String::new(),
+        "alpha".to_string(),
+        "same".to_string(),
+        "résumé".to_string(),
+        "re\u{301}sume\u{301}".to_string(),
+        "東京".to_string(),
+        "🌍".to_string(),
+        "missing".to_string(),
+    ]);
+    prop::collection::vec(
+        (
+            0usize..PaletteNoteCategory::ALL.len(),
+            token.clone(),
+            token,
+            any::<bool>(),
+        ),
+        0..=support::MAX_VECTOR_LEN,
+    )
+}
+
+fn generated_note_entries(cases: Vec<(usize, String, String, bool)>) -> Vec<PaletteNoteEntry> {
+    cases
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, (category, metadata, body_token, long_body))| {
+            let body = if long_body {
+                format!("{} {body_token}", "x".repeat(4 * 1024 + 1))
+            } else {
+                format!("body {body_token}")
+            };
+            PaletteNoteEntry {
+                category: PaletteNoteCategory::ALL[category],
+                // Deliberately omit the ordinal so generated duplicates exercise ties.
+                title: format!("note {metadata}"),
+                subtitle: "property metadata · Café · 東京".to_string(),
+                detail: (ordinal % 2 == 0).then(|| format!("detail {metadata}")),
+                note_text: Some(body),
+                target: PaletteNoteTarget::DocumentNote {
+                    path: PathBuf::from(format!("/workspace/property-note-{ordinal}.md")),
+                    workspace_folders: vec![PathBuf::from("/workspace")],
+                },
+            }
+        })
+        .collect()
 }
 
 /// Generate a bounded stream of relevance scores.

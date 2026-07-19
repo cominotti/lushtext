@@ -27,6 +27,7 @@ mod print;
 mod recent_open;
 mod search;
 mod session_persistence;
+mod session_restore;
 mod startup_data;
 mod tabs;
 mod transient_surfaces;
@@ -71,6 +72,8 @@ pub use notes::{
 pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
 #[cfg(feature = "test-utils")]
 pub use search::set_replace_reload_facts_delay_for_test;
+#[cfg(feature = "test-utils")]
+pub use session_persistence::SessionRestoreRuntimeSnapshot;
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).

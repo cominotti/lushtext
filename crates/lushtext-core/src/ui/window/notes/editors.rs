@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -379,38 +380,37 @@ impl LushtextWindow {
                         );
                         return;
                     };
-                    if note_text.trim().is_empty() {
-                        window_for_save.publish_status_message(
-                            "Document notes need note text",
-                            MessageKind::Warning,
-                        );
-                        return;
-                    }
-
-                    let mut note = existing_note_for_save
-                        .clone()
-                        .unwrap_or_else(|| RichNoteBody::new(""));
-                    if existing_note_for_save.is_some() {
-                        let _ = note.update_text(&note_text);
-                    } else {
-                        note = RichNoteBody::new(&note_text);
-                    }
-
                     spawn_blocking_then(
                         window_for_save,
                         move || {
+                            let note_text = note_text.into_string_on_worker();
+                            if note_text.trim().is_empty() {
+                                return Ok(false);
+                            }
+                            let mut note = existing_note_for_save
+                                .clone()
+                                .unwrap_or_else(|| RichNoteBody::new(""));
+                            if existing_note_for_save.is_some() {
+                                let _ = note.update_text(&note_text);
+                            } else {
+                                note = RichNoteBody::new(&note_text);
+                            }
                             let data_dir = json_store::data_dir();
                             document_note_service::save_for_path(&data_dir, &path_for_save, &note)
-                                .map(|_| ())
+                                .map(|_| true)
                         },
                         |window, result| match result {
-                            Ok(()) => {
+                            Ok(true) => {
                                 window.refresh_command_palette_note_source_debounced();
                                 window.publish_status_message(
                                     "Document note saved",
                                     MessageKind::Info,
                                 );
                             }
+                            Ok(false) => window.publish_status_message(
+                                "Document notes need note text",
+                                MessageKind::Warning,
+                            ),
                             Err(error) => {
                                 tracing::error!("Failed to save document note: {error}");
                                 window.publish_status_message(
@@ -526,36 +526,35 @@ impl LushtextWindow {
                         );
                         return;
                     };
-                    if note_text.trim().is_empty() {
-                        window_for_save.publish_status_message(
-                            "Folder notes need note text",
-                            MessageKind::Warning,
-                        );
-                        return;
-                    }
-
-                    let mut note = existing_note_for_save
-                        .clone()
-                        .unwrap_or_else(|| RichNoteBody::new(""));
-                    if existing_note_for_save.is_some() {
-                        let _ = note.update_text(&note_text);
-                    } else {
-                        note = RichNoteBody::new(&note_text);
-                    }
-
                     spawn_blocking_then(
                         window_for_save,
                         move || {
+                            let note_text = note_text.into_string_on_worker();
+                            if note_text.trim().is_empty() {
+                                return Ok(false);
+                            }
+                            let mut note = existing_note_for_save
+                                .clone()
+                                .unwrap_or_else(|| RichNoteBody::new(""));
+                            if existing_note_for_save.is_some() {
+                                let _ = note.update_text(&note_text);
+                            } else {
+                                note = RichNoteBody::new(&note_text);
+                            }
                             let data_dir = json_store::data_dir();
                             folder_note_service::save_for_folder(&data_dir, &folder_for_save, &note)
-                                .map(|_| ())
+                                .map(|_| true)
                         },
                         |window, result| match result {
-                            Ok(()) => {
+                            Ok(true) => {
                                 window.refresh_command_palette_note_source_debounced();
                                 window
                                     .publish_status_message("Folder note saved", MessageKind::Info);
                             }
+                            Ok(false) => window.publish_status_message(
+                                "Folder notes need note text",
+                                MessageKind::Warning,
+                            ),
                             Err(error) => {
                                 tracing::error!("Failed to save folder note: {error}");
                                 window.publish_status_message(
@@ -772,7 +771,7 @@ fn install_note_save_response_state(
 #[derive(Clone)]
 struct NoteSaveResponseRefresh {
     dialog_weak: glib::WeakRef<libadwaita::AlertDialog>,
-    presentation: Rc<NoteEditorPresentation>,
+    presentation: Arc<NoteEditorPresentation>,
     debounce: Debounce,
     in_flight: Rc<Cell<bool>>,
     rerun_requested: Rc<Cell<bool>>,
@@ -784,7 +783,7 @@ impl NoteSaveResponseRefresh {
     fn new(dialog: &libadwaita::AlertDialog, presentation: NoteEditorPresentation) -> Self {
         Self {
             dialog_weak: dialog.downgrade(),
-            presentation: Rc::new(presentation),
+            presentation: Arc::new(presentation),
             debounce: Debounce::new(),
             in_flight: Rc::new(Cell::new(false)),
             rerun_requested: Rc::new(Cell::new(false)),
@@ -823,9 +822,9 @@ impl NoteSaveResponseRefresh {
         let snapshot = snapshot_note_buffer_text(buffer, move |outcome| {
             snapshot_slot.borrow_mut().take();
             let rerun_requested = refresh.rerun_requested.replace(false);
-            refresh.in_flight.set(false);
 
             if rerun_requested {
+                refresh.in_flight.set(false);
                 if refresh.dialog_weak.upgrade().is_some() {
                     refresh.queue(buffer_for_rerun);
                 }
@@ -833,14 +832,30 @@ impl NoteSaveResponseRefresh {
             }
 
             let buffer_snapshot::BufferSnapshotOutcome::Captured(text) = outcome else {
+                refresh.in_flight.set(false);
                 return;
             };
-
-            let Some(dialog) = refresh.dialog_weak.upgrade() else {
-                return;
-            };
-            dialog
-                .set_response_enabled(RESPONSE_SAVE, refresh.presentation.save_enabled_for(&text));
+            let presentation = Arc::clone(&refresh.presentation);
+            spawn_blocking_then(
+                (refresh, buffer_for_rerun),
+                move || {
+                    let text = text.into_string_on_worker();
+                    presentation.save_enabled_for(&text)
+                },
+                move |(refresh, buffer_for_rerun), save_enabled| {
+                    let rerun_requested = refresh.rerun_requested.replace(false);
+                    refresh.in_flight.set(false);
+                    if rerun_requested {
+                        if refresh.dialog_weak.upgrade().is_some() {
+                            refresh.queue(buffer_for_rerun);
+                        }
+                        return;
+                    }
+                    if let Some(dialog) = refresh.dialog_weak.upgrade() {
+                        dialog.set_response_enabled(RESPONSE_SAVE, save_enabled);
+                    }
+                },
+            );
         });
         self.snapshot.replace(snapshot);
     }
@@ -864,11 +879,11 @@ fn render_note_preview(
         let buffer_snapshot::BufferSnapshotOutcome::Captured(text) = outcome else {
             return;
         };
-        if text.trim().is_empty() {
-            preview.show_content_placeholder(empty_preview_description);
-        } else {
-            preview.render_markdown_with_context(&text, &render_context);
-        }
+        preview.render_snapshot_with_context_or_placeholder(
+            text,
+            render_context,
+            Some(empty_preview_description),
+        );
     });
     preview.replace_source_snapshot(snapshot);
 }
@@ -884,7 +899,9 @@ fn snapshot_note_buffer_text<F: FnOnce(buffer_snapshot::BufferSnapshotOutcome) +
         ))
     } else {
         callback(buffer_snapshot::BufferSnapshotOutcome::Captured(
-            buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+            buffer_snapshot::BufferSnapshotPayload::direct(
+                buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+            ),
         ));
         None
     }

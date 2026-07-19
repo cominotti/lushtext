@@ -17,8 +17,8 @@ pub mod types;
 pub mod write;
 
 pub use types::{
-    DirectoryEntryInfo, DirectoryPage, DirectoryScanPolicy, FileFacts, FileIdentity, FileKind,
-    FileSnapshot, MutationOutcome, PathStatus, WriteLabel,
+    DirectoryEntryInfo, DirectoryPage, DirectoryPageVisitMetrics, DirectoryScanPolicy, FileFacts,
+    FileIdentity, FileKind, FileSnapshot, MutationOutcome, PathStatus, WriteLabel,
 };
 
 #[cfg(test)]
@@ -97,6 +97,62 @@ mod tests {
         assert!(wrapped.wrapped);
         assert_eq!(wrapped.entries[0].file_name, "alpha");
         assert!(wrapped.has_more);
+    }
+
+    #[test]
+    fn directory_page_cancellation_returns_interrupted_without_partial_rows() {
+        let dir = TempDir::new().expect("temp dir");
+        for name in ["alpha", "bravo", "charlie"] {
+            fixture::write_text(&dir.path().join(name), "");
+        }
+        let mut visits = 0usize;
+
+        let error = tree::scan_directory_page_after_with_cancel(
+            dir.path(),
+            None,
+            DirectoryScanPolicy {
+                max_entries: 2,
+                include_hidden: false,
+            },
+            || {
+                visits = visits.saturating_add(1);
+                visits > 1
+            },
+        )
+        .expect_err("cancelled page scan must not publish partial evidence");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn one_pass_page_visit_stops_after_one_raw_over_limit_probe() {
+        let dir = TempDir::new().expect("temp dir");
+        for name in ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"] {
+            fixture::write_text(&dir.path().join(name), "");
+        }
+        let mut delivered = Vec::new();
+
+        let metrics = tree::visit_directory_pages_with_cancel(
+            dir.path(),
+            DirectoryScanPolicy {
+                max_entries: 3,
+                include_hidden: false,
+            },
+            2,
+            || false,
+            |page| {
+                delivered.extend(page.iter().map(|entry| entry.file_name.clone()));
+                true
+            },
+        )
+        .expect("bounded page visit");
+
+        assert_eq!(metrics.raw_entries_visited, 4);
+        assert_eq!(metrics.entries_delivered, 3);
+        assert_eq!(metrics.pages_delivered, 2);
+        assert!(metrics.stopped_by_limit);
+        assert!(!metrics.reached_terminal);
+        assert_eq!(delivered.len(), 3);
     }
 
     #[test]

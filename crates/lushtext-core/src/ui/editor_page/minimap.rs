@@ -17,7 +17,6 @@ use gtk4::{self, cairo};
 use sourceview5::prelude::*;
 
 use crate::config::keys;
-use crate::ui::buffer_snapshot;
 use crate::ui::status_bar::MessageKind;
 use crate::ui::window::LushtextWindow;
 use gtk_lush_settle::SettleHandle;
@@ -74,6 +73,10 @@ const MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET: u64 = 2 * 1024 * 1024;
 /// JSON or generated files before a 64-160px minimap explodes one line into
 /// thousands of visual rows.
 const MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET: usize = 8_000;
+/// Live GTK-buffer characters inspected by one minimap analysis turn.
+const MINIMAP_ANALYSIS_CHARS_PER_SLICE: usize = 32 * 1024;
+/// Maximum retained long-line identities shared with marker projection.
+const MINIMAP_LONG_LINE_MARK_CAP: usize = 2_000;
 /// Minimum visual height for a semantic marker after projection.
 ///
 /// Collapsed or sub-pixel source-map lines still need to be discoverable, but
@@ -132,6 +135,35 @@ pub enum MinimapAvailability {
     Visible,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MinimapAnalysisRequest {
+    wrapped_layout: bool,
+    long_line_markers: bool,
+}
+
+impl MinimapAnalysisRequest {
+    fn required(self) -> bool {
+        self.wrapped_layout || self.long_line_markers
+    }
+}
+
+/// Accepted content evidence reused by layout availability and marker projection.
+pub(super) struct MinimapAnalysisCache {
+    generation: u64,
+    markers_collected: bool,
+    result: crate::model::minimap_analysis::MinimapAnalysisResult,
+}
+
+/// One bounded GTK iterator cursor owned by the current editor generation.
+pub(super) struct MinimapAnalysisSession {
+    generation: u64,
+    lifetime: u64,
+    request: MinimapAnalysisRequest,
+    buffer: sourceview5::Buffer,
+    cursor_mark: gtk4::TextMark,
+    accumulator: crate::model::minimap_analysis::MinimapAnalysisAccumulator,
+}
+
 /// Semantic marker categories painted in the minimap strip.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MinimapMarkerKind {
@@ -165,6 +197,34 @@ pub struct MinimapMarkerBounds {
     pub top: f64,
     /// Marker bottom in marker-strip widget coordinates.
     pub bottom: f64,
+}
+
+/// Scalar sliced-analysis evidence without document contents.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MinimapAnalysisSnapshot {
+    /// Current editor-owned analysis generation.
+    pub generation: u64,
+    /// Whether one bounded cursor is active.
+    pub active: bool,
+    /// Whether the sole continuation source is armed.
+    pub source_armed: bool,
+    /// Whether accepted content evidence is cached.
+    pub cache_owned: bool,
+    /// Generation that published the accepted cache.
+    pub cache_generation: Option<u64>,
+    /// Whether the accepted cache includes marker identities.
+    pub marker_cache_owned: bool,
+    /// Characters represented by the accepted cache.
+    pub cached_characters: u64,
+    /// Analysis slices dispatched during this editor lifetime.
+    pub slices: usize,
+    /// Largest character count inspected by one slice.
+    pub chars_per_slice_high_water: usize,
+    /// Active generations cancelled before publication.
+    pub cancellations: usize,
+    /// Current generations that reached accepted cache publication.
+    pub terminals: usize,
 }
 
 impl MinimapMarkerBounds {
@@ -316,6 +376,7 @@ impl LushtextEditorPage {
     pub(crate) fn minimap_work_pending(&self) -> bool {
         let minimap = &self.imp().minimap;
         minimap.refresh_pending.get()
+            || minimap.analysis_session.borrow().is_some()
             || minimap.reflow_settle.pending()
             || minimap.reflow_reveal_pending.get()
     }
@@ -335,11 +396,56 @@ impl LushtextEditorPage {
             .count()
     }
 
-    /// Test seam for the expensive long-line marker scan.
+    /// Test seam for accepted sliced long-line marker evidence.
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn long_line_warning_count_for_test(&self) -> usize {
-        collect_long_line_warnings(self).len()
+        self.imp()
+            .minimap
+            .analysis_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.markers_collected)
+            .map_or(0, |cache| cache.result.long_line_lines.len())
+    }
+
+    /// Return direct generation, slice, cancellation, and cache evidence.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn minimap_analysis_snapshot_for_test(&self) -> MinimapAnalysisSnapshot {
+        let minimap = &self.imp().minimap;
+        let cache = minimap.analysis_cache.borrow();
+        MinimapAnalysisSnapshot {
+            generation: minimap.analysis_generation.get(),
+            active: minimap.analysis_session.borrow().is_some(),
+            source_armed: minimap.analysis_source_id.borrow().is_some(),
+            cache_owned: cache.is_some(),
+            cache_generation: cache.as_ref().map(|cache| cache.generation),
+            marker_cache_owned: cache.as_ref().is_some_and(|cache| cache.markers_collected),
+            cached_characters: cache
+                .as_ref()
+                .map_or(0, |cache| cache.result.characters_examined),
+            slices: minimap.analysis_slices.get(),
+            chars_per_slice_high_water: minimap.analysis_chars_per_slice_high_water.get(),
+            cancellations: minimap.analysis_cancellations.get(),
+            terminals: minimap.analysis_terminals.get(),
+        }
+    }
+
+    /// Configured live-buffer character ceiling for one GTK analysis turn.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn minimap_analysis_slice_limit_for_test() -> usize {
+        MINIMAP_ANALYSIS_CHARS_PER_SLICE
+    }
+
+    /// Inject one transition after the next bounded analysis slice.
+    #[cfg(feature = "test-utils")]
+    pub fn set_after_minimap_analysis_slice_hook_for_test<F: FnOnce() + 'static>(&self, hook: F) {
+        self.imp()
+            .minimap
+            .analysis_after_slice_hook
+            .replace(Some(Box::new(hook)));
     }
 
     /// Return currently drawable marker bounds for one semantic category.
@@ -551,7 +657,7 @@ impl LushtextEditorPage {
                 let Some(editor) = editor_weak.upgrade() else {
                     return;
                 };
-                editor.imp().minimap.wrapped_layout_too_large.set(None);
+                editor.invalidate_minimap_analysis_content();
                 if editor.imp().minimap.tracking_suspended.get() {
                     return;
                 }
@@ -904,6 +1010,12 @@ impl LushtextEditorPage {
     /// Refresh minimap visibility, markers, and any one-shot availability feedback.
     pub(crate) fn refresh_minimap(&self) {
         self.imp().minimap.refresh_pending.set(false);
+        let request = minimap_analysis_request(self);
+        if cheap_minimap_availability(self) == MinimapAvailability::Visible {
+            self.ensure_minimap_analysis(request);
+        } else {
+            self.cancel_minimap_analysis(false, false);
+        }
         let availability = current_availability(self);
         self.imp().minimap.availability.set(availability);
         if availability != MinimapAvailability::TooLarge {
@@ -949,6 +1061,212 @@ impl LushtextEditorPage {
         self.queue_minimap_draw();
     }
 
+    fn ensure_minimap_analysis(&self, request: MinimapAnalysisRequest) {
+        if !request.required() {
+            self.cancel_minimap_analysis(false, false);
+            return;
+        }
+
+        let minimap = &self.imp().minimap;
+        let generation = minimap.analysis_generation.get();
+        let cache_satisfies = minimap
+            .analysis_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.generation == generation
+                    && (!request.long_line_markers || cache.markers_collected)
+            });
+        if cache_satisfies {
+            self.cancel_minimap_analysis(false, false);
+            return;
+        }
+
+        let active_matches = self
+            .imp()
+            .minimap
+            .analysis_session
+            .borrow()
+            .as_ref()
+            .is_some_and(|session| session.request == request);
+        if active_matches {
+            return;
+        }
+        self.cancel_minimap_analysis(false, false);
+
+        let imp = self.imp();
+        let generation = imp.minimap.analysis_generation.get().wrapping_add(1);
+        imp.minimap.analysis_generation.set(generation);
+        let lifetime = imp.minimap.analysis_lifetime.get();
+        let buffer = self.buffer();
+        let cursor_mark = buffer.create_mark(None, &buffer.start_iter(), true);
+        let policy = crate::model::minimap_analysis::MinimapAnalysisPolicy {
+            warning_line_chars: MINIMAP_LONG_LINE_WARNING_THRESHOLD,
+            wrapped_line_chars: MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET,
+            marker_limit: MINIMAP_LONG_LINE_MARK_CAP,
+        };
+        imp.minimap
+            .analysis_session
+            .replace(Some(MinimapAnalysisSession {
+                generation,
+                lifetime,
+                request,
+                buffer,
+                cursor_mark,
+                accumulator: crate::model::minimap_analysis::MinimapAnalysisAccumulator::new(
+                    policy,
+                    request.long_line_markers,
+                ),
+            }));
+
+        let editor_weak = self.downgrade();
+        let source_id = glib::idle_add_local(move || {
+            let Some(editor) = editor_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            editor.run_minimap_analysis_slice(generation, lifetime)
+        });
+        imp.minimap.analysis_source_id.replace(Some(source_id));
+    }
+
+    fn run_minimap_analysis_slice(&self, generation: u64, lifetime: u64) -> glib::ControlFlow {
+        let imp = self.imp();
+        if imp.minimap.analysis_generation.get() != generation
+            || imp.minimap.analysis_lifetime.get() != lifetime
+        {
+            return glib::ControlFlow::Break;
+        }
+        let Some(mut session) = imp.minimap.analysis_session.take() else {
+            imp.minimap.analysis_source_id.take();
+            return glib::ControlFlow::Break;
+        };
+        if session.generation != generation
+            || session.lifetime != lifetime
+            || session.buffer != self.buffer()
+        {
+            session.buffer.delete_mark(&session.cursor_mark);
+            imp.minimap.analysis_source_id.take();
+            return glib::ControlFlow::Break;
+        }
+
+        let mut iter = session.buffer.iter_at_mark(&session.cursor_mark);
+        let end = session.buffer.end_iter();
+        let mut inspected = 0usize;
+        while iter != end && inspected < MINIMAP_ANALYSIS_CHARS_PER_SLICE {
+            session.accumulator.inspect_char(iter.char());
+            inspected = inspected.saturating_add(1);
+            if !iter.forward_char() {
+                break;
+            }
+        }
+        session.buffer.move_mark(&session.cursor_mark, &iter);
+        #[cfg(feature = "test-utils")]
+        {
+            imp.minimap
+                .analysis_slices
+                .set(imp.minimap.analysis_slices.get().saturating_add(1));
+            imp.minimap.analysis_chars_per_slice_high_water.set(
+                imp.minimap
+                    .analysis_chars_per_slice_high_water
+                    .get()
+                    .max(inspected),
+            );
+            if let Some(hook) = imp.minimap.analysis_after_slice_hook.take() {
+                hook();
+            }
+        }
+        if imp.minimap.analysis_generation.get() != generation
+            || imp.minimap.analysis_lifetime.get() != lifetime
+        {
+            session.buffer.delete_mark(&session.cursor_mark);
+            imp.minimap.analysis_source_id.take();
+            return glib::ControlFlow::Break;
+        }
+
+        let complete = iter == end
+            || (session.request.wrapped_layout
+                && !session.request.long_line_markers
+                && session.accumulator.wrapped_layout_too_large());
+        if !complete {
+            imp.minimap.analysis_session.replace(Some(session));
+            return glib::ControlFlow::Continue;
+        }
+
+        session.buffer.delete_mark(&session.cursor_mark);
+        imp.minimap.analysis_source_id.take();
+        if imp.minimap.analysis_generation.get() != generation
+            || imp.minimap.analysis_lifetime.get() != lifetime
+        {
+            return glib::ControlFlow::Break;
+        }
+        imp.minimap
+            .analysis_cache
+            .replace(Some(MinimapAnalysisCache {
+                generation,
+                markers_collected: session.request.long_line_markers,
+                result: session.accumulator.finish(),
+            }));
+        #[cfg(feature = "test-utils")]
+        imp.minimap
+            .analysis_terminals
+            .set(imp.minimap.analysis_terminals.get().saturating_add(1));
+        self.refresh_minimap();
+        glib::ControlFlow::Break
+    }
+
+    fn cancel_minimap_analysis(&self, clear_cache: bool, release_markers: bool) {
+        let imp = self.imp();
+        let had_session = imp.minimap.analysis_session.borrow().is_some();
+        let source_id = imp.minimap.analysis_source_id.take();
+        let had_source = source_id.is_some();
+        if had_session || had_source || clear_cache {
+            imp.minimap
+                .analysis_generation
+                .set(imp.minimap.analysis_generation.get().wrapping_add(1));
+        }
+        if let Some(source_id) = source_id {
+            source_id.remove();
+        }
+        if let Some(session) = imp.minimap.analysis_session.take() {
+            session.buffer.delete_mark(&session.cursor_mark);
+        }
+        if clear_cache {
+            imp.minimap.analysis_cache.take();
+        } else if release_markers
+            && let Some(cache) = imp.minimap.analysis_cache.borrow_mut().as_mut()
+        {
+            cache.result.long_line_lines.clear();
+            cache.markers_collected = false;
+        }
+        #[cfg(feature = "test-utils")]
+        if had_session || had_source {
+            imp.minimap
+                .analysis_cancellations
+                .set(imp.minimap.analysis_cancellations.get().saturating_add(1));
+        }
+    }
+
+    pub(crate) fn invalidate_minimap_analysis_content(&self) {
+        self.cancel_minimap_analysis(true, false);
+    }
+
+    pub(crate) fn invalidate_minimap_analysis_request(&self, marker_preference_changed: bool) {
+        let release_markers = marker_preference_changed
+            && !self
+                .imp()
+                .settings
+                .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE);
+        self.cancel_minimap_analysis(false, release_markers);
+    }
+
+    pub(crate) fn dispose_minimap_analysis(&self) {
+        self.imp()
+            .minimap
+            .analysis_lifetime
+            .set(self.imp().minimap.analysis_lifetime.get().wrapping_add(1));
+        self.cancel_minimap_analysis(true, false);
+    }
+
     /// Debounce marker recomputation after search, edits, or viewport changes.
     pub(crate) fn schedule_minimap_refresh(&self) {
         self.imp().minimap.refresh_pending.set(true);
@@ -971,6 +1289,9 @@ impl LushtextEditorPage {
 
     /// Temporarily suspend edit tracking while programmatic buffer mutations run.
     pub(crate) fn set_minimap_tracking_suspended(&self, suspended: bool) {
+        if suspended && !self.imp().minimap.tracking_suspended.get() {
+            self.invalidate_minimap_analysis_content();
+        }
         self.imp().minimap.tracking_suspended.set(suspended);
     }
 
@@ -980,6 +1301,7 @@ impl LushtextEditorPage {
     /// remove its buffer projection, so clear the nullable `view` property to
     /// avoid duplicating layout work for every installation slice.
     pub(crate) fn suspend_minimap_projection(&self) {
+        self.invalidate_minimap_analysis_content();
         let Some(source_map) = self.imp().minimap.source_map.borrow().as_ref().cloned() else {
             return;
         };
@@ -999,6 +1321,13 @@ impl LushtextEditorPage {
             .borrow()
             .as_ref()
             .is_some_and(|source_map| source_map.view().is_some())
+    }
+
+    /// Return the scalar wrapped-layout admission decision without scanning text.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn wrapped_layout_analysis_required_for_test(&self) -> bool {
+        wrapped_layout_analysis_required(self)
     }
 
     /// Clear all modified-since-save markers for this editor.
@@ -1450,28 +1779,63 @@ fn fit_native_slider_to_source_map_bounds(
 }
 
 fn current_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
+    let cheap = cheap_minimap_availability(editor);
+    if cheap != MinimapAvailability::Visible {
+        return cheap;
+    }
+    let wrapped_layout_too_large = wrapped_layout_analysis_required(editor)
+        && editor
+            .imp()
+            .minimap
+            .analysis_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.generation == editor.imp().minimap.analysis_generation.get()
+                    && cache.result.wrapped_layout_too_large
+            });
+    minimap_availability_for_policy(MinimapAvailabilityPolicy {
+        focus_suppressed: false,
+        preference_enabled: true,
+        evicted: false,
+        syntax_enabled: true,
+        wrapped_layout_too_large,
+    })
+}
+
+fn cheap_minimap_availability(editor: &LushtextEditorPage) -> MinimapAvailability {
     let focus_suppressed = editor.focus_mode_suppresses_minimap();
     let preference_enabled = editor.imp().settings.boolean(keys::SHOW_MINIMAP);
     let evicted = editor.is_evicted();
     let syntax_enabled = editor.size_check().syntax_enabled();
-    let cheap_policy = MinimapAvailabilityPolicy {
-        focus_suppressed,
-        preference_enabled,
-        evicted,
-        syntax_enabled,
-        wrapped_layout_too_large: false,
-    };
-    if minimap_availability_for_policy(cheap_policy) != MinimapAvailability::Visible {
-        return minimap_availability_for_policy(cheap_policy);
-    }
-
     minimap_availability_for_policy(MinimapAvailabilityPolicy {
         focus_suppressed,
         preference_enabled,
         evicted,
         syntax_enabled,
-        wrapped_layout_too_large: wrapped_minimap_layout_exceeds_budget(editor),
+        wrapped_layout_too_large: false,
     })
+}
+
+fn minimap_analysis_request(editor: &LushtextEditorPage) -> MinimapAnalysisRequest {
+    MinimapAnalysisRequest {
+        wrapped_layout: wrapped_layout_analysis_required(editor),
+        long_line_markers: editor
+            .imp()
+            .settings
+            .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE),
+    }
+}
+
+fn wrapped_layout_analysis_required(editor: &LushtextEditorPage) -> bool {
+    wrapped_layout_analysis_required_for_bytes(
+        editor.source_view().wrap_mode() != gtk4::WrapMode::None,
+        editor.estimated_live_buffer_bytes(),
+    )
+}
+
+fn wrapped_layout_analysis_required_for_bytes(wrapping: bool, estimated_bytes: u64) -> bool {
+    wrapping && estimated_bytes > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET
 }
 
 /// Pure availability inputs gathered from GTK state by `current_availability`.
@@ -1497,94 +1861,22 @@ fn minimap_availability_for_policy(policy: MinimapAvailabilityPolicy) -> Minimap
     MinimapAvailability::Visible
 }
 
-fn wrapped_minimap_layout_exceeds_budget(editor: &LushtextEditorPage) -> bool {
-    if editor.source_view().wrap_mode() == gtk4::WrapMode::None {
-        return false;
-    }
-    if let Some(cached) = editor.imp().minimap.wrapped_layout_too_large.get() {
-        return cached;
-    }
-
-    let buffer = editor.buffer();
-    let buffer_chars = u64::try_from(buffer.char_count()).unwrap_or(u64::MAX);
-    let estimated_size = editor.file_size().unwrap_or(0).max(buffer_chars);
-    if estimated_size > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET
-        && buffer_snapshot::buffer_requires_chunked_snapshot(&buffer)
-    {
-        editor
-            .imp()
-            .minimap
-            .wrapped_layout_too_large
-            .set(Some(true));
-        return true;
-    }
-
-    if estimated_size <= MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET {
-        editor
-            .imp()
-            .minimap
-            .wrapped_layout_too_large
-            .set(Some(false));
-        return false;
-    }
-
-    let exceeds =
-        buffer_has_line_exceeding_char_budget(&buffer, MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET);
-    editor
-        .imp()
-        .minimap
-        .wrapped_layout_too_large
-        .set(Some(exceeds));
-    exceeds
-}
-
 #[cfg(test)]
 fn wrapped_layout_budget_exceeded(estimated_size: u64, has_extreme_line: bool) -> bool {
     estimated_size > MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET && has_extreme_line
 }
 
-fn buffer_has_line_exceeding_char_budget(
-    buffer: &sourceview5::Buffer,
-    line_char_budget: usize,
-) -> bool {
-    let mut current_line_chars = 0usize;
-    let mut iter = buffer.start_iter();
-    let end = buffer.end_iter();
-
-    while iter != end {
-        if iter.char() == '\n' {
-            current_line_chars = 0;
-        } else {
-            current_line_chars = current_line_chars.saturating_add(1);
-            if current_line_chars > line_char_budget {
-                return true;
-            }
-        }
-
-        if !iter.forward_char() {
-            break;
-        }
-    }
-
-    false
-}
-
 #[cfg(test)]
 fn text_exceeds_line_char_budget(text: &str, line_char_budget: usize) -> bool {
-    let mut current_line_chars = 0usize;
-
-    for ch in text.chars() {
-        if ch == '\n' {
-            current_line_chars = 0;
-        } else {
-            current_line_chars = current_line_chars.saturating_add(1);
-            if current_line_chars > line_char_budget {
-                return true;
-            }
-        }
-    }
-
-    false
+    let policy = crate::model::minimap_analysis::MinimapAnalysisPolicy {
+        warning_line_chars: usize::MAX,
+        wrapped_line_chars: line_char_budget,
+        marker_limit: 0,
+    };
+    let mut analysis =
+        crate::model::minimap_analysis::MinimapAnalysisAccumulator::new(policy, false);
+    analysis.inspect_slice(text.chars(), usize::MAX);
+    analysis.wrapped_layout_too_large()
 }
 
 fn document_line_count(editor: &LushtextEditorPage) -> u32 {
@@ -1640,9 +1932,20 @@ fn collect_markers(editor: &LushtextEditorPage) -> Vec<MinimapMarker> {
         .settings
         .boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE)
     {
+        let long_line_lines = editor
+            .imp()
+            .minimap
+            .analysis_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| {
+                cache.generation == editor.imp().minimap.analysis_generation.get()
+                    && cache.markers_collected
+            })
+            .map_or_else(Vec::new, |cache| cache.result.long_line_lines.clone());
         markers.extend(markers_from_lines(
             MinimapMarkerKind::LongLine,
-            collect_long_line_warnings(editor),
+            long_line_lines,
         ));
     }
     markers
@@ -1697,25 +2000,17 @@ fn collect_modified_lines(editor: &LushtextEditorPage) -> Vec<u32> {
         .collect()
 }
 
-fn collect_long_line_warnings(editor: &LushtextEditorPage) -> Vec<u32> {
-    let buffer = editor.buffer();
-    if buffer_snapshot::buffer_requires_chunked_snapshot(&buffer) {
-        return Vec::new();
-    }
-
-    let text = buffer_snapshot::snapshot_buffer_text_direct(&buffer);
-    long_line_warning_lines(&text)
-}
-
+#[cfg(test)]
 fn long_line_warning_lines(text: &str) -> Vec<u32> {
-    text.lines()
-        .enumerate()
-        .filter_map(|(line, text)| {
-            (text.chars().count() > MINIMAP_LONG_LINE_WARNING_THRESHOLD)
-                .then(|| u32::try_from(line).ok())
-                .flatten()
-        })
-        .collect()
+    let policy = crate::model::minimap_analysis::MinimapAnalysisPolicy {
+        warning_line_chars: MINIMAP_LONG_LINE_WARNING_THRESHOLD,
+        wrapped_line_chars: usize::MAX,
+        marker_limit: usize::MAX,
+    };
+    let mut analysis =
+        crate::model::minimap_analysis::MinimapAnalysisAccumulator::new(policy, true);
+    analysis.inspect_slice(text.chars(), usize::MAX);
+    analysis.finish().long_line_lines
 }
 
 fn markers_from_lines(
@@ -2252,6 +2547,8 @@ mod tests {
         assert_eq!(MINIMAP_SEARCH_MATCH_CAP, 2_000);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET, 2 * 1024 * 1024);
         assert_eq!(MINIMAP_WRAPPED_LAYOUT_LINE_CHAR_BUDGET, 8_000);
+        assert_eq!(MINIMAP_ANALYSIS_CHARS_PER_SLICE, 32 * 1024);
+        assert_eq!(MINIMAP_LONG_LINE_MARK_CAP, 2_000);
         assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2.0);
         assert_eq!(MINIMAP_TOP_CONTENT_MARGIN, 5);
         assert_eq!(MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD, 0.20);
@@ -2807,6 +3104,19 @@ mod tests {
         assert!(wrapped_layout_budget_exceeded(
             MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET + 1,
             true
+        ));
+    }
+
+    #[test]
+    fn test_wrapped_layout_analysis_uses_strict_scalar_byte_threshold() {
+        assert!(!wrapped_layout_analysis_required_for_bytes(false, u64::MAX));
+        assert!(!wrapped_layout_analysis_required_for_bytes(
+            true,
+            MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET
+        ));
+        assert!(wrapped_layout_analysis_required_for_bytes(
+            true,
+            MINIMAP_WRAPPED_LAYOUT_FILE_BUDGET + 1
         ));
     }
 

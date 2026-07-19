@@ -3,6 +3,7 @@
 //! Plain-Rust single-flight ownership for workspace content searches.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::model::content_search::SearchQuerySpec;
 
@@ -10,7 +11,7 @@ use crate::model::content_search::SearchQuerySpec;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceSearchRequest {
     pub spec: SearchQuerySpec,
-    pub folders: Vec<PathBuf>,
+    pub folders: Arc<[PathBuf]>,
 }
 
 /// One request admitted to become the only active controller/walker group.
@@ -97,7 +98,7 @@ mod tests {
                 query: query.to_string(),
                 options: ContentSearchOptions::default(),
             },
-            folders: vec![PathBuf::from("/workspace")],
+            folders: Arc::from([PathBuf::from("/workspace")]),
         }
     }
 
@@ -151,5 +152,30 @@ mod tests {
         flight.clear_pending();
         assert_eq!(flight.snapshot().active, 1);
         assert_eq!(flight.snapshot().pending, 0);
+    }
+
+    #[test]
+    fn active_and_pending_requests_share_immutable_scope_snapshots() {
+        let shared =
+            Arc::<[PathBuf]>::from([PathBuf::from("/workspace/a"), PathBuf::from("/workspace/b")]);
+        let mut first = request("first");
+        first.folders = Arc::clone(&shared);
+        let mut latest = request("latest");
+        latest.folders = Arc::clone(&shared);
+        let changed = Arc::<[PathBuf]>::from([PathBuf::from("/workspace/changed")]);
+
+        let mut flight = WorkspaceSearchFlight::default();
+        let WorkspaceSearchSubmission::Start(active) = flight.submit(first) else {
+            panic!("first request should start");
+        };
+        flight.submit(latest);
+        let pending = flight
+            .finish(active.generation)
+            .expect("latest request should start");
+
+        assert!(Arc::ptr_eq(&active.request.folders, &shared));
+        assert!(Arc::ptr_eq(&pending.request.folders, &shared));
+        assert!(!Arc::ptr_eq(&pending.request.folders, &changed));
+        assert_eq!(pending.request.folders.as_ref(), shared.as_ref());
     }
 }

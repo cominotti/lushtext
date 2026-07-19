@@ -403,10 +403,13 @@ Cargo workspace:
 - `crates/lushtext-core` - application logic: domain models, services, and GTK
   widgets. Its main-window adapter keeps pure responsive policy in
   `ui/window/adaptive_shell.rs`, keeps draft intent epochs in
-  `ui/window/draft_ordering.rs`, and divides note workflows between the private
+  `ui/window/draft_ordering.rs`, bounds progressive tab restoration in
+  `ui/window/session_restore.rs`, and divides note workflows between the private
   `ui/window/notes/{bookmarks,editors,browser}.rs` modules. Recycled workspace
   row wiring is split under `ui/sidebar/workspace_section/` into
-  `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`.
+  `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`. Plain policy
+  for per-store scan ownership, weighted disposal, and minimap analysis lives
+  in `model/{workspace_scan,plain_disposal,minimap_analysis}.rs`.
 - `crates/lushtext` - thin binary entry point plus integration tests.
 - `crates/gtk-lush/` - governed `0.0.0` GTK Lush family crates for extracting
   reusable GTK4/Libadwaita patterns. These are functional in-tree APIs, not

@@ -7,7 +7,8 @@
 
 use crate::model::sidecar_identity::stable_path_hash;
 use crate::services::content_search::{
-    MAX_REPLACE_UNDO_BYTES, ReplaceUndoBackup, ReplaceUndoEntry,
+    MAX_REPLACE_UNDO_BYTES, MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceUndoBackup, ReplaceUndoEntry,
+    replace_undo_retained_byte_weight,
 };
 use crate::services::{
     filesystem::{
@@ -668,6 +669,14 @@ fn load_incremental_journal(
                 target_path,
                 "incremental replace undo journal contains duplicate target paths",
             ));
+        }
+        if replace_undo_retained_byte_weight(&backup) > MAX_REPLACE_UNDO_RETAINED_BYTES {
+            diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                RecoveryMetadataClass::ReplaceAllUndoJournal,
+                &entry_path,
+                "incremental replace undo journal exceeds the complete retained-memory limit",
+            ));
+            break;
         }
     }
 

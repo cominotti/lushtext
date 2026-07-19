@@ -59,6 +59,15 @@ scripts/run-performance-smoke.sh \
   lane, whose slots release on worker completion rather than a GTK callback;
   readiness tracks those tasks as well as GTK retirement. Terminal transitions
   may use one escape generation, and repeated terminal updates reuse it.
+- The shared plain-data disposal lane admits without blocking GTK. It runs two
+  workers, owns at most eight reserved drop slots, and caps ordinary retained
+  weight at 128 MiB; a single overweight job may run only when the lane is
+  otherwise empty. Document-sized values reserve before crossing onto GTK and
+  carry that reservation until accepted transfer or final worker destruction;
+  capacity retries retain one compact latest request and one retry source.
+  Aggregate producer pressure, minimap analysis, draft repair, session restore,
+  workspace scanning, and note pruning are calibrated in
+  [Remaining Quality-Gap Scale Evidence](quality-gap-scale.md).
 - Workspace query ownership stays at one active worker group and one replaceable
   latest compact request. Accepted matches are sealed once into
   `Arc<Vec<SearchMatch>>`;
@@ -102,13 +111,17 @@ scripts/run-performance-smoke.sh \
 | Full clean 100,000-tab memory-policy scan | 1.1499-1.2423 ms |
 | Directory-only palette rebuild, 1,000 directories | 3.5545-4.1802 ms |
 | Directory-only palette rebuild, 10,000 directories | 41.967-44.926 ms |
+| Near-policy palette rebuild, 10,000 long-path files | 185.09-187.30 ms |
 | Replace Preview generation, 10,000 rows | 1.0467-1.0909 ms |
 | Replace Preview half-checked worker selection, 10,000 rows | 275.03-282.51 us |
 | Markdown plan, closeout 10,000-paragraph fixture | 1.5858-1.6636 ms |
 | 1,000 rapid compact workspace queries, closeout | 19.968-20.905 us |
 | Retirement-budget arithmetic, closeout | 174.42-182.52 ns |
 
-The backlog closeout adds focused `file_index_rebuild/directory_only/*`,
+The backlog closeout adds focused `file_index_rebuild/common_mixed/*`,
+`file_index_rebuild/missing_workspace_folders/*`,
+`file_index_rebuild/directory_only/*`,
+`file_index_rebuild/near_policy_long_paths/*`,
 `replace_preview_generation/checked_selection_10k_half`, mixed-event unit,
 rapid Markdown retirement, and reentrant buffer replacement evidence. Run it
 with:
@@ -118,6 +131,12 @@ scripts/run-performance-smoke.sh \
   --artifact-dir build/smoke/performance/bound-traversal-retirement-closeout \
   --filter 'file_index_rebuild replace_preview_generation markdown_render_planning search_interactive_policies end_to_end_boundedness'
 ```
+
+The 10,000-file long-path fixture retained 6,411 deterministic rows and
+57,050,177 installed bytes before the typed build-byte boundary, with a
+134,215,547-byte measured construction high water under the 128 MiB policy.
+This case intentionally exercises a usable partial result near both byte caps;
+it is not an absolute cross-machine timing gate.
 
 The Windows-1252 CRLF end-to-end write comparison changed from
 8.7098-9.0391 ms to 1.7795-1.8555 ms at 1 MiB, from 88.023-91.861 ms to

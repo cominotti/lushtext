@@ -25,8 +25,6 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -3846,17 +3844,282 @@ fn test_workspace_watch_overflow_promotes_once_before_gtk_poll() {
 fn test_workspace_readiness_waits_for_active_child_scan_application() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::new("readiness-child-scan"));
-    let path = PathBuf::from("/tmp/readiness-child-scan");
-    section
-        .imp()
-        .child_scan_tokens
-        .borrow_mut()
-        .insert(path.clone(), vec![Arc::new(AtomicBool::new(false))]);
+    let folder = tempfile::tempdir().expect("workspace folder");
+    fixture::write_text(&folder.path().join("child.txt"), "child");
+    section.set_child_scan_delay_for_test(Duration::from_millis(100));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("readiness-folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        let evidence = section.child_scan_pressure_for_test();
+        evidence.active_scans > 0 || evidence.active_empty_probes > 0
+    });
 
     assert!(section.workspace_refresh_blocks_readiness_for_test());
 
-    section.imp().child_scan_tokens.borrow_mut().remove(&path);
+    wait_until(Duration::from_secs(5), || {
+        !section.workspace_refresh_blocks_readiness_for_test()
+    });
     assert!(!section.workspace_refresh_blocks_readiness_for_test());
+}
+
+#[test]
+fn test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live() {
+    ensure_gtk_init();
+    let mut sections = Vec::new();
+    let mut windows = Vec::new();
+    let mut folders = Vec::new();
+    for index in 0..6 {
+        let folder = tempfile::tempdir().expect("workspace folder");
+        let section = LushtextWorkspaceSection::new(WorkspaceId::new(format!(
+            "aggregate-scan-{index}"
+        )));
+        section.set_child_scan_delay_for_test(Duration::from_millis(250));
+        section.load_workspace_folders(&[WorkspaceFolder::with_id(
+            WorkspaceFolderId::new(format!("aggregate-folder-{index}")),
+            folder.path().to_path_buf(),
+        )]);
+        windows.push(present_section_window(&section));
+        sections.push(section);
+        folders.push(folder);
+    }
+
+    wait_until(Duration::from_secs(5), || {
+        let evidence = sections[0].child_scan_pressure_for_test();
+        let waiting = sections
+            .iter()
+            .map(|section| {
+                section
+                    .child_scan_pressure_for_test()
+                    .admission_waiting_scans
+            })
+            .sum::<usize>();
+        evidence.aggregate_active_tasks == evidence.aggregate_task_limit && waiting >= 2
+    });
+
+    let pressure = sections[0].child_scan_pressure_for_test();
+    let waiting_high_water = sections
+        .iter()
+        .map(|section| {
+            section
+                .child_scan_pressure_for_test()
+                .admission_waiting_scans
+        })
+        .sum::<usize>();
+    let admission_waiters = sections
+        .iter()
+        .filter(|section| {
+            section
+                .child_scan_pressure_for_test()
+                .admission_waiting_scans
+                > 0
+        })
+        .collect::<Vec<_>>();
+    assert!(admission_waiters.len() >= 2);
+    assert!(
+        admission_waiters
+            .iter()
+            .all(|section| section.workspace_refresh_blocks_readiness_for_test()),
+        "sections waiting only for process-wide admission must still block readiness"
+    );
+    assert_eq!(pressure.aggregate_task_limit, 4);
+    assert!(pressure.aggregate_active_tasks <= pressure.aggregate_task_limit);
+    assert!(pressure.aggregate_task_high_water <= pressure.aggregate_task_limit);
+    let heartbeat = Rc::new(Cell::new(false));
+    let heartbeat_clone = Rc::clone(&heartbeat);
+    glib::idle_add_local_once(move || heartbeat_clone.set(true));
+    wait_until(Duration::from_secs(2), || heartbeat.get());
+    wait_until(Duration::from_secs(10), || {
+        sections
+            .iter()
+            .all(|section| !section.workspace_refresh_blocks_readiness_for_test())
+    });
+
+    let terminal = sections[0].child_scan_pressure_for_test();
+    assert_eq!(terminal.aggregate_active_tasks, 0);
+    assert!(terminal.aggregate_task_high_water <= terminal.aggregate_task_limit);
+    eprintln!(
+        "workspace-scan-aggregate-evidence sections={} task_limit={} active_high_water={} admission_waiting={} gtk_heartbeat={} terminal_active={}",
+        sections.len(),
+        pressure.aggregate_task_limit,
+        terminal.aggregate_task_high_water,
+        waiting_high_water,
+        heartbeat.get(),
+        terminal.aggregate_active_tasks,
+    );
+    drop((windows, folders));
+}
+
+#[test]
+fn test_slow_directory_refresh_churn_keeps_one_active_and_one_weak_latest_request() {
+    ensure_gtk_init();
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let nested = folder.path().join("nested");
+    fixture::create_dir(&nested);
+    fixture::write_text(&nested.join("existing.txt"), "existing");
+    let latest = nested.join("latest.txt");
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("scan-active-latest"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested directory row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &nested.join("existing.txt"))
+            && !section.workspace_refresh_blocks_readiness_for_test()
+    });
+    section.stop_workspace_watch_for_test();
+    section.set_child_scan_delay_for_test(Duration::from_millis(150));
+    let before = section.child_scan_pressure_for_test();
+
+    section.queue_auto_refresh_for_test(vec![nested.join("first-change")]);
+    section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(5), || {
+        section.child_scan_pressure_for_test().active_scans == 1
+    });
+    let admitted = section.child_scan_pressure_for_test();
+    assert_eq!(admitted.mirror_captures, before.mirror_captures + 1);
+
+    fixture::write_text(&latest, "latest");
+    for index in 0..12 {
+        section.queue_auto_refresh_for_test(vec![nested.join(format!("change-{index}"))]);
+        section.apply_queued_refresh_for_test();
+    }
+    let pressured = section.child_scan_pressure_for_test();
+    assert_eq!(pressured.active_scans, 1);
+    assert_eq!(pressured.pending_scans, 1);
+    assert_eq!(pressured.active_per_store_high_water, 1);
+    assert_eq!(pressured.pending_per_store_high_water, 1);
+    assert_eq!(pressured.weak_pending_high_water, 1);
+    assert_eq!(
+        pressured.mirror_captures, admitted.mirror_captures,
+        "queued generations must not capture another full mirror"
+    );
+
+    let heartbeat = Rc::new(Cell::new(false));
+    let heartbeat_clone = Rc::clone(&heartbeat);
+    glib::idle_add_local_once(move || heartbeat_clone.set(true));
+    wait_until(Duration::from_secs(2), || heartbeat.get());
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &latest)
+            && !section.workspace_refresh_blocks_readiness_for_test()
+    });
+
+    let terminal = section.child_scan_pressure_for_test();
+    assert_eq!(terminal.active_scans, 0);
+    assert_eq!(terminal.pending_scans, 0);
+    assert_eq!(terminal.mirror_captures, before.mirror_captures + 2);
+    assert!(terminal.cancellation_requests >= 1);
+    assert!(terminal.cancelled_terminals >= 1);
+    assert!(terminal.terminal_publications > before.terminal_publications);
+    eprintln!(
+        "workspace-scan-flight-evidence active_high_water={} pending_high_water={} weak_pending_high_water={} mirror_captures={} cancellation_requests={} cancelled_terminals={} terminal_publications={}",
+        terminal.active_per_store_high_water,
+        terminal.pending_per_store_high_water,
+        terminal.weak_pending_high_water,
+        terminal.mirror_captures - before.mirror_captures,
+        terminal.cancellation_requests - before.cancellation_requests,
+        terminal.cancelled_terminals - before.cancelled_terminals,
+        terminal.terminal_publications - before.terminal_publications,
+    );
+}
+
+#[test]
+fn test_store_removal_cancels_active_and_pending_scans_without_recreating_state() {
+    ensure_gtk_init();
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let nested = folder.path().join("nested");
+    fixture::create_dir(&nested);
+    fixture::write_text(&nested.join("existing.txt"), "existing");
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("scan-store-removal"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
+    row_for_path(&section, &nested)
+        .expect("nested directory row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || {
+        !section.workspace_refresh_blocks_readiness_for_test()
+    });
+    section.stop_workspace_watch_for_test();
+    section.set_child_scan_delay_for_test(Duration::from_millis(150));
+    section.queue_auto_refresh_for_test(vec![nested.join("first")]);
+    section.apply_queued_refresh_for_test();
+    section.queue_auto_refresh_for_test(vec![nested.join("latest")]);
+    section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(5), || {
+        let evidence = section.child_scan_pressure_for_test();
+        evidence.active_scans == 1 && evidence.pending_scans == 1
+    });
+
+    section.load_folders(&[]);
+
+    let cleared = section.child_scan_pressure_for_test();
+    assert_eq!(cleared.active_scans, 0);
+    assert_eq!(cleared.pending_scans, 0);
+    wait_until(Duration::from_secs(5), || {
+        !section.workspace_refresh_blocks_readiness_for_test()
+    });
+    assert!(!section.has_folders());
+    assert!(!tree_contains_path(&section, &nested));
+}
+
+#[test]
+fn test_stale_empty_folder_probe_cannot_overwrite_newer_nonempty_evidence() {
+    ensure_gtk_init();
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("empty-probe-generation"));
+    section.set_child_scan_delay_for_test(Duration::from_millis(150));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("folder"),
+        folder.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(5), || {
+        section.child_scan_pressure_for_test().active_empty_probes == 1
+            && section.empty_probe_reads_for_test() >= 1
+    });
+
+    fixture::write_text(&folder.path().join("new.txt"), "new");
+    section.imp().refresh_button.emit_clicked();
+    section.apply_queued_refresh_for_test();
+    wait_until(Duration::from_secs(5), || {
+        section.child_scan_pressure_for_test().pending_empty_probes == 1
+    });
+    wait_until(Duration::from_secs(10), || {
+        let evidence = section.child_scan_pressure_for_test();
+        evidence.active_empty_probes == 0
+            && evidence.pending_empty_probes == 0
+            && !section.workspace_refresh_blocks_readiness_for_test()
+    });
+
+    let top_level_store = section
+        .imp()
+        .top_level_store
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("top-level store");
+    let item = top_level_store
+        .item(0)
+        .and_downcast::<FileTreeItem>()
+        .expect("configured folder row");
+    let evidence = section.child_scan_pressure_for_test();
+    assert_eq!(item.is_empty(), Some(false));
+    assert!(evidence.empty_probe_stale_rejections >= 1);
+    assert!(evidence.empty_probe_terminal_publications >= 1);
 }
 
 #[test]

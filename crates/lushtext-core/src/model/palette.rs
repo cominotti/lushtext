@@ -438,6 +438,19 @@ pub struct PaletteNoteEntry {
 }
 
 impl PaletteNoteEntry {
+    /// Return heap bytes reachable through this row, excluding its slice shell.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        retained_bytes(
+            self.title
+                .capacity()
+                .saturating_add(self.subtitle.capacity())
+                .saturating_add(self.detail.as_ref().map_or(0, String::capacity))
+                .saturating_add(self.note_text.as_ref().map_or(0, String::capacity)),
+        )
+        .saturating_add(self.target.retained_heap_byte_weight())
+    }
+
     /// Build the subtitle shown in compact palette rows.
     #[must_use]
     pub fn display_subtitle(&self) -> String {
@@ -452,6 +465,53 @@ impl PaletteNoteEntry {
     pub fn note_text(&self) -> &str {
         self.note_text.as_deref().unwrap_or("")
     }
+}
+
+impl PaletteNoteTarget {
+    /// Return every heap allocation retained by this activation payload.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        match self {
+            Self::Bookmark {
+                path,
+                workspace_folders,
+                ..
+            }
+            | Self::DocumentNote {
+                path,
+                workspace_folders,
+            } => retained_bytes(path.capacity())
+                .saturating_add(retained_bytes(
+                    workspace_folders
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<PathBuf>()),
+                ))
+                .saturating_add(workspace_folders.iter().fold(0u64, |total, folder| {
+                    total.saturating_add(retained_bytes(folder.capacity()))
+                })),
+            Self::FolderNote {
+                workspace_name,
+                folder,
+            } => retained_bytes(workspace_name.capacity().saturating_add(folder.capacity())),
+        }
+    }
+}
+
+/// Return the exact retained weight of a compact note-entry slice.
+#[must_use]
+pub fn palette_note_entries_retained_byte_weight(entries: &[PaletteNoteEntry]) -> u64 {
+    retained_bytes(
+        entries
+            .len()
+            .saturating_mul(std::mem::size_of::<PaletteNoteEntry>()),
+    )
+    .saturating_add(entries.iter().fold(0u64, |total, entry| {
+        total.saturating_add(entry.retained_heap_byte_weight())
+    }))
+}
+
+fn retained_bytes(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
 }
 
 /// Main-thread snapshot of one open editor's live note-related state.

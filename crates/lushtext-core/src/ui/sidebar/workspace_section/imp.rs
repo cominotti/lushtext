@@ -8,12 +8,15 @@
 
 use super::context_menus::FileContextMenuWiring;
 pub(super) use super::context_menus::FileContextTarget;
+use super::folders::{ActiveFolderEmptyProbe, FolderEmptyProbeKey, PendingFolderEmptyProbe};
+use super::tree_loading::{ActiveChildScan, PendingChildScan};
 use super::watch_targets::{
     MaterializedWatchTargets, WatchLifetimeGeneration, WatchTargetGeneration,
 };
 use crate::model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
+use crate::model::workspace_scan::WorkspaceScanFlight;
 use crate::services::file_peek::PeekRequestToken;
 use crate::services::file_tree::DirectoryRowState;
 use crate::services::notifications::NotificationSeverity;
@@ -26,7 +29,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -100,6 +103,14 @@ pub struct RefreshRuntimeState {
     pub pending_paths: RefCell<HashSet<PathBuf>>,
     /// Whether the next refresh must rebuild the whole current section view.
     pub pending_full_reload: Cell<bool>,
+    /// Weak expanded-store refresh requests dispatched in bounded GTK batches.
+    pub scan_dispatch_queue: RefCell<VecDeque<(PathBuf, glib::WeakRef<gio::ListStore>)>>,
+    /// Sole source continuing a bounded expanded-store dispatch.
+    pub scan_dispatch_source: RefCell<Option<glib::SourceId>>,
+    /// Largest expanded-store dispatch batch processed in one GTK turn.
+    pub scan_dispatch_batch_high_water: Cell<usize>,
+    /// Largest weak expanded-store queue retained by this section.
+    pub scan_dispatch_queue_high_water: Cell<usize>,
     /// Whether the current scan burst should announce manual-refresh completion.
     pub manual_refresh_announcing: Cell<bool>,
     /// Last scan failure shown to the user so repeated auto-refresh attempts do
@@ -117,9 +128,39 @@ pub struct RefreshRuntimeState {
     pub cache_rebuild_input_rows: Cell<usize>,
     /// Plain map/row operations in that terminal child-cache replacement.
     pub cache_rebuild_operations: Cell<usize>,
+    /// Largest active scan count observed for any one materialized store.
+    pub scan_active_per_store_high_water: Cell<usize>,
+    /// Largest pending request count observed for any one materialized store.
+    pub scan_pending_per_store_high_water: Cell<usize>,
+    /// Largest weak-only queued payload count observed for any one store.
+    pub scan_weak_pending_high_water: Cell<usize>,
+    /// Mirror snapshots captured when a request actually received worker admission.
+    pub scan_mirror_captures: Cell<u64>,
+    /// Active scan cancellation requests caused by newer generations.
+    pub scan_cancellation_requests: Cell<u64>,
+    /// Worker scans that stopped at a filesystem cancellation checkpoint.
+    pub scan_cancelled_terminals: Cell<u64>,
+    /// Completions rejected by lifetime, store, target, or scan identity.
+    pub scan_stale_completions: Cell<u64>,
+    /// Current latest-only scans that published terminal reconciliation state.
+    pub scan_terminal_publications: Cell<u64>,
+    /// Largest active emptiness-probe count for any one configured folder.
+    pub empty_probe_active_per_folder_high_water: Cell<usize>,
+    /// Largest pending emptiness-probe count for any one configured folder.
+    pub empty_probe_pending_per_folder_high_water: Cell<usize>,
+    /// Older emptiness results rejected after a newer folder request existed.
+    pub empty_probe_stale_rejections: Cell<u64>,
+    /// Current emptiness results published to top-level folder rows.
+    pub empty_probe_terminal_publications: Cell<u64>,
     #[cfg(feature = "test-utils")]
     /// Section-local delay between GTK reconciliation batches in lifecycle tests.
     pub test_reconcile_batch_delay: Cell<std::time::Duration>,
+    #[cfg(feature = "test-utils")]
+    /// Section-local worker delay before directory traversal in churn tests.
+    pub test_scan_delay: Cell<std::time::Duration>,
+    #[cfg(feature = "test-utils")]
+    /// Empty-folder reads completed before their delayed worker handoff.
+    pub test_empty_probe_reads: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Live filesystem-watch wiring for one workspace section.
@@ -245,14 +286,27 @@ pub struct LushtextWorkspaceSection {
     pub dir_stores: RefCell<HashMap<PathBuf, glib::WeakRef<gio::ListStore>>>,
     /// Latest window-owned open/active tab projection for file-row decoration.
     pub(super) file_row_state_snapshot: RefCell<Rc<SidebarFileRowStateSnapshot>>,
-    /// Cancellation tokens for background directory scans, grouped by path.
-    ///
-    /// Overlapping workspace folders can materialize the same directory in
-    /// multiple visible tree rows. Each expanded row owns a scan token so one
-    /// duplicate row cannot cancel another row's child-store population.
-    pub child_scan_tokens: RefCell<HashMap<PathBuf, Vec<Arc<AtomicBool>>>>,
-    /// Direct store-to-token ownership used by batch freshness checks.
-    pub child_store_tokens: RefCell<HashMap<usize, Arc<AtomicBool>>>,
+    /// Scalar one-active plus one-latest ownership policy per materialized store.
+    pub(super) child_scan_flights: RefCell<HashMap<usize, WorkspaceScanFlight>>,
+    /// Admitted scan payload per store; strong GTK ownership stays in the worker handoff.
+    pub(super) child_active_scans: RefCell<HashMap<usize, ActiveChildScan>>,
+    /// Sole weak-store compact request waiting behind each active store scan.
+    pub(super) child_pending_scans: RefCell<HashMap<usize, PendingChildScan>>,
+    /// Current weak child-scan requests waiting for aggregate worker admission.
+    pub(super) child_admission_scans: RefCell<HashMap<usize, PendingChildScan>>,
+    /// Section lifetime invalidating every queued or admitted child scan.
+    pub(super) child_scan_lifetime: Cell<u64>,
+    /// One-active plus one-latest generation policy per configured-folder probe.
+    pub(super) folder_empty_flights: RefCell<HashMap<FolderEmptyProbeKey, WorkspaceScanFlight>>,
+    /// Admitted top-level emptiness probe per stable folder identity.
+    pub(super) folder_empty_active: RefCell<HashMap<FolderEmptyProbeKey, ActiveFolderEmptyProbe>>,
+    /// Sole weak-store/item emptiness request waiting behind each active probe.
+    pub(super) folder_empty_pending: RefCell<HashMap<FolderEmptyProbeKey, PendingFolderEmptyProbe>>,
+    /// Current weak emptiness probes waiting for aggregate worker admission.
+    pub(super) folder_empty_admission:
+        RefCell<HashMap<FolderEmptyProbeKey, PendingFolderEmptyProbe>>,
+    /// Sole section wakeup that retries compact requests against aggregate admission.
+    pub(super) workspace_scan_admission_source: RefCell<Option<glib::SourceId>>,
     /// Weak identity guard for raw child-store pointer keys.
     ///
     /// GLib may reuse an address after GTK releases a collapsed child model, so

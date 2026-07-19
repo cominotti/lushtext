@@ -30,6 +30,20 @@ use std::time::Duration;
 
 use super::LushtextWindow;
 
+enum GuardedReplaceApplyResult {
+    Applied {
+        result: Box<crate::model::content_search::ReplaceResult>,
+        backup: Option<crate::ui::search_panel::GuardedReplaceUndoBackup>,
+    },
+    Superseded,
+    Failed(anyhow::Error),
+}
+
+struct GuardedUndoResult {
+    outcome: content_search::UndoReplaceOutcome,
+    remaining_backup: Option<crate::ui::search_panel::GuardedReplaceUndoBackup>,
+}
+
 /// Delay that lets the in-editor Find revealer finish closing before workspace search opens.
 ///
 /// The 260 ms value tracks the panel transition budget; too short can hand
@@ -175,141 +189,188 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
     // --- Replace All: skip modified tabs, execute, status bar message ---
     let window_weak = window.downgrade();
-    imp.search_panel.connect_replace_all(move |replacements| {
-        let Some(window) = window_weak.upgrade() else {
-            return;
-        };
-        let imp = window.imp();
-        let Some(freshness) = imp.search_panel.take_replace_transaction() else {
-            window.publish_status_message(
-                "Replace All selection no longer owns the active transaction",
-                MessageKind::Warning,
-            );
-            return;
-        };
+    imp.search_panel
+        .connect_guarded_replace_all(move |replacements| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let imp = window.imp();
+            let Some(freshness) = imp.search_panel.take_replace_transaction() else {
+                window.publish_status_message(
+                    "Replace All selection no longer owns the active transaction",
+                    MessageKind::Warning,
+                );
+                return;
+            };
 
-        // Build skip_paths: files open with unsaved edits or an in-flight save.
-        // The replacement service also takes the same per-path advisory lock
-        // as editor saves, so a save that starts after this snapshot cannot
-        // race the final replacement rename for that file.
-        let mut skip_paths = HashSet::new();
-        let tab_view = &imp.tab_view;
-        for i in 0..tab_view.n_pages() {
-            let page = tab_view.nth_page(i);
-            // Tab pages store generic GTK widgets, so the cast gives access to
-            // editor-specific save and path state only for editor tabs.
-            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
-                && let Some(path) = editor.file_path()
-                && (editor.is_modified() || editor.is_saving())
-            {
-                skip_paths.insert(path);
-            }
-        }
-
-        let total_replacements = replacements.len();
-        let affected_paths: HashSet<std::path::PathBuf> = replacements
-            .iter()
-            .filter(|r| !skip_paths.contains(&r.path))
-            .map(|r| r.path.clone())
-            .collect();
-
-        if affected_paths.is_empty() {
-            window.publish_status_message(
-                "No replacements to apply (all files have unsaved changes or active saves)",
-                MessageKind::Warning,
-            );
-            imp.search_panel.finish_replace_transaction();
-            return;
-        }
-
-        let cancel = AtomicBool::new(false);
-        let data_dir = json_store::data_dir();
-        imp.search_panel.supersede_prior_undo_for_replace();
-        let undo_generation = freshness.expected();
-        spawn_blocking_then(
-            window.clone(),
-            move || {
-                content_search::apply_replacements_if_current(
-                    &replacements,
-                    &skip_paths,
-                    &cancel,
-                    &data_dir,
-                    &freshness,
-                )
-            },
-            move |window, result| {
-                let imp = window.imp();
-                match result {
-                    Ok(Some(outcome)) => {
-                        let (replace_result, backup) = outcome.into_parts();
-                        let mut msg = format!(
-                            "Replaced {} of {} matches in {} files",
-                            replace_result.replaced_count,
-                            total_replacements,
-                            replace_result.files_affected,
-                        );
-                        if !replace_result.skipped_paths.is_empty() {
-                            msg.push_str(&format!(
-                                " ({} files skipped)",
-                                replace_result.skipped_paths.len()
-                            ));
-                        }
-                        if !replace_result.errors.is_empty() {
-                            msg.push_str(&format!(" ({} errors)", replace_result.errors.len()));
-                        }
-                        let kind = if replace_result.errors.is_empty() {
-                            MessageKind::Info
-                        } else {
-                            MessageKind::Warning
-                        };
-                        window.publish_status_message(&msg, kind);
-                        if matches!(kind, MessageKind::Info) {
-                            window.announce_workflow_update(
-                                AnnouncementLane::StatusUpdate,
-                                "replace-all-complete",
-                                &msg,
-                            );
-                        }
-
-                        if backup.is_empty() {
-                            imp.search_panel
-                                .clear_undo_backup_for_generation(undo_generation);
-                        } else if imp
-                            .search_panel
-                            .set_persisted_undo_backup_for_generation(backup, undo_generation)
-                        {
-                            imp.search_panel.show_undo_button();
-                            window.announce_workflow_update(
-                                AnnouncementLane::StatusUpdate,
-                                "replace-all-undo-available",
-                                "Undo is available for the last Replace All",
-                            );
-                        }
-
-                        // Reload affected open tabs to show updated content.
-                        reload_affected_tabs(&window, &affected_paths);
-                    }
-                    Ok(None) => {
-                        window.publish_status_message(
-                            "Replace All was superseded before any files changed",
-                            MessageKind::Warning,
-                        );
-                    }
-                    Err(e) => {
-                        window.publish_status_message(
-                            &format!("Replace failed: {e}"),
-                            MessageKind::Error,
-                        );
+            // Build skip_paths: files open with unsaved edits or an in-flight save.
+            // The replacement service also takes the same per-path advisory lock
+            // as editor saves, so a save that starts after this snapshot cannot
+            // race the final replacement rename for that file.
+            let mut skip_paths = HashSet::new();
+            let mut open_canonical_identities = HashSet::new();
+            let tab_view = &imp.tab_view;
+            for i in 0..tab_view.n_pages() {
+                let page = tab_view.nth_page(i);
+                // Tab pages store generic GTK widgets, so the cast gives access to
+                // editor-specific save and path state only for editor tabs.
+                if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+                    && let Some(path) = editor.file_path()
+                {
+                    open_canonical_identities
+                        .insert(editor.canonical_file_path().unwrap_or_else(|| path.clone()));
+                    if editor.is_modified() || editor.is_saving() {
+                        skip_paths.insert(path);
                     }
                 }
+            }
+
+            let total_replacements = replacements.len();
+            if !replacements
+                .iter()
+                .any(|replacement| !skip_paths.contains(&replacement.path))
+            {
+                window.publish_status_message(
+                    "No replacements to apply (all files have unsaved changes or active saves)",
+                    MessageKind::Warning,
+                );
                 imp.search_panel.finish_replace_transaction();
-            },
-        );
-    });
+                return;
+            }
+
+            let cancel = AtomicBool::new(false);
+            let data_dir = json_store::data_dir();
+            let Some(undo_reservation) = imp
+                .search_panel
+                .try_reserve_undo_replacement(replacements.reservation_weight())
+            else {
+                window.publish_status_message(
+                    "Replace All deferred while memory pressure clears; try again shortly",
+                    MessageKind::Warning,
+                );
+                imp.search_panel.finish_replace_transaction();
+                return;
+            };
+            imp.search_panel.supersede_prior_undo_for_replace();
+            let undo_generation = freshness.expected();
+            spawn_blocking_then(
+                window.clone(),
+                move || {
+                    let replacements = replacements.into_inner_on_worker();
+                    match content_search::apply_replacements_if_current(
+                        &replacements,
+                        &skip_paths,
+                        &open_canonical_identities,
+                        &cancel,
+                        &data_dir,
+                        &freshness,
+                    ) {
+                        Ok(Some(outcome)) => {
+                            let (result, backup) = outcome.into_parts();
+                            if backup.is_empty() {
+                                drop(undo_reservation);
+                                GuardedReplaceApplyResult::Applied {
+                                    result: Box::new(result),
+                                    backup: None,
+                                }
+                            } else {
+                                GuardedReplaceApplyResult::Applied {
+                                    result: Box::new(result),
+                                    backup: Some(
+                                        crate::ui::search_panel::own_reserved_undo_backup(
+                                            undo_reservation,
+                                            backup,
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Ok(None) => GuardedReplaceApplyResult::Superseded,
+                        Err(error) => GuardedReplaceApplyResult::Failed(error),
+                    }
+                },
+                move |window, result| {
+                    let imp = window.imp();
+                    match result {
+                        GuardedReplaceApplyResult::Applied {
+                            result: replace_result,
+                            backup,
+                        } => {
+                            let replace_result = *replace_result;
+                            let mut msg = format!(
+                                "Replaced {} of {} matches in {} files",
+                                replace_result.replaced_count,
+                                total_replacements,
+                                replace_result.files_affected,
+                            );
+                            if replace_result.skipped_count > 0 {
+                                msg.push_str(&format!(
+                                    " ({} files skipped)",
+                                    replace_result.skipped_count
+                                ));
+                            }
+                            if replace_result.error_count > 0 {
+                                msg.push_str(&format!(" ({} errors)", replace_result.error_count));
+                            }
+                            let kind = if replace_result.error_count == 0 {
+                                MessageKind::Info
+                            } else {
+                                MessageKind::Warning
+                            };
+                            window.publish_status_message(&msg, kind);
+                            if matches!(kind, MessageKind::Info) {
+                                window.announce_workflow_update(
+                                    AnnouncementLane::StatusUpdate,
+                                    "replace-all-complete",
+                                    &msg,
+                                );
+                            }
+
+                            if let Some(backup) = backup {
+                                if imp.search_panel.set_persisted_undo_backup_for_generation(
+                                    backup,
+                                    undo_generation,
+                                ) {
+                                    imp.search_panel.show_undo_button();
+                                    window.announce_workflow_update(
+                                        AnnouncementLane::StatusUpdate,
+                                        "replace-all-undo-available",
+                                        "Undo is available for the last Replace All",
+                                    );
+                                }
+                            } else {
+                                imp.search_panel
+                                    .clear_undo_backup_for_generation(undo_generation);
+                            }
+
+                            // Reload affected open tabs to show updated content.
+                            let affected_paths = replace_result
+                                .affected_open_paths
+                                .into_iter()
+                                .collect::<HashSet<_>>();
+                            reload_affected_tabs(&window, &affected_paths);
+                        }
+                        GuardedReplaceApplyResult::Superseded => {
+                            window.publish_status_message(
+                                "Replace All was superseded before any files changed",
+                                MessageKind::Warning,
+                            );
+                        }
+                        GuardedReplaceApplyResult::Failed(e) => {
+                            window.publish_status_message(
+                                &format!("Replace failed: {e}"),
+                                MessageKind::Error,
+                            );
+                        }
+                    }
+                    imp.search_panel.finish_replace_transaction();
+                },
+            );
+        });
 
     // --- Undo All: restore files, status bar message ---
     let window_weak = window.downgrade();
-    imp.search_panel.connect_undo_all(move |backup| {
+    imp.search_panel.connect_guarded_undo_all(move |backup| {
         let Some(window) = window_weak.upgrade() else {
             return;
         };
@@ -318,30 +379,67 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             window.imp().search_panel.show_undo_button();
             return;
         };
+        let Some(undo_reservation) = window.imp().search_panel.try_reserve_undo_replacement(None)
+        else {
+            window.publish_status_message(
+                "Undo deferred while memory pressure clears; try again shortly",
+                MessageKind::Warning,
+            );
+            window.imp().search_panel.finish_replace_transaction();
+            window.imp().search_panel.show_undo_button();
+            return;
+        };
+
+        let mut open_canonical_identities = HashSet::new();
+        for index in 0..window.imp().tab_view.n_pages() {
+            let page = window.imp().tab_view.nth_page(index);
+            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+                && let Some(path) = editor.file_path()
+            {
+                open_canonical_identities.insert(editor.canonical_file_path().unwrap_or(path));
+            }
+        }
 
         spawn_blocking_then(
             window,
-            move || content_search::undo_replacements(backup.as_ref()),
-            move |window, outcome| {
-                let restored_paths: HashSet<std::path::PathBuf> =
-                    outcome.restored_paths.iter().cloned().collect();
+            move || {
+                let mut outcome = content_search::undo_replacements_for_open_identities(
+                    &backup,
+                    &open_canonical_identities,
+                );
+                let remaining = std::mem::take(&mut outcome.remaining_backup);
+                let remaining_backup = if remaining.is_empty() {
+                    drop(undo_reservation);
+                    None
+                } else {
+                    Some(crate::ui::search_panel::own_reserved_undo_backup(
+                        undo_reservation,
+                        remaining,
+                    ))
+                };
+                GuardedUndoResult {
+                    outcome,
+                    remaining_backup,
+                }
+            },
+            move |window, guarded| {
+                let GuardedUndoResult {
+                    outcome,
+                    remaining_backup,
+                } = guarded;
+                let restored_paths = outcome
+                    .restored_open_paths
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<_>>();
                 if !restored_paths.is_empty() {
                     reload_affected_tabs(&window, &restored_paths);
                 }
 
-                if outcome.remaining_backup.is_empty() {
-                    let message = format!("Reverted {} files", outcome.restored_count());
-                    window.publish_status_message(&message, MessageKind::Info);
-                    window.announce_workflow_update(
-                        AnnouncementLane::StatusUpdate,
-                        "replace-all-undo-complete",
-                        &message,
-                    );
-                    window.imp().search_panel.clear_undo_backup();
-                } else {
-                    let remaining = outcome.remaining_count();
-                    let skipped = outcome.skipped_paths.len();
-                    let failed = outcome.failed_paths.len();
+                if let Some(remaining_backup) = remaining_backup {
+                    let remaining = remaining_backup.len();
+                    let skipped = outcome.skipped_count;
+                    let failed = outcome.failed_count;
                     let message = if outcome.restored_count() > 0 {
                         format!(
                             "Reverted {} files; {remaining} files still need attention",
@@ -358,8 +456,17 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                     window
                         .imp()
                         .search_panel
-                        .set_undo_backup(outcome.remaining_backup);
+                        .set_guarded_undo_backup(remaining_backup);
                     window.imp().search_panel.show_undo_button();
+                } else {
+                    let message = format!("Reverted {} files", outcome.restored_count());
+                    window.publish_status_message(&message, MessageKind::Info);
+                    window.announce_workflow_update(
+                        AnnouncementLane::StatusUpdate,
+                        "replace-all-undo-complete",
+                        &message,
+                    );
+                    window.imp().search_panel.clear_undo_backup();
                 }
                 window.imp().search_panel.finish_replace_transaction();
             },

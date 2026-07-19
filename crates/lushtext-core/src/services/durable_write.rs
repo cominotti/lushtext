@@ -567,6 +567,12 @@ thread_local! {
     static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Make the next parent-directory sync on this test thread fail after rename.
+#[cfg(test)]
+pub(crate) fn fail_next_parent_sync_for_test() {
+    FAIL_NEXT_PARENT_SYNC.with(|fail| fail.set(true));
+}
+
 /// Create a directory tree and sync each directory entry that was newly created.
 ///
 /// **Threading:** Performs blocking filesystem calls. Call from a background

@@ -79,10 +79,16 @@ copies can still freeze the UI when they happen in one callback. Reuse
 `ui::buffer_snapshot` for editor text snapshots that feed saves, draft
 autosave, encoding analysis, preview flows, or optional marker scans.
 
-- Small buffers may use `snapshot_buffer_text_direct()` before handing owned
-  text to a worker.
+- Small, already-admitted buffers may use `snapshot_buffer_text_direct()` and
+  immediately move the result into the workflow's guarded worker handoff.
 - Unknown, grown-in-memory, or large buffers must use
-  `snapshot_buffer_text_async()` or an explicit paused/limited state.
+  `snapshot_buffer_text_async()` or an explicit paused/limited state. Chunked
+  capture owns independently allocated UTF-8 chunks; any whole-body coalescing,
+  transformation, and final destruction must happen on a worker under the same
+  admission guard rather than returning one large `String` to GTK.
+- A typed payload permit must span capture, worker handoff, transformation,
+  persistence, terminal freshness, and rejected/stale disposal. Compact latest
+  intent may wait for admission, but document-sized text may not.
 - Worker results that mutate UI state must carry a generation counter and a
   weak editor/window identity check. Reject results when the editor was closed,
   switched paths, edited again, or superseded by a newer request.
@@ -217,7 +223,7 @@ production policy.
 - Prefer `#[expect(lint, reason = "...")]` over `#[allow(lint)]` when suppressing a lint for a known reason (e.g., using a deprecated API that has no replacement yet). `#[expect]` is self-policing: it causes a compile error if the lint no longer fires, so stale suppressions are caught automatically. The reason must name the local GTK, generated-code, test, benchmark, or ownership invariant.
 - Reserve `#[allow(lint)]` only for cases where the lint may or may not fire depending on configuration or feature flags.
 - The workspace Clippy table is curated lint-by-lint after cleanup. Broad groups such as `clippy::restriction`, `clippy::pedantic`, `clippy::nursery`, and `clippy::cargo` are advisory discovery inputs only; do not enable them wholesale as blocking policy.
-- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `decimal_literal_representation`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, and `wildcard_imports` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents.
+- Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `decimal_literal_representation`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, `wildcard_imports`, and `debug_assert_with_mut_call` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents. In particular, execute mutations before `debug_assert!` and assert only the captured result so release builds cannot elide required state changes.
 - `make lint-advisory` runs broad Clippy, selected design-smell Clippy, selected numeric Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
 - No `clippy.toml` is currently checked in because this review found no globally safe disallowed method/type ban that applies across backend, fixture, generated, test, and build-support paths without broad suppressions. Add `clippy.toml` only when a future globally safe ban can include reason and replacement metadata. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
 

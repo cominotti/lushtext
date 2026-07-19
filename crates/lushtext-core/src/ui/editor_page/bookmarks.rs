@@ -118,27 +118,59 @@ pub(super) fn bookmark_records_bounded(
     editor: &LushtextEditorPage,
     max_records: usize,
 ) -> Vec<BookmarkRecord> {
-    let mut bookmarks: Vec<BookmarkRecord> = editor
-        .imp()
-        .bookmarks
-        .entries
-        .borrow()
-        .iter()
-        .filter_map(|entry| {
-            current_mark_line(editor, &entry.mark).map(|line| {
-                let mut record = entry.record.clone();
-                record.line = line;
-                record
-            })
-        })
-        .take(max_records)
-        .collect();
+    bookmark_records_bounded_by_retained_bytes(editor, max_records, u64::MAX).0
+}
+
+/// Clone a prefix of live bookmark metadata under count and retained-byte caps.
+///
+/// Heap sizes are checked on the existing records before cloning, preventing one
+/// oversized label from becoming an unaccounted duplicate in a deferred Notes
+/// request on the GTK thread.
+pub(super) fn bookmark_records_bounded_by_retained_bytes(
+    editor: &LushtextEditorPage,
+    max_records: usize,
+    max_retained_bytes: u64,
+) -> (Vec<BookmarkRecord>, u64, bool) {
+    let entries = editor.imp().bookmarks.entries.borrow();
+    let record_size = std::mem::size_of::<BookmarkRecord>();
+    let byte_limited_records =
+        usize::try_from(max_retained_bytes / u64::try_from(record_size.max(1)).unwrap_or(u64::MAX))
+            .unwrap_or(usize::MAX);
+    let capacity = max_records.min(entries.len()).min(byte_limited_records);
+    let mut bookmarks = Vec::with_capacity(capacity);
+    let mut retained_bytes =
+        u64::try_from(capacity.saturating_mul(record_size)).unwrap_or(u64::MAX);
+    let mut truncated = false;
+    for entry in entries.iter() {
+        let Some(line) = current_mark_line(editor, &entry.mark) else {
+            continue;
+        };
+        if bookmarks.len() == capacity {
+            truncated = true;
+            break;
+        }
+        let heap_bytes = entry
+            .record
+            .id
+            .0
+            .capacity()
+            .saturating_add(entry.record.label.as_ref().map_or(0, String::capacity));
+        let heap_bytes = u64::try_from(heap_bytes).unwrap_or(u64::MAX);
+        if retained_bytes.saturating_add(heap_bytes) > max_retained_bytes {
+            truncated = true;
+            break;
+        }
+        let mut record = entry.record.clone();
+        record.line = line;
+        bookmarks.push(record);
+        retained_bytes = retained_bytes.saturating_add(heap_bytes);
+    }
     bookmarks.sort_by(|left, right| {
         left.line
             .cmp(&right.line)
             .then_with(|| left.id.0.cmp(&right.id.0))
     });
-    bookmarks
+    (bookmarks, retained_bytes, truncated)
 }
 
 /// Return the live bookmark projection generation for async race guards.

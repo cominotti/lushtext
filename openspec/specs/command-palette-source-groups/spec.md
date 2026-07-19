@@ -153,6 +153,29 @@ For each command-palette source, the system SHALL retain at most the configured 
 - **THEN** each source returns its first bounded items in source order
 - **AND** no full-source result collection is materialized
 
+### Requirement: Note scoring prunes only non-contributing body work
+Command-palette note scoring SHALL preserve the current eligible rows, fuzzy scores, deterministic source-ordinal tie order, category grouping, Unicode behavior, and cancellation semantics. The scorer MAY skip a note body only after another searchable field has established eligibility and the scoring policy proves that the body cannot improve that row's result. A body MUST still be searched when it can establish eligibility or improve ordering.
+
+#### Scenario: Metadata match already dominates a large body
+- **WHEN** note title, path, workspace, line metadata, or another searchable metadata field establishes the row's best score and the body cannot exceed it
+- **THEN** the scorer does not scan the body
+- **AND** the row keeps the same score, identity, group, and deterministic position as the unpruned reference
+
+#### Scenario: Query matches only the note body
+- **WHEN** no searchable metadata field matches but the query appears in the note body
+- **THEN** the body remains eligible for bounded scoring
+- **AND** the matching row is neither pruned nor reordered solely by the optimization
+
+#### Scenario: Unicode and equal scores remain equivalent
+- **WHEN** generated notes contain Unicode text, empty fields, equal metadata and body scores, and source-order ties
+- **THEN** optimized and unpruned reference scoring publish identical selected identities and order
+- **AND** per-source result retention remains within the configured top-result bound
+
+#### Scenario: New query cancels a pruned or body-scanning pass
+- **WHEN** a newer palette query supersedes scoring during metadata or body evaluation
+- **THEN** the active scorer stops at the existing bounded cancellation checkpoint
+- **AND** only the latest query may publish note rows or searching state
+
 ### Requirement: Palette source behavior survives bounded selection
 Bounded selection MUST preserve open-tab precedence, workspace-scope labels, note-category order, command grouping, and duplicate suppression across sources.
 
@@ -268,3 +291,27 @@ The system SHALL render source labels as presentation-only group headers. Group 
 - **AND** the user activates a selected result row
 - **THEN** only file, note, and command result rows can trigger file opening, note opening, or command execution
 - **AND** source group headers do not trigger activation callbacks
+
+### Requirement: Palette traversal bounds directory work independently from file admission
+File-index construction SHALL examine and retain at most 100,000 distinct canonical directory identities per build, independently from the 100,000-file admission limit. A directory MUST consume directory budget before its identity is retained or descendants are scheduled, canonical aliases MUST consume the budget only once, and exhaustion MUST return the typed directory-retention truncation reason with a usable bounded partial index and direct retained-state metrics. Cooperative cancellation MUST remain observable before additional directory batches are admitted.
+
+#### Scenario: Directory-only forest reaches its budget
+- **WHEN** a workspace tree contains more than 100,000 distinct directories but few or no indexable files
+- **THEN** the build retains and scans no more than the directory budget
+- **AND** it completes with the typed directory-retention truncation reason
+- **AND** its retained-directory high-water metric does not grow with the unvisited remainder
+
+#### Scenario: File and directory limits remain independent
+- **WHEN** one fixture reaches the file limit in a shallow tree and another reaches the directory limit with few files
+- **THEN** each build reports the limit it encountered deterministically
+- **AND** neither limit is inferred from the other resource count
+
+#### Scenario: Canonical aliases do not amplify directory retention
+- **WHEN** overlapping workspace folder paths or filesystem aliases resolve to a directory identity already visited by the build
+- **THEN** that identity consumes one retained-directory slot
+- **AND** traversal does not rescan its descendants through the alias
+
+#### Scenario: Supersession stops directory admission
+- **WHEN** a newer workspace-scope build cancels an active directory-heavy traversal
+- **THEN** the active traversal stops before admitting another bounded directory batch
+- **AND** only the latest compact build request remains pending

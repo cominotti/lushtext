@@ -447,6 +447,7 @@ impl super::LushtextWindow {
             spawn_blocking_then(
                 window,
                 move || {
+                    let text = text.into_string_on_worker();
                     delay_lossy_encoding_analysis_for_test();
                     editor_io::analyze_lossy_encoding(&text, encoding)
                 },
@@ -485,7 +486,9 @@ impl super::LushtextWindow {
                 .replace(Some(snapshot));
         } else {
             run_analysis(buffer_snapshot::BufferSnapshotOutcome::Captured(
-                buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+                buffer_snapshot::BufferSnapshotPayload::direct(
+                    buffer_snapshot::snapshot_buffer_text_direct(&buffer),
+                ),
             ));
         }
     }

@@ -147,17 +147,37 @@ impl LushtextWindow {
     }
 
     /// Open a file while restoring startup session state without updating recent history.
-    pub(super) fn open_document_from_session_restore(&self, path: &Path) {
-        self.open_document_with_intent(path, OpenDocumentIntent::SessionRestore);
+    pub(super) fn open_document_from_session_restore<F>(
+        &self,
+        path: &Path,
+        on_planning_terminal: F,
+    ) -> Option<(libadwaita::TabPage, bool)>
+    where
+        F: FnOnce() + 'static,
+    {
+        self.open_document_with_intent_and_planning_terminal(
+            path,
+            OpenDocumentIntent::SessionRestore,
+            Some(Box::new(on_planning_terminal)),
+        )
     }
 
     /// Exercise the session-restore open intent from the external widget harness.
     #[cfg(feature = "test-utils")]
     pub fn open_document_from_session_restore_for_test(&self, path: &Path) {
-        self.open_document_from_session_restore(path);
+        let _ = self.open_document_from_session_restore(path, || {});
     }
 
     fn open_document_with_intent(&self, path: &Path, intent: OpenDocumentIntent) {
+        let _ = self.open_document_with_intent_and_planning_terminal(path, intent, None);
+    }
+
+    fn open_document_with_intent_and_planning_terminal(
+        &self,
+        path: &Path,
+        intent: OpenDocumentIntent,
+        planning_terminal: Option<Box<dyn FnOnce()>>,
+    ) -> Option<(libadwaita::TabPage, bool)> {
         let tab_view = &self.imp().tab_view;
         let key = open_path_key(path);
         if let Some(page) = self.find_open_document_page(&key, intent) {
@@ -167,7 +187,7 @@ impl LushtextWindow {
             {
                 self.record_recent_open_for_editor(editor, path);
             }
-            return;
+            return Some((page, false));
         }
 
         self.imp().open_paths.borrow_mut().insert(key);
@@ -197,14 +217,18 @@ impl LushtextWindow {
                     window.record_recent_open_for_editor(&editor, &path_for_recent);
                 }
                 if window.close_loaded_canonical_duplicate(&editor) {
-                    window.refresh_sidebar_file_row_states();
-                    window.refresh_open_popover_rows();
+                    if !window.tab_projection_refresh_deferred() {
+                        window.refresh_sidebar_file_row_states();
+                        window.refresh_open_popover_rows();
+                    }
                     return;
                 }
                 window.check_draft_on_open(&editor, &path_for_draft);
-                window.refresh_sidebar_file_row_states();
-                window.refresh_open_popover_rows();
-                window.refresh_status_bar();
+                if !window.tab_projection_refresh_deferred() {
+                    window.refresh_sidebar_file_row_states();
+                    window.refresh_open_popover_rows();
+                    window.refresh_status_bar();
+                }
                 if record_recent {
                     let title = editor.title();
                     window.announce_workflow_update(
@@ -229,44 +253,61 @@ impl LushtextWindow {
                 MessageKind::Error,
             );
             let Some(editor) = editor_weak.upgrade() else {
-                window.reconcile_open_paths_from_tabs();
-                window.refresh_sidebar_file_row_states();
-                window.refresh_open_popover_rows();
+                if !window.tab_projection_refresh_deferred() {
+                    window.reconcile_open_paths_from_tabs();
+                    window.refresh_sidebar_file_row_states();
+                    window.refresh_open_popover_rows();
+                }
                 return;
             };
             let first_open_failed = editor.load_state() == EditorLoadState::Failed;
             if !first_open_failed {
-                window.refresh_header_bar();
-                window.refresh_status_bar();
-                window.refresh_sidebar_file_row_states();
-                window.refresh_open_popover_rows();
+                if !window.tab_projection_refresh_deferred() {
+                    window.refresh_header_bar();
+                    window.refresh_status_bar();
+                    window.refresh_sidebar_file_row_states();
+                    window.refresh_open_popover_rows();
+                }
                 return;
             }
-            window.reconcile_open_paths_from_tabs();
+            if !window.tab_projection_refresh_deferred() {
+                window.reconcile_open_paths_from_tabs();
+            }
             window.apply_preloaded_draft_for_path(&editor, &path_for_failure);
             // A failed load can arrive after the user typed into the tab; keep
             // that buffer instead of demoting the page and rewriting its draft identity.
             if editor.is_modified() {
-                window.refresh_header_bar();
-                window.refresh_status_bar();
-                window.refresh_sidebar_file_row_states();
-                window.refresh_open_popover_rows();
+                if !window.tab_projection_refresh_deferred() {
+                    window.refresh_header_bar();
+                    window.refresh_status_bar();
+                    window.refresh_sidebar_file_row_states();
+                    window.refresh_open_popover_rows();
+                }
                 return;
             }
             if let Some(page) = page_weak.upgrade() {
                 page.set_title(&editor.title());
             }
-            window.refresh_sidebar_file_row_states();
-            window.refresh_open_popover_rows();
-            window.refresh_header_bar();
-            window.refresh_status_bar();
+            if !window.tab_projection_refresh_deferred() {
+                window.refresh_sidebar_file_row_states();
+                window.refresh_open_popover_rows();
+                window.refresh_header_bar();
+                window.refresh_status_bar();
+            }
         }));
 
         tab_view.set_selected_page(&page);
-        self.update_content_stack();
-        self.refresh_command_palette_sources();
-        self.refresh_status_bar();
-        editor_page.load_file_async(path);
+        if !self.tab_projection_refresh_deferred() {
+            self.update_content_stack();
+            self.refresh_command_palette_sources();
+            self.refresh_status_bar();
+        }
+        if let Some(callback) = planning_terminal {
+            editor_page.load_file_async_with_planning_terminal(path, callback);
+        } else {
+            editor_page.load_file_async(path);
+        }
+        Some((page, true))
     }
 
     fn find_open_document_page(
@@ -481,10 +522,12 @@ impl LushtextWindow {
         self.track_editor_memory(&editor_page);
         self.imp().tab_view.set_selected_page(&page);
         self.exit_preview_only_mode_now();
-        self.update_content_stack();
-        self.refresh_sidebar_file_row_states();
-        self.refresh_open_popover_rows();
-        self.refresh_status_bar();
+        if !self.tab_projection_refresh_deferred() {
+            self.update_content_stack();
+            self.refresh_sidebar_file_row_states();
+            self.refresh_open_popover_rows();
+            self.refresh_status_bar();
+        }
     }
 
     /// Connect a buffer's modified-changed signal to update the tab title
@@ -878,11 +921,22 @@ impl LushtextWindow {
 
     /// End a coalesced tab-model refresh and rebuild derived state once.
     pub(super) fn end_tab_projection_refresh_batch(&self) {
+        self.release_tab_projection_refresh_batch(true);
+    }
+
+    /// Release one projection deferral without publishing during teardown.
+    pub(super) fn cancel_tab_projection_refresh_batch(&self) {
+        self.release_tab_projection_refresh_batch(false);
+    }
+
+    fn release_tab_projection_refresh_batch(&self, publish: bool) {
         let depth = self.imp().tab_projection_refresh_defer_depth.get();
         debug_assert!(depth > 0, "tab projection refresh batch underflow");
         if depth <= 1 {
             self.imp().tab_projection_refresh_defer_depth.set(0);
-            self.refresh_tab_model_projections();
+            if publish {
+                self.refresh_tab_model_projections();
+            }
         } else {
             self.imp().tab_projection_refresh_defer_depth.set(depth - 1);
         }
@@ -895,12 +949,37 @@ impl LushtextWindow {
 
     /// Rebuild all window projections that derive from the mounted tab model.
     pub(super) fn refresh_tab_model_projections(&self) {
+        self.imp().session.tab_projection_publications.set(
+            self.imp()
+                .session
+                .tab_projection_publications
+                .get()
+                .saturating_add(1),
+        );
         self.reconcile_open_paths_from_tabs();
         self.update_content_stack();
         self.refresh_command_palette_sources();
+        self.refresh_selected_tab_model_projections();
+    }
+
+    /// Publish projections and policies derived from the selected tab once.
+    pub(super) fn refresh_selected_tab_model_projections(&self) {
         self.refresh_sidebar_file_row_states();
         self.refresh_open_popover_rows();
         self.refresh_status_bar();
+        // Stamp recency before reload/evaluation so a newly active tab
+        // invalidates any earlier LRU candidate.
+        if let Some(editor) = self.active_editor() {
+            self.mark_editor_memory_accessed(&editor);
+        }
+        self.reload_if_evicted();
+        self.maybe_evict_background_tabs();
+        self.save_session_debounced();
+        self.refresh_preview();
+        self.apply_focus_mode_to_editors();
+        if let Some(editor) = self.active_editor() {
+            editor.refresh_minimap();
+        }
     }
 
     /// Refresh sidebar file-row markers from the current file-backed tabs.

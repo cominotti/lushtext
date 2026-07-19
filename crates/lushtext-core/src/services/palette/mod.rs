@@ -25,21 +25,30 @@ pub use commands::{
 };
 pub use fuzzy::{PALETTE_CANCEL_CHECK_INTERVAL, compare_palette_rank, fuzzy_score};
 pub use grouped::{GroupedSearchInput, grouped_search};
+pub(crate) use index::FileIndexMutationLedger;
 pub use index::{
     FileIndex, FileIndexBuildCoordinator, FileIndexBuildCoordinatorSnapshot, FileIndexBuildMetrics,
     FileIndexBuildOutcome, FileIndexBuildRequest, FileIndexBuildStart, FileIndexTruncationReason,
-    MAX_INDEXED_DIRECTORIES, MAX_INDEXED_FILES,
+    MAX_FILE_INDEX_BUILD_RETAINED_BYTES, MAX_FILE_INDEX_RETAINED_BYTES, MAX_INDEXED_DIRECTORIES,
+    MAX_INDEXED_FILES,
 };
+#[cfg(test)]
+pub use notes::load_note_entries_for_scope;
 pub use notes::{
-    MAX_PALETTE_NOTE_ENTRIES, MAX_PALETTE_NOTE_TEXT_BYTES, NoteSourceLimits, NoteSourceMetrics,
-    NoteSourceRefreshCoordinator, NoteSourceRefreshCoordinatorSnapshot, NoteSourceRefreshRequest,
-    NoteSourceRefreshStart, NoteSourceTruncationReason, NotesBrowserQueryCoordinator,
+    MAX_PALETTE_NOTE_ENTRIES, MAX_PALETTE_NOTE_RETAINED_BYTES, MAX_PALETTE_NOTE_TEXT_BYTES,
+    NoteSourceLimits, NoteSourceMetrics, NoteSourceRefreshCoordinator,
+    NoteSourceRefreshCoordinatorSnapshot, NoteSourceRefreshRequest, NoteSourceRefreshStart,
+    NoteSourceTruncationReason, NotesBrowserMode, NotesBrowserQueryCoordinator,
     NotesBrowserQueryRequest, NotesBrowserQueryResult, PALETTE_NOTE_SOURCE_LIMITS,
     PaletteNoteSourceLoad, PaletteNoteSourceOutcome, admit_synthetic_note_bodies_for_benchmark,
     bookmark_display_label, build_note_entries, format_line_label,
-    load_note_entries_bounded_for_scope, load_note_entries_for_scope,
-    load_palette_note_entries_for_scope, open_tab_source_for_path, path_is_in_folders,
-    query_notes_browser_source, search_note_entries, search_note_entries_in_category,
+    load_note_entries_bounded_for_scope, load_palette_note_entries_for_scope,
+    open_tab_source_for_path, path_is_in_folders, query_notes_browser_source, search_note_entries,
+    search_note_entries_in_category,
+};
+#[cfg(feature = "property-tests")]
+pub use notes::{
+    NoteScoredIdentity, NoteScoringEquivalenceEvidence, note_scoring_equivalence_for_property_test,
 };
 #[cfg(feature = "test-utils")]
 pub use notes::{set_note_source_delay_for_test, set_notes_browser_query_delay_for_test};
