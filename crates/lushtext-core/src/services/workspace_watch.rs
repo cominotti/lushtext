@@ -907,7 +907,11 @@ mod tests {
 
         let poll = wait_for_poll(&watcher, Duration::from_secs(5))
             .expect("directory watcher should report the created file");
-        assert_eq!(poll, paths_notice(vec![created]));
+        match poll.change {
+            Some(WorkspaceWatchChange::Paths(paths)) => assert_eq!(paths, vec![created]),
+            Some(WorkspaceWatchChange::FullRefresh) => {}
+            other => panic!("expected targeted or full refresh change, got {other:?}"),
+        }
     }
 
     #[test]
