@@ -1856,8 +1856,10 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
     let page = LushtextEditorPage::new();
     let tmp = tempfile::NamedTempFile::new().expect("save teardown temp file");
     page.set_file_path(tmp.path());
-    page.buffer().set_text(&"x".repeat(11 * 1024 * 1024));
+    page.buffer().set_text(&"x".repeat(2_500_001));
     page.buffer().set_modified(true);
+    assert!(page.save_uses_chunked_snapshot_for_test());
+    page.reset_transient_load_admission_for_test();
     page.reset_transient_save_admission_for_test();
     page.pause_next_save_snapshot_for_test();
     let counters_before = buffer_snapshot_counters_for_test();
