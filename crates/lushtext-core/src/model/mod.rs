@@ -31,4 +31,6 @@ pub mod search_retirement;
 pub mod session;
 pub mod sidecar_identity;
 pub mod workspace;
+pub mod workspace_persistence;
 pub mod workspace_scan;
+pub mod workspace_search;

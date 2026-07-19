@@ -31,6 +31,28 @@ pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
 /// Debounce interval for persisting workspace changes to disk (ms).
 pub(super) const PERSIST_DEBOUNCE_MS: u64 = 150;
 
+/// Typed user-safe failure returned by an asynchronous workspace close flush.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspacePersistenceFlushError {
+    message: String,
+}
+
+impl WorkspacePersistenceFlushError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkspacePersistenceFlushError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WorkspacePersistenceFlushError {}
+
 /// Window-owned projection of file tabs that sidebar rows may render.
 ///
 /// The sidebar treats these paths as display identities only. The window still
@@ -69,6 +91,22 @@ impl SidebarFileRowStateSnapshot {
 }
 
 impl LushtextSidebar {
+    /// Return whether workspace persistence remains dirty, active, failed, or retry-waiting.
+    #[must_use]
+    pub(crate) fn workspace_persistence_pending(&self) -> bool {
+        self.imp().persistence.borrow().has_pending_work()
+    }
+
+    /// Return whether one workspace snapshot currently owns the worker slot.
+    #[must_use]
+    pub(crate) fn workspace_persistence_inflight(&self) -> bool {
+        self.imp()
+            .persistence
+            .borrow()
+            .in_flight_generation()
+            .is_some()
+    }
+
     /// Whether any section still has watcher lifecycle, mailbox, or refresh work.
     pub(crate) fn workspace_refresh_blocks_readiness(&self) -> bool {
         self.imp()

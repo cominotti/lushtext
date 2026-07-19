@@ -325,15 +325,16 @@ impl LushtextEditorPage {
     }
 
     /// Seed the tab's "last clean text" after a file load or reload completes.
-    pub(crate) fn seed_local_history_from_loaded_content(&self, content: String) {
+    pub(crate) fn seed_local_history_from_guarded_loaded_content(
+        &self,
+        content: crate::ui::plain_disposal::DisposalOwned<String>,
+    ) {
         let clean_text = if self.file_path().is_some()
             && self
                 .live_local_history_availability()
                 .allows_automatic_capture()
         {
-            Some(crate::ui::plain_disposal::DisposalOwned::small_unreserved(
-                content,
-            ))
+            Some(content.into_retained_current())
         } else {
             None
         };
@@ -347,12 +348,13 @@ impl LushtextEditorPage {
     }
 
     /// Treat restored draft content as the baseline for future local-history capture.
-    pub(crate) fn seed_local_history_from_restored_draft(&self, content: String) {
+    pub(crate) fn seed_local_history_from_guarded_restored_draft(
+        &self,
+        content: crate::ui::plain_disposal::DisposalOwned<String>,
+    ) {
         let availability = local_history_service::availability_for_utf8_bytes(content.len());
         let clean_text = if self.file_path().is_some() && availability.allows_automatic_capture() {
-            Some(crate::ui::plain_disposal::DisposalOwned::small_unreserved(
-                content,
-            ))
+            Some(content.into_retained_current())
         } else {
             None
         };

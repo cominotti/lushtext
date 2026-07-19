@@ -74,7 +74,7 @@ save_admission_policy: generated eight compact ordinary save requests under the 
 editor_memory_policy: generated 1k/10k/100k scalar tab sets plus one-record incremental edit evidence
 json_persistence: generated workspace/session JSON save and load fixtures
 editor_file_io: generated text files for load, save, and Save As-equivalent explicit-path writes
-transient_file_load: generated scalar admission bursts, stale queues, an exclusive near-limit request, Unicode slice planning, and one headless chunked-install responsiveness fixture
+transient_file_load: generated scalar admission bursts, stale queues, one bounded additive overweight request, Unicode slice planning, nine accepted-current baselines, and headless chunked-install/transit-release responsiveness fixtures
 workspace_watch_pressure: generated duplicate/access-noise/deep Unicode event batches, varied producer/consumer rates, and cap-plus-one full-refresh promotion
 quality_gap_scale: generated a 10,000-row Notes browser source, 10,000-row metadata-dominated note scoring with large bodies, a 4 MiB local-history preview, raw watcher ingress, a 10,000-row terminal cache rebuild, 10,000 rapid per-store scan requests, a 2.23 MiB sliced minimap analysis, and headless draft/session/pre-admitted-disposal/minimap/main-loop ownership fixtures
 replace_preview_generation: generated 1k and 10k in-memory match sets plus a 10k-row half-checked worker-side selection handoff
@@ -101,7 +101,7 @@ Coarse smoke thresholds:
 - Replace preview generation and selection: 10k generated matches and a 10k-row half-checked worker selection should stay sub-second on a developer workstation; preview selection must avoid whole-payload clones on GTK
 - sliced buffer replacement: a synchronous first delete or insert signal may supersede the active generation without a borrow conflict; exactly one latest body remains, editability/saveability are restored, and projection suspension clears
 - persistence, editor file I/O, Replace All, and undo restore: must complete every smoke sample successfully; dense-line construction must retain no more edit records than accepted replacements while reporting source lines, retained edit bytes, output bytes, and undo bytes directly
-- transient_file_load: admitted payload weight must stay within the scalar shared budget except for one exclusive request; the headless Unicode fixture must make main-loop progress between slices and release its permit after final editor residency is published
+- transient_file_load: admitted payload weight must stay within the scalar shared budget except for one explicitly bounded additive overweight transit owner; headless evidence must prove Unicode slice progress, accepted-current release of all eight transit slots before a ninth baseline, heavyweight progress beside retained current state, and final worker-side destruction
 - workspace_watch_pressure: retained unique paths must stay at or below 1,024, GTK consumption must stay at one bounded notice per poll, and cap overflow must promote to one conservative full refresh
 - quality_gap_scale: draft repair must reach a complete multi-page inventory before cleanup authority and preserve every body across two startups; session restore must create at most four pages per GTK turn with two file-plan permits and one terminal projection publication; weighted disposal must reject capacity immediately, retain only compact retry requests, pre-admit document-sized GTK owners, prove their nested final destruction off GTK, and drain within two workers, eight reserved drop slots, and 128 MiB ordinary retained weight; minimap analysis must inspect at most 32,768 characters per GTK turn and reject stale generations; note scoring must retain at most 500 rows while optimized and final-query reference results agree; Notes query ownership must remain one active plus one latest, preview ownership must retain one accepted payload and install in 256 KiB UTF-8-safe slices, raw watcher ingress must stay capped, per-store scans must stay at one active plus one weak latest request with mirror capture only at admission, and terminal cache operations must stay at or below eight times old-plus-new rows
 - recovery_performance: malformed metadata, pending migration, duplicate sidecar, local-history lineage, and first-dirty autosave fixtures must complete every smoke sample successfully; investigate multi-second recovery timings before shipping startup or close-flow reliability changes
@@ -174,18 +174,48 @@ for filter in $FILTERS; do
 done
 
 case " $FILTERS " in
+    *" json_persistence "*)
+        widget_log="$ARTIFACT_DIR/widget-workspace-persistence-faults.log"
+        : >"$widget_log"
+        echo "Running headless workspace-persistence fault matrix..."
+        for widget_filter in \
+            window::test_workspace_persistence_retry_resolves_feedback_and_readiness \
+            window::test_workspace_close_flush_failure_aborts_and_later_close_recovers \
+            window::test_close_waits_for_inflight_workspace_save_then_flushes_newest_mutation
+        do
+            if ! scripts/run-widget-tests.sh --headless -- "$widget_filter" --nocapture \
+                >>"$widget_log" 2>&1; then
+                tail -n 160 "$widget_log" >&2 || true
+                smoke_fail "workspace-persistence fault proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
+            fi
+        done
+        {
+            echo "## workspace_persistence_fault_matrix"
+            grep -E "workspace-persistence-fault-evidence|test result:" "$widget_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+        ;;
+esac
+
+case " $FILTERS " in
     *" transient_file_load "*)
         widget_log="$ARTIFACT_DIR/widget-transient-file-load.log"
+        : >"$widget_log"
         echo "Running headless transient file-load responsiveness proof..."
-        if ! scripts/run-widget-tests.sh --headless -- \
+        for widget_filter in \
             editor_page::test_large_unicode_load_installs_in_exact_bounded_slices \
-            >"$widget_log" 2>&1; then
-            tail -n 120 "$widget_log" >&2 || true
-            smoke_fail "headless transient file-load proof failed. Artifacts: $ARTIFACT_DIR"
-        fi
+            editor_page::test_nine_accepted_load_baselines_do_not_exhaust_transit_slots \
+            editor_page::test_overweight_load_reservation_progresses_with_retained_baseline
+        do
+            if ! scripts/run-widget-tests.sh --headless -- "$widget_filter" --nocapture \
+                >>"$widget_log" 2>&1; then
+                tail -n 120 "$widget_log" >&2 || true
+                smoke_fail "headless transient file-load proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
+            fi
+        done
         {
             echo "## transient_file_load_headless"
-            grep -E "transient-load-runtime-evidence|test result:" "$widget_log" || true
+            grep -E "transient-load-(runtime|disposal|baseline-count|overweight)-evidence|test result:" "$widget_log" || true
             echo
         } >>"$ARTIFACT_DIR/summary.txt"
         ;;
@@ -205,6 +235,7 @@ case " $FILTERS " in
             workspace_section::test_slow_directory_refresh_churn_keeps_one_active_and_one_weak_latest_request \
             workspace_section::test_large_reconciliation_is_batched_supersedable_and_preserves_state \
             plain_disposal::test_aggregate_disposal_pressure_returns_immediately_and_keeps_gtk_alive \
+            window::test_document_sized_preloaded_draft_publishes_only_after_bounded_install \
             editor_page::test_minimap_long_line_warning_scan_slices_large_many_short_buffer \
             editor_page::test_minimap_mid_scan_edit_cancels_stale_generation_and_publishes_latest
         do
@@ -216,7 +247,7 @@ case " $FILTERS " in
         done
         {
             echo "## quality_gap_scale_headless"
-            grep -E "notes-browser-runtime-evidence|local-history-preview-runtime-evidence|session-restore-(bound|cancellation)-evidence|workspace-scan-(aggregate|flight)-evidence|workspace-cache-runtime-evidence|plain-disposal-pressure-evidence|minimap-(analysis|cancellation)-evidence|test result:" "$widget_log" || true
+            grep -E "notes-browser-runtime-evidence|local-history-preview-runtime-evidence|session-restore-(bound|cancellation)-evidence|workspace-scan-(aggregate|flight)-evidence|workspace-cache-runtime-evidence|plain-disposal-pressure-evidence|draft-disposal-evidence|minimap-(analysis|cancellation)-evidence|test result:" "$widget_log" || true
             echo
         } >>"$ARTIFACT_DIR/summary.txt"
 

@@ -113,6 +113,29 @@ impl BookmarkDocument {
                 .then_with(|| left.id.0.cmp(&right.id.0))
         });
     }
+
+    /// Return the complete retained heap graph used during bounded source construction.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        let records = self.bookmarks.iter().fold(0u64, |total, bookmark| {
+            total
+                .saturating_add(u64::try_from(bookmark.id.0.capacity()).unwrap_or(u64::MAX))
+                .saturating_add(bookmark.label.as_ref().map_or(0, |label| {
+                    u64::try_from(label.capacity()).unwrap_or(u64::MAX)
+                }))
+        });
+        self.identity
+            .retained_heap_byte_weight()
+            .saturating_add(
+                u64::try_from(
+                    self.bookmarks
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<BookmarkRecord>()),
+                )
+                .unwrap_or(u64::MAX),
+            )
+            .saturating_add(records)
+    }
 }
 
 fn normalize_label(label: Option<String>) -> Option<String> {

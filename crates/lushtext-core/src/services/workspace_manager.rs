@@ -16,10 +16,49 @@ use crate::services::recovery_metadata::{
     save_enveloped_json_path,
 };
 use anyhow::Result;
+#[cfg(feature = "test-utils")]
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-utils")]
+use std::sync::{Mutex, OnceLock};
 
 /// Fixed filename for workspace state.
 const WORKSPACES_FILE: &str = "workspaces.json";
+
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Default)]
+struct WorkspaceSaveFaultForTest {
+    fail: bool,
+    delay_ms: u64,
+}
+
+#[cfg(feature = "test-utils")]
+fn workspace_save_faults_for_test() -> &'static Mutex<HashMap<PathBuf, WorkspaceSaveFaultForTest>> {
+    static FAULTS: OnceLock<Mutex<HashMap<PathBuf, WorkspaceSaveFaultForTest>>> = OnceLock::new();
+    FAULTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Fail the next workspace save for one isolated data directory.
+#[cfg(feature = "test-utils")]
+pub fn fail_next_save_for_data_dir_for_test(data_dir: &Path) {
+    workspace_save_faults_for_test()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(data_dir.join(WORKSPACES_FILE))
+        .or_default()
+        .fail = true;
+}
+
+/// Delay the next workspace save for one isolated data directory.
+#[cfg(feature = "test-utils")]
+pub fn delay_next_save_for_data_dir_for_test(data_dir: &Path, delay_ms: u64) {
+    workspace_save_faults_for_test()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(data_dir.join(WORKSPACES_FILE))
+        .or_default()
+        .delay_ms = delay_ms;
+}
 
 /// Error returned when a folder cannot be added to a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +322,19 @@ fn trace_recovery_diagnostics(load: &RecoveryLoad<WorkspacesFile>) {
 /// Returns an error if the workspace file cannot be serialized or written.
 pub fn save(data_dir: &Path, file: &WorkspacesFile) -> Result<()> {
     let path = data_dir.join(WORKSPACES_FILE);
+    #[cfg(feature = "test-utils")]
+    if let Some(fault) = workspace_save_faults_for_test()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&path)
+    {
+        if fault.delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(fault.delay_ms));
+        }
+        if fault.fail {
+            anyhow::bail!("injected workspace persistence failure");
+        }
+    }
     let config = RecoveryLoadConfig::new(data_dir, &path, RecoveryMetadataClass::WorkspaceState);
     let diagnostics = save_enveloped_json_path(&config, KIND_WORKSPACE_STATE, file)?;
     for diagnostic in diagnostics {

@@ -742,7 +742,7 @@ fn window_readiness_blocker(
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.sidebar.imp().persist_inflight.get() || imp.sidebar.imp().persist_dirty.get(),
+        imp.sidebar.workspace_persistence_pending(),
         READINESS_BLOCKER_WORKSPACE_PERSIST,
     ) {
         return Some(blocker);
@@ -893,8 +893,8 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
         folder_count: bounded_len(workspaces.all_workspace_folder_paths().len()),
         scoped_folder_count: bounded_len(imp.sidebar.current_scope_folder_paths().len()),
         no_workspaces: workspaces.workspaces.is_empty(),
-        persistence_inflight: imp.sidebar.imp().persist_inflight.get(),
-        persistence_dirty: imp.sidebar.imp().persist_dirty.get(),
+        persistence_inflight: imp.sidebar.workspace_persistence_inflight(),
+        persistence_dirty: imp.sidebar.workspace_persistence_pending(),
         filter_animation_active: imp.sidebar.imp().workspace_filter_animation_active.get(),
     }
 }

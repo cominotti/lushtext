@@ -59,6 +59,10 @@ pub(crate) use buffer_replacement::{BufferReplacementTicket, BufferReplacementWo
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::{EditorLoadState, PendingWarningAction};
 #[cfg(feature = "test-utils")]
+pub use load_runtime::set_next_load_body_disposal_probe_for_test;
+#[cfg(feature = "test-utils")]
+pub use load_runtime::set_next_load_disposal_reservation_weight_for_test;
+#[cfg(feature = "test-utils")]
 pub use local_history::{
     set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
 };

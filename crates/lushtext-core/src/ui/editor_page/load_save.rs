@@ -29,7 +29,7 @@ use crate::services::notifications::{InlineActionNotification, InlineNotificatio
 use crate::services::{editor_io, filesystem::metadata as fs_metadata};
 use crate::ui::buffer_snapshot;
 
-use super::load_runtime::{self, TransientLoadPermit};
+use super::load_runtime::{self, GuardedLoadResult, TransientLoadPermit};
 use super::save_runtime::{self, SavePayloadPermit, SaveSubmission};
 use super::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
@@ -145,7 +145,7 @@ pub(crate) struct ChunkedLoadInstall {
     editor: glib::WeakRef<LushtextEditorPage>,
     buffer: sourceview5::Buffer,
     end_mark: Option<gtk4::TextMark>,
-    loaded: Option<editor_io::LoadResult>,
+    loaded: Option<GuardedLoadResult>,
     byte_offset: usize,
     generation: u64,
     source_id: Option<glib::SourceId>,
@@ -572,68 +572,92 @@ impl LushtextEditorPage {
         result: Result<editor_io::LoadResult, EditorLoadError>,
         error_state: EditorLoadState,
     ) -> bool {
-        self.apply_load_outcome(load_generation, result, error_state, None)
-    }
-
-    pub(super) fn accept_admitted_load_outcome(
-        &self,
-        load_generation: u64,
-        result: Result<editor_io::LoadResult, EditorLoadError>,
-        error_state: EditorLoadState,
-        permit: TransientLoadPermit,
-    ) {
-        let _ = self.apply_load_outcome(load_generation, result, error_state, Some(permit));
-    }
-
-    fn apply_load_outcome(
-        &self,
-        load_generation: u64,
-        result: Result<editor_io::LoadResult, EditorLoadError>,
-        error_state: EditorLoadState,
-        permit: Option<TransientLoadPermit>,
-    ) -> bool {
         if self.imp().load_generation.get() != load_generation
             || self.imp().cancel_token.borrow().load(Ordering::Acquire)
         {
             return false;
         }
         match result {
-            Ok(loaded) => {
-                if self.requires_chunked_install(loaded.content.len()) {
-                    self.start_chunked_install(load_generation, loaded, permit);
-                } else {
-                    self.install_loaded_direct(loaded, permit);
-                }
+            Ok(mut loaded) => {
+                let content = std::mem::take(&mut loaded.content);
+                let weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
+                let Some(mut reservation) = crate::ui::plain_disposal::try_reserve_for_gtk(weight)
+                else {
+                    return false;
+                };
+                reservation.shrink_to(weight);
+                self.install_guarded_load(
+                    load_generation,
+                    GuardedLoadResult {
+                        metadata: loaded,
+                        content: reservation.own(content),
+                    },
+                    None,
+                );
             }
             Err(EditorLoadError::Cancelled) => {}
-            Err(error) => {
-                tracing::error!("{error}");
-                let error_text = error.to_string();
-                self.imp().load_state.set(error_state);
-                self.imp().latest_load_failed.set(true);
-                self.notify_memory_policy_changed();
-                self.emit_inline_notification(InlineActionNotification {
-                    style: InlineNotificationStyle::Error,
-                    title: "Could Not Open File".to_string(),
-                    body: error_text.clone(),
-                    primary_button: Some("_Retry".to_string()),
-                    secondary_button: None,
-                });
-                self.refresh_accessibility_metadata();
-                if error_state == EditorLoadState::Loaded {
-                    self.start_file_monitor();
-                }
-                if let Some(callback) = self.imp().load.load_failed_callback.take() {
-                    callback(error_text);
-                }
-            }
+            Err(error) => self.publish_load_error(&error, error_state),
         }
         true
     }
 
+    pub(super) fn accept_admitted_load_outcome(
+        &self,
+        load_generation: u64,
+        result: Result<GuardedLoadResult, EditorLoadError>,
+        error_state: EditorLoadState,
+        permit: TransientLoadPermit,
+    ) {
+        if self.imp().load_generation.get() != load_generation
+            || self.imp().cancel_token.borrow().load(Ordering::Acquire)
+        {
+            return;
+        }
+        match result {
+            Ok(loaded) => self.install_guarded_load(load_generation, loaded, Some(permit)),
+            Err(EditorLoadError::Cancelled) => {}
+            Err(error) => self.publish_load_error(&error, error_state),
+        }
+    }
+
+    fn install_guarded_load(
+        &self,
+        load_generation: u64,
+        loaded: GuardedLoadResult,
+        permit: Option<TransientLoadPermit>,
+    ) {
+        if self.requires_chunked_install(loaded.content.len()) {
+            self.start_chunked_install(load_generation, loaded, permit);
+        } else {
+            self.install_loaded_direct(loaded, permit);
+        }
+    }
+
+    fn publish_load_error(&self, error: &EditorLoadError, error_state: EditorLoadState) {
+        tracing::error!("{error}");
+        let error_text = error.to_string();
+        self.imp().load_state.set(error_state);
+        self.imp().latest_load_failed.set(true);
+        self.notify_memory_policy_changed();
+        self.emit_inline_notification(InlineActionNotification {
+            style: InlineNotificationStyle::Error,
+            title: "Could Not Open File".to_string(),
+            body: error_text.clone(),
+            primary_button: Some("_Retry".to_string()),
+            secondary_button: None,
+        });
+        self.refresh_accessibility_metadata();
+        if error_state == EditorLoadState::Loaded {
+            self.start_file_monitor();
+        }
+        if let Some(callback) = self.imp().load.load_failed_callback.take() {
+            callback(error_text);
+        }
+    }
+
     fn install_loaded_direct(
         &self,
-        loaded: editor_io::LoadResult,
+        loaded: GuardedLoadResult,
         permit: Option<TransientLoadPermit>,
     ) {
         self.imp().load.installation_slice_count.set(0);
@@ -655,7 +679,7 @@ impl LushtextEditorPage {
     fn start_chunked_install(
         &self,
         generation: u64,
-        loaded: editor_io::LoadResult,
+        loaded: GuardedLoadResult,
         permit: Option<TransientLoadPermit>,
     ) {
         let restore = self.begin_load_installation(true);
@@ -723,11 +747,15 @@ impl LushtextEditorPage {
 
     fn complete_loaded_installation(
         &self,
-        loaded: editor_io::LoadResult,
+        loaded: GuardedLoadResult,
         restore: LoadInstallationState,
     ) {
-        let editor_io::LoadResult {
+        let GuardedLoadResult {
+            metadata: loaded,
             content,
+        } = loaded;
+        let editor_io::LoadResult {
+            content: empty_content,
             size,
             size_check,
             canonical_path,
@@ -736,6 +764,7 @@ impl LushtextEditorPage {
             has_bom,
             file_health,
         } = loaded;
+        debug_assert!(empty_content.is_empty());
         let buffer = self.buffer();
         if size_check.undo_enabled() {
             buffer.end_irreversible_action();
@@ -763,7 +792,7 @@ impl LushtextEditorPage {
         self.apply_restore_position();
         self.imp().monitor.last_known_mtime.set(mtime);
         self.clear_inline_notification();
-        self.seed_local_history_from_loaded_content(content);
+        self.seed_local_history_from_guarded_loaded_content(content);
         self.restore_load_installation_state(restore);
         self.imp().load_state.set(EditorLoadState::Loaded);
         self.notify_memory_policy_changed();
@@ -833,19 +862,31 @@ impl LushtextEditorPage {
     /// Widget tests use this `test-utils` seam for UI-observable large-file
     /// capability states that would otherwise require loading tens of megabytes
     /// through `GtkTextBuffer` just to cross a threshold.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test process has already exhausted the guarded disposal
+    /// capacity required to own the synthetic body.
     #[cfg(feature = "test-utils")]
     pub fn apply_loaded_content_for_test(&self, content: &str, reported_size: u64) {
         let size_check = FileSizeCheck::classify(reported_size);
+        let content = content.to_string();
+        let weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
+        let reservation = crate::ui::plain_disposal::try_reserve_for_gtk(weight)
+            .expect("test load body should acquire disposal capacity");
         self.install_loaded_direct(
-            editor_io::LoadResult {
-                content: content.to_string(),
-                size: reported_size,
-                size_check,
-                canonical_path: self.canonical_file_path(),
-                mtime: self.imp().monitor.last_known_mtime.get(),
-                encoding_state: self.document_encoding_state(),
-                has_bom: self.has_bom(),
-                file_health: self.file_health(),
+            GuardedLoadResult {
+                metadata: editor_io::LoadResult {
+                    content: String::new(),
+                    size: reported_size,
+                    size_check,
+                    canonical_path: self.canonical_file_path(),
+                    mtime: self.imp().monitor.last_known_mtime.get(),
+                    encoding_state: self.document_encoding_state(),
+                    has_bom: self.has_bom(),
+                    file_health: self.file_health(),
+                },
+                content: reservation.own(content),
             },
             None,
         );
@@ -965,6 +1006,13 @@ impl LushtextEditorPage {
         &self,
     ) -> crate::model::file_load::FileLoadAdmissionSnapshot {
         load_runtime::snapshot_for_test()
+    }
+
+    /// Whether the process-wide load queue is polling for disposal capacity.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn transient_load_disposal_wakeup_armed_for_test(&self) -> bool {
+        load_runtime::disposal_wakeup_armed_for_test()
     }
 
     /// Reset process-wide admission state between isolated widget cases.

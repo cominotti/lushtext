@@ -185,6 +185,7 @@ impl LushtextCommandPalette {
         index: crate::ui::plain_disposal::DisposalOwned<FileIndex>,
     ) {
         let imp = self.imp();
+        let index = index.into_retained_current();
         let previous = std::mem::replace(&mut *imp.file_index.borrow_mut(), Arc::new(index));
         let last_owned = Arc::strong_count(&previous) == 1;
         let reached_policy_cap = previous.len() == crate::services::palette::MAX_INDEXED_FILES;
@@ -229,6 +230,7 @@ impl LushtextCommandPalette {
         &self,
         note_entries: crate::ui::plain_disposal::DisposalOwned<Box<[PaletteNoteEntry]>>,
     ) {
+        let note_entries = note_entries.into_retained_current();
         let previous = std::mem::replace(
             &mut *self.imp().note_entries.borrow_mut(),
             Arc::new(note_entries),

@@ -70,7 +70,8 @@ use lushtext_core::ui::editor_page::{
 };
 use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
 use lushtext_core::ui::plain_disposal::{
-    hold_disposal_capacity_for_test, hold_progress_disposal_capacity_for_test,
+    fill_disposal_capacity_for_test, hold_disposal_capacity_for_test,
+    hold_progress_disposal_capacity_for_test,
     lane_snapshot_for_test, progress_lane_snapshot_for_test,
 };
 use lushtext_core::ui::preferences::LushtextPreferences;
@@ -84,6 +85,7 @@ use lushtext_core::ui::window::{
     set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
     set_lazy_draft_read_delay_for_test, set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
+    set_next_draft_body_disposal_probe_for_test,
     set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
     set_notes_browser_source_entry_limit_for_test, set_orphan_cleanup_delays_for_test,
     set_replace_reload_facts_delay_for_test, with_print_runner_for_test,
@@ -93,6 +95,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 fn test_window() -> LushtextWindow {
@@ -10200,6 +10203,188 @@ fn test_rapid_workspace_mutations_persist_latest_sidebar_state() {
 }
 
 #[test]
+fn test_close_before_workspace_debounce_persists_newest_state() {
+    let (_folders, _left, _right) = seed_scoped_workspaces(WorkspaceScope::All);
+    let data_dir = json_store::data_dir();
+    let left_id = WorkspaceId::new("ws-left");
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 2);
+
+    window
+        .imp()
+        .sidebar
+        .rename_workspace_for_test(&left_id, "Newest Left");
+    window.close();
+
+    wait_until(Duration::from_secs(10), || !window.is_visible());
+    let loaded = workspace_manager::load(&data_dir).expect("load close-flushed workspaces");
+    assert_eq!(
+        loaded.workspace(&left_id).map(|workspace| workspace.name.as_str()),
+        Some("Newest Left")
+    );
+    println!(
+        "workspace-persistence-fault-evidence debounce_bypassed=true close_waited=true newest_durable=true close_aborted=false"
+    );
+}
+
+#[test]
+fn test_workspace_close_flush_failure_aborts_and_later_close_recovers() {
+    let (_folders, _left, _right) = seed_scoped_workspaces(WorkspaceScope::All);
+    let data_dir = json_store::data_dir();
+    let left_id = WorkspaceId::new("ws-left");
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 2);
+    let app = window
+        .application()
+        .expect("window application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("LushText application");
+
+    window
+        .imp()
+        .sidebar
+        .rename_workspace_for_test(&left_id, "Retryable Left");
+    workspace_manager::fail_next_save_for_data_dir_for_test(&data_dir);
+    window.close();
+
+    wait_until(Duration::from_secs(10), || {
+        window.is_visible()
+            && window.is_sensitive()
+            && !window.imp().session.close_safety_inflight.get()
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| status.text.contains("workspace changes could not be saved"))
+    });
+    assert!(window
+        .imp()
+        .sidebar
+        .imp()
+        .persistence
+        .borrow()
+        .has_pending_work());
+    assert_eq!(current_idle_blocker(&app).as_deref(), Some("workspace-persist"));
+    let still_durable = workspace_manager::load(&data_dir).expect("load prior durable workspace");
+    assert_eq!(
+        still_durable
+            .workspace(&left_id)
+            .map(|workspace| workspace.name.as_str()),
+        Some("left")
+    );
+
+    window.close();
+    wait_until(Duration::from_secs(10), || !window.is_visible());
+    let recovered = workspace_manager::load(&data_dir).expect("load recovered workspace");
+    assert_eq!(
+        recovered
+            .workspace(&left_id)
+            .map(|workspace| workspace.name.as_str()),
+        Some("Retryable Left")
+    );
+    println!(
+        "workspace-persistence-fault-evidence injected_failure=true close_aborted=true sensitivity_restored=true readiness_pending=true recovery_success=true"
+    );
+}
+
+#[test]
+fn test_workspace_persistence_retry_resolves_feedback_and_readiness() {
+    let (_folders, _left, _right) = seed_scoped_workspaces(WorkspaceScope::All);
+    let data_dir = json_store::data_dir();
+    let left_id = WorkspaceId::new("ws-left");
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 2);
+    let app = window
+        .application()
+        .expect("window application")
+        .downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("LushText application");
+
+    workspace_manager::fail_next_save_for_data_dir_for_test(&data_dir);
+    window
+        .imp()
+        .sidebar
+        .rename_workspace_for_test(&left_id, "Retry Then Settle");
+    wait_until(Duration::from_secs(5), || {
+        current_idle_blocker(&app).as_deref() == Some("workspace-persist")
+    });
+    wait_until(Duration::from_secs(5), || {
+        window
+            .imp()
+            .notification_bus
+            .status_bar_view()
+            .is_some_and(|status| status.text.contains("will retry"))
+    });
+    wait_until(Duration::from_secs(10), || {
+        !window
+            .imp()
+            .sidebar
+            .imp()
+            .persistence
+            .borrow()
+            .has_pending_work()
+            && window
+                .imp()
+                .notification_bus
+                .status_bar_view()
+                .is_some_and(|status| status.text == "Workspace changes were saved.")
+    });
+    assert_ne!(current_idle_blocker(&app).as_deref(), Some("workspace-persist"));
+    let loaded = workspace_manager::load(&data_dir).expect("load retried workspace");
+    assert_eq!(
+        loaded.workspace(&left_id).map(|workspace| workspace.name.as_str()),
+        Some("Retry Then Settle")
+    );
+    println!(
+        "workspace-persistence-fault-evidence bounded_retry=true warning_visible=true recovery_feedback=true readiness_settled=true newest_durable=true"
+    );
+}
+
+#[test]
+fn test_close_waits_for_inflight_workspace_save_then_flushes_newest_mutation() {
+    let (_folders, _left, _right) = seed_scoped_workspaces(WorkspaceScope::All);
+    let data_dir = json_store::data_dir();
+    let left_id = WorkspaceId::new("ws-left");
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_sections(&window, 2);
+
+    workspace_manager::delay_next_save_for_data_dir_for_test(&data_dir, 300);
+    window
+        .imp()
+        .sidebar
+        .rename_workspace_for_test(&left_id, "Older In Flight");
+    wait_until(Duration::from_secs(5), || {
+        window
+            .imp()
+            .sidebar
+            .imp()
+            .persistence
+            .borrow()
+            .in_flight_generation()
+            .is_some()
+    });
+    window
+        .imp()
+        .sidebar
+        .rename_workspace_for_test(&left_id, "Newest While Closing");
+    window.close();
+
+    wait_until(Duration::from_secs(10), || !window.is_visible());
+    let loaded = workspace_manager::load(&data_dir).expect("load newest close-flushed workspace");
+    assert_eq!(
+        loaded.workspace(&left_id).map(|workspace| workspace.name.as_str()),
+        Some("Newest While Closing")
+    );
+    println!(
+        "workspace-persistence-fault-evidence inflight_ordering=true mutation_during_write=true close_waited=true newest_durable=true"
+    );
+}
+
+#[test]
 fn test_workspace_selector_updates_search_and_palette_scope() {
     ensure_gtk_init();
     let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
@@ -11480,7 +11665,6 @@ fn test_local_history_preview_resumes_after_disposal_capacity_clears() {
         let snapshot = lane_snapshot_for_test();
         snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
     });
-    let capacity_hold = hold_disposal_capacity_for_test();
     let window = test_window();
     present_window(&window);
     window.open_document(&path);
@@ -11488,6 +11672,7 @@ fn test_local_history_preview_resumes_after_disposal_capacity_clears() {
         active_editor(&window).file_size().is_some()
             && action_enabled(&window, "show-local-history")
     });
+    let capacity_hold = fill_disposal_capacity_for_test();
 
     activate_action(&window, "show-local-history");
     wait_until(Duration::from_secs(5), || {
@@ -18056,6 +18241,9 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
     let editor = active_editor(&window);
     let draft_id = editor.draft_id().expect("draft id");
     let content = "🙂".repeat(300_000);
+    let gtk_thread = std::thread::current().id();
+    let (drop_tx, drop_rx) = mpsc::channel();
+    set_next_draft_body_disposal_probe_for_test(drop_tx);
     let entry = DraftEntry {
         draft_id: draft_id.clone(),
         original_path: None,
@@ -18100,6 +18288,14 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
             .expect("restored draft notification")
             .title,
         "Document Restored"
+    );
+    let destructor_thread = drop_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("ineligible restored draft body must retire on the progress worker");
+    assert_ne!(destructor_thread, gtk_thread);
+    eprintln!(
+        "draft-disposal-evidence eager_transfer=true sliced_install=true baseline_eligible=false destructor_off_gtk=true guard_released=true heartbeat_slices={}",
+        diagnostic.metrics.slice_count
     );
 }
 

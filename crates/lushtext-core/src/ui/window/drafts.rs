@@ -6,10 +6,14 @@
 //! crash recovery, autosave, and manifest maintenance. Session-only tab-state
 //! capture lives separately in `session_persistence.rs`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(feature = "test-utils")]
+use std::sync::{Mutex, mpsc::Sender};
 use std::time::Duration;
 
 use crate::model::draft::{
@@ -52,6 +56,9 @@ const ORPHAN_CLEANUP_FOLLOWUP_DELAY: Duration = Duration::from_secs(30);
 const ORPHAN_CLEANUP_MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// Low-frequency close/readiness poll while ordered recovery work drains.
 const DRAFT_MUTATION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Conservative pre-read reservation for one maximum automatic draft body.
+const DRAFT_RESTORE_DISPOSAL_RESERVATION_BYTES: u64 =
+    draft_service::MAX_AUTOMATIC_DRAFT_BYTES.saturating_add(1024 * 1024);
 
 #[cfg(feature = "test-utils")]
 /// Test override for first-dirty autosave timing without changing production policy.
@@ -77,6 +84,36 @@ static ORPHAN_CLEANUP_START_DELAY_MS: AtomicU64 = AtomicU64::new(2_000);
 static ORPHAN_CLEANUP_FOLLOWUP_DELAY_MS: AtomicU64 = AtomicU64::new(30_000);
 #[cfg(feature = "test-utils")]
 static ORPHAN_CLEANUP_WORKER_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-utils")]
+static NEXT_DRAFT_BODY_DISPOSAL_PROBE: Mutex<Option<Sender<std::thread::ThreadId>>> =
+    Mutex::new(None);
+
+/// Observe the worker thread that finally retires the next restored draft body.
+#[cfg(feature = "test-utils")]
+pub fn set_next_draft_body_disposal_probe_for_test(sender: Sender<std::thread::ThreadId>) {
+    NEXT_DRAFT_BODY_DISPOSAL_PROBE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(sender);
+}
+
+fn attach_draft_body_disposal_probe(
+    owner: crate::ui::plain_disposal::DisposalOwned<String>,
+) -> crate::ui::plain_disposal::DisposalOwned<String> {
+    #[cfg(feature = "test-utils")]
+    {
+        let sender = NEXT_DRAFT_BODY_DISPOSAL_PROBE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(sender) = sender {
+            return owner.with_disposal_terminal(move || {
+                let _ = sender.send(std::thread::current().id());
+            });
+        }
+    }
+    owner
+}
 #[cfg(feature = "test-utils")]
 static FAIL_NEXT_DRAFT_BODY: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "test-utils")]
@@ -339,6 +376,16 @@ enum DraftRestoreTracking {
     Lazy,
 }
 
+enum GuardedDraftRestoreResolution {
+    Restore(crate::ui::plain_disposal::DisposalOwned<String>),
+    Compact(FileDraftRestoreResolution),
+}
+
+enum GuardedPreloadedDraftRestore {
+    Content(crate::ui::plain_disposal::DisposalOwned<String>),
+    Compact(PreloadedDraftRestore),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DraftRestoreFacts {
     draft_id: Option<String>,
@@ -537,6 +584,48 @@ impl super::LushtextWindow {
         Ok(())
     }
 
+    /// Move one eager body together with a replacement disposal reservation.
+    ///
+    /// The aggregate startup permit continues to own all other bodies until
+    /// they are detached for worker retirement. If replacement headroom is
+    /// unavailable, every eager body becomes a compact lazy marker before this
+    /// method returns, so GTK never owns an unguarded recovery body.
+    fn take_preloaded_draft(&self, draft_id: &str) -> Option<GuardedPreloadedDraftRestore> {
+        let mut preloaded = self.imp().drafts.preloaded.borrow_mut();
+        let restore = preloaded.get(draft_id)?;
+        let PreloadedDraftRestore::Content(content) = restore else {
+            return preloaded
+                .remove(draft_id)
+                .map(GuardedPreloadedDraftRestore::Compact);
+        };
+        let body_weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
+        let reservation = preloaded.reservation_weight().map_or_else(
+            || crate::ui::plain_disposal::try_reserve_progress_for_gtk(body_weight),
+            |aggregate_weight| {
+                crate::ui::plain_disposal::try_reserve_progress_replacement_for_gtk(
+                    body_weight,
+                    aggregate_weight,
+                )
+            },
+        );
+        let Some(reservation) = reservation else {
+            release_eager_preloads(&mut preloaded);
+            return preloaded
+                .remove(draft_id)
+                .map(GuardedPreloadedDraftRestore::Compact);
+        };
+
+        let PreloadedDraftRestore::Content(content) = preloaded.remove(draft_id)? else {
+            unreachable!("preloaded body kind was checked before transfer")
+        };
+        if let Some(aggregate_weight) = preloaded.reservation_weight() {
+            preloaded.shrink_reservation_to(aggregate_weight.saturating_sub(body_weight));
+        }
+        Some(GuardedPreloadedDraftRestore::Content(
+            attach_draft_body_disposal_probe(reservation.own(content)),
+        ))
+    }
+
     /// Flush dirty drafts for close without monopolizing a GTK main-loop turn.
     ///
     /// Copies are serialized on GTK, writes run on workers, and `on_done` runs
@@ -584,9 +673,9 @@ impl super::LushtextWindow {
             return;
         };
 
-        if let Some(preloaded) = self.imp().drafts.preloaded.borrow_mut().remove(draft_id) {
+        if let Some(preloaded) = self.take_preloaded_draft(draft_id) {
             match preloaded {
-                PreloadedDraftRestore::Content(draft_content) => {
+                GuardedPreloadedDraftRestore::Content(draft_content) => {
                     self.note_draft_restore_started();
                     self.apply_draft(
                         &DraftRestoreTicket::capture(editor, entry),
@@ -594,16 +683,21 @@ impl super::LushtextWindow {
                         DraftRestoreTracking::Ordinary,
                     );
                 }
-                PreloadedDraftRestore::SkipStaleFile => {
+                GuardedPreloadedDraftRestore::Compact(PreloadedDraftRestore::SkipStaleFile) => {
                     tracing::warn!(
                         "Untitled draft {draft_id} unexpectedly carried a stale file warning"
                     );
                 }
-                PreloadedDraftRestore::SkipOversized => {
+                GuardedPreloadedDraftRestore::Compact(PreloadedDraftRestore::SkipOversized) => {
                     Self::show_oversized_draft_skipped(editor);
                 }
-                PreloadedDraftRestore::LazyAggregateBudget => {
+                GuardedPreloadedDraftRestore::Compact(
+                    PreloadedDraftRestore::LazyAggregateBudget,
+                ) => {
                     self.queue_lazy_draft_restore(editor, entry);
+                }
+                GuardedPreloadedDraftRestore::Compact(PreloadedDraftRestore::Content(_)) => {
+                    unreachable!("eager bodies cross GTK only with transferable disposal ownership")
                 }
             }
             return;
@@ -630,6 +724,24 @@ impl super::LushtextWindow {
         if self.imp().drafts.lazy_restore_inflight.get() {
             return;
         }
+        if self.imp().drafts.lazy_restore_queue.borrow().is_empty() {
+            return;
+        }
+        let observed_epoch = crate::ui::plain_disposal::progress_disposal_capacity_epoch();
+        let Some(reservation) = crate::ui::plain_disposal::try_reserve_progress_for_gtk(
+            DRAFT_RESTORE_DISPOSAL_RESERVATION_BYTES,
+        ) else {
+            let window_weak = self.downgrade();
+            self.imp()
+                .drafts
+                .lazy_restore_capacity_wakeup
+                .arm(observed_epoch, move || {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.drive_lazy_draft_restore_queue();
+                    }
+                });
+            return;
+        };
         let Some(candidate) = self
             .imp()
             .drafts
@@ -648,7 +760,19 @@ impl super::LushtextWindow {
             (),
             move || {
                 delay_draft_restore_for_test();
-                draft_service::resolve_draft_restore(&data_dir, &entry)
+                let mut reservation = reservation;
+                draft_service::resolve_draft_restore(&data_dir, &entry).map(|resolution| {
+                    match resolution {
+                        FileDraftRestoreResolution::Restore { content } => {
+                            reservation
+                                .shrink_to(u64::try_from(content.capacity()).unwrap_or(u64::MAX));
+                            GuardedDraftRestoreResolution::Restore(
+                                attach_draft_body_disposal_probe(reservation.own(content)),
+                            )
+                        }
+                        compact => GuardedDraftRestoreResolution::Compact(compact),
+                    }
+                })
             },
             move |(), result| {
                 let Some(window) = window_weak.upgrade() else {
@@ -663,7 +787,7 @@ impl super::LushtextWindow {
     fn finish_draft_restore(
         &self,
         ticket: &DraftRestoreTicket,
-        result: Result<FileDraftRestoreResolution>,
+        result: Result<GuardedDraftRestoreResolution>,
         tracking: DraftRestoreTracking,
     ) {
         let Some(editor) = ticket.current_editor(self) else {
@@ -672,21 +796,26 @@ impl super::LushtextWindow {
         };
         let draft_id = ticket.entry.draft_id.clone();
         match result {
-            Ok(FileDraftRestoreResolution::Restore { content }) => {
+            Ok(GuardedDraftRestoreResolution::Restore(content)) => {
                 self.apply_draft(ticket, content, tracking);
                 return;
             }
-            Ok(FileDraftRestoreResolution::SkipStale) => {
+            Ok(GuardedDraftRestoreResolution::Compact(FileDraftRestoreResolution::SkipStale)) => {
                 Self::show_stale_draft_skipped(&editor);
                 self.delete_draft_by_id(&draft_id);
             }
-            Ok(FileDraftRestoreResolution::SkipOversized) => {
+            Ok(GuardedDraftRestoreResolution::Compact(
+                FileDraftRestoreResolution::SkipOversized,
+            )) => {
                 Self::show_oversized_draft_skipped(&editor);
             }
-            Ok(
+            Ok(GuardedDraftRestoreResolution::Compact(
                 FileDraftRestoreResolution::SkipUnavailable
                 | FileDraftRestoreResolution::MissingDraft,
-            ) => {}
+            )) => {}
+            Ok(GuardedDraftRestoreResolution::Compact(FileDraftRestoreResolution::Restore {
+                ..
+            })) => unreachable!("restored bodies are guarded on the worker"),
             Err(error) => {
                 tracing::warn!("Failed to restore draft {draft_id}: {error}");
                 editor.emit_inline_notification(InlineActionNotification {
@@ -705,7 +834,7 @@ impl super::LushtextWindow {
     fn apply_draft(
         &self,
         ticket: &DraftRestoreTicket,
-        content: String,
+        content: crate::ui::plain_disposal::DisposalOwned<String>,
         tracking: DraftRestoreTracking,
     ) {
         let Some(editor) = ticket.current_editor(self) else {
@@ -716,7 +845,9 @@ impl super::LushtextWindow {
         let terminal_window = self.downgrade();
         let freshness_ticket = ticket.clone();
         let terminal_ticket = ticket.clone();
-        editor.replace_buffer_bounded(BufferReplacementRequest::new(
+        let accepted_body = Rc::new(RefCell::new(None));
+        let accepted_body_for_terminal = Rc::clone(&accepted_body);
+        let request = BufferReplacementRequest::new_guarded(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::DraftRecovery,
                 generation: ticket.dirty_generation,
@@ -738,22 +869,29 @@ impl super::LushtextWindow {
                             workflow: BufferReplacementWorkflow::DraftRecovery,
                             generation,
                         },
-                    body,
                     ..
                 } = outcome
                     && generation == terminal_ticket.dirty_generation
                     && let Some(editor) = terminal_ticket.current_editor(&window)
+                    && let Some(body) = accepted_body_for_terminal.borrow_mut().take()
                 {
                     Self::finish_applied_draft(&editor, body);
                 }
                 window.finish_draft_restore_tracking(tracking);
             },
-        ));
+        )
+        .return_guarded_body_on_complete(move |body| {
+            accepted_body.borrow_mut().replace(body);
+        });
+        editor.replace_buffer_bounded(request);
     }
 
-    fn finish_applied_draft(editor: &LushtextEditorPage, content: String) {
+    fn finish_applied_draft(
+        editor: &LushtextEditorPage,
+        content: crate::ui::plain_disposal::DisposalOwned<String>,
+    ) {
         let buffer = editor.buffer();
-        editor.seed_local_history_from_restored_draft(content);
+        editor.seed_local_history_from_guarded_restored_draft(content);
         buffer.set_modified(true);
         editor.capture_restored_draft_baseline();
         if editor.file_path().is_some() {
@@ -1760,11 +1898,11 @@ impl super::LushtextWindow {
         path: &Path,
     ) -> bool {
         let draft_id = draft_service::draft_id_for_path(path);
-        let Some(preloaded) = self.imp().drafts.preloaded.borrow_mut().remove(&draft_id) else {
+        let Some(preloaded) = self.take_preloaded_draft(&draft_id) else {
             return false;
         };
         match preloaded {
-            PreloadedDraftRestore::Content(draft_content) => {
+            GuardedPreloadedDraftRestore::Content(draft_content) => {
                 let Some(entry) = self
                     .imp()
                     .drafts
@@ -1782,13 +1920,13 @@ impl super::LushtextWindow {
                     DraftRestoreTracking::Ordinary,
                 );
             }
-            PreloadedDraftRestore::SkipStaleFile => {
+            GuardedPreloadedDraftRestore::Compact(PreloadedDraftRestore::SkipStaleFile) => {
                 Self::show_stale_draft_skipped(editor);
             }
-            PreloadedDraftRestore::SkipOversized => {
+            GuardedPreloadedDraftRestore::Compact(PreloadedDraftRestore::SkipOversized) => {
                 Self::show_oversized_draft_skipped(editor);
             }
-            PreloadedDraftRestore::LazyAggregateBudget => {
+            GuardedPreloadedDraftRestore::Compact(PreloadedDraftRestore::LazyAggregateBudget) => {
                 let Some(entry) = self
                     .imp()
                     .drafts
@@ -1800,6 +1938,9 @@ impl super::LushtextWindow {
                     return false;
                 };
                 self.queue_lazy_draft_restore(editor, entry);
+            }
+            GuardedPreloadedDraftRestore::Compact(PreloadedDraftRestore::Content(_)) => {
+                unreachable!("eager bodies cross GTK only with transferable disposal ownership")
             }
         }
         true

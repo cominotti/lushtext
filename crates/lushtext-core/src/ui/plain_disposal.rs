@@ -16,7 +16,7 @@ use crate::model::plain_disposal::PlainDisposalSnapshot;
 use crate::model::plain_disposal::{
     PlainDisposalAdmission, PlainDisposalLimits, QueuedPlainDisposal,
 };
-use crossbeam_channel::{Sender, TrySendError, bounded};
+use crossbeam_channel::{Sender, TrySendError, unbounded};
 #[cfg(any(test, feature = "test-utils"))]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -35,6 +35,9 @@ const DISPOSAL_WORKERS: usize = 2;
 const DISPOSAL_QUEUE_CAPACITY: usize = 8;
 /// Two maximum-size Replace All undo windows may drain concurrently.
 const DISPOSAL_RETAINED_BYTE_CAPACITY: u64 = 128 * 1024 * 1024;
+/// Largest supported source can expand threefold during legacy decoding.
+const FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY: u64 = crate::services::file_limits::REFUSE_TO_OPEN
+    .saturating_mul(crate::model::file_load::DECODED_BODY_SOURCE_MULTIPLIER);
 /// Recovery and Notes source construction retain independent progress capacity.
 ///
 /// The shared ordinary lane may legitimately stay full while long-lived palette
@@ -52,7 +55,8 @@ const DISPOSAL_LIMITS: PlainDisposalLimits = PlainDisposalLimits::new(
     DISPOSAL_QUEUE_CAPACITY,
     DISPOSAL_RETAINED_BYTE_CAPACITY,
 )
-.with_replacement_headroom(1);
+.with_replacement_headroom(1)
+.with_overweight_progress_byte_limit(FILE_LOAD_OVERWEIGHT_PROGRESS_CAPACITY);
 const PROGRESS_DISPOSAL_LIMITS: PlainDisposalLimits =
     PlainDisposalLimits::new(1, 2, PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY)
         .with_replacement_headroom(1);
@@ -116,7 +120,7 @@ impl Drop for DisposalJob {
 
 struct DisposalEnvelope {
     job: DisposalJob,
-    queued: QueuedPlainDisposal,
+    queued: Option<QueuedPlainDisposal>,
 }
 
 struct DisposalLaneInner {
@@ -164,10 +168,11 @@ impl DisposalLane {
             "disposal lane needs a retained-byte ceiling"
         );
 
-        let channel_capacity = limits
-            .queued_job_limit
-            .saturating_add(limits.replacement_job_headroom);
-        let (sender, receiver) = bounded::<DisposalEnvelope>(channel_capacity);
+        // Transit admission remains bounded by `PlainDisposalAdmission`. The
+        // physical channel is unbounded so accepted current owners can release
+        // their transit slot and later hand their already-retained value to the
+        // same workers without a fallible or blocking GTK-side operation.
+        let (sender, receiver) = unbounded::<DisposalEnvelope>();
         let admission = Arc::new(Mutex::new(PlainDisposalAdmission::new(limits)));
         let capacity_epoch = Arc::new(AtomicU64::new(0));
         let mut workers = Vec::with_capacity(limits.worker_limit);
@@ -180,13 +185,17 @@ impl DisposalLane {
                     .name(format!("{worker_name_prefix}-{index}"))
                     .spawn(move || {
                         while let Ok(envelope) = receiver.recv() {
-                            let active = lock_unpoisoned(&admission).start(envelope.queued);
+                            let active = envelope
+                                .queued
+                                .map(|queued| lock_unpoisoned(&admission).start(queued));
                             let panicked = catch_unwind(AssertUnwindSafe(|| {
                                 envelope.job.run();
                             }))
                             .is_err();
-                            lock_unpoisoned(&admission).finish(active, panicked);
-                            capacity_epoch.fetch_add(1, Ordering::AcqRel);
+                            if let Some(active) = active {
+                                lock_unpoisoned(&admission).finish(active, panicked);
+                                capacity_epoch.fetch_add(1, Ordering::AcqRel);
+                            }
                             if panicked {
                                 tracing::error!("Plain-data disposal destructor panicked");
                             }
@@ -224,6 +233,16 @@ impl DisposalLane {
         })
     }
 
+    fn try_reserve_overweight_progress(&self, weight: u64) -> Option<DisposalPermit> {
+        let queued =
+            lock_unpoisoned(&self.inner.admission).try_queue_overweight_progress(weight)?;
+        Some(DisposalPermit {
+            lane: self.clone(),
+            queued: Some(queued),
+            weight,
+        })
+    }
+
     fn try_reserve_replacement(&self, weight: u64, replaced_weight: u64) -> Option<DisposalPermit> {
         let queued = lock_unpoisoned(&self.inner.admission)
             .try_queue_replacement(weight, replaced_weight)?;
@@ -252,17 +271,46 @@ impl DisposalLane {
             self.note_capacity_release();
             return Err(DisposalSubmitError::Closed(job));
         };
-        match sender.try_send(DisposalEnvelope { job, queued }) {
+        match sender.try_send(DisposalEnvelope {
+            job,
+            queued: Some(queued),
+        }) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(envelope)) => {
-                lock_unpoisoned(&self.inner.admission).cancel_queued(envelope.queued, false);
+                lock_unpoisoned(&self.inner.admission).cancel_queued(
+                    envelope
+                        .queued
+                        .expect("reserved submission carries queued admission"),
+                    false,
+                );
                 self.note_capacity_release();
                 Err(DisposalSubmitError::Full(envelope.job))
             }
             Err(TrySendError::Disconnected(envelope)) => {
-                lock_unpoisoned(&self.inner.admission).cancel_queued(envelope.queued, true);
+                lock_unpoisoned(&self.inner.admission).cancel_queued(
+                    envelope
+                        .queued
+                        .expect("reserved submission carries queued admission"),
+                    true,
+                );
                 self.note_capacity_release();
                 Err(DisposalSubmitError::Closed(envelope.job))
+            }
+        }
+    }
+
+    fn submit_retained(&self, job: DisposalJob) -> Result<(), DisposalSubmitError> {
+        let Some(sender) = lock_unpoisoned(&self.inner.sender).clone() else {
+            return Err(DisposalSubmitError::Closed(job));
+        };
+        match sender.try_send(DisposalEnvelope { job, queued: None }) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Disconnected(envelope)) => {
+                Err(DisposalSubmitError::Closed(envelope.job))
+            }
+            Err(TrySendError::Full(envelope)) => {
+                // An unbounded retirement channel cannot become full.
+                Err(DisposalSubmitError::Full(envelope.job))
             }
         }
     }
@@ -327,6 +375,7 @@ impl Drop for DisposalPermit {
 pub struct DisposalOwned<T: Send + 'static> {
     value: Option<T>,
     permit: Option<DisposalPermit>,
+    retained_lane: Option<DisposalLane>,
     terminal: Mutex<Option<DisposeFn>>,
 }
 
@@ -358,6 +407,7 @@ impl<T: Send + 'static> DisposalOwned<T> {
         Self {
             value: Some(value),
             permit: Some(permit),
+            retained_lane: None,
             terminal: Mutex::new(None),
         }
     }
@@ -367,6 +417,7 @@ impl<T: Send + 'static> DisposalOwned<T> {
         Self {
             value: Some(value),
             permit: None,
+            retained_lane: None,
             terminal: Mutex::new(None),
         }
     }
@@ -375,6 +426,29 @@ impl<T: Send + 'static> DisposalOwned<T> {
     #[must_use]
     pub(crate) fn reservation_weight(&self) -> Option<u64> {
         self.permit.as_ref().map(|permit| permit.weight)
+    }
+
+    /// Reduce a retained aggregate after one allocation transfers to a new guard.
+    ///
+    /// This is a scalar accounting update: callers must already know the exact
+    /// removed allocation weight and must not scan or destroy the payload on GTK.
+    pub(crate) fn shrink_reservation_to(&mut self, weight: u64) {
+        if let Some(permit) = self.permit.as_mut() {
+            permit.shrink_to(weight);
+        }
+    }
+
+    /// Transfer accepted current ownership out of the bounded transit policy.
+    ///
+    /// The value keeps a guaranteed nonblocking handoff to the same disposal
+    /// workers, while future loads and restores can reuse the transit slot.
+    #[must_use]
+    pub(crate) fn into_retained_current(mut self) -> Self {
+        if let Some(permit) = self.permit.take() {
+            self.retained_lane = Some(permit.lane.clone());
+            drop(permit);
+        }
+        self
     }
 
     /// Attach compact worker-terminal accounting to the future final drop.
@@ -392,6 +466,7 @@ impl<T: Send + 'static> DisposalOwned<T> {
     pub(crate) fn into_inner_for_current_install(mut self) -> T {
         debug_assert!(lock_unpoisoned(&self.terminal).is_none());
         self.permit.take();
+        self.retained_lane.take();
         self.value
             .take()
             .expect("disposal-owned value exists until current installation")
@@ -401,6 +476,7 @@ impl<T: Send + 'static> DisposalOwned<T> {
     pub(crate) fn into_inner_on_worker(mut self) -> T {
         debug_assert!(lock_unpoisoned(&self.terminal).is_none());
         self.permit.take();
+        self.retained_lane.take();
         self.value
             .take()
             .expect("disposal-owned value exists until worker consumption")
@@ -421,6 +497,7 @@ impl<T: Send + 'static> DisposalOwned<T> {
         DisposalOwned {
             value: Some(map(value)),
             permit: self.permit.take(),
+            retained_lane: self.retained_lane.take(),
             terminal: Mutex::new(
                 self.terminal
                     .get_mut()
@@ -446,6 +523,7 @@ impl<T: Send + 'static> DisposalOwned<T> {
         let guarded = DisposalOwned {
             value: Some(retiring),
             permit: self.permit.take(),
+            retained_lane: self.retained_lane.take(),
             terminal: Mutex::new(
                 self.terminal
                     .get_mut()
@@ -480,7 +558,9 @@ impl<T: Send + 'static> Drop for DisposalOwned<T> {
         let Some(value) = self.value.take() else {
             return;
         };
-        let Some(permit) = self.permit.take() else {
+        let permit = self.permit.take();
+        let retained_lane = self.retained_lane.take();
+        if permit.is_none() && retained_lane.is_none() {
             drop(value);
             if let Some(terminal) = self
                 .terminal
@@ -491,8 +571,8 @@ impl<T: Send + 'static> Drop for DisposalOwned<T> {
                 terminal();
             }
             return;
-        };
-        let weight = permit.weight;
+        }
+        let weight = permit.as_ref().map_or(0, |permit| permit.weight);
         let job = if let Some(terminal) = self
             .terminal
             .get_mut()
@@ -503,7 +583,14 @@ impl<T: Send + 'static> Drop for DisposalOwned<T> {
         } else {
             DisposalJob::new(weight, move || drop(value))
         };
-        match permit.submit(job) {
+        let submission = if let Some(permit) = permit {
+            permit.submit(job)
+        } else {
+            retained_lane
+                .expect("retained current ownership keeps its disposal lane")
+                .submit_retained(job)
+        };
+        match submission {
             Ok(()) => {}
             Err(DisposalSubmitError::Closed(job)) => {
                 // The process-wide production lane never closes. Test-owned
@@ -543,6 +630,13 @@ pub(crate) fn try_own_for_gtk<T: Send + 'static>(
 pub(crate) fn try_reserve_for_gtk(weight: u64) -> Option<DisposalReservation> {
     disposal_lane()
         .try_reserve(weight)
+        .map(|permit| DisposalReservation { permit })
+}
+
+/// Reserve one file-load body, including the bounded additive overweight case.
+pub(crate) fn try_reserve_file_load_for_gtk(weight: u64) -> Option<DisposalReservation> {
+    disposal_lane()
+        .try_reserve_overweight_progress(weight)
         .map(|permit| DisposalReservation { permit })
 }
 
@@ -911,6 +1005,29 @@ pub fn hold_disposal_capacity_for_test() -> DisposalCapacityHold {
     let weight = DISPOSAL_RETAINED_BYTE_CAPACITY.saturating_add(1);
     let reservation = try_reserve_for_gtk(weight)
         .expect("test disposal capacity hold requires an otherwise-empty lane");
+    DisposalCapacityHold {
+        _reservation: reservation,
+    }
+}
+
+/// Fill the ordinary lane's remaining byte capacity around existing guards.
+///
+/// This models pressure that arrives after a document-sized owner has already
+/// crossed to GTK, without discarding that owner's production reservation.
+///
+/// # Panics
+///
+/// Panics when the lane is already over its ordinary byte limit or count
+/// capacity cannot admit the test-owned remainder.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn fill_disposal_capacity_for_test() -> DisposalCapacityHold {
+    let retained = disposal_lane().snapshot().retained_bytes;
+    let weight = DISPOSAL_RETAINED_BYTE_CAPACITY
+        .checked_sub(retained)
+        .expect("test disposal fill requires ordinary retained ownership");
+    let reservation = try_reserve_for_gtk(weight)
+        .expect("test disposal fill requires available ordinary count capacity");
     DisposalCapacityHold {
         _reservation: reservation,
     }
@@ -1306,5 +1423,67 @@ mod tests {
         assert_ne!(destructor_thread, gtk_thread);
         wait_until(|| lane.snapshot().completed_jobs == 1);
         assert_eq!(lane.snapshot().retained_bytes, 0);
+    }
+
+    #[test]
+    fn accepted_current_owners_release_transit_slots_before_final_retirement() {
+        let lane = DisposalLane::new(PlainDisposalLimits::new(1, 2, 1024));
+        let (thread_tx, thread_rx) = mpsc::channel();
+        let gtk_thread = std::thread::current().id();
+        let mut owners = Vec::new();
+
+        for index in 0..8 {
+            let permit = lane
+                .try_reserve(1)
+                .expect("accepted current owner must not exhaust transit count");
+            let thread_tx = thread_tx.clone();
+            owners.push(
+                DisposalOwned::new(
+                    ThreadObservedDrop {
+                        thread_tx: Some(thread_tx),
+                        nested: vec![format!("baseline-{index}")],
+                    },
+                    permit,
+                )
+                .into_retained_current(),
+            );
+            assert_eq!(lane.snapshot().queued_jobs, 0);
+        }
+
+        let ninth = lane
+            .try_reserve(1)
+            .expect("ninth transit owner progresses past eight retained baselines");
+        drop(ninth);
+        drop(owners);
+        for _ in 0..8 {
+            assert_ne!(
+                thread_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("retained owner retires on worker"),
+                gtk_thread
+            );
+        }
+    }
+
+    #[test]
+    fn retained_progress_owners_do_not_exhaust_two_slot_transit_lane() {
+        let lane = DisposalLane::new(PlainDisposalLimits::new(1, 2, 1024));
+        let first = DisposalOwned::new(
+            vec!["notes".to_string()],
+            lane.try_reserve(10).expect("notes transit"),
+        )
+        .into_retained_current();
+        let second = DisposalOwned::new(
+            vec!["draft".to_string()],
+            lane.try_reserve(10).expect("draft transit"),
+        )
+        .into_retained_current();
+
+        assert_eq!(lane.snapshot().queued_jobs, 0);
+        let next = lane
+            .try_reserve(10)
+            .expect("next draft restore keeps making progress");
+        drop(next);
+        drop((first, second));
     }
 }

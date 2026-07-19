@@ -50,6 +50,22 @@ pub struct FolderNoteDocument {
     pub note: RichNoteBody,
 }
 
+impl FolderNoteDocument {
+    /// Return the complete retained heap graph used during bounded source construction.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        u64::try_from(
+            self.identity
+                .display_folder
+                .capacity()
+                .saturating_add(self.identity.canonical_folder.capacity())
+                .saturating_add(self.identity.sidecar_id.capacity()),
+        )
+        .unwrap_or(u64::MAX)
+        .saturating_add(self.note.retained_heap_byte_weight())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

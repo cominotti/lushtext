@@ -167,6 +167,7 @@ enum GuardedNoteSourceOutcome {
     Complete {
         load: palette_service::PaletteNoteSourceLoad,
         entries: crate::ui::plain_disposal::DisposalOwned<Box<[PaletteNoteEntry]>>,
+        had_recovery_diagnostics: bool,
     },
     Cancelled,
     Failed(anyhow::Error),
@@ -178,6 +179,12 @@ fn guard_note_source_on_worker(
 ) -> GuardedNoteSourceOutcome {
     match result {
         Ok(PaletteNoteSourceOutcome::Complete { mut load, metrics }) => {
+            let diagnostics = std::mem::take(&mut load.diagnostics);
+            let had_recovery_diagnostics = !diagnostics.is_empty();
+            for diagnostic in &diagnostics {
+                tracing::warn!("{}", diagnostic.summary());
+            }
+            drop(diagnostics);
             let entries = std::mem::take(&mut load.entries).into_boxed_slice();
             debug_assert_eq!(
                 metrics.retained_bytes,
@@ -190,6 +197,7 @@ fn guard_note_source_on_worker(
             GuardedNoteSourceOutcome::Complete {
                 load,
                 entries: reservation.own(entries),
+                had_recovery_diagnostics,
             }
         }
         Ok(PaletteNoteSourceOutcome::Cancelled { .. }) => GuardedNoteSourceOutcome::Cancelled,
@@ -440,9 +448,11 @@ impl LushtextWindow {
 
         if accepted {
             match result {
-                GuardedNoteSourceOutcome::Complete { load, entries } => {
-                    Self::trace_browse_recovery_diagnostics(&load.diagnostics);
-                    let has_diagnostics = !load.diagnostics.is_empty();
+                GuardedNoteSourceOutcome::Complete {
+                    load,
+                    entries,
+                    had_recovery_diagnostics,
+                } => {
                     let was_truncated = !load.truncation_reasons.is_empty();
                     self.imp().command_palette.set_guarded_note_entries(entries);
                     if was_truncated && self.imp().palette_revealer.reveals_child() {
@@ -450,7 +460,9 @@ impl LushtextWindow {
                             "Command palette note source was limited to stay responsive",
                             MessageKind::Warning,
                         );
-                    } else if has_diagnostics && self.imp().palette_revealer.reveals_child() {
+                    } else if had_recovery_diagnostics
+                        && self.imp().palette_revealer.reveals_child()
+                    {
                         self.publish_status_message(
                             "Some note data could not be loaded for the palette",
                             MessageKind::Warning,
@@ -1026,11 +1038,15 @@ fn finish_notes_browser_source_load(
     };
     if accepted {
         match result {
-            GuardedNoteSourceOutcome::Complete { load, entries } => {
-                LushtextWindow::trace_browse_recovery_diagnostics(&load.diagnostics);
-                let has_diagnostics = !load.diagnostics.is_empty();
+            GuardedNoteSourceOutcome::Complete {
+                load,
+                entries,
+                had_recovery_diagnostics,
+            } => {
                 let source_truncation = load.truncation_reasons;
-                let previous = state.all_entries.replace(Arc::new(entries));
+                let previous = state
+                    .all_entries
+                    .replace(Arc::new(entries.into_retained_current()));
                 drop(previous);
                 *state.source_truncation.borrow_mut() = source_truncation;
                 state.source_ready.set(true);
@@ -1046,7 +1062,7 @@ fn finish_notes_browser_source_load(
                         },
                         MessageKind::Warning,
                     );
-                } else if has_diagnostics {
+                } else if had_recovery_diagnostics {
                     state.window.publish_status_message(
                         match mode {
                             palette_service::NotesBrowserMode::AllNotes => {

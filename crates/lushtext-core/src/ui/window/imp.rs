@@ -240,6 +240,9 @@ pub struct DraftState {
     pub(super) lazy_restore_queue: RefCell<VecDeque<DraftRestoreTicket>>,
     /// Whether one lazy draft body is currently crossing the worker boundary.
     pub(super) lazy_restore_inflight: Cell<bool>,
+    /// One paced progress-lane wakeup retained while a lazy ticket stays compact.
+    pub(super) lazy_restore_capacity_wakeup:
+        crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
     /// Number of asynchronous draft resolutions not yet delivered to GTK.
     pub(super) restore_inflight_count: Cell<usize>,
     /// Number of complete autosave bodies currently held across a worker handoff.
@@ -1003,6 +1006,7 @@ impl ObjectImpl for LushtextWindow {
             cancel.store(true, Ordering::Release);
         }
         self.session.restore_capacity_wakeup.cancel();
+        self.drafts.lazy_restore_capacity_wakeup.cancel();
         self.obj().cancel_session_restore_for_dispose();
         self.file_index_builds.borrow_mut().invalidate();
         self.file_index_admission.borrow_mut().take();

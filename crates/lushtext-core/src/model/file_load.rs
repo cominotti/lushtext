@@ -27,6 +27,13 @@ pub const TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES: u64 = 1024 * 1024;
 /// bound rather than an allocator/RSS measurement.
 pub const TRANSIENT_LOAD_SOURCE_MULTIPLIER: u64 = 8;
 
+/// Maximum UTF-8 body bytes produced from one admitted source byte.
+///
+/// The supported legacy single-byte encodings can expand one source byte to
+/// one three-byte Unicode scalar. Reserving this bound before decode ensures a
+/// successful body never waits unguarded for worker-side disposal capacity.
+pub const DECODED_BODY_SOURCE_MULTIPLIER: u64 = 3;
+
 /// Decoded content up to this size may be installed in one GTK turn.
 pub const SYNCHRONOUS_INSTALL_THRESHOLD_BYTES: usize =
     super::buffer_replacement::SYNCHRONOUS_REPLACEMENT_THRESHOLD_BYTES;
@@ -46,6 +53,12 @@ pub const fn transient_load_weight(source_bytes: u64) -> u64 {
     source_bytes
         .saturating_mul(TRANSIENT_LOAD_SOURCE_MULTIPLIER)
         .saturating_add(TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES)
+}
+
+/// Calculate the conservative future-disposal charge for decoded text.
+#[must_use]
+pub const fn decoded_body_reservation_weight(source_bytes: u64) -> u64 {
+    source_bytes.saturating_mul(DECODED_BODY_SOURCE_MULTIPLIER)
 }
 
 /// Current UI priority for one compact queued request.
@@ -291,6 +304,8 @@ mod tests {
             TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES + 10 * TRANSIENT_LOAD_SOURCE_MULTIPLIER
         );
         assert_eq!(transient_load_weight(u64::MAX), u64::MAX);
+        assert_eq!(decoded_body_reservation_weight(10), 30);
+        assert_eq!(decoded_body_reservation_weight(u64::MAX), u64::MAX);
 
         let text = format!("{}🙂tail", "a".repeat(INSTALL_SLICE_BYTES - 1));
         let end = next_install_boundary(&text, 0);

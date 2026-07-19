@@ -26,7 +26,8 @@ use lushtext_core::ui::editor_page::{
     BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError,
     LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
     coalesce_snapshot_payload_for_test, snapshot_buffer_text_async_for_test,
-    snapshot_payload_metrics_for_test,
+    snapshot_payload_metrics_for_test, set_next_load_body_disposal_probe_for_test,
+    set_next_load_disposal_reservation_weight_for_test,
 };
 use lushtext_core::ui::info_bar::inline_alert_announcement_key_for_test;
 use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, lane_snapshot_for_test};
@@ -36,6 +37,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 struct SaveWriteDelayReset;
@@ -1245,6 +1247,9 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
     fixture::write_text(&path, &content);
     let page = LushtextEditorPage::new();
     page.reset_transient_load_admission_for_test();
+    let gtk_thread = std::thread::current().id();
+    let (drop_tx, drop_rx) = mpsc::channel();
+    set_next_load_body_disposal_probe_for_test(drop_tx);
 
     let main_loop_progress = Rc::new(Cell::new(0u64));
     let maximum_active_weight = Rc::new(Cell::new(0u64));
@@ -1307,6 +1312,119 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
             .active_count
             == 0
     });
+    page.evict();
+    wait_until(Duration::from_secs(10), || page.is_evicted());
+    let destructor_thread = drop_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("guarded load body must reach the disposal worker");
+    assert_ne!(destructor_thread, gtk_thread);
+    eprintln!(
+        "transient-load-disposal-evidence transient_released=true disposal_released=true destructor_off_gtk=true baseline_transferred=true heartbeat={}",
+        main_loop_progress.get()
+    );
+}
+
+#[test]
+fn test_nine_accepted_load_baselines_do_not_exhaust_transit_slots() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("nine baseline fixture");
+    let before = lane_snapshot_for_test();
+    let mut pages = Vec::new();
+
+    for index in 0..9 {
+        let path = dir.path().join(format!("baseline-{index}.txt"));
+        fixture::write_text(&path, &format!("accepted baseline {index}\n"));
+        let page = LushtextEditorPage::new();
+        page.load_file_async(&path);
+        wait_until(Duration::from_secs(5), || {
+            page.load_state() == EditorLoadState::Loaded
+        });
+        wait_until(Duration::from_secs(2), || {
+            let snapshot = lane_snapshot_for_test();
+            snapshot.queued_jobs <= before.queued_jobs
+                && snapshot.retained_bytes <= before.retained_bytes
+        });
+        pages.push(page);
+    }
+
+    assert_eq!(pages.len(), 9);
+    assert!(pages.iter().all(|page| !page.is_modified()));
+    let after = lane_snapshot_for_test();
+    assert_eq!(after.queued_jobs, before.queued_jobs);
+    assert_eq!(after.retained_bytes, before.retained_bytes);
+    eprintln!(
+        "transient-load-baseline-count-evidence retained_baselines=9 transit_queued={} transit_bytes={}",
+        after.queued_jobs, after.retained_bytes
+    );
+}
+
+#[test]
+fn test_overweight_load_reservation_progresses_with_retained_baseline() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("overweight reservation fixture");
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    fixture::write_text(&first_path, "first retained baseline\n");
+    fixture::write_text(&second_path, "second accepted body\n");
+    let first = LushtextEditorPage::new();
+    first.load_file_async(&first_path);
+    wait_until(Duration::from_secs(5), || {
+        first.load_state() == EditorLoadState::Loaded
+    });
+
+    set_next_load_disposal_reservation_weight_for_test(150_000_000);
+    let second = LushtextEditorPage::new();
+    second.load_file_async(&second_path);
+    wait_until(Duration::from_secs(5), || {
+        second.load_state() == EditorLoadState::Loaded
+    });
+
+    let snapshot = lane_snapshot_for_test();
+    assert!(snapshot.overweight_bytes_high_water >= 150_000_000);
+    assert!(!snapshot.overweight_exclusive);
+    assert_eq!(editor_buffer_text(&second), "second accepted body\n");
+    eprintln!(
+        "transient-load-overweight-evidence reservation_bytes=150000000 overweight_high_water={} additive_total_high_water={} terminal_exclusive={}",
+        snapshot.overweight_bytes_high_water,
+        snapshot.overweight_total_bytes_high_water,
+        snapshot.overweight_exclusive
+    );
+    drop((first, second));
+}
+
+#[test]
+fn test_cancelled_disposal_blocked_load_disarms_capacity_wakeup() {
+    ensure_gtk_init();
+    wait_until(Duration::from_secs(5), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    let capacity_hold = hold_disposal_capacity_for_test();
+    let dir = tempfile::tempdir().expect("blocked load fixture");
+    let path = dir.path().join("blocked.txt");
+    fixture::write_text(&path, "blocked load\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(5), || {
+        page.transient_load_admission_snapshot_for_test()
+            .queued_count
+            == 1
+            && page.transient_load_disposal_wakeup_armed_for_test()
+    });
+    page.cancel_load();
+    wait_until(Duration::from_secs(5), || {
+        page.transient_load_admission_snapshot_for_test()
+            .queued_count
+            == 0
+            && !page.transient_load_disposal_wakeup_armed_for_test()
+    });
+
+    assert_eq!(page.load_state(), EditorLoadState::Failed);
+    drop(capacity_hold);
 }
 
 #[test]

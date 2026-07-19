@@ -10,6 +10,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+#[cfg(feature = "test-utils")]
+use std::sync::{Mutex, mpsc::Sender};
 
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
@@ -20,6 +24,7 @@ use crate::model::encoding::DocumentEncoding;
 use crate::model::file_load::FileLoadAdmissionSnapshot;
 use crate::model::file_load::{
     FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadPriority,
+    decoded_body_reservation_weight,
 };
 use crate::services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadResult};
 use crate::ui::window::LushtextWindow;
@@ -31,6 +36,45 @@ thread_local! {
     static COORDINATOR: RefCell<FileLoadCoordinator> = RefCell::new(FileLoadCoordinator::default());
 }
 
+#[cfg(feature = "test-utils")]
+static NEXT_LOAD_BODY_DISPOSAL_PROBE: Mutex<Option<Sender<std::thread::ThreadId>>> =
+    Mutex::new(None);
+#[cfg(feature = "test-utils")]
+static NEXT_LOAD_DISPOSAL_RESERVATION_WEIGHT: AtomicU64 = AtomicU64::new(0);
+
+/// Observe the worker thread that finally retires the next decoded load body.
+#[cfg(feature = "test-utils")]
+pub fn set_next_load_body_disposal_probe_for_test(sender: Sender<std::thread::ThreadId>) {
+    NEXT_LOAD_BODY_DISPOSAL_PROBE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(sender);
+}
+
+/// Override one conservative reservation without allocating a giant GTK fixture.
+#[cfg(feature = "test-utils")]
+pub fn set_next_load_disposal_reservation_weight_for_test(weight: u64) {
+    NEXT_LOAD_DISPOSAL_RESERVATION_WEIGHT.store(weight, AtomicOrdering::Release);
+}
+
+fn attach_load_body_disposal_probe(
+    owner: crate::ui::plain_disposal::DisposalOwned<String>,
+) -> crate::ui::plain_disposal::DisposalOwned<String> {
+    #[cfg(feature = "test-utils")]
+    {
+        let sender = NEXT_LOAD_BODY_DISPOSAL_PROBE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(sender) = sender {
+            return owner.with_disposal_terminal(move || {
+                let _ = sender.send(std::thread::current().id());
+            });
+        }
+    }
+    owner
+}
+
 struct QueuedLoad {
     editor: glib::WeakRef<LushtextEditorPage>,
     editor_id: usize,
@@ -39,6 +83,7 @@ struct QueuedLoad {
     reopen_as: Option<DocumentEncoding>,
     cancel: Arc<AtomicBool>,
     error_state: EditorLoadState,
+    sequence: u64,
 }
 
 #[derive(Default)]
@@ -48,6 +93,7 @@ struct FileLoadCoordinator {
     next_request_id: u64,
     next_sequence: u64,
     drain_scheduled: bool,
+    disposal_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
 }
 
 /// RAII ownership for one admitted payload charge.
@@ -83,9 +129,14 @@ impl Drop for TransientLoadPermit {
     }
 }
 
+pub(super) struct GuardedLoadResult {
+    pub(super) metadata: LoadResult,
+    pub(super) content: crate::ui::plain_disposal::DisposalOwned<String>,
+}
+
 struct AdmittedLoadOutcome {
     permit: TransientLoadPermit,
-    result: Result<LoadResult, EditorLoadError>,
+    result: Result<GuardedLoadResult, EditorLoadError>,
 }
 
 pub(super) fn submit(
@@ -119,6 +170,7 @@ pub(super) fn submit(
                 reopen_as,
                 cancel,
                 error_state,
+                sequence,
             },
         );
     });
@@ -160,7 +212,7 @@ fn schedule_drain() {
 fn drain() {
     let (save_weight, save_exclusive) = save_runtime::active_pressure();
     let close_save_pending = save_runtime::close_work_pending_or_active();
-    let dispatches = COORDINATOR.with_borrow_mut(|coordinator| {
+    let (dispatches, disposal_blocked_epoch) = COORDINATOR.with_borrow_mut(|coordinator| {
         coordinator.drain_scheduled = false;
         let stale = coordinator
             .requests
@@ -188,14 +240,52 @@ fn drain() {
         let protected_over_budget =
             protected_residency_bytes(&coordinator.requests) > EDITOR_MEMORY_UPPER_BUDGET_BYTES;
         let mut dispatches = Vec::new();
+        let mut disposal_blocked_epoch = None;
         if !close_save_pending {
             while let Some(grant) = coordinator.policy.admit_next_with_external(
                 protected_over_budget,
                 save_weight,
                 save_exclusive,
             ) {
+                let Some(request) = coordinator.requests.get(&grant.request_id) else {
+                    let _ = coordinator.policy.release(grant.request_id);
+                    continue;
+                };
+                let reservation_weight =
+                    decoded_body_reservation_weight(request.plan.facts.byte_size);
+                #[cfg(feature = "test-utils")]
+                let reservation_weight = {
+                    let override_weight =
+                        NEXT_LOAD_DISPOSAL_RESERVATION_WEIGHT.swap(0, AtomicOrdering::AcqRel);
+                    if override_weight > 0 {
+                        override_weight
+                    } else {
+                        reservation_weight
+                    }
+                };
+                let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
+                let Some(reservation) =
+                    crate::ui::plain_disposal::try_reserve_file_load_for_gtk(reservation_weight)
+                else {
+                    let priority = request
+                        .editor
+                        .upgrade()
+                        .map_or(FileLoadPriority::Normal, |editor| current_priority(&editor));
+                    let queued = FileLoadAdmissionRequest {
+                        request_id: grant.request_id,
+                        owner_id: u64::try_from(request.editor_id).unwrap_or(u64::MAX),
+                        sequence: request.sequence,
+                        weight: request.plan.transient_weight,
+                        priority,
+                    };
+                    let _ = coordinator.policy.release(grant.request_id);
+                    coordinator.policy.queue(queued);
+                    disposal_blocked_epoch = Some(observed_epoch);
+                    break;
+                };
                 let Some(request) = coordinator.requests.remove(&grant.request_id) else {
                     let _ = coordinator.policy.release(grant.request_id);
+                    drop(reservation);
                     continue;
                 };
                 dispatches.push((
@@ -204,19 +294,33 @@ fn drain() {
                         request_id: Some(grant.request_id),
                         weight: grant.weight,
                     },
+                    reservation,
                 ));
             }
         }
-        dispatches
+        (dispatches, disposal_blocked_epoch)
     });
 
-    for (request, permit) in dispatches {
-        dispatch(request, permit);
+    for (request, permit, reservation) in dispatches {
+        dispatch(request, permit, reservation);
     }
+    COORDINATOR.with_borrow(|coordinator| {
+        if let Some(observed_epoch) = disposal_blocked_epoch {
+            coordinator
+                .disposal_wakeup
+                .arm(observed_epoch, schedule_drain);
+        } else {
+            coordinator.disposal_wakeup.cancel();
+        }
+    });
     save_runtime::schedule_drain_for_external_change();
 }
 
-fn dispatch(request: QueuedLoad, permit: TransientLoadPermit) {
+fn dispatch(
+    request: QueuedLoad,
+    permit: TransientLoadPermit,
+    mut reservation: crate::ui::plain_disposal::DisposalReservation,
+) {
     let editor_weak = request.editor.clone();
     let generation = request.generation;
     let error_state = request.error_state;
@@ -225,9 +329,17 @@ fn dispatch(request: QueuedLoad, permit: TransientLoadPermit) {
     let plan = request.plan;
     spawn_blocking_then(
         editor_weak,
-        move || AdmittedLoadOutcome {
-            permit,
-            result: editor_io::load_planned_text_file(plan, &cancel, reopen_as),
+        move || {
+            let result =
+                editor_io::load_planned_text_file(plan, &cancel, reopen_as).map(|mut loaded| {
+                    let content = std::mem::take(&mut loaded.content);
+                    reservation.shrink_to(u64::try_from(content.capacity()).unwrap_or(u64::MAX));
+                    GuardedLoadResult {
+                        metadata: loaded,
+                        content: attach_load_body_disposal_probe(reservation.own(content)),
+                    }
+                });
+            AdmittedLoadOutcome { permit, result }
         },
         move |editor_weak, outcome| {
             let Some(editor) = editor_weak.upgrade() else {
@@ -310,6 +422,15 @@ pub(super) fn snapshot_for_test() -> FileLoadAdmissionSnapshot {
 }
 
 #[cfg(feature = "test-utils")]
+#[must_use]
+pub(super) fn disposal_wakeup_armed_for_test() -> bool {
+    COORDINATOR.with_borrow(|coordinator| coordinator.disposal_wakeup.is_armed())
+}
+
+#[cfg(feature = "test-utils")]
 pub(super) fn reset_for_test() {
-    COORDINATOR.with_borrow_mut(|coordinator| *coordinator = FileLoadCoordinator::default());
+    COORDINATOR.with_borrow_mut(|coordinator| {
+        coordinator.disposal_wakeup.cancel();
+        *coordinator = FileLoadCoordinator::default();
+    });
 }

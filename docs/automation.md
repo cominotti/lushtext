@@ -477,6 +477,13 @@ preview layout/code-block repair, editor search indexing, session
 restore, command-palette index debounce, Replace All preview generation, and
 close-safety work.
 
+Workspace persistence remains a blocker from the first requested mutation
+until the newest generation is durably saved. This includes debounce waiting,
+an active write, a newer snapshot waiting behind an older write, bounded retry
+backoff, and a failed generation awaiting an explicit retry or later mutation.
+Window close bypasses debounce and waits for that newest durable terminal; a
+write failure cancels close and leaves the same retryable blocker visible.
+
 Headless GTK sessions may still print portal, AT-SPI, or compositor cleanup
 warnings. Treat those as runtime diagnostics and correlate them with
 `WaitForReady`, `WaitForIdle`, and `GetSnapshot`; do not infer that LushText has

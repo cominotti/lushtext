@@ -25,4 +25,4 @@ pub use replace::{
     fail_next_replace_before_rename_for_path_for_test, set_max_replace_undo_bytes_for_test,
     set_undo_after_metadata_hook_for_test,
 };
-pub use search::search;
+pub use search::{search, search_with_plan};

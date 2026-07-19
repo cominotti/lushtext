@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::workspace_search::{WorkspaceSearchFallbackMetrics, WorkspaceSearchIncompleteReason};
+
 /// Maximum UTF-8 bytes retained for one matching search line.
 ///
 /// Workspace search can keep up to 10,000 matches in memory. Four KiB per
@@ -67,6 +69,8 @@ pub struct SearchMatch {
     pub line_truncated: bool,
     /// Original source line byte length before bounding.
     pub original_line_byte_len: usize,
+    /// Engine-root position used to recover configured display ownership.
+    pub traversal_root_index: usize,
 }
 
 impl SearchMatch {
@@ -89,6 +93,7 @@ impl SearchMatch {
             match_range,
             line_truncated,
             original_line_byte_len,
+            traversal_root_index: 0,
         }
     }
 
@@ -96,6 +101,13 @@ impl SearchMatch {
     #[must_use]
     pub fn with_id(mut self, id: SearchMatchId) -> Self {
         self.id = id;
+        self
+    }
+
+    /// Attach the immutable traversal-root position owned by the search plan.
+    #[must_use]
+    pub fn with_traversal_root_index(mut self, traversal_root_index: usize) -> Self {
+        self.traversal_root_index = traversal_root_index;
         self
     }
 }
@@ -274,6 +286,10 @@ pub enum SearchEvent {
     Progress(usize),
     /// An error occurred (e.g., invalid regex).
     Error(String),
+    /// Search stopped before ambiguous alias identity ownership exceeded policy.
+    Incomplete(WorkspaceSearchIncompleteReason),
+    /// Compact terminal evidence from the optional ambiguous-alias ledger.
+    TraversalMetrics(WorkspaceSearchFallbackMetrics),
     /// Search completed (always the last event sent).
     Done,
 }

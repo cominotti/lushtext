@@ -6,6 +6,7 @@
 //! persistence of workspace state to disk.
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
+use crate::model::workspace_persistence::WorkspacePersistenceState;
 use crate::services::notifications::NotificationSeverity;
 use crate::ui::accessibility;
 use crate::ui::sidebar::SidebarFileRowStateSnapshot;
@@ -25,6 +26,8 @@ type RenameCallback = Box<dyn Fn(&Path, &Path)>;
 type WorkspaceCallback = Box<dyn Fn(WorkspaceId)>;
 type FolderNotePathCallback = Box<dyn Fn(WorkspaceId, PathBuf)>;
 type WorkspaceScopeCallback = Box<dyn Fn(WorkspaceScope)>;
+type WorkspacePersistenceFlushCallback =
+    Box<dyn FnOnce(Result<(), super::WorkspacePersistenceFlushError>)>;
 
 /// Private template implementation for the multi-workspace sidebar.
 ///
@@ -94,10 +97,10 @@ pub struct LushtextSidebar {
     pub workspace_scope_changed_callback: RefCell<Option<WorkspaceScopeCallback>>,
     /// Debounce for workspace persistence (150ms).
     pub persist_debounce: Debounce,
-    /// Guard preventing overlapping persistence writes to disk.
-    pub persist_inflight: Cell<bool>,
-    /// Dirty flag set when a mutation occurs while persistence is in-flight.
-    pub persist_dirty: Cell<bool>,
+    /// Requested, in-flight, durable, and failed workspace-save generations.
+    pub persistence: RefCell<WorkspacePersistenceState>,
+    /// Close-flush completions waiting for the newest requested durable terminal.
+    pub(super) persistence_flush_waiters: RefCell<Vec<WorkspacePersistenceFlushCallback>>,
     /// Application settings for feature toggles.
     pub settings: gio::Settings,
 }
@@ -131,8 +134,8 @@ impl Default for LushtextSidebar {
             workspace_structure_changed_callback: RefCell::default(),
             workspace_scope_changed_callback: RefCell::default(),
             persist_debounce: Debounce::default(),
-            persist_inflight: Cell::default(),
-            persist_dirty: Cell::default(),
+            persistence: RefCell::default(),
+            persistence_flush_waiters: RefCell::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
         }
     }

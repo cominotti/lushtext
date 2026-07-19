@@ -38,6 +38,18 @@ impl DocumentSidecarIdentity {
             canonical_path,
         }
     }
+
+    /// Return heap bytes retained by owned paths and the stable identifier.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        u64::try_from(
+            self.display_path
+                .capacity()
+                .saturating_add(self.canonical_path.capacity())
+                .saturating_add(self.sidecar_id.capacity()),
+        )
+        .unwrap_or(u64::MAX)
+    }
 }
 
 /// Generate a deterministic sidecar hash from a canonical path.

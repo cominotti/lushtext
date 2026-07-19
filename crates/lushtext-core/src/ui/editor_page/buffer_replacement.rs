@@ -49,7 +49,7 @@ impl Deref for ReplacementBody {
 }
 
 enum CancelledBodyCallback {
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(feature = "test-utils")]
     Plain(Box<dyn FnOnce(String)>),
     Guarded(Box<dyn FnOnce(crate::ui::plain_disposal::DisposalOwned<String>)>),
 }
@@ -57,10 +57,10 @@ enum CancelledBodyCallback {
 impl CancelledBodyCallback {
     fn return_body(self, body: ReplacementBody) {
         match (self, body) {
-            #[cfg(any(test, feature = "test-utils"))]
+            #[cfg(feature = "test-utils")]
             (Self::Plain(callback), ReplacementBody::Plain(body)) => callback(body),
             (Self::Guarded(callback), ReplacementBody::Guarded(body)) => callback(body),
-            #[cfg(any(test, feature = "test-utils"))]
+            #[cfg(feature = "test-utils")]
             (Self::Plain(callback), ReplacementBody::Guarded(body)) => {
                 callback(body.into_inner_for_current_install());
             }
@@ -112,6 +112,7 @@ pub struct BufferReplacementMetrics {
 pub enum BufferReplacementOutcome {
     Complete {
         ticket: BufferReplacementTicket,
+        #[cfg(feature = "test-utils")]
         body: String,
         metrics: BufferReplacementMetrics,
     },
@@ -177,7 +178,7 @@ impl BufferReplacementRequest {
     }
 
     /// Return the uninstalled source body immediately when this request cancels.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(feature = "test-utils")]
     pub fn return_body_on_cancel(mut self, callback: impl FnOnce(String) + 'static) -> Self {
         self.cancelled_body = Some(CancelledBodyCallback::Plain(Box::new(callback)));
         self
@@ -579,8 +580,11 @@ fn finish_session(
                 String::new()
             }
         };
+        #[cfg(not(feature = "test-utils"))]
+        drop(body);
         BufferReplacementOutcome::Complete {
             ticket,
+            #[cfg(feature = "test-utils")]
             body,
             metrics,
         }

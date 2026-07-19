@@ -25,8 +25,8 @@ use lushtext_core::model::buffer_replacement::{
     BufferReplacementPlan, REPLACEMENT_CLEAR_SLICE_CHARS, REPLACEMENT_INSERT_SLICE_BYTES,
 };
 use lushtext_core::model::content_search::{
-    ContentSearchOptions, MAX_REPLACE_PREVIEW_ROWS, Replacement, SearchMatch, SearchMatchId,
-    generate_replacement_preview,
+    ContentSearchOptions, MAX_REPLACE_PREVIEW_ROWS, Replacement, SearchEvent, SearchMatch,
+    SearchMatchId, generate_replacement_preview,
 };
 use lushtext_core::model::draft::{DraftEntry, DraftManifest};
 use lushtext_core::model::editor_memory::{
@@ -63,6 +63,9 @@ use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
 use lushtext_core::model::workspace_scan::WorkspaceScanFlight;
+use lushtext_core::model::workspace_search::{
+    WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
+};
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
@@ -70,7 +73,7 @@ use lushtext_core::services::file_tree::{
     self, DirectoryEntry, DirectoryReconciliationPlan, DirectoryRowState,
 };
 use lushtext_core::services::filesystem::{
-    DirectoryScanPolicy, fixture, read as fs_read, tree as fs_tree,
+    DirectoryScanPolicy, fixture, metadata as fs_metadata, read as fs_read, tree as fs_tree,
 };
 use lushtext_core::services::json_format::KIND_LOCAL_HISTORY_INDEX;
 use lushtext_core::services::markdown_render::{
@@ -108,22 +111,59 @@ const CONTENT_SEARCH_BENCH_CHANNEL_CAPACITY: usize = 1024;
 /// through a bounded channel. Benchmarks must drain that channel at the same
 /// time, matching the UI worker/receiver shape; draining only after `search`
 /// returns can deadlock before Criterion finishes warmup.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ContentSearchBenchmarkOutcome {
+    events: usize,
+    matches: usize,
+    incomplete: usize,
+    match_identities: Vec<(PathBuf, u64)>,
+    fallback_metrics: WorkspaceSearchFallbackMetrics,
+}
+
 fn run_content_search_benchmark(
     query: &str,
     workspace_folders: &[&Path],
     options: &ContentSearchOptions,
-) -> usize {
+) -> ContentSearchBenchmarkOutcome {
+    run_content_search_benchmark_with_cancel(query, workspace_folders, options, false)
+}
+
+fn run_content_search_benchmark_with_cancel(
+    query: &str,
+    workspace_folders: &[&Path],
+    options: &ContentSearchOptions,
+    cancelled: bool,
+) -> ContentSearchBenchmarkOutcome {
     let (tx, rx) = crossbeam_channel::bounded(CONTENT_SEARCH_BENCH_CHANNEL_CAPACITY);
     let cancel = Arc::new(AtomicBool::new(false));
+    cancel.store(cancelled, std::sync::atomic::Ordering::Release);
 
     // Move the receiver to a short-lived drain thread so the producer keeps the
     // same bounded backpressure contract as production instead of using an
     // unbounded benchmark-only channel.
     let drain = std::thread::spawn(move || {
-        rx.iter().fold(0usize, |count, event| {
-            black_box(event);
-            count + 1
-        })
+        rx.iter().fold(
+            ContentSearchBenchmarkOutcome::default(),
+            |mut outcome, event| {
+                outcome.events = outcome.events.saturating_add(1);
+                match event {
+                    SearchEvent::Match(search_match) => {
+                        outcome.matches = outcome.matches.saturating_add(1);
+                        outcome
+                            .match_identities
+                            .push((search_match.path, search_match.line_number));
+                    }
+                    SearchEvent::Incomplete(_) => {
+                        outcome.incomplete = outcome.incomplete.saturating_add(1);
+                    }
+                    SearchEvent::TraversalMetrics(metrics) => {
+                        outcome.fallback_metrics = metrics;
+                    }
+                    _ => {}
+                }
+                outcome
+            },
+        )
     });
 
     content_search::search(
@@ -139,6 +179,32 @@ fn run_content_search_benchmark(
     drain
         .join()
         .expect("content-search benchmark event drain should not panic")
+}
+
+fn workspace_search_plan_retained_bytes(plan: &WorkspaceSearchTraversalPlan) -> u64 {
+    plan.display_roots()
+        .iter()
+        .fold(0u64, |total, root| {
+            total
+                .saturating_add(
+                    u64::try_from(root.configured_path().as_os_str().len()).unwrap_or(u64::MAX),
+                )
+                .saturating_add(root.canonical_path().map_or(0, |path| {
+                    u64::try_from(path.as_os_str().len()).unwrap_or(u64::MAX)
+                }))
+        })
+        .saturating_add(plan.traversal_roots().iter().fold(0u64, |total, root| {
+            total
+                .saturating_add(
+                    u64::try_from(root.scan_path().as_os_str().len()).unwrap_or(u64::MAX),
+                )
+                .saturating_add(root.canonical_path().map_or(0, |path| {
+                    u64::try_from(path.as_os_str().len()).unwrap_or(u64::MAX)
+                }))
+                .saturating_add(root.excluded_paths().iter().fold(0u64, |bytes, path| {
+                    bytes.saturating_add(u64::try_from(path.as_os_str().len()).unwrap_or(u64::MAX))
+                }))
+        }))
 }
 
 /// Build a synthetic in-memory file index with realistic file names.
@@ -1081,6 +1147,60 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
             <= palette::MAX_INDEXED_FILES + palette::MAX_INDEXED_DIRECTORIES
     );
 
+    let note_fixture = TempDir::new().expect("real note-source fixture");
+    let deep_data_dir = note_fixture
+        .path()
+        .join("dados-équipe")
+        .join("東京-project")
+        .join("🙂-notes");
+    let note_workspace = note_fixture.path().join("workspace");
+    fixture::create_dir_all(&deep_data_dir);
+    fixture::create_dir_all(&note_workspace);
+    let noted_file = note_workspace.join("main.rs");
+    fixture::write_text(&noted_file, "fn main() {}\n");
+    lushtext_core::services::bookmark_service::save_for_path(
+        &deep_data_dir,
+        &noted_file,
+        &[BookmarkRecord::new(
+            0,
+            Some("Unicode production-routed fixture".to_string()),
+        )],
+    )
+    .expect("save benchmark bookmark sidecar");
+    let malformed_path = lushtext_core::services::bookmark_service::bookmarks_dir(&deep_data_dir)
+        .join("malformed-🙂.json");
+    fixture::write_text(&malformed_path, "{ malformed recovery fixture");
+    let note_scope = WorkspacesFile {
+        current_scope: WorkspaceScope::All,
+        workspaces: vec![WorkspaceConfig::with_one_folder(
+            WorkspaceId::new("real-note-source"),
+            "Real Note Source",
+            note_workspace,
+        )],
+    }
+    .current_scope_snapshot();
+    let real_note_outcome = palette::load_note_entries_bounded_for_scope(
+        &deep_data_dir,
+        &note_scope,
+        &[],
+        false,
+        palette::NotesBrowserMode::Bookmarks,
+        palette::PALETTE_NOTE_SOURCE_LIMITS,
+        &palette::PaletteSearchCancellation::default(),
+    )
+    .expect("load production-routed note fixture");
+    let palette::PaletteNoteSourceOutcome::Complete {
+        load: real_note_load,
+        metrics: real_note_metrics,
+    } = &real_note_outcome
+    else {
+        panic!("fresh real note source must complete");
+    };
+    assert_eq!(real_note_load.entries.len(), 1);
+    assert!(real_note_metrics.peak_sidecar_path_bytes > 0);
+    assert!(real_note_metrics.peak_construction_bytes > 0);
+    assert!(!real_note_load.diagnostics.is_empty());
+
     let entry_bodies = (0..=palette::MAX_PALETTE_NOTE_ENTRIES)
         .map(|index| format!("note-{index:05}"))
         .collect::<Vec<_>>();
@@ -1227,12 +1347,22 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
 
     let replacement_plan = BufferReplacementPlan::for_sizes(2_000_000, 2_000_000);
     eprintln!(
-        "end-to-end-boundedness-evidence flat_entries=10000 retained_files={} file_peak_rows={} note_entries={} note_bytes={} cancelled_note_entries={} canonical_examined={} file_active={} file_pending={} note_active={} note_pending={} cleanup_page={} cleanup_has_more={} reconcile_removed={} reconcile_inserted={} replacement_mode={:?} clear_slice_chars={} insert_slice_bytes={}",
+        "end-to-end-boundedness-evidence flat_entries=10000 retained_files={} file_peak_rows={} note_entries={} note_bytes={} note_retained_bytes={} note_sidecar_path_peak={} note_construction_peak={} note_truncations={} real_note_entries={} real_note_sidecars={} real_note_sidecar_path_peak={} real_note_construction_peak={} real_note_diagnostics={} cancelled_note_entries={} cancelled_note_construction_peak={} canonical_examined={} file_active={} file_pending={} note_active={} note_pending={} cleanup_page={} cleanup_has_more={} reconcile_removed={} reconcile_inserted={} replacement_mode={:?} clear_slice_chars={} insert_slice_bytes={}",
         file_metrics.retained_files,
         file_metrics.peak_retained_directory_entries,
         entry_metrics.retained_entries,
         byte_metrics.retained_searchable_bytes,
+        byte_metrics.retained_bytes,
+        byte_metrics.peak_sidecar_path_bytes,
+        byte_metrics.peak_construction_bytes,
+        byte_metrics.truncation_reasons.len(),
+        real_note_metrics.retained_entries,
+        real_note_metrics.loaded_sidecars,
+        real_note_metrics.peak_sidecar_path_bytes,
+        real_note_metrics.peak_construction_bytes,
+        real_note_load.diagnostics.len(),
         cancelled_note_metrics.retained_entries,
+        cancelled_note_metrics.peak_construction_bytes,
         exclusion_metrics.candidates_examined,
         file_ownership.active,
         file_ownership.pending,
@@ -1280,6 +1410,22 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
                 black_box(&entry_bodies),
                 Some(256),
             ))
+        });
+    });
+    group.bench_function("note_source/real_sidecars_unicode_paths", |b| {
+        b.iter(|| {
+            black_box(
+                palette::load_note_entries_bounded_for_scope(
+                    black_box(&deep_data_dir),
+                    black_box(&note_scope),
+                    &[],
+                    false,
+                    palette::NotesBrowserMode::Bookmarks,
+                    palette::PALETTE_NOTE_SOURCE_LIMITS,
+                    &palette::PaletteSearchCancellation::default(),
+                )
+                .expect("real note-source benchmark load"),
+            )
         });
     });
     group.bench_function("canonical_exclusion/before_top_one", |b| {
@@ -2550,6 +2696,109 @@ fn bench_content_search(c: &mut Criterion) {
         };
         fixture::write_text(&dir_path.join(format!("file_{i}.rs")), &content);
     }
+
+    let overlap_child = search_root.join("dir_0");
+    let traversal_plan = WorkspaceSearchTraversalPlan::build(
+        [overlap_child.clone(), search_root.to_path_buf()],
+        fs_metadata::canonical_path,
+    );
+    let single_no_match = run_content_search_benchmark(
+        "definitely-absent-search-needle",
+        &[search_root],
+        &ContentSearchOptions::default(),
+    );
+    let overlap_no_match = run_content_search_benchmark(
+        "definitely-absent-search-needle",
+        &[overlap_child.as_path(), search_root],
+        &ContentSearchOptions::default(),
+    );
+    let missing_root = search_root.join("missing-unresolved-root");
+    let fallback_plan = WorkspaceSearchTraversalPlan::build(
+        [missing_root.clone(), search_root.to_path_buf()],
+        fs_metadata::canonical_path,
+    );
+    let fallback_no_match = run_content_search_benchmark(
+        "definitely-absent-search-needle",
+        &[missing_root.as_path(), search_root],
+        &ContentSearchOptions::default(),
+    );
+    let single_matches =
+        run_content_search_benchmark("TODO", &[search_root], &ContentSearchOptions::default());
+    let overlap_matches = run_content_search_benchmark(
+        "TODO",
+        &[overlap_child.as_path(), search_root],
+        &ContentSearchOptions::default(),
+    );
+    let cancelled = run_content_search_benchmark_with_cancel(
+        "definitely-absent-search-needle",
+        &[search_root],
+        &ContentSearchOptions::default(),
+        true,
+    );
+    assert_eq!(single_no_match.matches, 0);
+    assert_eq!(overlap_no_match.matches, single_no_match.matches);
+    assert_eq!(single_no_match.incomplete, 0);
+    assert_eq!(overlap_no_match.incomplete, 0);
+    assert!(fallback_plan.fallback_identity_required());
+    assert_eq!(fallback_no_match.incomplete, 0);
+    assert_eq!(fallback_no_match.fallback_metrics.entries, 10_000);
+    assert!(fallback_no_match.fallback_metrics.path_bytes > 0);
+    assert_eq!(traversal_plan.traversal_roots().len(), 2);
+    assert_eq!(
+        traversal_plan.traversal_roots()[1].excluded_paths(),
+        std::slice::from_ref(&overlap_child)
+    );
+    let mut single_identities = single_matches.match_identities.clone();
+    let mut overlap_identities = overlap_matches.match_identities.clone();
+    single_identities.sort();
+    overlap_identities.sort();
+    let semantic_equivalent = single_identities == overlap_identities;
+    assert!(semantic_equivalent);
+    assert!(
+        overlap_matches
+            .match_identities
+            .first()
+            .is_some_and(|(path, _)| path.starts_with(&overlap_child))
+    );
+    println!(
+        "workspace-search-traversal-evidence files=10000 configured_roots=2 traversal_roots={} excluded_roots={} display_roots={} fallback_required={} fallback_fixture_required={} fallback_entries_high_water={} fallback_path_bytes_high_water={} plan_retained_bytes={} fallback_plan_retained_bytes={} single_matches={} overlap_matches={} semantic_equivalent={} child_partition_first={} cancellation_events={}",
+        traversal_plan.traversal_roots().len(),
+        traversal_plan.traversal_roots()[1].excluded_paths().len(),
+        traversal_plan.display_roots().len(),
+        traversal_plan.fallback_identity_required(),
+        fallback_plan.fallback_identity_required(),
+        fallback_no_match.fallback_metrics.entries,
+        fallback_no_match.fallback_metrics.path_bytes,
+        workspace_search_plan_retained_bytes(&traversal_plan),
+        workspace_search_plan_retained_bytes(&fallback_plan),
+        single_matches.matches,
+        overlap_matches.matches,
+        semantic_equivalent,
+        overlap_matches
+            .match_identities
+            .first()
+            .is_some_and(|(path, _)| path.starts_with(&overlap_child)),
+        cancelled.events,
+    );
+
+    group.bench_function("no_match_10k_single_root", |b| {
+        b.iter(|| {
+            black_box(run_content_search_benchmark(
+                "definitely-absent-search-needle",
+                &[search_root],
+                &ContentSearchOptions::default(),
+            ));
+        });
+    });
+    group.bench_function("no_match_10k_overlapping_roots", |b| {
+        b.iter(|| {
+            black_box(run_content_search_benchmark(
+                "definitely-absent-search-needle",
+                &[overlap_child.as_path(), search_root],
+                &ContentSearchOptions::default(),
+            ));
+        });
+    });
 
     // 1. Literal search across 10k files.
     group.bench_function("literal_10k_files", |b| {

@@ -11,8 +11,7 @@
 //! inside the ripgrep stack, while mutation, undo backup, and persistence remain
 //! routed through `services::filesystem`.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +24,10 @@ use ignore::overrides::OverrideBuilder;
 use ignore::{WalkBuilder, WalkState};
 
 use crate::model::content_search::{ContentSearchOptions, SearchEvent, SearchMatch};
+use crate::model::workspace_search::{
+    WorkspaceSearchFallbackClaim, WorkspaceSearchFallbackLedger, WorkspaceSearchFallbackLimits,
+    WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
+};
 use crate::services::filesystem::metadata as fs_metadata;
 
 /// Maximum number of matches before the search stops. Approximate under
@@ -40,10 +43,6 @@ pub(super) const RESULT_CAP: usize = 10_000;
 ///
 /// The `tx` channel should be `bounded(1024)` in production to apply backpressure.
 /// Using `unbounded()` is acceptable in tests.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "The sender is cloned into parallel walker closures, so taking ownership keeps the thread boundary explicit"
-)]
 pub fn search(
     query: &str,
     workspace_folders: &[&Path],
@@ -53,6 +52,71 @@ pub fn search(
     progress_counter: Option<Arc<AtomicUsize>>,
     completion_flag: Option<Arc<AtomicBool>>,
 ) {
+    let plan = WorkspaceSearchTraversalPlan::build(
+        workspace_folders.iter().copied(),
+        fs_metadata::canonical_path,
+    );
+    search_with_plan(
+        query,
+        &plan,
+        options,
+        tx,
+        cancel,
+        progress_counter,
+        completion_flag,
+    );
+}
+
+/// Search one pre-normalized immutable workspace traversal plan.
+///
+/// Callers that already own a generation-scoped folder snapshot should build
+/// the plan on their worker before entering this service so root identity is
+/// resolved exactly once for the entire generation.
+pub fn search_with_plan(
+    query: &str,
+    plan: &WorkspaceSearchTraversalPlan,
+    options: &ContentSearchOptions,
+    tx: Sender<SearchEvent>,
+    cancel: Arc<AtomicBool>,
+    progress_counter: Option<Arc<AtomicUsize>>,
+    completion_flag: Option<Arc<AtomicBool>>,
+) {
+    search_with_plan_and_limits(
+        query,
+        plan,
+        options,
+        tx,
+        cancel,
+        SearchTelemetry {
+            progress_counter,
+            completion_flag,
+        },
+        WorkspaceSearchFallbackLimits::default(),
+    );
+}
+
+struct SearchTelemetry {
+    progress_counter: Option<Arc<AtomicUsize>>,
+    completion_flag: Option<Arc<AtomicBool>>,
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The sender is cloned into parallel walker closures, so taking ownership keeps the thread boundary explicit"
+)]
+fn search_with_plan_and_limits(
+    query: &str,
+    plan: &WorkspaceSearchTraversalPlan,
+    options: &ContentSearchOptions,
+    tx: Sender<SearchEvent>,
+    cancel: Arc<AtomicBool>,
+    telemetry: SearchTelemetry,
+    fallback_limits: WorkspaceSearchFallbackLimits,
+) {
+    let SearchTelemetry {
+        progress_counter,
+        completion_flag,
+    } = telemetry;
     // Empty query → Done immediately, no file traversal.
     if query.is_empty() {
         if let Some(flag) = &completion_flag {
@@ -62,7 +126,7 @@ pub fn search(
         return;
     }
 
-    if workspace_folders.is_empty() {
+    if plan.traversal_roots().is_empty() {
         if let Some(flag) = &completion_flag {
             flag.store(true, Ordering::Relaxed);
         }
@@ -101,17 +165,31 @@ pub fn search(
     // Shared counters across walker threads and ordered workspace folders.
     let match_count = Arc::new(AtomicUsize::new(0));
     let files_visited = Arc::new(AtomicUsize::new(0));
-    let visited_files = Arc::new(Mutex::new(HashSet::new()));
-    let file_identity_mode = FileIdentityMode::for_workspace_folders(workspace_folders);
+    let fallback_ledger = plan.fallback_identity_required().then(|| {
+        Arc::new(Mutex::new(WorkspaceSearchFallbackLedger::new(
+            fallback_limits,
+        )))
+    });
+    let incomplete_sent = Arc::new(AtomicBool::new(false));
 
-    for folder in workspace_folders {
-        if cancel.load(Ordering::Relaxed) {
+    for (traversal_root_index, traversal_root) in plan.traversal_roots().iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire) {
             break;
         }
+
+        let folder = traversal_root.scan_path();
 
         let mut builder = WalkBuilder::new(folder);
         builder.threads(threads);
         builder.hidden(true); // skip hidden files (LushText convention)
+        if !traversal_root.excluded_paths().is_empty() {
+            let excluded_paths = traversal_root.excluded_paths().to_vec();
+            builder.filter_entry(move |entry| {
+                !excluded_paths
+                    .iter()
+                    .any(|excluded| entry.path() == excluded)
+            });
+        }
 
         if !options.gitignore {
             builder
@@ -149,7 +227,8 @@ pub fn search(
             let match_count = match_count.clone();
             let files_visited = files_visited.clone();
             let progress_counter = progress_counter.clone();
-            let visited_files = visited_files.clone();
+            let fallback_ledger = fallback_ledger.clone();
+            let incomplete_sent = Arc::clone(&incomplete_sent);
 
             // Per-thread searcher — reused across all files on this thread.
             let mut searcher = SearcherBuilder::new()
@@ -157,7 +236,7 @@ pub fn search(
                 .build();
 
             Box::new(move |entry| {
-                if cancel.load(Ordering::Relaxed) {
+                if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire) {
                     return WalkState::Quit;
                 }
 
@@ -171,8 +250,24 @@ pub fn search(
                 }
 
                 let path = entry.into_path();
-                if !claim_file_identity(&path, &visited_files, file_identity_mode) {
-                    return WalkState::Continue;
+                if let Some(ledger) = fallback_ledger.as_ref() {
+                    let identity =
+                        fs_metadata::canonical_path(&path).unwrap_or_else(|_| path.clone());
+                    let claim = ledger
+                        .lock()
+                        .map_or(WorkspaceSearchFallbackClaim::Duplicate, |mut ledger| {
+                            ledger.try_claim(identity)
+                        });
+                    match claim {
+                        WorkspaceSearchFallbackClaim::Admitted => {}
+                        WorkspaceSearchFallbackClaim::Duplicate => return WalkState::Continue,
+                        WorkspaceSearchFallbackClaim::Incomplete(reason) => {
+                            if !incomplete_sent.swap(true, Ordering::AcqRel) {
+                                let _ = tx.send(SearchEvent::Incomplete(reason));
+                            }
+                            return WalkState::Quit;
+                        }
+                    }
                 }
 
                 // Report progress every 100 files (best-effort via try_send).
@@ -188,7 +283,8 @@ pub fn search(
                     &matcher,
                     &path,
                     UTF8(|line_number, line_content| {
-                        if cancel.load(Ordering::Relaxed) {
+                        if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire)
+                        {
                             return Ok(false);
                         }
 
@@ -198,7 +294,8 @@ pub fn search(
                         let match_range = find_match_range(&matcher, content.as_bytes());
 
                         let search_match =
-                            SearchMatch::new(path.clone(), line_number, content, match_range);
+                            SearchMatch::new(path.clone(), line_number, content, match_range)
+                                .with_traversal_root_index(traversal_root_index);
 
                         // Increment match counter and enforce the shared cap.
                         let prev = match_count.fetch_add(1, Ordering::Relaxed);
@@ -222,7 +319,7 @@ pub fn search(
                     tracing::warn!("Skipping {} during search: {e}", path.display());
                 }
 
-                if cancel.load(Ordering::Relaxed) {
+                if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire) {
                     return WalkState::Quit;
                 }
 
@@ -234,29 +331,17 @@ pub fn search(
     if let Some(flag) = &completion_flag {
         flag.store(true, Ordering::Relaxed);
     }
+    let fallback_metrics =
+        fallback_ledger
+            .as_ref()
+            .map_or_else(WorkspaceSearchFallbackMetrics::default, |ledger| {
+                ledger.lock().map_or_else(
+                    |_| WorkspaceSearchFallbackMetrics::default(),
+                    |ledger| ledger.metrics(),
+                )
+            });
+    let _ = tx.send(SearchEvent::TraversalMetrics(fallback_metrics));
     let _ = tx.send(SearchEvent::Done);
-}
-
-/// Search dedupe strategy for visited files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FileIdentityMode {
-    /// A single walker root cannot revisit the same regular file through a
-    /// configured parent/child overlap, so the walked path is enough.
-    WalkedPath,
-    /// Multiple roots may overlap, so canonical identity prevents duplicate
-    /// results through parent and descendant workspace folders.
-    CanonicalPath,
-}
-
-impl FileIdentityMode {
-    /// Use canonical dedupe only when multiple configured roots may overlap.
-    fn for_workspace_folders(workspace_folders: &[&Path]) -> Self {
-        if workspace_folders.len() > 1 {
-            Self::CanonicalPath
-        } else {
-            Self::WalkedPath
-        }
-    }
 }
 
 /// Find the first byte range that matched within one line.
@@ -270,33 +355,13 @@ fn find_match_range(matcher: &grep_regex::RegexMatcher, line: &[u8]) -> std::ops
     }
 }
 
-/// Claim one file by identity before searching it.
-///
-/// Overlapping workspace folders can reach the same file through a parent and a
-/// descendant tree. Canonicalizing before the lock keeps slow filesystem work
-/// outside the shared critical section and is reserved for multi-root searches;
-/// a single walker root can use the path reported by `ignore`.
-fn claim_file_identity(
-    path: &Path,
-    visited_files: &Mutex<HashSet<PathBuf>>,
-    mode: FileIdentityMode,
-) -> bool {
-    let identity = match mode {
-        FileIdentityMode::WalkedPath => path.to_path_buf(),
-        FileIdentityMode::CanonicalPath => {
-            fs_metadata::canonical_path(path).unwrap_or_else(|_| path.to_path_buf())
-        }
-    };
-    visited_files
-        .lock()
-        .is_ok_and(|mut visited| visited.insert(identity))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::filesystem::{fixture, read as fs_read};
     use std::assert_matches;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     /// Helper: run a search and collect all events into a Vec.
@@ -333,20 +398,6 @@ mod tests {
     /// Check that the last event is Done.
     fn assert_ends_with_done(events: &[SearchEvent]) {
         assert_matches!(events.last(), Some(SearchEvent::Done));
-    }
-
-    #[test]
-    fn file_identity_mode_uses_canonical_paths_only_for_multiple_roots() {
-        let root = Path::new("/tmp/workspace");
-
-        assert_eq!(
-            FileIdentityMode::for_workspace_folders(&[root]),
-            FileIdentityMode::WalkedPath
-        );
-        assert_eq!(
-            FileIdentityMode::for_workspace_folders(&[root, Path::new("/tmp/workspace/src")]),
-            FileIdentityMode::CanonicalPath
-        );
     }
 
     #[test]
@@ -748,6 +799,37 @@ mod tests {
     }
 
     #[test]
+    fn large_single_root_no_match_needs_no_fallback_identity_retention() {
+        let dir = tempdir().expect("large no-match fixture");
+        for index in 0..2_000 {
+            fixture::write_text(
+                &dir.path().join(format!("file-{index:04}.txt")),
+                "ordinary content without the query\n",
+            );
+        }
+
+        let plan = WorkspaceSearchTraversalPlan::build(
+            [dir.path().to_path_buf()],
+            crate::services::filesystem::metadata::canonical_path,
+        );
+        assert_eq!(plan.traversal_roots().len(), 1);
+        assert!(!plan.fallback_identity_required());
+        let events = search_collect(
+            "definitely-absent-search-needle",
+            &[dir.path()],
+            &ContentSearchOptions::default(),
+        );
+
+        assert_ends_with_done(&events);
+        assert_eq!(count_matches(&events), 0);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SearchEvent::Incomplete(_)))
+        );
+    }
+
+    #[test]
     fn overlapping_search_folders_deduplicate_files() {
         let dir = tempdir().expect("expected operation to succeed");
         let workspace_folder = dir.path().to_path_buf();
@@ -804,6 +886,113 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&parent_file));
         assert!(paths.contains(&nested_file));
+    }
+
+    #[test]
+    fn child_before_parent_keeps_matching_results_in_configured_partition_order() {
+        let dir = tempdir().expect("ordered overlap fixture");
+        let parent = dir.path().to_path_buf();
+        let child = parent.join("src");
+        let child_file = child.join("main.rs");
+        let sibling_file = parent.join("README.md");
+        fixture::create_dir(&child);
+        fixture::write_text(&child_file, "needle in child\n");
+        fixture::write_text(&sibling_file, "needle in sibling\n");
+
+        let events = search_collect(
+            "needle",
+            &[child.as_path(), parent.as_path()],
+            &ContentSearchOptions::default(),
+        );
+        let matches = search_matches(&events);
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].path, child_file);
+        assert_eq!(matches[1].path, sibling_file);
+        assert_eq!(matches[0].traversal_root_index, 0);
+        assert_eq!(matches[1].traversal_root_index, 1);
+    }
+
+    #[test]
+    fn canonical_alias_roots_scan_one_file_once() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let real = dir.path().join("real");
+        let alias = dir.path().join("alias");
+        fixture::create_dir(&real);
+        fixture::write_text(&real.join("main.rs"), "needle\n");
+        fixture::symlink(&real, &alias);
+
+        let events = search_collect(
+            "needle",
+            &[alias.as_path(), real.as_path()],
+            &ContentSearchOptions::default(),
+        );
+
+        assert_ends_with_done(&events);
+        assert_eq!(count_matches(&events), 1);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SearchEvent::Incomplete(_)))
+        );
+    }
+
+    #[test]
+    fn unavailable_root_does_not_hide_results_from_an_available_root() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let missing = dir.path().join("missing");
+        let available = dir.path().join("available");
+        fixture::create_dir(&available);
+        fixture::write_text(&available.join("main.rs"), "needle\n");
+
+        let events = search_collect(
+            "needle",
+            &[missing.as_path(), available.as_path()],
+            &ContentSearchOptions::default(),
+        );
+
+        assert_ends_with_done(&events);
+        assert_eq!(count_matches(&events), 1);
+    }
+
+    #[test]
+    fn ambiguous_fallback_stops_before_one_over_entry_limit() {
+        let first = tempdir().expect("expected operation to succeed");
+        let second = tempdir().expect("expected operation to succeed");
+        fixture::write_text(&first.path().join("first.rs"), "needle\n");
+        fixture::write_text(&second.path().join("second.rs"), "needle\n");
+        let plan = WorkspaceSearchTraversalPlan::build(
+            [first.path().to_path_buf(), second.path().to_path_buf()],
+            |_| Err::<PathBuf, _>(()),
+        );
+        assert!(plan.fallback_identity_required());
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        search_with_plan_and_limits(
+            "needle",
+            &plan,
+            &ContentSearchOptions::default(),
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            SearchTelemetry {
+                progress_counter: None,
+                completion_flag: None,
+            },
+            WorkspaceSearchFallbackLimits {
+                entries: 1,
+                path_bytes: u64::MAX,
+            },
+        );
+        let events: Vec<_> = rx.iter().collect();
+
+        assert_eq!(count_matches(&events), 1);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SearchEvent::Incomplete(
+                crate::model::workspace_search::WorkspaceSearchIncompleteReason::FallbackEntryLimit
+            )
+        )));
+        assert_ends_with_done(&events);
     }
 
     #[test]
@@ -927,7 +1116,17 @@ mod tests {
             "completion flag should be set even if Done is still backpressured"
         );
 
-        let events: Vec<_> = rx.iter().take(2).collect();
+        let mut events = Vec::new();
+        loop {
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("terminal events should drain after completion publication");
+            let done = matches!(event, SearchEvent::Done);
+            events.push(event);
+            if done {
+                break;
+            }
+        }
         assert!(
             events
                 .iter()
@@ -975,8 +1174,11 @@ mod tests {
             match event {
                 SearchEvent::Match(_) => match_count += 1,
                 SearchEvent::Done => break,
-                SearchEvent::Progress(_) => {}
+                SearchEvent::Progress(_) | SearchEvent::TraversalMetrics(_) => {}
                 SearchEvent::Error(message) => panic!("search should not emit an error: {message}"),
+                SearchEvent::Incomplete(reason) => {
+                    panic!("fixture should not be incomplete: {reason:?}")
+                }
                 SearchEvent::ResultCap => panic!("fixture should stay below the result cap"),
             }
         }

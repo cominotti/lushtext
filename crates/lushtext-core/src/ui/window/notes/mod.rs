@@ -67,6 +67,8 @@ const NOTES_BROWSER_SOURCE_LIMITS: palette_service::NoteSourceLimits =
         searchable_text_bytes: NOTES_BROWSER_SOURCE_TEXT_LIMIT,
         retained_bytes: palette_service::MAX_PALETTE_NOTE_RETAINED_BYTES,
         sidecar_entries: NOTES_BROWSER_SIDECAR_SCAN_LIMIT,
+        sidecar_path_bytes: palette_service::MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES,
+        construction_bytes: palette_service::MAX_PALETTE_NOTE_CONSTRUCTION_BYTES,
         diagnostics: NOTES_BROWSER_DIAGNOSTIC_LIMIT,
     };
 #[cfg(feature = "test-utils")]

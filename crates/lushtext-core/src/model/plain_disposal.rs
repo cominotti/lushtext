@@ -13,6 +13,8 @@ pub struct PlainDisposalLimits {
     pub retained_byte_limit: u64,
     /// Extra transient job slots available only to guarded replacements.
     pub replacement_job_headroom: usize,
+    /// Largest one-off overweight transit reservation admitted additively.
+    pub overweight_progress_byte_limit: u64,
 }
 
 impl PlainDisposalLimits {
@@ -28,6 +30,7 @@ impl PlainDisposalLimits {
             queued_job_limit,
             retained_byte_limit,
             replacement_job_headroom: 0,
+            overweight_progress_byte_limit: retained_byte_limit,
         }
     }
 
@@ -35,6 +38,13 @@ impl PlainDisposalLimits {
     #[must_use]
     pub const fn with_replacement_headroom(mut self, replacement_job_headroom: usize) -> Self {
         self.replacement_job_headroom = replacement_job_headroom;
+        self
+    }
+
+    /// Allow one bounded overweight transit owner alongside ordinary ownership.
+    #[must_use]
+    pub const fn with_overweight_progress_byte_limit(mut self, byte_limit: u64) -> Self {
+        self.overweight_progress_byte_limit = byte_limit;
         self
     }
 }
@@ -62,6 +72,8 @@ pub struct PlainDisposalSnapshot {
     pub retained_bytes_high_water: u64,
     /// Largest exclusively admitted overweight job observed.
     pub overweight_bytes_high_water: u64,
+    /// Largest actual retained-byte total while overweight transit was active.
+    pub overweight_total_bytes_high_water: u64,
     /// Largest actual retained-byte total while replacement headroom was active.
     pub replacement_bytes_high_water: u64,
     /// Jobs admitted since this policy was created.
@@ -82,14 +94,12 @@ pub struct PlainDisposalSnapshot {
 #[derive(Debug)]
 pub struct QueuedPlainDisposal {
     weight: u64,
-    overweight: bool,
 }
 
 /// Executing ownership returned when a worker starts an admitted job.
 #[derive(Debug)]
 pub struct ActivePlainDisposal {
     weight: u64,
-    overweight: bool,
 }
 
 /// Pure count-and-byte admission state for one disposal lane.
@@ -112,6 +122,58 @@ impl PlainDisposalAdmission {
     /// Try to reserve queued ownership without waiting for capacity.
     pub fn try_queue(&mut self, weight: u64) -> Option<QueuedPlainDisposal> {
         self.try_queue_inner(weight, None)
+    }
+
+    /// Try one bounded overweight reservation without requiring an empty lane.
+    ///
+    /// This is reserved for transit work whose supported maximum exceeds the
+    /// ordinary byte ceiling. Only one such owner may exist, and all later
+    /// admission remains blocked until aggregate ownership returns within the
+    /// ordinary ceiling.
+    pub fn try_queue_overweight_progress(&mut self, weight: u64) -> Option<QueuedPlainDisposal> {
+        if weight <= self.limits.retained_byte_limit {
+            return self.try_queue(weight);
+        }
+
+        let owned_jobs = self
+            .snapshot
+            .running_jobs
+            .saturating_add(self.snapshot.queued_jobs);
+        let ordinary_owned_limit = self
+            .limits
+            .worker_limit
+            .saturating_add(self.limits.queued_job_limit);
+        let available = weight <= self.limits.overweight_progress_byte_limit
+            && self.snapshot.queued_jobs < self.limits.queued_job_limit
+            && owned_jobs < ordinary_owned_limit
+            && !self.snapshot.overweight_exclusive
+            && !self.snapshot.replacement_headroom_active;
+        if !available {
+            self.snapshot.full_outcomes = self.snapshot.full_outcomes.saturating_add(1);
+            return None;
+        }
+
+        self.snapshot.queued_jobs = self.snapshot.queued_jobs.saturating_add(1);
+        self.snapshot.retained_bytes = self.snapshot.retained_bytes.saturating_add(weight);
+        self.snapshot.overweight_exclusive = true;
+        self.snapshot.admitted_jobs = self.snapshot.admitted_jobs.saturating_add(1);
+        self.snapshot.queued_high_water = self
+            .snapshot
+            .queued_high_water
+            .max(self.snapshot.queued_jobs);
+        self.snapshot.owned_high_water = self.snapshot.owned_high_water.max(
+            self.snapshot
+                .running_jobs
+                .saturating_add(self.snapshot.queued_jobs),
+        );
+        self.snapshot.overweight_bytes_high_water =
+            self.snapshot.overweight_bytes_high_water.max(weight);
+        self.snapshot.overweight_total_bytes_high_water = self
+            .snapshot
+            .overweight_total_bytes_high_water
+            .max(self.snapshot.retained_bytes);
+
+        Some(QueuedPlainDisposal { weight })
     }
 
     /// Try to reserve a guarded replacement using the current owner's byte credit.
@@ -212,10 +274,7 @@ impl PlainDisposalAdmission {
                 .max(self.snapshot.retained_bytes);
         }
 
-        Some(QueuedPlainDisposal {
-            weight,
-            overweight: exclusive_progress,
-        })
+        Some(QueuedPlainDisposal { weight })
     }
 
     /// Move one admitted job from queued to executing ownership.
@@ -235,7 +294,6 @@ impl PlainDisposalAdmission {
             .max(self.snapshot.running_jobs);
         ActivePlainDisposal {
             weight: queued.weight,
-            overweight: queued.overweight,
         }
     }
 
@@ -245,10 +303,7 @@ impl PlainDisposalAdmission {
         let released = queued.weight.saturating_sub(new_weight);
         queued.weight = new_weight;
         self.snapshot.retained_bytes = self.snapshot.retained_bytes.saturating_sub(released);
-        if queued.overweight && new_weight <= self.limits.retained_byte_limit {
-            queued.overweight = false;
-            self.snapshot.overweight_exclusive = false;
-        }
+        self.demote_overweight_if_within_limit();
         self.refresh_replacement_headroom();
     }
 
@@ -260,7 +315,7 @@ impl PlainDisposalAdmission {
     pub fn cancel_queued(&mut self, queued: QueuedPlainDisposal, closed: bool) {
         debug_assert!(self.snapshot.queued_jobs > 0);
         self.snapshot.queued_jobs = self.snapshot.queued_jobs.saturating_sub(1);
-        self.release_bytes(queued.weight, queued.overweight);
+        self.release_bytes(queued.weight);
         self.snapshot.cancelled_jobs = self.snapshot.cancelled_jobs.saturating_add(1);
         if closed {
             self.snapshot.closed_outcomes = self.snapshot.closed_outcomes.saturating_add(1);
@@ -275,19 +330,23 @@ impl PlainDisposalAdmission {
     pub fn finish(&mut self, active: ActivePlainDisposal, panicked: bool) {
         debug_assert!(self.snapshot.running_jobs > 0);
         self.snapshot.running_jobs = self.snapshot.running_jobs.saturating_sub(1);
-        self.release_bytes(active.weight, active.overweight);
+        self.release_bytes(active.weight);
         self.snapshot.completed_jobs = self.snapshot.completed_jobs.saturating_add(1);
         if panicked {
             self.snapshot.panicked_jobs = self.snapshot.panicked_jobs.saturating_add(1);
         }
     }
 
-    fn release_bytes(&mut self, weight: u64, overweight: bool) {
+    fn release_bytes(&mut self, weight: u64) {
         self.snapshot.retained_bytes = self.snapshot.retained_bytes.saturating_sub(weight);
-        if overweight {
+        self.demote_overweight_if_within_limit();
+        self.refresh_replacement_headroom();
+    }
+
+    fn demote_overweight_if_within_limit(&mut self) {
+        if self.snapshot.retained_bytes <= self.limits.retained_byte_limit {
             self.snapshot.overweight_exclusive = false;
         }
-        self.refresh_replacement_headroom();
     }
 
     fn refresh_replacement_headroom(&mut self) {
@@ -444,6 +503,84 @@ mod tests {
         let ordinary = policy.try_queue(1).expect("ordinary job after overweight");
         assert!(policy.try_queue(101).is_none());
         policy.cancel_queued(ordinary, false);
+    }
+
+    #[test]
+    fn bounded_overweight_progress_can_coexist_with_ordinary_transit() {
+        let limits = LIMITS.with_overweight_progress_byte_limit(200);
+        let mut policy = PlainDisposalAdmission::new(limits);
+        let ordinary = policy.try_queue(40).expect("ordinary transit");
+        let mut overweight = policy
+            .try_queue_overweight_progress(150)
+            .expect("bounded additive overweight transit");
+
+        assert!(policy.snapshot().overweight_exclusive);
+        assert_eq!(policy.snapshot().retained_bytes, 190);
+        assert_eq!(policy.snapshot().overweight_total_bytes_high_water, 190);
+        assert!(policy.try_queue(1).is_none());
+        assert!(policy.try_queue_overweight_progress(150).is_none());
+
+        policy.shrink_queued(&mut overweight, 50);
+        assert!(!policy.snapshot().overweight_exclusive);
+        let active = policy.start(ordinary);
+        let resumed = policy
+            .try_queue(10)
+            .expect("ordinary admission resumes within remaining byte capacity");
+        policy.cancel_queued(resumed, false);
+        policy.finish(active, false);
+        policy.cancel_queued(overweight, false);
+    }
+
+    #[test]
+    fn unrelated_release_demotes_shrunk_overweight_owner_at_aggregate_ceiling() {
+        let limits = LIMITS.with_overweight_progress_byte_limit(200);
+        let mut policy = PlainDisposalAdmission::new(limits);
+        let first = policy.try_queue(40).expect("first ordinary transit");
+        let first = policy.start(first);
+        let second = policy.try_queue(40).expect("second ordinary transit");
+        let mut overweight = policy
+            .try_queue_overweight_progress(150)
+            .expect("bounded additive overweight transit");
+
+        policy.shrink_queued(&mut overweight, 50);
+        assert!(policy.snapshot().overweight_exclusive);
+        policy.finish(first, false);
+        assert!(!policy.snapshot().overweight_exclusive);
+
+        let second = policy.start(second);
+        let resumed = policy
+            .try_queue(10)
+            .expect("ordinary admission resumes while the shrunk owner remains");
+        policy.cancel_queued(resumed, false);
+        policy.finish(second, false);
+        policy.cancel_queued(overweight, false);
+    }
+
+    #[test]
+    fn demoted_overweight_token_cannot_clear_a_new_additive_owner() {
+        let limits = LIMITS.with_overweight_progress_byte_limit(200);
+        let mut policy = PlainDisposalAdmission::new(limits);
+        let ordinary = policy.try_queue(40).expect("ordinary transit");
+        let mut first = policy
+            .try_queue_overweight_progress(150)
+            .expect("first additive owner");
+
+        policy.shrink_queued(&mut first, 50);
+        assert!(!policy.snapshot().overweight_exclusive);
+        let ordinary = policy.start(ordinary);
+        let first = policy.start(first);
+        let second = policy
+            .try_queue_overweight_progress(150)
+            .expect("demoted first token permits one new additive owner");
+        assert!(policy.snapshot().overweight_exclusive);
+
+        policy.finish(first, false);
+        assert!(policy.snapshot().overweight_exclusive);
+        assert!(policy.try_queue_overweight_progress(150).is_none());
+
+        policy.cancel_queued(second, false);
+        policy.finish(ordinary, false);
+        assert!(!policy.snapshot().overweight_exclusive);
     }
 
     #[test]

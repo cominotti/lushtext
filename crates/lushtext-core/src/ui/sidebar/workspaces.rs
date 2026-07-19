@@ -18,6 +18,10 @@ use crate::model::workspace::{
     WorkspaceConfig, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId, WorkspaceScope,
     WorkspacesFile,
 };
+use crate::model::workspace_persistence::{
+    WorkspacePersistenceCloseDecision, WorkspacePersistenceStartReason,
+    WorkspacePersistenceTerminalEffect,
+};
 use crate::services::notifications::NotificationSeverity;
 use crate::services::{json_store, workspace_manager};
 use crate::ui::accessibility;
@@ -675,41 +679,163 @@ impl LushtextSidebar {
 
     /// Save the current workspace state to disk on a background thread.
     pub(super) fn persist(&self) {
-        let imp = self.imp();
-        imp.persist_dirty.set(true);
-        if imp.persist_inflight.get() {
+        let should_schedule = {
+            let imp = self.imp();
+            let mut state = imp.persistence.borrow_mut();
+            state.request_mutation();
+            state.in_flight_generation().is_none()
+        };
+        if !should_schedule {
             return;
         }
 
-        imp.persist_debounce.schedule(
-            self,
+        self.schedule_persist(
             Duration::from_millis(super::PERSIST_DEBOUNCE_MS),
-            move |sidebar, _| {
-                let imp = sidebar.imp();
-                if imp.persist_inflight.get() || !imp.persist_dirty.get() {
-                    return;
+            WorkspacePersistenceStartReason::Debounce,
+        );
+    }
+
+    fn schedule_persist(&self, delay: Duration, reason: WorkspacePersistenceStartReason) {
+        self.imp()
+            .persist_debounce
+            .schedule(self, delay, move |sidebar, _| {
+                sidebar.start_persist_worker(reason);
+            });
+    }
+
+    fn start_persist_worker(&self, reason: WorkspacePersistenceStartReason) {
+        let Some(generation) = self.imp().persistence.borrow_mut().start(reason) else {
+            return;
+        };
+        let data_dir = json_store::data_dir();
+        let workspaces_file = self.imp().workspaces_file.borrow().clone();
+
+        spawn_blocking_then(
+            self.clone(),
+            move || workspace_manager::save(&data_dir, &workspaces_file),
+            move |sidebar, result| {
+                let had_failure = sidebar.imp().persistence.borrow().is_failed();
+                let effect = match result {
+                    Ok(()) => sidebar
+                        .imp()
+                        .persistence
+                        .borrow_mut()
+                        .apply_success(generation),
+                    Err(error) => {
+                        tracing::error!("Failed to save workspaces: {error}");
+                        sidebar
+                            .imp()
+                            .persistence
+                            .borrow_mut()
+                            .apply_failure(generation, "Workspace changes could not be saved.")
+                    }
+                };
+                let close_waiting = !sidebar.imp().persistence_flush_waiters.borrow().is_empty();
+
+                match effect {
+                    WorkspacePersistenceTerminalEffect::StartNewest => {
+                        sidebar.start_persist_worker(if close_waiting {
+                            WorkspacePersistenceStartReason::CloseFlush
+                        } else {
+                            WorkspacePersistenceStartReason::Debounce
+                        });
+                    }
+                    WorkspacePersistenceTerminalEffect::RetryAfter(_)
+                    | WorkspacePersistenceTerminalEffect::AwaitExplicitRetry
+                        if close_waiting =>
+                    {
+                        sidebar.resolve_workspace_flush_waiters(&Err(
+                            super::WorkspacePersistenceFlushError::new(
+                                "the newest workspace snapshot could not be saved",
+                            ),
+                        ));
+                    }
+                    WorkspacePersistenceTerminalEffect::RetryAfter(delay) => {
+                        sidebar.publish_workspace_persistence_message(
+                            "Workspace changes could not be saved. LushText will retry them.",
+                            NotificationSeverity::Warning,
+                        );
+                        sidebar
+                            .schedule_persist(delay, WorkspacePersistenceStartReason::RetryWakeup);
+                    }
+                    WorkspacePersistenceTerminalEffect::AwaitExplicitRetry => {
+                        sidebar.publish_workspace_persistence_message(
+                            "Workspace changes could not be saved. They remain pending for the next change or close attempt.",
+                            NotificationSeverity::Warning,
+                        );
+                    }
+                    WorkspacePersistenceTerminalEffect::Settled => {
+                        if had_failure {
+                            sidebar.publish_workspace_persistence_message(
+                                "Workspace changes were saved.",
+                                NotificationSeverity::Info,
+                            );
+                        }
+                        if close_waiting {
+                            sidebar.resolve_workspace_flush_waiters(&Ok(()));
+                        }
+                    }
+                    WorkspacePersistenceTerminalEffect::IgnoredStale if close_waiting => {
+                        sidebar.resolve_workspace_flush_waiters(&Err(
+                            super::WorkspacePersistenceFlushError::new(
+                                "workspace persistence returned an obsolete terminal",
+                            ),
+                        ));
+                    }
+                    WorkspacePersistenceTerminalEffect::IgnoredStale => {}
                 }
-
-                let data_dir = json_store::data_dir();
-                let workspaces_file = imp.workspaces_file.borrow().clone();
-                imp.persist_inflight.set(true);
-                imp.persist_dirty.set(false);
-
-                spawn_blocking_then(
-                    sidebar.clone(),
-                    move || workspace_manager::save(&data_dir, &workspaces_file),
-                    |sidebar, result| {
-                        let imp = sidebar.imp();
-                        imp.persist_inflight.set(false);
-                        if let Err(error) = result {
-                            tracing::error!("Failed to save workspaces: {error}");
-                        }
-                        if imp.persist_dirty.get() {
-                            sidebar.persist();
-                        }
-                    },
-                );
             },
         );
+    }
+
+    /// Flush the newest requested workspace snapshot without waiting for debounce.
+    pub(crate) fn flush_workspace_persistence(
+        &self,
+        callback: impl FnOnce(Result<(), super::WorkspacePersistenceFlushError>) + 'static,
+    ) {
+        let close_decision = {
+            let persistence = self.imp().persistence.borrow();
+            persistence.close_decision()
+        };
+        match close_decision {
+            WorkspacePersistenceCloseDecision::Durable => {
+                glib::idle_add_local_once(move || callback(Ok(())));
+            }
+            WorkspacePersistenceCloseDecision::WaitForInFlight(_) => {
+                self.imp()
+                    .persistence_flush_waiters
+                    .borrow_mut()
+                    .push(Box::new(callback));
+            }
+            WorkspacePersistenceCloseDecision::StartNow(_) => {
+                self.imp()
+                    .persistence_flush_waiters
+                    .borrow_mut()
+                    .push(Box::new(callback));
+                let _ = self.imp().persist_debounce.invalidate();
+                self.start_persist_worker(WorkspacePersistenceStartReason::CloseFlush);
+            }
+        }
+    }
+
+    fn resolve_workspace_flush_waiters(
+        &self,
+        result: &Result<(), super::WorkspacePersistenceFlushError>,
+    ) {
+        let waiters = self
+            .imp()
+            .persistence_flush_waiters
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            waiter(result.clone());
+        }
+    }
+
+    fn publish_workspace_persistence_message(&self, text: &str, severity: NotificationSeverity) {
+        if let Some(ref callback) = *self.imp().message_callback.borrow() {
+            callback(text, severity);
+        }
     }
 }

@@ -685,35 +685,55 @@ impl super::LushtextWindow {
         let window_for_draft = self.clone();
         self.flush_dirty_drafts_async(move |draft_result| match draft_result {
             Ok(()) => {
-                let window_for_session = window_for_draft.clone();
-                let window_for_destroy = window_for_draft;
-                window_for_session.save_session_for_close_async(move |result| {
-                    if let Err(error) = result {
-                        abort_async_close_safety(&window_for_destroy, was_sensitive);
-                        window_for_destroy.publish_status_message(
-                            &format!("Close cancelled because session recovery state could not be saved: {error}"),
+                let sidebar = window_for_draft.imp().sidebar.clone();
+                let window_for_workspace = window_for_draft;
+                sidebar.flush_workspace_persistence(move |workspace_result| {
+                    if let Err(error) = workspace_result {
+                        abort_async_close_safety(&window_for_workspace, was_sensitive);
+                        window_for_workspace.publish_status_message(
+                            &format!(
+                                "Close cancelled because workspace changes could not be saved: {error}"
+                            ),
                             MessageKind::Error,
                         );
                         return;
                     }
-                    #[cfg(feature = "test-utils")]
-                    {
-                        let delay_ms = CLOSE_SAFETY_COMPLETION_DELAY_MS.load(Ordering::Acquire);
-                        if delay_ms > 0 {
-                            glib::timeout_add_local_once(
-                                std::time::Duration::from_millis(delay_ms),
-                                move || {
-                                    finish_async_close_safety(
-                                        &window_for_destroy,
-                                        &fingerprint,
-                                        was_sensitive,
-                                    );
-                                },
+
+                    let window_for_session = window_for_workspace.clone();
+                    let window_for_destroy = window_for_workspace;
+                    window_for_session.save_session_for_close_async(move |result| {
+                        if let Err(error) = result {
+                            abort_async_close_safety(&window_for_destroy, was_sensitive);
+                            window_for_destroy.publish_status_message(
+                                &format!("Close cancelled because session recovery state could not be saved: {error}"),
+                                MessageKind::Error,
                             );
                             return;
                         }
-                    }
-                    finish_async_close_safety(&window_for_destroy, &fingerprint, was_sensitive);
+                        #[cfg(feature = "test-utils")]
+                        {
+                            let delay_ms =
+                                CLOSE_SAFETY_COMPLETION_DELAY_MS.load(Ordering::Acquire);
+                            if delay_ms > 0 {
+                                glib::timeout_add_local_once(
+                                    std::time::Duration::from_millis(delay_ms),
+                                    move || {
+                                        finish_async_close_safety(
+                                            &window_for_destroy,
+                                            &fingerprint,
+                                            was_sensitive,
+                                        );
+                                    },
+                                );
+                                return;
+                            }
+                        }
+                        finish_async_close_safety(
+                            &window_for_destroy,
+                            &fingerprint,
+                            was_sensitive,
+                        );
+                    });
                 });
             }
             Err(error) => {

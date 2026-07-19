@@ -57,6 +57,18 @@ pub const MAX_PALETTE_NOTE_ENTRIES: usize = 10_000;
 pub const MAX_PALETTE_NOTE_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum complete heap graph retained by one palette note source.
 pub const MAX_PALETTE_NOTE_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum complete sidecar-path ownership retained by one source scan.
+pub const MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES: u64 = 8 * 1024 * 1024;
+/// Maximum concurrently retained final rows plus construction-only scratch.
+///
+/// This preserves the 64 MiB final source while leaving room for one maximum
+/// 16 MiB recovery-metadata input and bounded path, diagnostic, and category
+/// construction ownership.
+pub const MAX_PALETTE_NOTE_CONSTRUCTION_BYTES: u64 = 96 * 1024 * 1024;
+/// Conservative parsed-model heap expansion relative to compact JSON input.
+const NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER: u64 = 4;
+/// Fixed allowance for one returned recovery diagnostic graph.
+const NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES: u64 = 64 * 1024;
 /// Maximum recovery diagnostics retained with one bounded palette source.
 const MAX_PALETTE_NOTE_DIAGNOSTICS: usize = 1_024;
 
@@ -71,6 +83,10 @@ pub struct NoteSourceLimits {
     pub retained_bytes: u64,
     /// Maximum sidecar candidates retained by each directory scan.
     pub sidecar_entries: usize,
+    /// Maximum complete path ownership retained by each sidecar scan.
+    pub sidecar_path_bytes: u64,
+    /// Maximum aggregate concurrently retained construction graph.
+    pub construction_bytes: u64,
     /// Maximum recovery diagnostics retained for UI reporting.
     pub diagnostics: usize,
 }
@@ -81,6 +97,8 @@ pub const PALETTE_NOTE_SOURCE_LIMITS: NoteSourceLimits = NoteSourceLimits {
     searchable_text_bytes: MAX_PALETTE_NOTE_TEXT_BYTES,
     retained_bytes: MAX_PALETTE_NOTE_RETAINED_BYTES,
     sidecar_entries: MAX_PALETTE_NOTE_ENTRIES,
+    sidecar_path_bytes: MAX_PALETTE_NOTE_SIDECAR_PATH_BYTES,
+    construction_bytes: MAX_PALETTE_NOTE_CONSTRUCTION_BYTES,
     diagnostics: MAX_PALETTE_NOTE_DIAGNOSTICS,
 };
 
@@ -165,6 +183,10 @@ pub enum NoteSourceTruncationReason {
     RetainedByteLimit,
     /// A sidecar directory contained more candidates than the bounded scan retained.
     SidecarLimit,
+    /// Complete sidecar paths reached their conservative byte ceiling.
+    SidecarPathByteLimit,
+    /// Concurrent construction ownership reached its aggregate byte ceiling.
+    ConstructionByteLimit,
     /// Recovery diagnostics exceeded their bounded evidence budget.
     DiagnosticLimit,
     /// Live editor paths or bookmark metadata exceeded the pre-admission request budget.
@@ -182,6 +204,14 @@ pub struct NoteSourceMetrics {
     pub retained_bytes: u64,
     /// Number of sidecars loaded one at a time.
     pub loaded_sidecars: usize,
+    /// Sidecar path bytes currently retained during construction.
+    pub current_sidecar_path_bytes: u64,
+    /// Highest sidecar path ownership observed during construction.
+    pub peak_sidecar_path_bytes: u64,
+    /// Aggregate final-row and scratch bytes currently retained during construction.
+    pub current_construction_bytes: u64,
+    /// Highest aggregate construction ownership observed.
+    pub peak_construction_bytes: u64,
     /// Highest aggregate row count retained during construction.
     pub peak_retained_entries: usize,
     /// Stable reasons why later source material was omitted.
@@ -502,12 +532,25 @@ pub fn load_note_entries_bounded_for_scope(
             live_scoped_document_ids.insert(identity.sidecar_id);
         }
     }
+    let live_identity_bytes = string_set_retained_byte_weight(&live_scoped_document_ids);
+    if !admission.try_charge_construction(live_identity_bytes) {
+        return Ok(admission.complete());
+    }
 
     if !scope_folders.is_empty() {
         let canonical_folders = note_storage::canonicalize_folders(scope_folders);
+        let canonical_folder_bytes = path_slice_retained_byte_weight(&canonical_folders);
+        if !admission.try_charge_construction(canonical_folder_bytes) {
+            return Ok(admission.complete());
+        }
         let dir = bookmark_service::bookmarks_dir(data_dir);
-        let sidecars =
-            bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?;
+        let BoundedSidecarEntries::Admitted {
+            entries: sidecars,
+            retained_bytes: sidecar_path_bytes,
+        } = bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?
+        else {
+            return Ok(admission.complete());
+        };
         if cancellation.is_cancelled() {
             return Ok(admission.cancelled());
         }
@@ -515,22 +558,36 @@ pub fn load_note_entries_bounded_for_scope(
             if cancellation.is_cancelled() {
                 return Ok(admission.cancelled());
             }
-            let load = note_storage::load_json_file_recovering::<BookmarkDocument>(
+            let Some(parse) =
+                reserve_sidecar_parse(std::slice::from_ref(&entry.path), &mut admission)?
+            else {
+                return Ok(admission.complete());
+            };
+            let load = note_storage::load_json_file_recovering_with_max_bytes::<BookmarkDocument>(
                 data_dir,
                 &entry.path,
                 RecoveryMetadataClass::BookmarkSidecar,
+                parse.max_read_bytes,
             );
-            admission.loaded_sidecar(&load.diagnostics);
+            let document_bytes = load
+                .value
+                .as_ref()
+                .map_or(0, BookmarkDocument::retained_heap_byte_weight);
+            if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, &mut admission) {
+                return Ok(admission.complete());
+            }
             let Some(document) = load.value else {
                 continue;
             };
             if !note_storage::matches_any_folder(&document.identity, &canonical_folders)
                 || live_scoped_document_ids.contains(&document.identity.sidecar_id)
             {
+                admission.release_construction(document_bytes);
                 continue;
             }
             let path = document.identity.display_path;
             let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
+                admission.release_construction(document_bytes);
                 continue;
             };
             let workspace_folder =
@@ -549,8 +606,12 @@ pub fn load_note_entries_bounded_for_scope(
                     return Ok(admission.complete());
                 }
             }
+            admission.release_construction(document_bytes);
         }
+        admission.release_sidecar_paths(sidecar_path_bytes);
+        admission.release_construction(canonical_folder_bytes);
     }
+    admission.release_construction(live_identity_bytes);
 
     for snapshot in open_editor_snapshots
         .iter()
@@ -583,16 +644,33 @@ pub fn load_note_entries_bounded_for_scope(
                 if cancellation.is_cancelled() {
                     return Ok(admission.cancelled());
                 }
-                let load = folder_note_service::load_for_folder_recovering(data_dir, &folder)?;
-                admission.loaded_sidecar(&load.diagnostics);
-                if let Some(document) = load.document
-                    && !admission.admit(folder_note_entry(
+                let paths = folder_note_service::sidecar_paths_for_folder(data_dir, &folder)?;
+                let Some(parse) = reserve_sidecar_parse(&paths, &mut admission)? else {
+                    return Ok(admission.complete());
+                };
+                let load = folder_note_service::load_for_folder_recovering_with_max_bytes(
+                    data_dir,
+                    &folder,
+                    parse.max_read_bytes,
+                )?;
+                let document_bytes = load.document.as_ref().map_or(
+                    0,
+                    crate::model::folder_note::FolderNoteDocument::retained_heap_byte_weight,
+                );
+                if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, &mut admission)
+                {
+                    return Ok(admission.complete());
+                }
+                if let Some(document) = load.document {
+                    let admitted = admission.admit(folder_note_entry(
                         workspace.name.clone(),
                         folder,
                         document.note,
-                    ))
-                {
-                    return Ok(admission.complete());
+                    ));
+                    admission.release_construction(document_bytes);
+                    if !admitted {
+                        return Ok(admission.complete());
+                    }
                 }
             }
         }
@@ -600,9 +678,18 @@ pub fn load_note_entries_bounded_for_scope(
 
     if mode == NotesBrowserMode::AllNotes && !scope_folders.is_empty() {
         let canonical_folders = note_storage::canonicalize_folders(scope_folders);
+        let canonical_folder_bytes = path_slice_retained_byte_weight(&canonical_folders);
+        if !admission.try_charge_construction(canonical_folder_bytes) {
+            return Ok(admission.complete());
+        }
         let dir = document_note_service::document_notes_dir(data_dir);
-        let sidecars =
-            bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?;
+        let BoundedSidecarEntries::Admitted {
+            entries: sidecars,
+            retained_bytes: sidecar_path_bytes,
+        } = bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?
+        else {
+            return Ok(admission.complete());
+        };
         if cancellation.is_cancelled() {
             return Ok(admission.cancelled());
         }
@@ -610,20 +697,34 @@ pub fn load_note_entries_bounded_for_scope(
             if cancellation.is_cancelled() {
                 return Ok(admission.cancelled());
             }
-            let load = note_storage::load_json_file_recovering::<DocumentNoteDocument>(
+            let Some(parse) =
+                reserve_sidecar_parse(std::slice::from_ref(&entry.path), &mut admission)?
+            else {
+                return Ok(admission.complete());
+            };
+            let load = note_storage::load_json_file_recovering_with_max_bytes::<DocumentNoteDocument>(
                 data_dir,
                 &entry.path,
                 RecoveryMetadataClass::DocumentNoteSidecar,
+                parse.max_read_bytes,
             );
-            admission.loaded_sidecar(&load.diagnostics);
+            let document_bytes = load
+                .value
+                .as_ref()
+                .map_or(0, DocumentNoteDocument::retained_heap_byte_weight);
+            if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, &mut admission) {
+                return Ok(admission.complete());
+            }
             let Some(document) = load.value else {
                 continue;
             };
             if !note_storage::matches_any_folder(&document.identity, &canonical_folders) {
+                admission.release_construction(document_bytes);
                 continue;
             }
             let path = document.identity.display_path;
             let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
+                admission.release_construction(document_bytes);
                 continue;
             };
             let workspace_folder =
@@ -632,10 +733,14 @@ pub fn load_note_entries_bounded_for_scope(
                 workspace_name: workspace.name.clone(),
                 workspace_folder,
             };
-            if !admission.admit(document_note_entry(&source, path, document.note)) {
+            let admitted = admission.admit(document_note_entry(&source, path, document.note));
+            admission.release_construction(document_bytes);
+            if !admitted {
                 return Ok(admission.complete());
             }
         }
+        admission.release_sidecar_paths(sidecar_path_bytes);
+        admission.release_construction(canonical_folder_bytes);
     }
 
     for snapshot in open_editor_snapshots {
@@ -657,19 +762,123 @@ pub fn load_note_entries_bounded_for_scope(
             }
         }
         if mode == NotesBrowserMode::AllNotes
-            && let Ok(Some(document)) =
-                document_note_service::load_for_path(data_dir, &snapshot.path)
-            && !admission.admit(document_note_entry(
+            && let Ok(identity) = note_storage::resolve_document_identity(&snapshot.path)
+        {
+            let sidecar_path = document_note_service::document_notes_dir(data_dir)
+                .join(note_storage::sidecar_filename(&identity.sidecar_id));
+            let Some(parse) = reserve_sidecar_parse(&[sidecar_path], &mut admission)? else {
+                return Ok(admission.complete());
+            };
+            let document = document_note_service::load_for_path_with_max_bytes(
+                data_dir,
+                &snapshot.path,
+                parse.max_read_bytes,
+            )?;
+            let document_bytes = document
+                .as_ref()
+                .map_or(0, DocumentNoteDocument::retained_heap_byte_weight);
+            if !admit_parsed_sidecar(&parse, document_bytes, &[], &mut admission) {
+                return Ok(admission.complete());
+            }
+            let Some(document) = document else {
+                continue;
+            };
+            let admitted = admission.admit(document_note_entry(
                 &source,
                 snapshot.path.clone(),
                 document.note,
-            ))
-        {
-            return Ok(admission.complete());
+            ));
+            admission.release_construction(document_bytes);
+            if !admitted {
+                return Ok(admission.complete());
+            }
         }
     }
 
     Ok(admission.complete())
+}
+
+enum BoundedSidecarEntries {
+    Admitted {
+        entries: Vec<file_tree::DirectoryEntry>,
+        retained_bytes: u64,
+    },
+    LimitReached,
+}
+
+struct SidecarParseReservation {
+    charged_bytes: u64,
+    model_byte_limit: u64,
+    max_read_bytes: u64,
+}
+
+fn reserve_sidecar_parse(
+    paths: &[PathBuf],
+    admission: &mut NoteSourceAdmission,
+) -> Result<Option<SidecarParseReservation>> {
+    let default_max = crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES;
+    let mut readable_bytes = 0u64;
+    let mut has_oversized = false;
+    for path in paths {
+        match fs_metadata::file_facts(path) {
+            Ok(facts) if facts.byte_size <= default_max => {
+                readable_bytes = readable_bytes.max(facts.byte_size);
+            }
+            Ok(_) => has_oversized = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            // The recovery-aware loader owns unreadable-sidecar diagnostics.
+            // Keep this preflight diagnostic-only when metadata is unavailable.
+            Err(_) => {}
+        }
+    }
+    let model_byte_limit = readable_bytes.saturating_mul(NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER);
+    let charged_bytes = readable_bytes
+        .saturating_add(model_byte_limit)
+        .saturating_add(NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES);
+    if !admission.try_charge_construction(charged_bytes) {
+        return Ok(None);
+    }
+    Ok(Some(SidecarParseReservation {
+        charged_bytes,
+        model_byte_limit,
+        max_read_bytes: if readable_bytes == 0 && has_oversized {
+            default_max
+        } else {
+            readable_bytes
+        },
+    }))
+}
+
+fn admit_parsed_sidecar(
+    reservation: &SidecarParseReservation,
+    document_bytes: u64,
+    diagnostics: &[RecoveryDiagnostic],
+    admission: &mut NoteSourceAdmission,
+) -> bool {
+    let diagnostic_bytes = diagnostics_retained_byte_weight(diagnostics);
+    let actual_bytes = document_bytes.saturating_add(diagnostic_bytes);
+    if document_bytes > reservation.model_byte_limit || actual_bytes > reservation.charged_bytes {
+        admission.add_truncation(NoteSourceTruncationReason::ConstructionByteLimit);
+        admission.release_construction(reservation.charged_bytes);
+        return false;
+    }
+    admission.release_construction(reservation.charged_bytes.saturating_sub(actual_bytes));
+    if !admission.loaded_sidecar(diagnostics) {
+        admission.release_construction(actual_bytes);
+        return false;
+    }
+    admission.release_construction(diagnostic_bytes);
+    true
+}
+
+fn diagnostics_retained_byte_weight(diagnostics: &[RecoveryDiagnostic]) -> u64 {
+    diagnostics.iter().fold(0u64, |total, diagnostic| {
+        total
+            .saturating_add(
+                u64::try_from(std::mem::size_of::<RecoveryDiagnostic>()).unwrap_or(u64::MAX),
+            )
+            .saturating_add(diagnostic.retained_heap_byte_weight())
+    })
 }
 
 fn bounded_sidecar_entries(
@@ -677,24 +886,54 @@ fn bounded_sidecar_entries(
     sidecar_limit: usize,
     cancellation: &PaletteSearchCancellation,
     admission: &mut NoteSourceAdmission,
-) -> Result<Vec<file_tree::DirectoryEntry>> {
+) -> Result<BoundedSidecarEntries> {
     if !fs_metadata::path_status(dir)?.is_present() {
-        return Ok(Vec::new());
+        return Ok(BoundedSidecarEntries::Admitted {
+            entries: Vec::new(),
+            retained_bytes: 0,
+        });
     }
-    let scan = file_tree::scan_directory_bounded_with_cancel(dir, sidecar_limit, 0, || {
-        cancellation.is_cancelled()
-    });
+    let remaining_construction = admission.remaining_construction_bytes();
+    let scan_byte_limit = admission
+        .sidecar_path_byte_limit
+        .min(remaining_construction);
+    let scan = file_tree::scan_directory_bounded_with_cancel_and_bytes(
+        dir,
+        sidecar_limit,
+        0,
+        scan_byte_limit,
+        || cancellation.is_cancelled(),
+    );
     if scan.cancelled {
-        return Ok(Vec::new());
+        return Ok(BoundedSidecarEntries::Admitted {
+            entries: Vec::new(),
+            retained_bytes: 0,
+        });
     }
     if scan.truncated {
         admission.add_truncation(NoteSourceTruncationReason::SidecarLimit);
+    }
+    if scan.byte_truncated {
+        if scan_byte_limit == admission.sidecar_path_byte_limit {
+            admission.add_truncation(NoteSourceTruncationReason::SidecarPathByteLimit);
+        }
+        if scan_byte_limit == remaining_construction {
+            admission.add_truncation(NoteSourceTruncationReason::ConstructionByteLimit);
+        }
     }
     if let Some(error) = scan.error {
         return Err(anyhow::anyhow!(error))
             .with_context(|| format!("failed to read {}", dir.display()));
     }
-    Ok(scan.entries)
+    if !admission.observe_construction_overlap(scan.peak_retained_bytes)
+        || !admission.try_charge_sidecar_paths(scan.retained_bytes)
+    {
+        return Ok(BoundedSidecarEntries::LimitReached);
+    }
+    Ok(BoundedSidecarEntries::Admitted {
+        entries: scan.entries,
+        retained_bytes: scan.retained_bytes,
+    })
 }
 
 struct NoteSourceAdmission {
@@ -707,7 +946,10 @@ struct NoteSourceAdmission {
     entry_limit: usize,
     text_byte_limit: usize,
     retained_byte_limit: u64,
+    sidecar_path_byte_limit: u64,
+    construction_byte_limit: u64,
     diagnostic_limit: usize,
+    diagnostic_construction_bytes: u64,
 }
 
 impl Default for NoteSourceAdmission {
@@ -728,7 +970,10 @@ impl NoteSourceAdmission {
             entry_limit: limits.entries,
             text_byte_limit: limits.searchable_text_bytes,
             retained_byte_limit: limits.retained_bytes,
+            sidecar_path_byte_limit: limits.sidecar_path_bytes,
+            construction_byte_limit: limits.construction_bytes,
             diagnostic_limit: limits.diagnostics,
+            diagnostic_construction_bytes: 0,
         }
     }
 
@@ -743,6 +988,8 @@ impl NoteSourceAdmission {
             searchable_text_bytes: text_byte_limit,
             retained_bytes: u64::MAX,
             sidecar_entries: entry_limit,
+            sidecar_path_bytes: u64::MAX,
+            construction_bytes: u64::MAX,
             diagnostics: diagnostic_limit,
         })
     }
@@ -769,6 +1016,16 @@ impl NoteSourceAdmission {
             self.add_truncation(NoteSourceTruncationReason::RetainedByteLimit);
             return false;
         }
+        // Geometric category capacity can retain almost two row shells, and
+        // final assembly allocates one more shell array before those category
+        // vectors drop. Charging both overlaps before push keeps peak evidence
+        // conservative without depending on allocator growth details.
+        let vector_overlap = u64::try_from(std::mem::size_of::<PaletteNoteEntry>())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2);
+        if !self.try_charge_construction(retained_bytes.saturating_add(vector_overlap)) {
+            return false;
+        }
 
         self.metrics.retained_entries = self.metrics.retained_entries.saturating_add(1);
         self.metrics.retained_searchable_bytes = self
@@ -789,14 +1046,24 @@ impl NoteSourceAdmission {
         true
     }
 
-    fn loaded_sidecar(&mut self, diagnostics: &[RecoveryDiagnostic]) {
+    fn loaded_sidecar(&mut self, diagnostics: &[RecoveryDiagnostic]) -> bool {
         self.metrics.loaded_sidecars = self.metrics.loaded_sidecars.saturating_add(1);
         let remaining = self.diagnostic_limit.saturating_sub(self.diagnostics.len());
-        self.diagnostics
-            .extend(diagnostics.iter().take(remaining).cloned());
+        for diagnostic in diagnostics.iter().take(remaining) {
+            let bytes = u64::try_from(std::mem::size_of::<RecoveryDiagnostic>())
+                .unwrap_or(u64::MAX)
+                .saturating_add(diagnostic.retained_heap_byte_weight());
+            if !self.try_charge_construction(bytes) {
+                return false;
+            }
+            self.diagnostic_construction_bytes =
+                self.diagnostic_construction_bytes.saturating_add(bytes);
+            self.diagnostics.push(diagnostic.clone());
+        }
         if diagnostics.len() > remaining {
             self.add_truncation(NoteSourceTruncationReason::DiagnosticLimit);
         }
+        true
     }
 
     fn add_truncation(&mut self, reason: NoteSourceTruncationReason) {
@@ -805,7 +1072,76 @@ impl NoteSourceAdmission {
         }
     }
 
-    fn cancelled(self) -> PaletteNoteSourceOutcome {
+    fn try_charge_sidecar_paths(&mut self, bytes: u64) -> bool {
+        let next_paths = self
+            .metrics
+            .current_sidecar_path_bytes
+            .saturating_add(bytes);
+        if next_paths > self.sidecar_path_byte_limit {
+            self.add_truncation(NoteSourceTruncationReason::SidecarPathByteLimit);
+            return false;
+        }
+        if !self.try_charge_construction(bytes) {
+            return false;
+        }
+        self.metrics.current_sidecar_path_bytes = next_paths;
+        self.metrics.peak_sidecar_path_bytes = self
+            .metrics
+            .peak_sidecar_path_bytes
+            .max(self.metrics.current_sidecar_path_bytes);
+        true
+    }
+
+    fn release_sidecar_paths(&mut self, bytes: u64) {
+        self.metrics.current_sidecar_path_bytes = self
+            .metrics
+            .current_sidecar_path_bytes
+            .saturating_sub(bytes);
+        self.release_construction(bytes);
+    }
+
+    fn try_charge_construction(&mut self, bytes: u64) -> bool {
+        let next = self
+            .metrics
+            .current_construction_bytes
+            .saturating_add(bytes);
+        if next > self.construction_byte_limit {
+            self.add_truncation(NoteSourceTruncationReason::ConstructionByteLimit);
+            return false;
+        }
+        self.metrics.current_construction_bytes = next;
+        self.metrics.peak_construction_bytes = self.metrics.peak_construction_bytes.max(next);
+        true
+    }
+
+    fn remaining_construction_bytes(&self) -> u64 {
+        self.construction_byte_limit
+            .saturating_sub(self.metrics.current_construction_bytes)
+    }
+
+    fn observe_construction_overlap(&mut self, scratch_bytes: u64) -> bool {
+        let peak = self
+            .metrics
+            .current_construction_bytes
+            .saturating_add(scratch_bytes);
+        if peak > self.construction_byte_limit {
+            self.add_truncation(NoteSourceTruncationReason::ConstructionByteLimit);
+            return false;
+        }
+        self.metrics.peak_construction_bytes = self.metrics.peak_construction_bytes.max(peak);
+        true
+    }
+
+    fn release_construction(&mut self, bytes: u64) {
+        self.metrics.current_construction_bytes = self
+            .metrics
+            .current_construction_bytes
+            .saturating_sub(bytes);
+    }
+
+    fn cancelled(mut self) -> PaletteNoteSourceOutcome {
+        self.metrics.current_sidecar_path_bytes = 0;
+        self.metrics.current_construction_bytes = 0;
         PaletteNoteSourceOutcome::Cancelled {
             metrics: self.metrics,
         }
@@ -815,6 +1151,16 @@ impl NoteSourceAdmission {
         sort_note_entries_by_label(&mut self.bookmark_entries);
         sort_note_entries_by_label(&mut self.document_entries);
         sort_note_entries_by_label(&mut self.open_tab_entries);
+        let construction_row_bytes = self.metrics.retained_bytes;
+        let vector_overlap = u64::try_from(std::mem::size_of::<PaletteNoteEntry>())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2)
+            .saturating_mul(u64::try_from(self.metrics.retained_entries).unwrap_or(u64::MAX));
+        self.release_construction(
+            construction_row_bytes
+                .saturating_add(vector_overlap)
+                .saturating_add(self.diagnostic_construction_bytes),
+        );
         let mut entries = Vec::with_capacity(self.metrics.retained_entries);
         entries.extend(self.bookmark_entries);
         entries.extend(self.folder_entries);
@@ -823,6 +1169,8 @@ impl NoteSourceAdmission {
         entries.shrink_to_fit();
         self.metrics.retained_bytes =
             crate::model::palette::palette_note_entries_retained_byte_weight(&entries);
+        self.metrics.current_sidecar_path_bytes = 0;
+        self.metrics.current_construction_bytes = 0;
         debug_assert!(self.metrics.retained_bytes <= self.retained_byte_limit);
         let truncation_reasons = self.metrics.truncation_reasons.clone();
         PaletteNoteSourceOutcome::Complete {
@@ -834,6 +1182,25 @@ impl NoteSourceAdmission {
             metrics: self.metrics,
         }
     }
+}
+
+fn path_slice_retained_byte_weight(paths: &[PathBuf]) -> u64 {
+    u64::try_from(paths.len().saturating_mul(std::mem::size_of::<PathBuf>()))
+        .unwrap_or(u64::MAX)
+        .saturating_add(paths.iter().fold(0u64, |total, path| {
+            total.saturating_add(u64::try_from(path.capacity()).unwrap_or(u64::MAX))
+        }))
+}
+
+fn string_set_retained_byte_weight(values: &HashSet<String>) -> u64 {
+    let buckets = values
+        .capacity()
+        .saturating_mul(std::mem::size_of::<String>().saturating_add(1));
+    u64::try_from(buckets).unwrap_or(u64::MAX).saturating_add(
+        values.iter().fold(0u64, |total, value| {
+            total.saturating_add(u64::try_from(value.capacity()).unwrap_or(u64::MAX))
+        }),
+    )
 }
 
 /// Exercise the production aggregate note admission policy with synthetic bodies.
@@ -1930,6 +2297,305 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_path_accounting_accepts_exact_bytes_and_rejects_one_over() {
+        let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
+            entries: 1,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 1,
+            sidecar_path_bytes: 10,
+            construction_bytes: 20,
+            diagnostics: 1,
+        });
+
+        assert!(admission.try_charge_sidecar_paths(10));
+        assert_eq!(admission.metrics.current_sidecar_path_bytes, 10);
+        assert_eq!(admission.metrics.peak_sidecar_path_bytes, 10);
+        assert_eq!(admission.metrics.current_construction_bytes, 10);
+        admission.release_sidecar_paths(10);
+        assert_eq!(admission.metrics.current_sidecar_path_bytes, 0);
+        assert_eq!(admission.metrics.current_construction_bytes, 0);
+
+        assert!(!admission.try_charge_sidecar_paths(11));
+        assert_eq!(admission.metrics.current_sidecar_path_bytes, 0);
+        assert!(
+            admission
+                .metrics
+                .truncation_reasons
+                .contains(&NoteSourceTruncationReason::SidecarPathByteLimit)
+        );
+    }
+
+    #[test]
+    fn sidecar_scan_peak_is_bounded_by_remaining_aggregate_construction() {
+        let dir = TempDir::new().expect("unicode sidecar scan fixture");
+        let sidecars = dir.path().join("données-équipe-東京-🙂");
+        fixture::create_dir_all(&sidecars);
+        for index in 0..8 {
+            write_file(
+                &sidecars.join(format!("note-équipe-東京-🙂-{index:02}.json")),
+                "{}",
+            );
+        }
+        let limits = NoteSourceLimits {
+            entries: 16,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 16,
+            sidecar_path_bytes: 32 * 1024,
+            construction_bytes: 32 * 1024,
+            diagnostics: 1,
+        };
+        let mut admission = NoteSourceAdmission::with_limits(limits);
+        assert!(admission.try_charge_construction(1_024));
+
+        let BoundedSidecarEntries::Admitted {
+            entries,
+            retained_bytes,
+        } = bounded_sidecar_entries(
+            &sidecars,
+            limits.sidecar_entries,
+            &PaletteSearchCancellation::default(),
+            &mut admission,
+        )
+        .expect("bounded sidecar scan")
+        else {
+            panic!("unicode fixture must fit the declared scan envelope");
+        };
+
+        assert_eq!(entries.len(), 8);
+        assert!(retained_bytes > 0);
+        assert!(admission.metrics.peak_sidecar_path_bytes > 0);
+        assert!(admission.metrics.peak_construction_bytes <= limits.construction_bytes);
+        admission.release_sidecar_paths(retained_bytes);
+        admission.release_construction(1_024);
+    }
+
+    #[test]
+    fn sidecar_parse_reserves_raw_plus_model_peak_before_loading() {
+        let dir = TempDir::new().expect("sidecar parse reservation fixture");
+        let path = dir.path().join("note.json");
+        write_file(&path, &"x".repeat(4_096));
+        let raw_bytes = fs_metadata::file_facts(&path)
+            .expect("sidecar facts")
+            .byte_size;
+        let required = raw_bytes
+            .saturating_mul(NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER.saturating_add(1))
+            .saturating_add(NOTE_SIDECAR_DIAGNOSTIC_RESERVATION_BYTES);
+        let limits = |construction_bytes| NoteSourceLimits {
+            entries: 1,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 1,
+            sidecar_path_bytes: u64::MAX,
+            construction_bytes,
+            diagnostics: 1,
+        };
+
+        let mut exact = NoteSourceAdmission::with_limits(limits(required.saturating_add(17)));
+        assert!(exact.try_charge_construction(17));
+        let reservation = reserve_sidecar_parse(std::slice::from_ref(&path), &mut exact)
+            .expect("preflight")
+            .expect("exact parse envelope");
+        assert_eq!(reservation.charged_bytes, required);
+        assert_eq!(exact.metrics.peak_construction_bytes, required + 17);
+        exact.release_construction(reservation.charged_bytes);
+
+        let mut one_under = NoteSourceAdmission::with_limits(limits(required.saturating_add(16)));
+        assert!(one_under.try_charge_construction(17));
+        assert!(
+            reserve_sidecar_parse(&[path], &mut one_under)
+                .expect("preflight")
+                .is_none()
+        );
+        assert!(
+            one_under
+                .metrics
+                .truncation_reasons
+                .contains(&NoteSourceTruncationReason::ConstructionByteLimit)
+        );
+    }
+
+    #[test]
+    fn unreadable_sidecar_preflight_preserves_existing_rows_and_diagnostic() {
+        let dir = TempDir::new().expect("unreadable sidecar fixture");
+        let not_a_directory = dir.path().join("not-a-directory");
+        write_file(&not_a_directory, "not a directory");
+        let sidecar_path = not_a_directory.join("bookmark.json");
+        let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
+            entries: 2,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 1,
+            sidecar_path_bytes: u64::MAX,
+            construction_bytes: u64::MAX,
+            diagnostics: 1,
+        });
+        assert!(admission.admit(test_note_entry(
+            PaletteNoteCategory::OpenTabs,
+            "Valid open note",
+            "body",
+        )));
+
+        let reservation =
+            reserve_sidecar_parse(std::slice::from_ref(&sidecar_path), &mut admission)
+                .expect("metadata failure stays in the recovery flow")
+                .expect("diagnostic reservation");
+        let load = note_storage::load_json_file_recovering_with_max_bytes::<BookmarkDocument>(
+            dir.path(),
+            &sidecar_path,
+            RecoveryMetadataClass::BookmarkSidecar,
+            reservation.max_read_bytes,
+        );
+        assert!(matches!(
+            load.diagnostics.as_slice(),
+            [diagnostic]
+                if matches!(
+                    diagnostic.problem,
+                    crate::services::recovery_metadata::RecoveryProblem::Unreadable { .. }
+                )
+        ));
+        assert!(admit_parsed_sidecar(
+            &reservation,
+            0,
+            &load.diagnostics,
+            &mut admission,
+        ));
+
+        let PaletteNoteSourceOutcome::Complete { load, .. } = admission.complete() else {
+            unreachable!("recovery-aware source completes");
+        };
+        assert_eq!(load.entries.len(), 1);
+        assert_eq!(load.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn bookmark_model_expansion_stays_within_parse_reservation_factor() {
+        let identity = crate::model::sidecar_identity::DocumentSidecarIdentity::from_paths(
+            PathBuf::from("/workspace/main.rs"),
+            PathBuf::from("/workspace/main.rs"),
+        );
+        let document = BookmarkDocument {
+            identity,
+            bookmarks: (0..1_000)
+                .map(|index| BookmarkRecord::new(index, None))
+                .collect(),
+        };
+        let compact_json = serde_json::to_vec(&document).expect("serialize bookmark fixture");
+        assert!(
+            document.retained_heap_byte_weight()
+                <= u64::try_from(compact_json.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(NOTE_SIDECAR_MODEL_EXPANSION_MULTIPLIER)
+        );
+    }
+
+    #[test]
+    fn construction_accounting_is_saturating_and_preserves_peak_after_release() {
+        let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
+            entries: 1,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 1,
+            sidecar_path_bytes: u64::MAX,
+            construction_bytes: 10,
+            diagnostics: 1,
+        });
+
+        assert!(admission.try_charge_construction(10));
+        admission.release_construction(10);
+        assert_eq!(admission.metrics.current_construction_bytes, 0);
+        assert_eq!(admission.metrics.peak_construction_bytes, 10);
+        assert!(!admission.try_charge_construction(u64::MAX));
+        assert_eq!(admission.metrics.current_construction_bytes, 0);
+        assert!(
+            admission
+                .metrics
+                .truncation_reasons
+                .contains(&NoteSourceTruncationReason::ConstructionByteLimit)
+        );
+    }
+
+    #[test]
+    fn unicode_path_and_diagnostic_heap_weights_have_exact_construction_boundaries() {
+        let mut unicode_path = PathBuf::from("/workspace/équipe/東京/🙂.json");
+        unicode_path.reserve(256);
+        let paths = vec![unicode_path];
+        let path_bytes = path_slice_retained_byte_weight(&paths);
+        assert!(path_bytes > u64::try_from(paths[0].as_os_str().len()).unwrap_or(u64::MAX));
+
+        let diagnostic = RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::BookmarkSidecar,
+            paths[0].clone(),
+            "diagnostic detail".repeat(32),
+        );
+        let diagnostic_bytes = u64::try_from(std::mem::size_of::<RecoveryDiagnostic>())
+            .unwrap_or(u64::MAX)
+            .saturating_add(diagnostic.retained_heap_byte_weight());
+        let limits = |construction_bytes| NoteSourceLimits {
+            entries: 1,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 1,
+            sidecar_path_bytes: u64::MAX,
+            construction_bytes,
+            diagnostics: 1,
+        };
+
+        let mut exact = NoteSourceAdmission::with_limits(limits(diagnostic_bytes));
+        assert!(exact.loaded_sidecar(std::slice::from_ref(&diagnostic)));
+        assert_eq!(exact.metrics.peak_construction_bytes, diagnostic_bytes);
+
+        let mut one_under =
+            NoteSourceAdmission::with_limits(limits(diagnostic_bytes.saturating_sub(1)));
+        assert!(!one_under.loaded_sidecar(&[diagnostic]));
+        assert!(
+            one_under
+                .metrics
+                .truncation_reasons
+                .contains(&NoteSourceTruncationReason::ConstructionByteLimit)
+        );
+    }
+
+    #[test]
+    fn final_row_and_category_overlap_stop_before_one_over_construction() {
+        let entry = test_note_entry(PaletteNoteCategory::DocumentNotes, "Boundary", "body");
+        let retained = u64::try_from(std::mem::size_of::<PaletteNoteEntry>())
+            .unwrap_or(u64::MAX)
+            .saturating_add(entry.retained_heap_byte_weight());
+        let vector_overlap = u64::try_from(std::mem::size_of::<PaletteNoteEntry>())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2);
+        let exact_bytes = retained.saturating_add(vector_overlap);
+        let limits = |construction_bytes| NoteSourceLimits {
+            entries: 1,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 1,
+            sidecar_path_bytes: u64::MAX,
+            construction_bytes,
+            diagnostics: 1,
+        };
+
+        let mut exact = NoteSourceAdmission::with_limits(limits(exact_bytes));
+        assert!(exact.admit(entry.clone()));
+        let PaletteNoteSourceOutcome::Complete { load, metrics } = exact.complete() else {
+            unreachable!("exact construction boundary completes");
+        };
+        assert_eq!(load.entries.len(), 1);
+        assert_eq!(metrics.peak_construction_bytes, exact_bytes);
+
+        let mut one_under = NoteSourceAdmission::with_limits(limits(exact_bytes.saturating_sub(1)));
+        assert!(!one_under.admit(entry));
+        assert!(
+            one_under
+                .metrics
+                .truncation_reasons
+                .contains(&NoteSourceTruncationReason::ConstructionByteLimit)
+        );
+    }
+
+    #[test]
     fn bounded_note_admission_charges_activation_target_paths_and_vector_capacity() {
         let mut path = PathBuf::from("/workspace/document.md");
         path.reserve(8 * 1024);
@@ -1958,6 +2624,8 @@ mod tests {
             searchable_text_bytes: usize::MAX,
             retained_bytes: complete_bytes.saturating_sub(target_bytes),
             sidecar_entries: 4,
+            sidecar_path_bytes: u64::MAX,
+            construction_bytes: u64::MAX,
             diagnostics: 4,
         });
 

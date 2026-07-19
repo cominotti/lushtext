@@ -111,6 +111,12 @@ impl RichNoteBody {
         self.text.is_empty()
     }
 
+    /// Return heap bytes retained by the note body.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        u64::try_from(self.text.capacity()).unwrap_or(u64::MAX)
+    }
+
     /// Human-friendly single-line preview used in list rows and compact shells.
     #[must_use]
     pub fn preview_line(&self) -> String {

@@ -19,3 +19,13 @@ pub struct DocumentNoteDocument {
     /// Rich note body stored for the whole file.
     pub note: RichNoteBody,
 }
+
+impl DocumentNoteDocument {
+    /// Return the complete retained heap graph used during bounded source construction.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        self.identity
+            .retained_heap_byte_weight()
+            .saturating_add(self.note.retained_heap_byte_weight())
+    }
+}

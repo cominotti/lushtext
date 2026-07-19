@@ -103,14 +103,30 @@ pub fn load_for_folder(data_dir: &Path, folder: &Path) -> Result<Option<FolderNo
 ///
 /// Returns an error if the folder identity cannot be resolved.
 pub fn load_for_folder_recovering(data_dir: &Path, folder: &Path) -> Result<FolderNoteLoad> {
-    let identity = resolve_folder_note_identity(folder)?;
-    Ok(load_for_identity_recovering(data_dir, &identity))
+    load_for_folder_recovering_with_max_bytes(
+        data_dir,
+        folder,
+        crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
+    )
 }
 
-fn load_for_identity_recovering(data_dir: &Path, identity: &FolderNoteIdentity) -> FolderNoteLoad {
+pub(crate) fn load_for_folder_recovering_with_max_bytes(
+    data_dir: &Path,
+    folder: &Path,
+    max_bytes: u64,
+) -> Result<FolderNoteLoad> {
+    let identity = resolve_folder_note_identity(folder)?;
+    Ok(load_for_identity_recovering(data_dir, &identity, max_bytes))
+}
+
+fn load_for_identity_recovering(
+    data_dir: &Path,
+    identity: &FolderNoteIdentity,
+    max_bytes: u64,
+) -> FolderNoteLoad {
     let mut diagnostics = Vec::new();
     let path = folder_note_sidecar_path(data_dir, identity);
-    let load = load_folder_note_sidecar(data_dir, &path);
+    let load = load_folder_note_sidecar(data_dir, &path, max_bytes);
     note_storage::trace_recovery_diagnostics(&load.diagnostics);
     diagnostics.extend(load.diagnostics);
     if load.value.is_some() {
@@ -127,7 +143,7 @@ fn load_for_identity_recovering(data_dir: &Path, identity: &FolderNoteIdentity) 
             diagnostics,
         };
     }
-    let legacy_load = load_folder_note_sidecar(data_dir, &legacy_path);
+    let legacy_load = load_folder_note_sidecar(data_dir, &legacy_path, max_bytes);
     note_storage::trace_recovery_diagnostics(&legacy_load.diagnostics);
     diagnostics.extend(legacy_load.diagnostics);
     FolderNoteLoad {
@@ -139,12 +155,22 @@ fn load_for_identity_recovering(data_dir: &Path, identity: &FolderNoteIdentity) 
 fn load_folder_note_sidecar(
     data_dir: &Path,
     path: &Path,
+    max_bytes: u64,
 ) -> crate::services::recovery_metadata::RecoveryLoad<Option<FolderNoteDocument>> {
-    note_storage::load_json_file_recovering::<FolderNoteDocument>(
+    note_storage::load_json_file_recovering_with_max_bytes::<FolderNoteDocument>(
         data_dir,
         path,
         RecoveryMetadataClass::FolderNoteSidecar,
+        max_bytes,
     )
+}
+
+pub(crate) fn sidecar_paths_for_folder(data_dir: &Path, folder: &Path) -> Result<[PathBuf; 2]> {
+    let identity = resolve_folder_note_identity(folder)?;
+    Ok([
+        folder_note_sidecar_path(data_dir, &identity),
+        legacy_folder_note_sidecar_path(data_dir, &identity),
+    ])
 }
 
 /// Save the current note for one workspace folder.
@@ -243,7 +269,11 @@ pub fn move_folder_tree(data_dir: &Path, old_folder: &Path, new_folder: &Path) -
                 continue;
             }
 
-            let load = load_folder_note_sidecar(data_dir, &sidecar_path);
+            let load = load_folder_note_sidecar(
+                data_dir,
+                &sidecar_path,
+                crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
+            );
             note_storage::trace_recovery_diagnostics(&load.diagnostics);
             let Some(document) = load.value else {
                 continue;
@@ -358,7 +388,11 @@ pub fn list_folder_notes_for_scope_recovering(
     for workspace in visible_workspaces {
         for folder_path in workspace.folder_paths() {
             let identity = resolve_folder_note_identity(&folder_path)?;
-            let load = load_for_identity_recovering(data_dir, &identity);
+            let load = load_for_identity_recovering(
+                data_dir,
+                &identity,
+                crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
+            );
             diagnostics.extend(load.diagnostics);
             let Some(document) = load.document else {
                 continue;

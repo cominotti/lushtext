@@ -409,7 +409,7 @@ Cargo workspace:
   row wiring is split under `ui/sidebar/workspace_section/` into
   `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`. Plain policy
   for per-store scan ownership, weighted disposal, and minimap analysis lives
-  in `model/{workspace_scan,plain_disposal,minimap_analysis}.rs`.
+  in `model/{workspace_scan,workspace_search,workspace_persistence,plain_disposal,minimap_analysis}.rs`.
 - `crates/lushtext` - thin binary entry point plus integration tests.
 - `crates/gtk-lush/` - governed `0.0.0` GTK Lush family crates for extracting
   reusable GTK4/Libadwaita patterns. These are functional in-tree APIs, not

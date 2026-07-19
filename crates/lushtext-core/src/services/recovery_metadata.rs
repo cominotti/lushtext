@@ -227,6 +227,35 @@ pub struct RecoveryDiagnostic {
 }
 
 impl RecoveryDiagnostic {
+    /// Return heap bytes retained by this diagnostic's owned evidence.
+    #[must_use]
+    pub fn retained_heap_byte_weight(&self) -> u64 {
+        let problem = match &self.problem {
+            RecoveryProblem::Malformed { detail }
+            | RecoveryProblem::UnsupportedFormat { detail }
+            | RecoveryProblem::Unreadable { detail }
+            | RecoveryProblem::Repaired { detail }
+            | RecoveryProblem::RepairSkipped { detail } => detail.capacity(),
+            RecoveryProblem::UnsupportedVersion {
+                supported_versions, ..
+            } => supported_versions.capacity(),
+            RecoveryProblem::UnsupportedFileKind { .. } | RecoveryProblem::Oversized { .. } => 0,
+        };
+        let preservation = match &self.preservation {
+            RecoveryPreservation::Quarantined { path }
+            | RecoveryPreservation::CopiedToQuarantine { path } => path.capacity(),
+            RecoveryPreservation::Failed { detail } => detail.capacity(),
+            RecoveryPreservation::NotNeeded | RecoveryPreservation::PreservedInPlace => 0,
+        };
+        u64::try_from(
+            self.original_path
+                .capacity()
+                .saturating_add(problem)
+                .saturating_add(preservation),
+        )
+        .unwrap_or(u64::MAX)
+    }
+
     /// Build a diagnostic from a preservation attempt.
     #[must_use]
     pub fn with_preservation(

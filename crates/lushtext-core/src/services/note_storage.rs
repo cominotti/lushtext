@@ -156,8 +156,23 @@ pub fn load_json_file_recovering<T: DeserializeOwned>(
     path: &Path,
     class: RecoveryMetadataClass,
 ) -> RecoveryLoad<Option<T>> {
+    load_json_file_recovering_with_max_bytes(
+        data_dir,
+        path,
+        class,
+        crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
+    )
+}
+
+/// Load one sidecar under a caller-calibrated pre-admitted input ceiling.
+pub(crate) fn load_json_file_recovering_with_max_bytes<T: DeserializeOwned>(
+    data_dir: &Path,
+    path: &Path,
+    class: RecoveryMetadataClass,
+    max_bytes: u64,
+) -> RecoveryLoad<Option<T>> {
     load_enveloped_json_optional_accepting(
-        &RecoveryLoadConfig::new(data_dir, path, class),
+        &RecoveryLoadConfig::new(data_dir, path, class).with_max_bytes(max_bytes),
         sidecar_document_kind(class),
         legacy_sidecar_document_kinds(class),
     )

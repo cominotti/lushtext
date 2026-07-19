@@ -6,7 +6,7 @@
 //! `SearchEvent` values into GTK list-model updates.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::AtomicU64;
@@ -22,6 +22,8 @@ use crate::model::search_flight::{
     WorkspaceSearchRequest, WorkspaceSearchStart, WorkspaceSearchSubmission,
 };
 use crate::model::search_retirement::SearchRetirementSliceBudget;
+use crate::model::workspace_search::WorkspaceSearchTraversalPlan;
+use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::{content_search, json_store, search_history};
 
 use super::LushtextSearchPanel;
@@ -354,6 +356,7 @@ impl LushtextSearchPanel {
         // rendering results, instead of letting a huge search allocate
         // unbounded match rows before the main loop can catch up.
         let (tx, rx) = crossbeam_channel::bounded(1024);
+        let (plan_tx, plan_rx) = crossbeam_channel::bounded(1);
         let cancel = Arc::new(AtomicBool::new(false));
         let progress_counter = Arc::new(AtomicUsize::new(0));
         imp.runtime.cancel_token.replace(Some(cancel.clone()));
@@ -380,10 +383,14 @@ impl LushtextSearchPanel {
                     std::thread::sleep(Duration::from_millis(delay_ms));
                 }
             }
-            let folder_refs: Vec<&Path> = worker_folders.iter().map(PathBuf::as_path).collect();
-            content_search::search(
+            let plan = Arc::new(WorkspaceSearchTraversalPlan::build(
+                worker_folders.iter().cloned(),
+                fs_metadata::canonical_path,
+            ));
+            let _ = plan_tx.send(Arc::clone(&plan));
+            content_search::search_with_plan(
                 &worker_spec.query,
-                &folder_refs,
+                &plan,
                 &worker_spec.options,
                 tx,
                 cancel,
@@ -394,6 +401,8 @@ impl LushtextSearchPanel {
 
         let panel_weak = self.downgrade();
         let mut completion_notified = false;
+        let mut traversal_plan: Option<Arc<WorkspaceSearchTraversalPlan>> = None;
+        let mut search_incomplete = false;
         // Poll at UI cadence instead of waking GTK for every worker event; the
         // per-tick cap below keeps input and redraws responsive on noisy searches.
         glib::timeout_add_local(Duration::from_millis(50), move || {
@@ -406,6 +415,11 @@ impl LushtextSearchPanel {
                 return glib::ControlFlow::Break;
             }
             let cancelled = timer_cancel.load(Ordering::Acquire);
+            if traversal_plan.is_none()
+                && let Ok(plan) = plan_rx.try_recv()
+            {
+                traversal_plan = Some(plan);
+            }
             let mut done = false;
             let mut items_this_tick = 0;
             // Keep each GTK tick bounded so a large streaming search cannot
@@ -416,7 +430,12 @@ impl LushtextSearchPanel {
                 match receive_search_event(&rx, &mut items_this_tick) {
                     SearchEventPoll::Event(SearchEvent::Match(search_match)) => {
                         if !cancelled {
-                            append_match_result(&panel, search_match, &folders);
+                            append_match_result(
+                                &panel,
+                                search_match,
+                                traversal_plan.as_deref(),
+                                &folders,
+                            );
                         }
                     }
                     SearchEventPoll::Event(SearchEvent::Done) | SearchEventPoll::Disconnected => {
@@ -433,12 +452,25 @@ impl LushtextSearchPanel {
                             panel.refresh_accessibility_state();
                         }
                     }
-                    SearchEventPoll::Event(SearchEvent::Progress(_)) => {}
+                    SearchEventPoll::Event(
+                        SearchEvent::Progress(_) | SearchEvent::TraversalMetrics(_),
+                    ) => {}
                     SearchEventPoll::Event(SearchEvent::Error(msg)) => {
                         if !cancelled {
                             imp.error_label.set_text(&msg);
                             imp.error_label.add_css_class("error");
                             imp.error_label.set_visible(true);
+                            panel.refresh_accessibility_state();
+                        }
+                    }
+                    SearchEventPoll::Event(SearchEvent::Incomplete(_reason)) => {
+                        if !cancelled {
+                            search_incomplete = true;
+                            imp.count_label.set_text(
+                                "Search incomplete — overlapping workspace paths reached the identity safety limit",
+                            );
+                            imp.count_label.add_css_class("warning");
+                            panel.reveal_results_feedback();
                             panel.refresh_accessibility_state();
                         }
                     }
@@ -458,7 +490,7 @@ impl LushtextSearchPanel {
 
             let total = imp.runtime.total_matches.get();
             let files = imp.runtime.total_files.get();
-            if !cancelled && total > 0 && !imp.runtime.result_capped.get() {
+            if !cancelled && total > 0 && !imp.runtime.result_capped.get() && !search_incomplete {
                 imp.count_label
                     .set_text(&format!("{total} results in {files} files"));
                 panel.refresh_accessibility_state();
@@ -486,7 +518,7 @@ impl LushtextSearchPanel {
                         });
                     }
                 }
-                if !cancelled && total == 0 {
+                if !cancelled && total == 0 && !search_incomplete {
                     imp.count_label.set_text("No results found");
                     panel.reveal_results_feedback();
                     panel.refresh_accessibility_state();
@@ -735,11 +767,17 @@ impl LushtextSearchPanel {
 fn append_match_result(
     panel: &LushtextSearchPanel,
     search_match: crate::model::content_search::SearchMatch,
+    traversal_plan: Option<&WorkspaceSearchTraversalPlan>,
     workspace_folders: &[PathBuf],
 ) {
     let imp = panel.imp();
     let path = search_match.path.clone();
-    let display = make_display_path(&path, workspace_folders);
+    let display = traversal_plan
+        .and_then(|plan| plan.display_relative_path(search_match.traversal_root_index, &path))
+        .map_or_else(
+            || make_display_path(&path, workspace_folders),
+            |relative| relative.display().to_string(),
+        );
     let match_id = crate::model::content_search::SearchMatchId::from_index(
         imp.runtime.search_matches.borrow().len(),
     );
