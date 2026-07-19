@@ -2046,7 +2046,17 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
             )
             missing_fields = {row["field"] for row in missing_manifest["missing_fields"]}
             assert {"color_scheme", "word_wrap", "fixture_kind"} <= missing_fields
-    except Exception as exc:  # pragma: no cover - deliberately catches assertion details for CLI users.
+    # AssertionError remains uncaught: failed self-test assertions are programming
+    # defects, while the expected operational failures below still get a compact
+    # CLI result instead of a traceback.
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ) as exc:
         return failure("self-test", "workflow-failure", f"self-test failed: {exc}")
     return success("self-test", "lushtext automation client self-test passed")
 
