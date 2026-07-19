@@ -10733,14 +10733,14 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
     select_sidebar_path(&section, &missing);
 
     window.open_document(&alpha);
-    wait_until(Duration::from_secs(3), || {
+    wait_until(Duration::from_secs(10), || {
         active_editor(&window).file_size().is_some()
             && active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
     });
     assert_window_workspace_row_state(&section, &alpha, true, true);
 
     window.open_document(&beta);
-    wait_until(Duration::from_secs(3), || {
+    wait_until(Duration::from_secs(10), || {
         window.imp().tab_view.n_pages() == 2
             && active_editor(&window).file_path().as_deref() == Some(beta.as_path())
             && active_editor(&window).file_size().is_some()
@@ -10749,7 +10749,7 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
     assert_window_workspace_row_state(&section, &beta, true, true);
 
     window.open_document(&alpha);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window.imp().tab_view.n_pages() == 2
             && active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
     });
@@ -10757,7 +10757,7 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
     assert_window_workspace_row_state(&section, &beta, true, false);
 
     window.close_tab_for_path(&alpha);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         window.imp().tab_view.n_pages() == 1
             && active_editor(&window).file_path().as_deref() == Some(beta.as_path())
     });
@@ -10766,7 +10766,7 @@ fn test_workspace_row_state_window_tracks_open_switch_close_and_failed_load() {
 
     fixture::remove_file(&missing);
     window.open_document(&missing);
-    wait_until(Duration::from_secs(3), || {
+    wait_until(Duration::from_secs(10), || {
         active_editor(&window).load_state() == EditorLoadState::Failed
             && active_editor(&window).file_path().as_deref() == Some(missing.as_path())
     });

@@ -1040,6 +1040,25 @@ impl LushtextEditorPage {
         self.imp().save.snapshot.borrow().is_some()
     }
 
+    /// Pause the next chunked save snapshot after its first captured slice.
+    #[cfg(feature = "test-utils")]
+    pub fn pause_next_save_snapshot_for_test(&self) {
+        self.imp().save.snapshot_test_mutation.set(Some(
+            buffer_snapshot::BufferSnapshotTestMutation {
+                trigger: buffer_snapshot::BufferSnapshotTestTrigger::AfterSlice(1),
+                edit: buffer_snapshot::BufferSnapshotTestEdit::Pause,
+            },
+        ));
+    }
+
+    /// Resume a save snapshot paused by [`Self::pause_next_save_snapshot_for_test`].
+    #[cfg(feature = "test-utils")]
+    pub fn resume_save_snapshot_for_test(&self) {
+        if let Some(snapshot) = self.imp().save.snapshot.borrow().as_ref() {
+            snapshot.resume_for_test();
+        }
+    }
+
     /// Return the active load generation for stale-callback regression tests.
     #[cfg(feature = "test-utils")]
     #[must_use]
@@ -1312,28 +1331,31 @@ impl LushtextEditorPage {
 
         if self.live_buffer_requires_chunked_snapshot() {
             let editor_weak = self.downgrade();
-            let snapshot =
-                buffer_snapshot::snapshot_buffer_text_async(self.buffer(), move |outcome| {
-                    let Some(editor) = editor_weak.upgrade() else {
-                        return;
-                    };
-                    editor.imp().save.snapshot.take();
-                    match outcome {
-                        buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
-                            editor.write_snapshot_async(
-                                path,
-                                text,
-                                restore_state,
-                                admitted,
-                                callback,
-                            );
-                        }
-                        buffer_snapshot::BufferSnapshotOutcome::Cancelled(_)
-                        | buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
-                            editor.finish_save_snapshot_without_write(restore_state, callback);
-                        }
+            let snapshot_callback = move |outcome| {
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                editor.imp().save.snapshot.take();
+                match outcome {
+                    buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
+                        editor.write_snapshot_async(path, text, restore_state, admitted, callback);
                     }
-                });
+                    buffer_snapshot::BufferSnapshotOutcome::Cancelled(_)
+                    | buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
+                        editor.finish_save_snapshot_without_write(restore_state, callback);
+                    }
+                }
+            };
+            #[cfg(feature = "test-utils")]
+            let snapshot = buffer_snapshot::snapshot_buffer_text_async_for_test(
+                self.buffer().upcast::<gtk4::TextBuffer>(),
+                None,
+                self.imp().save.snapshot_test_mutation.take(),
+                snapshot_callback,
+            );
+            #[cfg(not(feature = "test-utils"))]
+            let snapshot =
+                buffer_snapshot::snapshot_buffer_text_async(self.buffer(), snapshot_callback);
             self.imp().save.snapshot.replace(Some(snapshot));
             return;
         }

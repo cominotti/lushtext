@@ -38,6 +38,8 @@ pub(crate) const BUFFER_SNAPSHOT_SYNC_BYTE_THRESHOLD: u64 = 10_000_000;
 const BUFFER_SNAPSHOT_CHUNK_CHARS: i32 = 64 * 1024;
 /// Maximum UTF-8 bytes copied from GTK in one character-aligned slice.
 const BUFFER_SNAPSHOT_CHUNK_MAX_BYTES: u64 = 4 * BUFFER_SNAPSHOT_CHUNK_CHARS as u64;
+#[cfg(feature = "test-utils")]
+const BUFFER_SNAPSHOT_TEST_PAUSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[cfg(feature = "test-utils")]
 static SNAPSHOT_WORKER_COALESCES: AtomicU64 = AtomicU64::new(0);
@@ -419,6 +421,28 @@ impl BufferSnapshotHandle {
     }
 
     #[cfg(feature = "test-utils")]
+    /// Replace a paused test source with an immediate continuation.
+    pub fn resume_for_test(&self) {
+        let Some(session) = self.0.upgrade() else {
+            return;
+        };
+        let should_schedule = {
+            let mut state = session.borrow_mut();
+            if state.terminal || state.reservation.is_none() {
+                false
+            } else {
+                if let Some(source) = state.scheduled_source.take() {
+                    source.remove();
+                }
+                true
+            }
+        };
+        if should_schedule {
+            schedule_snapshot_slice(&session);
+        }
+    }
+
+    #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn state_for_test(&self) -> BufferSnapshotStateForTest {
         let Some(session) = self.0.upgrade() else {
@@ -466,6 +490,7 @@ pub enum BufferSnapshotTestEdit {
     DeleteBeforeMark,
     DeleteAfterMark,
     Dispose,
+    Pause,
 }
 
 /// Observable ownership state for deterministic widget lifecycle assertions.
@@ -873,7 +898,7 @@ fn run_snapshot_slice(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
     };
 
     #[cfg(feature = "test-utils")]
-    apply_test_mutation(session, reached_end);
+    let paused = apply_test_mutation(session, reached_end);
 
     let cancel_reason = session.borrow().cancel_reason;
     if let Some(reason) = cancel_reason {
@@ -886,6 +911,18 @@ fn run_snapshot_slice(session: &Rc<RefCell<ChunkedSnapshotSession>>) {
     }
     if reached_end {
         finish_captured_snapshot(session);
+        return;
+    }
+    #[cfg(feature = "test-utils")]
+    if paused {
+        // The public lifecycle handle is intentionally weak. Retain the paused
+        // test session through a removable source just like an ordinary slice.
+        let session_for_source = Rc::clone(session);
+        let source_id =
+            glib::timeout_add_local_once(BUFFER_SNAPSHOT_TEST_PAUSE_TIMEOUT, move || {
+                run_snapshot_slice(&session_for_source);
+            });
+        session.borrow_mut().scheduled_source = Some(source_id);
         return;
     }
 
@@ -988,7 +1025,7 @@ fn finish_snapshot_inner(
 }
 
 #[cfg(feature = "test-utils")]
-fn apply_test_mutation(session: &Rc<RefCell<ChunkedSnapshotSession>>, reached_end: bool) {
+fn apply_test_mutation(session: &Rc<RefCell<ChunkedSnapshotSession>>, reached_end: bool) -> bool {
     let mutation = {
         let mut state = session.borrow_mut();
         let should_run = state
@@ -1000,11 +1037,14 @@ fn apply_test_mutation(session: &Rc<RefCell<ChunkedSnapshotSession>>, reached_en
         should_run.then(|| state.test_mutation.take()).flatten()
     };
     let Some(mutation) = mutation else {
-        return;
+        return false;
     };
     if mutation.edit == BufferSnapshotTestEdit::Dispose {
         finish_snapshot(session, None);
-        return;
+        return false;
+    }
+    if mutation.edit == BufferSnapshotTestEdit::Pause {
+        return true;
     }
 
     let (buffer, mark) = {
@@ -1012,7 +1052,7 @@ fn apply_test_mutation(session: &Rc<RefCell<ChunkedSnapshotSession>>, reached_en
         (state.buffer.clone(), state.progress_mark.clone())
     };
     let Some(mark) = mark else {
-        return;
+        return false;
     };
     match mutation.edit {
         BufferSnapshotTestEdit::InsertBeforeMark => {
@@ -1037,8 +1077,9 @@ fn apply_test_mutation(session: &Rc<RefCell<ChunkedSnapshotSession>>, reached_en
                 buffer.delete(&mut start, &mut end);
             }
         }
-        BufferSnapshotTestEdit::Dispose => unreachable!(),
+        BufferSnapshotTestEdit::Dispose | BufferSnapshotTestEdit::Pause => unreachable!(),
     }
+    false
 }
 
 #[cfg(test)]

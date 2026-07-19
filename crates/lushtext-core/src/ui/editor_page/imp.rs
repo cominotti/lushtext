@@ -128,6 +128,10 @@ pub struct SaveState {
     pub generation: Cell<u64>,
     /// Lifecycle handle for a save snapshot that is yielding between chunks.
     pub snapshot: RefCell<Option<BufferSnapshotHandle>>,
+    /// One-shot deterministic slice action consumed by the widget-test save path.
+    #[cfg(feature = "test-utils")]
+    pub snapshot_test_mutation:
+        Cell<Option<crate::ui::buffer_snapshot::BufferSnapshotTestMutation>>,
 }
 
 /// One editor-scoped warning action routed through the shared inline alert buttons.

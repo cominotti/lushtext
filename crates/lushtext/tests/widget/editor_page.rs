@@ -22,9 +22,9 @@ use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleA
 use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
     BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
-    BufferSnapshotOutcome, BufferSnapshotStateForTest, BufferSnapshotTestEdit,
-    BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
+    BufferSnapshotHandle, BufferSnapshotOutcome, BufferSnapshotStateForTest, BufferSnapshotTestEdit,
+    BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError,
+    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
     coalesce_snapshot_payload_for_test, snapshot_buffer_text_async_for_test,
     snapshot_payload_metrics_for_test,
 };
@@ -73,6 +73,56 @@ fn wait_until_observing_each_dispatch(timeout: Duration, mut predicate: impl FnM
         }
     }
     panic!("condition was not met within {timeout:?}");
+}
+
+fn wait_for_save_snapshot(page: &LushtextEditorPage) {
+    let timeout = Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
+    let context = glib::MainContext::default();
+    while Instant::now() < deadline {
+        if page.save_snapshot_inflight_for_test() {
+            return;
+        }
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    panic!(
+        "save snapshot was not installed within {timeout:?}: saving={} admission={:?} disposal={:?}",
+        page.is_saving(),
+        page.transient_save_admission_snapshot_for_test(),
+        lane_snapshot_for_test()
+    );
+}
+
+fn wait_for_save_result(
+    page: &LushtextEditorPage,
+    result: &RefCell<Option<Result<(), EditorSaveError>>>,
+) {
+    let timeout = Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
+    let context = glib::MainContext::default();
+    while Instant::now() < deadline {
+        if result.borrow().is_some() {
+            return;
+        }
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let snapshot = page
+        .imp()
+        .save
+        .snapshot
+        .borrow()
+        .as_ref()
+        .map(BufferSnapshotHandle::state_for_test);
+    panic!(
+        "save did not finish within {timeout:?}: saving={} snapshot={snapshot:?} admission={:?} disposal={:?}",
+        page.is_saving(),
+        page.transient_save_admission_snapshot_for_test(),
+        lane_snapshot_for_test()
+    );
 }
 
 fn same_widget(widget: &gtk4::Widget, target: &impl IsA<gtk4::Widget>) -> bool {
@@ -861,22 +911,23 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
     page.source_view().set_cursor_visible(true);
     page.buffer().set_text(&"x".repeat(2_500_001));
     page.buffer().set_modified(true);
+    page.reset_transient_save_admission_for_test();
+    page.pause_next_save_snapshot_for_test();
     let result = Rc::new(RefCell::new(None));
     let result_for_callback = Rc::clone(&result);
 
     page.save_file_async(move |save_result| {
         result_for_callback.borrow_mut().replace(save_result);
     });
-    wait_until(Duration::from_secs(2), || {
-        page.save_snapshot_inflight_for_test()
-    });
+    wait_for_save_snapshot(&page);
     assert!(page.save_snapshot_inflight_for_test());
     assert!(!page.source_view().is_editable());
     assert!(!page.source_view().is_cursor_visible());
     let mut end = page.buffer().end_iter();
     page.buffer()
         .insert(&mut end, "mutated during save capture");
-    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+    page.resume_save_snapshot_for_test();
+    wait_for_save_result(&page, &result);
 
     assert!(matches!(
         result.borrow().as_ref(),
@@ -1808,13 +1859,12 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
     page.buffer().set_text(&"x".repeat(11 * 1024 * 1024));
     page.buffer().set_modified(true);
     page.reset_transient_save_admission_for_test();
+    page.pause_next_save_snapshot_for_test();
     let counters_before = buffer_snapshot_counters_for_test();
     let callback_count = Rc::new(Cell::new(0));
     let callback_count_for_save = Rc::clone(&callback_count);
     page.save_file_async(move |_| callback_count_for_save.set(callback_count_for_save.get() + 1));
-    wait_until_observing_each_dispatch(Duration::from_secs(10), || {
-        page.save_snapshot_inflight_for_test()
-    });
+    wait_for_save_snapshot(&page);
 
     // SAFETY: this standalone test page is disposed exactly once after its
     // save snapshot starts; subsequent assertions inspect only test counters.
