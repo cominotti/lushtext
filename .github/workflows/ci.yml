@@ -307,7 +307,9 @@ jobs:
         # through `cargo test --test widget` under the shared runner instead of
         # nextest. The runner owns the mutter/dbus setup plus one retry for
         # transient compositor failures.
-        run: ./scripts/run-widget-tests.sh --headless --retries 1
+        run: |
+          ./scripts/run-widget-tests.sh --self-test
+          ./scripts/run-widget-tests.sh --headless --retries 1
 
   bench-compile:
     name: Bench Compile

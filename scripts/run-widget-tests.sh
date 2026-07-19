@@ -6,8 +6,9 @@ set -euo pipefail
 RETRIES=0
 MONITOR="2560x1600"
 TEST_ARGS=()
+SELF_TEST=false
 UNSUPPORTED_HOST_EXIT_CODE=77
-BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|^\(xdg-desktop-portal-gtk:[0-9]+\): xdg-desktop-portal-gtk-WARNING \*\*: ([0-9:.]+: )?error: Could not connect: No such file or directory$|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|rm: cannot remove '\''/tmp/.*/doc'\'': Is a directory$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$|.*WARNING: Glycin running without sandbox\.$)'
+BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|^\(xdg-desktop-portal-gtk:[0-9]+\): xdg-desktop-portal-gtk-WARNING \*\*: ([0-9:.]+: )?error: Could not connect: No such file or directory$|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|rm: cannot remove '\''/tmp/.*/doc'\'': Is a directory$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$|.*WARNING: Glycin running without sandbox\.$)'
 # Cargo diagnostics spell this as a standalone `warning:` token. Requiring a
 # line/whitespace boundary keeps `--list` output such as `...visible_warning:
 # test` from being mistaken for a toolkit or compiler warning.
@@ -24,6 +25,7 @@ Options:
   --headless    Always run under `mutter --headless`.
   --retries N   Retry the full harness up to N times after the first failure.
   --monitor WxH Virtual monitor size for headless runs (default: 2560x1600).
+  --self-test   Verify warning classification without launching GTK.
   -h, --help    Show this help text.
 
 Arguments after `--` are passed to the widget test binary, for example:
@@ -72,6 +74,23 @@ check_for_unexpected_widget_warnings() {
         echo "Error: unexpected warning output during widget tests." >&2
         return 1
     fi
+}
+
+self_test_warning_classification() {
+    local log_file
+    log_file="$(mktemp)"
+    trap 'rm -f "$log_file"' RETURN
+
+    printf '%s\n' "** (mutter:582): WARNING **: 09:42:29.034: Skipping layers 1..n of your pipeline since the first layer is sliced. We don't currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep" >"$log_file"
+    check_for_unexpected_widget_warnings "$log_file"
+
+    printf '%s\n' "Gtk-WARNING **: allocation failed" >"$log_file"
+    if check_for_unexpected_widget_warnings "$log_file" >/dev/null 2>&1; then
+        echo "Error: widget warning self-test accepted an unexpected GTK warning." >&2
+        return 1
+    fi
+
+    echo "Widget warning classification self-test passed."
 }
 
 run_with_widget_log() {
@@ -145,6 +164,10 @@ while [[ $# -gt 0 ]]; do
             MONITOR="$2"
             shift 2
             ;;
+        --self-test)
+            SELF_TEST=true
+            shift
+            ;;
         --)
             shift
             TEST_ARGS=("$@")
@@ -165,6 +188,11 @@ done
 if ! [[ "$RETRIES" =~ ^[0-9]+$ ]]; then
     echo "Error: --retries must be a non-negative integer." >&2
     exit 1
+fi
+
+if [[ "$SELF_TEST" == true ]]; then
+    self_test_warning_classification
+    exit 0
 fi
 
 attempt=1
