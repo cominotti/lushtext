@@ -371,12 +371,17 @@ Every chunked snapshot consumer SHALL choose an explicit cancellation policy app
 - **AND** cancellation or failure restores the prior editable and cursor-visible state without clearing modified content
 
 ### Requirement: Large file installation yields in bounded GTK slices
-Installing a decoded document above the synchronous installation threshold SHALL use bounded main-loop slices. The editor SHALL remain non-editable and projections that would amplify each insertion SHALL remain suspended until the complete current generation is installed or the operation is cancelled.
+Installing a decoded document above the synchronous installation threshold SHALL use bounded main-loop slices whose boundaries align to paragraph ends (just after a newline). GTK text layout validates whole paragraphs, so a slice that stops inside a paragraph forces later slices to re-lay-out everything already installed in that paragraph — quadratic total work that can stall recovery of single-line documents for minutes. A single paragraph longer than the slice byte budget SHALL be installed (and, during clearing, deleted) in one turn, because GTK cannot lay out a partial paragraph incrementally regardless of how the mutation is sliced. The editor SHALL remain non-editable and projections that would amplify each insertion SHALL remain suspended until the complete current generation is installed or the operation is cancelled.
 
 #### Scenario: Large decoded text is installed
 - **WHEN** an admitted load returns text above the synchronous installation threshold
-- **THEN** GTK inserts the text in bounded slices with scheduling points between them
+- **THEN** GTK inserts the text in bounded paragraph-aligned slices with scheduling points between them
 - **AND** syntax, minimap, history, draft, monitor, and modified-state finalization run only after the complete current generation is present
+
+#### Scenario: Giant single-paragraph content avoids quadratic re-layout
+- **WHEN** a recovered draft or loaded file contains one paragraph larger than the slice byte budget
+- **THEN** that paragraph is installed in a single turn while any multi-paragraph remainder keeps bounded newline-aligned slices
+- **AND** previously installed paragraphs are not re-validated by later slices
 
 #### Scenario: Load is cancelled during installation
 - **WHEN** the tab closes, reloads, or advances generation between installation slices
@@ -689,3 +694,72 @@ Each workspace-search generation SHALL own one immutable shared folder snapshot.
 - **WHEN** the selected workspace scope changes while a search generation is active
 - **THEN** a new generation receives a new immutable snapshot
 - **AND** the prior generation cannot observe the new scope or publish stale results into it
+
+### Requirement: Workspace search bounds traversal identity ownership
+Each workspace-search generation SHALL normalize its immutable ordered folder scope into a bounded traversal plan before scanning. A single effective traversal root and multiple roots proven disjoint MUST NOT retain one visited-file identity per scanned file. Exact duplicate and covered roots MUST be scanned only once while result attribution preserves the original configured folder precedence. Any unresolved alias fallback that still requires per-file identity tracking MUST enforce explicit entry and conservative path-byte limits and MUST terminate with typed incomplete-search feedback before either limit is exceeded.
+
+#### Scenario: Single-root no-match search visits a huge tree
+- **WHEN** one workspace folder contains more files than the result cap but none match the query
+- **THEN** search retained identity state remains independent of the number of visited files
+- **AND** cancellation, progress, and normal completion preserve their existing semantics
+
+#### Scenario: Overlapping roots cover the same file
+- **WHEN** ordered workspace folders include duplicates, descendants, or canonical aliases that cover the same file
+- **THEN** the normalized traversal plan avoids duplicate scanning where coverage is resolved
+- **AND** an admitted result is attributed according to the first configured folder that owned it before normalization
+
+#### Scenario: Alias identity cannot be resolved completely
+- **WHEN** unavailable or uncanonicalizable roots require fallback file-identity tracking to prevent duplicate results
+- **THEN** the fallback ledger retains no more than its documented entry and path-byte budgets
+- **AND** reaching either budget stops with explicit incomplete-search feedback rather than silently publishing a complete result
+
+### Requirement: Decoded document and recovery bodies retain off-GTK disposal ownership
+Every document-sized decoded file body and recovered draft body SHALL reserve bounded plain-data disposal capacity before the body crosses from worker or aggregate preload ownership onto GTK. The reservation MUST remain attached through weak-owner checks, generation validation, direct or sliced buffer installation, cancellation, teardown, and eligible accepted-baseline transfer. A stale, rejected, superseded, ineligible, or otherwise terminal body MUST perform its final plain-Rust destruction on the admitted disposal worker, and document-sized bodies MUST NOT use the statically-small unreserved sentinel path.
+
+#### Scenario: File-load completion loses its editor
+- **WHEN** a supported large decoded file body reaches main-loop completion after the editor weak reference can no longer be upgraded
+- **THEN** the guarded result is rejected without destroying the body in GTK dispatch
+- **AND** its final destructor runs through the pre-admitted disposal worker
+
+#### Scenario: Sliced file installation is cancelled
+- **WHEN** a newer load generation or editor teardown cancels a large installation between GTK slices
+- **THEN** the installer releases transient load admission exactly once
+- **AND** the remaining guarded decoded body is finally destroyed off GTK
+
+#### Scenario: Draft body becomes stale before replacement
+- **WHEN** an eager or lazy recovered draft body loses ticket freshness before or during bounded replacement
+- **THEN** no partial or terminal restored state is published
+- **AND** the body's guard survives until worker-side final destruction
+
+#### Scenario: Accepted body seeds a clean baseline
+- **WHEN** file-load or draft policy retains the accepted installed body as an eligible local-history baseline
+- **THEN** ownership is transferred without a full-body clone or unguarded unwrap
+- **AND** later baseline replacement or editor teardown still performs final plain-data destruction off GTK
+
+### Requirement: Large-file decoding and analysis are cooperatively cancellable
+After bounded file ingestion, encoding detection, decoding, line-ending classification, and file-health analysis for a large admitted document SHALL observe cancellation at explicit bounded work boundaries wherever the underlying operation supports incremental progress. Once cancellation is observed, the worker MUST stop subsequent analysis, publish only the existing typed cancelled terminal, and release its transient ownership exactly once. A successful uncancelled load MUST preserve exact decoded content, encoding metadata, line-ending classification, and file-health findings.
+
+#### Scenario: Cancellation arrives during incremental decoding
+- **WHEN** a large admitted document is cancelled while byte classification or decoding is in progress
+- **THEN** the worker stops at a bounded cancellation checkpoint without starting later exhaustive analysis
+- **AND** no decoded result is installed for the cancelled generation
+
+#### Scenario: Cancellation arrives during health analysis
+- **WHEN** decoding completes but cancellation occurs while line-ending or file-health evidence is being accumulated
+- **THEN** the analysis terminates without publishing a partial health result
+- **AND** the load's transient permit and retained bytes are released exactly once
+
+#### Scenario: Supported encodings cross chunk boundaries
+- **WHEN** UTF-8, BOM or BOM-less UTF-16, or a supported fallback encoding contains multibyte characters across processing chunk boundaries
+- **THEN** the uncancelled result exactly matches the reference decoding and metadata
+- **AND** cancellation checks do not split, replace, or lose valid scalar content
+
+#### Scenario: Small file uses a direct path
+- **WHEN** an admitted document is below the calibrated incremental-processing threshold
+- **THEN** it may use a direct decode and analysis path
+- **AND** it preserves the same pre/post cancellation, exact-result, and terminal ownership semantics
+
+#### Scenario: A codec operation cannot yield internally
+- **WHEN** one existing library operation cannot expose incremental progress
+- **THEN** cancellation is checked immediately before and after that operation
+- **AND** the implementation does not claim an absolute cancellation-latency guarantee for that interval

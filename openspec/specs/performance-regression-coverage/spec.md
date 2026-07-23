@@ -541,3 +541,70 @@ This change SHALL NOT be considered complete until the standard validation, lint
 - **WHEN** file-index or other materially changed GTK-free hot paths receive Criterion coverage
 - **THEN** baseline and changed measurements use the same environment and report distributions or effect size
 - **AND** no copied absolute time from another machine becomes a pass or fail threshold
+
+### Requirement: Reviewed ownership and persistence gaps have direct boundary evidence
+The project SHALL maintain deterministic pure, service, integration, headless GTK/widget, release-semantic, and benchmark evidence for workspace-search identity retention, decoded file and draft body disposal, workspace persistence terminal state, and Notes construction scratch. Evidence MUST assert actual container sizes, conservative bytes, thread identity, generation state, retry/readiness outcomes, close completion, and main-loop progress rather than relying only on elapsed time or self-reported success flags.
+
+#### Scenario: Single and overlapping workspace roots scan at scale
+- **WHEN** no-match and sparse-match fixtures traverse a huge single root, exact duplicates, covered descendants, canonical aliases, and unresolved aliases
+- **THEN** evidence records traversal roots, display-owner mappings, fallback-ledger entries and bytes, cancellation, truncation, and result equivalence
+- **AND** the single-root retained identity high-water remains independent of visited-file count
+
+#### Scenario: Large file-load terminals run with destructor sentinels
+- **WHEN** supported large decoded bodies complete, lose their editor, become stale, cancel during sliced installation, transfer to a baseline, replace that baseline, and tear down
+- **THEN** evidence records exact transient-permit and disposal-reservation deltas for every terminal
+- **AND** final body destructors run on the disposal worker while an independent GTK heartbeat progresses
+
+#### Scenario: Eager and lazy draft bodies exercise every terminal
+- **WHEN** near-limit recovery bodies are extracted from eager preloads or read lazily and then complete, become stale, are superseded during replacement, seed a baseline, skip baseline creation, or lose the window
+- **THEN** exact ownership proves no raw body escapes its guard and every reservation releases once
+- **AND** preserved draft evidence and final editor state match the existing recovery contract
+
+#### Scenario: Workspace persistence fault matrix runs
+- **WHEN** deterministic seams exercise close before debounce, mutation during write, worker failure, bounded retry, recovery success, close during in-flight work, and close-time failure
+- **THEN** requested, in-flight, durable, failed, readiness, feedback, and close states match the plain policy oracle
+- **AND** only the newest snapshot becomes durable and failed close leaves the usable window retryable
+
+#### Scenario: Notes construction approaches every byte boundary
+- **WHEN** long and Unicode paths, maximum-count sidecars, a near-limit metadata input, canonical aliases, many diagnostics, exact-boundary, one-over-boundary, and cancellation fixtures run
+- **THEN** evidence records current and peak path, scratch, searchable, retained-source, entry, and diagnostic ownership
+- **AND** every high-water remains within its declared limit with deterministic typed truncation and equivalent admitted-row semantics
+
+#### Scenario: Routine and deep evidence remain tiered
+- **WHEN** default checks and performance smoke run
+- **THEN** pure state transitions, representative faults, and bounded widget cases remain in routine lanes
+- **AND** near-limit heap pressure, large filesystem traversal, and throughput comparisons remain in Criterion or performance-smoke lanes with fixture and environment context
+
+#### Scenario: Complete implementation gates run
+- **WHEN** every implementation task is complete
+- **THEN** `make check`, `make lint-advisory`, `make test-unit`, `make test-int`, `make test-prop`, `make test-widget`, and `make performance-smoke` pass
+- **AND** focused disposal ownership tests pass with debug assertions disabled
+- **AND** `openspec validate --all --strict --no-interactive` and `git diff --check` pass
+
+### Requirement: Residual responsiveness and test-isolation boundaries have direct evidence
+The project SHALL maintain deterministic tests and performance fixtures for incremental refresh-state capture, one-active/one-latest bookmark previews, cancellable large-file processing, and target-scoped Replace/Undo fault injection. Evidence MUST assert actual work, retained ownership, cancellation, terminal publication, and registry state rather than relying only on elapsed time or self-reported outcomes.
+
+#### Scenario: Targeted refresh runs in a large materialized tree
+- **WHEN** one affected directory is refreshed among many expanded and materialized rows
+- **THEN** instrumentation proves refresh preparation and expansion bookkeeping touch only affected state
+- **AND** a full derivation oracle proves the final expansion and selection state remains correct
+
+#### Scenario: Bookmark selections supersede delayed workers
+- **WHEN** many closed-file bookmarks are selected while excerpt workers are deliberately delayed
+- **THEN** evidence records an active high-water of one, a pending high-water of one, cooperative cancellation, and latest-only publication
+- **AND** dialog teardown drains or cancels all retained preview ownership
+
+#### Scenario: Large-file work is cancelled at varied stages
+- **WHEN** representative large ASCII, multibyte UTF-8, UTF-16, and fallback-encoded fixtures are cancelled during classification, decoding, or analysis
+- **THEN** work counters prove bounded cancellation progress and exact-once transient-capacity release
+- **AND** uncancelled runs remain byte-for-text and metadata equivalent to the reference path
+
+#### Scenario: Different Undo targets race in parallel
+- **WHEN** target-scoped after-metadata hooks are registered for different temporary files and Undo operations interleave or run concurrently
+- **THEN** each operation consumes only its own one-shot hook
+- **AND** no unconsumed registration leaks into another test
+
+#### Scenario: Near-limit memory evidence is requested
+- **WHEN** the opt-in performance lane exercises a supported file near the configured load ceiling
+- **THEN** it records fixture size, encoding, cancellation progress, transient ownership, resident-memory context, profile, and environment metadata
+- **AND** default pull-request validation does not gain an absolute host-sensitive RSS or timing gate

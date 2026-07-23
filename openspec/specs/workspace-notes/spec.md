@@ -385,3 +385,59 @@ The dedicated bookmark browser SHALL be a generation-scoped bookmark-only mode o
 - **WHEN** an interactive caller constructs the bookmark-only inventory
 - **THEN** it must supply the unified Notes source limit, byte budget, generation, and cancellation policy
 - **AND** no unrestricted aggregate bookmark-vector API remains available to production UI code
+
+### Requirement: Notes source construction scratch is byte-bounded
+The unified Notes source loader SHALL enforce explicit conservative byte ceilings for concurrently retained construction scratch and sidecar traversal paths in addition to existing entry, searchable-text, final retained-source, sidecar-count, open-editor, and diagnostic limits. Accounting MUST use saturating arithmetic and MUST include the current recovery-aware sidecar input, retained path batch, canonical identity copies, diagnostic storage, temporary category/capacity ownership, and other construction allocations that overlap the final source. Reaching a construction or path ceiling MUST stop at a deterministic complete boundary and publish a distinct typed truncation reason with compact current/peak metrics.
+
+#### Scenario: Sidecar directory contains long Unicode paths
+- **WHEN** fewer than the sidecar entry cap would nevertheless exceed the traversal path-byte ceiling
+- **THEN** the byte-bounded scanner retains only complete entries within both limits
+- **AND** source feedback distinguishes path-byte truncation from sidecar-count truncation
+
+#### Scenario: One near-limit sidecar overlaps admitted rows
+- **WHEN** recovery-aware loading holds a sidecar input near its metadata byte limit while final rows and construction scratch already exist
+- **THEN** measured peak construction ownership remains within the documented scratch ceiling
+- **AND** the loader stops before another complete allocation would exceed that ceiling
+
+#### Scenario: Diagnostics and canonicalization consume scratch
+- **WHEN** malformed sidecars and many folder identities produce bounded recovery diagnostics and canonical path copies
+- **THEN** those allocations contribute to construction metrics rather than bypassing admission
+- **AND** valid rows admitted before the deterministic boundary remain ordered, browsable, and activatable
+
+#### Scenario: Construction is cancelled
+- **WHEN** source generation is superseded or the Notes browser closes during sidecar traversal or parsing
+- **THEN** cancellation releases path, sidecar, diagnostic, and category scratch on the worker
+- **AND** no large construction allocation crosses to GTK in the cancelled outcome
+
+#### Scenario: Final source reaches GTK
+- **WHEN** bounded construction completes with admitted rows
+- **THEN** only the final measured retained source and compact metrics cross to GTK under the existing progress reservation
+- **AND** construction scratch has already been released and is not hidden inside diagnostic payloads
+
+### Requirement: Closed-file bookmark previews are one-active and one-latest
+Each open Notes browser SHALL own at most one active closed-file bookmark excerpt load and one latest pending compact request. Selecting a newer preview MUST cancel the active request and replace the pending request without launching another worker until the active request reaches a terminal outcome. Excerpt loading MUST check cancellation during bounded ingestion and line scanning, and only the current browser lifetime, preview generation, and selected bookmark identity may publish preview state.
+
+#### Scenario: Rapid selection outpaces a slow closed-file load
+- **WHEN** the user selects several closed-file bookmarks before the first excerpt load terminates
+- **THEN** the browser retains one active load and at most the latest compact pending request
+- **AND** intermediate selections do not accumulate worker jobs or excerpt payloads
+
+#### Scenario: Active excerpt observes cancellation
+- **WHEN** a newer selection cancels a closed-file excerpt during bounded read or line scanning
+- **THEN** obsolete work stops at a bounded cancellation checkpoint
+- **AND** the latest pending request becomes eligible only after the active terminal is observed
+
+#### Scenario: Stale terminal reaches the browser
+- **WHEN** an obsolete excerpt load returns after the selection or browser lifetime changed
+- **THEN** it cannot replace preview content, loading state, or the Open action target
+- **AND** only the still-current latest request may publish
+
+#### Scenario: Notes browser closes under preview pressure
+- **WHEN** the dialog closes with active and pending closed-file preview work
+- **THEN** active work is cancelled and pending work is discarded
+- **AND** no later completion retains or mutates the closed browser
+
+#### Scenario: Bookmark source is already open
+- **WHEN** the selected bookmark can be previewed from its live editor
+- **THEN** the browser uses the existing live excerpt path without starting a closed-file worker
+- **AND** obsolete closed-file work is cancelled or discarded

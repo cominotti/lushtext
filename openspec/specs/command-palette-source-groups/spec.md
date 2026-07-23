@@ -326,7 +326,7 @@ Command-palette file indexing SHALL enforce a conservative O(1) byte ledger befo
 
 #### Scenario: Directory-only traversal grows pending state
 - **WHEN** a broad tree contains many directories but few indexable files
-- **THEN** visited, pending, scan-page, and workspace-root path ownership still consumes the byte ledger
+- **THEN** visited, pending, scan-page, and workspace-folder path ownership still consumes the byte ledger
 - **AND** the traversal cannot bypass the cap merely because final output is small
 
 #### Scenario: Scan batch approaches remaining scratch capacity
