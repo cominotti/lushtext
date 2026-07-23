@@ -65,6 +65,50 @@
   </screenshots>
 
   <releases>
+    <release version="0.6.0" date="2026-07-23">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Wikisource, "A Dream Within a Dream" (from The Works of the Late Edgar Allan Poe, 1859), complete second stanza.</p>
+        <p>Selection: Complete printed stanza.</p>
+        <p>Complete stanza:</p>
+        <p>&gt; I stand amid the roar</p>
+        <p>&gt; Of a surf-tormented shore,</p>
+        <p>&gt; And I hold within my hand</p>
+        <p>&gt; Grains of the golden sand—</p>
+        <p>&gt; How few! yet how they creep</p>
+        <p>&gt; Through my fingers to the deep,</p>
+        <p>&gt; While I weep—while I weep!</p>
+        <p>&gt; O God! can I not grasp</p>
+        <p>&gt; Them with a tighter clasp?</p>
+        <p>&gt; O God! can I not save</p>
+        <p>&gt; One from the pitiless wave?</p>
+        <p>&gt; Is all that we see or seem</p>
+        <p>&gt; But a dream within a dream?</p>
+        <p>Edgar Allan Poe, "A Dream Within a Dream"</p>
+        <p>## What's Changed</p>
+        <p>This release is about keeping LushText calm and safe under pressure. The editor stays responsive when you open large files, run big searches, or replace across a whole workspace, and your unsaved work is protected far more carefully when things go wrong.</p>
+        <p>LushText now keeps its own memory use in check when you have many files open. When the combined size of loaded editor buffers grows past a comfortable limit, LushText quietly unloads the least-recently-used background tabs that are clean and reloadable, and reloads them from disk the moment you switch back. The tab you are working in is never unloaded, and any tab with unsaved changes, an untitled draft, or a document still loading or saving is always kept in memory. You may notice a background tab re-reading from disk when you return to it; you will never lose edits to it.</p>
+        <p>Editing very large documents no longer freezes the window. Large buffer replacements and clears now happen in paragraph-sized slices across multiple UI turns instead of one long blocking pass, and document-sized text is coalesced and released off the main thread. This removes multi-second hangs that could previously appear when loading, replacing, or recovering huge single-line files.</p>
+        <p>Searching and replacing across a workspace is more cooperative. The command palette and search now share one fuzzy-ranking path, so results are scored consistently everywhere. Search, replace preview, workspace scans, file-tree retirement, and directory traversal are all bounded so a burst of work does one aggregate pass instead of piling up. Because ranking is now unified, the order of some search results can differ from previous versions for the same query.</p>
+        <p>The workspace file tree keeps up with the filesystem more reliably. When files change quickly on disk, the folder watcher restarts and refreshes responsively instead of stalling during rapid directory churn.</p>
+        <p>Markdown preview handles broken local images gracefully. A corrupt or unreadable local image now shows a clear fallback block in the preview instead of stressing the rendering path.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for end users after upgrading. There is no settings reset, workspace rebuild, or app-data migration for this release. Your existing drafts, sessions, bookmarks, notes, and local history all load unchanged.</p>
+        <p>Downstream packagers should build from the release commit or regenerate vendored Cargo sources from the matching `Cargo.lock`, since the Rust dependency set and Flatpak vendored sources were refreshed for this release.</p>
+        <p>Maintainers and automation clients that read LushText's D-Bus automation interface should note that the read-only interface version is now 2, with additional snapshot fields for workspace-persistence progress, command-palette search and index state, and replace-preview omitted or skipped counts. Existing fields are unchanged.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>No user-facing feature is deprecated in this release, and no on-disk format changed. Drafts, sessions, sidecar notes and bookmarks, local history, and search backups from earlier versions remain fully compatible, and downgrading to an earlier release is safe with respect to your data.</p>
+        <p>When many large files are open, LushText may now unload clean background tabs to stay within its memory budget and reload them from disk on demand. This is expected behavior; it only ever affects clean, reloadable tabs, never the active tab and never unsaved work.</p>
+        <p>Because fuzzy search ranking is now unified across the command palette and search, the ordering of some results may change compared with previous versions.</p>
+        <p>Automatic draft recovery accepts drafts up to 64 MiB of text each; at startup LushText eagerly admits recovery bodies up to a combined 64 MiB and restores anything beyond that lazily. Very large recovery bodies are therefore restored a little later rather than all at once. Markdown preview still does not fetch remote images; only local images are rendered, and unreadable ones fall back to a clear placeholder.</p>
+        <p>## Bug Fixes</p>
+        <p>Fixed multi-second freezes when opening, replacing text in, or recovering very large single-line documents; large buffer edits are now sliced across UI turns instead of blocking the window.</p>
+        <p>Fixed workspace search results widening the search panel or showing a horizontal scrollbar for long file paths; long paths now clip cleanly and the panel keeps a stable width.</p>
+        <p>Fixed sluggish workspace file-tree refresh during rapid filesystem changes so the tree updates promptly after directories change on disk.</p>
+        <p>Hardened editor crash recovery and snapshot ordering so a crash during a save is much less likely to surface stale or incomplete recovery state, and draft snapshots stay retryable rather than being silently lost.</p>
+        <p>Made interrupted Replace All operations recoverable: each per-file change becomes recovery-visible before its file is replaced, and undo re-verifies the replaced bytes before restoring, closing a gap where an interrupted Replace All could leave files that could not be cleanly restored.</p>
+      </description>
+    </release>
     <release version="0.5.2" date="2026-07-05">
       <description>
         <p>## Poetic Opening</p>
