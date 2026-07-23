@@ -545,7 +545,7 @@ This change SHALL NOT be considered complete until the standard validation, lint
 ### Requirement: Reviewed ownership and persistence gaps have direct boundary evidence
 The project SHALL maintain deterministic pure, service, integration, headless GTK/widget, release-semantic, and benchmark evidence for workspace-search identity retention, decoded file and draft body disposal, workspace persistence terminal state, and Notes construction scratch. Evidence MUST assert actual container sizes, conservative bytes, thread identity, generation state, retry/readiness outcomes, close completion, and main-loop progress rather than relying only on elapsed time or self-reported success flags.
 
-#### Scenario: Single and overlapping workspace roots scan at scale
+#### Scenario: Single and overlapping workspace folders scan at scale
 - **WHEN** no-match and sparse-match fixtures traverse a huge single root, exact duplicates, covered descendants, canonical aliases, and unresolved aliases
 - **THEN** evidence records traversal roots, display-owner mappings, fallback-ledger entries and bytes, cancellation, truncation, and result equivalence
 - **AND** the single-root retained identity high-water remains independent of visited-file count
