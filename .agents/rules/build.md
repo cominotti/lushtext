@@ -103,7 +103,14 @@ surfaces, hover-only affordances, direct GTK accessible metadata calls that
 bypass `ui::accessibility`, missing row apply/clear coverage, stale or
 malformed AT-SPI smoke anchors, accessibility matrix/smoke crosswalk drift,
 manifest fixture-boundary drift, and missing manual Orca release-template
-links. The target is included in `make check-policy`.
+links. The target is included in `make check-policy`. While
+accessibility-relevant files are dirty, it also requires the accessibility and
+visual smoke summaries to carry a source fingerprint matching the current
+tree. That fingerprint digests only relevant-file *contents*
+(`scripts/accessibility_source_fingerprint.py`), so staging or committing a
+byte-identical tree does not void live proof; only a real edit to a relevant
+file requires rerunning the lanes, and the module's own bytes are part of the
+relevant set.
 Screenshot-reported or geometry-sensitive UI fixes should also run
 `make visual-geometry-smoke` when the intended invariant is same-session pixel
 stability across a layout action. Pixel-visible effects that have a named

@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Fingerprint the source/docs/tooling that define accessibility proof."""
+"""Fingerprint the source/docs/tooling that define accessibility proof.
+
+The compared digest covers only the *contents* of the relevant files (tracked
+or not), so smoke proof stays valid across git bookkeeping transitions —
+staging, committing, or branch motion with identical bytes — and is voided
+exactly when a relevant file's bytes change. `git_head` and `relevant_status`
+are recorded as informational forensics only and MUST stay out of the digest.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +24,7 @@ RELEVANT_EXACT_PATHS = (
     ".agents/skills/gtk-agentic-debugging/scripts/atspi-dump-tree.py",
     ".agents/skills/gtk-agentic-debugging/scripts/atspi-set-text.py",
     ".agents/skills/gtk-agentic-debugging/scripts/capture-lushtext-mutter.py",
+    "scripts/accessibility_source_fingerprint.py",
     "scripts/accessibility_warning_allowlist.py",
     "scripts/run-accessibility-smoke.sh",
     "scripts/run-visual-smoke.sh",
@@ -41,23 +49,30 @@ def source_fingerprint(repo_root: Path) -> dict[str, object]:
     entries = list(source_entries(repo_root))
     status = relevant_status(repo_root)
     head = git_output(repo_root, ["rev-parse", "HEAD"]) or None
-    encoded = json.dumps(
-        {
-            "entries": entries,
-            "git_head": head,
-            "relevant_status": status,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
     return {
-        "schema_version": 1,
-        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "schema_version": 2,
+        "sha256": entries_digest(entries),
         "git_head": head,
         "dirty": bool(status),
         "path_count": len(entries),
         "relevant_status": status,
     }
+
+
+def entries_digest(entries: list[dict[str, object]]) -> str:
+    """Digest relevant-file contents only, never git bookkeeping state.
+
+    Including `git_head` or porcelain status lines here would void live smoke
+    proof on staging or committing byte-identical trees, forcing pointless
+    lane reruns without catching any additional drift; `source_entries`
+    already hashes tracked and untracked relevant files from disk.
+    """
+    encoded = json.dumps(
+        {"entries": entries},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def source_entries(repo_root: Path):

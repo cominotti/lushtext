@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from accessibility_source_fingerprint import source_fingerprint
+from accessibility_source_fingerprint import entries_digest, source_entries, source_fingerprint
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -727,6 +727,13 @@ def run_self_test() -> None:
         )
     ) != 1:
         raise AssertionError("stale smoke summary fixture did not trip freshness check")
+    # The compared digest must derive from relevant-file contents alone so
+    # staging or committing byte-identical trees cannot void live smoke proof.
+    fingerprint = source_fingerprint(REPO_ROOT)
+    if fingerprint["sha256"] != entries_digest(list(source_entries(REPO_ROOT))):
+        raise AssertionError(
+            "source fingerprint digest must cover only content entries, not git state"
+        )
     print("PASS: accessibility policy self-test")
 
 
