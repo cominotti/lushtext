@@ -276,7 +276,10 @@ impl LushtextWorkspaceSection {
     }
 
     fn snapshot_refresh_state(&self) {
-        self.save_expanded_paths();
+        // Expansion context is maintained live by row transitions and accepted
+        // reconciliation, so an in-place refresh only snapshots scalar
+        // selection and resets per-run metrics. The full flattened-model
+        // derivation remains reserved for genuine model replacement.
         *self.imp().pending_selection.borrow_mut() = self.selected_tree_path();
         self.imp().refresh_runtime.reconcile_batch_count.set(0);
         self.imp().refresh_runtime.reconcile_max_batch_rows.set(0);
@@ -527,7 +530,7 @@ impl LushtextWorkspaceSection {
             )]
             top_level_store.splice(prefix as u32, removed as u32, &replacement);
             self.recache_top_level_store(&top_level_store);
-            self.restore_materialized_state();
+            super::tree_loading::schedule_child_state_restore(self);
         }
 
         self.schedule_top_level_folder_empty_checks(&top_level_store);
@@ -561,29 +564,6 @@ impl LushtextWorkspaceSection {
                 );
             }
         }
-    }
-
-    fn restore_materialized_state(&self) {
-        let expanded_paths = self.imp().expanded_paths.borrow().clone();
-        let pending_selection = self.imp().pending_selection.borrow().clone();
-        if expanded_paths.is_empty() && pending_selection.is_none() {
-            return;
-        }
-
-        let section_weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_millis(1), move || {
-            let Some(section) = section_weak.upgrade() else {
-                return;
-            };
-            for path in expanded_paths {
-                if let Some(row) = section.find_dir_row(&path) {
-                    row.set_expanded(true);
-                }
-            }
-            if let Some(path) = pending_selection {
-                section.select_and_scroll_to(&path);
-            }
-        });
     }
 }
 

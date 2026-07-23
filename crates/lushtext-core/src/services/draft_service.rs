@@ -9,7 +9,8 @@
 
 use crate::model::draft::{
     DraftCleanupContinuation, DraftEntry, DraftManifest, DraftManifestAuthority,
-    DraftManifestCompleteness, FileDraftRestoreResolution, PreloadedDraftRestore,
+    DraftManifestCompleteness, FileDraftRestoreResolution, FileDraftRestoreSkip,
+    PreloadedDraftRestore, PreloadedDraftSkip,
 };
 use crate::model::session::SessionData;
 use crate::model::sidecar_identity::stable_path_hash;
@@ -501,12 +502,18 @@ fn load_restore_state_with_eager_limit_and_cancel(
                 DraftPreloadDecision::Read => {}
                 DraftPreloadDecision::SkipOversized => {
                     tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
-                    preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
+                    preloaded.insert(
+                        draft_id,
+                        PreloadedDraftRestore::Skip(PreloadedDraftSkip::Oversized),
+                    );
                     continue;
                 }
                 DraftPreloadDecision::SkipBudget => {
                     tracing::warn!("Skipped eager preload for large draft {draft_id}");
-                    preloaded.insert(draft_id, PreloadedDraftRestore::LazyAggregateBudget);
+                    preloaded.insert(
+                        draft_id,
+                        PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget),
+                    );
                     continue;
                 }
             }
@@ -514,19 +521,24 @@ fn load_restore_state_with_eager_limit_and_cancel(
                 Ok(FileDraftRestoreResolution::Restore { content }) => {
                     preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
                 }
-                Ok(FileDraftRestoreResolution::SkipStale) => {
-                    preloaded.insert(draft_id.clone(), PreloadedDraftRestore::SkipStaleFile);
+                Ok(FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Stale)) => {
+                    preloaded.insert(
+                        draft_id.clone(),
+                        PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile),
+                    );
                     if !stale_draft_ids.contains(&draft_id) {
                         stale_draft_ids.push(draft_id);
                     }
                 }
-                Ok(FileDraftRestoreResolution::SkipOversized) => {
-                    preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
+                Ok(FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Oversized)) => {
+                    preloaded.insert(
+                        draft_id,
+                        PreloadedDraftRestore::Skip(PreloadedDraftSkip::Oversized),
+                    );
                 }
-                Ok(
-                    FileDraftRestoreResolution::SkipUnavailable
-                    | FileDraftRestoreResolution::MissingDraft,
-                ) => {}
+                Ok(FileDraftRestoreResolution::Skip(
+                    FileDraftRestoreSkip::Unavailable | FileDraftRestoreSkip::MissingDraft,
+                )) => {}
                 Err(e) => {
                     tracing::warn!("Failed to pre-resolve draft {draft_id}: {e}");
                 }
@@ -538,12 +550,18 @@ fn load_restore_state_with_eager_limit_and_cancel(
             DraftPreloadDecision::Read => {}
             DraftPreloadDecision::SkipOversized => {
                 tracing::warn!("Skipped automatic restore for oversized draft {draft_id}");
-                preloaded.insert(draft_id, PreloadedDraftRestore::SkipOversized);
+                preloaded.insert(
+                    draft_id,
+                    PreloadedDraftRestore::Skip(PreloadedDraftSkip::Oversized),
+                );
                 continue;
             }
             DraftPreloadDecision::SkipBudget => {
                 tracing::warn!("Skipped eager preload for large draft {draft_id}");
-                preloaded.insert(draft_id, PreloadedDraftRestore::LazyAggregateBudget);
+                preloaded.insert(
+                    draft_id,
+                    PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget),
+                );
                 continue;
             }
         }
@@ -1297,25 +1315,35 @@ pub fn resolve_file_draft_restore(
     entry: &DraftEntry,
 ) -> Result<FileDraftRestoreResolution> {
     let Some(path) = entry.original_path.as_deref() else {
-        return Ok(FileDraftRestoreResolution::SkipUnavailable);
+        return Ok(FileDraftRestoreResolution::Skip(
+            FileDraftRestoreSkip::Unavailable,
+        ));
     };
 
     if let Some(saved_mtime) = entry.original_mtime_secs {
         let Some(current_mtime) = editor_io::mtime_secs(path) else {
-            return Ok(FileDraftRestoreResolution::SkipUnavailable);
+            return Ok(FileDraftRestoreResolution::Skip(
+                FileDraftRestoreSkip::Unavailable,
+            ));
         };
         if current_mtime != saved_mtime {
-            return Ok(FileDraftRestoreResolution::SkipStale);
+            return Ok(FileDraftRestoreResolution::Skip(
+                FileDraftRestoreSkip::Stale,
+            ));
         }
     }
 
     if oversized_draft_size(data_dir, &entry.draft_id).is_some() {
-        return Ok(FileDraftRestoreResolution::SkipOversized);
+        return Ok(FileDraftRestoreResolution::Skip(
+            FileDraftRestoreSkip::Oversized,
+        ));
     }
 
     match read_draft(data_dir, &entry.draft_id)? {
         Some(content) => Ok(FileDraftRestoreResolution::Restore { content }),
-        None => Ok(FileDraftRestoreResolution::MissingDraft),
+        None => Ok(FileDraftRestoreResolution::Skip(
+            FileDraftRestoreSkip::MissingDraft,
+        )),
     }
 }
 
@@ -1335,11 +1363,15 @@ pub fn resolve_draft_restore(
         return resolve_file_draft_restore(data_dir, entry);
     }
     if oversized_draft_size(data_dir, &entry.draft_id).is_some() {
-        return Ok(FileDraftRestoreResolution::SkipOversized);
+        return Ok(FileDraftRestoreResolution::Skip(
+            FileDraftRestoreSkip::Oversized,
+        ));
     }
     match read_draft(data_dir, &entry.draft_id)? {
         Some(content) => Ok(FileDraftRestoreResolution::Restore { content }),
-        None => Ok(FileDraftRestoreResolution::MissingDraft),
+        None => Ok(FileDraftRestoreResolution::Skip(
+            FileDraftRestoreSkip::MissingDraft,
+        )),
     }
 }
 
@@ -2891,7 +2923,10 @@ mod tests {
             resolve_file_draft_restore(dir.path(), &file_entry("draft", &path, Some(stale_mtime)))
                 .expect("expected operation to succeed");
 
-        assert_eq!(resolution, FileDraftRestoreResolution::SkipStale);
+        assert_eq!(
+            resolution,
+            FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Stale)
+        );
     }
 
     #[test]
@@ -2922,7 +2957,10 @@ mod tests {
             resolve_file_draft_restore(dir.path(), &file_entry("draft", &missing_path, Some(123)))
                 .expect("expected operation to succeed");
 
-        assert_eq!(resolution, FileDraftRestoreResolution::SkipUnavailable);
+        assert_eq!(
+            resolution,
+            FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Unavailable)
+        );
     }
 
     #[test]
@@ -2938,7 +2976,10 @@ mod tests {
         )
         .expect("expected operation to succeed");
 
-        assert_eq!(resolution, FileDraftRestoreResolution::MissingDraft);
+        assert_eq!(
+            resolution,
+            FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::MissingDraft)
+        );
     }
 
     #[test]
@@ -2960,7 +3001,10 @@ mod tests {
         )
         .expect("expected operation to succeed");
 
-        assert_eq!(resolution, FileDraftRestoreResolution::SkipOversized);
+        assert_eq!(
+            resolution,
+            FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Oversized)
+        );
     }
 
     #[test]
@@ -3063,7 +3107,9 @@ mod tests {
         );
         assert_eq!(
             restore.preloaded_drafts.get(second),
-            Some(&PreloadedDraftRestore::LazyAggregateBudget)
+            Some(&PreloadedDraftRestore::Skip(
+                PreloadedDraftSkip::LazyAggregateBudget
+            ))
         );
         assert!(restore.manifest.find_by_id(second).is_some());
         assert_eq!(
@@ -3105,7 +3151,7 @@ mod tests {
 
         assert_eq!(
             restore.preloaded_drafts.get(&draft_id),
-            Some(&PreloadedDraftRestore::SkipStaleFile)
+            Some(&PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile))
         );
         assert!(restore.manifest.find_by_id(&draft_id).is_none());
         assert!(
@@ -3210,7 +3256,7 @@ mod tests {
 
         assert_eq!(
             restore.preloaded_drafts.get(draft_id),
-            Some(&PreloadedDraftRestore::SkipOversized)
+            Some(&PreloadedDraftRestore::Skip(PreloadedDraftSkip::Oversized))
         );
         assert_eq!(restore.session.tabs.len(), 1, "session tab still restores");
         assert_eq!(restore.session.tabs[0].draft_id.as_deref(), Some(draft_id));

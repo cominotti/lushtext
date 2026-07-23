@@ -201,6 +201,12 @@ fn delete_buffer_slice(buffer: &sourceview5::Buffer) -> bool {
     let mut start = buffer.start_iter();
     let mut end = start;
     let _ = end.forward_chars(remaining.min(CLEAR_SLICE_CHARS));
+    // GTK text layout validates whole paragraphs, so a deletion that stops
+    // inside a line would re-lay-out the shrinking remainder on every turn.
+    // Extending to the next line start deletes each paragraph exactly once.
+    if !end.is_end() && !end.starts_line() {
+        let _ = end.forward_line();
+    }
     buffer.delete(&mut start, &mut end);
     buffer.char_count() == 0
 }
@@ -578,8 +584,7 @@ impl LushtextEditorPage {
             return false;
         }
         match result {
-            Ok(mut loaded) => {
-                let content = std::mem::take(&mut loaded.content);
+            Ok(editor_io::LoadResult { metadata, content }) => {
                 let weight = u64::try_from(content.capacity()).unwrap_or(u64::MAX);
                 let Some(mut reservation) = crate::ui::plain_disposal::try_reserve_for_gtk(weight)
                 else {
@@ -589,7 +594,7 @@ impl LushtextEditorPage {
                 self.install_guarded_load(
                     load_generation,
                     GuardedLoadResult {
-                        metadata: loaded,
+                        metadata,
                         content: reservation.own(content),
                     },
                     None,
@@ -754,8 +759,7 @@ impl LushtextEditorPage {
             metadata: loaded,
             content,
         } = loaded;
-        let editor_io::LoadResult {
-            content: empty_content,
+        let editor_io::LoadMetadata {
             size,
             size_check,
             canonical_path,
@@ -764,7 +768,6 @@ impl LushtextEditorPage {
             has_bom,
             file_health,
         } = loaded;
-        debug_assert!(empty_content.is_empty());
         let buffer = self.buffer();
         if size_check.undo_enabled() {
             buffer.end_irreversible_action();
@@ -876,8 +879,7 @@ impl LushtextEditorPage {
             .expect("test load body should acquire disposal capacity");
         self.install_loaded_direct(
             GuardedLoadResult {
-                metadata: editor_io::LoadResult {
-                    content: String::new(),
+                metadata: editor_io::LoadMetadata {
                     size: reported_size,
                     size_check,
                     canonical_path: self.canonical_file_path(),

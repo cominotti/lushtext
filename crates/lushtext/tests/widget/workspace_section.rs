@@ -3516,8 +3516,20 @@ fn test_inline_rename_refreshes_expanded_directory_watch_target() {
     assert!(
         !section
             .watch_targets_for_test()
-            .contains(&WorkspaceWatchTarget::directory(nested)),
+            .contains(&WorkspaceWatchTarget::directory(nested.clone())),
         "the in-place rename must release the stale directory target"
+    );
+    let live = section.expanded_paths_for_test();
+    assert!(
+        live.contains(&renamed) && !live.contains(&nested),
+        "expansion intent must follow the renamed directory prefix"
+    );
+    assert_eq!(
+        live,
+        section
+            .derived_expanded_paths_for_test()
+            .expect("tree model should be present"),
+        "live expansion state must match the full derivation oracle after an inline rename"
     );
 }
 
@@ -5005,6 +5017,231 @@ fn test_refresh_updates_tree_after_external_delete() {
     fixture::remove_file(&deleted);
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(5), || !tree_contains_path(&section, &deleted));
+}
+
+#[test]
+fn test_live_expansion_state_matches_full_oracle_across_tree_mutations() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("expansion oracle tempdir");
+    let alpha = dir.path().join("alpha");
+    let alpha_inner = alpha.join("inner");
+    let beta = dir.path().join("beta");
+    fixture::create_dir_all(&alpha_inner);
+    fixture::create_dir(&beta);
+    fixture::write_text(&alpha.join("one.txt"), "one");
+    fixture::write_text(&alpha_inner.join("deep.txt"), "deep");
+    fixture::write_text(&beta.join("two.txt"), "two");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-expansion-oracle"));
+    section.load_folders(&[FolderTreeEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+    section.stop_workspace_watch_for_test();
+    let _window = present_section_window(&section);
+
+    let assert_matches_oracle = |context: &str| {
+        let live = section.expanded_paths_for_test();
+        let derived = section
+            .derived_expanded_paths_for_test()
+            .expect("tree model should be present");
+        assert_eq!(
+            live, derived,
+            "live expansion state must match the full derivation oracle after {context}"
+        );
+    };
+
+    assert_matches_oracle("initial load");
+
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &alpha) && tree_contains_path(&section, &beta)
+    });
+    assert_matches_oracle("top-level expansion");
+
+    row_for_path(&section, &alpha)
+        .expect("alpha row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &alpha_inner)
+    });
+    row_for_path(&section, &alpha_inner)
+        .expect("alpha inner row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &alpha_inner.join("deep.txt"))
+    });
+    assert_matches_oracle("nested expansion");
+
+    // Targeted auto refresh that splices a created file into an expanded dir.
+    let created = alpha_inner.join("fresh.txt");
+    fixture::write_text(&created, "fresh");
+    section.queue_auto_refresh_for_test(vec![created.clone()]);
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &created)
+    });
+    assert_matches_oracle("targeted refresh splice");
+
+    // Accepted reconciliation that removes an expanded directory.
+    fixture::remove_dir_all(&alpha_inner);
+    section.queue_auto_refresh_for_test(vec![alpha.clone()]);
+    wait_until(Duration::from_secs(10), || {
+        !tree_contains_path(&section, &alpha_inner)
+    });
+    assert_matches_oracle("expanded directory removal");
+    assert!(
+        !section.expanded_paths_for_test().contains(&alpha_inner),
+        "a later refresh must not resurrect a removed expanded path"
+    );
+
+    // Ancestor collapse retires descendant restoration intent.
+    row_for_path(&section, &alpha)
+        .expect("alpha row after removal")
+        .set_expanded(false);
+    flush_events();
+    assert_matches_oracle("ancestor collapse");
+
+    // Broad manual reload still resynchronizes through the full derivation.
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &beta)
+    });
+    assert_matches_oracle("manual full refresh");
+
+    // A generated toggle sequence (deterministic LCG) must keep the live set
+    // equal to the oracle after every transition.
+    let toggle_targets = [dir.path().to_path_buf(), alpha, beta];
+    let mut lcg_state: u64 = 0x2545_F491_4F6C_DD1D;
+    for step in 0..32 {
+        lcg_state = lcg_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let target = &toggle_targets[(lcg_state >> 33) as usize % toggle_targets.len()];
+        let expand = lcg_state & 1 == 0;
+        if let Some(row) = row_for_path(&section, target) {
+            row.set_expanded(expand);
+            flush_events();
+        }
+        let live = section.expanded_paths_for_test();
+        let derived = section
+            .derived_expanded_paths_for_test()
+            .expect("tree model should be present");
+        assert_eq!(
+            live, derived,
+            "live expansion state diverged from the oracle at generated step {step}"
+        );
+    }
+}
+
+#[test]
+fn test_targeted_refresh_skips_full_expansion_capture_in_large_tree() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("expansion cost tempdir");
+    let bulk = dir.path().join("bulk");
+    let mut bulk_dirs = Vec::new();
+    for index in 0..24 {
+        let sub = bulk.join(format!("dir-{index:02}"));
+        fixture::create_dir_all(&sub);
+        fixture::write_text(&sub.join("file.txt"), "row");
+        bulk_dirs.push(sub);
+    }
+    let target = dir.path().join("target");
+    fixture::create_dir_all(&target);
+    let seed = target.join("seed.txt");
+    fixture::write_text(&seed, "seed");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-expansion-cost"));
+    section.load_folders(&[FolderTreeEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+    section.stop_workspace_watch_for_test();
+    let _window = present_section_window(&section);
+
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &bulk) && tree_contains_path(&section, &target)
+    });
+    row_for_path(&section, &bulk)
+        .expect("bulk row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(10), || {
+        bulk_dirs
+            .iter()
+            .all(|sub| tree_contains_path(&section, sub))
+    });
+    for sub in &bulk_dirs {
+        row_for_path(&section, sub)
+            .expect("bulk child row")
+            .set_expanded(true);
+    }
+    row_for_path(&section, &target)
+        .expect("target row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &seed)
+            && bulk_dirs
+                .iter()
+                .all(|sub| tree_contains_path(&section, &sub.join("file.txt")))
+    });
+    select_path(&section, &seed);
+
+    let materialized_rows = section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .map_or(0, gtk4::TreeListModel::n_items);
+    assert!(
+        materialized_rows > 50,
+        "the unrelated materialized tree must dominate the affected directory, got {materialized_rows}"
+    );
+    let (scans_before, rows_before) = section.expansion_capture_metrics_for_test();
+
+    // One-directory targeted refresh among many unrelated materialized rows.
+    let created = target.join("created.txt");
+    fixture::write_text(&created, "created");
+    section.queue_auto_refresh_for_test(vec![created.clone()]);
+    wait_until(Duration::from_secs(10), || {
+        tree_contains_path(&section, &created)
+    });
+
+    let (scans_after, rows_after) = section.expansion_capture_metrics_for_test();
+    assert_eq!(
+        scans_after, scans_before,
+        "a targeted in-place refresh must not run a full expansion derivation"
+    );
+    assert_eq!(
+        rows_after, rows_before,
+        "expansion capture must not visit unrelated flattened rows"
+    );
+
+    // Reconciliation work stays bounded by the affected directory.
+    let (_batches, max_batch_rows, _terminals, _superseded, live_sources) =
+        section.reconciliation_metrics_for_test();
+    assert!(
+        max_batch_rows <= 4,
+        "the accepted splice must stay proportional to the affected directory, got {max_batch_rows}"
+    );
+    assert_eq!(live_sources, 0);
+
+    // Unchanged expansion, selection, and readiness behavior is preserved.
+    assert!(
+        bulk_dirs.iter().all(|sub| {
+            row_for_path(&section, sub).is_some_and(|row| row.is_expanded())
+        }),
+        "unrelated expanded directories must stay expanded"
+    );
+    assert_eq!(selected_path(&section).as_deref(), Some(seed.as_path()));
+    wait_until(Duration::from_secs(5), || {
+        !section.workspace_refresh_blocks_readiness_for_test()
+    });
+    let live = section.expanded_paths_for_test();
+    let derived = section
+        .derived_expanded_paths_for_test()
+        .expect("tree model should be present");
+    assert_eq!(live, derived);
+    eprintln!(
+        "workspace-expansion-capture-evidence materialized_rows={materialized_rows} capture_scans_before={scans_before} capture_scans_after={scans_after} capture_rows_after={rows_after} max_batch_rows={max_batch_rows}"
+    );
 }
 
 #[test]

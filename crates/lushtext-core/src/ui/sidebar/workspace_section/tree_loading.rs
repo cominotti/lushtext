@@ -492,6 +492,13 @@ fn clear_dir_states(section: &LushtextWorkspaceSection, roots: &HashSet<PathBuf>
     let under_removed_root =
         |path: &Path| path.ancestors().any(|ancestor| roots.contains(ancestor));
     super::folders::cancel_folder_empty_probes_under_roots(section, roots);
+    // Accepted removals retire expansion intent for the affected subtrees so a
+    // later refresh cannot resurrect paths that no longer exist.
+    section
+        .imp()
+        .expanded_paths
+        .borrow_mut()
+        .retain(|path| !under_removed_root(path));
     let removed_store_keys = section
         .imp()
         .child_store_paths
@@ -1234,22 +1241,30 @@ fn build_child_items(rows: &[DirectoryRowState]) -> Vec<FileTreeItem> {
         .collect()
 }
 
-/// Restore expansion and pending selection after reconciliation may replace rows.
-fn schedule_child_state_restore(section: &LushtextWorkspaceSection) {
-    let expanded_paths = section.imp().expanded_paths.borrow().clone();
-    let pending_selection = section.imp().pending_selection.borrow().clone();
-    if expanded_paths.is_empty() && pending_selection.is_none() {
+/// Restore expansion and pending selection after a refresh may replace rows.
+///
+/// Shared by watcher reconciliation and targeted in-place refresh; both defer
+/// one main-loop tick so `GtkTreeListModel` row recycling settles first.
+pub(super) fn schedule_child_state_restore(section: &LushtextWorkspaceSection) {
+    if section.imp().expanded_paths.borrow().is_empty()
+        && section.imp().pending_selection.borrow().is_none()
+    {
         return;
     }
 
     let section_weak = section.downgrade();
     glib::timeout_add_local_once(Duration::from_millis(1), move || {
         if let Some(section) = section_weak.upgrade() {
+            // Read expansion intent at apply time: the authoritative set is
+            // live, so a collapse between scheduling and this callback must
+            // not be resurrected by a stale snapshot.
+            let expanded_paths = section.imp().expanded_paths.borrow().clone();
             for path in expanded_paths {
                 if let Some(row) = section.find_dir_row(&path) {
                     row.set_expanded(true);
                 }
             }
+            let pending_selection = section.imp().pending_selection.borrow().clone();
             if let Some(path) = pending_selection {
                 section.select_and_scroll_to(&path);
             }

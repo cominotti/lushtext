@@ -138,10 +138,20 @@ impl DraftCleanupContinuation {
 pub enum PreloadedDraftRestore {
     /// Restored content ready to apply once the target editor is available.
     Content(String),
+    /// A body-free restore outcome; the reason says how the editor reacts.
+    Skip(PreloadedDraftSkip),
+}
+
+/// Body-free preload outcomes that never carry a document-sized payload.
+///
+/// Guarded transfer wrappers hold this type directly so their compact side
+/// cannot represent a body by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreloadedDraftSkip {
     /// A file-backed draft was discarded because the backing file changed.
-    SkipStaleFile,
+    StaleFile,
     /// The draft remains on disk but is too large to apply automatically.
-    SkipOversized,
+    Oversized,
     /// The draft is individually eligible but did not fit the eager startup budget.
     ///
     /// The window recreates the tab first, then admits this body through its
@@ -158,12 +168,22 @@ pub enum PreloadedDraftRestore {
 pub enum FileDraftRestoreResolution {
     /// The draft is still safe to restore and includes ready-to-apply content.
     Restore { content: String },
+    /// A body-free resolution; the reason says how the editor reacts.
+    Skip(FileDraftRestoreSkip),
+}
+
+/// Body-free restore resolutions that never carry a document-sized payload.
+///
+/// Guarded transfer wrappers hold this type directly so their compact side
+/// cannot represent a body by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileDraftRestoreSkip {
     /// The backing file's mtime changed, so restoring would overwrite newer data.
-    SkipStale,
+    Stale,
     /// The draft is too large to read into a GTK buffer automatically.
-    SkipOversized,
+    Oversized,
     /// Automatic restore could not trust current file metadata for this attempt.
-    SkipUnavailable,
+    Unavailable,
     /// The manifest entry existed, but the draft file itself was already gone.
     MissingDraft,
 }

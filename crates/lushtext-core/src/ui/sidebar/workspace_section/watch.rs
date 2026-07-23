@@ -161,6 +161,12 @@ impl LushtextWorkspaceSection {
 
         let section_weak = self.downgrade();
         row.connect_notify_local(Some("expanded"), move |row, _| {
+            // The authoritative expansion set follows every live transition,
+            // even during a reorder drag, matching what a whole-model snapshot
+            // would capture at the next refresh.
+            if let Some(section) = section_weak.upgrade() {
+                section.record_row_expansion_transition(row);
+            }
             if super::dnd::expanded_watch_should_be_suppressed(row) {
                 return;
             }

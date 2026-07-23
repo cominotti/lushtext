@@ -38,26 +38,54 @@ fn workspace_save_faults_for_test() -> &'static Mutex<HashMap<PathBuf, Workspace
     FAULTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Cleanup ownership for one armed workspace-save fault registration.
+///
+/// Dropping the guard removes any unconsumed fault, so a test that arms the
+/// seam and fails early cannot leak the fault into a later save of the same
+/// path in this process. Removing an already-consumed fault is a no-op.
+#[cfg(feature = "test-utils")]
+#[must_use = "dropping the guard immediately would disarm the fault"]
+pub struct WorkspaceSaveFaultGuard {
+    path: PathBuf,
+}
+
+#[cfg(feature = "test-utils")]
+impl Drop for WorkspaceSaveFaultGuard {
+    fn drop(&mut self) {
+        workspace_save_faults_for_test()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.path);
+    }
+}
+
 /// Fail the next workspace save for one isolated data directory.
 #[cfg(feature = "test-utils")]
-pub fn fail_next_save_for_data_dir_for_test(data_dir: &Path) {
+pub fn fail_next_save_for_data_dir_for_test(data_dir: &Path) -> WorkspaceSaveFaultGuard {
+    let path = data_dir.join(WORKSPACES_FILE);
     workspace_save_faults_for_test()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(data_dir.join(WORKSPACES_FILE))
+        .entry(path.clone())
         .or_default()
         .fail = true;
+    WorkspaceSaveFaultGuard { path }
 }
 
 /// Delay the next workspace save for one isolated data directory.
 #[cfg(feature = "test-utils")]
-pub fn delay_next_save_for_data_dir_for_test(data_dir: &Path, delay_ms: u64) {
+pub fn delay_next_save_for_data_dir_for_test(
+    data_dir: &Path,
+    delay_ms: u64,
+) -> WorkspaceSaveFaultGuard {
+    let path = data_dir.join(WORKSPACES_FILE);
     workspace_save_faults_for_test()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(data_dir.join(WORKSPACES_FILE))
+        .entry(path.clone())
         .or_default()
         .delay_ms = delay_ms;
+    WorkspaceSaveFaultGuard { path }
 }
 
 /// Error returned when a folder cannot be added to a workspace.

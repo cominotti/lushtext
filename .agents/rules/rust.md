@@ -89,6 +89,18 @@ autosave, encoding analysis, preview flows, or optional marker scans.
 - A typed payload permit must span capture, worker handoff, transformation,
   persistence, terminal freshness, and rejected/stale disposal. Compact latest
   intent may wait for admission, but document-sized text may not.
+- Guarded transfer wrappers must make illegal ownership states unrepresentable:
+  the compact (non-body) case holds a body-free type (for example
+  `PreloadedDraftSkip` / `FileDraftRestoreSkip`) instead of re-wrapping the full
+  body-carrying enum, and service results whose document-sized field is always
+  empty on one side of the boundary split into metadata plus separately owned
+  content (`LoadMetadata` + `DisposalOwned<String>`). Consumers must not need
+  `unreachable!` arms or emptiness `debug_assert!`s to reject states the types
+  should not represent.
+- Bounded loading loops that reserve construction bytes against an admission
+  budget release each per-item reservation through a scope-owned mechanism
+  (see `with_construction_charge` in `services/palette/notes.rs`), not through
+  manual release calls that every new early exit must remember.
 - Worker results that mutate UI state must carry a generation counter and a
   weak editor/window identity check. Reject results when the editor was closed,
   switched paths, edited again, or superseded by a newer request.

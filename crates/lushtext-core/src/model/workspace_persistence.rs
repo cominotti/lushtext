@@ -46,8 +46,6 @@ pub enum WorkspacePersistenceStartReason {
     Debounce,
     /// A bounded automatic retry delay elapsed.
     RetryWakeup,
-    /// The user or a caller explicitly requested a retry.
-    ExplicitRetry,
     /// Window close is flushing the newest state without debounce.
     CloseFlush,
 }
@@ -63,7 +61,7 @@ pub enum WorkspacePersistenceTerminalEffect {
     StartNewest,
     /// Retry the current generation after the bounded delay.
     RetryAfter(Duration),
-    /// Automatic retries are exhausted; wait for explicit retry, mutation, or close.
+    /// Automatic retries are exhausted; wait for a new mutation or close flush.
     AwaitExplicitRetry,
 }
 

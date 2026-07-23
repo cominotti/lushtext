@@ -250,9 +250,26 @@ fn is_allowed_compatibility_reference(relative: &str, needle: &str, line: &str) 
         "workspace-note" | "workspace_note" | "workspace note" | "workspacenote" => {
             is_legacy_folder_note_compatibility(relative, line)
         }
-        "display_root" | "canonical_root" => is_legacy_folder_note_identity_field(relative),
+        "display_root" => {
+            is_legacy_folder_note_identity_field(relative)
+                || is_current_search_traversal_display_root(relative)
+        }
+        "canonical_root" => is_legacy_folder_note_identity_field(relative),
         _ => false,
     }
+}
+
+/// Current workspace-search traversal API surface.
+///
+/// A search "display root" is one configured folder's traversal and
+/// presentation anchor, not the retired folder-note identity field this audit
+/// guards against; the lexical collision is intentional and bounded here.
+fn is_current_search_traversal_display_root(relative: &str) -> bool {
+    matches!(
+        relative,
+        "crates/lushtext-core/src/model/workspace_search.rs"
+            | "crates/lushtext-core/benches/benchmarks.rs"
+    )
 }
 
 fn is_legacy_folder_note_compatibility(relative: &str, line: &str) -> bool {

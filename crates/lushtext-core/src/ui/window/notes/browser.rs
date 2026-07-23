@@ -181,9 +181,7 @@ fn guard_note_source_on_worker(
         Ok(PaletteNoteSourceOutcome::Complete { mut load, metrics }) => {
             let diagnostics = std::mem::take(&mut load.diagnostics);
             let had_recovery_diagnostics = !diagnostics.is_empty();
-            for diagnostic in &diagnostics {
-                tracing::warn!("{}", diagnostic.summary());
-            }
+            LushtextWindow::trace_browse_recovery_diagnostics(&diagnostics);
             drop(diagnostics);
             let entries = std::mem::take(&mut load.entries).into_boxed_slice();
             debug_assert_eq!(
@@ -671,7 +669,7 @@ impl LushtextWindow {
             back_button,
             filtered_indices: RefCell::new(Vec::new()),
             search_debounce: Debounce::default(),
-            preview_generation: Cell::new(0),
+            preview_loads: RefCell::default(),
             all_entries: RefCell::new(Arc::new(
                 crate::ui::plain_disposal::DisposalOwned::small_unreserved(
                     entries.into_boxed_slice(),
@@ -1312,7 +1310,7 @@ impl NotesBrowserState {
         self.sidebar.remove_all();
         self.filtered_indices.borrow_mut().clear();
         self.split_view.set_show_content(false);
-        self.advance_preview_generation();
+        self.preview_loads.borrow_mut().invalidate();
         self.configure_mode(mode);
     }
 
@@ -1326,6 +1324,7 @@ impl NotesBrowserState {
         self.source_admission.borrow_mut().take();
         self.source_capacity_wakeup.cancel();
         self.query_runtime.borrow_mut().invalidate();
+        self.preview_loads.borrow_mut().invalidate();
         self.source_ready.set(false);
         self.filtered_indices.borrow_mut().clear();
         let source = self.all_entries.replace(Arc::new(
@@ -1338,7 +1337,10 @@ impl NotesBrowserState {
 
     /// Refresh the preview pane for one selected sidebar item.
     fn refresh_preview(state: &Rc<Self>, index: Option<usize>, user_selected: bool) {
-        let generation = state.advance_preview_generation();
+        // Any newly rendered selection supersedes older closed-file excerpt
+        // work; a closed-file bookmark branch resubmits below.
+        state.preview_loads.borrow_mut().invalidate();
+
         let Some(index) = index else {
             state.show_unselected_preview();
             return;
@@ -1357,7 +1359,7 @@ impl NotesBrowserState {
         state.preview_title.set_label(&entry.preview_title());
         state.preview_meta.set_label(&entry.preview_meta());
         if matches!(&entry.target, PaletteNoteTarget::Bookmark { .. }) {
-            Self::refresh_bookmark_preview(state, entry, generation);
+            Self::refresh_bookmark_preview(state, entry);
         } else if entry.note_text().trim().is_empty() {
             state.show_markdown_placeholder("This note is empty.");
         } else {
@@ -1380,13 +1382,6 @@ impl NotesBrowserState {
             // navigation request during resize and widget-test transitions.
             state.split_view.set_show_content(true);
         }
-    }
-
-    /// Advance the preview token that async bookmark loads must match.
-    fn advance_preview_generation(&self) -> u32 {
-        let generation = self.preview_generation.get().wrapping_add(1);
-        self.preview_generation.set(generation);
-        generation
     }
 
     /// Reset the preview pane to the initial no-selection state.

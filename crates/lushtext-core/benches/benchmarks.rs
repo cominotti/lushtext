@@ -3475,8 +3475,61 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
         minimap_result.long_line_lines.len(),
     );
 
+    let preview_request =
+        |index: u32| lushtext_core::services::bookmark_excerpt::BookmarkExcerptPreviewRequest {
+            path: PathBuf::from(format!("/bench/notes/bookmark-{index}.md")),
+            line: index,
+        };
+    let mut preview_coordinator =
+        lushtext_core::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator::default();
+    let first_preview = preview_coordinator
+        .submit(preview_request(0))
+        .expect("first preview submission starts");
+    for index in 1..=512 {
+        assert!(
+            preview_coordinator.submit(preview_request(index)).is_none(),
+            "superseding submissions must retain only the latest pending request"
+        );
+    }
+    assert!(first_preview.cancellation.is_cancelled());
+    let latest_preview = preview_coordinator
+        .finish(first_preview.generation)
+        .expect("latest pending preview starts after the active terminal");
+    assert!(
+        preview_coordinator
+            .finish(latest_preview.generation)
+            .is_none()
+    );
+    let preview_evidence = preview_coordinator.snapshot();
+    if preview_evidence.active_high_water != 1
+        || preview_evidence.pending_high_water != 1
+        || preview_evidence.started != 2
+    {
+        panic!("bookmark preview churn must stay one-active/one-latest: {preview_evidence:?}");
+    }
+    eprintln!(
+        "bookmark-preview-coordinator-evidence submissions=513 started={} active_high_water={} pending_high_water={} cancellation_requests={}",
+        preview_evidence.started,
+        preview_evidence.active_high_water,
+        preview_evidence.pending_high_water,
+        preview_evidence.cancellation_requests
+    );
+
     let mut group = c.benchmark_group("quality_gap_scale");
     group.sample_size(10);
+    group.bench_function("bookmark_preview_flight/rapid_10000", |b| {
+        b.iter(|| {
+            let mut coordinator = lushtext_core::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator::default();
+            let mut active = coordinator.submit(preview_request(0));
+            for index in 1..10_000u32 {
+                assert!(coordinator.submit(preview_request(index)).is_none());
+            }
+            while let Some(start) = active.take() {
+                active = coordinator.finish(start.generation);
+            }
+            black_box(coordinator.snapshot())
+        });
+    });
     group.bench_function("notes_browser/no_match_10000", |b| {
         b.iter(|| {
             black_box(palette::query_notes_browser_source(

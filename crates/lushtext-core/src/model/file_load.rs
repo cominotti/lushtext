@@ -307,10 +307,11 @@ mod tests {
         assert_eq!(decoded_body_reservation_weight(10), 30);
         assert_eq!(decoded_body_reservation_weight(u64::MAX), u64::MAX);
 
-        let text = format!("{}🙂tail", "a".repeat(INSTALL_SLICE_BYTES - 1));
+        let text = format!("{}\n🙂tail", "a".repeat(INSTALL_SLICE_BYTES - 1));
         let end = next_install_boundary(&text, 0);
         assert!(text.is_char_boundary(end));
-        assert!(end <= INSTALL_SLICE_BYTES);
+        assert_eq!(end, INSTALL_SLICE_BYTES);
+        assert!(text[..end].ends_with('\n'));
         assert_eq!(next_install_boundary(&text, text.len()), text.len());
     }
 

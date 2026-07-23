@@ -269,7 +269,10 @@ must not depend on ambient Unix permissions to make operations fail: CI
 containers may run as root and bypass those permissions. Prefer feature-gated,
 per-invocation fault seams with no global mutable state so failure evidence
 stays deterministic across privilege levels and parallel tests while production
-callers cannot select injected I/O.
+callers cannot select injected I/O. When a seam must be visible across threads,
+key it by the exact operation target and return cleanup ownership from
+registration (see the Replace/Undo after-metadata hook registry) instead of
+using one process-global slot that a parallel operation can consume.
 
 `make test-prop` uses the CI-safe default of 64 cases per property. Use
 `make test-prop-deep PROPTEST_DEEP_CASES=1024` for a manual or scheduled pass.
@@ -462,6 +465,10 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
 - `make accessibility-smoke` keeps the accessibility bridge enabled and uses the
   AT-SPI path. Do not rely on the widget harness for this class of coverage
   because `scripts/run-widget-tests.sh` intentionally sets `NO_AT_BRIDGE=1`.
+  Its warning allowlist classification lives once in
+  `scripts/accessibility_warning_allowlist.py`, imported by both the final
+  warning scan and the summary composer; edit the shared module instead of
+  embedding a second predicate copy in the lane script.
 - `make check-accessibility-policy` is the fast local guardrail for new
   accessibility-sensitive UI lines. It does not replace widget tests or
   AT-SPI smoke; it catches obvious helper, row-recycling, hover, transient, and

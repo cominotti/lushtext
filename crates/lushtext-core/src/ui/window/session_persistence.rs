@@ -14,7 +14,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use crate::model::draft::PreloadedDraftRestore;
+use crate::model::draft::{PreloadedDraftRestore, PreloadedDraftSkip};
 use crate::model::session::{SessionData, SessionTab};
 use crate::services::notifications::NotificationSeverity;
 use crate::services::recovery_metadata::{
@@ -44,9 +44,7 @@ fn startup_preloads_retained_bytes(preloaded: &HashMap<String, PreloadedDraftRes
                 .saturating_add(id.capacity())
                 .saturating_add(match restore {
                     PreloadedDraftRestore::Content(content) => content.capacity(),
-                    PreloadedDraftRestore::SkipStaleFile
-                    | PreloadedDraftRestore::SkipOversized
-                    | PreloadedDraftRestore::LazyAggregateBudget => 0,
+                    PreloadedDraftRestore::Skip(_) => 0,
                 })
         })
         .saturating_add(preloaded.capacity().saturating_mul(
@@ -73,13 +71,15 @@ fn fit_startup_preloads_to_reservation(
     }
 
     for restore in preloaded.values_mut() {
-        let PreloadedDraftRestore::Content(_) = restore else {
-            continue;
-        };
-        let PreloadedDraftRestore::Content(content) =
-            std::mem::replace(restore, PreloadedDraftRestore::LazyAggregateBudget)
-        else {
-            unreachable!("content match was checked before replacement");
+        let content = match std::mem::replace(
+            restore,
+            PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget),
+        ) {
+            PreloadedDraftRestore::Content(content) => content,
+            compact @ PreloadedDraftRestore::Skip(_) => {
+                *restore = compact;
+                continue;
+            }
         };
         retained_bytes =
             retained_bytes.saturating_sub(u64::try_from(content.capacity()).unwrap_or(u64::MAX));
@@ -1011,11 +1011,12 @@ mod tests {
         let retained = fit_startup_preloads_to_reservation(&mut preloaded, body_limited);
 
         assert!(retained <= body_limited);
-        assert!(
-            preloaded
-                .values()
-                .any(|restore| { matches!(restore, PreloadedDraftRestore::LazyAggregateBudget) })
-        );
+        assert!(preloaded.values().any(|restore| {
+            matches!(
+                restore,
+                PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget)
+            )
+        }));
 
         let metadata_only_limit =
             u64::try_from(std::mem::size_of::<HashMap<String, PreloadedDraftRestore>>())

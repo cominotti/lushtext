@@ -341,17 +341,15 @@ impl LushtextWindow {
 
 impl NotesBrowserState {
     /// Resolve and render a bookmark preview for the selected row.
-    pub(super) fn refresh_bookmark_preview(
-        state: &Rc<Self>,
-        entry: &NotesBrowserEntry,
-        generation: u32,
-    ) {
+    pub(super) fn refresh_bookmark_preview(state: &Rc<Self>, entry: &NotesBrowserEntry) {
         let PaletteNoteTarget::Bookmark { path, line, .. } = &entry.target else {
             return;
         };
 
         let presentation = bookmark_excerpt::presentation_for_path(path);
         if let Some(editor) = state.window.open_editor_for_path(path) {
+            // Live-editor previews bypass closed-file workers entirely; the
+            // caller already invalidated older closed-file work.
             state.render_bookmark_excerpt_state(
                 entry,
                 live_bookmark_excerpt_for_editor(&editor, *line, presentation),
@@ -364,36 +362,96 @@ impl NotesBrowserState {
             bookmark_excerpt::BookmarkExcerptState::Loading { presentation },
         );
 
-        let path = path.clone();
-        let path_for_load = path.clone();
-        let line = *line;
+        let start = state.preview_loads.borrow_mut().submit(
+            bookmark_excerpt::BookmarkExcerptPreviewRequest {
+                path: path.clone(),
+                line: *line,
+            },
+        );
+        if let Some(start) = start {
+            Self::start_bookmark_preview_load(state, start);
+        }
+    }
+
+    /// Launch the sole active closed-file excerpt worker for one admitted request.
+    fn start_bookmark_preview_load(
+        state: &Rc<Self>,
+        start: bookmark_excerpt::BookmarkExcerptPreviewStart,
+    ) {
+        if start.cancellation.is_cancelled() {
+            Self::finish_bookmark_preview_load(state, start.generation, None);
+            return;
+        }
+
+        let bookmark_excerpt::BookmarkExcerptPreviewStart {
+            generation,
+            request,
+            cancellation,
+        } = start;
+        let path = request.path.clone();
+        let line = request.line;
         let state_weak = Rc::downgrade(state);
         spawn_blocking_then(
             (),
             move || {
                 delay_bookmark_excerpt_preview_for_test();
-                bookmark_excerpt::load_from_path(&path_for_load, line)
+                bookmark_excerpt::load_from_path_cancellable(
+                    &request.path,
+                    request.line,
+                    &cancellation,
+                )
             },
-            move |(), result| {
+            move |(), outcome| {
                 let Some(state) = state_weak.upgrade() else {
                     return;
                 };
-                state.apply_bookmark_preview_completion(generation, &path, line, result);
+                let completion = match outcome {
+                    bookmark_excerpt::BookmarkExcerptLoadOutcome::Completed(result) => {
+                        Some((path, line, result))
+                    }
+                    bookmark_excerpt::BookmarkExcerptLoadOutcome::Cancelled => None,
+                };
+                Self::finish_bookmark_preview_load(&state, generation, completion);
             },
         );
+    }
+
+    /// Retire one active excerpt terminal, publish if current, then start the latest request.
+    ///
+    /// Every terminal (success, unavailable, cancelled, and the pre-cancelled
+    /// short circuit) passes through this single transition so active ownership
+    /// clears exactly once and a retained pending request cannot stall.
+    fn finish_bookmark_preview_load(
+        state: &Rc<Self>,
+        generation: u64,
+        completion: Option<(
+            std::path::PathBuf,
+            u32,
+            bookmark_excerpt::BookmarkExcerptState,
+        )>,
+    ) {
+        let (accepted, next) = {
+            let mut loads = state.preview_loads.borrow_mut();
+            let accepted = loads.is_current(generation) && !state.disposed.get();
+            let next = loads.finish(generation);
+            (accepted, next)
+        };
+        if accepted && let Some((path, line, result)) = completion {
+            state.apply_bookmark_preview_completion(&path, line, result);
+        }
+        if let Some(next) = next {
+            Self::start_bookmark_preview_load(state, next);
+        }
     }
 
     /// Apply a closed-file preview only if it still belongs to the selected row.
     fn apply_bookmark_preview_completion(
         &self,
-        generation: u32,
         path: &Path,
         line: u32,
         result: bookmark_excerpt::BookmarkExcerptState,
     ) {
-        if self.preview_generation.get() != generation
-            || !self.selected_bookmark_matches(path, line)
-        {
+        if !self.selected_bookmark_matches(path, line) {
             return;
         }
 

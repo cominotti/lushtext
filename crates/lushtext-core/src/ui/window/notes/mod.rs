@@ -208,8 +208,8 @@ struct NotesBrowserState {
     disposed: Cell<bool>,
     /// Inventory mode that owns the current source/query generations.
     mode: Cell<palette_service::NotesBrowserMode>,
-    /// Generation counter used to ignore stale closed-file bookmark preview loads.
-    preview_generation: Cell<u32>,
+    /// One-active/one-latest ownership for closed-file bookmark excerpt loads.
+    preview_loads: RefCell<crate::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator>,
 }
 
 /// Scalar bounded-source and query-ownership evidence for widget tests.
@@ -228,6 +228,8 @@ pub struct NotesBrowserRuntimeSnapshot {
     pub query: palette_service::PaletteSearchCoordinatorSnapshot,
     /// Initial bounded-source ownership counters.
     pub source: palette_service::NoteSourceRefreshCoordinatorSnapshot,
+    /// Closed-file bookmark excerpt ownership counters.
+    pub preview: crate::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinatorSnapshot,
 }
 
 /// Weak handle to the currently visible unified notes browser.
@@ -308,6 +310,7 @@ impl ActiveNotesBrowser {
             mode: state.mode.get(),
             query: state.query_runtime.borrow().snapshot(),
             source: state.source_refreshes.borrow().snapshot(),
+            preview: state.preview_loads.borrow().snapshot(),
         })
     }
 }

@@ -3,7 +3,9 @@
 //! Integration tests for session persistence.
 
 use crate::common::TestContext;
-use lushtext_core::model::draft::{DraftEntry, DraftManifest, PreloadedDraftRestore};
+use lushtext_core::model::draft::{
+    DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip,
+};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::services::filesystem::fixture;
 use lushtext_core::services::recovery_metadata::{RecoveryMetadataClass, RecoveryProblem};
@@ -339,7 +341,7 @@ fn test_startup_restore_load_marks_stale_file_backed_drafts_and_removes_them() {
     assert_eq!(restore.session.tabs[0].path, Some(file_path));
     assert_eq!(
         restore.preloaded_drafts.get(&draft_id),
-        Some(&PreloadedDraftRestore::SkipStaleFile)
+        Some(&PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile))
     );
     assert!(restore.manifest.find_by_id(&draft_id).is_none());
     assert_eq!(

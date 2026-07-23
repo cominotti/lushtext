@@ -23,7 +23,9 @@ use lushtext_core::config::keys;
 use lushtext_core::model::action_catalog::{ActionScope, ActionValueType, ObservedAction};
 use lushtext_core::model::automation::{AutomationReadinessPredicate, AutomationReadinessStatus};
 use lushtext_core::model::content_search::SearchMatch;
-use lushtext_core::model::draft::{DraftEntry, DraftManifest, PreloadedDraftRestore};
+use lushtext_core::model::draft::{
+    DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip,
+};
 use lushtext_core::model::editor_memory::{
     EDITOR_MEMORY_UPPER_BUDGET_BYTES, EditorMemoryBudgetOutcome,
 };
@@ -6266,14 +6268,18 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
     let first_generation = first_editor.load_generation_for_test();
     let second_generation = second_editor.load_generation_for_test();
     let result = |content: &str, path: &Path| editor_io::LoadResult {
+        metadata: editor_io::LoadMetadata {
+            size: u64::try_from(content.len()).expect("fixture length"),
+            size_check: FileSizeCheck::Normal,
+            canonical_path: Some(
+                fs_metadata::canonical_path(path).expect("canonical restore path"),
+            ),
+            mtime: Some(1),
+            encoding_state: DocumentEncodingState::default(),
+            has_bom: false,
+            file_health: Vec::new(),
+        },
         content: content.to_string(),
-        size: u64::try_from(content.len()).expect("fixture length"),
-        size_check: FileSizeCheck::Normal,
-        canonical_path: Some(fs_metadata::canonical_path(path).expect("canonical restore path")),
-        mtime: Some(1),
-        encoding_state: DocumentEncodingState::default(),
-        has_bom: false,
-        file_health: Vec::new(),
     };
 
     assert!(second_editor.apply_load_result_for_test(
@@ -7927,7 +7933,7 @@ fn test_draft_pipeline_lazy_restore_rejects_stale_editor_and_advances_queue() {
             .drafts
             .preloaded
             .borrow_mut()
-            .insert(draft_id.clone(), PreloadedDraftRestore::LazyAggregateBudget);
+            .insert(draft_id.clone(), PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget));
     }
 
     window.check_draft_by_id(&first, &first_id);
@@ -8209,7 +8215,7 @@ fn test_draft_pipeline_lazy_read_failure_preserves_body_and_reports_diagnostic()
         .drafts
         .preloaded
         .borrow_mut()
-        .insert(draft_id.clone(), PreloadedDraftRestore::LazyAggregateBudget);
+        .insert(draft_id.clone(), PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget));
 
     window.check_draft_by_id(&editor, &draft_id);
     wait_until(Duration::from_secs(3), || {
@@ -10246,7 +10252,7 @@ fn test_workspace_close_flush_failure_aborts_and_later_close_recovers() {
         .imp()
         .sidebar
         .rename_workspace_for_test(&left_id, "Retryable Left");
-    workspace_manager::fail_next_save_for_data_dir_for_test(&data_dir);
+    let _fault_guard = workspace_manager::fail_next_save_for_data_dir_for_test(&data_dir);
     window.close();
 
     wait_until(Duration::from_secs(10), || {
@@ -10266,6 +10272,12 @@ fn test_workspace_close_flush_failure_aborts_and_later_close_recovers() {
         .persistence
         .borrow()
         .has_pending_work());
+    // Other close-abort blockers (for example the draft flush) can outrank
+    // workspace persistence for a few more turns; wait for the settled blocker
+    // instead of sampling the first diagnostic after the status message lands.
+    wait_until(Duration::from_secs(10), || {
+        current_idle_blocker(&app).as_deref() == Some("workspace-persist")
+    });
     assert_eq!(current_idle_blocker(&app).as_deref(), Some("workspace-persist"));
     let still_durable = workspace_manager::load(&data_dir).expect("load prior durable workspace");
     assert_eq!(
@@ -10303,7 +10315,7 @@ fn test_workspace_persistence_retry_resolves_feedback_and_readiness() {
         .downcast::<lushtext_core::app::LushtextApplication>()
         .expect("LushText application");
 
-    workspace_manager::fail_next_save_for_data_dir_for_test(&data_dir);
+    let _fault_guard = workspace_manager::fail_next_save_for_data_dir_for_test(&data_dir);
     window
         .imp()
         .sidebar
@@ -10352,7 +10364,7 @@ fn test_close_waits_for_inflight_workspace_save_then_flushes_newest_mutation() {
     present_window(&window);
     wait_for_workspace_sections(&window, 2);
 
-    workspace_manager::delay_next_save_for_data_dir_for_test(&data_dir, 300);
+    let _fault_guard = workspace_manager::delay_next_save_for_data_dir_for_test(&data_dir, 300);
     window
         .imp()
         .sidebar
@@ -10764,14 +10776,16 @@ fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destina
     });
 
     let stale_result = editor_io::LoadResult {
+        metadata: editor_io::LoadMetadata {
+            size: 18,
+            size_check: FileSizeCheck::Normal,
+            canonical_path: Some(fs_metadata::canonical_path(&source).expect("canonical source")),
+            mtime: Some(123),
+            encoding_state: DocumentEncodingState::default(),
+            has_bom: false,
+            file_health: Vec::new(),
+        },
         content: "source disk bytes\n".to_string(),
-        size: 18,
-        size_check: FileSizeCheck::Normal,
-        canonical_path: Some(fs_metadata::canonical_path(&source).expect("canonical source")),
-        mtime: Some(123),
-        encoding_state: DocumentEncodingState::default(),
-        has_bom: false,
-        file_health: Vec::new(),
     };
     assert!(
         !editor.apply_load_result_for_test(stale_generation, Ok(stale_result)),
@@ -16342,6 +16356,217 @@ fn test_notes_browser_ignores_stale_bookmark_excerpt_completion() {
         !preview_text.contains("slow target"),
         "the older closed-file preview completion should not replace the selected row"
     );
+}
+
+#[test]
+fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() {
+    ensure_gtk_init();
+    let _delay_reset = BookmarkExcerptPreviewDelayReset;
+    set_bookmark_excerpt_preview_delay_for_test(1000);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    for (label, stem) in [
+        ("aaa first", "first"),
+        ("bbb second", "second"),
+        ("ccc third", "third"),
+        ("ddd fourth", "fourth"),
+    ] {
+        let path = left_folder.join(format!("{stem}-preview.rs"));
+        fixture::write_text(
+            &path,
+            &format!("{stem} before\n{stem} target\n{stem} after\n"),
+        );
+        bookmark_service::save_for_path(
+            &json_store::data_dir(),
+            &path,
+            &[lushtext_core::model::bookmark::BookmarkRecord::new(
+                1,
+                Some(label.to_string()),
+            )],
+        )
+        .expect("save rapid-selection bookmark");
+    }
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 6);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 4);
+    wait_for_notes_preview_text(&child, "Loading bookmark preview...");
+
+    // Supersede the sleeping first worker three times without waiting.
+    sidebar.set_selected(1);
+    sidebar.set_selected(2);
+    sidebar.set_selected(3);
+    let pressured = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("browser snapshot under preview pressure")
+        .preview;
+    assert_eq!(pressured.active, 1);
+    assert_eq!(
+        pressured.pending, 1,
+        "intermediate selections must collapse into one latest compact request"
+    );
+    assert_eq!(
+        pressured.started, 1,
+        "no second worker may start before the active terminal"
+    );
+
+    wait_until(Duration::from_secs(15), || {
+        notes_preview_text(&child).is_some_and(|text| text.contains("fourth target"))
+    });
+
+    let preview_text = notes_preview_text(&child).expect("latest preview text");
+    assert!(preview_text.contains("fourth target"));
+    for stale in ["first target", "second target", "third target"] {
+        assert!(
+            !preview_text.contains(stale),
+            "superseded previews must not publish: {stale}"
+        );
+    }
+    let settled = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("settled browser snapshot")
+        .preview;
+    assert_eq!(settled.active, 0);
+    assert_eq!(settled.pending, 0);
+    assert_eq!(settled.active_high_water, 1);
+    assert_eq!(settled.pending_high_water, 1);
+    assert_eq!(
+        settled.started, 2,
+        "only the first and the latest selections may start workers"
+    );
+    assert_eq!(settled.cancellation_requests, 1);
+    eprintln!(
+        "notes-preview-coordinator-evidence selections=4 started={} active_high_water={} pending_high_water={} cancellation_requests={}",
+        settled.started, settled.active_high_water, settled.pending_high_water, settled.cancellation_requests
+    );
+}
+
+#[test]
+fn test_notes_browser_close_cancels_active_and_pending_preview_work() {
+    ensure_gtk_init();
+    let _delay_reset = BookmarkExcerptPreviewDelayReset;
+    set_bookmark_excerpt_preview_delay_for_test(600);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    for (label, stem) in [("aaa active", "active"), ("zzz pending", "pending")] {
+        let path = left_folder.join(format!("{stem}-teardown.rs"));
+        fixture::write_text(
+            &path,
+            &format!("{stem} before\n{stem} target\n{stem} after\n"),
+        );
+        bookmark_service::save_for_path(
+            &json_store::data_dir(),
+            &path,
+            &[lushtext_core::model::bookmark::BookmarkRecord::new(
+                1,
+                Some(label.to_string()),
+            )],
+        )
+        .expect("save teardown bookmark");
+    }
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 4);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 2);
+    wait_for_notes_preview_text(&child, "Loading bookmark preview...");
+
+    sidebar.set_selected(1);
+    let pressured = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("browser snapshot before teardown")
+        .preview;
+    assert_eq!(pressured.active, 1);
+    assert_eq!(pressured.pending, 1);
+
+    dialog.close();
+    flush_events();
+    assert!(
+        window.notes_browser_runtime_snapshot_for_test().is_none(),
+        "closing the dialog must release the browser runtime"
+    );
+
+    // Let the cancelled worker's delayed terminal arrive; it must not reopen
+    // or mutate the closed browser.
+    flush_after_delay(Duration::from_millis(900));
+    assert!(window.notes_browser_runtime_snapshot_for_test().is_none());
+    assert!(visible_sheet_dialog(&window).is_none());
+}
+
+#[test]
+fn test_notes_browser_mode_switch_cancels_closed_file_preview_work() {
+    ensure_gtk_init();
+    let _delay_reset = BookmarkExcerptPreviewDelayReset;
+    set_bookmark_excerpt_preview_delay_for_test(800);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let path = left_folder.join("mode-switch-preview.rs");
+    fixture::write_text(&path, "alpha before\nalpha target\nalpha after\n");
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(
+            1,
+            Some("alpha mode switch".to_string()),
+        )],
+    )
+    .expect("save mode-switch bookmark");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    wait_for_workspace_consumers(&window, 2, 3);
+
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(5), || {
+        visible_sheet_dialog(&window).is_some()
+    });
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    let child = dialog.child().expect("notes browser child");
+    let sidebar = find_adw_sidebar(&child).expect("notes browser sidebar");
+    wait_until(Duration::from_secs(5), || sidebar.items().n_items() == 1);
+    wait_for_notes_preview_text(&child, "Loading bookmark preview...");
+
+    // Replace the inventory mode while the closed-file worker is still asleep.
+    activate_action(&window, "show-bookmarks");
+    let switched = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("browser snapshot after mode switch")
+        .preview;
+    assert_eq!(
+        switched.cancellation_requests, 1,
+        "replacing the inventory mode must cancel the active closed-file load"
+    );
+
+    wait_until(Duration::from_secs(15), || {
+        notes_preview_text(&child).is_some_and(|text| text.contains("alpha target"))
+    });
+    let settled = window
+        .notes_browser_runtime_snapshot_for_test()
+        .expect("settled browser snapshot")
+        .preview;
+    assert_eq!(settled.active, 0);
+    assert_eq!(settled.pending, 0);
+    assert_eq!(settled.active_high_water, 1);
+    assert_eq!(settled.pending_high_water, 1);
 }
 
 #[test]

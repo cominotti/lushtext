@@ -103,23 +103,15 @@ pub fn load_for_folder(data_dir: &Path, folder: &Path) -> Result<Option<FolderNo
 ///
 /// Returns an error if the folder identity cannot be resolved.
 pub fn load_for_folder_recovering(data_dir: &Path, folder: &Path) -> Result<FolderNoteLoad> {
-    load_for_folder_recovering_with_max_bytes(
-        data_dir,
-        folder,
-        crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
-    )
-}
-
-pub(crate) fn load_for_folder_recovering_with_max_bytes(
-    data_dir: &Path,
-    folder: &Path,
-    max_bytes: u64,
-) -> Result<FolderNoteLoad> {
     let identity = resolve_folder_note_identity(folder)?;
-    Ok(load_for_identity_recovering(data_dir, &identity, max_bytes))
+    Ok(load_for_identity_recovering(
+        data_dir,
+        &identity,
+        crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
+    ))
 }
 
-fn load_for_identity_recovering(
+pub(crate) fn load_for_identity_recovering(
     data_dir: &Path,
     identity: &FolderNoteIdentity,
     max_bytes: u64,
@@ -165,12 +157,16 @@ fn load_folder_note_sidecar(
     )
 }
 
-pub(crate) fn sidecar_paths_for_folder(data_dir: &Path, folder: &Path) -> Result<[PathBuf; 2]> {
+pub(crate) fn sidecar_lookup_for_folder(
+    data_dir: &Path,
+    folder: &Path,
+) -> Result<(FolderNoteIdentity, [PathBuf; 2])> {
     let identity = resolve_folder_note_identity(folder)?;
-    Ok([
+    let paths = [
         folder_note_sidecar_path(data_dir, &identity),
         legacy_folder_note_sidecar_path(data_dir, &identity),
-    ])
+    ];
+    Ok((identity, paths))
 }
 
 /// Save the current note for one workspace folder.

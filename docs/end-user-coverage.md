@@ -159,6 +159,20 @@ they are not default PR gates:
   one headless large-Unicode install and records admitted payload weight, queued
   scalar count, GTK slice count, main-loop progress, and final editor residency;
   see [`docs/benchmarks/transient-file-load.md`](benchmarks/transient-file-load.md).
+  The lane additionally records bounded editor-load slice cancellation evidence
+  (`editor-load-slice-evidence`), closed-file bookmark preview one-active/
+  one-latest churn (`bookmark-preview-coordinator-evidence` and
+  `notes-preview-coordinator-evidence`), targeted workspace refresh
+  expansion-capture independence (`workspace-expansion-capture-evidence`), and
+  parallel Replace/Undo hook-registry isolation
+  (`replace-undo-hook-isolation-evidence`).
+- An opt-in near-supported-limit editor-load diagnostic records fixture size,
+  encoding, build profile, environment, resident-memory context, bounded
+  cancellation progress, and planned transient ownership without adding a
+  default-CI timing or memory gate. Run it explicitly with
+  `cargo test -p lushtext-core --lib near_supported_limit_load_diagnostic --
+  --ignored --nocapture`; `LUSHTEXT_NEAR_LIMIT_LOAD_BYTES` bounds the fixture
+  for smaller hosts.
 - Full fuzz smoke, deep property runs, full mutation, and full benchmark reports
   remain opt-in or scheduled because they are intentionally more expensive.
 

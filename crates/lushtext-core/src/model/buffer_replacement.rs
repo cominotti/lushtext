@@ -60,25 +60,34 @@ pub fn next_clear_char_count(remaining_chars: i32) -> i32 {
     remaining_chars.clamp(0, REPLACEMENT_CLEAR_SLICE_CHARS)
 }
 
-/// Return the next UTF-8 boundary without exceeding the insertion byte budget.
+/// Return the next paragraph-aligned boundary near the insertion byte budget.
+///
+/// GTK text layout validates whole paragraphs, so a slice that stops inside a
+/// paragraph forces the next slice to re-lay-out everything installed so far —
+/// quadratic total work that freezes recovery of single-line documents. Every
+/// slice therefore ends just after a newline: paragraphs installed by earlier
+/// turns are never touched again. A single paragraph longer than the budget is
+/// installed in one turn because GTK cannot lay it out incrementally anyway.
 #[must_use]
 pub fn next_replacement_boundary(text: &str, start: usize) -> usize {
     if start >= text.len() {
         return text.len();
     }
-    let mut end = start
+    let mut budget_end = start
         .saturating_add(REPLACEMENT_INSERT_SLICE_BYTES)
         .min(text.len());
-    while end > start && !text.is_char_boundary(end) {
-        end -= 1;
+    while budget_end > start && !text.is_char_boundary(budget_end) {
+        budget_end -= 1;
     }
-    if end == start {
-        text[start..]
-            .char_indices()
-            .nth(1)
-            .map_or(text.len(), |(offset, _)| start.saturating_add(offset))
-    } else {
-        end
+    if budget_end == text.len() {
+        return text.len();
+    }
+    if let Some(newline) = text[start..budget_end].rfind('\n') {
+        return start.saturating_add(newline).saturating_add(1);
+    }
+    match text[budget_end..].find('\n') {
+        Some(newline) => budget_end.saturating_add(newline).saturating_add(1),
+        None => text.len(),
     }
 }
 
@@ -122,11 +131,9 @@ mod tests {
     }
 
     #[test]
-    fn insertion_policy_never_splits_awkward_unicode() {
-        let text = format!(
-            "{}🙂e\u{301}tail",
-            "a".repeat(REPLACEMENT_INSERT_SLICE_BYTES - 1)
-        );
+    fn insertion_policy_ends_bounded_slices_after_paragraphs() {
+        let line = format!("{}🙂e\u{301}\n", "a".repeat(1_000));
+        let text = line.repeat(2 * REPLACEMENT_INSERT_SLICE_BYTES / line.len());
         let mut start = 0;
         let mut rebuilt = String::new();
         while start < text.len() {
@@ -134,9 +141,46 @@ mod tests {
             assert!(end > start);
             assert!(end - start <= REPLACEMENT_INSERT_SLICE_BYTES);
             assert!(text.is_char_boundary(end));
+            assert!(text[..end].ends_with('\n') || end == text.len());
             rebuilt.push_str(&text[start..end]);
             start = end;
         }
         assert_eq!(rebuilt, text);
+    }
+
+    #[test]
+    fn insertion_policy_installs_oversized_paragraphs_atomically() {
+        // A paragraph longer than the byte budget must land in one turn: GTK
+        // lays out whole paragraphs, so splitting it re-validates the same
+        // growing line on every later slice (quadratic recovery installs).
+        let giant = "b".repeat(3 * REPLACEMENT_INSERT_SLICE_BYTES);
+        let text = format!("head\n{giant}\ntail");
+        let first = next_replacement_boundary(&text, 0);
+        assert_eq!(&text[..first], "head\n");
+        let second = next_replacement_boundary(&text, first);
+        assert_eq!(second, text.len() - "tail".len());
+        assert!(text[..second].ends_with('\n'));
+        assert_eq!(next_replacement_boundary(&text, second), text.len());
+    }
+
+    #[test]
+    fn insertion_policy_takes_newline_free_tail_in_one_turn() {
+        let text = format!("x{}", "y".repeat(2 * REPLACEMENT_INSERT_SLICE_BYTES));
+        assert_eq!(next_replacement_boundary(&text, 0), text.len());
+        assert_eq!(next_replacement_boundary(&text, text.len()), text.len());
+    }
+
+    #[test]
+    fn insertion_policy_never_splits_multibyte_chars_at_the_budget_edge() {
+        // A multibyte char straddling the byte budget must not panic the
+        // newline search on either side of the budget edge.
+        let text = format!(
+            "{}🙂e\u{301}\nnext line\n",
+            "a".repeat(REPLACEMENT_INSERT_SLICE_BYTES - 1)
+        );
+        let end = next_replacement_boundary(&text, 0);
+        assert!(text.is_char_boundary(end));
+        assert!(text[..end].ends_with('\n'));
+        assert_eq!(next_replacement_boundary(&text, end), text.len());
     }
 }

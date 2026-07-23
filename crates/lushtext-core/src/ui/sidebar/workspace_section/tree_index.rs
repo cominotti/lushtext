@@ -19,23 +19,169 @@ use super::{LushtextWorkspaceSection, tree_loading};
 use crate::services::file_tree::DirectoryRowState;
 
 impl LushtextWorkspaceSection {
+    /// Derive the complete expanded-path set by walking the flattened model.
+    ///
+    /// This full scan is reserved for bootstrap, pre-replacement capture, and
+    /// the test oracle. Targeted in-place refresh relies on the live
+    /// `expanded_paths` set maintained by row expansion transitions and
+    /// accepted reconciliation instead.
+    pub(super) fn derive_expanded_paths_from_model(&self) -> Option<HashSet<PathBuf>> {
+        let tree_model = self.imp().tree_model.borrow().as_ref().cloned()?;
+        let runtime = &self.imp().refresh_runtime;
+        runtime
+            .expansion_capture_scans
+            .set(runtime.expansion_capture_scans.get().saturating_add(1));
+        runtime.expansion_capture_rows.set(
+            runtime
+                .expansion_capture_rows
+                .get()
+                .saturating_add(u64::from(tree_model.n_items())),
+        );
+
+        let mut expanded = HashSet::new();
+        for i in 0..tree_model.n_items() {
+            if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                && row.is_expanded()
+                && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+                && let Some(path) = item.path()
+            {
+                expanded.insert(path);
+            }
+        }
+        Some(expanded)
+    }
+
+    /// Replace the live expansion set with a full flattened-model derivation.
+    ///
+    /// Call this only before a genuine model replacement or broad reload. The
+    /// snapshot replaces (never unions with) the current state so a rebuild
+    /// cannot re-expand rows the user has since collapsed.
     pub(super) fn save_expanded_paths(&self) {
-        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
-            let mut expanded = self.imp().expanded_paths.borrow_mut();
-            // Snapshot the current expanded state rather than accumulating a
-            // historical union. Otherwise a refresh can re-expand rows the user
-            // has since collapsed.
-            expanded.clear();
-            for i in 0..tree_model.n_items() {
-                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
-                    && row.is_expanded()
-                    && let Some(item) = row.item().and_downcast::<FileTreeItem>()
-                    && let Some(path) = item.path()
-                {
+        if let Some(derived) = self.derive_expanded_paths_from_model() {
+            *self.imp().expanded_paths.borrow_mut() = derived;
+        }
+    }
+
+    /// Mirror one live row expansion transition into the authoritative set.
+    pub(super) fn record_row_expansion_transition(&self, row: &gtk4::TreeListRow) {
+        // Rows being destroyed by a splice or an ancestor collapse can still
+        // emit property notifications; only rows still present in the flattened
+        // model carry user expansion intent.
+        if row.position() == gtk4::INVALID_LIST_POSITION {
+            return;
+        }
+        let Some(path) = row
+            .item()
+            .and_downcast::<FileTreeItem>()
+            .filter(FileTreeItem::is_dir)
+            .and_then(|item| item.path())
+        else {
+            return;
+        };
+        let mut expanded = self.imp().expanded_paths.borrow_mut();
+        if row.is_expanded() {
+            expanded.insert(path);
+            return;
+        }
+
+        // Collapsing hides every descendant from the flattened model, which is
+        // exactly what a whole-model expansion snapshot captures next:
+        // descendant restoration intent does not survive an ancestor collapse.
+        // Overlapping workspace folders can still show a pruned path through a
+        // duplicate row, so ambiguous candidates fall back to a subtree-scoped
+        // model reconciliation instead of a blind prefix prune.
+        let mut needs_model_reconcile = false;
+        let subtree = expanded
+            .iter()
+            .filter(|candidate| candidate.starts_with(&path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for candidate in subtree {
+            if self.visible_path_is_ambiguous(&candidate) {
+                needs_model_reconcile = true;
+            } else {
+                expanded.remove(&candidate);
+            }
+        }
+        drop(expanded);
+        if needs_model_reconcile {
+            self.reconcile_expanded_subtree_from_model(&path);
+        }
+    }
+
+    /// Re-derive expansion intent under one prefix from the flattened model.
+    ///
+    /// This duplicate-aware fallback runs only when a collapsed subtree
+    /// contains paths that other visible rows may still show expanded.
+    fn reconcile_expanded_subtree_from_model(&self, prefix: &Path) {
+        let Some(tree_model) = self.imp().tree_model.borrow().as_ref().cloned() else {
+            return;
+        };
+        let mut expanded = self.imp().expanded_paths.borrow_mut();
+        expanded.retain(|candidate| !candidate.starts_with(prefix));
+        for i in 0..tree_model.n_items() {
+            if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
+                && row.is_expanded()
+                && let Some(item) = row.item().and_downcast::<FileTreeItem>()
+                && let Some(path) = item.path()
+                && path.starts_with(prefix)
+            {
+                expanded.insert(path);
+            }
+        }
+    }
+
+    /// Rewrite expansion intent for a renamed directory subtree.
+    ///
+    /// The renamed rows stay expanded in place because inline rename mutates
+    /// item paths without a splice, so their restoration intent must follow
+    /// the new prefix instead of being retired with the old one.
+    pub(super) fn rename_expanded_subtree(&self, old_path: &Path, new_path: &Path) {
+        let mut expanded = self.imp().expanded_paths.borrow_mut();
+        let moved = expanded
+            .iter()
+            .filter(|path| path.starts_with(old_path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in moved {
+            expanded.remove(&path);
+            match path.strip_prefix(old_path) {
+                Ok(suffix) if suffix.as_os_str().is_empty() => {
+                    expanded.insert(new_path.to_path_buf());
+                }
+                Ok(suffix) => {
+                    expanded.insert(new_path.join(suffix));
+                }
+                Err(_) => {
                     expanded.insert(path);
                 }
             }
         }
+    }
+
+    /// Return the live expansion set for test assertions.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn expanded_paths_for_test(&self) -> HashSet<PathBuf> {
+        self.imp().expanded_paths.borrow().clone()
+    }
+
+    /// Run the full flattened-model expansion derivation as a test oracle.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn derived_expanded_paths_for_test(&self) -> Option<HashSet<PathBuf>> {
+        self.derive_expanded_paths_from_model()
+    }
+
+    /// Return `(full scans, rows visited)` for expansion-capture evidence.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn expansion_capture_metrics_for_test(&self) -> (u64, u64) {
+        let runtime = &self.imp().refresh_runtime;
+        (
+            runtime.expansion_capture_scans.get(),
+            runtime.expansion_capture_rows.get(),
+        )
     }
 
     pub(super) fn reset_item_cache(&self) {

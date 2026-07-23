@@ -218,6 +218,38 @@ case " $FILTERS " in
             grep -E "transient-load-(runtime|disposal|baseline-count|overweight)-evidence|test result:" "$widget_log" || true
             echo
         } >>"$ARTIFACT_DIR/summary.txt"
+
+        slice_log="$ARTIFACT_DIR/unit-editor-load-slices.log"
+        echo "Running bounded editor-load slice cancellation proof..."
+        if ! cargo test -p lushtext-core --lib \
+            services::editor_io::tests::cancellation_stops_classification_decoding_and_analysis_stages \
+            -- --nocapture >"$slice_log" 2>&1; then
+            tail -n 120 "$slice_log" >&2 || true
+            smoke_fail "editor-load slice cancellation proof failed. Artifacts: $ARTIFACT_DIR"
+        fi
+        {
+            echo "## editor_load_slices"
+            grep -E "editor-load-slice-evidence|test result:" "$slice_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
+        ;;
+esac
+
+case " $FILTERS " in
+    *" replace_undo_workflows "*)
+        hook_log="$ARTIFACT_DIR/unit-replace-undo-hook-isolation.log"
+        echo "Running parallel Undo hook-registry isolation proof..."
+        if ! cargo test -p lushtext-core --lib \
+            services::content_search::replace::tests::parallel_undo_operations_consume_only_their_own_target_hooks \
+            -- --nocapture >"$hook_log" 2>&1; then
+            tail -n 120 "$hook_log" >&2 || true
+            smoke_fail "parallel Undo hook-registry isolation proof failed. Artifacts: $ARTIFACT_DIR"
+        fi
+        {
+            echo "## replace_undo_hook_isolation"
+            grep -E "replace-undo-hook-isolation-evidence|test result:" "$hook_log" || true
+            echo
+        } >>"$ARTIFACT_DIR/summary.txt"
         ;;
 esac
 
@@ -231,9 +263,11 @@ case " $FILTERS " in
             window::test_local_history_preview_supersedes_reads_and_unicode_install_slices \
             window::test_bounded_session_restore_preserves_order_selection_and_one_terminal_projection \
             window::test_session_restore_cancellation_clears_pending_permits_source_and_projection_deferral \
+            window::test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview \
             workspace_section::test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live \
             workspace_section::test_slow_directory_refresh_churn_keeps_one_active_and_one_weak_latest_request \
             workspace_section::test_large_reconciliation_is_batched_supersedable_and_preserves_state \
+            workspace_section::test_targeted_refresh_skips_full_expansion_capture_in_large_tree \
             plain_disposal::test_aggregate_disposal_pressure_returns_immediately_and_keeps_gtk_alive \
             window::test_document_sized_preloaded_draft_publishes_only_after_bounded_install \
             editor_page::test_minimap_long_line_warning_scan_slices_large_many_short_buffer \
@@ -247,7 +281,7 @@ case " $FILTERS " in
         done
         {
             echo "## quality_gap_scale_headless"
-            grep -E "notes-browser-runtime-evidence|local-history-preview-runtime-evidence|session-restore-(bound|cancellation)-evidence|workspace-scan-(aggregate|flight)-evidence|workspace-cache-runtime-evidence|plain-disposal-pressure-evidence|draft-disposal-evidence|minimap-(analysis|cancellation)-evidence|test result:" "$widget_log" || true
+            grep -E "notes-browser-runtime-evidence|notes-preview-coordinator-evidence|local-history-preview-runtime-evidence|session-restore-(bound|cancellation)-evidence|workspace-scan-(aggregate|flight)-evidence|workspace-cache-runtime-evidence|workspace-expansion-capture-evidence|plain-disposal-pressure-evidence|draft-disposal-evidence|minimap-(analysis|cancellation)-evidence|test result:" "$widget_log" || true
             echo
         } >>"$ARTIFACT_DIR/summary.txt"
 

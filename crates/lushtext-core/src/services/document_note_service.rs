@@ -55,23 +55,15 @@ pub fn document_notes_dir(data_dir: &Path) -> PathBuf {
 /// directory cannot be scanned. Malformed or unreadable sidecars are preserved
 /// through recovery diagnostics and treated as absent.
 pub fn load_for_path(data_dir: &Path, path: &Path) -> Result<Option<DocumentNoteDocument>> {
-    load_for_path_with_max_bytes(
+    let identity = note_storage::resolve_document_identity(path)?;
+    load_for_identity(
         data_dir,
-        path,
+        &identity,
         crate::services::recovery_metadata::DEFAULT_MAX_METADATA_BYTES,
     )
 }
 
-pub(crate) fn load_for_path_with_max_bytes(
-    data_dir: &Path,
-    path: &Path,
-    max_bytes: u64,
-) -> Result<Option<DocumentNoteDocument>> {
-    let identity = note_storage::resolve_document_identity(path)?;
-    load_for_identity(data_dir, &identity, max_bytes)
-}
-
-fn load_for_identity(
+pub(crate) fn load_for_identity(
     data_dir: &Path,
     identity: &DocumentSidecarIdentity,
     max_bytes: u64,

@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -579,34 +580,37 @@ pub fn load_note_entries_bounded_for_scope(
             let Some(document) = load.value else {
                 continue;
             };
-            if !note_storage::matches_any_folder(&document.identity, &canonical_folders)
-                || live_scoped_document_ids.contains(&document.identity.sidecar_id)
-            {
-                admission.release_construction(document_bytes);
-                continue;
-            }
-            let path = document.identity.display_path;
-            let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
-                admission.release_construction(document_bytes);
-                continue;
-            };
-            let workspace_folder =
-                workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
-            let source = PaletteNoteDocumentSource::Workspace {
-                workspace_name: workspace.name.clone(),
-                workspace_folder,
-            };
-            for bookmark in document.bookmarks {
-                if !admission.admit(bookmark_entry(
-                    &source,
-                    path.clone(),
-                    bookmark.line,
-                    bookmark.label.as_deref(),
-                )) {
-                    return Ok(admission.complete());
+            let outcome = admission.with_construction_charge(document_bytes, |admission| {
+                if !note_storage::matches_any_folder(&document.identity, &canonical_folders)
+                    || live_scoped_document_ids.contains(&document.identity.sidecar_id)
+                {
+                    return ControlFlow::Continue(());
                 }
+                let path = document.identity.display_path;
+                let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
+                    return ControlFlow::Continue(());
+                };
+                let workspace_folder =
+                    workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
+                let source = PaletteNoteDocumentSource::Workspace {
+                    workspace_name: workspace.name.clone(),
+                    workspace_folder,
+                };
+                for bookmark in document.bookmarks {
+                    if !admission.admit(bookmark_entry(
+                        &source,
+                        path.clone(),
+                        bookmark.line,
+                        bookmark.label.as_deref(),
+                    )) {
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            });
+            if !matches!(outcome, ChargeOutcome::Ran) {
+                return Ok(admission.complete());
             }
-            admission.release_construction(document_bytes);
         }
         admission.release_sidecar_paths(sidecar_path_bytes);
         admission.release_construction(canonical_folder_bytes);
@@ -644,15 +648,16 @@ pub fn load_note_entries_bounded_for_scope(
                 if cancellation.is_cancelled() {
                     return Ok(admission.cancelled());
                 }
-                let paths = folder_note_service::sidecar_paths_for_folder(data_dir, &folder)?;
+                let (identity, paths) =
+                    folder_note_service::sidecar_lookup_for_folder(data_dir, &folder)?;
                 let Some(parse) = reserve_sidecar_parse(&paths, &mut admission)? else {
                     return Ok(admission.complete());
                 };
-                let load = folder_note_service::load_for_folder_recovering_with_max_bytes(
+                let load = folder_note_service::load_for_identity_recovering(
                     data_dir,
-                    &folder,
+                    &identity,
                     parse.max_read_bytes,
-                )?;
+                );
                 let document_bytes = load.document.as_ref().map_or(
                     0,
                     crate::model::folder_note::FolderNoteDocument::retained_heap_byte_weight,
@@ -662,13 +667,18 @@ pub fn load_note_entries_bounded_for_scope(
                     return Ok(admission.complete());
                 }
                 if let Some(document) = load.document {
-                    let admitted = admission.admit(folder_note_entry(
-                        workspace.name.clone(),
-                        folder,
-                        document.note,
-                    ));
-                    admission.release_construction(document_bytes);
-                    if !admitted {
+                    let outcome = admission.with_construction_charge(document_bytes, |admission| {
+                        if admission.admit(folder_note_entry(
+                            workspace.name.clone(),
+                            folder,
+                            document.note,
+                        )) {
+                            ControlFlow::Continue(())
+                        } else {
+                            ControlFlow::Break(())
+                        }
+                    });
+                    if !matches!(outcome, ChargeOutcome::Ran) {
                         return Ok(admission.complete());
                     }
                 }
@@ -718,24 +728,27 @@ pub fn load_note_entries_bounded_for_scope(
             let Some(document) = load.value else {
                 continue;
             };
-            if !note_storage::matches_any_folder(&document.identity, &canonical_folders) {
-                admission.release_construction(document_bytes);
-                continue;
-            }
-            let path = document.identity.display_path;
-            let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
-                admission.release_construction(document_bytes);
-                continue;
-            };
-            let workspace_folder =
-                workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
-            let source = PaletteNoteDocumentSource::Workspace {
-                workspace_name: workspace.name.clone(),
-                workspace_folder,
-            };
-            let admitted = admission.admit(document_note_entry(&source, path, document.note));
-            admission.release_construction(document_bytes);
-            if !admitted {
+            let outcome = admission.with_construction_charge(document_bytes, |admission| {
+                if !note_storage::matches_any_folder(&document.identity, &canonical_folders) {
+                    return ControlFlow::Continue(());
+                }
+                let path = document.identity.display_path;
+                let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
+                    return ControlFlow::Continue(());
+                };
+                let workspace_folder =
+                    workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
+                let source = PaletteNoteDocumentSource::Workspace {
+                    workspace_name: workspace.name.clone(),
+                    workspace_folder,
+                };
+                if admission.admit(document_note_entry(&source, path, document.note)) {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                }
+            });
+            if !matches!(outcome, ChargeOutcome::Ran) {
                 return Ok(admission.complete());
             }
         }
@@ -769,9 +782,9 @@ pub fn load_note_entries_bounded_for_scope(
             let Some(parse) = reserve_sidecar_parse(&[sidecar_path], &mut admission)? else {
                 return Ok(admission.complete());
             };
-            let document = document_note_service::load_for_path_with_max_bytes(
+            let document = document_note_service::load_for_identity(
                 data_dir,
-                &snapshot.path,
+                &identity,
                 parse.max_read_bytes,
             )?;
             let document_bytes = document
@@ -783,13 +796,18 @@ pub fn load_note_entries_bounded_for_scope(
             let Some(document) = document else {
                 continue;
             };
-            let admitted = admission.admit(document_note_entry(
-                &source,
-                snapshot.path.clone(),
-                document.note,
-            ));
-            admission.release_construction(document_bytes);
-            if !admitted {
+            let outcome = admission.with_construction_charge(document_bytes, |admission| {
+                if admission.admit(document_note_entry(
+                    &source,
+                    snapshot.path.clone(),
+                    document.note,
+                )) {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                }
+            });
+            if !matches!(outcome, ChargeOutcome::Ran) {
                 return Ok(admission.complete());
             }
         }
@@ -804,6 +822,17 @@ enum BoundedSidecarEntries {
         retained_bytes: u64,
     },
     LimitReached,
+}
+
+/// Result of one `with_construction_charge` scope.
+#[derive(Debug, PartialEq, Eq)]
+enum ChargeOutcome<T> {
+    /// The body ran to completion; the charge was released by scope.
+    Ran,
+    /// The body exited early with a value; the charge was still released.
+    Broke(T),
+    /// The budget rejected the charge, so the body never ran.
+    BudgetExhausted,
 }
 
 struct SidecarParseReservation {
@@ -867,7 +896,10 @@ fn admit_parsed_sidecar(
         admission.release_construction(actual_bytes);
         return false;
     }
-    admission.release_construction(diagnostic_bytes);
+    // Settle the full parse reservation here: callers take a fresh scope-owned
+    // charge for the parsed document via `with_construction_charge`, so no
+    // residual manual charge can leak across an early item exit.
+    admission.release_construction(actual_bytes);
     true
 }
 
@@ -1137,6 +1169,29 @@ impl NoteSourceAdmission {
             .metrics
             .current_construction_bytes
             .saturating_sub(bytes);
+    }
+
+    /// Run one item's admission body under a scope-owned construction charge.
+    ///
+    /// The charge is taken before `body` runs and released exactly once on
+    /// every return path — item admitted, filtered out (`Continue`), or early
+    /// loop exit (`Break`). Callers cannot leak or double-release the charge
+    /// because they never see it; a new early exit inside `body` releases by
+    /// scope instead of by a manual call it could forget.
+    fn with_construction_charge<T>(
+        &mut self,
+        bytes: u64,
+        body: impl FnOnce(&mut Self) -> ControlFlow<T, ()>,
+    ) -> ChargeOutcome<T> {
+        if !self.try_charge_construction(bytes) {
+            return ChargeOutcome::BudgetExhausted;
+        }
+        let flow = body(self);
+        self.release_construction(bytes);
+        match flow {
+            ControlFlow::Continue(()) => ChargeOutcome::Ran,
+            ControlFlow::Break(value) => ChargeOutcome::Broke(value),
+        }
     }
 
     fn cancelled(mut self) -> PaletteNoteSourceOutcome {
@@ -2324,6 +2379,61 @@ mod tests {
                 .truncation_reasons
                 .contains(&NoteSourceTruncationReason::SidecarPathByteLimit)
         );
+    }
+
+    #[test]
+    fn construction_charge_scope_releases_on_admit_filter_break_and_exhaustion() {
+        let mut admission = NoteSourceAdmission::with_limits(NoteSourceLimits {
+            entries: 8,
+            searchable_text_bytes: usize::MAX,
+            retained_bytes: u64::MAX,
+            sidecar_entries: 8,
+            sidecar_path_bytes: 1_024,
+            construction_bytes: 100,
+            diagnostics: 1,
+        });
+
+        // Admit path: the body runs with the charge visible, then the scope
+        // releases exactly once.
+        let outcome = admission.with_construction_charge(40, |admission| {
+            assert_eq!(admission.metrics.current_construction_bytes, 40);
+            ControlFlow::<(), ()>::Continue(())
+        });
+        assert_eq!(outcome, ChargeOutcome::Ran);
+        assert_eq!(admission.metrics.current_construction_bytes, 0);
+        assert_eq!(admission.metrics.peak_construction_bytes, 40);
+
+        // Filter-out path: an early `Continue` (the loops' `continue`) still
+        // releases by scope with no manual call.
+        let outcome =
+            admission.with_construction_charge(25, |_| ControlFlow::<(), ()>::Continue(()));
+        assert_eq!(outcome, ChargeOutcome::Ran);
+        assert_eq!(admission.metrics.current_construction_bytes, 0);
+
+        // Break path: an early loop exit releases before the value surfaces,
+        // so a new early exit cannot leak the charge.
+        let outcome = admission.with_construction_charge(30, |_| ControlFlow::Break("stop"));
+        assert_eq!(outcome, ChargeOutcome::Broke("stop"));
+        assert_eq!(admission.metrics.current_construction_bytes, 0);
+
+        // Budget-exhausted path: the body never runs and nothing is charged.
+        assert!(admission.try_charge_construction(90));
+        let outcome = admission.with_construction_charge(20, |_| {
+            unreachable!("an exhausted budget must not run the charged body");
+            #[expect(unreachable_code, reason = "type anchor for the never-run body")]
+            ControlFlow::<(), ()>::Continue(())
+        });
+        assert_eq!(outcome, ChargeOutcome::BudgetExhausted);
+        assert_eq!(admission.metrics.current_construction_bytes, 90);
+        assert!(
+            admission
+                .metrics
+                .truncation_reasons
+                .contains(&NoteSourceTruncationReason::ConstructionByteLimit)
+        );
+        admission.release_construction(90);
+        assert_eq!(admission.metrics.current_construction_bytes, 0);
+        assert_eq!(admission.metrics.peak_construction_bytes, 90);
     }
 
     #[test]

@@ -211,6 +211,16 @@ add a new one before calling the work complete.
 - **Pinned top row**: The "New Workspace" affordance sits above the outer ScrolledWindow and stays fixed while the workspace list scrolls.
 - **No horizontal sidebar scrollbar**: workspace headers and file-tree labels still avoid ellipsizing, but the left sidebar must not expose a horizontal scrollbar. Overflow is clipped by the viewport instead of enabling sideways scrolling.
 - **Width presets drive the shell**: `Preferences > Workspace` exposes compact `Small`, `Comfy`, and `Large` options that keep their `20%`, `30%`, and `40%` identities while clamping the visible sidebar width to a comfortable desktop range. The window layer owns the split-view math; the sidebar does not expose a duplicate width control.
+- **Live expansion state**: `expanded_paths` is authoritative live state, kept
+  current by row `notify::expanded` transitions, accepted reconciliation
+  retirement (`clear_dir_states`), and rename prefix rewrites. A targeted
+  in-place refresh must not rewalk the flattened `GtkTreeListModel` to
+  rediscover expansion; the full derivation (`derive_expanded_paths_from_model`)
+  is reserved for bootstrap, pre-replacement capture, and the test oracle.
+  Deferred restore callbacks (`schedule_child_state_restore`,
+  `restore_materialized_state`) must read the set at apply time, not clone it
+  at schedule time — a user collapse between scheduling and the callback must
+  never be resurrected by a stale snapshot.
 - **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder request, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 
@@ -423,6 +433,15 @@ draft/save snapshots all touch the live GTK buffer. Keep these paths bounded:
   modified, untitled, known-file-floor, saturation, cancellation, and
   stale-generation behavior remain covered by tests. Optional long-line marker
   collection stays sliced, cancellable, and generation-bound.
+- Bounded buffer installation and clearing slices must end on paragraph
+  boundaries (`next_replacement_boundary` cuts just after a newline; iter-based
+  clears extend to the next line start). GTK text layout validates whole
+  paragraphs, so a slice that stops mid-paragraph re-lays-out everything
+  already installed in that paragraph on every later slice — quadratic work
+  that froze crash recovery of a 33 MB single-line draft for minutes. A
+  paragraph larger than the slice byte budget installs or clears in one turn;
+  that single long turn matches the unavoidable layout cost its first render
+  pays anyway.
 - Replace-preview rows and other large derived result sets should be generated
   from owned data on a worker, with a pending state and stale-result rejection
   keyed by generation counters.

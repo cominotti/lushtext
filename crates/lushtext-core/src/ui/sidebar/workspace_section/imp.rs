@@ -152,6 +152,13 @@ pub struct RefreshRuntimeState {
     pub empty_probe_stale_rejections: Cell<u64>,
     /// Current emptiness results published to top-level folder rows.
     pub empty_probe_terminal_publications: Cell<u64>,
+    /// Complete flattened-model expansion derivations run by this section.
+    ///
+    /// Full derivations are reserved for bootstrap, pre-replacement capture,
+    /// and the test oracle; a targeted in-place refresh must not add to this.
+    pub expansion_capture_scans: Cell<u64>,
+    /// Flattened rows visited across all full expansion derivations.
+    pub expansion_capture_rows: Cell<u64>,
     #[cfg(feature = "test-utils")]
     /// Section-local delay between GTK reconciliation batches in lifecycle tests.
     pub test_reconcile_batch_delay: Cell<std::time::Duration>,

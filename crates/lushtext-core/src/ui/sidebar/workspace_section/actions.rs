@@ -281,6 +281,10 @@ impl super::LushtextWorkspaceSection {
                             && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
                         {
                             if is_dir {
+                                // Move expansion intent to the new prefix before
+                                // the old subtree state is retired; the renamed
+                                // rows stay expanded in place.
+                                section.rename_expanded_subtree(&old_path, &new_path);
                                 super::tree_loading::clear_dir_state(&section, &old_path);
                                 imp.dir_rows
                                     .borrow_mut()

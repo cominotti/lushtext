@@ -351,8 +351,15 @@ fn delete_one_slice(buffer: &sourceview5::Buffer, count: i32) -> (bool, u64) {
     let mut start = buffer.start_iter();
     let mut end = start;
     let _ = end.forward_chars(count);
+    // GTK text layout validates whole paragraphs, so a deletion that stops
+    // inside a line would re-lay-out the shrinking remainder on every turn.
+    // Extending to the next line start deletes each paragraph exactly once.
+    if !end.is_end() && !end.starts_line() {
+        let _ = end.forward_line();
+    }
+    let deleted = u64::try_from(end.offset()).unwrap_or(0);
     buffer.delete(&mut start, &mut end);
-    (buffer.char_count() == 0, u64::try_from(count).unwrap_or(0))
+    (buffer.char_count() == 0, deleted)
 }
 
 fn run_clear_slice(session: &Rc<RefCell<BufferReplacementSession>>) {

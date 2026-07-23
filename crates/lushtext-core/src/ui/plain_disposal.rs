@@ -553,6 +553,41 @@ impl<T: Send + 'static> DerefMut for DisposalOwned<T> {
     }
 }
 
+/// One-shot test seam observing the worker thread that retires one guarded body.
+///
+/// Each module owning a `set_next_*_disposal_probe_for_test` seam instantiates
+/// its own static slot so arming one workflow's probe cannot observe another
+/// workflow's disposal.
+#[cfg(feature = "test-utils")]
+pub(crate) struct DisposalProbeSlot {
+    sender: Mutex<Option<std::sync::mpsc::Sender<std::thread::ThreadId>>>,
+}
+
+#[cfg(feature = "test-utils")]
+impl DisposalProbeSlot {
+    pub(crate) const fn new() -> Self {
+        Self {
+            sender: Mutex::new(None),
+        }
+    }
+
+    /// Arm the slot to observe the next attached owner's disposal thread.
+    pub(crate) fn set(&self, sender: std::sync::mpsc::Sender<std::thread::ThreadId>) {
+        lock_unpoisoned(&self.sender).replace(sender);
+    }
+
+    /// Attach the armed probe to one owner, consuming the armed sender.
+    pub(crate) fn attach<T: Send + 'static>(&self, owner: DisposalOwned<T>) -> DisposalOwned<T> {
+        if let Some(sender) = lock_unpoisoned(&self.sender).take() {
+            owner.with_disposal_terminal(move || {
+                let _ = sender.send(std::thread::current().id());
+            })
+        } else {
+            owner
+        }
+    }
+}
+
 impl<T: Send + 'static> Drop for DisposalOwned<T> {
     fn drop(&mut self) {
         let Some(value) = self.value.take() else {

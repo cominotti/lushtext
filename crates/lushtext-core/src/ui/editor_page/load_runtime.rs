@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 #[cfg(feature = "test-utils")]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 #[cfg(feature = "test-utils")]
-use std::sync::{Mutex, mpsc::Sender};
+use std::sync::mpsc::Sender;
 
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
@@ -26,7 +26,7 @@ use crate::model::file_load::{
     FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadPriority,
     decoded_body_reservation_weight,
 };
-use crate::services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadResult};
+use crate::services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadMetadata};
 use crate::ui::window::LushtextWindow;
 
 use super::save_runtime;
@@ -37,18 +37,15 @@ thread_local! {
 }
 
 #[cfg(feature = "test-utils")]
-static NEXT_LOAD_BODY_DISPOSAL_PROBE: Mutex<Option<Sender<std::thread::ThreadId>>> =
-    Mutex::new(None);
+static NEXT_LOAD_BODY_DISPOSAL_PROBE: crate::ui::plain_disposal::DisposalProbeSlot =
+    crate::ui::plain_disposal::DisposalProbeSlot::new();
 #[cfg(feature = "test-utils")]
 static NEXT_LOAD_DISPOSAL_RESERVATION_WEIGHT: AtomicU64 = AtomicU64::new(0);
 
 /// Observe the worker thread that finally retires the next decoded load body.
 #[cfg(feature = "test-utils")]
 pub fn set_next_load_body_disposal_probe_for_test(sender: Sender<std::thread::ThreadId>) {
-    NEXT_LOAD_BODY_DISPOSAL_PROBE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .replace(sender);
+    NEXT_LOAD_BODY_DISPOSAL_PROBE.set(sender);
 }
 
 /// Override one conservative reservation without allocating a giant GTK fixture.
@@ -61,17 +58,7 @@ fn attach_load_body_disposal_probe(
     owner: crate::ui::plain_disposal::DisposalOwned<String>,
 ) -> crate::ui::plain_disposal::DisposalOwned<String> {
     #[cfg(feature = "test-utils")]
-    {
-        let sender = NEXT_LOAD_BODY_DISPOSAL_PROBE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(sender) = sender {
-            return owner.with_disposal_terminal(move || {
-                let _ = sender.send(std::thread::current().id());
-            });
-        }
-    }
+    let owner = NEXT_LOAD_BODY_DISPOSAL_PROBE.attach(owner);
     owner
 }
 
@@ -130,7 +117,7 @@ impl Drop for TransientLoadPermit {
 }
 
 pub(super) struct GuardedLoadResult {
-    pub(super) metadata: LoadResult,
+    pub(super) metadata: LoadMetadata,
     pub(super) content: crate::ui::plain_disposal::DisposalOwned<String>,
 }
 
@@ -331,11 +318,11 @@ fn dispatch(
         editor_weak,
         move || {
             let result =
-                editor_io::load_planned_text_file(plan, &cancel, reopen_as).map(|mut loaded| {
-                    let content = std::mem::take(&mut loaded.content);
+                editor_io::load_planned_text_file(plan, &cancel, reopen_as).map(|loaded| {
+                    let editor_io::LoadResult { metadata, content } = loaded;
                     reservation.shrink_to(u64::try_from(content.capacity()).unwrap_or(u64::MAX));
                     GuardedLoadResult {
-                        metadata: loaded,
+                        metadata,
                         content: attach_load_body_disposal_probe(reservation.own(content)),
                     }
                 });

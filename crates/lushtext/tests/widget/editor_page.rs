@@ -1195,14 +1195,16 @@ fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
     let stale_generation = page.load_generation_for_test();
     page.cancel_load();
     let stale_result = LoadResult {
+        metadata: editor_io::LoadMetadata {
+            size: 17,
+            size_check: FileSizeCheck::Normal,
+            canonical_path: Some(std::path::PathBuf::from("/tmp/stale.txt")),
+            mtime: Some(123),
+            encoding_state: DocumentEncodingState::default(),
+            has_bom: false,
+            file_health: Vec::new(),
+        },
         content: "stale disk bytes\n".to_string(),
-        size: 17,
-        size_check: FileSizeCheck::Normal,
-        canonical_path: Some(std::path::PathBuf::from("/tmp/stale.txt")),
-        mtime: Some(123),
-        encoding_state: DocumentEncodingState::default(),
-        has_bom: false,
-        file_health: Vec::new(),
     };
 
     assert!(

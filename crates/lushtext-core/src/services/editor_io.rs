@@ -35,6 +35,86 @@ use std::time::Duration;
 /// large document, so the sample stays intentionally small and fast to inspect.
 const MAX_LOSSY_PREVIEW_ISSUES: usize = 8;
 
+/// Bytes processed per bounded classification, decoding, or analysis slice.
+///
+/// Each slice ends at a cooperative cancellation checkpoint, so 256 KiB keeps
+/// obsolete work on a cancelled multi-hundred-megabyte load bounded to a few
+/// milliseconds without measurable throughput loss on the success path.
+const LOAD_PROCESSING_CHUNK_BYTES: usize = 256 * 1024;
+
+/// Inputs at or below this size may use the direct whole-buffer path.
+///
+/// One mebibyte matches the synchronous buffer-replacement threshold family:
+/// direct classification, decoding, and analysis finish fast enough that the
+/// pre/post stage cancellation checks alone bound obsolete work.
+const DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES: usize = 1024 * 1024;
+
+#[cfg(any(test, feature = "test-utils"))]
+thread_local! {
+    static LOAD_PROCESSING_CHUNK_EVENTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static CANCEL_LOAD_AFTER_PROCESSING_CHUNKS: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Take and reset this thread's bounded load-processing slice count.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn take_load_processing_chunks_for_test() -> u64 {
+    LOAD_PROCESSING_CHUNK_EVENTS.with(|events| events.replace(0))
+}
+
+/// Cancel the current thread's load token at the Nth bounded processing slice.
+///
+/// This per-thread, per-invocation seam makes stage-specific cancellation
+/// deterministic without global mutable state; pass `None` to disarm it.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn cancel_load_after_processing_chunks_for_test(limit: Option<u64>) {
+    CANCEL_LOAD_AFTER_PROCESSING_CHUNKS.with(|slot| slot.set(limit));
+}
+
+/// Count one bounded processing slice and drive the test cancellation seam.
+///
+/// Callers record a slice immediately before its cancellation check, so an
+/// armed test seam stops the pipeline before the counted slice does any work.
+fn record_load_processing_chunk(cancel: &AtomicBool) {
+    #[cfg(any(test, feature = "test-utils"))]
+    {
+        let chunks = LOAD_PROCESSING_CHUNK_EVENTS.with(|events| {
+            let next = events.get().saturating_add(1);
+            events.set(next);
+            next
+        });
+        CANCEL_LOAD_AFTER_PROCESSING_CHUNKS.with(|slot| {
+            if slot.get().is_some_and(|limit| chunks >= limit) {
+                cancel.store(true, Ordering::Release);
+            }
+        });
+    }
+    #[cfg(not(any(test, feature = "test-utils")))]
+    let _ = cancel;
+}
+
+/// Admit one bounded processing slice under the shared checkpoint contract.
+///
+/// Records the slice before reading the cancellation flag — the armed test
+/// seam counts every admitted slice and must stop the pipeline before the
+/// counted slice does any work — then returns the exclusive slice end for the
+/// slice starting at `position`. Callers with boundary rules (UTF-8 scalar
+/// extension, char-boundary backoff) adjust the returned end locally.
+fn next_load_processing_slice_end(
+    position: usize,
+    len: usize,
+    cancel: &AtomicBool,
+) -> Result<usize, EditorLoadError> {
+    record_load_processing_chunk(cancel);
+    if cancel.load(Ordering::Acquire) {
+        return Err(EditorLoadError::Cancelled);
+    }
+    Ok(position
+        .saturating_add(LOAD_PROCESSING_CHUNK_BYTES)
+        .min(len))
+}
+
 #[cfg(feature = "test-utils")]
 static LOAD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
@@ -99,7 +179,18 @@ pub fn set_transient_weight_override_for_test(weight: Option<u64>) {
 /// Successful result from `load_text_file`.
 #[derive(Debug)]
 pub struct LoadResult {
+    /// Document facts that flow to editor state independently of the body.
+    pub metadata: LoadMetadata,
+    /// Decoded document text.
     pub content: String,
+}
+
+/// Compact per-load facts that cross ownership boundaries without the body.
+///
+/// Guarded GTK-side results hold this value beside separately owned content so
+/// no layer ships a document-sized field that is empty by construction.
+#[derive(Debug)]
+pub struct LoadMetadata {
     pub size: u64,
     pub size_check: FileSizeCheck,
     /// Canonical filesystem identity resolved on the background load thread.
@@ -415,30 +506,46 @@ fn load_planned_text_file_with_limit(
         return Err(EditorLoadError::Changed { path });
     }
 
-    let decoded = decode_document(&bytes, reopen_as);
-    if decoded.had_errors {
+    let payload = decode_payload_cancellable(&bytes, reopen_as, cancel)?;
+    if payload.had_errors {
         return Err(EditorLoadError::Decode {
             path,
-            encoding: decoded.encoding_state.opened_encoding,
+            encoding: payload.opened_encoding,
         });
     }
     if cancel.load(Ordering::Acquire) {
         return Err(EditorLoadError::Cancelled);
     }
-    let file_health = build_file_health(&decoded.content, &decoded, &bytes);
+    // Line-ending and character health evidence share one bounded pass over
+    // the decoded text; NUL evidence keeps its raw-byte scan but skips it for
+    // UTF-16, whose zero bytes are expected and excluded from the finding.
+    let analysis = analyze_decoded_content_cancellable(&payload.content, cancel)?;
+    let nul_evidence = if matches!(
+        payload.opened_encoding,
+        DocumentEncoding::Utf16Le | DocumentEncoding::Utf16Be
+    ) {
+        false
+    } else {
+        contains_nul_cancellable(&bytes, cancel)?
+    };
     if cancel.load(Ordering::Acquire) {
         return Err(EditorLoadError::Cancelled);
     }
 
+    let decoded = assemble_decoded_document(payload, &analysis);
+    let file_health = build_file_health(&decoded, &analysis, nul_evidence);
+
     Ok(LoadResult {
+        metadata: LoadMetadata {
+            size: plan.facts.byte_size,
+            size_check: plan.size_check,
+            canonical_path: plan.facts.canonical_path,
+            mtime: plan.facts.modified_at_secs,
+            encoding_state: decoded.encoding_state,
+            has_bom: decoded.has_bom,
+            file_health,
+        },
         content: decoded.content,
-        size: plan.facts.byte_size,
-        size_check: plan.size_check,
-        canonical_path: plan.facts.canonical_path,
-        mtime: plan.facts.modified_at_secs,
-        encoding_state: decoded.encoding_state,
-        has_bom: decoded.has_bom,
-        file_health,
     })
 }
 
@@ -511,7 +618,8 @@ fn delay_load_for_test() {}
 
 /// Classify raw editor bytes without filesystem access for fuzz targets.
 ///
-/// This deliberately reuses `decode_document()` and `build_file_health()` so
+/// This deliberately reuses the cancellable decode/analysis stages and
+/// `build_file_health()` so
 /// fuzzing exercises the production byte-ingestion path while staying free of
 /// disk I/O, GTK widgets, and cancellation timing.
 #[cfg(feature = "fuzzing")]
@@ -520,8 +628,15 @@ pub fn classify_bytes_for_fuzzing(
     bytes: &[u8],
     reopen_as: Option<DocumentEncoding>,
 ) -> FuzzedEditorBytes {
-    let decoded = decode_document(bytes, reopen_as);
-    let file_health = build_file_health(&decoded.content, &decoded, bytes);
+    let never = AtomicBool::new(false);
+    let payload = decode_payload_cancellable(bytes, reopen_as, &never)
+        .unwrap_or_else(|_| unreachable!("an uncancelled decode has no failure terminal"));
+    let analysis = analyze_decoded_content_cancellable(&payload.content, &never)
+        .unwrap_or_else(|_| unreachable!("an uncancelled analysis has no failure terminal"));
+    let nul_evidence = contains_nul_cancellable(bytes, &never)
+        .unwrap_or_else(|_| unreachable!("an uncancelled scan has no failure terminal"));
+    let decoded = assemble_decoded_document(payload, &analysis);
+    let file_health = build_file_health(&decoded, &analysis, nul_evidence);
 
     FuzzedEditorBytes {
         content: decoded.content,
@@ -740,96 +855,242 @@ struct DecodedDocument {
     content: String,
     encoding_state: DocumentEncodingState,
     has_bom: bool,
+}
+
+/// Decoded text plus classification metadata before content analysis runs.
+struct DecodedPayload {
+    content: String,
+    opened_encoding: DocumentEncoding,
+    decode_confidence: DecodeConfidence,
+    has_bom: bool,
     had_errors: bool,
 }
 
-/// Decode raw bytes into Unicode text and document metadata.
-fn decode_document(bytes: &[u8], reopen_as: Option<DocumentEncoding>) -> DecodedDocument {
-    let (content, opened_encoding, decode_confidence, has_bom, had_errors) = if let Some(encoding) =
-        reopen_as
-    {
-        let (decoded, had_bom, had_errors) = decode_with_encoding(bytes, encoding);
-        (
-            decoded,
+/// Line-ending and character evidence from one bounded pass over decoded text.
+struct DecodedContentAnalysis {
+    detected_line_ending: LineEnding,
+    suggested_line_ending: LineEnding,
+    nbsp_count: usize,
+    zero_width_count: usize,
+}
+
+fn assemble_decoded_document(
+    payload: DecodedPayload,
+    analysis: &DecodedContentAnalysis,
+) -> DecodedDocument {
+    let encoding_state = DocumentEncodingState {
+        opened_encoding: payload.opened_encoding,
+        save_encoding: payload.opened_encoding,
+        detected_line_ending: analysis.detected_line_ending,
+        save_line_ending: analysis.suggested_line_ending,
+        decode_confidence: payload.decode_confidence,
+    };
+    DecodedDocument {
+        content: payload.content,
+        encoding_state,
+        has_bom: payload.has_bom,
+    }
+}
+
+/// Classify and decode raw bytes with cooperative cancellation checkpoints.
+///
+/// Classification order, BOM handling, the BOM-less UTF-16 heuristic, fallback
+/// choice, and decoded output are exactly equivalent to the previous
+/// whole-buffer implementation; only the traversal is sliced.
+fn decode_payload_cancellable(
+    bytes: &[u8],
+    reopen_as: Option<DocumentEncoding>,
+    cancel: &AtomicBool,
+) -> Result<DecodedPayload, EditorLoadError> {
+    let payload = |content: String,
+                   opened_encoding: DocumentEncoding,
+                   decode_confidence: DecodeConfidence,
+                   has_bom: bool,
+                   had_errors: bool| DecodedPayload {
+        content,
+        opened_encoding,
+        decode_confidence,
+        has_bom,
+        had_errors,
+    };
+
+    if let Some(encoding) = reopen_as {
+        let (content, has_bom, had_errors) = decode_with_encoding(bytes, encoding, cancel)?;
+        return Ok(payload(
+            content,
             encoding,
             DecodeConfidence::Exact,
-            had_bom,
+            has_bom,
             had_errors,
-        )
-    } else if let Some((encoding, stripped)) = bom_prefixed_encoding(bytes) {
-        let (content, had_errors) = decode_bytes_without_bom(stripped, encoding);
-        (content, encoding, DecodeConfidence::Exact, true, had_errors)
-    } else if let Ok(utf8) = simdutf8::basic::from_utf8(bytes) {
-        (
-            utf8.to_string(),
+        ));
+    }
+    if let Some((encoding, stripped)) = bom_prefixed_encoding(bytes) {
+        let (content, had_errors) = decode_bytes_without_bom(stripped, encoding, cancel)?;
+        return Ok(payload(
+            content,
+            encoding,
+            DecodeConfidence::Exact,
+            true,
+            had_errors,
+        ));
+    }
+    if let Some(content) = try_decode_valid_utf8(bytes, cancel)? {
+        return Ok(payload(
+            content,
             DocumentEncoding::Utf8,
             DecodeConfidence::Exact,
             false,
             false,
-        )
-    } else if let Some(encoding) = guess_utf16_without_bom(bytes) {
-        let (content, had_errors) = decode_bytes_without_bom(bytes, encoding);
-        (
+        ));
+    }
+    if let Some(encoding) = guess_utf16_without_bom_cancellable(bytes, cancel)? {
+        let (content, had_errors) = decode_bytes_without_bom(bytes, encoding, cancel)?;
+        return Ok(payload(
             content,
             encoding,
             DecodeConfidence::Heuristic,
             false,
             had_errors,
-        )
-    } else {
-        let (content, had_errors) = decode_bytes_without_bom(bytes, DocumentEncoding::Windows1252);
-        (
-            content,
-            DocumentEncoding::Windows1252,
-            DecodeConfidence::Low,
-            false,
-            had_errors,
-        )
-    };
-
-    let (detected_line_ending, suggested_line_ending) = detect_line_endings(&content);
-    let encoding_state = DocumentEncodingState {
-        opened_encoding,
-        save_encoding: opened_encoding,
-        detected_line_ending,
-        save_line_ending: suggested_line_ending,
-        decode_confidence,
-    };
-
-    DecodedDocument {
-        content,
-        encoding_state,
-        has_bom,
-        had_errors,
+        ));
     }
+    let (content, had_errors) =
+        decode_bytes_without_bom(bytes, DocumentEncoding::Windows1252, cancel)?;
+    Ok(payload(
+        content,
+        DocumentEncoding::Windows1252,
+        DecodeConfidence::Low,
+        false,
+        had_errors,
+    ))
 }
 
 /// Decode bytes using an explicit encoding selection, stripping any matching BOM.
-fn decode_with_encoding(bytes: &[u8], encoding: DocumentEncoding) -> (String, bool, bool) {
+fn decode_with_encoding(
+    bytes: &[u8],
+    encoding: DocumentEncoding,
+    cancel: &AtomicBool,
+) -> Result<(String, bool, bool), EditorLoadError> {
     if let Some((detected_encoding, stripped)) = bom_prefixed_encoding(bytes)
         && detected_encoding == encoding
     {
-        let (content, had_errors) = decode_bytes_without_bom(stripped, encoding);
-        return (content, true, had_errors);
+        let (content, had_errors) = decode_bytes_without_bom(stripped, encoding, cancel)?;
+        return Ok((content, true, had_errors));
     }
 
-    let (content, had_errors) = decode_bytes_without_bom(bytes, encoding);
-    (content, false, had_errors)
+    let (content, had_errors) = decode_bytes_without_bom(bytes, encoding, cancel)?;
+    Ok((content, false, had_errors))
 }
 
 /// Decode bytes with the requested encoding after BOM handling has been resolved.
-fn decode_bytes_without_bom(bytes: &[u8], encoding: DocumentEncoding) -> (String, bool) {
-    match encoding {
-        DocumentEncoding::Utf8 | DocumentEncoding::Utf8Bom
-            if let Ok(utf8) = simdutf8::basic::from_utf8(bytes) =>
-        {
-            (utf8.to_string(), false)
+fn decode_bytes_without_bom(
+    bytes: &[u8],
+    encoding: DocumentEncoding,
+    cancel: &AtomicBool,
+) -> Result<(String, bool), EditorLoadError> {
+    if matches!(encoding, DocumentEncoding::Utf8 | DocumentEncoding::Utf8Bom)
+        && let Some(content) = try_decode_valid_utf8(bytes, cancel)?
+    {
+        return Ok((content, false));
+    }
+    decode_with_codec_cancellable(bytes, encoding, cancel)
+}
+
+/// Validate and copy UTF-8 in bounded slices split at scalar boundaries.
+///
+/// Returns `Ok(None)` when the bytes are not valid UTF-8. Fusing validation
+/// with the copy keeps the success path single-pass while giving very large
+/// documents a cancellation checkpoint every slice.
+fn try_decode_valid_utf8(
+    bytes: &[u8],
+    cancel: &AtomicBool,
+) -> Result<Option<String>, EditorLoadError> {
+    if bytes.len() <= DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES {
+        return Ok(simdutf8::basic::from_utf8(bytes).ok().map(str::to_string));
+    }
+
+    let mut content = String::with_capacity(bytes.len());
+    let mut position = 0usize;
+    while position < bytes.len() {
+        let mut end = next_load_processing_slice_end(position, bytes.len(), cancel)?;
+        // Extend past UTF-8 continuation bytes so a valid scalar never splits
+        // across slices. Valid UTF-8 never has more than three consecutive
+        // continuation bytes, so a longer run (binary padding such as repeated
+        // 0x80) is rejected here instead of extending one slice arbitrarily
+        // far past its cancellation checkpoint.
+        let mut extended = 0usize;
+        while end < bytes.len() && (bytes[end] & 0xC0) == 0x80 {
+            end += 1;
+            extended += 1;
+            if extended > 3 {
+                return Ok(None);
+            }
         }
-        _ => {
-            let (decoded, had_errors) = encoding.codec().decode_without_bom_handling(bytes);
-            (decoded.into_owned(), had_errors)
+        match simdutf8::basic::from_utf8(&bytes[position..end]) {
+            Ok(valid) => content.push_str(valid),
+            Err(_) => return Ok(None),
+        }
+        position = end;
+    }
+    Ok(Some(content))
+}
+
+/// Stream bytes through a stateful `encoding_rs` decoder in bounded slices.
+///
+/// `encoding_rs` guarantees streaming output identical to the whole-buffer
+/// decode, including replacement characters and the `had_errors` verdict.
+fn decode_with_codec_cancellable(
+    bytes: &[u8],
+    encoding: DocumentEncoding,
+    cancel: &AtomicBool,
+) -> Result<(String, bool), EditorLoadError> {
+    if bytes.len() <= DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES {
+        let (decoded, had_errors) = encoding.codec().decode_without_bom_handling(bytes);
+        return Ok((decoded.into_owned(), had_errors));
+    }
+
+    let mut decoder = encoding.codec().new_decoder_without_bom_handling();
+    let mut content = String::with_capacity(bytes.len());
+    let mut had_errors = false;
+    let mut position = 0usize;
+    loop {
+        let end = next_load_processing_slice_end(position, bytes.len(), cancel)?;
+        let last = end == bytes.len();
+        let mut source = &bytes[position..end];
+        loop {
+            let needed = decoder
+                .max_utf8_buffer_length(source.len())
+                .unwrap_or_else(|| source.len().saturating_mul(3).saturating_add(16));
+            content.reserve(needed);
+            let (result, read, errors) = decoder.decode_to_string(source, &mut content, last);
+            had_errors |= errors;
+            source = &source[read..];
+            match result {
+                encoding_rs::CoderResult::InputEmpty => break,
+                encoding_rs::CoderResult::OutputFull => {}
+            }
+        }
+        position = end;
+        if last {
+            return Ok((content, had_errors));
         }
     }
+}
+
+/// Report whether the raw bytes contain a NUL, with bounded slice checkpoints.
+fn contains_nul_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<bool, EditorLoadError> {
+    if bytes.len() <= DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES {
+        return Ok(bytes.contains(&0));
+    }
+
+    let mut position = 0usize;
+    while position < bytes.len() {
+        let end = next_load_processing_slice_end(position, bytes.len(), cancel)?;
+        if memchr::memchr(0, &bytes[position..end]).is_some() {
+            return Ok(true);
+        }
+        position = end;
+    }
+    Ok(false)
 }
 
 /// Detect BOM-prefixed encodings that the load pipeline can trust exactly.
@@ -859,8 +1120,51 @@ fn guess_utf16_without_bom(bytes: &[u8]) -> Option<DocumentEncoding> {
         .step_by(2)
         .filter(|&&byte| byte == 0)
         .count();
-    let pair_count = bytes.len() / 2;
 
+    classify_utf16_zero_parity(even_zeroes, odd_zeroes, bytes.len() / 2)
+}
+
+/// Run the BOM-less UTF-16 heuristic with bounded slice checkpoints.
+fn guess_utf16_without_bom_cancellable(
+    bytes: &[u8],
+    cancel: &AtomicBool,
+) -> Result<Option<DocumentEncoding>, EditorLoadError> {
+    if bytes.len() <= DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES {
+        return Ok(guess_utf16_without_bom(bytes));
+    }
+    if bytes.len() < 4 || !bytes.len().is_multiple_of(2) {
+        return Ok(None);
+    }
+
+    let mut even_zeroes = 0usize;
+    let mut odd_zeroes = 0usize;
+    let mut position = 0usize;
+    while position < bytes.len() {
+        let end = next_load_processing_slice_end(position, bytes.len(), cancel)?;
+        for (offset, &byte) in bytes[position..end].iter().enumerate() {
+            if byte == 0 {
+                if (position + offset).is_multiple_of(2) {
+                    even_zeroes += 1;
+                } else {
+                    odd_zeroes += 1;
+                }
+            }
+        }
+        position = end;
+    }
+    Ok(classify_utf16_zero_parity(
+        even_zeroes,
+        odd_zeroes,
+        bytes.len() / 2,
+    ))
+}
+
+/// Shared BOM-less UTF-16 verdict from zero-byte parity counts.
+fn classify_utf16_zero_parity(
+    even_zeroes: usize,
+    odd_zeroes: usize,
+    pair_count: usize,
+) -> Option<DocumentEncoding> {
     // UTF-16 English and code-like text produces many zero high bytes on one
     // side of each 16-bit unit. Keep the threshold coarse on purpose so the
     // fallback still prefers Windows-1252 when the signal is weak.
@@ -873,6 +1177,68 @@ fn guess_utf16_without_bom(bytes: &[u8]) -> Option<DocumentEncoding> {
     None
 }
 
+/// Streaming CR/LF/CRLF tally whose CR carry survives slice boundaries.
+///
+/// Feeding the whole text as one slice reproduces the historical single-pass
+/// tally exactly; bounded slices only add a carry for a CR that ends a slice
+/// and might pair with an LF starting the next one.
+#[derive(Default)]
+struct LineEndingTally {
+    crlf_count: usize,
+    lf_count: usize,
+    cr_count: usize,
+    pending_cr: bool,
+}
+
+impl LineEndingTally {
+    fn scan_slice(&mut self, bytes: &[u8]) {
+        let mut skip_first_lf = false;
+        if self.pending_cr {
+            self.pending_cr = false;
+            if bytes.first() == Some(&b'\n') {
+                self.crlf_count += 1;
+                skip_first_lf = true;
+            } else {
+                self.cr_count += 1;
+            }
+        }
+
+        let mut paired_lf = None;
+        for index in memchr::memchr2_iter(b'\r', b'\n', bytes) {
+            if index == 0 && skip_first_lf {
+                continue;
+            }
+            if paired_lf == Some(index) {
+                paired_lf = None;
+                continue;
+            }
+            match bytes[index] {
+                b'\r' if index + 1 == bytes.len() => {
+                    self.pending_cr = true;
+                }
+                b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
+                    self.crlf_count += 1;
+                    paired_lf = Some(index + 1);
+                }
+                b'\r' => {
+                    self.cr_count += 1;
+                }
+                b'\n' => {
+                    self.lf_count += 1;
+                }
+                _ => unreachable!("memchr2_iter yields only CR or LF candidates"),
+            }
+        }
+    }
+
+    fn finish(mut self) -> (usize, usize, usize) {
+        if self.pending_cr {
+            self.cr_count += 1;
+        }
+        (self.crlf_count, self.lf_count, self.cr_count)
+    }
+}
+
 /// Detect line-ending style from decoded text and choose a safe save default.
 ///
 /// The input must already be decoded text. CR/LF candidate discovery uses the
@@ -880,32 +1246,18 @@ fn guess_utf16_without_bom(bytes: &[u8]) -> Option<DocumentEncoding> {
 /// byte and therefore cannot split a UTF-8 scalar.
 #[must_use]
 pub fn detect_line_endings(text: &str) -> (LineEnding, LineEnding) {
-    let bytes = text.as_bytes();
-    let mut crlf_count = 0usize;
-    let mut lf_count = 0usize;
-    let mut cr_count = 0usize;
-    let mut paired_lf = None;
+    let mut tally = LineEndingTally::default();
+    tally.scan_slice(text.as_bytes());
+    let (crlf_count, lf_count, cr_count) = tally.finish();
+    classify_line_ending_counts(crlf_count, lf_count, cr_count)
+}
 
-    for index in memchr::memchr2_iter(b'\r', b'\n', bytes) {
-        if paired_lf == Some(index) {
-            paired_lf = None;
-            continue;
-        }
-        match bytes[index] {
-            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
-                crlf_count += 1;
-                paired_lf = Some(index + 1);
-            }
-            b'\r' => {
-                cr_count += 1;
-            }
-            b'\n' => {
-                lf_count += 1;
-            }
-            _ => unreachable!("memchr2_iter yields only CR or LF candidates"),
-        }
-    }
-
+/// Shared detected/suggested line-ending policy from complete tally counts.
+fn classify_line_ending_counts(
+    crlf_count: usize,
+    lf_count: usize,
+    cr_count: usize,
+) -> (LineEnding, LineEnding) {
     let distinct_styles =
         usize::from(crlf_count > 0) + usize::from(lf_count > 0) + usize::from(cr_count > 0);
 
@@ -927,11 +1279,64 @@ pub fn detect_line_endings(text: &str) -> (LineEnding, LineEnding) {
     (detected, suggested)
 }
 
-/// Build surfaced file-health findings from the decoded document snapshot.
-fn build_file_health(
+/// Accumulate line-ending and character health evidence in one bounded pass.
+///
+/// Fusing the line-ending tally with the non-breaking-space and zero-width
+/// counts removes two redundant whole-document scans while keeping every
+/// successful count and classification identical to the previous passes.
+fn analyze_decoded_content_cancellable(
     content: &str,
+    cancel: &AtomicBool,
+) -> Result<DecodedContentAnalysis, EditorLoadError> {
+    let mut tally = LineEndingTally::default();
+    let mut nbsp_count = 0usize;
+    let mut zero_width_count = 0usize;
+
+    let mut scan_slice = |slice: &str| {
+        tally.scan_slice(slice.as_bytes());
+        for character in slice.chars() {
+            if character == '\u{00A0}' {
+                nbsp_count += 1;
+            } else if is_zero_width(character) {
+                zero_width_count += 1;
+            }
+        }
+    };
+
+    if content.len() <= DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES {
+        scan_slice(content);
+    } else {
+        let mut position = 0usize;
+        while position < content.len() {
+            let mut end = next_load_processing_slice_end(position, content.len(), cancel)?;
+            while !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            scan_slice(&content[position..end]);
+            position = end;
+        }
+    }
+
+    let (crlf_count, lf_count, cr_count) = tally.finish();
+    let (detected_line_ending, suggested_line_ending) =
+        classify_line_ending_counts(crlf_count, lf_count, cr_count);
+    Ok(DecodedContentAnalysis {
+        detected_line_ending,
+        suggested_line_ending,
+        nbsp_count,
+        zero_width_count,
+    })
+}
+
+/// Build surfaced file-health findings from the decoded document snapshot.
+///
+/// Character counts arrive from the fused bounded analysis pass and the NUL
+/// verdict from the raw-byte scan, so this assembly stage never rescans the
+/// document.
+fn build_file_health(
     decoded: &DecodedDocument,
-    raw_bytes: &[u8],
+    analysis: &DecodedContentAnalysis,
+    nul_evidence: bool,
 ) -> Vec<FileHealthFinding> {
     let mut findings = Vec::new();
 
@@ -966,7 +1371,7 @@ fn build_file_health(
         });
     }
 
-    if raw_bytes.contains(&0)
+    if nul_evidence
         && !matches!(
             decoded.encoding_state.opened_encoding,
             DocumentEncoding::Utf16Le | DocumentEncoding::Utf16Be
@@ -980,10 +1385,7 @@ fn build_file_health(
         });
     }
 
-    let nbsp_count = content
-        .chars()
-        .filter(|&character| character == '\u{00A0}')
-        .count();
+    let nbsp_count = analysis.nbsp_count;
     if nbsp_count > 0 {
         findings.push(FileHealthFinding {
             kind: FileHealthFindingKind::NonBreakingSpace,
@@ -995,10 +1397,7 @@ fn build_file_health(
         });
     }
 
-    let zero_width_count = content
-        .chars()
-        .filter(|&character| is_zero_width(character))
-        .count();
+    let zero_width_count = analysis.zero_width_count;
     if zero_width_count > 0 {
         findings.push(FileHealthFinding {
             kind: FileHealthFindingKind::ZeroWidthCharacter,
@@ -1385,15 +1784,18 @@ mod tests {
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
 
         assert_eq!(result.content, "hello\nworld");
-        assert_eq!(result.size, 11);
-        assert_eq!(result.size_check, FileSizeCheck::Normal);
+        assert_eq!(result.metadata.size, 11);
+        assert_eq!(result.metadata.size_check, FileSizeCheck::Normal);
         assert_eq!(
-            result.encoding_state.opened_encoding,
+            result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Utf8
         );
-        assert_eq!(result.encoding_state.detected_line_ending, LineEnding::Lf);
+        assert_eq!(
+            result.metadata.encoding_state.detected_line_ending,
+            LineEnding::Lf
+        );
         assert!(
-            result.mtime.is_some(),
+            result.metadata.mtime.is_some(),
             "mtime should be populated from metadata"
         );
     }
@@ -1408,13 +1810,17 @@ mod tests {
 
         assert_eq!(result.content, "a\r\n");
         assert_eq!(
-            result.encoding_state.opened_encoding,
+            result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Utf8Bom
         );
-        assert_eq!(result.encoding_state.detected_line_ending, LineEnding::Crlf);
-        assert!(result.has_bom);
+        assert_eq!(
+            result.metadata.encoding_state.detected_line_ending,
+            LineEnding::Crlf
+        );
+        assert!(result.metadata.has_bom);
         assert!(
             result
+                .metadata
                 .file_health
                 .iter()
                 .any(|finding| finding.kind == FileHealthFindingKind::Utf8Bom)
@@ -1431,13 +1837,13 @@ mod tests {
             load_text_file_with_encoding(file.path(), &cancel, Some(DocumentEncoding::Utf8Bom))
                 .expect("expected operation to succeed");
         assert_eq!(matching.content, "a");
-        assert!(matching.has_bom);
+        assert!(matching.metadata.has_bom);
 
         let plain_utf8 =
             load_text_file_with_encoding(file.path(), &cancel, Some(DocumentEncoding::Utf8))
                 .expect("expected operation to succeed");
         assert_eq!(plain_utf8.content, "\u{feff}a");
-        assert!(!plain_utf8.has_bom);
+        assert!(!plain_utf8.metadata.has_bom);
     }
 
     #[test]
@@ -1469,15 +1875,16 @@ mod tests {
 
         assert_eq!(result.content, "café");
         assert_eq!(
-            result.encoding_state.opened_encoding,
+            result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Windows1252
         );
         assert_eq!(
-            result.encoding_state.decode_confidence,
+            result.metadata.encoding_state.decode_confidence,
             DecodeConfidence::Low
         );
         assert!(
             result
+                .metadata
                 .file_health
                 .iter()
                 .any(|finding| finding.kind == FileHealthFindingKind::LowConfidenceDecode)
@@ -1500,20 +1907,20 @@ mod tests {
 
         assert_eq!(le_result.content, "Hé\n");
         assert_eq!(
-            le_result.encoding_state.opened_encoding,
+            le_result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Utf16Le
         );
         assert_eq!(
-            le_result.encoding_state.decode_confidence,
+            le_result.metadata.encoding_state.decode_confidence,
             DecodeConfidence::Heuristic
         );
         assert_eq!(be_result.content, "Hé\n");
         assert_eq!(
-            be_result.encoding_state.opened_encoding,
+            be_result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Utf16Be
         );
         assert_eq!(
-            be_result.encoding_state.decode_confidence,
+            be_result.metadata.encoding_state.decode_confidence,
             DecodeConfidence::Heuristic
         );
     }
@@ -1557,11 +1964,11 @@ mod tests {
             load_text_file(odd_file.path(), &cancel).expect("expected operation to succeed");
 
         assert_eq!(
-            short_result.encoding_state.opened_encoding,
+            short_result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Windows1252
         );
         assert_eq!(
-            odd_result.encoding_state.opened_encoding,
+            odd_result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Windows1252
         );
     }
@@ -1575,11 +1982,12 @@ mod tests {
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
 
         assert_eq!(
-            result.encoding_state.detected_line_ending,
+            result.metadata.encoding_state.detected_line_ending,
             LineEnding::Mixed
         );
         assert!(
             result
+                .metadata
                 .file_health
                 .iter()
                 .any(|finding| finding.kind == FileHealthFindingKind::MixedLineEndings)
@@ -1678,17 +2086,19 @@ mod tests {
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
 
         assert_eq!(
-            result.encoding_state.opened_encoding,
+            result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::Utf16Le
         );
         assert!(
             !result
+                .metadata
                 .file_health
                 .iter()
                 .any(|finding| finding.kind == FileHealthFindingKind::BinaryLikeContent)
         );
         assert!(
             !result
+                .metadata
                 .file_health
                 .iter()
                 .any(|finding| finding.kind == FileHealthFindingKind::Utf8Bom)
@@ -1704,11 +2114,13 @@ mod tests {
         let result = load_text_file(file.path(), &cancel).expect("expected operation to succeed");
 
         let nbsp = result
+            .metadata
             .file_health
             .iter()
             .find(|finding| finding.kind == FileHealthFindingKind::NonBreakingSpace)
             .expect("NBSP finding should be present");
         let zero_width = result
+            .metadata
             .file_health
             .iter()
             .find(|finding| finding.kind == FileHealthFindingKind::ZeroWidthCharacter)
@@ -1727,12 +2139,14 @@ mod tests {
 
         assert!(
             !result
+                .metadata
                 .file_health
                 .iter()
                 .any(|finding| finding.kind == FileHealthFindingKind::NonBreakingSpace)
         );
         assert!(
             !result
+                .metadata
                 .file_health
                 .iter()
                 .any(|finding| finding.kind == FileHealthFindingKind::ZeroWidthCharacter)
@@ -1748,6 +2162,411 @@ mod tests {
         let result = load_text_file(file.path(), &cancel);
 
         assert_matches!(result, Err(EditorLoadError::Cancelled));
+    }
+
+    /// Build a chunked-path fixture body larger than the direct threshold.
+    fn large_body(seed: &str) -> String {
+        let target =
+            DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES + DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES / 2;
+        let mut body = String::with_capacity(target + seed.len());
+        while body.len() < target {
+            body.push_str(seed);
+        }
+        body
+    }
+
+    fn utf16_bytes(text: &str, little_endian: bool, with_bom: bool) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(text.len() * 2 + 2);
+        if with_bom {
+            bytes.extend_from_slice(if little_endian {
+                &[0xFF, 0xFE]
+            } else {
+                &[0xFE, 0xFF]
+            });
+        }
+        for unit in text.encode_utf16() {
+            let pair = if little_endian {
+                unit.to_le_bytes()
+            } else {
+                unit.to_be_bytes()
+            };
+            bytes.extend_from_slice(&pair);
+        }
+        bytes
+    }
+
+    fn loaded(bytes: &[u8]) -> LoadResult {
+        let file = NamedTempFile::new().expect("temp fixture file");
+        fixture::write_bytes(file.path(), bytes);
+        let cancel = AtomicBool::new(false);
+        load_text_file(file.path(), &cancel).expect("uncancelled load succeeds")
+    }
+
+    fn reference_counts(content: &str) -> (usize, usize) {
+        let nbsp = content
+            .chars()
+            .filter(|&character| character == '\u{00A0}')
+            .count();
+        let zero_width = content
+            .chars()
+            .filter(|&character| is_zero_width(character))
+            .count();
+        (nbsp, zero_width)
+    }
+
+    fn health_count(result: &LoadResult, kind: FileHealthFindingKind) -> usize {
+        result
+            .metadata
+            .file_health
+            .iter()
+            .filter(|finding| finding.kind == kind)
+            .count()
+    }
+
+    #[test]
+    fn chunked_ascii_and_multibyte_utf8_match_reference_across_slice_boundaries() {
+        let ascii = large_body("plain ascii line\r\n");
+        let ascii_result = loaded(ascii.as_bytes());
+        assert_eq!(ascii_result.content, ascii);
+        assert_eq!(
+            ascii_result.metadata.encoding_state.opened_encoding,
+            DocumentEncoding::Utf8
+        );
+        assert_eq!(
+            ascii_result.metadata.encoding_state.detected_line_ending,
+            detect_line_endings(&ascii).0
+        );
+
+        // Four-byte, three-byte, and two-byte scalars with a stride that is
+        // deliberately coprime to the slice size so scalars straddle slices.
+        let multibyte = large_body("é漢🎉 zero\u{200B}width nbsp\u{00A0} text\n");
+        let multibyte_result = loaded(multibyte.as_bytes());
+        assert_eq!(multibyte_result.content, multibyte);
+        assert_eq!(
+            multibyte_result.metadata.encoding_state.opened_encoding,
+            DocumentEncoding::Utf8
+        );
+        let (nbsp, zero_width) = reference_counts(&multibyte);
+        assert!(nbsp > 0 && zero_width > 0);
+        assert_eq!(
+            health_count(&multibyte_result, FileHealthFindingKind::NonBreakingSpace),
+            1
+        );
+        assert!(
+            multibyte_result
+                .metadata
+                .file_health
+                .iter()
+                .any(
+                    |finding| finding.kind == FileHealthFindingKind::NonBreakingSpace
+                        && finding.body.contains(&nbsp.to_string())
+                )
+        );
+        assert!(
+            multibyte_result
+                .metadata
+                .file_health
+                .iter()
+                .any(
+                    |finding| finding.kind == FileHealthFindingKind::ZeroWidthCharacter
+                        && finding.body.contains(&zero_width.to_string())
+                )
+        );
+    }
+
+    #[test]
+    fn chunked_bom_and_fallback_paths_match_reference_decodes() {
+        let body = large_body("bom guarded utf8 content é\n");
+        let mut utf8_bom = vec![0xEF, 0xBB, 0xBF];
+        utf8_bom.extend_from_slice(body.as_bytes());
+        let bom_result = loaded(&utf8_bom);
+        assert_eq!(bom_result.content, body);
+        assert_eq!(
+            bom_result.metadata.encoding_state.opened_encoding,
+            DocumentEncoding::Utf8Bom
+        );
+        assert!(bom_result.metadata.has_bom);
+
+        for (little_endian, expected) in [
+            (true, DocumentEncoding::Utf16Le),
+            (false, DocumentEncoding::Utf16Be),
+        ] {
+            let text = large_body("utf16 content with accents é and lines\r\n");
+            let bytes = utf16_bytes(&text, little_endian, true);
+            let result = loaded(&bytes);
+            assert_eq!(result.content, text);
+            assert_eq!(result.metadata.encoding_state.opened_encoding, expected);
+            assert_eq!(
+                result.metadata.encoding_state.decode_confidence,
+                DecodeConfidence::Exact
+            );
+            assert!(result.metadata.has_bom);
+            assert_eq!(
+                health_count(&result, FileHealthFindingKind::BinaryLikeContent),
+                0,
+                "UTF-16 zero bytes must not be reported as binary-like content"
+            );
+        }
+
+        // BOM-less UTF-16 needs a non-ASCII scalar early so chunked UTF-8
+        // validation fails before the parity heuristic takes over.
+        let bomless_text = format!("é{}", large_body("bomless utf16 line\n"));
+        let bomless = utf16_bytes(&bomless_text, true, false);
+        let bomless_result = loaded(&bomless);
+        assert_eq!(bomless_result.content, bomless_text);
+        assert_eq!(
+            bomless_result.metadata.encoding_state.opened_encoding,
+            DocumentEncoding::Utf16Le
+        );
+        assert_eq!(
+            bomless_result.metadata.encoding_state.decode_confidence,
+            DecodeConfidence::Heuristic
+        );
+
+        // Windows-1252 fallback: 0x93/0x94 smart quotes are invalid UTF-8.
+        let fallback_seed = b"fallback \x93quoted\x94 text with nul \x00 evidence\r".repeat(40_000);
+        let fallback_result = loaded(&fallback_seed);
+        let (reference, reference_errors) = DocumentEncoding::Windows1252
+            .codec()
+            .decode_without_bom_handling(&fallback_seed);
+        assert!(!reference_errors);
+        assert_eq!(fallback_result.content, reference);
+        assert_eq!(
+            fallback_result.metadata.encoding_state.opened_encoding,
+            DocumentEncoding::Windows1252
+        );
+        assert_eq!(
+            fallback_result.metadata.encoding_state.decode_confidence,
+            DecodeConfidence::Low
+        );
+        assert_eq!(
+            health_count(&fallback_result, FileHealthFindingKind::BinaryLikeContent),
+            1,
+            "NUL evidence must survive the chunked raw-byte scan"
+        );
+        assert_eq!(
+            fallback_result.metadata.encoding_state.detected_line_ending,
+            detect_line_endings(&reference).0
+        );
+        assert_eq!(
+            fallback_result.metadata.encoding_state.save_line_ending,
+            detect_line_endings(&reference).1
+        );
+    }
+
+    #[test]
+    fn chunked_mixed_line_endings_match_whole_text_classification() {
+        let mixed = large_body("one\r\ntwo\nthree\rfour\n");
+        let result = loaded(mixed.as_bytes());
+        let (reference_detected, reference_suggested) = detect_line_endings(&mixed);
+        assert_eq!(reference_detected, LineEnding::Mixed);
+        assert_eq!(
+            result.metadata.encoding_state.detected_line_ending,
+            reference_detected
+        );
+        assert_eq!(
+            result.metadata.encoding_state.save_line_ending,
+            reference_suggested
+        );
+        assert_eq!(
+            health_count(&result, FileHealthFindingKind::MixedLineEndings),
+            1
+        );
+    }
+
+    #[test]
+    fn continuation_byte_runs_fail_fast_without_extending_a_slice() {
+        // A valid ASCII prefix ends exactly at the first slice boundary; the
+        // rest is binary padding whose bytes all match the UTF-8 continuation
+        // pattern. The boundary extension must reject the run after at most
+        // three bytes instead of stretching one slice across the remainder.
+        let mut bytes = vec![b'a'; LOAD_PROCESSING_CHUNK_BYTES];
+        bytes.extend(std::iter::repeat_n(
+            0x80u8,
+            DIRECT_LOAD_PROCESSING_THRESHOLD_BYTES + LOAD_PROCESSING_CHUNK_BYTES,
+        ));
+        let never = AtomicBool::new(false);
+
+        let _ = take_load_processing_chunks_for_test();
+        assert_eq!(
+            try_decode_valid_utf8(&bytes, &never).expect("uncancelled classification"),
+            None
+        );
+        assert_eq!(
+            take_load_processing_chunks_for_test(),
+            1,
+            "the run must be rejected inside the first slice"
+        );
+
+        // The fallback decode still matches the whole-buffer reference.
+        let (content, had_errors) =
+            decode_with_codec_cancellable(&bytes, DocumentEncoding::Windows1252, &never)
+                .expect("uncancelled fallback decode");
+        let (reference, reference_errors) = DocumentEncoding::Windows1252
+            .codec()
+            .decode_without_bom_handling(&bytes);
+        assert_eq!(content, reference);
+        assert_eq!(had_errors, reference_errors);
+    }
+
+    #[test]
+    fn line_ending_tally_carries_cr_across_slice_boundaries() {
+        let text = "alpha\r\nbeta\rgamma\nend\r";
+        for split in 0..=text.len() {
+            let mut tally = LineEndingTally::default();
+            tally.scan_slice(&text.as_bytes()[..split]);
+            tally.scan_slice(&text.as_bytes()[split..]);
+            let sliced = tally.finish();
+
+            let mut whole = LineEndingTally::default();
+            whole.scan_slice(text.as_bytes());
+            assert_eq!(
+                sliced,
+                whole.finish(),
+                "sliced tally diverged at split {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_stops_classification_decoding_and_analysis_stages() {
+        // UTF-16 LE with BOM: stage layout is decode slices then analysis
+        // slices; the NUL scan is skipped for UTF-16.
+        let text = "a".repeat(2 * 1024 * 1024);
+        let bom_bytes = utf16_bytes(&text, true, true);
+        let payload_bytes = bom_bytes.len() - 2;
+        let decode_slices =
+            u64::try_from(payload_bytes.div_ceil(LOAD_PROCESSING_CHUNK_BYTES)).expect("fits");
+        let analysis_slices =
+            u64::try_from(text.len().div_ceil(LOAD_PROCESSING_CHUNK_BYTES)).expect("fits");
+        let file = NamedTempFile::new().expect("utf16 fixture");
+        fixture::write_bytes(file.path(), &bom_bytes);
+
+        // Success baseline: exact bounded slice budget, no cancellation.
+        let _ = take_load_processing_chunks_for_test();
+        cancel_load_after_processing_chunks_for_test(None);
+        let cancel = AtomicBool::new(false);
+        let success = load_text_file(file.path(), &cancel).expect("uncancelled load");
+        assert_eq!(success.content, text);
+        assert_eq!(
+            take_load_processing_chunks_for_test(),
+            decode_slices + analysis_slices
+        );
+
+        // Cancellation during incremental decoding.
+        cancel_load_after_processing_chunks_for_test(Some(1));
+        let cancel = AtomicBool::new(false);
+        let result = load_text_file(file.path(), &cancel);
+        cancel_load_after_processing_chunks_for_test(None);
+        assert_matches!(result, Err(EditorLoadError::Cancelled));
+        assert_eq!(
+            take_load_processing_chunks_for_test(),
+            1,
+            "no further slices may run after decode-stage cancellation"
+        );
+
+        // Cancellation during fused line-ending/health analysis.
+        cancel_load_after_processing_chunks_for_test(Some(decode_slices + 2));
+        let cancel = AtomicBool::new(false);
+        let result = load_text_file(file.path(), &cancel);
+        cancel_load_after_processing_chunks_for_test(None);
+        assert_matches!(result, Err(EditorLoadError::Cancelled));
+        assert_eq!(
+            take_load_processing_chunks_for_test(),
+            decode_slices + 2,
+            "no further slices may run after analysis-stage cancellation"
+        );
+
+        // Classification-stage cancellation: BOM-less UTF-16 first fails the
+        // chunked UTF-8 validation in its first slice, then the parity
+        // heuristic owns the following slices.
+        let bomless_text = format!("é{}", "a".repeat(2 * 1024 * 1024));
+        let bomless_bytes = utf16_bytes(&bomless_text, true, false);
+        let bomless_file = NamedTempFile::new().expect("bomless utf16 fixture");
+        fixture::write_bytes(bomless_file.path(), &bomless_bytes);
+        cancel_load_after_processing_chunks_for_test(Some(3));
+        let cancel = AtomicBool::new(false);
+        let result = load_text_file(bomless_file.path(), &cancel);
+        cancel_load_after_processing_chunks_for_test(None);
+        assert_matches!(result, Err(EditorLoadError::Cancelled));
+        assert_eq!(
+            take_load_processing_chunks_for_test(),
+            3,
+            "no further slices may run after classification-stage cancellation"
+        );
+
+        eprintln!(
+            "editor-load-slice-evidence payload_bytes={payload_bytes} decode_slices={decode_slices} analysis_slices={analysis_slices} decode_cancel_slices=1 analysis_cancel_slices={} classification_cancel_slices=3",
+            decode_slices + 2
+        );
+    }
+
+    /// Opt-in near-supported-limit load diagnostic.
+    ///
+    /// Run explicitly with `cargo test -p lushtext-core --lib
+    /// near_supported_limit_load_diagnostic -- --ignored --nocapture`;
+    /// `LUSHTEXT_NEAR_LIMIT_LOAD_BYTES` overrides the fixture size for smaller
+    /// hosts. It records fixture size, encoding, build profile, environment,
+    /// resident-memory context, bounded cancellation progress, and planned
+    /// transient ownership, and stays ignored so default validation gains no
+    /// host-sensitive timing or memory gate.
+    #[test]
+    #[ignore = "opt-in near-supported-limit diagnostic, never a default CI gate"]
+    fn near_supported_limit_load_diagnostic() {
+        let fixture_bytes = std::env::var("LUSHTEXT_NEAR_LIMIT_LOAD_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(REFUSE_TO_OPEN.saturating_sub(1_000_000))
+            .min(REFUSE_TO_OPEN.saturating_sub(1));
+        let file = NamedTempFile::new().expect("near-limit fixture file");
+        fixture::write_repeated_bytes(file.path(), b"near-limit diagnostic line\n", fixture_bytes);
+
+        let rss_before_kib = resident_memory_kib();
+        let _ = take_load_processing_chunks_for_test();
+
+        let cancel = AtomicBool::new(false);
+        let plan = plan_text_file(file.path(), &cancel).expect("near-limit plan");
+        let planned_weight = plan.transient_weight;
+        let started = std::time::Instant::now();
+        let result = load_planned_text_file(plan, &cancel, None).expect("near-limit load");
+        let load_millis = started.elapsed().as_millis();
+        let success_slices = take_load_processing_chunks_for_test();
+        let rss_after_kib = resident_memory_kib();
+        assert_eq!(
+            u64::try_from(result.content.len()).expect("content length fits"),
+            fixture_bytes
+        );
+
+        cancel_load_after_processing_chunks_for_test(Some(4));
+        let cancel = AtomicBool::new(false);
+        let plan = plan_text_file(file.path(), &cancel).expect("near-limit cancel plan");
+        let cancelled = load_planned_text_file(plan, &cancel, None);
+        cancel_load_after_processing_chunks_for_test(None);
+        let cancelled_slices = take_load_processing_chunks_for_test();
+        assert_matches!(cancelled, Err(EditorLoadError::Cancelled));
+        assert_eq!(cancelled_slices, 4);
+
+        eprintln!(
+            "near-limit-load-evidence fixture_bytes={fixture_bytes} encoding={} profile={} os={} arch={} rss_before_kib={rss_before_kib:?} rss_after_kib={rss_after_kib:?} planned_transient_weight={planned_weight} success_slices={success_slices} load_millis={load_millis} cancelled_slices={cancelled_slices}",
+            result.metadata.encoding_state.opened_encoding.label(),
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        );
+    }
+
+    /// Best-effort resident-set sample for the opt-in diagnostic only.
+    fn resident_memory_kib() -> Option<u64> {
+        let status = fs_read::text(Path::new("/proc/self/status")).ok()?;
+        status.lines().find_map(|line| {
+            line.strip_prefix("VmRSS:")
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|value| value.parse().ok())
+        })
     }
 
     #[test]
@@ -1775,11 +2594,11 @@ mod tests {
 
         assert_eq!(result.content, "あ");
         assert_eq!(
-            result.encoding_state.opened_encoding,
+            result.metadata.encoding_state.opened_encoding,
             DocumentEncoding::ShiftJis
         );
         assert_eq!(
-            result.encoding_state.decode_confidence,
+            result.metadata.encoding_state.decode_confidence,
             DecodeConfidence::Exact
         );
     }

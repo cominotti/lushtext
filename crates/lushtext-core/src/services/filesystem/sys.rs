@@ -154,12 +154,49 @@ pub(in crate::services) fn write_at_start(path: &Path, bytes: &[u8]) -> io::Resu
     file.write_all(bytes)
 }
 
+/// Streaming read chunk shared by the bounded and prefix readers.
+///
+/// Sixty-four kibibytes keeps each read syscall large enough for throughput
+/// while making the between-chunk cancellation checks frequent on slow media.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
 pub(in crate::services) fn read_prefix(path: &Path, byte_limit: usize) -> io::Result<Vec<u8>> {
     let mut file = fs::File::open(path)?;
     let mut limited = Read::by_ref(&mut file).take(u64::try_from(byte_limit).unwrap_or(u64::MAX));
     let mut bytes = Vec::new();
     limited.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+pub(in crate::services) fn read_prefix_cancellable<F>(
+    path: &Path,
+    byte_limit: usize,
+    mut cancelled: F,
+) -> Result<Vec<u8>, BoundedFileReadError>
+where
+    F: FnMut() -> bool,
+{
+    let mut file = fs::File::open(path).map_err(BoundedFileReadError::Io)?;
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0u8; READ_CHUNK_BYTES].into_boxed_slice();
+
+    loop {
+        if cancelled() {
+            return Err(BoundedFileReadError::Cancelled);
+        }
+        let remaining = byte_limit.saturating_sub(bytes.len());
+        if remaining == 0 {
+            return Ok(bytes);
+        }
+        let read_len = remaining.min(READ_CHUNK_BYTES);
+        let count = file
+            .read(&mut chunk[..read_len])
+            .map_err(BoundedFileReadError::Io)?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
 }
 
 pub(in crate::services) fn read_bounded<F>(
@@ -171,8 +208,6 @@ pub(in crate::services) fn read_bounded<F>(
 where
     F: FnMut() -> bool,
 {
-    const READ_CHUNK_BYTES: usize = 64 * 1024;
-
     let usize_max = u64::try_from(usize::MAX).unwrap_or(u64::MAX);
     let initial_capacity =
         usize::try_from(capacity_hint.min(byte_limit).min(usize_max)).unwrap_or(usize::MAX);

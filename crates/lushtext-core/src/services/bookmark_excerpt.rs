@@ -7,9 +7,13 @@
 //! `GtkTextBuffer` access and rendering, while this module owns plain text,
 //! disk-read, size, UTF-8, and budget policy.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{metadata, read};
+use crate::services::palette::{
+    PaletteSearchCancellation, PaletteSearchCoordinator, PaletteSearchCoordinatorSnapshot,
+    PaletteSearchStart,
+};
 
 use super::file_limits::FileSizeCheck;
 
@@ -38,6 +42,12 @@ pub const BOOKMARK_EXCERPT_SCAN_LINE_LIMIT: usize = 20_000;
 /// A single giant line can otherwise consume the whole preview allocation even
 /// when the surrounding line window is tiny.
 pub const BOOKMARK_EXCERPT_LINE_CHAR_LIMIT: usize = 4096;
+/// Logical lines scanned between cooperative cancellation checks.
+///
+/// Splitting the one-mebibyte excerpt budget into lines is short but not free;
+/// checking every 1024 lines keeps supersession responsive without measurable
+/// per-line overhead.
+pub const BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES: usize = 1024;
 
 /// How a bookmark excerpt should be presented by the Notes browser.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,6 +170,40 @@ impl BookmarkExcerpt {
     }
 }
 
+/// Cooperative cancellation observed between bounded excerpt work stages.
+pub type BookmarkExcerptCancellation = PaletteSearchCancellation;
+
+/// Typed terminal outcome from one cancellable closed-file excerpt load.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BookmarkExcerptLoadOutcome {
+    /// The bounded load finished with a renderable or unavailable state.
+    Completed(BookmarkExcerptState),
+    /// Cooperative cancellation stopped the load before completion.
+    Cancelled,
+}
+
+/// Compact closed-file bookmark selection retained by the latest preview slot.
+///
+/// The request deliberately carries no source text and no dialog owner so a
+/// superseded selection retains only path-sized state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BookmarkExcerptPreviewRequest {
+    /// Bookmarked file whose excerpt should be previewed.
+    pub path: PathBuf,
+    /// Bookmarked line using zero-based editor numbering.
+    pub line: u32,
+}
+
+/// One request admitted as the sole active closed-file excerpt load.
+pub type BookmarkExcerptPreviewStart = PaletteSearchStart<BookmarkExcerptPreviewRequest>;
+
+/// Scalar one-active/one-latest ownership evidence.
+pub type BookmarkExcerptPreviewCoordinatorSnapshot = PaletteSearchCoordinatorSnapshot;
+
+/// Serialize excerpt loads while retaining only the latest superseding selection.
+pub type BookmarkExcerptPreviewCoordinator =
+    PaletteSearchCoordinator<BookmarkExcerptPreviewRequest>;
+
 /// Infer whether a path should render bookmark context as Markdown.
 #[must_use]
 pub fn presentation_for_path(path: &Path) -> BookmarkExcerptPresentation {
@@ -250,61 +294,83 @@ pub fn extract_from_context_lines(
 /// unavailable states so the UI can keep the selected row usable.
 #[must_use]
 pub fn load_from_path(path: &Path, target_line: u32) -> BookmarkExcerptState {
-    let presentation = presentation_for_path(path);
+    match load_from_path_cancellable(path, target_line, &BookmarkExcerptCancellation::default()) {
+        BookmarkExcerptLoadOutcome::Completed(state) => state,
+        BookmarkExcerptLoadOutcome::Cancelled => {
+            unreachable!("a default cancellation token is never cancelled")
+        }
+    }
+}
 
-    let Ok(facts) = metadata::file_facts(path) else {
-        return unavailable(
-            presentation,
-            BookmarkExcerptUnavailableReason::MissingOrUnreadable,
-        );
+/// Load a closed-file bookmark excerpt with cooperative cancellation.
+///
+/// Cancellation is checked around the metadata probe, between bounded read
+/// chunks, and at fixed checkpoints while scanning logical lines, so a
+/// superseded Notes selection stops obsolete work instead of running to a
+/// discarded completion. An uncancelled call is result-equivalent to
+/// [`load_from_path`].
+#[must_use]
+pub fn load_from_path_cancellable(
+    path: &Path,
+    target_line: u32,
+    cancellation: &BookmarkExcerptCancellation,
+) -> BookmarkExcerptLoadOutcome {
+    let presentation = presentation_for_path(path);
+    let refused = |reason: BookmarkExcerptUnavailableReason| {
+        BookmarkExcerptLoadOutcome::Completed(unavailable(presentation, reason))
     };
+
+    if cancellation.is_cancelled() {
+        return BookmarkExcerptLoadOutcome::Cancelled;
+    }
+    let Ok(facts) = metadata::file_facts(path) else {
+        return refused(BookmarkExcerptUnavailableReason::MissingOrUnreadable);
+    };
+    if cancellation.is_cancelled() {
+        return BookmarkExcerptLoadOutcome::Cancelled;
+    }
     if !matches!(facts.kind, crate::services::filesystem::FileKind::File) {
-        return unavailable(
-            presentation,
-            BookmarkExcerptUnavailableReason::MissingOrUnreadable,
-        );
+        return refused(BookmarkExcerptUnavailableReason::MissingOrUnreadable);
     }
     if !FileSizeCheck::classify(facts.byte_size).open_allowed() {
-        return unavailable(
-            presentation,
-            BookmarkExcerptUnavailableReason::TooLargeToPreview,
-        );
+        return refused(BookmarkExcerptUnavailableReason::TooLargeToPreview);
     }
     if usize::try_from(target_line)
         .ok()
         .is_some_and(|line| line >= BOOKMARK_EXCERPT_SCAN_LINE_LIMIT)
     {
-        return unavailable(
-            presentation,
-            BookmarkExcerptUnavailableReason::LineBeyondPreviewBudget,
-        );
+        return refused(BookmarkExcerptUnavailableReason::LineBeyondPreviewBudget);
     }
 
-    let Ok(bytes) = read_bounded_bytes(path, BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT) else {
-        return unavailable(
-            presentation,
-            BookmarkExcerptUnavailableReason::MissingOrUnreadable,
-        );
+    let bytes = match read_bounded_bytes_cancellable(
+        path,
+        BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT,
+        cancellation,
+    ) {
+        Ok(bytes) => bytes,
+        Err(read::BoundedFileReadError::Cancelled) => {
+            return BookmarkExcerptLoadOutcome::Cancelled;
+        }
+        Err(_) => {
+            return refused(BookmarkExcerptUnavailableReason::MissingOrUnreadable);
+        }
     };
     if bytes.bytes.contains(&0) {
-        return unavailable(
-            presentation,
-            BookmarkExcerptUnavailableReason::BinaryOrUnsupported,
-        );
+        return refused(BookmarkExcerptUnavailableReason::BinaryOrUnsupported);
     }
 
     let Ok(text) = validated_utf8_prefix(&bytes.bytes, bytes.truncated_by_bytes) else {
-        return unavailable(
-            presentation,
-            BookmarkExcerptUnavailableReason::BinaryOrUnsupported,
-        );
+        return refused(BookmarkExcerptUnavailableReason::BinaryOrUnsupported);
     };
-    extract_from_text_with_external_budget(
-        text,
+    let Some(lines) = logical_lines_cancellable(text, cancellation) else {
+        return BookmarkExcerptLoadOutcome::Cancelled;
+    };
+    BookmarkExcerptLoadOutcome::Completed(extract_from_lines(
+        &lines,
         target_line,
         presentation,
         bytes.truncated_by_bytes,
-    )
+    ))
 }
 
 fn extract_from_text_with_external_budget(
@@ -313,7 +379,20 @@ fn extract_from_text_with_external_budget(
     presentation: BookmarkExcerptPresentation,
     truncated_by_external_budget: bool,
 ) -> BookmarkExcerptState {
-    let lines = logical_lines(text);
+    extract_from_lines(
+        &logical_lines(text),
+        target_line,
+        presentation,
+        truncated_by_external_budget,
+    )
+}
+
+fn extract_from_lines(
+    lines: &[&str],
+    target_line: u32,
+    presentation: BookmarkExcerptPresentation,
+    truncated_by_external_budget: bool,
+) -> BookmarkExcerptState {
     let Some(target_index) = usize::try_from(target_line).ok() else {
         return unavailable(
             presentation,
@@ -361,13 +440,33 @@ fn unavailable(
 }
 
 fn logical_lines(text: &str) -> Vec<&str> {
+    logical_lines_cancellable(text, &BookmarkExcerptCancellation::default())
+        .expect("a default cancellation token is never cancelled")
+}
+
+/// Collect logical lines with periodic cancellation checkpoints.
+///
+/// Returns `None` when cancellation is observed at a checkpoint; an uncancelled
+/// call collects exactly the same lines as [`logical_lines`].
+fn logical_lines_cancellable<'text>(
+    text: &'text str,
+    cancellation: &BookmarkExcerptCancellation,
+) -> Option<Vec<&'text str>> {
     if text.is_empty() {
-        vec![""]
-    } else {
-        text.split('\n')
-            .take(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT)
-            .collect()
+        return Some(vec![""]);
     }
+    let mut lines = Vec::new();
+    for (index, line) in text
+        .split('\n')
+        .take(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT)
+        .enumerate()
+    {
+        if index % BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES == 0 && cancellation.is_cancelled() {
+            return None;
+        }
+        lines.push(line);
+    }
+    Some(lines)
 }
 
 fn clip_line(line: &str) -> (String, bool) {
@@ -383,8 +482,14 @@ fn clip_line(line: &str) -> (String, bool) {
     }
 }
 
-fn read_bounded_bytes(path: &Path, byte_limit: usize) -> std::io::Result<BoundedBytes> {
-    let mut bytes = read::prefix_bytes(path, byte_limit.saturating_add(1))?;
+fn read_bounded_bytes_cancellable(
+    path: &Path,
+    byte_limit: usize,
+    cancellation: &BookmarkExcerptCancellation,
+) -> Result<BoundedBytes, read::BoundedFileReadError> {
+    let mut bytes = read::prefix_bytes_cancellable(path, byte_limit.saturating_add(1), || {
+        cancellation.is_cancelled()
+    })?;
     let truncated_by_bytes = bytes.len() > byte_limit;
     if truncated_by_bytes {
         bytes.truncate(byte_limit);
@@ -446,6 +551,83 @@ mod tests {
         assert_eq!(BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT, 1024 * 1024);
         assert_eq!(BOOKMARK_EXCERPT_SCAN_LINE_LIMIT, 20_000);
         assert_eq!(BOOKMARK_EXCERPT_LINE_CHAR_LIMIT, 4096);
+        assert_eq!(BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES, 1024);
+    }
+
+    #[test]
+    fn load_from_path_cancellable_short_circuits_before_metadata() {
+        let cancellation = BookmarkExcerptCancellation::default();
+        assert!(cancellation.cancel());
+        assert!(
+            !cancellation.cancel(),
+            "only the first cancel transition reports success"
+        );
+
+        let outcome = load_from_path_cancellable(
+            Path::new("/nonexistent/never-touched.md"),
+            0,
+            &cancellation,
+        );
+
+        assert_eq!(outcome, BookmarkExcerptLoadOutcome::Cancelled);
+    }
+
+    #[test]
+    fn load_from_path_cancellable_matches_uncancelled_reference() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ready = dir.path().join("ready.md");
+        fixture::write_text(&ready, "alpha\nbravo\ncharlie\n");
+        let missing = dir.path().join("missing.md");
+        let binary = dir.path().join("binary.rs");
+        fixture::write_bytes(&binary, b"fn\0main");
+
+        for (path, line) in [(&ready, 1u32), (&missing, 0), (&binary, 0)] {
+            let reference = load_from_path(path, line);
+            let outcome =
+                load_from_path_cancellable(path, line, &BookmarkExcerptCancellation::default());
+            assert_eq!(outcome, BookmarkExcerptLoadOutcome::Completed(reference));
+        }
+    }
+
+    #[test]
+    fn logical_line_scan_checkpoints_observe_cancellation_and_match_reference() {
+        let text = numbered_text(BOOKMARK_EXCERPT_CANCELLATION_CHECK_LINES * 2);
+        let cancellation = BookmarkExcerptCancellation::default();
+
+        assert_eq!(
+            logical_lines_cancellable(&text, &cancellation).expect("uncancelled scan completes"),
+            logical_lines(&text)
+        );
+
+        let _ = cancellation.cancel();
+        assert_eq!(
+            logical_lines_cancellable(&text, &cancellation),
+            None,
+            "a cancelled token must stop the scan at the next checkpoint"
+        );
+    }
+
+    #[test]
+    fn cancellable_prefix_read_stops_between_chunks_without_retaining_bytes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("large.txt");
+        fixture::write_repeated_bytes(&file, b"x", 256 * 1024);
+
+        let mut checks = 0usize;
+        let result = read::prefix_bytes_cancellable(&file, 256 * 1024, || {
+            checks += 1;
+            checks > 2
+        });
+
+        assert!(matches!(result, Err(read::BoundedFileReadError::Cancelled)));
+        assert_eq!(checks, 3, "cancellation is polled once per streamed chunk");
+
+        let uncancelled = read::prefix_bytes_cancellable(&file, 300 * 1024, || false)
+            .expect("uncancelled prefix read");
+        assert_eq!(
+            uncancelled,
+            read::prefix_bytes(&file, 300 * 1024).expect("reference prefix read")
+        );
     }
 
     #[test]
@@ -664,10 +846,15 @@ mod tests {
 
     #[test]
     fn read_bounded_bytes_marks_truncation_only_when_file_exceeds_limit() {
+        let uncancelled = BookmarkExcerptCancellation::default();
         let exact = tempfile::NamedTempFile::new().expect("temp file");
         fixture::write_repeated_bytes(exact.path(), b"x", BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT as u64);
-        let exact_bytes =
-            read_bounded_bytes(exact.path(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT).expect("read exact");
+        let exact_bytes = read_bounded_bytes_cancellable(
+            exact.path(),
+            BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT,
+            &uncancelled,
+        )
+        .expect("read exact");
 
         assert_eq!(exact_bytes.bytes.len(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT);
         assert!(!exact_bytes.truncated_by_bytes);
@@ -678,8 +865,12 @@ mod tests {
             b"x",
             (BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT + 1) as u64,
         );
-        let over_bytes =
-            read_bounded_bytes(over.path(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT).expect("read over");
+        let over_bytes = read_bounded_bytes_cancellable(
+            over.path(),
+            BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT,
+            &uncancelled,
+        )
+        .expect("read over");
 
         assert_eq!(over_bytes.bytes.len(), BOOKMARK_EXCERPT_SCAN_BYTE_LIMIT);
         assert!(over_bytes.truncated_by_bytes);

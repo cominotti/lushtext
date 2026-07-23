@@ -50,7 +50,8 @@ thread_local! {
 #[cfg(any(test, feature = "test-utils"))]
 type UndoAfterMetadataHook = Box<dyn FnOnce(&Path) + Send + 'static>;
 #[cfg(any(test, feature = "test-utils"))]
-static UNDO_AFTER_METADATA_HOOK: OnceLock<Mutex<Option<UndoAfterMetadataHook>>> = OnceLock::new();
+static UNDO_AFTER_METADATA_HOOKS: OnceLock<Mutex<BTreeMap<PathBuf, UndoAfterMetadataHook>>> =
+    OnceLock::new();
 
 #[cfg(any(test, feature = "test-utils"))]
 static FAIL_REPLACE_BEFORE_RENAME_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -89,22 +90,89 @@ fn take_replace_before_rename_failure_for_test(_path: &Path) -> bool {
     false
 }
 
-/// Install a one-shot Undo race seam after metadata but before bounded ingestion.
+/// Cleanup ownership for one registered Undo after-metadata hook.
+///
+/// Dropping the guard removes a still-unconsumed registration so a failed
+/// assertion or early test exit cannot leak its seam into a later operation.
 #[cfg(any(test, feature = "test-utils"))]
-pub fn set_undo_after_metadata_hook_for_test(hook: impl FnOnce(&Path) + Send + 'static) {
-    let slot = UNDO_AFTER_METADATA_HOOK.get_or_init(|| Mutex::new(None));
-    *slot
+#[must_use = "dropping the guard immediately would unregister the hook"]
+pub struct UndoAfterMetadataHookGuard {
+    target: PathBuf,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl Drop for UndoAfterMetadataHookGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = UNDO_AFTER_METADATA_HOOKS.get() {
+            registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&self.target);
+        }
+    }
+}
+
+/// Install a one-shot Undo race seam for `target`, firing after metadata but
+/// before bounded ingestion.
+///
+/// The registry is keyed by the exact owned path the Undo entry carries, so
+/// parallel operations on distinct targets cannot consume one another's seams.
+/// Registering a second hook for the same target replaces the first.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use = "the guard owns cleanup for an unconsumed registration"]
+pub fn register_undo_after_metadata_hook_for_test(
+    target: &Path,
+    hook: impl FnOnce(&Path) + Send + 'static,
+) -> UndoAfterMetadataHookGuard {
+    let registry = UNDO_AFTER_METADATA_HOOKS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    registry
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(hook));
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(target.to_path_buf(), Box::new(hook));
+    UndoAfterMetadataHookGuard {
+        target: target.to_path_buf(),
+    }
+}
+
+/// Report whether no Undo after-metadata hooks remain registered.
+///
+/// This whole-registry assertion is only race-free when the caller owns every
+/// registration in the process (for example under nextest's process-per-test
+/// isolation). Parallel tests inside one process should use the target-scoped
+/// [`undo_after_metadata_hook_is_registered_for_test`] instead.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn undo_after_metadata_hook_registry_is_empty_for_test() -> bool {
+    UNDO_AFTER_METADATA_HOOKS.get().is_none_or(|registry| {
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    })
+}
+
+/// Report whether an Undo after-metadata hook is still registered for `target`.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn undo_after_metadata_hook_is_registered_for_test(target: &Path) -> bool {
+    UNDO_AFTER_METADATA_HOOKS.get().is_some_and(|registry| {
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(target)
+    })
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 fn run_undo_after_metadata_hook_for_test(path: &Path) {
-    let slot = UNDO_AFTER_METADATA_HOOK.get_or_init(|| Mutex::new(None));
-    let hook = slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
+    let hook = UNDO_AFTER_METADATA_HOOKS.get().and_then(|registry| {
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(path)
+    });
+    // Invoke after the registry lock is released so hooks for distinct targets
+    // can execute concurrently and a hook driving another Undo cannot deadlock.
     if let Some(hook) = hook {
         hook(path);
     }
@@ -2324,7 +2392,7 @@ mod tests {
             file.clone(),
             ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
         );
-        set_undo_after_metadata_hook_for_test(|path| {
+        let _hook_guard = register_undo_after_metadata_hook_for_test(&file, |path| {
             fixture::write_repeated_bytes(path, b"x", MAX_REPLACE_FILE_BYTES + 1);
         });
 
@@ -2339,6 +2407,137 @@ mod tests {
                 .expect("grown target facts")
                 .byte_size,
             MAX_REPLACE_FILE_BYTES + 1
+        );
+    }
+
+    #[test]
+    fn undo_hooks_fire_only_for_their_own_target_across_interleaved_undos() {
+        let dir = tempdir().expect("undo hook isolation tempdir");
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        fixture::write_text(&first, "after\n");
+        fixture::write_text(&second, "after\n");
+        let fired = Arc::new(Mutex::new(Vec::new()));
+
+        let first_recorder = Arc::clone(&fired);
+        let _first_guard = register_undo_after_metadata_hook_for_test(&first, move |path| {
+            first_recorder
+                .lock()
+                .expect("record first hook")
+                .push(path.to_path_buf());
+        });
+        let second_recorder = Arc::clone(&fired);
+        let _second_guard = register_undo_after_metadata_hook_for_test(&second, move |path| {
+            second_recorder
+                .lock()
+                .expect("record second hook")
+                .push(path.to_path_buf());
+        });
+
+        // Undo the second target first: a single-slot seam would let this
+        // operation steal and consume the first target's hook.
+        let mut second_backup = ReplaceUndoBackup::new();
+        second_backup.insert(
+            second.clone(),
+            ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+        );
+        let second_outcome = undo_replacements(&second_backup);
+        assert_eq!(second_outcome.restored_count(), 1);
+        assert_eq!(
+            fired.lock().expect("fired after second undo").as_slice(),
+            std::slice::from_ref(&second)
+        );
+        assert!(undo_after_metadata_hook_is_registered_for_test(&first));
+        assert!(!undo_after_metadata_hook_is_registered_for_test(&second));
+
+        let mut first_backup = ReplaceUndoBackup::new();
+        first_backup.insert(
+            first.clone(),
+            ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+        );
+        let first_outcome = undo_replacements(&first_backup);
+        assert_eq!(first_outcome.restored_count(), 1);
+        assert_eq!(
+            fired.lock().expect("fired after both undos").as_slice(),
+            &[second, first.clone()]
+        );
+        assert!(!undo_after_metadata_hook_is_registered_for_test(&first));
+    }
+
+    #[test]
+    fn parallel_undo_operations_consume_only_their_own_target_hooks() {
+        let dir = tempdir().expect("parallel undo hooks tempdir");
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let mut targets = Vec::new();
+        let mut guards = Vec::new();
+        for index in 0..8 {
+            let target = dir.path().join(format!("target-{index}.txt"));
+            fixture::write_text(&target, "after\n");
+            let recorder = Arc::clone(&fired);
+            guards.push(register_undo_after_metadata_hook_for_test(
+                &target,
+                move |path| {
+                    recorder
+                        .lock()
+                        .expect("record parallel hook")
+                        .push(path.to_path_buf());
+                },
+            ));
+            targets.push(target);
+        }
+
+        std::thread::scope(|scope| {
+            for target in &targets {
+                scope.spawn(move || {
+                    let mut backup = ReplaceUndoBackup::new();
+                    backup.insert(
+                        target.clone(),
+                        ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+                    );
+                    let outcome = undo_replacements(&backup);
+                    assert_eq!(outcome.restored_count(), 1);
+                });
+            }
+        });
+
+        let mut fired_paths = fired.lock().expect("parallel fired paths").clone();
+        fired_paths.sort();
+        assert_eq!(fired_paths, targets);
+        for target in &targets {
+            assert!(!undo_after_metadata_hook_is_registered_for_test(target));
+        }
+        eprintln!(
+            "replace-undo-hook-isolation-evidence targets={} fired={} leaked=0",
+            targets.len(),
+            fired_paths.len()
+        );
+        drop(guards);
+    }
+
+    #[test]
+    fn dropped_hook_guard_removes_unconsumed_registration() {
+        let dir = tempdir().expect("hook guard cleanup tempdir");
+        let target = dir.path().join("unconsumed.txt");
+        fixture::write_text(&target, "after\n");
+        let fired = Arc::new(AtomicBool::new(false));
+        let hook_fired = Arc::clone(&fired);
+        let guard = register_undo_after_metadata_hook_for_test(&target, move |_| {
+            hook_fired.store(true, Ordering::SeqCst);
+        });
+        assert!(undo_after_metadata_hook_is_registered_for_test(&target));
+        drop(guard);
+        assert!(!undo_after_metadata_hook_is_registered_for_test(&target));
+
+        let mut backup = ReplaceUndoBackup::new();
+        backup.insert(
+            target,
+            ReplaceUndoEntry::new(b"before\n".to_vec(), b"after\n".to_vec()),
+        );
+        let outcome = undo_replacements(&backup);
+        assert_eq!(outcome.restored_count(), 1);
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "a dropped guard's hook must never fire"
         );
     }
 

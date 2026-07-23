@@ -190,6 +190,7 @@ repo_root = Path(sys.argv[4]).resolve()
 assertions_dir = root / "assertions"
 sys.path.insert(0, str(repo_root / "scripts"))
 from accessibility_source_fingerprint import source_fingerprint
+from accessibility_warning_allowlist import warning_line_is_allowlisted
 
 def rel(path: Path) -> str:
     try:
@@ -206,14 +207,6 @@ manifests = sorted(assertions_dir.glob("*-manifest.json"))
 screenshots = sorted(root.glob("*.png"))
 warning_path = root / "warnings.txt"
 warning_lines = lines(warning_path)
-
-def warning_line_is_allowlisted(line: str) -> bool:
-    if line.startswith("Gdk-Message: ") and line.endswith("Error reading events from display: Broken pipe"):
-        return True
-    return (
-        "ERROR lushtext_core::ui::editor_page::load_save: Failed to read " in line
-        and "unreadable-load-target.txt: Permission denied" in line
-    )
 
 matrix_rows = []
 for manifest_path in manifests:
@@ -1753,20 +1746,15 @@ if ((RUN_CASE_COUNT == 0)); then
 fi
 
 collect_accessibility_warnings "$WARNINGS_OUTPUT"
-if /usr/bin/python3 - "$WARNINGS_OUTPUT" "$ARTIFACT_DIR/assertions/unexpected-warnings.txt" <<'PY'
+if /usr/bin/python3 - "$WARNINGS_OUTPUT" "$ARTIFACT_DIR/assertions/unexpected-warnings.txt" "$REPO_ROOT" <<'PY'
 import sys
 from pathlib import Path
 
 warnings_path = Path(sys.argv[1])
 unexpected_path = Path(sys.argv[2])
-
-def warning_line_is_allowlisted(line: str) -> bool:
-    if line.startswith("Gdk-Message: ") and line.endswith("Error reading events from display: Broken pipe"):
-        return True
-    return (
-        "ERROR lushtext_core::ui::editor_page::load_save: Failed to read " in line
-        and "unreadable-load-target.txt: Permission denied" in line
-    )
+repo_root = Path(sys.argv[3]).resolve()
+sys.path.insert(0, str(repo_root / "scripts"))
+from accessibility_warning_allowlist import warning_line_is_allowlisted
 
 lines = warnings_path.read_text(encoding="utf-8", errors="replace").splitlines()
 unexpected = [line for line in lines if not warning_line_is_allowlisted(line)]

@@ -63,6 +63,27 @@ pub fn prefix_bytes(path: &Path, byte_limit: usize) -> std::io::Result<Vec<u8>> 
     sys::read_prefix(path, byte_limit)
 }
 
+/// Read at most `byte_limit` prefix bytes with cooperative cancellation.
+///
+/// Unlike [`bounded_bytes`], reaching `byte_limit` is a successful truncated
+/// prefix rather than an oversize failure, so preview flows can render a
+/// bounded excerpt of a larger file. Cancellation is checked between fixed-size
+/// read chunks.
+///
+/// # Errors
+///
+/// Returns a typed cancellation or I/O failure.
+pub fn prefix_bytes_cancellable<F>(
+    path: &Path,
+    byte_limit: usize,
+    cancelled: F,
+) -> Result<Vec<u8>, BoundedFileReadError>
+where
+    F: FnMut() -> bool,
+{
+    sys::read_prefix_cancellable(path, byte_limit, cancelled)
+}
+
 /// Stream bytes with a hard limit plus one-byte oversize sentinel.
 ///
 /// The returned allocation never grows beyond `byte_limit`; the backend reads

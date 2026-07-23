@@ -187,22 +187,8 @@ impl WorkspaceSearchTraversalPlan {
         traversal_index: usize,
         walked_path: &Path,
     ) -> Option<&WorkspaceSearchDisplayRoot> {
-        let traversal = self.traversal_roots.get(traversal_index)?;
-        let relative = walked_path.strip_prefix(&traversal.scan_path).ok()?;
-        let canonical_candidate = traversal
-            .canonical_path
-            .as_ref()
-            .map(|root| root.join(relative));
-
-        self.display_roots.iter().find(|display| {
-            match (
-                display.canonical_path.as_ref(),
-                canonical_candidate.as_ref(),
-            ) {
-                (Some(root), Some(candidate)) => candidate.starts_with(root),
-                _ => walked_path.starts_with(&display.configured_path),
-            }
-        })
+        let canonical_candidate = self.canonical_candidate(traversal_index, walked_path)?;
+        self.display_owner(walked_path, canonical_candidate.as_deref())
     }
 
     /// Return a display-relative path under the first configured owner.
@@ -212,13 +198,8 @@ impl WorkspaceSearchTraversalPlan {
         traversal_index: usize,
         walked_path: &Path,
     ) -> Option<PathBuf> {
-        let traversal = self.traversal_roots.get(traversal_index)?;
-        let relative = walked_path.strip_prefix(&traversal.scan_path).ok()?;
-        let canonical_candidate = traversal
-            .canonical_path
-            .as_ref()
-            .map(|root| root.join(relative));
-        let display = self.display_owner_for_walked_path(traversal_index, walked_path)?;
+        let canonical_candidate = self.canonical_candidate(traversal_index, walked_path)?;
+        let display = self.display_owner(walked_path, canonical_candidate.as_deref())?;
         match (display.canonical_path.as_ref(), canonical_candidate) {
             (Some(root), Some(candidate)) => {
                 candidate.strip_prefix(root).ok().map(Path::to_path_buf)
@@ -228,6 +209,38 @@ impl WorkspaceSearchTraversalPlan {
                 .ok()
                 .map(Path::to_path_buf),
         }
+    }
+
+    /// Project one walked path into its traversal root's canonical namespace.
+    ///
+    /// The outer `Option` is traversal-membership failure; the inner value is
+    /// `None` when the traversal root itself has no canonical identity.
+    fn canonical_candidate(
+        &self,
+        traversal_index: usize,
+        walked_path: &Path,
+    ) -> Option<Option<PathBuf>> {
+        let traversal = self.traversal_roots.get(traversal_index)?;
+        let relative = walked_path.strip_prefix(&traversal.scan_path).ok()?;
+        Some(
+            traversal
+                .canonical_path
+                .as_ref()
+                .map(|root| root.join(relative)),
+        )
+    }
+
+    fn display_owner(
+        &self,
+        walked_path: &Path,
+        canonical_candidate: Option<&Path>,
+    ) -> Option<&WorkspaceSearchDisplayRoot> {
+        self.display_roots.iter().find(|display| {
+            match (display.canonical_path.as_ref(), canonical_candidate) {
+                (Some(root), Some(candidate)) => candidate.starts_with(root),
+                _ => walked_path.starts_with(&display.configured_path),
+            }
+        })
     }
 }
 
