@@ -609,6 +609,16 @@ These findings are inputs to the convention section of this change. They are
 recorded here because they change what the convention must say, and a later
 session must not have to rediscover them.
 
+**Disposition after section 2.** Findings 1, 2, 3, and 4 produced spec amendments:
+the established seam shape must be reused rather than paralleled, evidence surfaces
+share one visibility rule and fold in pre-existing typed observation, a workflow
+with no qualifying bundle counts as a complete row, and workflow code asserts zero
+argument-count suppressions. Findings 5 and 8 are definitional and live in
+[Measurement Definitions](#measurement-definitions) and the
+[Policy Module Census](#policy-module-census). Findings 6 and 7 are absorbed into
+this matrix's risk tiers and migration slots; the programme record written in
+section 7 must carry them forward rather than restating the superseded figures.
+
 1. **The `Ticket` + `Facts` + `*_is_current` idiom already exists** in three
    workflows. The convention should name and require this existing idiom rather
    than introduce a differently shaped value object.
@@ -669,6 +679,52 @@ attributed to a matrix row or to the list above; the remaining 3 are the crate
 infrastructure files named above. Layer totals at census time: `ui/` 67,200
 lines across 104 files, `model/` 11,817 across 29 files, `services/` 47,273
 across 61 files.
+
+## Settled Conventions
+
+These four conventions were settled from the census evidence above and are recorded
+normatively in the capability specs. A later change that wants to revisit one must
+amend the spec and re-migrate every already-migrated row in the same change.
+
+### Role file names
+
+| Role | File name | Notes |
+| --- | --- | --- |
+| Facade | the workflow's public module surface | narrates stages, delegates everything |
+| Pure policy | `policy.rs` | one per workflow; no GTK-family imports |
+| Evidence | `evidence.rs` | one per workflow; narrowest visibility its readers need |
+| Coordination | bounded set of job names: `admission`, `execution`, `retirement`, `watch` | a workflow may own more than one |
+
+The convention deliberately does **not** fix a single coordination file name. The
+census found `runtime` already naming three different jobs across four files, and
+`ui/editor_page/` and `ui/window/` host 8 and 12 workflows respectively, so one fixed
+name would force a subdirectory-per-workflow restructuring of roughly 20 workflows.
+Role names are scoped within a shared directory instead. A coordination job that no
+listed role name describes requires a spec amendment to add the name.
+
+### Facade size budget
+
+A budget is required, but the number is **not yet set**. The first migration change
+measures its facade and sets the number; every later migration is held to it. Chosen
+this way because no measurement supports a number today: the smallest existing thin
+public surface is 247 lines, the exemplar's own `mod.rs` is 578 for 6 inversions, and
+facades must narrate 3 to 7 inversions.
+
+### Argument-count suppressions
+
+The residual sweep asserts **zero** `#[expect(clippy::too_many_arguments)]` in
+workflow adapter and coordination code, with no allowlist. Reachable because
+Clippy's threshold is 7, only two functions in the crate have 8 or more parameters,
+and the only one in workflow code is the save seam that `QueuedSaveTicket` removes.
+Domain catalog construction in `model/` is outside the workflow-seam rule.
+
+### Cross-cutting eligibility
+
+Relocation eligibility is decided by the number of **owning workflows**, not
+consuming files. Pure policy whose only consumer is its own coordination adapter is
+cross-cutting when that adapter serves several workflows. This is what keeps
+`plain_disposal`, `buffer_snapshot`, `buffer_replacement`, `editor_memory`, and
+`migration_ledger` in shared locations.
 
 ## Completion Rule
 

@@ -34,15 +34,15 @@
 
 ## 2. Convention: settle the shape the census revealed
 
-- [ ] 2.1 Reconcile the two new capability specs against the census. If the census
+- [x] 2.1 Reconcile the two new capability specs against the census. If the census
       contradicts a requirement, amend the spec before any code moves.
-- [ ] 2.2 Settle the coordination role file name (fixed name versus bounded set) from
+- [x] 2.2 Settle the coordination role file name (fixed name versus bounded set) from
       what the census found across workflows, and record the decision in the
       capability spec (design.md open question).
-- [ ] 2.3 Settle whether the narrative facade gets a normative line budget, or
+- [x] 2.3 Settle whether the narrative facade gets a normative line budget, or
       whether the exemplar measures it first and a later change sets the number
       (design.md open question).
-- [ ] 2.4 Settle whether the residual sweep can assert zero
+- [x] 2.4 Settle whether the residual sweep can assert zero
       `#[expect(clippy::too_many_arguments)]` in workflow code or needs a bounded
       allowlist for builder-style row constructors such as
       `ui/window/encoding.rs::append_choice_row` (design.md open question).
