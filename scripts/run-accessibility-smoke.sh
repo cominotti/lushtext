@@ -1151,10 +1151,17 @@ fi
 if case_selected "markdown-preview"; then
 DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$REPO_ROOT/samples/markdown-test.md"
+# "Rendered Markdown content" is the text view's eager accessible name (present
+# from construction), so waiting on it alone does not gate on a completed render.
+# Opening the file loads its buffer asynchronously and the preview re-renders
+# through the debounced buffer-changed path, so also wait for a render-derived
+# anchor ("Markdown table" only exists after the render pass builds it) before
+# asserting rendered text length.
 run_accessibility_capture "markdown-preview" \
     --window-bool-action set-preview-mode=true \
     --wait-predicate visual-geometry-settled \
-    --wait-atspi-text "Rendered Markdown content"
+    --wait-atspi-text "Rendered Markdown content" \
+    --wait-atspi-text "Markdown table"
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor "markdown-preview" "markdown preview" "document text" "Markdown preview"
 assert_anchor "markdown-preview" "markdown preview" "scroll pane" "Markdown preview scroll area"
@@ -1171,9 +1178,12 @@ fi
 if case_selected "preview-mode-transition"; then
 DEFAULT_FIXTURE="$FIXTURE"
 FIXTURE="$REPO_ROOT/samples/markdown-test.md"
+# Gate on render-derived content, not just the eager accessible name (see the
+# markdown-preview case above): the post-load re-render is debounced.
 run_accessibility_capture "preview-mode-transition" \
     --step window-bool-action:set-preview-mode=true \
-    --step wait-atspi-text:"Rendered Markdown content"
+    --step wait-atspi-text:"Rendered Markdown content" \
+    --step wait-atspi-text:"Markdown table"
 FIXTURE="$DEFAULT_FIXTURE"
 assert_anchor "preview-mode-transition" "markdown preview" "document text" "Markdown preview"
 assert_anchor "preview-mode-transition" "markdown preview" "scroll pane" "Markdown preview scroll area"

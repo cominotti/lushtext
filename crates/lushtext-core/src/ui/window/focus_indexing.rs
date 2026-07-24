@@ -723,10 +723,8 @@ impl LushtextWindow {
                             retained_bytes
                                 <= crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES
                         );
-                        let mut reservation = reservation;
-                        reservation.shrink_to(retained_bytes);
                         GuardedFileIndexBuildOutcome::Complete {
-                            index: reservation.own(index),
+                            index: reservation.shrink_to_and_own(retained_bytes, index),
                             metrics,
                         }
                     }

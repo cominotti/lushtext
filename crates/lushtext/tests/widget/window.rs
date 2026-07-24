@@ -9,7 +9,8 @@
 
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    fs_metadata, fs_mutate, fs_read, isolated_data_dir, test_application, wait_until,
+    fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, test_application,
+    wait_until,
 };
 use gio::prelude::{ActionExt, ActionGroupExt, ActionMapExt, ListModelExt, MenuModelExt};
 use glib::prelude::{Cast, IsA, ObjectExt, ToValue, ToVariant};
@@ -568,19 +569,6 @@ fn wait_for_startup_data_flow(window: &LushtextWindow) {
     wait_until(Duration::from_secs(10), || {
         window.imp().startup_data_flow.completed.get()
     });
-}
-
-fn present_window(window: &LushtextWindow) {
-    window.present();
-    // Window realization is a precondition, not the behavior under test, so give
-    // the headless compositor a generous budget to send the surface `configure`
-    // that yields a non-zero allocation. `wait_until` returns as soon as the size
-    // is real, so the larger ceiling only matters on a slow, loaded compositor and
-    // never costs time on the fast path.
-    wait_until(Duration::from_secs(5), || {
-        window.width() > 0 && window.height() > 0
-    });
-    flush_after_delay(Duration::from_millis(20));
 }
 
 fn action_enabled(window: &LushtextWindow, name: &str) -> bool {

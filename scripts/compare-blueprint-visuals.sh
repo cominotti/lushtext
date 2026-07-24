@@ -154,7 +154,7 @@ scan_visual_logs() {
         grep -E -i \
             '(Gtk|Gdk|GSK|Adwaita|Libadwaita|AT-SPI|accessibility).*(warning|critical|error)|GLib-GObject-CRITICAL|gtk_[a-z0-9_]+.*assertion|gdk_[a-z0-9_]+.*assertion' \
             "$log_path" \
-            | grep -E -v '^Gdk-Message: .*Error reading events from display: Broken pipe$' \
+            | /usr/bin/python3 "$REPO_ROOT/scripts/smoke_warning_classifiers.py" --drop-gdk-broken-pipe \
             >>"$matches" || true
     done
 

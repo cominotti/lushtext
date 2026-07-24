@@ -381,12 +381,6 @@ impl LushtextCommandPalette {
         self.imp().open_tabs.borrow().len()
     }
 
-    /// Number of cached note entries supplied by the window shell.
-    #[must_use]
-    pub fn note_source_count(&self) -> usize {
-        self.imp().note_entries.borrow().len()
-    }
-
     /// Number of queued mutations plus any active index-mutation worker.
     #[must_use]
     pub fn pending_index_update_count(&self) -> usize {

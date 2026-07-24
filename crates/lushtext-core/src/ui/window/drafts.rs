@@ -830,7 +830,7 @@ impl super::LushtextWindow {
         let terminal_ticket = ticket.clone();
         let accepted_body = Rc::new(RefCell::new(None));
         let accepted_body_for_terminal = Rc::clone(&accepted_body);
-        let request = BufferReplacementRequest::new_guarded(
+        let request = BufferReplacementRequest::new_guarded_returning_body_on_complete(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::DraftRecovery,
                 generation: ticket.dirty_generation,
@@ -862,10 +862,10 @@ impl super::LushtextWindow {
                 }
                 window.finish_draft_restore_tracking(tracking);
             },
-        )
-        .return_guarded_body_on_complete(move |body| {
-            accepted_body.borrow_mut().replace(body);
-        });
+            move |body| {
+                accepted_body.borrow_mut().replace(body);
+            },
+        );
         editor.replace_buffer_bounded(request);
     }
 
@@ -1233,14 +1233,6 @@ impl super::LushtextWindow {
     #[must_use]
     pub fn draft_restore_inflight_for_test(&self) -> bool {
         self.imp().drafts.restore_inflight_count.get() > 0
-    }
-
-    /// Cancel the active autosave snapshot to exercise retry semantics.
-    #[cfg(feature = "test-utils")]
-    pub fn cancel_draft_snapshot_for_test(&self) {
-        if let Some(cancellation) = self.imp().drafts.autosave_snapshot.borrow().as_ref() {
-            cancellation.cancel();
-        }
     }
 
     /// Schedule a short autosave after the first dirty edit in a clean cycle.

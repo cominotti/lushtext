@@ -11,6 +11,7 @@ use crate::services::recovery_metadata::{
     RecoveryLoad, RecoveryLoadConfig, RecoveryMetadataClass, load_enveloped_json_or_default,
     save_enveloped_json_path,
 };
+use crate::services::sync::lock_unpoisoned;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -74,17 +75,17 @@ pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
 /// per data directory so widget tests using isolated data homes do not interfere
 /// with each other.
 ///
+/// If an earlier ordered save panicked and poisoned the process-local ordering
+/// lock, this recovers the guard through [`lock_unpoisoned`] rather than
+/// panicking a second time, so a close-time session save cannot be lost to a
+/// prior panic. The generation map is rebuildable, so recovering it keeps
+/// ordering semantics correct for subsequent saves.
+///
 /// # Errors
 ///
 /// Returns an error if the session file cannot be serialized or written.
-///
-/// # Panics
-///
-/// Panics if an earlier panic poisoned the process-local session ordering lock.
 pub fn save_ordered(data_dir: &Path, session: &SessionData, generation: u64) -> Result<bool> {
-    let mut generations = ordered_session_saves()
-        .lock()
-        .expect("session save ordering lock poisoned");
+    let mut generations = lock_unpoisoned(ordered_session_saves());
     let accepted_generation = generations.get(data_dir).copied().unwrap_or(0);
     if generation < accepted_generation {
         return Ok(false);
@@ -269,6 +270,51 @@ mod tests {
 
         let loaded = load(dir.path()).expect("expected operation to succeed");
         assert_eq!(loaded.tabs[0].path, Some("/tmp/replacement.rs".into()));
+    }
+
+    #[test]
+    fn ordered_save_recovers_from_poisoned_lock() {
+        // Poison the process-local ordering lock by panicking while its guard is
+        // held. Under nextest (process-per-test) this global is fresh, so the
+        // poison cannot leak into sibling tests.
+        let poisoned = std::thread::spawn(|| {
+            let _guard = ordered_session_saves()
+                .lock()
+                .expect("uncontended lock acquire");
+            panic!("intentionally poison the ordering lock");
+        })
+        .join();
+        assert!(poisoned.is_err(), "helper thread should have panicked");
+        assert!(
+            ordered_session_saves().is_poisoned(),
+            "the ordering lock should now be poisoned"
+        );
+
+        // A close-time save after the poison must still complete and keep
+        // correct generation ordering instead of panicking a second time.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let newer = SessionData {
+            tabs: vec![tab("/tmp/newer.rs", 2)],
+            active_tab_index: Some(0),
+        };
+        let older = SessionData {
+            tabs: vec![tab("/tmp/older.rs", 1)],
+            active_tab_index: Some(0),
+        };
+
+        assert!(
+            save_ordered(dir.path(), &newer, 2)
+                .expect("ordered save should complete despite the poisoned lock"),
+            "newer save should be accepted after poison recovery"
+        );
+        assert!(
+            !save_ordered(dir.path(), &older, 1)
+                .expect("ordered save should complete despite the poisoned lock"),
+            "older save should still be ignored after poison recovery"
+        );
+
+        let loaded = load(dir.path()).expect("expected operation to succeed");
+        assert_eq!(loaded.tabs[0].path, Some("/tmp/newer.rs".into()));
     }
 
     #[test]

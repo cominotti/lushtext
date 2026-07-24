@@ -1088,38 +1088,64 @@ fn collect_files_bounded(
     *traversal.visited_charge = traversal.visited_charge.saturating_add(root_visited_charge);
     traversal.visited_directories.insert(canonical_directory);
 
-    let root_path = dir.to_path_buf();
-    let mut pending = Vec::new();
+    // Scope-own the pending-stack scratch: whatever graph/shell scratch remains
+    // charged when the traversal loop exits — for any reason — is released
+    // exactly once here, instead of on each of the loop's early-exit paths.
+    // (`release_scratch` never changes the peak, so this single release is
+    // accounting-equivalent to the per-exit releases it replaces.)
+    let mut pending: Vec<(PathBuf, u32)> = Vec::new();
     let mut pending_shell_charge = 0u64;
     let mut pending_graph_charge = 0u64;
-    if !ensure_scratch_vec_slot(&mut pending, traversal.ledger, &mut pending_shell_charge) {
+    let result = collect_pending_directories(
+        dir,
+        workspace_folder,
+        traversal,
+        &mut pending,
+        &mut pending_shell_charge,
+        &mut pending_graph_charge,
+    );
+    traversal
+        .ledger
+        .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
+    result
+}
+
+/// Run the pending-directory traversal loop.
+///
+/// Every exit path here is a bare `return`; the pending-stack scratch
+/// (`pending_graph_charge` + `pending_shell_charge`) is released once by the
+/// scope owner [`collect_files_bounded`]. The per-directory scan scratch is
+/// released at a single point per iteration, whatever exit the entry loop takes.
+fn collect_pending_directories(
+    root: &Path,
+    workspace_folder: &Arc<PathBuf>,
+    traversal: &mut FileIndexTraversal<'_>,
+    pending: &mut Vec<(PathBuf, u32)>,
+    pending_shell_charge: &mut u64,
+    pending_graph_charge: &mut u64,
+) -> bool {
+    if !ensure_scratch_vec_slot(pending, traversal.ledger, pending_shell_charge) {
         traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
         return true;
     }
+    let root_path = root.to_path_buf();
     let root_pending_charge = owned_path_bytes(&root_path);
     if !traversal.ledger.try_charge_scratch(root_pending_charge) {
-        traversal.ledger.release_scratch(pending_shell_charge);
         traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
         return true;
     }
-    pending_graph_charge = pending_graph_charge.saturating_add(root_pending_charge);
+    *pending_graph_charge = pending_graph_charge.saturating_add(root_pending_charge);
     pending.push((root_path, 0u32));
 
     while let Some((dir, depth)) = pending.pop() {
         let popped_charge = owned_path_bytes(&dir);
-        pending_graph_charge = pending_graph_charge.saturating_sub(popped_charge);
+        *pending_graph_charge = pending_graph_charge.saturating_sub(popped_charge);
         traversal.ledger.release_scratch(popped_charge);
         if traversal.cancellation.is_cancelled() {
-            traversal
-                .ledger
-                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return false;
         }
         if traversal.out.len() >= traversal.file_limit {
             traversal.metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
-            traversal
-                .ledger
-                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return true;
         }
 
@@ -1140,9 +1166,6 @@ fn collect_files_bounded(
             .observe_scratch_peak(scan.peak_retained_bytes)
         {
             traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
-            traversal
-                .ledger
-                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return true;
         }
         traversal.metrics.scanned_directories =
@@ -1156,9 +1179,6 @@ fn collect_files_bounded(
             .peak_retained_directory_entries
             .max(pending.len().saturating_add(scan.peak_retained_entries));
         if scan.cancelled {
-            traversal
-                .ledger
-                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return false;
         }
         if scan.truncated {
@@ -1169,29 +1189,24 @@ fn collect_files_bounded(
         }
         if !traversal.ledger.try_charge_scratch(scan.retained_bytes) {
             traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
-            traversal
-                .ledger
-                .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
             return true;
         }
         let scan_charge = scan.retained_bytes;
         let scan_byte_truncated = scan.byte_truncated;
 
+        // The entry loop signals a whole-traversal exit through `early_return`
+        // rather than releasing scan scratch on each exit path: `scan_charge`
+        // is released once below, whatever exit the loop takes.
+        let mut early_return: Option<bool> = None;
         for entry in scan.entries {
             if traversal.cancellation.is_cancelled() {
-                traversal.ledger.release_scratch(scan_charge);
-                traversal
-                    .ledger
-                    .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
-                return false;
+                early_return = Some(false);
+                break;
             }
             if traversal.out.len() >= traversal.file_limit {
                 traversal.metrics.truncation = Some(FileIndexTruncationReason::FileLimit);
-                traversal.ledger.release_scratch(scan_charge);
-                traversal
-                    .ledger
-                    .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
-                return true;
+                early_return = Some(true);
+                break;
             }
             if entry.is_dir {
                 if is_ignored_index_dir(&entry.path) {
@@ -1227,11 +1242,7 @@ fn collect_files_bounded(
                 }
                 *traversal.visited_charge = traversal.visited_charge.saturating_add(visited_charge);
                 traversal.visited_directories.insert(canonical);
-                if !ensure_scratch_vec_slot(
-                    &mut pending,
-                    traversal.ledger,
-                    &mut pending_shell_charge,
-                ) {
+                if !ensure_scratch_vec_slot(pending, traversal.ledger, pending_shell_charge) {
                     traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
                     break;
                 }
@@ -1240,7 +1251,7 @@ fn collect_files_bounded(
                     traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
                     break;
                 }
-                pending_graph_charge = pending_graph_charge.saturating_add(pending_charge);
+                *pending_graph_charge = pending_graph_charge.saturating_add(pending_charge);
                 pending.push((entry.path, child_depth));
             } else {
                 let file = indexed_file_from_path(entry.path, Arc::clone(workspace_folder));
@@ -1278,6 +1289,9 @@ fn collect_files_bounded(
             }
         }
         traversal.ledger.release_scratch(scan_charge);
+        if let Some(result) = early_return {
+            return result;
+        }
         if scan_byte_truncated {
             traversal.metrics.truncation = Some(FileIndexTruncationReason::BuildByteLimit);
         }
@@ -1289,9 +1303,6 @@ fn collect_files_bounded(
             break;
         }
     }
-    traversal
-        .ledger
-        .release_scratch(pending_graph_charge.saturating_add(pending_shell_charge));
     true
 }
 
@@ -1426,6 +1437,148 @@ mod build_ledger_tests {
         assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
         assert!(ledger.peak_retained_bytes() <= MAX_FILE_INDEX_RETAINED_BYTES);
         assert!(index.retained_byte_weight() <= MAX_FILE_INDEX_RETAINED_BYTES);
+    }
+
+    /// Drive the traversal on a real fixture and return the ledger plus the
+    /// scratch the *caller* (not the traversal) still owns after it returns.
+    fn run_traversal(
+        root: &Path,
+        build_byte_limit: u64,
+        file_limit: usize,
+        cancellation: &PaletteSearchCancellation,
+    ) -> (bool, FileIndexBuildLedger, Vec<IndexedFile>, u64, u64) {
+        let mut ledger = FileIndexBuildLedger::with_build_limit(build_byte_limit);
+        // Pre-size `out` so `ensure_installed_vec_slot` never charges an
+        // incremental installed shell, keeping the leak assertion exact.
+        let mut files = Vec::with_capacity(1024);
+        let mut visited_directories = HashSet::new();
+        let mut canonical_files = HashSet::new();
+        let mut metrics = FileIndexBuildMetrics::default();
+        let mut visited_charge = 0u64;
+        let mut canonical_files_charge = 0u64;
+        let canonical_folder = fs_metadata::canonical_path(root).expect("canonical root");
+        let folder_arc = Arc::new(root.to_path_buf());
+        let completed = {
+            let mut traversal = FileIndexTraversal {
+                out: &mut files,
+                visited_directories: &mut visited_directories,
+                canonical_files: &mut canonical_files,
+                canonical_folder: &canonical_folder,
+                file_limit,
+                directory_limit: MAX_INDEXED_DIRECTORIES,
+                cancellation,
+                metrics: &mut metrics,
+                ledger: &mut ledger,
+                visited_charge: &mut visited_charge,
+                canonical_files_charge: &mut canonical_files_charge,
+            };
+            collect_files_bounded(root, &folder_arc, &mut traversal)
+        };
+        (
+            completed,
+            ledger,
+            files,
+            visited_charge,
+            canonical_files_charge,
+        )
+    }
+
+    /// After the traversal returns for any reason, releasing the caller-owned
+    /// scratch (`visited`/`canonical`) and the installed graph weight of every
+    /// admitted file must bring the build ledger back to zero. Any residual
+    /// means pending-stack or scan scratch leaked on that exit path.
+    fn assert_scratch_fully_released(
+        mut ledger: FileIndexBuildLedger,
+        files: &[IndexedFile],
+        visited_charge: u64,
+        canonical_files_charge: u64,
+    ) {
+        ledger.release_scratch(visited_charge.saturating_add(canonical_files_charge));
+        let installed: u64 = files.iter().map(indexed_file_graph_weight).sum();
+        ledger.release_installed(installed);
+        assert_eq!(
+            ledger.current_build_bytes, 0,
+            "pending-stack or scan scratch leaked on the traversal's exit path"
+        );
+    }
+
+    #[test]
+    fn traversal_normal_completion_releases_all_scratch_and_skips_ignored_dirs() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        crate::services::filesystem::fixture::write_text(&dir.path().join("a.rs"), "fn a() {}");
+        crate::services::filesystem::fixture::write_text(&dir.path().join("b.md"), "# b");
+        crate::services::filesystem::fixture::create_dir_all(&dir.path().join("nested"));
+        crate::services::filesystem::fixture::write_text(
+            &dir.path().join("nested/c.toml"),
+            "k = 1",
+        );
+        // A filtered batch: an ignored directory whose contents must be skipped.
+        crate::services::filesystem::fixture::create_dir_all(&dir.path().join(".git"));
+        crate::services::filesystem::fixture::write_text(&dir.path().join(".git/config"), "x");
+
+        let cancellation = PaletteSearchCancellation::default();
+        let (completed, ledger, files, visited, canonical) = run_traversal(
+            dir.path(),
+            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+            MAX_INDEXED_FILES,
+            &cancellation,
+        );
+
+        assert!(completed, "an uncancelled traversal reports completion");
+        assert!(
+            files.iter().all(|file| !file
+                .path
+                .components()
+                .any(|component| component.as_os_str() == ".git")),
+            "ignored directory contents must not be indexed"
+        );
+        assert_eq!(files.len(), 3, "three non-ignored files are indexed");
+        assert_scratch_fully_released(ledger, &files, visited, canonical);
+    }
+
+    #[test]
+    fn traversal_budget_rejection_releases_all_scratch() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        for index in 0..8 {
+            crate::services::filesystem::fixture::write_text(
+                &dir.path().join(format!("file-{index}.rs")),
+                "fn placeholder() {}",
+            );
+        }
+
+        // A build-byte limit large enough to admit the root scratch but small
+        // enough to reject partway through the scan, exercising a mid-loop
+        // BuildByteLimit exit.
+        let cancellation = PaletteSearchCancellation::default();
+        let (_completed, ledger, files, visited, canonical) =
+            run_traversal(dir.path(), 512, MAX_INDEXED_FILES, &cancellation);
+
+        assert_scratch_fully_released(ledger, &files, visited, canonical);
+    }
+
+    #[test]
+    fn traversal_cancellation_releases_all_scratch() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        crate::services::filesystem::fixture::write_text(&dir.path().join("a.rs"), "fn a() {}");
+        crate::services::filesystem::fixture::create_dir_all(&dir.path().join("nested"));
+        crate::services::filesystem::fixture::write_text(
+            &dir.path().join("nested/b.rs"),
+            "fn b() {}",
+        );
+
+        // Supersession/cancellation: a pre-cancelled token exits the loop the
+        // first time it is observed.
+        let cancellation = PaletteSearchCancellation::default();
+        let _ = cancellation.cancel();
+        let (completed, ledger, files, visited, canonical) = run_traversal(
+            dir.path(),
+            MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
+            MAX_INDEXED_FILES,
+            &cancellation,
+        );
+
+        assert!(!completed, "a cancelled traversal reports non-completion");
+        assert_scratch_fully_released(ledger, &files, visited, canonical);
     }
 
     #[cfg(feature = "property-tests")]

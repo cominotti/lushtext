@@ -87,7 +87,7 @@ enum GuardedLocalHistoryPreviewLoadOutcome {
 
 fn guard_local_history_preview_on_worker(
     result: anyhow::Result<local_history_service::LocalHistoryPreviewLoadOutcome>,
-    mut reservation: crate::ui::plain_disposal::DisposalReservation,
+    reservation: crate::ui::plain_disposal::DisposalReservation,
 ) -> anyhow::Result<GuardedLocalHistoryPreviewLoadOutcome> {
     match result? {
         local_history_service::LocalHistoryPreviewLoadOutcome::Loaded(snapshot) => {
@@ -99,9 +99,8 @@ fn guard_local_history_preview_on_worker(
             )
             .unwrap_or(u64::MAX);
             debug_assert!(weight <= LOCAL_HISTORY_PREVIEW_RESERVATION_BYTES);
-            reservation.shrink_to(weight);
             Ok(GuardedLocalHistoryPreviewLoadOutcome::Loaded(
-                reservation.own(snapshot),
+                reservation.shrink_to_and_own(weight, snapshot),
             ))
         }
         local_history_service::LocalHistoryPreviewLoadOutcome::Missing => {
@@ -462,7 +461,7 @@ impl LushtextWindow {
         let terminal_editor = editor.downgrade();
         let cancelled_editor = editor.downgrade();
         let window_weak = self.downgrade();
-        let request = BufferReplacementRequest::new_guarded(
+        let request = BufferReplacementRequest::new_guarded_returning_body_on_cancel(
             BufferReplacementTicket {
                 workflow: BufferReplacementWorkflow::LocalHistoryUndo,
                 generation: ticket.edit_generation,
@@ -500,17 +499,17 @@ impl LushtextWindow {
                 window.publish_status_message("Local-history restore undone", MessageKind::Info);
                 window.refresh_status_bar();
             },
-        )
-        .return_guarded_body_on_cancel(move |body| {
-            if let Some(editor) = cancelled_editor.upgrade()
-                && ticket.is_current(&editor)
-            {
-                editor.set_local_history_restore_undo_text(Some(body));
-                editor.set_pending_warning_action(Some(
-                    PendingWarningAction::UndoLocalHistoryRestore,
-                ));
-            }
-        });
+            move |body| {
+                if let Some(editor) = cancelled_editor.upgrade()
+                    && ticket.is_current(&editor)
+                {
+                    editor.set_local_history_restore_undo_text(Some(body));
+                    editor.set_pending_warning_action(Some(
+                        PendingWarningAction::UndoLocalHistoryRestore,
+                    ));
+                }
+            },
+        );
         editor.replace_buffer_bounded(request);
     }
 
@@ -908,7 +907,7 @@ impl LushtextWindow {
                         .restore_snapshot
                         .map_preserving_reservation(|snapshot| snapshot.text);
                     state.browser.editor.replace_buffer_bounded(
-                        BufferReplacementRequest::new_guarded(
+                        BufferReplacementRequest::new_guarded_returning_body_on_cancel(
                             BufferReplacementTicket {
                                 workflow: BufferReplacementWorkflow::LocalHistoryRestore,
                                 generation: ticket.edit_generation,
@@ -967,15 +966,15 @@ impl LushtextWindow {
                                 browser.window.refresh_status_bar();
                                 browser.dialog.close();
                             },
-                        )
-                        .return_guarded_body_on_cancel(move |text| {
-                            cancelled_browser.loaded_snapshot.replace(Some(
-                                text.map_preserving_reservation(|text| LocalHistorySnapshot {
-                                    meta: restore_meta,
-                                    text,
-                                }),
-                            ));
-                        }),
+                            move |text| {
+                                cancelled_browser.loaded_snapshot.replace(Some(
+                                    text.map_preserving_reservation(|text| LocalHistorySnapshot {
+                                        meta: restore_meta,
+                                        text,
+                                    }),
+                                ));
+                            },
+                        ),
                     );
                 },
             );

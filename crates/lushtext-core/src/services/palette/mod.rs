@@ -6,6 +6,7 @@
 //! split by workflow so file indexing, command registry maintenance, and fuzzy
 //! scoring can evolve independently without one giant service file.
 
+mod charge_scope;
 mod commands;
 mod fuzzy;
 mod grouped;

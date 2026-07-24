@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::model::content_search::SearchQuerySpec;
+use crate::services::single_flight::SingleFlightCoordinator;
 
 /// Compact latest query retained while one active search disconnects.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,52 +38,61 @@ pub struct WorkspaceSearchFlightSnapshot {
 }
 
 /// At most one active search plus one replaceable latest pending request.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+///
+/// A thin wrapper over the shared [`SingleFlightCoordinator`] that adapts the
+/// generic submit/finish results into workspace-search evidence: workspace
+/// search does not use the coordinator's cancellation token (the content-search
+/// walker owns cancellation), and `submit` reports the superseded generation
+/// rather than dropping it.
+#[derive(Debug, Default)]
 pub struct WorkspaceSearchFlight {
-    next_generation: u64,
-    active_generation: Option<u64>,
-    pending: Option<WorkspaceSearchRequest>,
+    coordinator: SingleFlightCoordinator<WorkspaceSearchRequest>,
 }
 
 impl WorkspaceSearchFlight {
     /// Start immediately when idle, otherwise replace the compact pending query.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the shared coordinator rejects a submission while
+    /// reporting no active generation, which its one-active/one-latest contract
+    /// makes impossible.
     pub fn submit(&mut self, request: WorkspaceSearchRequest) -> WorkspaceSearchSubmission {
-        if let Some(active_generation) = self.active_generation {
-            self.pending = Some(request);
-            return WorkspaceSearchSubmission::Supersede { active_generation };
+        let active_generation = self.coordinator.active_generation();
+        match self.coordinator.submit(request) {
+            Some(start) => WorkspaceSearchSubmission::Start(WorkspaceSearchStart {
+                generation: start.generation,
+                request: start.request,
+            }),
+            None => WorkspaceSearchSubmission::Supersede {
+                active_generation: active_generation
+                    .expect("a superseded submission always has an active generation"),
+            },
         }
-        WorkspaceSearchSubmission::Start(self.start(request))
     }
 
     /// Finish only the current generation and admit the retained latest query.
     pub fn finish(&mut self, generation: u64) -> Option<WorkspaceSearchStart> {
-        if self.active_generation != Some(generation) {
-            return None;
-        }
-        self.active_generation = None;
-        self.pending.take().map(|request| self.start(request))
+        self.coordinator
+            .finish(generation)
+            .map(|start| WorkspaceSearchStart {
+                generation: start.generation,
+                request: start.request,
+            })
     }
 
     /// Cancel pending ownership while the active generation drains externally.
     pub fn clear_pending(&mut self) {
-        self.pending = None;
+        self.coordinator.clear_pending();
     }
 
     #[must_use]
     pub fn snapshot(&self) -> WorkspaceSearchFlightSnapshot {
+        let snapshot = self.coordinator.snapshot();
         WorkspaceSearchFlightSnapshot {
-            active: usize::from(self.active_generation.is_some()),
-            pending: usize::from(self.pending.is_some()),
-            active_generation: self.active_generation,
-        }
-    }
-
-    fn start(&mut self, request: WorkspaceSearchRequest) -> WorkspaceSearchStart {
-        self.next_generation = self.next_generation.wrapping_add(1);
-        self.active_generation = Some(self.next_generation);
-        WorkspaceSearchStart {
-            generation: self.next_generation,
-            request,
+            active: snapshot.active,
+            pending: snapshot.pending,
+            active_generation: self.coordinator.active_generation(),
         }
     }
 }

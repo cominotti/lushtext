@@ -323,8 +323,23 @@ pub(super) fn activate_bookmark_at_line(
     line: u32,
 ) -> Option<BookmarkRecord> {
     let bookmark = bookmark_at_line(editor, line)?;
-    if let Some(callback) = editor.imp().bookmarks.activated_callback.borrow().as_ref() {
+    // Take the callback out to end the borrow before invoking, so a callback
+    // that re-enters registration cannot panic; restore it unless invocation
+    // registered a replacement.
+    let callback = editor
+        .imp()
+        .bookmarks
+        .activated_callback
+        .borrow_mut()
+        .take();
+    if let Some(callback) = callback {
         callback(bookmark.clone());
+        editor
+            .imp()
+            .bookmarks
+            .activated_callback
+            .borrow_mut()
+            .get_or_insert(callback);
     }
     Some(bookmark)
 }
@@ -423,8 +438,15 @@ pub(super) fn navigate_bookmark(
 /// Emit the bookmark-changed callback when one is registered.
 pub(super) fn emit_bookmarks_changed(editor: &LushtextEditorPage) {
     bump_bookmark_change_generation(editor);
-    if let Some(callback) = editor.imp().bookmarks.changed_callback.borrow().as_ref() {
+    let callback = editor.imp().bookmarks.changed_callback.borrow_mut().take();
+    if let Some(callback) = callback {
         callback();
+        editor
+            .imp()
+            .bookmarks
+            .changed_callback
+            .borrow_mut()
+            .get_or_insert(callback);
     }
     editor.schedule_minimap_refresh();
 }

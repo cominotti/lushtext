@@ -2,7 +2,9 @@
 
 //! Tests for the LushtextSidebar multi-workspace orchestrator.
 
-use crate::common::{ensure_gtk_init, fixture, flush_after_delay, flush_events, wait_until};
+use crate::common::{
+    ensure_gtk_init, fixture, flush_after_delay, flush_events, present_window, wait_until,
+};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::workspace::{WorkspaceConfig, WorkspaceId, WorkspacesFile};
@@ -399,11 +401,6 @@ fn test_update_tab_path_no_match_is_noop() {
 
     let page = window.imp().tab_view.nth_page(0);
     assert_eq!(page.title().as_str(), "keep.rs");
-}
-
-fn present_window(window: &LushtextWindow) {
-    window.present();
-    flush_events();
 }
 
 fn assert_tab_count(window: &LushtextWindow, expected: i32) {

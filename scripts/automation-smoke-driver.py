@@ -17,6 +17,8 @@ import sys
 import time
 from pathlib import Path
 
+from smoke_warning_classifiers import is_gdk_broken_pipe_teardown
+
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[1]
@@ -68,8 +70,7 @@ BENIGN_WARNING_RE = re.compile(
     r"xdg-desktop-portal-WARNING \*\*: .*preferred method .*portals\.conf|"
     r"xdg-desktop-portal-WARNING \*\*: .*Failed to connect to PipeWire|"
     r"dbind-WARNING \*\*: .*Couldn't connect to accessibility bus|"
-    r"Gtk-CRITICAL \*\*: .*Unable to connect to the accessibility bus|"
-    r"Gdk-Message: .*Error reading events from display: Broken pipe"
+    r"Gtk-CRITICAL \*\*: .*Unable to connect to the accessibility bus"
 )
 
 
@@ -537,7 +538,11 @@ def scan_runtime_warnings(artifact_dir: Path) -> None:
             log_path.read_text(encoding="utf-8", errors="replace").splitlines(),
             start=1,
         ):
-            if WARNING_RE.search(line) and not BENIGN_WARNING_RE.search(line):
+            if (
+                WARNING_RE.search(line)
+                and not is_gdk_broken_pipe_teardown(line)
+                and not BENIGN_WARNING_RE.search(line)
+            ):
                 findings.append(f"{log_path.relative_to(artifact_dir)}:{line_no}: {line}")
 
     report = artifact_dir / "assertions/runtime-warning-scan.txt"

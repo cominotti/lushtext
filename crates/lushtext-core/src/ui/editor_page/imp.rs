@@ -398,6 +398,33 @@ pub struct LocalHistoryState {
         Cell<Option<crate::services::local_history_service::LocalHistoryAvailability>>,
 }
 
+/// Window-wide memory-residency and eviction bookkeeping for one editor tab.
+#[derive(Default)]
+pub struct MemoryResidencyState {
+    /// Whether this tab's buffer was evicted to free memory. Evicted tabs
+    /// reload from disk when re-focused.
+    pub evicted: Cell<bool>,
+    /// Window-wide least-recently-used generation assigned on load or activation.
+    pub access_generation: Cell<u64>,
+    /// Page-local generation advanced whenever residency or eligibility changes.
+    pub policy_generation: Cell<u64>,
+    /// Synthetic estimate used by deterministic budget widget tests.
+    #[cfg(feature = "test-utils")]
+    pub estimate_override: Cell<Option<u64>>,
+}
+
+/// Background file-load freshness primitives that advance together per load.
+#[derive(Default)]
+pub struct LoadTrackingState {
+    /// Monotonic identity for file loads so stale background completions cannot
+    /// apply after a newer open or reopen starts for the same editor tab.
+    pub generation: Cell<u64>,
+    /// Cooperative cancellation token for the current background file load.
+    /// A fresh `Arc<AtomicBool>` per load prevents a newer request from
+    /// uncancelling an older background worker.
+    pub cancel_token: RefCell<Arc<AtomicBool>>,
+}
+
 /// Private template implementation for one editor tab.
 ///
 /// Owns the GtkSourceView, minimap overlay, search bar, and per-tab state that
@@ -451,23 +478,10 @@ pub struct LushtextEditorPage {
     pub latest_load_failed: Cell<bool>,
     /// Feature gate classification based on file size (syntax, undo thresholds).
     pub size_check: Cell<FileSizeCheck>,
-    /// Whether this tab's buffer was evicted to free memory. Evicted tabs
-    /// reload from disk when re-focused.
-    pub evicted: Cell<bool>,
-    /// Window-wide least-recently-used generation assigned on load or activation.
-    pub memory_access_generation: Cell<u64>,
-    /// Page-local generation advanced whenever residency or eligibility changes.
-    pub memory_policy_generation: Cell<u64>,
-    /// Synthetic estimate used by deterministic budget widget tests.
-    #[cfg(feature = "test-utils")]
-    pub memory_estimate_override: Cell<Option<u64>>,
-    /// Cooperative cancellation token for the current background file load.
-    /// A fresh `Arc<AtomicBool>` per load prevents a newer request from
-    /// uncancelling an older background worker.
-    pub cancel_token: RefCell<Arc<AtomicBool>>,
-    /// Monotonic identity for file loads so stale background completions cannot
-    /// apply after a newer open or reopen starts for the same editor tab.
-    pub load_generation: Cell<u64>,
+    /// Memory-residency and eviction bookkeeping for this tab.
+    pub residency: MemoryResidencyState,
+    /// Background file-load freshness primitives (generation + cancel token).
+    pub load_tracking: LoadTrackingState,
     /// Last style-scheme ID actually applied to this buffer.
     pub applied_style_scheme_id: RefCell<Option<String>>,
     /// Current document-surface opacity for the main editor text area.
@@ -532,13 +546,8 @@ impl Default for LushtextEditorPage {
             load_state: Cell::new(EditorLoadState::Untitled),
             latest_load_failed: Cell::new(false),
             size_check: Cell::new(FileSizeCheck::Normal),
-            evicted: Cell::new(false),
-            memory_access_generation: Cell::new(0),
-            memory_policy_generation: Cell::new(0),
-            #[cfg(feature = "test-utils")]
-            memory_estimate_override: Cell::new(None),
-            cancel_token: RefCell::new(Arc::new(AtomicBool::new(false))),
-            load_generation: Cell::new(0),
+            residency: MemoryResidencyState::default(),
+            load_tracking: LoadTrackingState::default(),
             applied_style_scheme_id: RefCell::new(None),
             document_surface_opacity: Cell::new(1.0),
             settings: gio::Settings::new(crate::config::APP_ID),

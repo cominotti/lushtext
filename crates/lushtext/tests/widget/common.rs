@@ -9,9 +9,7 @@
 use gio::prelude::{ApplicationExt, Cast, ListModelExt, ObjectExt};
 use glib::prelude::IsA;
 use glib::prelude::ToValue;
-pub use gtk_lush_proof_harness::{
-    flush_after_delay, flush_events, present_window, wait_until,
-};
+pub use gtk_lush_proof_harness::{flush_after_delay, flush_events, wait_until};
 use gtk4::prelude::{GtkWindowExt, WidgetExt};
 use lushtext_core::config::APP_ID;
 pub use lushtext_core::services::filesystem::{
@@ -21,6 +19,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
+use std::time::Duration;
 
 static GTK_INIT: Once = Once::new();
 
@@ -80,6 +79,23 @@ pub fn test_application() -> libadwaita::Application {
 pub fn test_window() -> lushtext_core::ui::window::LushtextWindow {
     let app = test_application();
     lushtext_core::ui::window::LushtextWindow::new(&app)
+}
+
+/// Present a test window and wait for the headless compositor to realize it.
+///
+/// This is the single shared presentation helper for the widget-test tree.
+/// Window realization is a precondition, not the behavior under test, so it
+/// gives the compositor a generous async-scale budget for the surface
+/// `configure` that yields a non-zero allocation; `wait_until` returns the
+/// instant the size is real, so the larger ceiling only costs time on a slow,
+/// loaded compositor. A short post-realization settle drains main-loop work
+/// scheduled during allocation before the caller interacts with the window.
+pub fn present_window(window: &(impl IsA<gtk4::Window> + IsA<gtk4::Widget>)) {
+    window.present();
+    wait_until(Duration::from_secs(5), || {
+        window.width() > 0 && window.height() > 0
+    });
+    flush_after_delay(Duration::from_millis(20));
 }
 
 /// Temporarily point app-data I/O at a fresh directory for one widget test.

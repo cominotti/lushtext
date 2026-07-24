@@ -3,7 +3,7 @@
 //! Tests for the LushtextEditorPage widget.
 
 use crate::common::{
-    ensure_gtk_init, fixture, flush_after_delay, fs_read, isolated_data_dir, present_window,
+    ensure_gtk_init, fixture, flush_after_delay, flush_events, fs_read, isolated_data_dir,
     test_application, wait_until,
 };
 use gio::prelude::ListModelExt;
@@ -258,7 +258,12 @@ fn present_editor_page_with_size(
         .default_height(height)
         .child(page)
         .build();
-    present_window(&window);
+    // Present and drain; a raw ApplicationWindow with a heavy editor child may
+    // not report a non-zero window allocation quickly, so realization is proven
+    // by the editor's own source-view mapping below rather than the shared
+    // `present_window` window-size wait.
+    window.present();
+    flush_events();
     wait_until(std::time::Duration::from_secs(2), || {
         page.source_view().is_mapped() && page.source_view().visible_rect().height() > 0
     });
@@ -384,7 +389,12 @@ fn present_editor_page_sized(page: &LushtextEditorPage, width: i32) -> gtk4::App
         .default_height(700)
         .child(page)
         .build();
-    present_window(&window);
+    // Present and drain; a raw ApplicationWindow with a heavy editor child may
+    // not report a non-zero window allocation quickly, so realization is proven
+    // by the editor's own source-view mapping below rather than the shared
+    // `present_window` window-size wait.
+    window.present();
+    flush_events();
     wait_until(std::time::Duration::from_secs(2), || {
         page.source_view().is_mapped() && page.source_view().visible_rect().height() > 0
     });
@@ -1323,6 +1333,62 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
     eprintln!(
         "transient-load-disposal-evidence transient_released=true disposal_released=true destructor_off_gtk=true baseline_transferred=true heartbeat={}",
         main_loop_progress.get()
+    );
+}
+
+#[test]
+fn test_file_loaded_callback_reentering_registration_does_not_borrow_panic() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("reentrant file-loaded tempdir");
+    let first = dir.path().join("reentrant-a.txt");
+    let second = dir.path().join("reentrant-b.txt");
+    fixture::write_text(&first, "first\n");
+    fixture::write_text(&second, "second\n");
+    let page = LushtextEditorPage::new();
+
+    let invocations = Rc::new(Cell::new(0u32));
+    let reentrant_registered = Rc::new(Cell::new(false));
+
+    let page_weak = page.downgrade();
+    let invocations_outer = Rc::clone(&invocations);
+    let reentrant_registered_outer = Rc::clone(&reentrant_registered);
+    page.connect_file_loaded(move || {
+        invocations_outer.set(invocations_outer.get().saturating_add(1));
+        // Re-enter registration from inside the callback. This used to panic
+        // with BorrowMutError because the callback collection stayed borrowed
+        // across the invocation; the snapshot-then-invoke fix must let this
+        // register cleanly.
+        if !reentrant_registered_outer.replace(true)
+            && let Some(page) = page_weak.upgrade()
+        {
+            let invocations_inner = Rc::clone(&invocations_outer);
+            page.connect_file_loaded(move || {
+                invocations_inner.set(invocations_inner.get().saturating_add(1));
+            });
+        }
+    });
+
+    page.load_file_async(&first);
+    wait_until(Duration::from_secs(15), || {
+        page.load_state() == EditorLoadState::Loaded
+    });
+    assert!(reentrant_registered.get(), "re-entrant registration ran");
+    let after_first = invocations.get();
+    assert!(after_first >= 1, "the file-loaded callback fired");
+
+    // A reload must fire both the original and the callback registered during
+    // the first invocation, proving the snapshot restore appended (not dropped)
+    // the re-entrant registration.
+    page.load_file_async(&second);
+    wait_until(Duration::from_secs(15), || {
+        page.load_state() == EditorLoadState::Loaded
+            && page.file_path().as_deref() == Some(second.as_path())
+    });
+    assert!(
+        invocations.get() >= after_first + 2,
+        "both the original and the re-entrant-registered callback fire on reload \
+         (before={after_first}, after={})",
+        invocations.get()
     );
 }
 

@@ -355,22 +355,6 @@ pub struct RecoveryLoad<T> {
 }
 
 impl<T> RecoveryLoad<T> {
-    /// Return the recovered value and discard diagnostics intentionally.
-    #[must_use]
-    pub fn into_value(self) -> T {
-        self.value
-    }
-
-    /// Keep recovery metadata while replacing the loaded value.
-    #[must_use]
-    pub fn map_value<U>(self, value: U) -> RecoveryLoad<U> {
-        RecoveryLoad {
-            value,
-            outcome: self.outcome,
-            diagnostics: self.diagnostics,
-        }
-    }
-
     /// Return whether all diagnostics allow replacement writes.
     #[must_use]
     pub fn replacement_allowed(&self) -> bool {
@@ -465,19 +449,6 @@ pub enum RecoveryRepair<T> {
 pub fn load_json_or_default<T>(config: &RecoveryLoadConfig<'_>) -> RecoveryLoad<T>
 where
     T: DeserializeOwned + Default,
-{
-    load_json_with_repair(config, |_| RecoveryRepair::Unavailable)
-}
-
-/// Load an optional JSON metadata file.
-///
-/// Missing files return `None` without diagnostics. Present valid files return
-/// `Some(T)`, while malformed or unreadable files return `None` with recovery
-/// diagnostics and preservation behavior.
-#[must_use]
-pub fn load_json_optional<T>(config: &RecoveryLoadConfig<'_>) -> RecoveryLoad<Option<T>>
-where
-    T: DeserializeOwned,
 {
     load_json_with_repair(config, |_| RecoveryRepair::Unavailable)
 }

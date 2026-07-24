@@ -1235,12 +1235,6 @@ impl AutomationReadinessPredicate {
             .map(AutomationReadinessPredicateReference::from)
             .collect()
     }
-
-    /// Convert this Automation1 predicate into the proof-spine identifier.
-    #[must_use]
-    pub fn to_proof_predicate(self) -> ReadinessPredicate {
-        ReadinessPredicate::new(self.as_str())
-    }
 }
 
 /// Stable readiness statuses shared by app waits and host-side smoke helpers.

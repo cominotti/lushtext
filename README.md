@@ -405,7 +405,10 @@ Cargo workspace:
   `ui/window/adaptive_shell.rs`, keeps draft intent epochs in
   `ui/window/draft_ordering.rs`, bounds progressive tab restoration in
   `ui/window/session_restore.rs`, and divides note workflows between the private
-  `ui/window/notes/{bookmarks,editors,browser}.rs` modules. Recycled workspace
+  `ui/window/notes/{bookmarks,editors,browser}.rs` modules. The Markdown preview
+  adapter is likewise split under `ui/markdown_preview/` into behavior-neutral
+  workflow siblings (`images.rs`, `tables.rs`, `code_blocks.rs`, `links.rs`,
+  `inline_footnotes.rs`) around the render-orchestration `mod.rs`. Recycled workspace
   row wiring is split under `ui/sidebar/workspace_section/` into
   `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`. Plain policy
   for per-store scan ownership, weighted disposal, and minimap analysis lives

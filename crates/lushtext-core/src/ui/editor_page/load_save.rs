@@ -60,7 +60,7 @@ impl SaveCompletionTicket {
         Self {
             save_generation: editor.imp().save.generation.get(),
             path_generation: editor.imp().local_history.path_generation.get(),
-            load_generation: editor.imp().load_generation.get(),
+            load_generation: editor.imp().load_tracking.generation.get(),
             edit_generation: editor.imp().local_history.edit_generation.get(),
             close_session_identity,
         }
@@ -70,7 +70,7 @@ impl SaveCompletionTicket {
         editor.is_saving()
             && editor.imp().save.generation.get() == self.save_generation
             && editor.imp().local_history.path_generation.get() == self.path_generation
-            && editor.imp().load_generation.get() == self.load_generation
+            && editor.imp().load_tracking.generation.get() == self.load_generation
             && editor.imp().local_history.edit_generation.get() == self.edit_generation
             && self.close_session_identity.is_none_or(|identity| {
                 editor
@@ -178,8 +178,13 @@ fn run_install_slice(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         return;
     };
     if phase != LoadInstallPhase::ClearingCancelled
-        && (editor.imp().load_generation.get() != generation
-            || editor.imp().cancel_token.borrow().load(Ordering::Acquire))
+        && (editor.imp().load_tracking.generation.get() != generation
+            || editor
+                .imp()
+                .load_tracking
+                .cancel_token
+                .borrow()
+                .load(Ordering::Acquire))
     {
         abort_chunked_install(session, AbortDisposition::Cancel);
         return;
@@ -308,7 +313,7 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
     };
     editor.imp().load.installation_slice_count.set(slice_count);
     if editor.imp().load.dispose_during_finalization.get()
-        || editor.imp().load_generation.get() != generation
+        || editor.imp().load_tracking.generation.get() != generation
     {
         buffer.end_irreversible_action();
         session.borrow_mut().terminal = true;
@@ -499,6 +504,7 @@ impl LushtextEditorPage {
                 replaced.finish_planning();
             }
             self.imp()
+                .load_tracking
                 .cancel_token
                 .borrow()
                 .store(true, Ordering::Release);
@@ -528,9 +534,12 @@ impl LushtextEditorPage {
         self.stop_file_monitor();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        self.imp().cancel_token.replace(cancel.clone());
-        let load_generation = self.imp().load_generation.get().wrapping_add(1);
-        self.imp().load_generation.set(load_generation);
+        self.imp()
+            .load_tracking
+            .cancel_token
+            .replace(cancel.clone());
+        let load_generation = self.imp().load_tracking.generation.get().wrapping_add(1);
+        self.imp().load_tracking.generation.set(load_generation);
 
         let editor_weak = self.downgrade();
         let cancel_for_plan = Arc::clone(&cancel);
@@ -578,8 +587,13 @@ impl LushtextEditorPage {
         result: Result<editor_io::LoadResult, EditorLoadError>,
         error_state: EditorLoadState,
     ) -> bool {
-        if self.imp().load_generation.get() != load_generation
-            || self.imp().cancel_token.borrow().load(Ordering::Acquire)
+        if self.imp().load_tracking.generation.get() != load_generation
+            || self
+                .imp()
+                .load_tracking
+                .cancel_token
+                .borrow()
+                .load(Ordering::Acquire)
         {
             return false;
         }
@@ -613,8 +627,13 @@ impl LushtextEditorPage {
         error_state: EditorLoadState,
         permit: TransientLoadPermit,
     ) {
-        if self.imp().load_generation.get() != load_generation
-            || self.imp().cancel_token.borrow().load(Ordering::Acquire)
+        if self.imp().load_tracking.generation.get() != load_generation
+            || self
+                .imp()
+                .load_tracking
+                .cancel_token
+                .borrow()
+                .load(Ordering::Acquire)
         {
             return;
         }
@@ -780,7 +799,7 @@ impl LushtextEditorPage {
         self.imp().canonical_file_path.replace(canonical_path);
         self.imp().latest_load_failed.set(false);
         self.imp().load.installation_incomplete.set(false);
-        self.imp().evicted.set(false);
+        self.imp().residency.evicted.set(false);
         self.set_document_encoding_state(encoding_state);
         self.set_has_bom(has_bom);
         self.set_file_health(file_health);
@@ -825,9 +844,18 @@ impl LushtextEditorPage {
         if let Some(callback) = self.imp().load.load_completed_callback.take() {
             callback();
         }
-        for callback in self.imp().load.file_loaded_callbacks.borrow().iter() {
+        // Snapshot the callbacks and drop the borrow before invoking, so a
+        // file-loaded callback that re-enters `connect_file_loaded` (a
+        // `borrow_mut`) cannot panic the GTK thread. Callbacks registered during
+        // invocation land in the temporarily-empty live vec and are appended
+        // after the originals, preserving invocation order.
+        let callbacks = std::mem::take(&mut *self.imp().load.file_loaded_callbacks.borrow_mut());
+        for callback in &callbacks {
             callback();
         }
+        let mut slot = self.imp().load.file_loaded_callbacks.borrow_mut();
+        let newly_registered = std::mem::replace(&mut *slot, callbacks);
+        slot.extend(newly_registered);
     }
 
     fn restore_load_installation_state(&self, restore: LoadInstallationState) {
@@ -916,8 +944,9 @@ impl LushtextEditorPage {
             .set(was_loading && installation_active);
         self.cancel_current_load_resources(AbortDisposition::Cancel);
         self.imp()
-            .load_generation
-            .set(self.imp().load_generation.get().wrapping_add(1));
+            .load_tracking
+            .generation
+            .set(self.imp().load_tracking.generation.get().wrapping_add(1));
         if was_loading && !installation_active {
             self.finish_user_cancelled_load();
         }
@@ -951,12 +980,14 @@ impl LushtextEditorPage {
         self.imp().load.user_cancel_pending.set(false);
         self.cancel_current_load_resources(AbortDisposition::Dispose);
         self.imp()
-            .load_generation
-            .set(self.imp().load_generation.get().wrapping_add(1));
+            .load_tracking
+            .generation
+            .set(self.imp().load_tracking.generation.get().wrapping_add(1));
     }
 
     fn cancel_noninstall_load_resources(&self) {
         self.imp()
+            .load_tracking
             .cancel_token
             .borrow()
             .store(true, Ordering::Release);
@@ -983,8 +1014,8 @@ impl LushtextEditorPage {
         generation: u64,
         cancel: &Arc<AtomicBool>,
     ) -> bool {
-        self.imp().load_generation.get() == generation
-            && Arc::ptr_eq(&self.imp().cancel_token.borrow(), cancel)
+        self.imp().load_tracking.generation.get() == generation
+            && Arc::ptr_eq(&self.imp().load_tracking.cancel_token.borrow(), cancel)
             && !cancel.load(Ordering::Acquire)
     }
 
@@ -1113,14 +1144,14 @@ impl LushtextEditorPage {
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn load_generation_for_test(&self) -> u64 {
-        self.imp().load_generation.get()
+        self.imp().load_tracking.generation.get()
     }
 
     /// Return the active cancellation token so tests can prove token identity rotation.
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn load_cancel_token_for_test(&self) -> Arc<AtomicBool> {
-        self.imp().cancel_token.borrow().clone()
+        self.imp().load_tracking.cancel_token.borrow().clone()
     }
 
     /// Apply a synthetic load result through the production stale-generation gate.
@@ -1131,8 +1162,9 @@ impl LushtextEditorPage {
         load_generation: u64,
         result: Result<editor_io::LoadResult, EditorLoadError>,
     ) -> bool {
-        if self.imp().load_generation.get() == load_generation {
+        if self.imp().load_tracking.generation.get() == load_generation {
             self.imp()
+                .load_tracking
                 .cancel_token
                 .replace(Arc::new(AtomicBool::new(false)));
         }
@@ -1147,8 +1179,9 @@ impl LushtextEditorPage {
         load_generation: u64,
         error: EditorLoadError,
     ) -> bool {
-        if self.imp().load_generation.get() == load_generation {
+        if self.imp().load_tracking.generation.get() == load_generation {
             self.imp()
+                .load_tracking
                 .cancel_token
                 .replace(Arc::new(AtomicBool::new(false)));
         }
@@ -1600,7 +1633,7 @@ impl LushtextEditorPage {
                     let completed_body_for_request = Rc::clone(&completed_body);
                     let completed_body_for_terminal = Rc::clone(&completed_body);
                     editor.replace_buffer_bounded(
-                        BufferReplacementRequest::new_guarded(
+                        BufferReplacementRequest::new_guarded_returning_body_on_complete(
                             BufferReplacementTicket {
                                 workflow: BufferReplacementWorkflow::SaveFormatting,
                                 generation: ticket.save_generation,
@@ -1643,10 +1676,10 @@ impl LushtextEditorPage {
                                     ),
                                 }
                             },
-                        )
-                        .return_guarded_body_on_complete(move |body| {
-                            completed_body_for_request.replace(Some(body));
-                        }),
+                            move |body| {
+                                completed_body_for_request.replace(Some(body));
+                            },
+                        ),
                     );
                 }
                 Err(error) => {

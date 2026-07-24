@@ -9,6 +9,10 @@
 #[cfg(any(test, feature = "test-utils"))]
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
+// `BTreeSet` backs only the test/test-utils before-rename failure-seam registry,
+// so gate the import to match its sole consumer and stay clean in default builds.
+#[cfg(any(test, feature = "test-utils"))]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -54,7 +58,7 @@ static UNDO_AFTER_METADATA_HOOKS: OnceLock<Mutex<BTreeMap<PathBuf, UndoAfterMeta
     OnceLock::new();
 
 #[cfg(any(test, feature = "test-utils"))]
-static FAIL_REPLACE_BEFORE_RENAME_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static FAIL_REPLACE_BEFORE_RENAME_PATHS: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
 
 /// Override the Replace All undo-payload ceiling on the current test thread.
 #[cfg(any(test, feature = "test-utils"))]
@@ -62,27 +66,72 @@ pub fn set_max_replace_undo_bytes_for_test(limit: Option<u64>) {
     TEST_MAX_REPLACE_UNDO_BYTES.with(|slot| slot.set(limit));
 }
 
-/// Fail the next Replace All target write for `path` before its rename.
+/// Cleanup ownership for one armed before-rename failure seam.
+///
+/// Dropping the guard disarms a still-unconsumed seam so a failed assertion or
+/// early test exit cannot leak it into a later operation on the same target.
 #[cfg(any(test, feature = "test-utils"))]
-pub fn fail_next_replace_before_rename_for_path_for_test(path: &Path) {
-    let slot = FAIL_REPLACE_BEFORE_RENAME_PATH.get_or_init(|| Mutex::new(None));
-    *slot
+#[must_use = "dropping the guard immediately would disarm the failure seam"]
+pub struct ReplaceBeforeRenameFailureGuard {
+    target: PathBuf,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl Drop for ReplaceBeforeRenameFailureGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = FAIL_REPLACE_BEFORE_RENAME_PATHS.get() {
+            registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&self.target);
+        }
+    }
+}
+
+/// Fail the next Replace All target write for `target` before its rename.
+///
+/// The registry is keyed by the exact target path, so parallel operations on
+/// distinct targets cannot arm or consume one another's seams. The returned
+/// guard disarms an unconsumed seam on drop.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use = "the guard owns cleanup for an unconsumed before-rename seam"]
+pub fn fail_next_replace_before_rename_for_path_for_test(
+    target: &Path,
+) -> ReplaceBeforeRenameFailureGuard {
+    let registry = FAIL_REPLACE_BEFORE_RENAME_PATHS.get_or_init(|| Mutex::new(BTreeSet::new()));
+    registry
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path.to_path_buf());
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(target.to_path_buf());
+    ReplaceBeforeRenameFailureGuard {
+        target: target.to_path_buf(),
+    }
+}
+
+/// Report whether a before-rename failure seam is still armed for `target`.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn replace_before_rename_failure_is_armed_for_test(target: &Path) -> bool {
+    FAIL_REPLACE_BEFORE_RENAME_PATHS
+        .get()
+        .is_some_and(|registry| {
+            registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(target)
+        })
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 fn take_replace_before_rename_failure_for_test(path: &Path) -> bool {
-    let slot = FAIL_REPLACE_BEFORE_RENAME_PATH.get_or_init(|| Mutex::new(None));
-    let mut pending = slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pending.as_deref() == Some(path) {
-        pending.take();
-        true
-    } else {
-        false
-    }
+    FAIL_REPLACE_BEFORE_RENAME_PATHS
+        .get()
+        .is_some_and(|registry| {
+            registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(path)
+        })
 }
 
 #[cfg(not(any(test, feature = "test-utils")))]
@@ -1464,6 +1513,35 @@ mod tests {
     }
 
     #[test]
+    fn parallel_before_rename_seams_are_keyed_and_cleaned_up() {
+        let dir = tempdir().expect("tempdir");
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+
+        {
+            let first_seam = fail_next_replace_before_rename_for_path_for_test(&first);
+            let second_seam = fail_next_replace_before_rename_for_path_for_test(&second);
+            assert!(replace_before_rename_failure_is_armed_for_test(&first));
+            assert!(replace_before_rename_failure_is_armed_for_test(&second));
+
+            // Consuming one target's seam must not clobber the other's.
+            assert!(take_replace_before_rename_failure_for_test(&first));
+            assert!(!replace_before_rename_failure_is_armed_for_test(&first));
+            assert!(replace_before_rename_failure_is_armed_for_test(&second));
+            // Consuming the same target twice is a no-op.
+            assert!(!take_replace_before_rename_failure_for_test(&first));
+
+            drop(first_seam);
+            drop(second_seam);
+        }
+
+        // Per-target assertions (rather than whole-registry emptiness) stay
+        // race-free when other tests share the process-global registry.
+        assert!(!replace_before_rename_failure_is_armed_for_test(&first));
+        assert!(!replace_before_rename_failure_is_armed_for_test(&second));
+    }
+
+    #[test]
     fn undo_retained_weight_charges_table_paths_and_vector_capacities() {
         let mut backup = ReplaceUndoBackup::new();
         let mut path = PathBuf::from("/workspace/retained.rs");
@@ -1893,7 +1971,7 @@ mod tests {
         let one_entry =
             u64::try_from("needle\n".len() + "done\n".len()).expect("fixture payload fits u64");
         TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(one_entry)));
-        fail_next_replace_before_rename_for_path_for_test(&first);
+        let _before_rename_seam = fail_next_replace_before_rename_for_path_for_test(&first);
 
         let outcome = apply_replacements(
             &replacements,

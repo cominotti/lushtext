@@ -105,6 +105,8 @@ src/
 │   ├── search_backup.rs # Replace All incrementally active per-file undo journal persistence within the safety window
 │   ├── search_history.rs # Search history persistence: load/save/dedup (capped at 20)
 │   ├── session_service.rs
+│   ├── single_flight.rs # Workflow-neutral one-active/one-latest coordinator + cooperative cancellation token shared by palette/notes/bookmark/local-history/workspace search
+│   ├── sync.rs          # Small cross-workflow sync helpers (poison-recovering mutex lock)
 │   ├── folder_note_service.rs # Workspace-folder note load/save/move/list helpers
 │   ├── workspace_manager.rs
 │   └── workspace_watch.rs # Materialized-scope filesystem watch service for sidebar auto-refresh
@@ -124,7 +126,7 @@ src/
     ├── plain_disposal.rs # Non-blocking weighted Send-payload destruction with producer-owned latest retry
     ├── open_popover/    # Ctrl+K searchable recent-document Open popover
     ├── properties_panel/ # Right-side document metadata + formatting controls
-    ├── markdown_preview/ # Read-only Markdown preview (pulldown-cmark → TextTags + anchored GTK widgets)
+    ├── markdown_preview/ # Read-only Markdown preview (pulldown-cmark → TextTags + anchored GTK widgets); mod.rs owns render orchestration + the public wrapper, with behavior-neutral workflow sibling modules images.rs, tables.rs, code_blocks.rs, links.rs, and inline_footnotes.rs
     ├── info_bar/        # Contextual editor inline alerts above editor
     ├── search_bar/      # Find/replace widget
     ├── status_bar/      # Bottom bar: feedback messages + file metadata

@@ -29,6 +29,7 @@ use crate::services::{
     bookmark_service, document_note_service, file_tree, folder_note_service, note_storage,
 };
 
+use super::charge_scope::{ChargeOutcome, try_with_charge, with_charge};
 use super::fuzzy::search_items_cancellable;
 #[cfg(any(test, feature = "property-tests"))]
 use super::fuzzy::search_items_full_sort_reference;
@@ -493,6 +494,36 @@ pub fn load_palette_note_entries_for_scope(
     )
 }
 
+/// Which terminal outcome a scoped note-source section reports to its owner.
+///
+/// Scoped charge bodies only *borrow* the admission, so they cannot call the
+/// by-value `complete`/`cancelled` terminals directly. They report the terminal
+/// kind through the scope, and the owner (which still owns the admission after
+/// the scope releases) produces the actual terminal outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoteSourceTerminal {
+    Complete,
+    Cancelled,
+}
+
+/// Collapse a note-source charge scope into the enclosing body's control flow.
+///
+/// A rejected budget and a `Complete` terminal both mean "stop and complete",
+/// so they fold together; a `Cancelled` terminal and a clean run pass through.
+fn charge_scope_into_terminal(
+    outcome: &ChargeOutcome<NoteSourceTerminal>,
+) -> ControlFlow<NoteSourceTerminal, ()> {
+    match outcome {
+        ChargeOutcome::BudgetExhausted | ChargeOutcome::Broke(NoteSourceTerminal::Complete) => {
+            ControlFlow::Break(NoteSourceTerminal::Complete)
+        }
+        ChargeOutcome::Broke(NoteSourceTerminal::Cancelled) => {
+            ControlFlow::Break(NoteSourceTerminal::Cancelled)
+        }
+        ChargeOutcome::Ran => ControlFlow::Continue(()),
+    }
+}
+
 /// Load one immutable note inventory under a caller-owned aggregate policy.
 ///
 /// This is shared by the command palette and Browse Notes so sidecar ordering,
@@ -534,88 +565,122 @@ pub fn load_note_entries_bounded_for_scope(
         }
     }
     let live_identity_bytes = string_set_retained_byte_weight(&live_scoped_document_ids);
-    if !admission.try_charge_construction(live_identity_bytes) {
-        return Ok(admission.complete());
-    }
-
-    if !scope_folders.is_empty() {
-        let canonical_folders = note_storage::canonicalize_folders(scope_folders);
-        let canonical_folder_bytes = path_slice_retained_byte_weight(&canonical_folders);
-        if !admission.try_charge_construction(canonical_folder_bytes) {
+    let live_scope = try_with_charge(
+        &mut admission,
+        |admission| admission.try_charge_construction(live_identity_bytes),
+        |admission| admission.release_construction(live_identity_bytes),
+        |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>> {
+            if scope_folders.is_empty() {
+                return Ok(ControlFlow::Continue(()));
+            }
+            let canonical_folders = note_storage::canonicalize_folders(scope_folders);
+            let canonical_folder_bytes = path_slice_retained_byte_weight(&canonical_folders);
+            let canonical_scope = try_with_charge(
+                admission,
+                |admission| admission.try_charge_construction(canonical_folder_bytes),
+                |admission| admission.release_construction(canonical_folder_bytes),
+                |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>> {
+                    let dir = bookmark_service::bookmarks_dir(data_dir);
+                    let BoundedSidecarEntries::Admitted {
+                        entries: sidecars,
+                        retained_bytes: sidecar_path_bytes,
+                    } = bounded_sidecar_entries(
+                        &dir,
+                        limits.sidecar_entries,
+                        cancellation,
+                        admission,
+                    )?
+                    else {
+                        return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                    };
+                    if cancellation.is_cancelled() {
+                        return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
+                    }
+                    for entry in sidecars {
+                        if cancellation.is_cancelled() {
+                            return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
+                        }
+                        let Some(parse) =
+                            reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)?
+                        else {
+                            return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        };
+                        let load = note_storage::load_json_file_recovering_with_max_bytes::<
+                            BookmarkDocument,
+                        >(
+                            data_dir,
+                            &entry.path,
+                            RecoveryMetadataClass::BookmarkSidecar,
+                            parse.max_read_bytes,
+                        );
+                        let document_bytes = load
+                            .value
+                            .as_ref()
+                            .map_or(0, BookmarkDocument::retained_heap_byte_weight);
+                        if !admit_parsed_sidecar(
+                            &parse,
+                            document_bytes,
+                            &load.diagnostics,
+                            admission,
+                        ) {
+                            return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        }
+                        let Some(document) = load.value else {
+                            continue;
+                        };
+                        let outcome =
+                            admission.with_construction_charge(document_bytes, |admission| {
+                                if !note_storage::matches_any_folder(
+                                    &document.identity,
+                                    &canonical_folders,
+                                ) || live_scoped_document_ids
+                                    .contains(&document.identity.sidecar_id)
+                                {
+                                    return ControlFlow::Continue(());
+                                }
+                                let path = document.identity.display_path;
+                                let Some(workspace) = workspace_for_path(visible_workspaces, &path)
+                                else {
+                                    return ControlFlow::Continue(());
+                                };
+                                let workspace_folder = workspace_folder_for_path(workspace, &path)
+                                    .unwrap_or_else(|| path.clone());
+                                let source = PaletteNoteDocumentSource::Workspace {
+                                    workspace_name: workspace.name.clone(),
+                                    workspace_folder,
+                                };
+                                for bookmark in document.bookmarks {
+                                    if !admission.admit(bookmark_entry(
+                                        &source,
+                                        path.clone(),
+                                        bookmark.line,
+                                        bookmark.label.as_deref(),
+                                    )) {
+                                        return ControlFlow::Break(());
+                                    }
+                                }
+                                ControlFlow::Continue(())
+                            });
+                        if !matches!(outcome, ChargeOutcome::Ran) {
+                            return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                        }
+                    }
+                    admission.release_sidecar_paths(sidecar_path_bytes);
+                    Ok(ControlFlow::Continue(()))
+                },
+            )?;
+            Ok(charge_scope_into_terminal(&canonical_scope))
+        },
+    )?;
+    match live_scope {
+        ChargeOutcome::BudgetExhausted | ChargeOutcome::Broke(NoteSourceTerminal::Complete) => {
             return Ok(admission.complete());
         }
-        let dir = bookmark_service::bookmarks_dir(data_dir);
-        let BoundedSidecarEntries::Admitted {
-            entries: sidecars,
-            retained_bytes: sidecar_path_bytes,
-        } = bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?
-        else {
-            return Ok(admission.complete());
-        };
-        if cancellation.is_cancelled() {
+        ChargeOutcome::Broke(NoteSourceTerminal::Cancelled) => {
             return Ok(admission.cancelled());
         }
-        for entry in sidecars {
-            if cancellation.is_cancelled() {
-                return Ok(admission.cancelled());
-            }
-            let Some(parse) =
-                reserve_sidecar_parse(std::slice::from_ref(&entry.path), &mut admission)?
-            else {
-                return Ok(admission.complete());
-            };
-            let load = note_storage::load_json_file_recovering_with_max_bytes::<BookmarkDocument>(
-                data_dir,
-                &entry.path,
-                RecoveryMetadataClass::BookmarkSidecar,
-                parse.max_read_bytes,
-            );
-            let document_bytes = load
-                .value
-                .as_ref()
-                .map_or(0, BookmarkDocument::retained_heap_byte_weight);
-            if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, &mut admission) {
-                return Ok(admission.complete());
-            }
-            let Some(document) = load.value else {
-                continue;
-            };
-            let outcome = admission.with_construction_charge(document_bytes, |admission| {
-                if !note_storage::matches_any_folder(&document.identity, &canonical_folders)
-                    || live_scoped_document_ids.contains(&document.identity.sidecar_id)
-                {
-                    return ControlFlow::Continue(());
-                }
-                let path = document.identity.display_path;
-                let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
-                    return ControlFlow::Continue(());
-                };
-                let workspace_folder =
-                    workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
-                let source = PaletteNoteDocumentSource::Workspace {
-                    workspace_name: workspace.name.clone(),
-                    workspace_folder,
-                };
-                for bookmark in document.bookmarks {
-                    if !admission.admit(bookmark_entry(
-                        &source,
-                        path.clone(),
-                        bookmark.line,
-                        bookmark.label.as_deref(),
-                    )) {
-                        return ControlFlow::Break(());
-                    }
-                }
-                ControlFlow::Continue(())
-            });
-            if !matches!(outcome, ChargeOutcome::Ran) {
-                return Ok(admission.complete());
-            }
-        }
-        admission.release_sidecar_paths(sidecar_path_bytes);
-        admission.release_construction(canonical_folder_bytes);
+        ChargeOutcome::Ran => {}
     }
-    admission.release_construction(live_identity_bytes);
 
     for snapshot in open_editor_snapshots
         .iter()
@@ -689,71 +754,87 @@ pub fn load_note_entries_bounded_for_scope(
     if mode == NotesBrowserMode::AllNotes && !scope_folders.is_empty() {
         let canonical_folders = note_storage::canonicalize_folders(scope_folders);
         let canonical_folder_bytes = path_slice_retained_byte_weight(&canonical_folders);
-        if !admission.try_charge_construction(canonical_folder_bytes) {
-            return Ok(admission.complete());
-        }
-        let dir = document_note_service::document_notes_dir(data_dir);
-        let BoundedSidecarEntries::Admitted {
-            entries: sidecars,
-            retained_bytes: sidecar_path_bytes,
-        } = bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, &mut admission)?
-        else {
-            return Ok(admission.complete());
-        };
-        if cancellation.is_cancelled() {
-            return Ok(admission.cancelled());
-        }
-        for entry in sidecars {
-            if cancellation.is_cancelled() {
+        let canonical_scope = try_with_charge(
+            &mut admission,
+            |admission| admission.try_charge_construction(canonical_folder_bytes),
+            |admission| admission.release_construction(canonical_folder_bytes),
+            |admission| -> Result<ControlFlow<NoteSourceTerminal, ()>> {
+                let dir = document_note_service::document_notes_dir(data_dir);
+                let BoundedSidecarEntries::Admitted {
+                    entries: sidecars,
+                    retained_bytes: sidecar_path_bytes,
+                } = bounded_sidecar_entries(&dir, limits.sidecar_entries, cancellation, admission)?
+                else {
+                    return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                };
+                if cancellation.is_cancelled() {
+                    return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
+                }
+                for entry in sidecars {
+                    if cancellation.is_cancelled() {
+                        return Ok(ControlFlow::Break(NoteSourceTerminal::Cancelled));
+                    }
+                    let Some(parse) =
+                        reserve_sidecar_parse(std::slice::from_ref(&entry.path), admission)?
+                    else {
+                        return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                    };
+                    let load = note_storage::load_json_file_recovering_with_max_bytes::<
+                        DocumentNoteDocument,
+                    >(
+                        data_dir,
+                        &entry.path,
+                        RecoveryMetadataClass::DocumentNoteSidecar,
+                        parse.max_read_bytes,
+                    );
+                    let document_bytes = load
+                        .value
+                        .as_ref()
+                        .map_or(0, DocumentNoteDocument::retained_heap_byte_weight);
+                    if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, admission) {
+                        return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                    }
+                    let Some(document) = load.value else {
+                        continue;
+                    };
+                    let outcome = admission.with_construction_charge(document_bytes, |admission| {
+                        if !note_storage::matches_any_folder(&document.identity, &canonical_folders)
+                        {
+                            return ControlFlow::Continue(());
+                        }
+                        let path = document.identity.display_path;
+                        let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
+                            return ControlFlow::Continue(());
+                        };
+                        let workspace_folder = workspace_folder_for_path(workspace, &path)
+                            .unwrap_or_else(|| path.clone());
+                        let source = PaletteNoteDocumentSource::Workspace {
+                            workspace_name: workspace.name.clone(),
+                            workspace_folder,
+                        };
+                        if admission.admit(document_note_entry(&source, path, document.note)) {
+                            ControlFlow::Continue(())
+                        } else {
+                            ControlFlow::Break(())
+                        }
+                    });
+                    if !matches!(outcome, ChargeOutcome::Ran) {
+                        return Ok(ControlFlow::Break(NoteSourceTerminal::Complete));
+                    }
+                }
+                admission.release_sidecar_paths(sidecar_path_bytes);
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+        match canonical_scope {
+            ChargeOutcome::BudgetExhausted | ChargeOutcome::Broke(NoteSourceTerminal::Complete) => {
+                return Ok(admission.complete());
+            }
+            ChargeOutcome::Broke(NoteSourceTerminal::Cancelled) => {
                 return Ok(admission.cancelled());
             }
-            let Some(parse) =
-                reserve_sidecar_parse(std::slice::from_ref(&entry.path), &mut admission)?
-            else {
-                return Ok(admission.complete());
-            };
-            let load = note_storage::load_json_file_recovering_with_max_bytes::<DocumentNoteDocument>(
-                data_dir,
-                &entry.path,
-                RecoveryMetadataClass::DocumentNoteSidecar,
-                parse.max_read_bytes,
-            );
-            let document_bytes = load
-                .value
-                .as_ref()
-                .map_or(0, DocumentNoteDocument::retained_heap_byte_weight);
-            if !admit_parsed_sidecar(&parse, document_bytes, &load.diagnostics, &mut admission) {
-                return Ok(admission.complete());
-            }
-            let Some(document) = load.value else {
-                continue;
-            };
-            let outcome = admission.with_construction_charge(document_bytes, |admission| {
-                if !note_storage::matches_any_folder(&document.identity, &canonical_folders) {
-                    return ControlFlow::Continue(());
-                }
-                let path = document.identity.display_path;
-                let Some(workspace) = workspace_for_path(visible_workspaces, &path) else {
-                    return ControlFlow::Continue(());
-                };
-                let workspace_folder =
-                    workspace_folder_for_path(workspace, &path).unwrap_or_else(|| path.clone());
-                let source = PaletteNoteDocumentSource::Workspace {
-                    workspace_name: workspace.name.clone(),
-                    workspace_folder,
-                };
-                if admission.admit(document_note_entry(&source, path, document.note)) {
-                    ControlFlow::Continue(())
-                } else {
-                    ControlFlow::Break(())
-                }
-            });
-            if !matches!(outcome, ChargeOutcome::Ran) {
-                return Ok(admission.complete());
-            }
+            ChargeOutcome::Ran => {}
         }
-        admission.release_sidecar_paths(sidecar_path_bytes);
-        admission.release_construction(canonical_folder_bytes);
     }
 
     for snapshot in open_editor_snapshots {
@@ -824,17 +905,6 @@ enum BoundedSidecarEntries {
     LimitReached,
 }
 
-/// Result of one `with_construction_charge` scope.
-#[derive(Debug, PartialEq, Eq)]
-enum ChargeOutcome<T> {
-    /// The body ran to completion; the charge was released by scope.
-    Ran,
-    /// The body exited early with a value; the charge was still released.
-    Broke(T),
-    /// The budget rejected the charge, so the body never ran.
-    BudgetExhausted,
-}
-
 struct SidecarParseReservation {
     charged_bytes: u64,
     model_byte_limit: u64,
@@ -878,6 +948,17 @@ fn reserve_sidecar_parse(
     }))
 }
 
+/// Settle a sidecar parse reservation directly against its actual byte cost.
+///
+/// This is the one intentional *direct settlement* path in the note-source
+/// ledger, distinct from the scope-owned [`with_charge`] guards. The
+/// reservation is charged during a preflight (`reserve_sidecar_parse`), before
+/// the sidecar is read, then reconciled here against the parsed document's real
+/// size: the unused remainder is released, and on any early reject the entire
+/// reservation is released before returning. Because the charge is *consumed*
+/// into admission on the success path (a fresh `with_construction_charge` scope
+/// then covers the parsed document), no residual manual charge can leak across
+/// an early item exit. Every `false` return releases the full reservation.
 fn admit_parsed_sidecar(
     reservation: &SidecarParseReservation,
     document_bytes: u64,
@@ -1183,15 +1264,12 @@ impl NoteSourceAdmission {
         bytes: u64,
         body: impl FnOnce(&mut Self) -> ControlFlow<T, ()>,
     ) -> ChargeOutcome<T> {
-        if !self.try_charge_construction(bytes) {
-            return ChargeOutcome::BudgetExhausted;
-        }
-        let flow = body(self);
-        self.release_construction(bytes);
-        match flow {
-            ControlFlow::Continue(()) => ChargeOutcome::Ran,
-            ControlFlow::Break(value) => ChargeOutcome::Broke(value),
-        }
+        with_charge(
+            self,
+            |admission| admission.try_charge_construction(bytes),
+            |admission| admission.release_construction(bytes),
+            body,
+        )
     }
 
     fn cancelled(mut self) -> PaletteNoteSourceOutcome {

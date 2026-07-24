@@ -23,17 +23,45 @@ use super::LushtextEditorPage;
 
 type FreshnessCheck = Box<dyn Fn(&LushtextEditorPage) -> bool>;
 type TerminalCallback = Box<dyn FnOnce(BufferReplacementOutcome)>;
-type CompletedGuardedBodyCallback =
-    Box<dyn FnOnce(crate::ui::plain_disposal::DisposalOwned<String>)>;
+/// Callback that receives a guarded (disposal-owned) source body back.
+type GuardedBodyCallback = Box<dyn FnOnce(crate::ui::plain_disposal::DisposalOwned<String>)>;
+/// Callback that receives a plain source body back (test-only cancel probe).
+#[cfg(feature = "test-utils")]
+type PlainBodyCallback = Box<dyn FnOnce(String)>;
 
+/// The uninstalled source body paired with the workflow callbacks matched to
+/// its kind.
+///
+/// Keeping each callback *inside* the body variant it belongs to makes a
+/// guarded cancellation callback structurally impossible to attach to a plain
+/// body (and a plain callback impossible to attach to a guarded body): the only
+/// constructors that accept a guarded callback also demand a guarded body. As a
+/// result terminal teardown matches every legal pairing exhaustively with no
+/// runtime panic arm for an unrepresentable mismatch.
 enum ReplacementBody {
-    Plain(String),
-    Guarded(crate::ui::plain_disposal::DisposalOwned<String>),
+    Plain {
+        body: String,
+        /// Test-only probe returning the uninstalled plain body on cancel.
+        #[cfg(feature = "test-utils")]
+        on_cancel: Option<PlainBodyCallback>,
+    },
+    Guarded {
+        body: crate::ui::plain_disposal::DisposalOwned<String>,
+        /// Returns the uninstalled guarded body on cancel/supersede, keeping its
+        /// disposal reservation intact.
+        on_cancel: Option<GuardedBodyCallback>,
+        /// Preserves the installed guarded source for an accepted workflow cache.
+        on_complete: Option<GuardedBodyCallback>,
+    },
 }
 
 impl Default for ReplacementBody {
     fn default() -> Self {
-        Self::Plain(String::new())
+        Self::Plain {
+            body: String::new(),
+            #[cfg(feature = "test-utils")]
+            on_cancel: None,
+        }
     }
 }
 
@@ -42,30 +70,57 @@ impl Deref for ReplacementBody {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Self::Plain(body) => body,
-            Self::Guarded(body) => body,
+            Self::Plain { body, .. } => body,
+            Self::Guarded { body, .. } => body,
         }
     }
 }
 
-enum CancelledBodyCallback {
-    #[cfg(feature = "test-utils")]
-    Plain(Box<dyn FnOnce(String)>),
-    Guarded(Box<dyn FnOnce(crate::ui::plain_disposal::DisposalOwned<String>)>),
-}
-
-impl CancelledBodyCallback {
-    fn return_body(self, body: ReplacementBody) {
-        match (self, body) {
+impl ReplacementBody {
+    /// Return this uninstalled body to its workflow owner on cancel/supersede.
+    ///
+    /// A guarded completion callback is intentionally dropped uncalled here; a
+    /// guarded body with no cancel callback disposes itself through
+    /// `DisposalOwned`.
+    fn return_on_cancel(self) {
+        match self {
             #[cfg(feature = "test-utils")]
-            (Self::Plain(callback), ReplacementBody::Plain(body)) => callback(body),
-            (Self::Guarded(callback), ReplacementBody::Guarded(body)) => callback(body),
-            #[cfg(feature = "test-utils")]
-            (Self::Plain(callback), ReplacementBody::Guarded(body)) => {
-                callback(body.into_inner_for_current_install());
+            Self::Plain { body, on_cancel } => {
+                if let Some(callback) = on_cancel {
+                    callback(body);
+                }
             }
-            (Self::Guarded(_), ReplacementBody::Plain(_)) => {
-                unreachable!("guarded cancellation callback requires a guarded body")
+            #[cfg(not(feature = "test-utils"))]
+            Self::Plain { body } => drop(body),
+            Self::Guarded {
+                body,
+                on_cancel,
+                on_complete: _,
+            } => match on_cancel {
+                Some(callback) => callback(body),
+                None => drop(body),
+            },
+        }
+    }
+
+    /// Finalize an accepted replacement: route a guarded body to its completion
+    /// callback and yield the retained plain body for terminal evidence.
+    fn into_completed_body(self) -> String {
+        match self {
+            #[cfg(feature = "test-utils")]
+            Self::Plain { body, on_cancel: _ } => body,
+            #[cfg(not(feature = "test-utils"))]
+            Self::Plain { body } => body,
+            Self::Guarded {
+                body,
+                on_cancel: _,
+                on_complete,
+            } => {
+                match on_complete {
+                    Some(callback) => callback(body),
+                    None => drop(body),
+                }
+                String::new()
             }
         }
     }
@@ -151,16 +206,20 @@ impl BufferReplacementOutcome {
 }
 
 /// One complete replacement request; pending ownership never contains GTK objects.
+///
+/// The body kind and its cancellation/completion callbacks are paired by
+/// construction: every constructor that accepts a guarded callback also demands
+/// a guarded body, so a guarded callback cannot reach a plain body (or the
+/// reverse). There is no builder that could later cross those kinds.
 pub struct BufferReplacementRequest {
     ticket: BufferReplacementTicket,
     body: ReplacementBody,
     is_current: FreshnessCheck,
     callback: TerminalCallback,
-    cancelled_body: Option<CancelledBodyCallback>,
-    completed_guarded_body: Option<CompletedGuardedBodyCallback>,
 }
 
 impl BufferReplacementRequest {
+    /// Plain-body replacement with no body-return callback (e.g. eviction).
     pub fn new(
         ticket: BufferReplacementTicket,
         body: String,
@@ -169,54 +228,76 @@ impl BufferReplacementRequest {
     ) -> Self {
         Self {
             ticket,
-            body: ReplacementBody::Plain(body),
+            body: ReplacementBody::Plain {
+                body,
+                #[cfg(feature = "test-utils")]
+                on_cancel: None,
+            },
             is_current: Box::new(is_current),
             callback: Box::new(callback),
-            cancelled_body: None,
-            completed_guarded_body: None,
         }
     }
 
-    /// Return the uninstalled source body immediately when this request cancels.
+    /// Plain-body replacement that returns the uninstalled body when cancelled.
     #[cfg(feature = "test-utils")]
-    pub fn return_body_on_cancel(mut self, callback: impl FnOnce(String) + 'static) -> Self {
-        self.cancelled_body = Some(CancelledBodyCallback::Plain(Box::new(callback)));
-        self
+    pub fn new_returning_body_on_cancel(
+        ticket: BufferReplacementTicket,
+        body: String,
+        is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
+        callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+        on_cancel: impl FnOnce(String) + 'static,
+    ) -> Self {
+        Self {
+            ticket,
+            body: ReplacementBody::Plain {
+                body,
+                on_cancel: Some(Box::new(on_cancel)),
+            },
+            is_current: Box::new(is_current),
+            callback: Box::new(callback),
+        }
     }
 
-    /// Build a replacement whose final source owner remains pre-admitted for worker disposal.
-    pub(crate) fn new_guarded(
+    /// Guarded-body replacement that returns the uninstalled guarded body on
+    /// cancel without releasing its disposal reservation.
+    pub(crate) fn new_guarded_returning_body_on_cancel(
         ticket: BufferReplacementTicket,
         body: crate::ui::plain_disposal::DisposalOwned<String>,
         is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
         callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+        on_cancel: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
     ) -> Self {
         Self {
             ticket,
-            body: ReplacementBody::Guarded(body),
+            body: ReplacementBody::Guarded {
+                body,
+                on_cancel: Some(Box::new(on_cancel)),
+                on_complete: None,
+            },
             is_current: Box::new(is_current),
             callback: Box::new(callback),
-            cancelled_body: None,
-            completed_guarded_body: None,
         }
     }
 
-    /// Return one cancelled guarded body without releasing its disposal reservation.
-    pub(crate) fn return_guarded_body_on_cancel(
-        mut self,
-        callback: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
+    /// Guarded-body replacement that preserves the installed guarded source for
+    /// an accepted workflow cache when the replacement completes.
+    pub(crate) fn new_guarded_returning_body_on_complete(
+        ticket: BufferReplacementTicket,
+        body: crate::ui::plain_disposal::DisposalOwned<String>,
+        is_current: impl Fn(&LushtextEditorPage) -> bool + 'static,
+        callback: impl FnOnce(BufferReplacementOutcome) + 'static,
+        on_complete: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
     ) -> Self {
-        self.cancelled_body = Some(CancelledBodyCallback::Guarded(Box::new(callback)));
-        self
-    }
-
-    /// Preserve an installed guarded source for an accepted workflow cache.
-    pub(crate) fn return_guarded_body_on_complete(
-        mut self,
-        callback: impl FnOnce(crate::ui::plain_disposal::DisposalOwned<String>) + 'static,
-    ) -> Self {
-        self.completed_guarded_body = Some(Box::new(callback));
-        self
+        Self {
+            ticket,
+            body: ReplacementBody::Guarded {
+                body,
+                on_cancel: None,
+                on_complete: Some(Box::new(on_complete)),
+            },
+            is_current: Box::new(is_current),
+            callback: Box::new(callback),
+        }
     }
 }
 
@@ -247,8 +328,6 @@ pub(crate) struct BufferReplacementSession {
     byte_offset: usize,
     is_current: FreshnessCheck,
     callback: Option<TerminalCallback>,
-    cancelled_body: Option<CancelledBodyCallback>,
-    completed_guarded_body: Option<CompletedGuardedBodyCallback>,
     source_id: Option<glib::SourceId>,
     guard: Option<ReplacementGuard>,
     phase: ReplacementPhase,
@@ -417,21 +496,15 @@ fn run_insert_slice(session: &Rc<RefCell<BufferReplacementSession>>) {
     let current_phase = {
         let mut state = session.borrow_mut();
         if state.terminal {
-            let cancelled_body = state.cancelled_body.take();
             drop(state);
-            if let Some(cancelled_body) = cancelled_body {
-                cancelled_body.return_body(body);
-            }
+            body.return_on_cancel();
             return;
         }
         state.metrics.inserted_bytes = state.metrics.inserted_bytes.max(end);
         state.metrics.slice_count = state.metrics.slice_count.saturating_add(1);
         if state.phase != ReplacementPhase::Installing {
-            let cancelled_body = state.cancelled_body.take();
             drop(state);
-            if let Some(cancelled_body) = cancelled_body {
-                cancelled_body.return_body(body);
-            }
+            body.return_on_cancel();
             return;
         }
         state.byte_offset = end;
@@ -473,11 +546,8 @@ fn run_direct(session: &Rc<RefCell<BufferReplacementSession>>) {
     buffer.set_text(&body);
     let mut state = session.borrow_mut();
     if state.terminal || state.phase != ReplacementPhase::Clearing {
-        let cancelled_body = state.cancelled_body.take();
         drop(state);
-        if let Some(cancelled_body) = cancelled_body {
-            cancelled_body.return_body(body);
-        }
+        body.return_on_cancel();
         return;
     }
     state.mutation_started = true;
@@ -493,7 +563,7 @@ fn cancel_session(
     reason: BufferReplacementCancelReason,
     disposing: bool,
 ) {
-    let (source, mutation_started, body, cancelled_body) = {
+    let (source, mutation_started, body) = {
         let mut state = session.borrow_mut();
         if state.terminal || state.phase == ReplacementPhase::Finalizing {
             return;
@@ -501,11 +571,10 @@ fn cancel_session(
         let source = state.source_id.take();
         state.cancel_reason = Some(reason);
         let body = state.body.take();
-        let cancelled_body = body.as_ref().and_then(|_| state.cancelled_body.take());
-        (source, state.mutation_started, body, cancelled_body)
+        (source, state.mutation_started, body)
     };
-    if let (Some(body), Some(cancelled_body)) = (body, cancelled_body) {
-        cancelled_body.return_body(body);
+    if let Some(body) = body {
+        body.return_on_cancel();
     }
     if let Some(source) = source {
         source.remove();
@@ -545,7 +614,7 @@ fn finish_session(
     session: &Rc<RefCell<BufferReplacementSession>>,
     cancellation: Option<BufferReplacementCancelReason>,
 ) {
-    let (editor, buffer, source, guard, ticket, body, callback, completed_guarded_body, metrics) = {
+    let (editor, buffer, source, guard, ticket, body, callback, metrics) = {
         let mut state = session.borrow_mut();
         if state.terminal {
             return;
@@ -560,7 +629,6 @@ fn finish_session(
             state.ticket,
             state.body.take(),
             state.callback.take(),
-            state.completed_guarded_body.take(),
             state.metrics,
         )
     };
@@ -576,17 +644,7 @@ fn finish_session(
             metrics,
         }
     } else {
-        let body = match body.unwrap_or_default() {
-            ReplacementBody::Plain(body) => body,
-            ReplacementBody::Guarded(body) => {
-                if let Some(callback) = completed_guarded_body {
-                    callback(body);
-                } else {
-                    drop(body);
-                }
-                String::new()
-            }
-        };
+        let body = body.unwrap_or_default().into_completed_body();
         #[cfg(not(feature = "test-utils"))]
         drop(body);
         BufferReplacementOutcome::Complete {
@@ -716,9 +774,7 @@ impl LushtextEditorPage {
                 return;
             }
             if let Some(replaced) = self.imp().replacement.pending.replace(Some(request)) {
-                if let Some(cancelled_body) = replaced.cancelled_body {
-                    cancelled_body.return_body(replaced.body);
-                }
+                replaced.body.return_on_cancel();
                 (replaced.callback)(BufferReplacementOutcome::Cancelled {
                     ticket: replaced.ticket,
                     reason: BufferReplacementCancelReason::Superseded,
@@ -743,8 +799,6 @@ impl LushtextEditorPage {
             byte_offset: 0,
             is_current: request.is_current,
             callback: Some(request.callback),
-            cancelled_body: request.cancelled_body,
-            completed_guarded_body: request.completed_guarded_body,
             source_id: None,
             guard: Some(guard),
             phase: ReplacementPhase::Clearing,
@@ -769,9 +823,7 @@ impl LushtextEditorPage {
 
     pub(crate) fn cancel_buffer_replacement_for_dispose(&self) {
         if let Some(pending) = self.imp().replacement.pending.take() {
-            if let Some(cancelled_body) = pending.cancelled_body {
-                cancelled_body.return_body(pending.body);
-            }
+            pending.body.return_on_cancel();
             (pending.callback)(BufferReplacementOutcome::Cancelled {
                 ticket: pending.ticket,
                 reason: BufferReplacementCancelReason::Disposed,
@@ -846,42 +898,40 @@ impl LushtextEditorPage {
         outcomes: Rc<RefCell<Vec<BufferReplacementTestOutcome>>>,
         cancelled_bodies: Rc<RefCell<Vec<String>>>,
     ) {
-        self.replace_buffer_bounded(
-            BufferReplacementRequest::new(
-                BufferReplacementTicket {
-                    workflow: BufferReplacementWorkflow::Test,
-                    generation,
-                },
-                body,
-                move |_| current.get(),
-                move |outcome| {
-                    let outcome = match outcome {
-                        BufferReplacementOutcome::Complete {
-                            ticket,
-                            body,
-                            metrics,
-                        } => BufferReplacementTestOutcome {
-                            ticket,
-                            body: Some(body),
-                            cancel_reason: None,
-                            metrics,
-                        },
-                        BufferReplacementOutcome::Cancelled {
-                            ticket,
-                            reason,
-                            metrics,
-                        } => BufferReplacementTestOutcome {
-                            ticket,
-                            body: None,
-                            cancel_reason: Some(reason),
-                            metrics,
-                        },
-                    };
-                    outcomes.borrow_mut().push(outcome);
-                },
-            )
-            .return_body_on_cancel(move |body| cancelled_bodies.borrow_mut().push(body)),
-        );
+        self.replace_buffer_bounded(BufferReplacementRequest::new_returning_body_on_cancel(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::Test,
+                generation,
+            },
+            body,
+            move |_| current.get(),
+            move |outcome| {
+                let outcome = match outcome {
+                    BufferReplacementOutcome::Complete {
+                        ticket,
+                        body,
+                        metrics,
+                    } => BufferReplacementTestOutcome {
+                        ticket,
+                        body: Some(body),
+                        cancel_reason: None,
+                        metrics,
+                    },
+                    BufferReplacementOutcome::Cancelled {
+                        ticket,
+                        reason,
+                        metrics,
+                    } => BufferReplacementTestOutcome {
+                        ticket,
+                        body: None,
+                        cancel_reason: Some(reason),
+                        metrics,
+                    },
+                };
+                outcomes.borrow_mut().push(outcome);
+            },
+            move |body| cancelled_bodies.borrow_mut().push(body),
+        ));
     }
 
     #[cfg(feature = "test-utils")]
@@ -921,5 +971,59 @@ impl LushtextEditorPage {
         &self,
     ) -> Option<BufferReplacementTerminalDiagnostic> {
         *self.imp().replacement.last_terminal.borrow()
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    //! Correct-by-construction proof for body-kind / callback-kind pairing.
+    //!
+    //! The illegal pairings — a guarded cancellation/completion callback with a
+    //! plain body, or a plain callback with a guarded body — are
+    //! *unconstructible*: every constructor that accepts a guarded callback
+    //! (`new_guarded_returning_body_on_{cancel,complete}`) also requires a
+    //! `DisposalOwned<String>` body, and the only plain constructors (`new`,
+    //! `new_returning_body_on_cancel`) accept no guarded callback. No
+    //! `BufferReplacementRequest` value can therefore pair a guarded callback
+    //! with a plain body, which is why [`ReplacementBody::return_on_cancel`] and
+    //! [`ReplacementBody::into_completed_body`] match every legal pairing
+    //! exhaustively with no runtime panic arm. These tests exercise the plain
+    //! routing (guarded routing needs the GTK disposal lane and is covered by
+    //! the replacement widget tests).
+
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn plain_body_returns_through_its_matched_cancel_callback() {
+        let returned = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&returned);
+        let body = ReplacementBody::Plain {
+            body: "abc".to_string(),
+            on_cancel: Some(Box::new(move |body| *sink.borrow_mut() = Some(body))),
+        };
+        body.return_on_cancel();
+        assert_eq!(returned.borrow().as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn plain_body_completion_yields_the_retained_body() {
+        let body = ReplacementBody::Plain {
+            body: "done".to_string(),
+            #[cfg(feature = "test-utils")]
+            on_cancel: None,
+        };
+        assert_eq!(body.into_completed_body(), "done");
+    }
+
+    #[test]
+    fn default_body_is_an_empty_plain_placeholder() {
+        // `Default`/`mem::take`/`unwrap_or_default` placeholder values must stay
+        // representable without weakening the pairing guarantee.
+        let body = ReplacementBody::default();
+        assert!(body.is_empty());
+        assert_eq!(body.into_completed_body(), "");
     }
 }

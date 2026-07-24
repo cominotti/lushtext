@@ -113,6 +113,42 @@ autosave, encoding analysis, preview flows, or optional marker scans.
   `spawn_blocking_then`, applying it only while the editor is still mounted and
   still owns the same path.
 
+## Coordination Vocabulary
+
+The bounded-work programme reuses a small set of coordination concepts. Learn
+these names once instead of re-deriving each subsystem's bookkeeping:
+
+- **Admission** — a gate that decides whether new work may start against a
+  bounded budget, reserving weight up front and releasing it on completion or
+  rejection. The disposal lane (`ui::plain_disposal`) admits guarded payloads;
+  palette ledgers admit construction/scratch bytes. Admission is *reserve then
+  settle*, never fire-and-forget.
+- **Budget** — the ceiling an admission gate protects (byte limits, retained
+  weight, queue depth). A budget is a policy value near its owner, not a global
+  constant dump; crossing it yields a typed truncation/rejection, never a panic.
+- **Coordinator** — a one-active/one-latest single-flight owner
+  (`services::single_flight::SingleFlightCoordinator`, aliased per workflow):
+  it starts at most one request, keeps only the newest superseding request, and
+  hands out a `FlightCancellation` token. Consume the shared coordinator; do not
+  re-implement submit/finish/supersede generation logic per workflow.
+- **Ledger** — O(1) running accounting for a bounded build/mutation
+  (`FileIndexBuildLedger`, `NoteSourceAdmission`, `FileIndexMutationLedger`):
+  it charges on reserve, releases on scope exit, and tracks peak/high-water
+  evidence. Release scratch through a scope-owned guard (`with_charge` /
+  `try_with_charge` in `services::palette::charge_scope`), not per-exit calls.
+- **Retirement** — the deferred, off-GTK destruction of a large owned payload
+  through the disposal lane (`DisposalOwned<T>` reaching a terminal worker), so
+  freeing document-sized memory never blocks the GTK main thread.
+- **Continuation** — a bounded resumable loop that reserves per-item weight and
+  yields between chunks (draft/orphan durable continuation, chunked buffer
+  install/clear), releasing each reservation through a scope-owned mechanism.
+- **Generation counter** — a monotonic `u64`/`u32` freshness token that a
+  worker result must match before it may mutate UI state. Advance it on every
+  new request; reject a completion whose generation is stale, whose editor was
+  closed, or whose path/identity changed. Coordinators own the request
+  generation; workflows keep their own edit/path/analysis generations explicit
+  where durable writes or cross-thread ownership depend on them.
+
 ## Filesystem Boundary
 
 Production code must use `services::filesystem` for file reads, metadata,

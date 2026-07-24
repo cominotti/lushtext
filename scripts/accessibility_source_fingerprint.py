@@ -28,6 +28,7 @@ RELEVANT_EXACT_PATHS = (
     "scripts/accessibility_warning_allowlist.py",
     "scripts/run-accessibility-smoke.sh",
     "scripts/run-visual-smoke.sh",
+    "scripts/smoke_warning_classifiers.py",
     "docs/accessibility.md",
     "docs/accessibility-matrix.md",
     "docs/accessibility-orca-checklist.md",

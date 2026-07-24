@@ -166,8 +166,15 @@ impl LushtextSidebar {
     }
 
     fn emit_file_renamed(&self, old_path: &Path, new_path: &Path) {
-        if let Some(ref callback) = *self.imp().rename_callback.borrow() {
+        // End the borrow before invoking so a callback that re-enters
+        // registration cannot panic; restore unless a replacement was set.
+        let callback = self.imp().rename_callback.borrow_mut().take();
+        if let Some(callback) = callback {
             callback(old_path, new_path);
+            self.imp()
+                .rename_callback
+                .borrow_mut()
+                .get_or_insert(callback);
         }
     }
 
@@ -178,8 +185,13 @@ impl LushtextSidebar {
     }
 
     fn emit_file_created(&self, path: &Path) {
-        if let Some(ref callback) = *self.imp().create_callback.borrow() {
+        let callback = self.imp().create_callback.borrow_mut().take();
+        if let Some(callback) = callback {
             callback(path);
+            self.imp()
+                .create_callback
+                .borrow_mut()
+                .get_or_insert(callback);
         }
     }
 

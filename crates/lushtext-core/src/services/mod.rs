@@ -38,6 +38,8 @@ pub mod saved_searches;
 pub mod search_backup;
 pub mod search_history;
 pub mod session_service;
+pub mod single_flight;
+pub(crate) mod sync;
 pub mod workspace_manager;
 pub mod workspace_watch;
 

@@ -175,7 +175,7 @@ enum GuardedNoteSourceOutcome {
 
 fn guard_note_source_on_worker(
     result: anyhow::Result<PaletteNoteSourceOutcome>,
-    mut reservation: crate::ui::plain_disposal::DisposalReservation,
+    reservation: crate::ui::plain_disposal::DisposalReservation,
 ) -> GuardedNoteSourceOutcome {
     match result {
         Ok(PaletteNoteSourceOutcome::Complete { mut load, metrics }) => {
@@ -191,10 +191,9 @@ fn guard_note_source_on_worker(
             debug_assert!(
                 metrics.retained_bytes <= palette_service::MAX_PALETTE_NOTE_RETAINED_BYTES
             );
-            reservation.shrink_to(metrics.retained_bytes);
             GuardedNoteSourceOutcome::Complete {
                 load,
-                entries: reservation.own(entries),
+                entries: reservation.shrink_to_and_own(metrics.retained_bytes, entries),
                 had_recovery_diagnostics,
             }
         }

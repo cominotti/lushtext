@@ -306,29 +306,28 @@ impl super::LushtextWorkspaceSection {
                         }
                         imp.is_new_item.set(false);
 
-                        if is_new
-                            && !is_dir
-                            && let Some(ref cb) = *imp.create_callback.borrow()
-                        {
-                            cb(&new_path);
-                        } else if !is_new && let Some(ref cb) = *imp.rename_callback.borrow() {
-                            cb(&old_path, &new_path);
+                        // End the callback borrow before invoking so a callback
+                        // that re-enters registration cannot panic; restore it
+                        // unless invocation registered a replacement.
+                        if is_new && !is_dir {
+                            let cb = imp.create_callback.borrow_mut().take();
+                            if let Some(cb) = cb {
+                                cb(&new_path);
+                                imp.create_callback.borrow_mut().get_or_insert(cb);
+                            }
+                        } else if !is_new {
+                            let cb = imp.rename_callback.borrow_mut().take();
+                            if let Some(cb) = cb {
+                                cb(&old_path, &new_path);
+                                imp.rename_callback.borrow_mut().get_or_insert(cb);
+                            }
                         }
                     }
                     Err(e) => {
                         tracing::error!("Failed to rename {}: {}", old_path.display(), e);
                         if is_new {
                             imp.is_new_item.set(false);
-                            // Fire-and-forget cleanup on a background thread to avoid
-                            // blocking the main thread on slow filesystems (NFS, FUSE).
-                            let old_path_bg = old_path.clone();
-                            std::thread::spawn(move || {
-                                if is_dir {
-                                    let _ = fs_mutate::remove_dir_if_exists(&old_path_bg);
-                                } else {
-                                    let _ = fs_mutate::remove_file_if_exists(&old_path_bg);
-                                }
-                            });
+                            spawn_temp_item_cleanup(old_path.clone(), is_dir);
                             let _ = section.remove_from_model(&old_path);
                         }
                     }
@@ -350,7 +349,6 @@ impl super::LushtextWorkspaceSection {
         cancel_rename(entry, label, content_box);
         self.imp().is_new_item.set(false);
 
-        // Fire-and-forget deletion of the temp item on a background thread.
         // Uses the captured context target instead of stat to avoid a synchronous syscall.
         let path = temp_path.to_path_buf();
         let is_dir = self
@@ -359,13 +357,7 @@ impl super::LushtextWorkspaceSection {
             .borrow()
             .as_ref()
             .is_some_and(|target| target.is_dir);
-        std::thread::spawn(move || {
-            if is_dir {
-                let _ = fs_mutate::remove_dir_if_exists(&path);
-            } else {
-                let _ = fs_mutate::remove_file_if_exists(&path);
-            }
-        });
+        spawn_temp_item_cleanup(path, is_dir);
 
         let _ = self.remove_from_model(temp_path);
     }
@@ -503,6 +495,33 @@ fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBu
         }
     }
     Err(std::io::Error::other("could not find unique name"))
+}
+
+/// Fire-and-forget removal of a temporary or failed inline item on a background
+/// thread.
+///
+/// Both the cancelled-new-item flow and the failed-rename recovery flow need to
+/// discard a placeholder path without blocking the GTK main thread on slow
+/// filesystems (NFS, FUSE), so this intentionally bypasses
+/// `gtk_lush_tasks::spawn_blocking_then` (which is for work whose completion
+/// touches GTK state). The cleanup is best-effort — the user-facing flow is
+/// already resolved — but a failure is logged at warning level so orphaned
+/// placeholder debugging has a trail instead of a silent drop.
+fn spawn_temp_item_cleanup(path: PathBuf, is_dir: bool) {
+    std::thread::spawn(move || {
+        let result = if is_dir {
+            fs_mutate::remove_dir_if_exists(&path)
+        } else {
+            fs_mutate::remove_file_if_exists(&path)
+        };
+        if let Err(e) = result {
+            tracing::warn!(
+                "Failed to clean up temporary item {}: {}",
+                path.display(),
+                e
+            );
+        }
+    });
 }
 
 /// Remove the rename entry and restore the label.

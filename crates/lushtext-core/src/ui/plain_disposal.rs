@@ -16,6 +16,7 @@ use crate::model::plain_disposal::PlainDisposalSnapshot;
 use crate::model::plain_disposal::{
     PlainDisposalAdmission, PlainDisposalLimits, QueuedPlainDisposal,
 };
+use crate::services::sync::lock_unpoisoned;
 use crossbeam_channel::{Sender, TrySendError, unbounded};
 #[cfg(any(test, feature = "test-utils"))]
 use std::cell::Cell;
@@ -25,7 +26,7 @@ use std::ops::{Deref, DerefMut};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -400,6 +401,22 @@ impl DisposalReservation {
     pub(crate) fn own<T: Send + 'static>(self, value: T) -> DisposalOwned<T> {
         DisposalOwned::new(value, self.permit)
     }
+
+    /// The shared guarded worker-outcome tail: shrink the conservative pre-I/O
+    /// reservation to the completed value's exact `weight`, then take ownership.
+    ///
+    /// The window-layer file-index, note-source, and local-history preview
+    /// adapters all end their worker with this weight-then-own step. Each keeps
+    /// its own outcome enum and freshness checks; only this reservation
+    /// bookkeeping is shared.
+    pub(crate) fn shrink_to_and_own<T: Send + 'static>(
+        mut self,
+        weight: u64,
+        value: T,
+    ) -> DisposalOwned<T> {
+        self.shrink_to(weight);
+        self.own(value)
+    }
 }
 
 impl<T: Send + 'static> DisposalOwned<T> {
@@ -765,12 +782,6 @@ impl<const PROGRESS: bool> CapacityWakeup<PROGRESS> {
 pub(crate) type DisposalCapacityWakeup = CapacityWakeup<false>;
 /// Capacity wakeup for startup recovery and Notes source progress.
 pub(crate) type ProgressDisposalCapacityWakeup = CapacityWakeup<true>;
-
-fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 fn disposal_lane() -> DisposalLane {
     static LANE: OnceLock<DisposalLane> = OnceLock::new();

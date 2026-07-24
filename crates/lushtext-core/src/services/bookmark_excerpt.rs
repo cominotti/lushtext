@@ -11,8 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{metadata, read};
 use crate::services::palette::{
-    PaletteSearchCancellation, PaletteSearchCoordinator, PaletteSearchCoordinatorSnapshot,
-    PaletteSearchStart,
+    PaletteSearchCoordinator, PaletteSearchCoordinatorSnapshot, PaletteSearchStart,
 };
 
 use super::file_limits::FileSizeCheck;
@@ -171,7 +170,7 @@ impl BookmarkExcerpt {
 }
 
 /// Cooperative cancellation observed between bounded excerpt work stages.
-pub type BookmarkExcerptCancellation = PaletteSearchCancellation;
+pub type BookmarkExcerptCancellation = crate::services::single_flight::FlightCancellation;
 
 /// Typed terminal outcome from one cancellable closed-file excerpt load.
 #[derive(Clone, Debug, Eq, PartialEq)]

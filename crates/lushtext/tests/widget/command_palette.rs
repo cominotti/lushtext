@@ -4,7 +4,8 @@
 //! grouped results, keyboard flow, click-away dismissal, and focus restoration.
 
 use crate::common::{
-    ensure_gtk_init, fixture, flush_after_delay, flush_events, isolated_data_dir, wait_until,
+    ensure_gtk_init, fixture, flush_after_delay, flush_events, isolated_data_dir, present_window,
+    wait_until,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::prelude::ToValue;
@@ -74,16 +75,6 @@ fn spin_until(predicate: impl Fn() -> bool) {
 }
 
 /// Present a test window and wait until the headless compositor allocates it.
-fn present_window(window: &LushtextWindow) {
-    window.present();
-    // Realization is a precondition: give the headless compositor a generous
-    // budget to allocate the window before tests interact with it.
-    wait_until(Duration::from_secs(5), || {
-        window.width() > 0 && window.height() > 0
-    });
-    flush_events();
-}
-
 /// Seed two persisted workspaces so window construction observes real app state.
 fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, PathBuf, PathBuf) {
     ensure_gtk_init();

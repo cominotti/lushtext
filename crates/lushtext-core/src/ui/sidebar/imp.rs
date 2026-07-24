@@ -10,7 +10,7 @@ use crate::model::workspace_persistence::WorkspacePersistenceState;
 use crate::services::notifications::NotificationSeverity;
 use crate::ui::accessibility;
 use crate::ui::sidebar::SidebarFileRowStateSnapshot;
-use gtk_lush_settle::Debounce;
+use gtk_lush_settle::{Debounce, SupersedingTimer};
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, glib};
@@ -72,6 +72,10 @@ pub struct LushtextSidebar {
     pub applied_workspace_filter: RefCell<WorkspaceScope>,
     /// Guard tracking the fade-out/fade-in sequence for selector changes.
     pub workspace_filter_animation_active: Cell<bool>,
+    /// Safety-net timer that reapplies the workspace filter if the revealer's
+    /// child-revealed notification does not fire (test/headless frame clocks).
+    /// Superseding semantics remove a stale arm when the animation re-arms.
+    pub workspace_filter_settle_timer: SupersedingTimer,
 
     /// Callback for file double-click activation, forwarded to the window.
     pub file_activated_callback: RefCell<Option<FileCallback>>,
@@ -122,6 +126,7 @@ impl Default for LushtextSidebar {
             syncing_workspace_filter: Cell::default(),
             applied_workspace_filter: RefCell::new(WorkspaceScope::All),
             workspace_filter_animation_active: Cell::default(),
+            workspace_filter_settle_timer: SupersedingTimer::default(),
             file_activated_callback: RefCell::default(),
             local_history_callback: RefCell::default(),
             document_note_callback: RefCell::default(),

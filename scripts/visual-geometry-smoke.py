@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from smoke_warning_classifiers import is_gdk_broken_pipe_teardown
 from visual_geometry_png import (
     Rect,
     clamp_rect,
@@ -2140,7 +2141,7 @@ def scan_warnings(case_dir: Path) -> dict[str, Any]:
         if not path.is_file():
             continue
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if "Error reading events from display: Broken pipe" in line:
+            if is_gdk_broken_pipe_teardown(line):
                 continue
             if KNOWN_HEADLESS_WARNING_RE.search(line):
                 continue

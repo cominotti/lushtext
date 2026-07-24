@@ -37,7 +37,10 @@ fn pre_rename_failure_reclaims_one_entry_budget_for_later_sorted_target() {
     let one_entry =
         u64::try_from("needle\n".len() + "done\n".len()).expect("fixture payload should fit u64");
     content_search::set_max_replace_undo_bytes_for_test(Some(one_entry));
-    content_search::fail_next_replace_before_rename_for_path_for_test(&first);
+    // Keep the guard alive through `apply_replacements`; dropping it early would
+    // disarm the before-rename failure seam before the replace runs.
+    let _before_rename_seam =
+        content_search::fail_next_replace_before_rename_for_path_for_test(&first);
 
     let outcome = content_search::apply_replacements(
         &replacements,

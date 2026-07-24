@@ -271,12 +271,6 @@ impl LushtextEditorPage {
         *self.imp().document_metadata.file_health.borrow_mut() = findings;
     }
 
-    /// Whether the current tab has any surfaced file-health findings.
-    #[must_use]
-    pub fn has_file_health(&self) -> bool {
-        !self.imp().document_metadata.file_health.borrow().is_empty()
-    }
-
     /// Current invisible-character visibility mode for this tab.
     #[must_use]
     pub fn invisible_characters_mode(&self) -> InvisibleCharactersMode {
@@ -339,7 +333,7 @@ impl LushtextEditorPage {
 
     /// Evict buffer content to free memory. The tab reloads from disk when re-focused.
     pub fn evict(&self) {
-        let generation = self.imp().memory_policy_generation.get();
+        let generation = self.imp().residency.policy_generation.get();
         let editor_weak = self.downgrade();
         self.replace_buffer_bounded(BufferReplacementRequest::new(
             BufferReplacementTicket {
@@ -348,7 +342,7 @@ impl LushtextEditorPage {
             },
             String::new(),
             move |editor| {
-                editor.imp().memory_policy_generation.get() == generation
+                editor.imp().residency.policy_generation.get() == generation
                     && !editor.is_evicted()
                     && !editor.is_saving()
                     && editor.load_state() == EditorLoadState::Loaded
@@ -370,7 +364,7 @@ impl LushtextEditorPage {
                 ) {
                     return;
                 }
-                editor.imp().evicted.set(true);
+                editor.imp().residency.evicted.set(true);
                 editor.buffer().set_modified(false);
                 editor.release_local_history_residency_for_eviction();
                 editor.clear_modified_line_marks();
@@ -383,7 +377,7 @@ impl LushtextEditorPage {
 
     #[must_use]
     pub fn is_evicted(&self) -> bool {
-        self.imp().evicted.get()
+        self.imp().residency.evicted.get()
     }
 
     /// Whether current content can be dropped and reconstructed from disk.
@@ -409,7 +403,7 @@ impl LushtextEditorPage {
             return crate::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
         }
         #[cfg(feature = "test-utils")]
-        if let Some(bytes) = self.imp().memory_estimate_override.get() {
+        if let Some(bytes) = self.imp().residency.estimate_override.get() {
             return bytes;
         }
 
@@ -426,18 +420,18 @@ impl LushtextEditorPage {
     /// Current least-recently-used generation assigned by the owning window.
     #[must_use]
     pub(crate) fn memory_access_generation(&self) -> u64 {
-        self.imp().memory_access_generation.get()
+        self.imp().residency.access_generation.get()
     }
 
     /// Current residency and eviction-eligibility generation.
     #[must_use]
     pub(crate) fn memory_policy_generation(&self) -> u64 {
-        self.imp().memory_policy_generation.get()
+        self.imp().residency.policy_generation.get()
     }
 
     /// Assign a window-wide access generation and invalidate stale decisions.
     pub(crate) fn mark_memory_accessed(&self, generation: u64) {
-        self.imp().memory_access_generation.set(generation);
+        self.imp().residency.access_generation.set(generation);
         self.notify_memory_policy_changed();
     }
 
@@ -457,8 +451,9 @@ impl LushtextEditorPage {
     /// Advance policy freshness and notify the window without copying text.
     pub(crate) fn notify_memory_policy_changed(&self) {
         self.imp()
-            .memory_policy_generation
-            .set(self.imp().memory_policy_generation.get().wrapping_add(1));
+            .residency
+            .policy_generation
+            .set(self.imp().residency.policy_generation.get().wrapping_add(1));
         if let Some(ref callback) = *self.imp().memory_changed_callback.borrow() {
             callback();
         }
@@ -467,7 +462,7 @@ impl LushtextEditorPage {
     /// Override scalar residency for deterministic window-policy tests.
     #[cfg(feature = "test-utils")]
     pub fn set_memory_estimate_for_test(&self, bytes: Option<u64>) {
-        self.imp().memory_estimate_override.set(bytes);
+        self.imp().residency.estimate_override.set(bytes);
         self.notify_memory_policy_changed();
     }
 
@@ -555,7 +550,7 @@ impl LushtextEditorPage {
     /// Current file-load generation used to reject stale lazy draft completions.
     #[must_use]
     pub(crate) fn load_generation(&self) -> u64 {
-        self.imp().load_generation.get()
+        self.imp().load_tracking.generation.get()
     }
 
     /// Apply EditorConfig formatting overrides and update the view.

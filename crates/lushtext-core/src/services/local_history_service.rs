@@ -11,10 +11,11 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+// `AtomicU64`/`Ordering` back only the test-utils preview-read delay seam now
+// that the cancellation token aliases the shared single-flight primitive.
 #[cfg(feature = "test-utils")]
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::model::local_history::{
@@ -100,24 +101,10 @@ pub struct LocalHistoryPreviewRequest {
 }
 
 /// Cooperative cancellation observed between bounded file-read chunks.
-#[derive(Clone, Debug, Default)]
-pub struct LocalHistoryPreviewCancellation {
-    cancelled: Arc<AtomicBool>,
-}
-
-impl LocalHistoryPreviewCancellation {
-    /// Cancel the active preview load and report whether this was the first request.
-    #[must_use]
-    pub fn cancel(&self) -> bool {
-        !self.cancelled.swap(true, Ordering::Relaxed)
-    }
-
-    /// Return whether the owning selection was superseded.
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
-    }
-}
+///
+/// Aliases the shared single-flight token (following the `bookmark_excerpt`
+/// precedent) instead of maintaining a structural copy.
+pub type LocalHistoryPreviewCancellation = crate::services::single_flight::FlightCancellation;
 
 /// Typed terminal outcome from one bounded snapshot load.
 #[derive(Debug)]
@@ -270,7 +257,6 @@ impl LocalHistoryPreviewCoordinator {
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Debug)]
 enum ObsoleteLineageCleanupFailure {
-    Any,
     Path(PathBuf),
 }
 
@@ -460,23 +446,6 @@ pub fn availability_for_live_buffer_chars(char_count: i32) -> LocalHistoryAvaila
 pub fn availability_for_utf8_bytes(byte_len: usize) -> LocalHistoryAvailability {
     let byte_len = u64::try_from(byte_len).unwrap_or(u64::MAX);
     availability_for_size_check(FileSizeCheck::classify(byte_len))
-}
-
-/// Fail the next obsolete local-history lineage cleanup in test builds.
-///
-/// Prefer [`fail_next_obsolete_lineage_cleanup_for_path_for_test`] when tests
-/// can name the expected lineage, so unrelated parallel cleanup work cannot
-/// consume the injected failure.
-///
-/// # Panics
-///
-/// Panics if the test-only failure hook mutex was poisoned by an earlier panic.
-#[cfg(any(test, feature = "test-utils"))]
-pub fn fail_next_obsolete_lineage_cleanup_for_test() {
-    *obsolete_lineage_cleanup_failure()
-        .lock()
-        .expect("obsolete-lineage cleanup failure hook poisoned") =
-        Some(ObsoleteLineageCleanupFailure::Any);
 }
 
 /// Fail obsolete local-history lineage cleanup only for a specific path.
@@ -1352,7 +1321,6 @@ fn maybe_fail_obsolete_lineage_cleanup_for_test(path: &Path) -> Result<()> {
             .lock()
             .expect("obsolete-lineage cleanup failure hook poisoned");
         let should_fail = match failure.as_ref() {
-            Some(ObsoleteLineageCleanupFailure::Any) => true,
             Some(ObsoleteLineageCleanupFailure::Path(target)) => target == path,
             None => false,
         };

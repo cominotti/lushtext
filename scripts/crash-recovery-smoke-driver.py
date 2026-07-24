@@ -19,6 +19,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from smoke_warning_classifiers import is_gdk_broken_pipe_teardown
+
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[1]
@@ -1086,13 +1088,12 @@ def scan_runtime_warnings(artifact_dir: Path) -> None:
         r"gtk_[a-z0-9_]+.*assertion|gdk_[a-z0-9_]+.*assertion",
         re.IGNORECASE,
     )
-    allow_re = re.compile(r"^Gdk-Message: .*Error reading events from display: Broken pipe$")
     matches = []
     for path in sorted((artifact_dir / "logs").glob("*")):
         if not path.is_file() or path.suffix not in {".log", ".stdout", ".stderr"}:
             continue
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if warning_re.search(line) and not allow_re.search(line):
+            if warning_re.search(line) and not is_gdk_broken_pipe_teardown(line):
                 matches.append(f"{path.name}: {line}")
 
     report = artifact_dir / "assertions/runtime-warning-scan.txt"

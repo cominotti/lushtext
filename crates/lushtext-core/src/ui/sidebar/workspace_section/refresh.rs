@@ -73,12 +73,6 @@ impl LushtextWorkspaceSection {
         self.queue_auto_refresh(changed_paths);
     }
 
-    /// Test helper for driving mailbox overflow without filesystem events.
-    #[cfg(feature = "test-utils")]
-    pub fn queue_auto_full_refresh_for_test(&self) {
-        self.queue_auto_full_refresh();
-    }
-
     /// Queue an automatic refresh from the filesystem watcher.
     pub(super) fn queue_auto_refresh(&self, changed_paths: Vec<PathBuf>) {
         if changed_paths.is_empty() {
