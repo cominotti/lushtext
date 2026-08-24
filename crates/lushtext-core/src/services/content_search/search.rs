@@ -92,7 +92,7 @@ impl WalkStop {
 /// `cancel` belongs to the caller: setting it means "discard this flight". The
 /// service never writes it, so a result cap or identity-limit stop still ends
 /// with the terminating event plus `Done` on the channel for the caller to
-/// render (see [`WalkStop`]).
+/// render. The module-private `WalkStop` value owns that distinction.
 ///
 /// The `tx` channel should be `bounded(1024)` in production to apply backpressure.
 /// Using `unbounded()` is acceptable in tests.
