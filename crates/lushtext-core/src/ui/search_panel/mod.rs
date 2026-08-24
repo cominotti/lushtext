@@ -23,9 +23,9 @@
 //!    disposer (`retirement::detach_visible_results`), and any superseded
 //!    Replace All preview is released with them
 //!    (`replace::release_superseded_preview`).
-//! 4. **Admit one flight.** The single-flight policy either starts this request
-//!    or keeps it as the one replaceable latest request
-//!    (`policy::WorkspaceSearchFlight`).
+//! 4. **Admit one flight.** `execution::start_search` submits the request to the
+//!    single-flight policy, which either starts it or keeps it as the one
+//!    replaceable latest request (`policy::WorkspaceSearchFlight`).
 //! 5. **Stream results.** `execution` spawns the walker thread and a paced GTK
 //!    turn appends match rows into the grouped tree model.
 //!
@@ -53,8 +53,9 @@
 //!    transaction, opens a fresh attempt, and hands the partition to
 //!    `replace::apply_checked_replacements`.
 //! 4. **Offer undo.** A successful apply publishes the journal-backed undo
-//!    affordance, and [`LushtextSearchPanel::activate_undo_replacements`] hands
-//!    the backup back to the window.
+//!    affordance, and [`LushtextSearchPanel::activate_undo_replacements`]
+//!    delegates to `replace::hand_back_undo_backup`, which hands the backup
+//!    back to the window.
 //!
 //! Stages 2 and 3 are each inverted once: control resumes in a worker
 //! completion closure in `replace`, which revalidates that attempt's ticket
@@ -250,20 +251,12 @@ impl LushtextSearchPanel {
 
     /// Trigger the visible Undo Replacements affordance through the normal callback.
     ///
-    /// Replace stage 4. The durable undo journal and its generation guards stay
-    /// in `replace` and `services/content_search`; this only hands the current
-    /// backup to the window callback.
+    /// Replace stage 4. `replace::hand_back_undo_backup` checks the apply
+    /// transaction, takes the current backup, and retracts the affordance before
+    /// handing the backup to the window callback. The durable undo journal and
+    /// its generation guards stay in `replace` and `services/content_search`.
     pub fn activate_undo_replacements(&self) {
-        let imp = self.imp();
-        if imp.preview.replace_transaction_pending.get() {
-            return;
-        }
-        if let Some(backup) = imp.preview.undo_backup.borrow().clone() {
-            self.hide_undo_button();
-            if let Some(ref callback) = *imp.callbacks.undo_callback.borrow() {
-                callback(backup);
-            }
-        }
+        self.hand_back_undo_backup();
     }
 
     /// Update the workspace folders to search. Called when workspaces change.

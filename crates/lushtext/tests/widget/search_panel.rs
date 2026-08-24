@@ -2,7 +2,10 @@
 
 //! Tests for the workspace search panel and its components.
 
-use crate::common::{ensure_gtk_init, fixture, flush_after_delay, flush_events, wait_until};
+use crate::common::{
+    ensure_gtk_init, fixture, flush_after_delay, flush_events, isolated_data_dir, present_window,
+    wait_until,
+};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::content_search::{
@@ -2748,4 +2751,354 @@ fn test_search_panel_followup_search_keeps_results_body_open_until_new_outcome()
     assert!(imp.results_feedback_revealer.reveals_child());
     assert!(!imp.results_body_revealer.reveals_child());
     assert_eq!(imp.count_label.text().as_str(), "No results found");
+}
+
+/// Collect every descendant `GtkLabel` under one widget subtree.
+///
+/// Realized `GtkListView` rows are built by the search panel's list factory, so
+/// the row labels only exist after the compositor has realized the list. The
+/// walk is the only way to reach them from a test.
+fn collect_row_labels(widget: &gtk4::Widget, out: &mut Vec<gtk4::Label>) {
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(label) = current.downcast_ref::<gtk4::Label>() {
+            out.push(label.clone());
+        }
+        collect_row_labels(&current, out);
+        child = current.next_sibling();
+    }
+}
+
+#[test]
+fn test_search_panel_single_result_reports_one_result_in_one_file() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("notes.txt"), "only one needle here\n");
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+
+    wait_until(Duration::from_secs(10), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 1
+    });
+
+    let imp = panel.imp();
+    assert_eq!(imp.runtime.total_matches.get(), 1);
+    assert_eq!(imp.runtime.total_files.get(), 1);
+    assert_eq!(imp.count_label.text().as_str(), "1 results in 1 files");
+    assert!(!imp.count_label.has_css_class("warning"));
+    assert!(imp.results_body_revealer.reveals_child());
+
+    let evidence = panel.evidence();
+    assert_eq!(evidence.match_count, 1);
+    assert_eq!(evidence.file_count, 1);
+    assert!(!evidence.result_capped);
+}
+
+#[test]
+fn test_search_panel_many_results_group_by_file_and_scroll_within_clamp() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    // Twelve files with two matches each: enough rows to require scrolling in a
+    // 240px results body, and enough files to prove grouped counting.
+    for index in 0..12 {
+        fixture::write_text(
+            &dir.path().join(format!("file_{index}.txt")),
+            "needle first\nunrelated middle line\nneedle second\n",
+        );
+    }
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_files.get() == 12
+    });
+
+    let imp = panel.imp();
+    assert_eq!(imp.runtime.total_matches.get(), 24);
+    assert_eq!(imp.runtime.total_files.get(), 12);
+    assert_eq!(imp.count_label.text().as_str(), "24 results in 12 files");
+    assert!(!imp.count_label.has_css_class("warning"));
+    assert!(imp.results_body_revealer.reveals_child());
+    // One grouped root row per file, each owning its own child store.
+    assert_eq!(imp.runtime.root_store.borrow().n_items(), 12);
+    assert_eq!(imp.runtime.file_groups.borrow().len(), 12);
+    // Dense results scroll the item region only; the clamp is unchanged and the
+    // panel never offers horizontal scrolling.
+    assert_eq!(imp.results_scroll.max_content_height(), 240);
+    assert_eq!(
+        imp.results_scroll.hscrollbar_policy(),
+        gtk4::PolicyType::Never
+    );
+    // Header/footer chrome stays present rather than being pushed out by rows.
+    assert!(imp.search_entry.property::<bool>("visible"));
+    assert!(imp.close_button.property::<bool>("visible"));
+
+    let evidence = panel.evidence();
+    assert_eq!(evidence.match_count, 24);
+    assert_eq!(evidence.file_count, 12);
+    assert!(!evidence.result_capped);
+}
+
+#[test]
+fn test_search_panel_narrow_window_ellipsizes_rows_without_horizontal_scrolling() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let deep = dir
+        .path()
+        .join("a-very-long-workspace-subdirectory-name")
+        .join("another-deeply-nested-directory-level");
+    fixture::create_dir_all(&deep);
+    fixture::write_text(
+        &deep.join("an-extremely-long-file-name-that-cannot-fit-in-a-narrow-panel.txt"),
+        "needle followed by a very long line of content that cannot possibly fit inside a narrow search results row without being shortened somehow\n",
+    );
+
+    let window = gtk4::Window::builder()
+        .default_width(360)
+        .default_height(640)
+        .build();
+    window.set_child(Some(&panel));
+    present_window(&window);
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+
+    wait_until(Duration::from_secs(15), || {
+        panel.imp().runtime.total_matches.get() > 0
+    });
+    flush_after_delay(Duration::from_millis(120));
+
+    let imp = panel.imp();
+    // The narrow window must not be widened by long paths or long match lines.
+    assert!(
+        window.width() <= 400,
+        "long paths must not force the window wider; width was {}",
+        window.width(),
+    );
+    assert_eq!(
+        imp.results_scroll.hscrollbar_policy(),
+        gtk4::PolicyType::Never
+    );
+    let hadjustment = imp.results_scroll.hadjustment();
+    assert!(
+        hadjustment.upper() <= hadjustment.page_size() + 1.0,
+        "narrow results must not overflow horizontally: upper {} page {}",
+        hadjustment.upper(),
+        hadjustment.page_size(),
+    );
+    // Query and dismissal controls stay allocated and reachable at this width.
+    assert!(imp.search_entry.width() > 0);
+    assert!(imp.close_button.width() > 0);
+
+    // The realized rows must shorten their own text rather than expand the row.
+    let list: gtk4::Widget = imp.results_list.get().upcast();
+    let mut labels = Vec::new();
+    wait_until(Duration::from_secs(10), || {
+        labels.clear();
+        collect_row_labels(&list, &mut labels);
+        labels
+            .iter()
+            .any(|label| label.ellipsize() != gtk4::pango::EllipsizeMode::None)
+    });
+    assert!(
+        !labels.is_empty(),
+        "expected realized result rows in a presented narrow window",
+    );
+    let modes: Vec<gtk4::pango::EllipsizeMode> =
+        labels.iter().map(gtk4::Label::ellipsize).collect();
+    assert!(
+        modes.contains(&gtk4::pango::EllipsizeMode::Middle),
+        "the file label must ellipsize in the middle so both ends stay readable; modes {modes:?}",
+    );
+    assert!(
+        modes.contains(&gtk4::pango::EllipsizeMode::End),
+        "the match-line label must ellipsize at the end; modes {modes:?}",
+    );
+    for label in &labels {
+        assert!(
+            label.width() <= window.width(),
+            "no row label may be wider than the narrow window",
+        );
+    }
+
+    panel.close();
+    flush_events();
+    window.set_child(None::<&gtk4::Widget>);
+}
+
+#[test]
+fn test_replace_all_then_undo_restores_original_file_bytes() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    let original_first = "alpha needle beta\nplain line\n";
+    let original_second = "needle only\n";
+    fixture::write_text(&first, original_first);
+    fixture::write_text(&second, original_second);
+
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 2
+    });
+    assert_eq!(panel.imp().runtime.total_matches.get(), 2);
+
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 2 && !evidence.replace_preview_pending
+    });
+    let previewed = panel.evidence();
+    assert_eq!(previewed.replace_preview_count, 2);
+    assert_eq!(
+        previewed.checked_replacement_count, 2,
+        "previewed rows start checked so the confirm step applies exactly them",
+    );
+
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        fixture::read_text(&first).contains("thread") && fixture::read_text(&second).contains("thread")
+    });
+    fixture::assert_text(&first, "alpha thread beta\nplain line\n");
+    fixture::assert_text(&second, "thread only\n");
+
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().has_undo_backup && panel.imp().undo_button.property::<bool>("visible")
+    });
+    assert!(
+        panel.evidence().has_undo_backup,
+        "a successful Replace All must publish a journal-backed undo affordance",
+    );
+
+    panel.activate_undo_replacements();
+    wait_until(Duration::from_secs(20), || {
+        fixture::read_text(&first) == original_first
+            && fixture::read_text(&second) == original_second
+    });
+    fixture::assert_text(&first, original_first);
+    fixture::assert_text(&second, original_second);
+}
+
+/// Write a workspace whose match count exceeds the content-search result cap.
+///
+/// The cap is a service constant, so the only honest way to reach the capped
+/// state through the real streaming path is a fixture large enough to trip it.
+fn write_over_cap_fixture(root: &std::path::Path) {
+    for index in 0..20 {
+        fixture::write_text(
+            &root.join(format!("big_{index}.txt")),
+            &"needle\n".repeat(600),
+        );
+    }
+}
+
+#[test]
+fn test_search_panel_capped_results_warn_and_keep_every_delivered_match() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    write_over_cap_fixture(dir.path());
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+
+    // Streaming 10,000 matches costs at least 40 paced ticks, so the budget is
+    // generous; the predicate returns as soon as the flight settles.
+    wait_until(Duration::from_secs(60), || {
+        let imp = panel.imp();
+        !imp.runtime.searching.get() && imp.runtime.result_capped.get()
+    });
+
+    let imp = panel.imp();
+    assert!(
+        imp.runtime.result_capped.get(),
+        "reaching the service result cap must set the capped state, not stop silently",
+    );
+    assert_eq!(
+        imp.count_label.text().as_str(),
+        "10,000+ results (truncated) \u{2014} narrow your search",
+    );
+    assert!(
+        imp.count_label.has_css_class("warning"),
+        "a truncated result set must be styled as a warning, not as a plain count",
+    );
+    assert!(imp.results_body_revealer.reveals_child());
+    // Every match the service delivered before it stopped producing must still
+    // be rendered: the defect this covers discarded the whole bounded channel.
+    let total = imp.runtime.total_matches.get();
+    assert!(
+        total >= 10_000,
+        "a capped search must keep the matches it found, got {total}",
+    );
+    assert!(
+        imp.runtime.accepted_matches.borrow().is_some(),
+        "a capped search is a completed search: its accepted snapshot must publish",
+    );
+    assert!(imp.save_button.property::<bool>("visible"));
+
+    let evidence = panel.evidence();
+    assert!(evidence.result_capped);
+    assert_eq!(evidence.match_count, total);
+    assert!(evidence.file_count > 0);
+}
+
+#[test]
+fn test_search_panel_superseding_a_capped_search_discards_it_immediately() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    write_over_cap_fixture(dir.path());
+    fixture::write_text(&dir.path().join("distinct.txt"), "one solitary marker\n");
+
+    panel.clamp_results_height(240);
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.set_query("needle");
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    panel.start_search(&search_spec("needle"));
+
+    // Supersede while the capped search is still streaming into the panel.
+    wait_until(Duration::from_secs(30), || {
+        let imp = panel.imp();
+        imp.runtime.searching.get() && imp.runtime.total_matches.get() > 250
+    });
+    assert!(
+        panel.imp().runtime.searching.get(),
+        "the fixture must still be streaming when the newer query arrives",
+    );
+    // The retained latest request is only admitted while it still matches the
+    // visible query, so the entry must move with the superseding spec.
+    panel.set_query("marker");
+    let _ = panel.imp().runtime.search_debounce.invalidate();
+    panel.start_search(&search_spec("marker"));
+
+    wait_until(Duration::from_secs(60), || {
+        let imp = panel.imp();
+        !imp.runtime.searching.get() && imp.runtime.total_matches.get() == 1
+    });
+
+    let imp = panel.imp();
+    // Cap termination is a service-side stop; a user supersede still discards
+    // everything the old flight had buffered.
+    assert_eq!(imp.runtime.total_matches.get(), 1);
+    assert_eq!(imp.runtime.total_files.get(), 1);
+    assert_eq!(imp.count_label.text().as_str(), "1 results in 1 files");
+    assert!(!imp.runtime.result_capped.get());
+    assert!(!imp.count_label.has_css_class("warning"));
+    assert!(!panel.evidence().result_capped);
 }

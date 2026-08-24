@@ -734,6 +734,27 @@ impl LushtextSearchPanel {
         self.apply_checked_replacements(ticket, outcome, checked);
     }
 
+    /// Hand the current undo journal back to the window's restore workflow.
+    ///
+    /// Replace stage 4 in one operation: refuse while the single apply
+    /// transaction is still claimed, read the published backup, retract the
+    /// affordance so the same journal cannot be handed back twice, and invoke
+    /// the window callback. A missing callback or missing backup leaves live
+    /// state untouched.
+    pub(super) fn hand_back_undo_backup(&self) {
+        let imp = self.imp();
+        if imp.preview.replace_transaction_pending.get() {
+            return;
+        }
+        let Some(backup) = imp.preview.undo_backup.borrow().clone() else {
+            return;
+        };
+        self.hide_undo_button();
+        if let Some(ref callback) = *imp.callbacks.undo_callback.borrow() {
+            callback(backup);
+        }
+    }
+
     /// Partition the checked preview rows on a worker, then hand them to the
     /// window's Replace All callback if the attempt is still current.
     pub(super) fn apply_checked_replacements(

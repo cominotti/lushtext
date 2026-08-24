@@ -404,6 +404,34 @@ mod retirement_budget_tests {
     }
 
     #[test]
+    fn partially_consumed_budget_still_has_room_in_the_same_turn() {
+        // A slice that has released some rows but not all of its budget must
+        // report room left, or one bounded retirement turn would stop after its
+        // first category and the disposer would crawl one item per GTK turn.
+        let mut budget = SearchRetirementSliceBudget::new(250);
+        assert!(
+            !budget.exhausted(),
+            "a fresh slice budget has its whole allowance available",
+        );
+        assert_eq!(budget.take(100), 100);
+        assert!(
+            !budget.exhausted(),
+            "100 of 250 released leaves room for the next ownership category",
+        );
+        assert!(budget.take_one());
+        assert!(
+            !budget.exhausted(),
+            "charging one more value must not exhaust a 250-row slice",
+        );
+        assert_eq!(budget.retired(), 101);
+        assert_eq!(budget.take(usize::MAX), 149);
+        assert!(
+            budget.exhausted(),
+            "the slice is exhausted only once its whole budget is spent",
+        );
+    }
+
+    #[test]
     fn zero_budget_and_large_available_counts_saturate_safely() {
         let mut empty = SearchRetirementSliceBudget::new(0);
         assert_eq!(empty.take(usize::MAX), 0);

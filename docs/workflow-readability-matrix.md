@@ -128,9 +128,21 @@ intent and split the coordination modules: `clear_results` now delegates to
 `retire_detached_results`, `advance_preview_generation` split into
 `invalidate_active_preview` plus `issue_preview_ticket`, `retire_preview_state`
 became `release_superseded_preview`, and `spawn_preview_selection` became
-`apply_checked_replacements` taking one `ReplacePreviewTicket`. The current
+`apply_checked_replacements` taking one `ReplacePreviewTicket`, and the undo
+hand-back became `hand_back_undo_backup` so replace stage 4 is delegated like
+the other stages instead of being inlined in the facade. The current
 stage order and every resumption point are narrated in the facade,
 `crates/lushtext-core/src/ui/search_panel/mod.rs`.
+
+**Stop semantics at the content-search boundary.** The walker's stop reasons are
+now distinguished by owner (`WalkStop` in
+`crates/lushtext-core/src/services/content_search/search.rs`). The caller's
+`cancel` flag means "discard this flight" and is written only by the panel's
+supersede/close path; a result-cap or identity-limit stop ends production
+without touching it, so the streaming tick still drains the buffered matches,
+the terminating event, and `Done`. Before this separation the cap wrote the
+caller's flag, and the panel's `if !cancelled` tick arms silently discarded the
+`ResultCap` notice plus every match still in the bounded channel.
 
 ### WFR-DOCUMENT-SAVE
 

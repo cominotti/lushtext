@@ -32,14 +32,67 @@ use crate::services::filesystem::metadata as fs_metadata;
 
 /// Maximum number of matches before the search stops. Approximate under
 /// parallel walkers — concurrent threads may overshoot by up to the thread
-/// count before observing the cancel flag. The UI should clamp display to
+/// count before observing the stop signal. The UI should clamp display to
 /// this value.
 pub(super) const RESULT_CAP: usize = 10_000;
+
+/// Why the parallel walk should stop scanning, and who owns each reason.
+///
+/// The distinction matters at the service boundary. `cancelled` is the
+/// **caller's** flag: a superseding query or a closing panel sets it to say
+/// "nothing from this flight is wanted any more", and the consumer is entitled
+/// to discard every event still in flight. A service-internal termination is
+/// the opposite claim: production stops, but every event already queued —
+/// including the terminating `ResultCap` or `Incomplete` event itself — is the
+/// honest result the consumer still has to render. Terminating by writing the
+/// caller's flag conflated the two and silently discarded the cap notice plus
+/// up to a channel's worth of already-found matches.
+#[derive(Clone)]
+struct WalkStop {
+    /// Caller-owned supersede/user cancellation. Never written here.
+    cancelled: Arc<AtomicBool>,
+    /// One-shot claim on sending the single `Incomplete` event.
+    incomplete_sent: Arc<AtomicBool>,
+    /// Set once the shared result cap has been reported.
+    result_capped: Arc<AtomicBool>,
+}
+
+impl WalkStop {
+    fn new(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            incomplete_sent: Arc::new(AtomicBool::new(false)),
+            result_capped: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Whether the walk should stop scanning, for any of the three reasons.
+    fn stopped(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+            || self.incomplete_sent.load(Ordering::Acquire)
+            || self.result_capped.load(Ordering::Acquire)
+    }
+
+    /// Claim the exclusive right to send the one `Incomplete` event.
+    fn claim_incomplete(&self) -> bool {
+        !self.incomplete_sent.swap(true, Ordering::AcqRel)
+    }
+
+    /// Stop producing after the cap notice has been sent to the consumer.
+    fn record_result_cap(&self) {
+        self.result_capped.store(true, Ordering::Release);
+    }
+}
 
 /// Searches file contents across the supplied workspace folders with streaming results.
 ///
 /// Blocks until search completes or is cancelled. Call from a dedicated thread.
 /// Results are sent through `tx` as `SearchEvent` variants.
+///
+/// `cancel` belongs to the caller: setting it means "discard this flight". The
+/// service never writes it, so a result cap or identity-limit stop still ends
+/// with the terminating event plus `Done` on the channel for the caller to
+/// render (see [`WalkStop`]).
 ///
 /// The `tx` channel should be `bounded(1024)` in production to apply backpressure.
 /// Using `unbounded()` is acceptable in tests.
@@ -170,10 +223,10 @@ fn search_with_plan_and_limits(
             fallback_limits,
         )))
     });
-    let incomplete_sent = Arc::new(AtomicBool::new(false));
+    let stop = WalkStop::new(cancel);
 
     for (traversal_root_index, traversal_root) in plan.traversal_roots().iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire) {
+        if stop.stopped() {
             break;
         }
 
@@ -222,13 +275,12 @@ fn search_with_plan_and_limits(
 
         walker.run(|| {
             let tx = tx.clone();
-            let cancel = cancel.clone();
+            let stop = stop.clone();
             let matcher = matcher.clone();
             let match_count = match_count.clone();
             let files_visited = files_visited.clone();
             let progress_counter = progress_counter.clone();
             let fallback_ledger = fallback_ledger.clone();
-            let incomplete_sent = Arc::clone(&incomplete_sent);
 
             // Per-thread searcher — reused across all files on this thread.
             let mut searcher = SearcherBuilder::new()
@@ -236,7 +288,7 @@ fn search_with_plan_and_limits(
                 .build();
 
             Box::new(move |entry| {
-                if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire) {
+                if stop.stopped() {
                     return WalkState::Quit;
                 }
 
@@ -262,7 +314,7 @@ fn search_with_plan_and_limits(
                         WorkspaceSearchFallbackClaim::Admitted => {}
                         WorkspaceSearchFallbackClaim::Duplicate => return WalkState::Continue,
                         WorkspaceSearchFallbackClaim::Incomplete(reason) => {
-                            if !incomplete_sent.swap(true, Ordering::AcqRel) {
+                            if stop.claim_incomplete() {
                                 let _ = tx.send(SearchEvent::Incomplete(reason));
                             }
                             return WalkState::Quit;
@@ -283,8 +335,7 @@ fn search_with_plan_and_limits(
                     &matcher,
                     &path,
                     UTF8(|line_number, line_content| {
-                        if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire)
-                        {
+                        if stop.stopped() {
                             return Ok(false);
                         }
 
@@ -306,8 +357,14 @@ fn search_with_plan_and_limits(
                         let _ = tx.send(SearchEvent::Match(search_match));
 
                         if prev + 1 >= RESULT_CAP {
+                            // Order matters: the cap notice is queued behind the
+                            // matches it describes, and only then is production
+                            // stopped. The caller's cancellation flag stays
+                            // untouched so the consumer keeps draining this
+                            // flight's buffered matches, the cap notice, and the
+                            // terminal `Done`.
                             let _ = tx.send(SearchEvent::ResultCap);
-                            cancel.store(true, Ordering::Relaxed);
+                            stop.record_result_cap();
                             return Ok(false);
                         }
 
@@ -319,7 +376,7 @@ fn search_with_plan_and_limits(
                     tracing::warn!("Skipping {} during search: {e}", path.display());
                 }
 
-                if cancel.load(Ordering::Relaxed) || incomplete_sent.load(Ordering::Acquire) {
+                if stop.stopped() {
                     return WalkState::Quit;
                 }
 
@@ -653,6 +710,77 @@ mod tests {
 
         let has_cap = events.iter().any(|e| matches!(e, SearchEvent::ResultCap));
         assert!(has_cap, "should emit ResultCap event");
+    }
+
+    #[test]
+    fn result_cap_terminates_without_touching_the_caller_cancel_flag() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let workspace_folder = dir.path();
+
+        for i in 0..20 {
+            fixture::write_text(
+                &workspace_folder.join(format!("big_{i}.txt")),
+                &"needle\n".repeat(600),
+            );
+        }
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let cancel = Arc::new(AtomicBool::new(false));
+        search(
+            "needle",
+            &[workspace_folder],
+            &ContentSearchOptions::default(),
+            tx,
+            Arc::clone(&cancel),
+            None,
+            None,
+        );
+        let events: Vec<_> = rx.iter().collect();
+
+        assert!(
+            !cancel.load(Ordering::Acquire),
+            "the cap is a service-side stop; flipping the caller's cancel flag makes the \
+             consumer discard the cap notice and every buffered match",
+        );
+        let cap_index = events
+            .iter()
+            .position(|event| matches!(event, SearchEvent::ResultCap))
+            .expect("capped search should report the cap");
+        assert_ends_with_done(&events);
+        assert!(
+            cap_index > 0,
+            "the cap notice follows the matches it describes"
+        );
+        // Concurrent walkers may still be flushing their own matches when the
+        // capping thread reports, so only the total is exact enough to assert.
+        assert!(
+            count_matches(&events) >= RESULT_CAP,
+            "a capped search must still deliver every match it found up to the cap",
+        );
+    }
+
+    #[test]
+    fn walk_stop_separates_caller_cancellation_from_service_termination() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = WalkStop::new(Arc::clone(&cancelled));
+        assert!(!stop.stopped());
+
+        stop.record_result_cap();
+        assert!(stop.stopped());
+        assert!(
+            !cancelled.load(Ordering::Acquire),
+            "service termination must never write the caller's flag",
+        );
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = WalkStop::new(Arc::clone(&cancelled));
+        assert!(stop.claim_incomplete(), "the first claim owns the event");
+        assert!(!stop.claim_incomplete(), "only one Incomplete may be sent");
+        assert!(stop.stopped());
+        assert!(!cancelled.load(Ordering::Acquire));
+
+        let cancelled = Arc::new(AtomicBool::new(true));
+        assert!(WalkStop::new(cancelled).stopped());
     }
 
     #[test]
