@@ -452,7 +452,9 @@ Migration to this shape is a staged programme. Per-workflow status, owned pure
 policy, seam value objects, risk tiers, and migration slots live in
 [`docs/workflow-readability-matrix.md`](docs/workflow-readability-matrix.md), and
 `make check-workflow-boundaries` checks conformance. Unmigrated workflows are
-behaviorally unchanged.
+behaviorally unchanged. The programme's rationale, measured baseline, remaining
+per-change scope, and deferred work are recorded in
+[`docs/next/workflow-readability.md`](docs/next/workflow-readability.md).
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
 and [`docs/automation-reference.md`](docs/automation-reference.md). The

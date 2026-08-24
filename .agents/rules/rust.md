@@ -127,6 +127,15 @@ workflows follow the convention. Every workflow has a stable `WFR-*` row; update
 its row in the same change as the code, and read the row before restructuring a
 workflow so an `exempt` or `deferred` classification is not silently overridden.
 
+Migration is a multi-change programme and most workflows are still unmigrated.
+`docs/next/workflow-readability.md` is its record: the measured problem, the
+baseline of what is actually migrated, the remaining per-change scope and slot
+ledger, the sequencing rationale, the rejected alternatives (a new policy layer,
+a naming-only pass, horizontal slicing), and the deferred work (actuation test
+seams, state-machine reification of inverted drains) with the bar that would
+justify it. Read it before planning workflow-structure work, and advance it in
+the same change as the matrix.
+
 A migrated workflow assigns each of its modules exactly one role:
 
 - **Narrative facade** — the workflow's public module surface. It narrates the

@@ -136,8 +136,14 @@ Workflow-readability changes should pass `make check-workflow-boundaries`; it is
 also part of `make check-policy`. It fails when a `policy.rs` module imports
 `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`; when a `policy.rs` sits at
 a path the mutation scope cannot reach; when a workflow marked migrated in
-`docs/workflow-readability-matrix.md` lacks its required roles; or when a matrix
-row claims evidence that is absent. `docs/workflow-readability-matrix.md` is the
+`docs/workflow-readability-matrix.md` lacks its required roles; when a matrix
+row claims evidence that is absent; when the matrix declares roles for a row that
+is not marked migrated; when a normative facade line budget has been declared and
+a migrated row's facade exceeds it; or when the programme record's slot ledger in
+`docs/next/workflow-readability.md` disagrees with the matrix about which
+workflows are migrated and which are still outstanding. That record is the
+programme's why/baseline/remaining-scope narrative and must advance in the same
+change as the matrix. `docs/workflow-readability-matrix.md` is the
 completion source of truth for that convention: every workflow has a stable
 `WFR-*` row id, and a workflow may be marked `migrated` only when the row's
 facade, coordination, policy, and evidence roles, seam value object, mutation

@@ -167,6 +167,13 @@ recovery), and each of its modules carries exactly one role:
   `make check-workflow-boundaries`.
 - Amending the convention requires re-migrating every already-migrated workflow in
   the same change. Two generations of the convention must not coexist.
+- `docs/next/workflow-readability.md` is the programme record: the measured problem
+  this solves, how much is actually migrated (one workflow, roughly six percent of
+  `ui/` + `model/`), the remaining per-change scope with its machine-readable slot
+  ledger, the sequencing rationale, the rejected alternatives, and the two
+  deferred items with the bar that would justify taking them on. **Read it before
+  planning any workflow-structure work**, and advance it in the same change as the
+  matrix — `make check-workflow-boundaries` compares the two.
 
 ## Nested AGENTS.md Files
 

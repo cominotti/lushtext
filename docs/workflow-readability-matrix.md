@@ -2,10 +2,27 @@
 
 This matrix is the completion source of truth for deciding whether a LushText
 workflow follows the workflow readability convention. The normative contract
-lives in `openspec/specs/workflow-readability-boundaries/spec.md` and
-`openspec/specs/workflow-evidence-surfaces/spec.md`; this file maps that
-contract to concrete workflows, file sets, policy ownership, test seams, seam
-value objects, risk tiers, and migration status.
+lives in five capability specs, and a migration must read every one that touches
+its scope: `openspec/specs/workflow-readability-boundaries/spec.md` (module
+shape, facade contract and budget rule, seam value objects, naming, risk tiers,
+retroactive amendment), `openspec/specs/workflow-evidence-surfaces/spec.md`
+(evidence surfaces, their single visibility rule, the seam taxonomy, the
+evidence-to-automation projection),
+`openspec/specs/gtk-adapter-module-boundaries/spec.md` (the decomposition
+contract and the **bounded set of coordination role names** — adding a role name
+amends that spec), `openspec/specs/mutation-testing/spec.md` (the
+`ui/**/policy.rs` scope convention and relocation parity), and
+`openspec/specs/dbus-automation-spine/spec.md` (snapshots projecting from
+evidence). This file maps that contract to concrete workflows, file sets, policy
+ownership, test seams, seam value objects, risk tiers, and migration status.
+
+`docs/next/workflow-readability.md` is the programme record beside this matrix:
+it holds why the programme exists with its measured baseline, how much is
+actually migrated, the remaining per-change scope with its machine-readable slot
+ledger, the sequencing rationale, the rejected alternatives, and the deferred
+work. Read it first if you are starting cold; read this matrix when you need a
+specific workflow's status or obligations. `make check-workflow-boundaries`
+compares the two, so they cannot drift.
 
 A workflow is a user-initiated operation with ordered stages that crosses the
 adapter boundary into coordination and pure policy. Rows are one per workflow,
@@ -66,7 +83,7 @@ convention has been proven on at least two completed lower-risk migrations.
 
 | Row id | Workflow | Current size | Entry points | Owned pure policy | Seams (i/c/a/p) | Seam value object | Evidence surface | Risk | Slot | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs` (was the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census)); mutation parity proved | panel half migrated: 8 inspection fns retired into `evidence.rs`, 5 configuration setters plus 6 override statics collapsed into `SearchPanelTestPolicy`; actuation seams deferred | exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side) | exists: `SearchPanelEvidence` via `evidence()`; automation `window.content_search` projects from it | tier-2 (search/preview half), tier-3 (Replace All write half) | 1 (this change, search/preview half) + 2 (replace/undo half) | migrated |
+| WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs` (was the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census)); mutation parity proved | panel half migrated: 8 inspection fns retired into `evidence.rs`, 5 configuration setters plus 6 override statics collapsed into `SearchPanelTestPolicy`; actuation seams deferred | exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side) | exists: `SearchPanelEvidence` via `evidence()`; automation `window.content_search` projects from it | tier-2 (search/preview half), tier-3 (Replace All write half) | 1 (search/preview half, complete) + 2 (replace/undo half) | migrated |
 | WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | 16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897) | `Ctrl+P`, `Ctrl+K` palette modes, `win.notes-show-notes` | none in `model/` beyond domain `model/palette.rs` (17 consumers → domain, stays) | 15/10/2/0 = 27 fns, 40 sites, 4 override statics | exists: `FileIndexBuildCoordinator` + `NoteSourceRefreshCoordinator` generation identity | partial: `FileIndexBuildCoordinatorSnapshot`, `NoteSourceRefreshCoordinatorSnapshot`, `PaletteSearchCoordinatorSnapshot` | tier-2 | 2 | pending |
 | WFR-DOCUMENT-SAVE | Save, Save As, save formatting, durability | 7 files, 6,672 lines (ui 2,132 / model 991 / services 3,549) | `win.save`, `win.save-as`, `Ctrl+S`, close-with-changes dialog, autosave-on-close | `model/save_admission.rs` (2 consumer files, 1 workflow → single-consumer, relocates) | 10/11/9/4 = 34 fns, 44 sites, 5 override statics | exists: `SaveCompletionTicket` (completion seam). required: `QueuedSaveTicket` + `QueuedSaveFacts` (admission seam; carries the renamed field) | partial: `SaveAdmissionSnapshot` | tier-3 | 3 | pending |
 | WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | 10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375) | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore | `model/file_load.rs` (4 consumers → domain-shaped, stays pending review in slot 3) | 23/7/3/1 = 34 fns, 55 sites, 3 override statics | required: `LoadRequestTicket` (carries `{load_generation, cancel_token}`, exploded at 2 call sites today) | partial: `FileLoadAdmissionSnapshot`, `OpenPopoverRowLayoutSnapshot` | tier-3 | 3 | pending |
@@ -493,7 +510,7 @@ at both call sites (`ui/editor_page/load_runtime.rs:209`,
 
 ### done: `ReplacePreviewTicket` + `ReplacePreviewFacts` (`WFR-SEARCH-REPLACE`)
 
-Reified by this change in `ui/search_panel/policy.rs`. The ticket carries
+Reified by slot 1 in `ui/search_panel/policy.rs`. The ticket carries
 `{generation, query_spec}` and is validated as one unit against live
 `ReplacePreviewFacts {generation, pending, query_spec}` by
 `ReplacePreviewTicket::is_current`. It is constructed at exactly one place,
@@ -535,9 +552,12 @@ typed observation, not replacing untyped getters wholesale.
 
 Existing `*Evidence` types: `SessionRestoreEvidence` (`pub(super)`),
 `DisposalPressureEvidence` (`pub`), `WorkspaceScanPressureEvidence` (`pub`),
-`NoteScoringEquivalenceEvidence` (`pub`). Their inconsistent visibility is
-itself a finding: the convention must fix one visibility rule so an evidence
-surface stays an internal type of the owning crate.
+`NoteScoringEquivalenceEvidence` (`pub`). Their inconsistent visibility was
+itself a census finding, and it is settled: the one rule is the narrowest
+visibility an evidence surface's readers require, with a pre-existing wider type
+narrowed to it, so the surface stays an internal type of the owning crate. See
+[Settled Conventions](#settled-conventions) and
+`openspec/specs/workflow-evidence-surfaces/spec.md`.
 
 ## Outlier Resolutions
 
@@ -625,9 +645,17 @@ same grounds and are recorded as such.
 Order is by increasing risk, and every `tier-3` slot follows at least two
 completed lower-risk migrations.
 
+**Slot 2 is the one place where that rule needs an explicit decision.** Slot 2
+carries a tier-3 half (the Replace All write path and its undo journal) but only
+one completed lower-risk migration precedes it, slot 1's tier-2 exemplar. Slot 2
+must therefore either land and verify its tier-2 `WFR-COMMAND-PALETTE` migration
+before opening the replace/undo half inside the same change, or split into 2a
+(palette, tier-2) and 2b (replace/undo, tier-3). Its position in this table is not
+a waiver of the two-proof rule; the proposal must say which option it takes.
+
 | Slot | Change scope | Workflows | Highest tier |
 | --- | --- | --- | --- |
-| 1 | This change: census, convention, enablers, exemplar | `WFR-SEARCH-REPLACE` search and preview half only | tier-2 |
+| 1 | Census, convention, enablers, exemplar (`normalize-workflow-readability-boundaries`, complete) | `WFR-SEARCH-REPLACE` search and preview half only | tier-2 |
 | 2 | Search/replace completion plus palette | `WFR-SEARCH-REPLACE` replace and undo half, `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections | tier-3 |
 | 3 | Save and load | `WFR-DOCUMENT-SAVE`, `WFR-DOCUMENT-LOAD` | tier-3 |
 | 4 | User-content restore family | `WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-BUFFER-REPLACEMENT` | tier-3 |
@@ -639,13 +667,39 @@ Slot 1 is the only slot whose workflow is not migrated end to end, by design:
 the exemplar deliberately scopes to the non-writing half so the pattern is
 proven before any user-data path is touched.
 
+**Artifacts each slot is expected to need.** Slot 1 carried proposal, design,
+tasks, and two new capability specs. Slots 2 through 5 and 7 are expected to need
+only a **proposal and tasks**, because this matrix and the two capability specs
+already hold the contract: a migration consumes the convention and checks off
+rows. Slot 6 (minimap) is the expected exception and may need a design document
+for its pixel-verified geometry under animation frames. A migration that finds it
+needs a spec delta or a new capability is a signal that the phase-0 contract was
+incomplete, and the retroactive-amendment rule in
+[Completion Rule](#completion-rule) applies to the fix.
+
+**Slot 1 residue that slot 2 inherits.** `WFR-SEARCH-REPLACE` is `migrated` for
+its search and preview half only. Still outstanding: the Replace All write path
+and its undo journal (`services/search_backup.rs`); `replace.rs`'s final
+coordination role name or names; making `activate_undo_replacements` a delegation
+instead of facade-inlined transaction bookkeeping and widget mutation;
+`model/workspace_search.rs`'s relocation decision; the normative facade line
+budget number; and the first `WFR-AUTOMATION-SPINE` projections beyond the search
+fields. Slot 2 must **not** re-plan the capped-result delivery fix or the
+`WalkStop` stop-semantics split — both landed in slot 1 and are recorded under
+[WFR-SEARCH-REPLACE](#wfr-search-replace).
+
+The change-level view of these slots, with the same list in a machine-readable
+slot ledger that `make check-workflow-boundaries` compares against this matrix,
+lives in `docs/next/workflow-readability.md`. Advancing a slot means updating
+both files in the same change.
+
 `WFR-EDITOR-MEMORY` and `WFR-MIGRATION-LEDGER` have no slot. They are
 cross-cutting policy that stays where it is; their rows exist so a later change
 cannot silently relocate them.
 
 ## Census Findings For Convention Settling
 
-These findings are inputs to the convention section of this change. They are
+These findings were the inputs to slot 1's convention section. They are
 recorded here because they change what the convention must say, and a later
 session must not have to rediscover them.
 
@@ -739,7 +793,7 @@ amend the spec and re-migrate every already-migrated row in the same change.
 | --- | --- | --- |
 | Facade | the workflow's public module surface | narrates stages, delegates everything |
 | Pure policy | `policy.rs` | one per workflow; no GTK-family imports |
-| Evidence | `evidence.rs` | one per workflow; narrowest visibility its readers need |
+| Evidence | `evidence.rs` | one per workflow; one visibility rule — the narrowest visibility its readers require, and a pre-existing wider evidence type is narrowed to it rather than left wide |
 | Coordination | bounded set of job names: `admission`, `execution`, `retirement`, `watch` | a workflow may own more than one |
 
 The convention deliberately does **not** fix a single coordination file name. The
@@ -752,9 +806,11 @@ listed role name describes requires a spec amendment to add the name.
 ### Facade size budget
 
 **Measured, not yet normative.** The exemplar's facade
-(`crates/lushtext-core/src/ui/search_panel/mod.rs`) is **357 physical lines**, of
-which 74 are the module-doc stage narration and 175 are non-comment, non-blank
-lines, narrating 6 inversions across two stage orders. It replaced a 578-line
+(`crates/lushtext-core/src/ui/search_panel/mod.rs`) is **350 physical lines**, of
+which 75 are the module-doc stage narration and 166 are non-comment, non-blank
+lines, narrating 6 inversions across two stage orders. It measured 357 lines when
+the migration landed and 350 after the result-cap fix delegated the undo
+hand-back out of the facade. It replaced a 578-line
 `mod.rs` that also held the accessibility projection and 23 observation getters;
 those moved to `accessibility.rs` and `evidence.rs` respectively. Physical lines
 are the metric the mechanical check uses, so that is the number a budget should
@@ -762,8 +818,8 @@ be compared against.
 
 Per `openspec/specs/workflow-readability-boundaries/spec.md`, the **first
 migration change after this exemplar** sets the normative number from the
-exemplar's measured facade. This change is the exemplar, not that migration, so
-it records the measurement and leaves the number unset; migration change 2 sets
+exemplar's measured facade. Slot 1 was the exemplar, not that migration, so it
+recorded the measurement and left the number unset; slot 2 sets
 it, and under the retroactive-amendment rule that is also the cheapest moment to
 correct it, because exactly one workflow is migrated. The measurement above is
 the input: a budget below roughly 370 lines would force this facade's narration
@@ -877,6 +933,17 @@ A workflow may be marked `migrated` only when all of the following hold, and
 - Any automation snapshot field for this workflow projects from the evidence
   surface, with the exported D-Bus fields, names, and semantics unchanged.
 
+### Retroactive amendment
+
 A change that amends the convention MUST re-migrate every row already marked
 `migrated` in the same change. Two generations of the convention MUST NOT
 coexist in the tree.
+
+This applies to the role names, the facade budget number, the seam value-object
+shape, the evidence-surface visibility rule, and anything else recorded in
+[Settled Conventions](#settled-conventions) or the two capability specs. A later
+migration therefore cannot fork the convention: either it follows what is
+recorded here, or it pays to re-migrate every earlier workflow. The practical
+consequence is that the cheapest moment to correct a convention is while exactly
+one workflow is migrated, which is slot 2. The same rule is recorded in
+`docs/next/workflow-readability.md` and `AGENTS.md`.

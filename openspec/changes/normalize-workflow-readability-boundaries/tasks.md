@@ -287,7 +287,7 @@ memory of this discussion, can answer in one read: what problem this solves, how
 much is done, what is next, what is deferred and why. Do not rely on this change's
 archived artifacts being found by search.
 
-- [ ] 7.1 Write `docs/next/workflow-readability.md` as the programme record,
+- [x] 7.1 Write `docs/next/workflow-readability.md` as the programme record,
       following the posture-and-gates shape of `docs/next/gtk-lush.md` and
       `crates/gtk-lush/GOVERNANCE.md`. It MUST contain: the four measured problems
       with their numbers; the baseline quantification from design.md D10 (6% of
@@ -297,39 +297,215 @@ archived artifacts being found by search.
       (new policy layer, naming-only pass, horizontal slicing); the deferred work
       with what would justify taking it on; and a link to this change by name for
       full rationale.
-- [ ] 7.2 Record in the programme record and the matrix the planned migration order
+      Written with all required content. The D10 baseline figures were verified
+      against the tree rather than copied, and the record states both the planned
+      and the actual number wherever they differ:
+      - 6% / 4,762 of 79,017 lines: holds as the exemplar workflow's censused
+        footprint, and the record says explicitly that this is the workflow's
+        footprint rather than the diff size.
+      - 2 of 8 policy modules: 2 relocated is correct, but the record restates the
+        denominator as **2 of 7 relocation candidates**, because 4 of the 8
+        mechanism modules are cross-cutting and stay while the census found 3
+        previously unlisted single-workflow modules. `model/` went 29 → 27 files.
+      - 48 of 639 test seams: the planned figure was exactly right — the exemplar
+        workflow held 48 of the 639 `#[cfg(feature = "test-utils")]` sites
+        (2 + 6 + 14 + 26 across `mod.rs`, `imp.rs`, `runtime.rs`, `replace.rs` at
+        `91fcce5`). It now holds 40, its 23 `*_for_test` functions became 7, and
+        repo-wide totals moved 639 → 631 sites and 351 → 335 functions.
+      - 2 of 90 long signatures: **wrong as stated**, and the record says so. The
+        actual result is 1 seam reified and 0 long signatures shortened, because
+        census finding 3 established that this workflow's only ≥6-parameter
+        function is an exempt row-item constructor. The record requires later
+        changes to report seams reified as the primary unit.
+      Also corrected while writing: the facade measures **350** physical lines
+      today (75 doc-narration, 166 code), not the 357 the matrix recorded — the
+      result-cap fix delegated the undo hand-back out of the facade after the
+      migration landed. The matrix's Facade size budget section is updated to 350
+      with both numbers and the reason for the change.
+- [x] 7.2 Record in the programme record and the matrix the planned migration order
       and per-change scope: search/replace and palette, then save and load, then
       draft/recovery and session, then workspace tree and notes, then minimap, then
       the residual sweep. Note that migration changes are expected to need only
       proposal and tasks, and that needing a spec delta signals an incomplete
       contract.
-- [ ] 7.3 Record the deferred work explicitly and separately from the planned work:
+      Both files carry the seven-slot order with per-slot scope and the
+      "proposal + tasks" expectation (slot 6 the expected exception, needing a
+      design document for pixel-verified minimap geometry), plus the rule that a
+      needed spec delta signals an incomplete phase-0 contract and triggers the
+      retroactive-amendment rule. Because the exemplar already migrated the
+      search/preview half of slot 1, both files also record the **slot 1 residue**
+      slot 2 inherits: the Replace All write path and its undo journal,
+      `replace.rs`'s final coordination role name, making
+      `activate_undo_replacements` a delegation instead of facade-inlined
+      transaction bookkeeping, `model/workspace_search.rs`'s relocation decision,
+      the normative facade line budget number, and the first
+      `WFR-AUTOMATION-SPINE` projections beyond search. Both files also state that
+      slot 2 must **not** re-plan the capped-result delivery fix or the `WalkStop`
+      stop-semantics split from commit `f0ab1d9`.
+- [x] 7.3 Record the deferred work explicitly and separately from the planned work:
       actuation test seams (the missing workflow/dialog-presentation boundary) and
       state-machine reification of inverted drains, each with its reason and its
       justification bar.
-- [ ] 7.4 Record the unblock point: the migration changes become authorable after
+      `## 7. Deferred work` in the programme record, deliberately after the
+      remaining-scope table and outside every slot, with a What / Why deferred /
+      Justification bar for each. Actuation seams (~98 functions) unblock on a
+      change that independently needs the dialog-presentation boundary and can pay
+      for real-session proof of every affected dialog path. State-machine
+      reification is recorded as possibly never justified: it requires a specific
+      workflow that still cannot be reasoned about from its narration *and* real
+      defects traced to that opacity.
+- [x] 7.4 Record the unblock point: the migration changes become authorable after
       sections 1 and 2 of this change, not after the exemplar. State what each needs
       from the census — value-object names, per-kind seam counts, risk tier.
-- [ ] 7.5 Record the retroactive-amendment rule in the programme record and the
+      `## 4. The unblock point` states that authoring unblocked after sections 1
+      and 2, not after the exemplar, and that slots may be authored in any order
+      but must land in order. Its table maps each required input to the matrix
+      section that already holds it: seam value-object names and their exact field
+      bundles, per-kind seam counts, risk tier and slot, ordered stages with every
+      inversion, owned pure policy with its relocation target, and the settled
+      conventions.
+- [x] 7.5 Record the retroactive-amendment rule in the programme record and the
       matrix so a future migration cannot fork the convention without re-migrating
       earlier workflows.
-- [ ] 7.6 Make the record discoverable from the surfaces a session loads
+      `## 8. Retroactive amendment` in the record and a new
+      `### Retroactive amendment` subsection under the matrix's Completion Rule.
+      Both name what the rule covers (role names, facade budget number, seam
+      value-object shape, evidence visibility rule, everything in Settled
+      Conventions) and both state the practical consequence: the cheapest moment to
+      correct the convention is slot 2, while exactly one workflow is migrated.
+- [x] 7.6 Make the record discoverable from the surfaces a session loads
       automatically: add a pointer in `AGENTS.md` (architecture or key design
       decisions), a pointer from `docs/workflow-readability-matrix.md`, and a
       reference from the relevant `.agents/rules/*.md` entry revised in section 4.
       A future session MUST reach the programme record without knowing to search
       `docs/next/`.
-- [ ] 7.7 Add `docs/next/` planned-work records and
+      Four carriers, all auto-loaded or one hop from an auto-loaded file:
+      `AGENTS.md`'s Workflow Role Convention section (a "read it before planning
+      any workflow-structure work" bullet beside the matrix bullet),
+      `.agents/rules/rust.md`'s Workflow Vocabulary And Boundaries section (chosen
+      because that is where a cold session lands for the convention itself, and it
+      names the rejected alternatives and deferrals so the pointer is worth
+      following), `.agents/rules/build.md`'s `check-workflow-boundaries` paragraph
+      (which now has to describe the record because the gate reads it), and the
+      matrix's own header paragraph.
+- [x] 7.7 Add `docs/next/` planned-work records and
       `docs/workflow-readability-matrix.md` to the mandatory-update trigger list in
       `.agents/rules/documentation.md`, so a later migration change is required to
       advance the record rather than leaving it stale. This closes the existing gap
       where `docs/next/` is the repo's planned-work convention but is not a
       documentation trigger.
-- [ ] 7.8 Extend the section 3.3 policy check so it fails when the programme record
+      `.agents/rules/documentation.md` gains `docs/next/*.md` as mandatory-update
+      item 8 (the skills-references item renumbers to 9) plus two trigger lines: the
+      existing workflow-structure trigger now also requires advancing the record's
+      status line, baseline, remaining-scope table, and slot ledger, and a new
+      trigger covers any `docs/next/` programme phase that advances, is rescoped, or
+      is deferred. The matrix was already item 7 from section 4; verified present and
+      extended rather than duplicated.
+- [x] 7.8 Extend the section 3.3 policy check so it fails when the programme record
       claims a migration is complete but the matching matrix rows are not marked
       migrated, or when the record's remaining-scope table and the matrix disagree
       about which workflows are outstanding.
-- [ ] 7.9 Cold-read verification: with this change's conversation and artifacts set
+      Added as rule 6 in `scripts/check-workflow-boundaries.py`. The convention
+      mirrors the facade-budget declaration pattern: one machine-readable line per
+      slot, `- slot <n> (complete|outstanding): <WFR-ID>[ (partial)][, ...]`,
+      documented in the record's own "Slot ledger (machine-readable)" subsection
+      with the failure modes spelled out, and parsed outside fenced blocks so the
+      format example is inert. Four failure modes: a `complete` slot naming a row
+      the matrix does not mark `migrated`; an `outstanding` slot naming a `migrated`
+      row without `(partial)`; a row id absent from the matrix; and a matrix row
+      that is neither `migrated` nor `exempt` and carries a slot appearing in no
+      outstanding line. The `(partial)` marker exists precisely because
+      `WFR-SEARCH-REPLACE` is genuinely both — migrated for one half, outstanding
+      for the other — and forcing that to be declared is stronger than tolerating
+      the disagreement. The `Slot` column is located by header name rather than
+      position so a later column insertion cannot silently shift it, and rows whose
+      slot is `none` (the two cross-cutting/exempt rows) owe no ledger entry.
+      **Absent-record decision:** `check_tree` takes the record path as an optional
+      argument. Omitting it leaves rule 6 inert, which is what the fixtures for
+      rules 1 through 5 rely on; passing a path whose file is missing is a reported
+      finding. The real-tree entry point always passes the canonical path, so the
+      rule can never silently no-op in this repository while remaining composable.
+      Documented in the module docstring.
+      Self-test cases added (all pass, plus the pre-existing cases): agreement
+      passes; complete-but-pending fails; a matrix row missing from the ledger
+      fails; a `migrated` row listed outstanding without `(partial)` fails while the
+      same row with `(partial)` passes; an unknown row id fails; an absent record
+      fails when the path is supplied; an omitted record path is inert; and a record
+      with no ledger lines fails. Verified independently that rule 6 is really
+      exercised on the current tree: 19 unsettled slotted rows, all listed, no
+      extras, 7 ledger claims parsed.
+- [x] 7.9 Cold-read verification: with this change's conversation and artifacts set
       aside, read only `AGENTS.md`, the revised rules, the matrix, and the programme
       record, and confirm the next change's scope and prerequisites are derivable. If
       they are not, the record is insufficient and section 7 is incomplete.
+      Run as a real adversarial cold read, not a self-review: a separate reader with
+      no access to this change's conversation or artifacts, restricted to
+      `AGENTS.md`, the four revised rules files, the matrix, and the programme
+      record, was asked to answer the problem, the completion state, the next
+      change's exact scope, its prerequisites, the deferrals, the amendment
+      constraint, and the gate's failure modes — and to attack the documents.
+      **First pass: derivable, with 10 findings.** Six of the seven questions were
+      answered cleanly with quotations; the seventh (prerequisites) landed on a real
+      self-contradiction. Findings acted on:
+      - **A (real, load-bearing)** — the two-completed-lower-risk-proofs rule for
+        `tier-3` versus slot 2, which carries a tier-3 half after only slot 1. The
+        reader had to guess. Both the record and the matrix now state the decision
+        slot 2 must make explicitly (sequence the tier-2 palette first inside the
+        change, or split into 2a/2b) and that slot 2's table position is not a
+        waiver.
+      - **E (latent gate deadlock)** — `WFR-AUTOMATION-SPINE`'s slot is
+        "2 onward", so when slot 2 completes it could neither be marked `migrated`
+        truthfully nor pass rule 6. Resolved by defining `(partial)` on a
+        `complete` ledger line as "this slot's share is done, the row continues",
+        exempting it from the migrated requirement; implemented, documented, and
+        self-tested.
+      - **D** — `deferred` meant two things (matrix row status = slotted and
+        planned; record section = unslotted and possibly permanent). Disambiguated
+        in the record's deferred-work section.
+      - **F** — the 8 / 23 / 7 seam figures did not reconcile anywhere. The record
+        now reconciles them exactly (23 pre-migration `*_for_test` functions = 8
+        inspection retired + 5 configuration setters + 3 configuration readers + 7
+        remaining actuation/probe), verified against `91fcce5` and the current tree,
+        and distinguishes them from the matrix's separate "23 observation getters"
+        prose figure.
+      - **G** — the record restated the superseded "90 long signatures" figure in
+        the same sentence that pointed at its correction; it now gives 88
+        receiver-counted / 43 strict and requires later changes to say which.
+      - **H** — slots 2 through 7 had no change names or lookup path; the record now
+        gives a naming convention and says to check `openspec list` and the archive
+        first.
+      - **I** — clarified that the one evidence-visibility rule is "narrowest the
+        readers require, and a pre-existing wider type is narrowed to it", matching
+        `workflow-evidence-surfaces`.
+      - **L** — stale "this change" deixis in a durable document: four occurrences
+        in the matrix rewritten to name slot 1.
+      - **B, C, K were false**: the reader's injected copy of the rules files
+        predated section 4, so it reported `make check-workflow-boundaries` missing
+        from `build.md`, the matrix missing from `documentation.md`, and a stale
+        mutation-scope statement. All three are present on disk
+        (`build.md:42`, `build.md:135-142`, `build.md:396-412`,
+        `documentation.md:18`, `widget-wiring.md:279+`); verified before dismissing.
+      **Second pass on the fixed documents: A, D, E, F, G, H, I, L all confirmed
+      resolved, and the cold-start questions answered.** Three new findings, all
+      fixed:
+      - **N1** — `rust.md` correctly says a new coordination role name amends
+        `gtk-adapter-module-boundaries`, but the record's carrier table and the
+        matrix header named only the two new capabilities. Since the bounded role-name
+        set is exactly what slot 2's `replace.rs` decision needs, both now name all
+        five normative specs with what each owns, and the record calls out that row
+        for slot 2.
+      - **N2** — the "split into 2a/2b" remedy was not expressible in the ledger
+        grammar. Documented that `<n>` is a slot *label* and a split keeps its number
+        with a letter suffix (never renumbering later slots); the parser already
+        accepted it, and a self-test now pins that.
+      - **N3** — `build.md`'s failure-mode list omitted the facade-budget check and
+        the roles-declared-for-a-non-migrated-row check, and would have gone stale
+        the moment slot 2 declares a budget. Both added, the budget one phrased
+        conditionally.
+      Residual sweeps from the same pass: the matrix's evidence-visibility paragraph
+      no longer states the rule in open census tense, and the record explains that a
+      migrated row's `Seams (i/c/a/p)` cell holds migration prose rather than a
+      tuple, so sizing evidence work uses an unmigrated row's tuple.
+      Honest result: **derivable after two passes.** The scope, prerequisites,
+      deferrals, amendment constraint, and gate behavior of slot 2 are all readable
+      from the four permitted surfaces without this change's artifacts.

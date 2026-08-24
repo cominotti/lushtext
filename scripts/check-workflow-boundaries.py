@@ -26,6 +26,20 @@ Four mechanical guarantees, all derived from
    `migrated` row's declared facade file may exceed it. The budget is set by the
    first migration change after the exemplar, so while no line declares one this
    rule is inert rather than assuming a default.
+6. Programme-record agreement: the slot ledger in
+   `docs/next/workflow-readability.md` and the matrix must tell the same story
+   about what is done and what is outstanding. Each ledger line reads
+   `- slot <n> (complete|outstanding): <WFR-ID>[ (partial)][, ...]`, and the
+   check fails when a `complete` slot names a row the matrix does not mark
+   `migrated`, when an `outstanding` slot names a `migrated` row without the
+   `(partial)` marker, when a named row id is absent from the matrix, or when a
+   matrix row that is neither `migrated` nor `exempt` and carries a migration
+   slot appears in no `outstanding` ledger line. `(partial)` on a `complete` line
+   means the slot's share of an incremental row is done while the row continues
+   later, so that entry is exempt from the `migrated` requirement. A caller that passes no record
+   path leaves this rule inert (the fixtures that exercise other rules do so);
+   the real-tree entry point always passes the canonical path, so a missing
+   record is reported rather than silently skipped.
 """
 
 from __future__ import annotations
@@ -39,6 +53,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = REPO_ROOT / "docs/workflow-readability-matrix.md"
+RECORD_PATH = REPO_ROOT / "docs/next/workflow-readability.md"
 MUTANTS_CONFIG_PATH = REPO_ROOT / ".cargo/mutants.toml"
 CORE_SRC = Path("crates/lushtext-core/src")
 
@@ -94,6 +109,15 @@ STRING_LITERAL_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
 BACKTICKED_RE = re.compile(r"`([^`]+)`")
 RELOCATION_TARGET_RE = re.compile(r"relocates? to `([^`]+)`")
 ROW_ID_RE = re.compile(r"^WFR-[A-Z0-9-]+$")
+# The programme record's machine-readable slot ledger, documented beside itself
+# in `docs/next/workflow-readability.md`.
+SLOT_LEDGER_RE = re.compile(
+    r"^-\s+slot\s+(\S+)\s+\((complete|outstanding)\):\s*(.+)$", re.IGNORECASE
+)
+SLOT_ENTRY_RE = re.compile(r"(WFR-[A-Z0-9-]+)(\s*\(partial\))?", re.IGNORECASE)
+# Statuses that owe no outstanding-slot entry: the work is either done or the row
+# is deliberately never migrated.
+SETTLED_STATUSES = ("migrated", "exempt")
 ROLE_LINE_RE = re.compile(r"^-\s+([A-Za-z][A-Za-z ]*?):\s*(.+)$")
 EXAMINE_GLOBS_RE = re.compile(r"^examine_globs\s*=\s*\[", re.MULTILINE)
 
@@ -106,6 +130,9 @@ class MatrixRow:
     line_number: int
     cells: tuple[str, ...]
     status: str
+    # The row's migration slot, or None when the table declares no `Slot` column.
+    # `none` is a real value: it marks a row that is never migrated.
+    slot: str | None
 
 
 @dataclass(frozen=True)
@@ -301,16 +328,31 @@ def status_findings(rows: list[MatrixRow]) -> list[str]:
 def parse_matrix_rows(text: str) -> list[MatrixRow]:
     """Parse `Product Matrix` rows keyed by their stable row id."""
     rows: list[MatrixRow] = []
+    slot_index: int | None = None
     for line_number, line in enumerate(text.splitlines(), start=1):
         cells = split_table_row(line)
-        if len(cells) < 2 or not ROW_ID_RE.match(cells[0]):
+        if len(cells) < 2:
             continue
+        if not ROW_ID_RE.match(cells[0]):
+            # Track the enclosing table's header so the `Slot` column is located
+            # by name rather than by a positional guess that a later column
+            # insertion would silently shift.
+            lowered = [cell.lower() for cell in cells]
+            if "row id" in lowered:
+                slot_index = lowered.index("slot") if "slot" in lowered else None
+            continue
+        slot = (
+            cells[slot_index]
+            if slot_index is not None and slot_index < len(cells)
+            else None
+        )
         rows.append(
             MatrixRow(
                 row_id=cells[0],
                 line_number=line_number,
                 cells=tuple(cells),
                 status=parse_status(cells[-1]),
+                slot=slot,
             )
         )
     return rows
@@ -554,10 +596,128 @@ def facade_size_findings(
     return findings
 
 
+# --- Check 6: programme record agreement ------------------------------------
+
+
+@dataclass(frozen=True)
+class SlotClaim:
+    """One machine-readable slot ledger line from the programme record."""
+
+    slot: str
+    line_number: int
+    complete: bool
+    # Row ids claimed by this slot, paired with their `(partial)` marker.
+    entries: tuple[tuple[str, bool], ...]
+
+
+def parse_slot_ledger(text: str) -> list[SlotClaim]:
+    """Parse the programme record's slot ledger lines, ignoring fenced examples."""
+    claims: list[SlotClaim] = []
+    in_fence = False
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            # The record documents the ledger's own format in a fence.
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = SLOT_LEDGER_RE.match(line.strip())
+        if match is None:
+            continue
+        entries = tuple(
+            (row_id.upper(), bool(partial))
+            for row_id, partial in SLOT_ENTRY_RE.findall(match.group(3))
+        )
+        claims.append(
+            SlotClaim(
+                slot=match.group(1),
+                line_number=line_number,
+                complete=match.group(2).lower() == "complete",
+                entries=entries,
+            )
+        )
+    return claims
+
+
+def record_findings(rows: list[MatrixRow], record_path: Path) -> list[str]:
+    """Return findings where the programme record and the matrix disagree."""
+    record = display_path(record_path)
+    if not record_path.is_file():
+        return [
+            f"missing programme record: {record}; the matrix's status is only half "
+            "the story without it"
+        ]
+
+    text = record_path.read_text(encoding="utf-8")
+    claims = parse_slot_ledger(text)
+    if not claims:
+        return [
+            f"{record}: no `- slot <n> (complete|outstanding): <WFR-ID>` ledger lines "
+            "were parsed, so the record makes no checkable claim about remaining scope"
+        ]
+
+    status_by_id = {row.row_id: row for row in rows}
+    findings: list[str] = []
+    claimed_outstanding: set[str] = set()
+
+    for claim in claims:
+        for row_id, partial in claim.entries:
+            row = status_by_id.get(row_id)
+            if row is None:
+                findings.append(
+                    f"{record}:{claim.line_number} slot {claim.slot} names {row_id}, "
+                    f"which has no row in {display_path(MATRIX_PATH)}"
+                )
+                continue
+            if claim.complete and partial:
+                # `(partial)` on a complete line means this slot's share of the
+                # row is done while the row continues in a later slot, which is
+                # how an incremental row such as WFR-AUTOMATION-SPINE avoids
+                # having to be falsely marked `migrated` to satisfy the gate.
+                continue
+            if claim.complete and row.status != MIGRATED_STATUS:
+                findings.append(
+                    f"{record}:{claim.line_number} slot {claim.slot} is declared "
+                    f"complete but {row_id} is `{row.status}` in "
+                    f"{display_path(MATRIX_PATH)}:{row.line_number}, not "
+                    f"`{MIGRATED_STATUS}`"
+                )
+                continue
+            if not claim.complete:
+                claimed_outstanding.add(row_id)
+                if row.status == MIGRATED_STATUS and not partial:
+                    findings.append(
+                        f"{record}:{claim.line_number} slot {claim.slot} lists {row_id} "
+                        f"as outstanding, but {display_path(MATRIX_PATH)}:"
+                        f"{row.line_number} marks it `{MIGRATED_STATUS}`; a migrated row "
+                        "with remaining scope must be written as "
+                        f"`{row_id} (partial)`"
+                    )
+
+    for row in rows:
+        if row.status in SETTLED_STATUSES:
+            continue
+        if row.slot is None or row.slot.strip().lower() in {"none", ""}:
+            continue
+        if row.row_id not in claimed_outstanding:
+            findings.append(
+                f"{display_path(MATRIX_PATH)}:{row.line_number} row {row.row_id} is "
+                f"`{row.status}` with migration slot `{row.slot}`, but {record} lists it "
+                "in no outstanding slot; the remaining-scope ledger and the matrix "
+                "disagree about what is left"
+            )
+    return findings
+
+
 # --- Orchestration ----------------------------------------------------------
 
 
-def check_tree(root: Path, matrix_path: Path, mutants_config: Path) -> list[str]:
+def check_tree(
+    root: Path,
+    matrix_path: Path,
+    mutants_config: Path,
+    record_path: Path | None = None,
+) -> list[str]:
     """Return every workflow boundary finding for one checkout root."""
     findings: list[str] = []
 
@@ -590,6 +750,8 @@ def check_tree(root: Path, matrix_path: Path, mutants_config: Path) -> list[str]
     findings.extend(
         facade_size_findings(rows, declarations, parse_facade_budget(text), root)
     )
+    if record_path is not None:
+        findings.extend(record_findings(rows, record_path))
     return findings
 
 
@@ -978,6 +1140,160 @@ def run_self_test() -> None:
         if findings:
             raise AssertionError(f"expected an undeclared budget to be inert, got {findings}")
 
+    # Rule 6 needs a matrix with a `Slot` column, because an outstanding row is
+    # one that carries a migration slot and is not settled.
+    slotted_header = (
+        "\n## Product Matrix\n\n"
+        "| Row id | Workflow | Risk | Slot | Status |\n"
+        "| --- | --- | --- | --- | --- |\n"
+    )
+
+    def slotted_fixture(root: Path, body: str, ledger: str | None) -> tuple[Path, Path, Path]:
+        """Build a matrix with a `Slot` column plus an optional programme record."""
+        write(root / ".cargo/mutants.toml", MINIMAL_MUTANTS_CONFIG)
+        matrix = root / "docs/workflow-readability-matrix.md"
+        write(matrix, "# Fixture Matrix\n" + slotted_header + body + migrated_roles)
+        write(root / CORE_SRC / "ui/search_panel/mod.rs", "pub struct Panel;\n")
+        write(root / CORE_SRC / "ui/search_panel/evidence.rs", "pub struct Facts;\n")
+        record = root / "docs/next/workflow-readability.md"
+        if ledger is not None:
+            write(
+                record,
+                "# Fixture Record\n\nDeclared as:\n\n```\n"
+                "- slot <n> (complete|outstanding): <WFR-ID>\n```\n\n" + ledger,
+            )
+        return matrix, root / ".cargo/mutants.toml", record
+
+    agreeing_body = (
+        "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+        "| WFR-PENDING | Pending | tier-3 | 2 | pending |\n"
+        "| WFR-SHARED | Shared | tier-3 | none | cross-cutting |\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Agreement passes: the complete slot names the migrated row, the
+        # outstanding slot names every unsettled slotted row, and a `none`-slot
+        # row owes no ledger entry.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE\n- slot 2 (outstanding): WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(f"expected an agreeing record to pass, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A slot declared complete whose row the matrix still lists as pending.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE, WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("is declared complete but WFR-PENDING is `pending`" in f for f in findings):
+            raise AssertionError(
+                f"expected a complete-but-pending finding, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # The matrix has an unsettled slotted row the ledger never mentions.
+        matrix, config, record = slotted_fixture(
+            root, agreeing_body, "- slot 1 (complete): WFR-EXAMPLE\n"
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("lists it in no outstanding slot" in f for f in findings):
+            raise AssertionError(
+                f"expected a missing-outstanding finding, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A migrated row may be listed outstanding only as `(partial)`.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 2 (outstanding): WFR-EXAMPLE, WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("must be written as `WFR-EXAMPLE (partial)`" in f for f in findings):
+            raise AssertionError(f"expected an unmarked-partial finding, got {findings}")
+
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE\n"
+            "- slot 2 (outstanding): WFR-EXAMPLE (partial), WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(
+                f"expected a `(partial)` migrated row to pass, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # `(partial)` on a complete line exempts an incremental row from the
+        # `migrated` requirement, so a row whose scope spans slots does not have
+        # to be falsely marked migrated. It must still be listed outstanding.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE, WFR-PENDING (partial)\n"
+            "- slot 2 (outstanding): WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(
+                f"expected `(partial)` on a complete line to pass, got {findings}"
+            )
+
+        # A split slot keeps its number and takes a letter suffix, so the slot
+        # label is not restricted to an integer.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE\n"
+            "- slot 2a (outstanding): WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(f"expected a `2a` slot label to parse, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A ledger row id that no matrix row defines is a typo, not scope.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE\n"
+            "- slot 2 (outstanding): WFR-PENDING, WFR-TYPO\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("WFR-TYPO, which has no row" in f for f in findings):
+            raise AssertionError(f"expected an unknown-row finding, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A caller that passes a record path expects a record: absent must fail,
+        # and a record with no ledger claims nothing checkable.
+        matrix, config, record = slotted_fixture(root, agreeing_body, None)
+        findings = check_tree(root, matrix, config, record)
+        if not any("missing programme record" in f for f in findings):
+            raise AssertionError(f"expected an absent-record finding, got {findings}")
+        # Passing no record path at all leaves the rule inert, which is what the
+        # fixtures above rely on while exercising rules 1 through 5.
+        if any("programme record" in f for f in check_tree(root, matrix, config)):
+            raise AssertionError("expected an omitted record path to be inert")
+
+        write(record, "# Fixture Record\n\nNo ledger here.\n")
+        findings = check_tree(root, matrix, config, record)
+        if not any("no `- slot" in f for f in findings):
+            raise AssertionError(f"expected an empty-ledger finding, got {findings}")
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         # String literals and block comments name GTK types without importing them.
@@ -1006,7 +1322,7 @@ def main() -> int:
     if args.self_test:
         run_self_test()
 
-    findings = check_tree(REPO_ROOT, MATRIX_PATH, MUTANTS_CONFIG_PATH)
+    findings = check_tree(REPO_ROOT, MATRIX_PATH, MUTANTS_CONFIG_PATH, RECORD_PATH)
     if findings:
         print("workflow boundary policy violations:")
         for finding in findings:
@@ -1017,7 +1333,8 @@ def main() -> int:
     print(
         "workflow boundary policy passed: "
         f"{len(modules)} workflow policy module(s) are pure and mutation-scoped, "
-        "and every migrated matrix row names complete, existing roles"
+        "every migrated matrix row names complete, existing roles, and the programme "
+        "record's slot ledger agrees with the matrix"
     )
     return 0
 
