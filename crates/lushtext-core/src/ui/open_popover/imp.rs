@@ -232,7 +232,7 @@ impl Default for LushtextOpenPopover {
 // ObjectSubclass registers the custom GtkPopover type referenced by templates.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextOpenPopover {
-    const NAME: &'static str = "LushtextOpenPopover";
+    const NAME: &str = "LushtextOpenPopover";
     type Type = super::LushtextOpenPopover;
     type ParentType = gtk4::Popover;
 

@@ -62,7 +62,7 @@ pub struct LushtextStatusBar {
 
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextStatusBar {
-    const NAME: &'static str = "LushtextStatusBar";
+    const NAME: &str = "LushtextStatusBar";
     type Type = super::LushtextStatusBar;
     type ParentType = gtk4::Box;
 

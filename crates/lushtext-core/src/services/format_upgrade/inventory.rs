@@ -6,6 +6,7 @@
 //! quarantine, delete, or write any metadata; those side effects belong in the
 //! explicit apply command after the user chooses an action.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{
@@ -494,7 +495,7 @@ fn item_file_facts(path: &Path) -> Result<FormatItemFileFacts, String> {
 }
 
 fn has_extension(path: &Path, expected: &str) -> bool {
-    path.extension().and_then(|ext| ext.to_str()) == Some(expected)
+    path.extension().and_then(OsStr::to_str) == Some(expected)
 }
 
 /// Interpret one JSON envelope as current, upgradeable, future, or unsupported.

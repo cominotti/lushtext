@@ -163,7 +163,7 @@ impl Default for LushtextCommandPalette {
 // NAME must match the `class` attribute in the UI template XML.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextCommandPalette {
-    const NAME: &'static str = "LushtextCommandPalette";
+    const NAME: &str = "LushtextCommandPalette";
     type Type = super::LushtextCommandPalette;
     type ParentType = gtk4::Box;
 

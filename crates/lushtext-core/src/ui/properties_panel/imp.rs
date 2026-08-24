@@ -68,7 +68,7 @@ impl Default for LushtextPropertiesPanel {
 // Register the Rust implementation as a `GtkBox` subclass so the public
 // wrapper can participate in templates and Libadwaita layout containers.
 impl ObjectSubclass for LushtextPropertiesPanel {
-    const NAME: &'static str = "LushtextPropertiesPanel";
+    const NAME: &str = "LushtextPropertiesPanel";
     type Type = super::LushtextPropertiesPanel;
     type ParentType = gtk4::Box;
 

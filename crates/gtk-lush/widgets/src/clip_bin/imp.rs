@@ -27,7 +27,7 @@ pub struct ClipBin {
 
 #[glib::object_subclass]
 impl ObjectSubclass for ClipBin {
-    const NAME: &'static str = "GtkLushClipBin";
+    const NAME: &str = "GtkLushClipBin";
     type Type = super::ClipBin;
     type ParentType = gtk4::Widget;
 }

@@ -33,7 +33,7 @@ mod imp {
     // ObjectSubclass registers this data object with GLib so ListStore can hold it.
     #[glib::object_subclass]
     impl ObjectSubclass for OpenPopoverItem {
-        const NAME: &'static str = "LushtextOpenPopoverItem";
+        const NAME: &str = "LushtextOpenPopoverItem";
         type Type = super::OpenPopoverItem;
         type ParentType = glib::Object;
     }

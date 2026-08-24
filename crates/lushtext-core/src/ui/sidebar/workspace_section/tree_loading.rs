@@ -220,11 +220,7 @@ pub(super) fn populate_child_store(
 
     match submission {
         ChildScanSubmission::Start(_) => start_child_scan(section, store_key, request),
-        ChildScanSubmission::QueueLatest {
-            cancel_active,
-            replaced_pending: _,
-            ..
-        } => {
+        ChildScanSubmission::QueueLatest { cancel_active, .. } => {
             section
                 .imp()
                 .child_pending_scans

@@ -577,7 +577,7 @@ impl Default for LushtextEditorPage {
 // NAME must match the `class` attribute in the UI template XML.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextEditorPage {
-    const NAME: &'static str = "LushtextEditorPage";
+    const NAME: &str = "LushtextEditorPage";
     type Type = super::LushtextEditorPage;
     type ParentType = gtk4::Box;
 

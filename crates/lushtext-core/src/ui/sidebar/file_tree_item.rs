@@ -42,7 +42,7 @@ mod imp {
     // ObjectSubclass registers this struct with GLib's runtime type system.
     #[glib::object_subclass]
     impl ObjectSubclass for FileTreeItem {
-        const NAME: &'static str = "LushtextFileTreeItem";
+        const NAME: &str = "LushtextFileTreeItem";
         type Type = super::FileTreeItem;
         type ParentType = glib::Object;
     }

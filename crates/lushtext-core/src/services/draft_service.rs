@@ -31,6 +31,7 @@ use crate::services::{
 };
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Mutex, OnceLock,
@@ -1240,7 +1241,7 @@ fn draft_id_from_draft_file_name(name: &str) -> Option<String> {
     }
     name_path
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(OsStr::to_str)
         .filter(|stem| !stem.is_empty())
         .map(ToOwned::to_owned)
 }

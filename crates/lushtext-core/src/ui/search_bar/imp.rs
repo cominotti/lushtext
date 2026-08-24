@@ -97,7 +97,7 @@ pub struct LushtextSearchBar {
 
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextSearchBar {
-    const NAME: &'static str = "LushtextSearchBar";
+    const NAME: &str = "LushtextSearchBar";
     type Type = super::LushtextSearchBar;
     type ParentType = gtk4::Grid;
 

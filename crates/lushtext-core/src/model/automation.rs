@@ -226,708 +226,6 @@ impl AutomationWorkflowEvent {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn workflow_event_log_records_start_and_finish_transitions() {
-        let mut log = AutomationWorkflowEventLog::default();
-
-        log.observe([AutomationWorkflowObservation::new(
-            AUTOMATION_WORKFLOW_FILE_LOAD,
-            true,
-            Some(READINESS_BLOCKER_FILE_LOAD),
-        )]);
-        log.observe([AutomationWorkflowObservation::new(
-            AUTOMATION_WORKFLOW_FILE_LOAD,
-            true,
-            Some(READINESS_BLOCKER_FILE_LOAD),
-        )]);
-        log.observe([AutomationWorkflowObservation::new(
-            AUTOMATION_WORKFLOW_FILE_LOAD,
-            false,
-            None,
-        )]);
-
-        let snapshot = log.snapshot();
-        assert_eq!(snapshot.last_sequence, 2);
-        assert!(!snapshot.capped);
-        assert_eq!(snapshot.events.len(), 2);
-        assert_eq!(snapshot.events[0].sequence, 1);
-        assert_eq!(snapshot.events[0].phase, "started");
-        assert_eq!(snapshot.events[0].status, "running");
-        assert_eq!(
-            snapshot.events[0].blocker.as_deref(),
-            Some(READINESS_BLOCKER_FILE_LOAD)
-        );
-        assert_eq!(snapshot.events[1].phase, "finished");
-        assert_eq!(snapshot.events[1].status, "settled");
-    }
-
-    #[test]
-    fn workflow_event_log_uses_zero_as_empty_sequence_sentinel() {
-        let mut log = AutomationWorkflowEventLog::default();
-
-        assert_eq!(log.snapshot().last_sequence, 0);
-        log.observe([AutomationWorkflowObservation::new(
-            AUTOMATION_WORKFLOW_SAVE,
-            true,
-            Some(READINESS_BLOCKER_SAVE),
-        )]);
-
-        let snapshot = log.snapshot();
-        assert_eq!(snapshot.last_sequence, 1);
-        assert_eq!(snapshot.events[0].sequence, 1);
-    }
-
-    #[test]
-    fn workflow_event_log_caps_old_events() {
-        let mut log = AutomationWorkflowEventLog::default();
-
-        for _ in 0..=AUTOMATION_WORKFLOW_EVENT_LIMIT {
-            log.observe([AutomationWorkflowObservation::new(
-                AUTOMATION_WORKFLOW_SAVE,
-                true,
-                Some(READINESS_BLOCKER_SAVE),
-            )]);
-            log.observe([AutomationWorkflowObservation::new(
-                AUTOMATION_WORKFLOW_SAVE,
-                false,
-                None,
-            )]);
-        }
-
-        let snapshot = log.snapshot();
-        assert!(snapshot.capped);
-        assert_eq!(snapshot.events.len(), AUTOMATION_WORKFLOW_EVENT_LIMIT);
-        assert_eq!(
-            snapshot.events.first().map(|event| event.sequence),
-            Some(snapshot.last_sequence + 1 - AUTOMATION_WORKFLOW_EVENT_LIMIT as u64)
-        );
-    }
-
-    #[test]
-    fn workflow_event_log_keeps_state_until_inactive_observed() {
-        let mut log = AutomationWorkflowEventLog::default();
-
-        log.observe([AutomationWorkflowObservation::new(
-            AUTOMATION_WORKFLOW_FILE_LOAD,
-            true,
-            Some(READINESS_BLOCKER_FILE_LOAD),
-        )]);
-        log.observe([]);
-
-        let snapshot = log.snapshot();
-        assert_eq!(snapshot.last_sequence, 1);
-        assert_eq!(snapshot.events.len(), 1);
-        assert_eq!(snapshot.events[0].phase, "started");
-
-        log.observe([AutomationWorkflowObservation::new(
-            AUTOMATION_WORKFLOW_FILE_LOAD,
-            false,
-            None,
-        )]);
-
-        let snapshot = log.snapshot();
-        assert_eq!(snapshot.last_sequence, 2);
-        assert_eq!(snapshot.events.len(), 2);
-        assert_eq!(snapshot.events[1].phase, "finished");
-        assert_eq!(snapshot.events[1].status, "settled");
-    }
-
-    #[test]
-    fn automation_snapshot_serializes_disabled_no_window_state() {
-        let snapshot = AutomationSnapshot {
-            interface_version: 1,
-            enabled: false,
-            app_id: "dev.cominotti.lushtext".to_string(),
-            app_version: "0.0.0-test".to_string(),
-            build_profile: "test".to_string(),
-            idle: false,
-            idle_blocker: Some(READINESS_BLOCKER_APP_STARTUP.to_string()),
-            window: None,
-        };
-
-        let value = serde_json::to_value(snapshot).expect("snapshot should serialize");
-
-        assert_eq!(value["interface_version"], 1);
-        assert_eq!(value["enabled"], false);
-        assert_eq!(value["app_id"], "dev.cominotti.lushtext");
-        assert_eq!(value["app_version"], "0.0.0-test");
-        assert_eq!(value["build_profile"], "test");
-        assert_eq!(value["idle"], false);
-        assert_eq!(value["idle_blocker"], READINESS_BLOCKER_APP_STARTUP);
-        assert!(value["window"].is_null());
-    }
-
-    #[test]
-    fn tab_snapshot_serializes_redacted_file_and_draft_metadata_only() {
-        let tab = AutomationTabSnapshot {
-            index: 0,
-            active: true,
-            title: "Draft tab".to_string(),
-            document_kind: "file".to_string(),
-            path: Some("/tmp/lushtext-automation.txt".to_string()),
-            modified: true,
-            saving: false,
-            load_state: "loaded".to_string(),
-            file_size: Some(42),
-            draft_present: true,
-            evicted: false,
-            pinned: true,
-        };
-
-        let value = serde_json::to_value(tab).expect("tab snapshot should serialize");
-        let fields = value
-            .as_object()
-            .expect("tab snapshot should serialize as an object");
-
-        assert_eq!(fields["draft_present"], true);
-        assert_eq!(fields["path"], "/tmp/lushtext-automation.txt");
-        assert_eq!(fields["file_size"], 42);
-        assert!(!fields.contains_key("draft_id"));
-        assert!(!fields.contains_key("document_text"));
-        assert!(!fields.contains_key("content"));
-        assert!(!fields.contains_key("bookmark_ids"));
-        assert!(!fields.contains_key("local_history_snapshots"));
-    }
-
-    #[test]
-    fn surface_snapshot_serializes_accessibility_readiness_without_content() {
-        let surfaces = AutomationSurfaceSnapshot {
-            workspace_sidebar_visible: true,
-            workspace_sidebar_requested: true,
-            document_properties_visible: false,
-            document_properties_requested: false,
-            compact_surface: Some("workspace-sidebar".to_string()),
-            command_palette_visible: false,
-            search_panel_visible: true,
-            open_popover_visible: false,
-            preview_pane_visible: false,
-            preview_mode: false,
-            focus_mode: false,
-            minimap_requested: true,
-            status_bar_visible: true,
-            active_transient_surface: Some("workspace-search".to_string()),
-            accessibility_ready: false,
-            accessibility_blocker: Some(READINESS_BLOCKER_WORKSPACE_SEARCH.to_string()),
-        };
-
-        let value = serde_json::to_value(surfaces).expect("surface snapshot should serialize");
-        let fields = value
-            .as_object()
-            .expect("surface snapshot should serialize as an object");
-
-        assert_eq!(fields["accessibility_ready"], false);
-        assert_eq!(
-            fields["accessibility_blocker"],
-            READINESS_BLOCKER_WORKSPACE_SEARCH
-        );
-        assert_eq!(fields["active_transient_surface"], "workspace-search");
-        assert!(!fields.contains_key("document_text"));
-        assert!(!fields.contains_key("note_body"));
-        assert!(!fields.contains_key("search_results"));
-    }
-
-    #[test]
-    fn workflow_events_snapshot_serializes_stable_contract() {
-        let snapshot = AutomationWorkflowEventsSnapshot {
-            last_sequence: 7,
-            capped: true,
-            events: vec![AutomationWorkflowEvent {
-                sequence: 7,
-                workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
-                phase: "finished",
-                status: "settled",
-                summary: "save finished".to_string(),
-                blocker: Some(READINESS_BLOCKER_SAVE.to_string()),
-            }],
-        };
-
-        let value =
-            serde_json::to_value(snapshot).expect("workflow event snapshot should serialize");
-
-        assert_eq!(value["last_sequence"], 7);
-        assert_eq!(value["capped"], true);
-        assert_eq!(value["events"][0]["sequence"], 7);
-        assert_eq!(value["events"][0]["workflow_id"], AUTOMATION_WORKFLOW_SAVE);
-        assert_eq!(value["events"][0]["phase"], "finished");
-        assert_eq!(value["events"][0]["status"], "settled");
-        assert_eq!(value["events"][0]["summary"], "save finished");
-        assert_eq!(value["events"][0]["blocker"], READINESS_BLOCKER_SAVE);
-    }
-
-    #[test]
-    fn workflow_event_projects_to_proof_spine_without_renaming_automation_fields() {
-        let event = AutomationWorkflowEvent {
-            sequence: 9,
-            workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
-            phase: "started",
-            status: "running",
-            summary: "save started".to_string(),
-            blocker: Some(READINESS_BLOCKER_SAVE.to_string()),
-        };
-
-        let proof_event = event.to_proof_event();
-        let automation_json =
-            serde_json::to_value(event).expect("automation event should serialize");
-
-        assert_eq!(automation_json["phase"], "started");
-        assert_eq!(automation_json["status"], "running");
-        assert_eq!(proof_event.phase, WorkflowPhase::Start);
-        assert_eq!(proof_event.status, ProofStatus::Blocked);
-        assert_eq!(
-            proof_event
-                .blocker
-                .as_ref()
-                .map(|blocker| blocker.kind.as_str()),
-            Some(READINESS_BLOCKER_SAVE)
-        );
-    }
-
-    #[test]
-    fn finished_workflow_event_projects_to_ready_finish_proof_event() {
-        let event = AutomationWorkflowEvent {
-            sequence: 10,
-            workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
-            phase: "finished",
-            status: "settled",
-            summary: "save finished".to_string(),
-            blocker: None,
-        };
-
-        let proof_event = event.to_proof_event();
-
-        assert_eq!(proof_event.phase, WorkflowPhase::Finish);
-        assert_eq!(proof_event.status, ProofStatus::Ready);
-        assert_eq!(proof_event.detail.as_deref(), Some("save finished"));
-        assert!(proof_event.blocker.is_none());
-    }
-
-    #[test]
-    fn readiness_predicates_round_trip_stable_reference_fields() {
-        let cases = [
-            (
-                AutomationReadinessPredicate::AppStartup,
-                "app-startup",
-                "Application startup",
-                READINESS_BLOCKER_APP_STARTUP,
-            ),
-            (
-                AutomationReadinessPredicate::WindowActionsExported,
-                "window-actions-exported",
-                "active window",
-                READINESS_BLOCKER_APP_STARTUP,
-            ),
-            (
-                AutomationReadinessPredicate::FileOpenComplete,
-                "file-open-complete",
-                "File-backed editor tabs",
-                READINESS_BLOCKER_FILE_LOAD,
-            ),
-            (
-                AutomationReadinessPredicate::SearchComplete,
-                "search-complete",
-                "Editor search",
-                READINESS_BLOCKER_WORKSPACE_SEARCH,
-            ),
-            (
-                AutomationReadinessPredicate::SaveComplete,
-                "save-complete",
-                "Editor saves",
-                READINESS_BLOCKER_SAVE,
-            ),
-            (
-                AutomationReadinessPredicate::WorkspaceRefreshComplete,
-                "workspace-refresh-complete",
-                "Workspace watcher",
-                READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
-            ),
-            (
-                AutomationReadinessPredicate::SessionRestoreComplete,
-                "session-restore-complete",
-                "Session restore",
-                READINESS_BLOCKER_SESSION_RESTORE,
-            ),
-            (
-                AutomationReadinessPredicate::RecoveryRestoreComplete,
-                "recovery-restore-complete",
-                "Startup recovery restore",
-                READINESS_BLOCKER_SESSION_RESTORE,
-            ),
-            (
-                AutomationReadinessPredicate::VisualGeometrySettled,
-                "visual-geometry-settled",
-                "GTK layout",
-                READINESS_BLOCKER_MINIMAP_REFRESH,
-            ),
-            (
-                AutomationReadinessPredicate::Idle,
-                "idle",
-                "Every tracked",
-                READINESS_BLOCKER_SAVE,
-            ),
-            (
-                AutomationReadinessPredicate::AccessibilitySettled,
-                "accessibility-settled",
-                "Accessibility tree",
-                READINESS_BLOCKER_PREVIEW_ANIMATION,
-            ),
-        ];
-
-        assert_eq!(AutomationReadinessPredicate::ALL.len(), cases.len());
-        let rows = AutomationReadinessPredicate::reference_rows();
-        assert_eq!(rows.len(), cases.len());
-
-        for (index, (predicate, name, description_fragment, expected_blocker)) in
-            cases.into_iter().enumerate()
-        {
-            assert_eq!(predicate.as_str(), name);
-            assert_eq!(
-                AutomationReadinessPredicate::from_name(name),
-                Some(predicate)
-            );
-            assert_eq!(predicate.anchor(), format!("readiness-predicate-{name}"));
-            assert!(predicate.description().contains(description_fragment));
-            assert!(predicate.includes_blocker(expected_blocker));
-            assert!(!predicate.includes_blocker("not-a-real-readiness-blocker"));
-
-            let row = &rows[index];
-            assert_eq!(row.predicate, name);
-            assert_eq!(row.anchor, format!("readiness-predicate-{name}"));
-            assert!(row.description.contains(description_fragment));
-            assert!(row.blockers.contains(&expected_blocker));
-            assert_eq!(row.stability, "stable");
-        }
-
-        assert_eq!(
-            AutomationReadinessPredicate::from_name("future-ready"),
-            None
-        );
-    }
-
-    #[test]
-    fn readiness_status_strings_round_trip_to_proof_statuses() {
-        let cases = [
-            (
-                AutomationReadinessStatus::Ready,
-                "ready",
-                ProofStatus::Ready,
-            ),
-            (
-                AutomationReadinessStatus::PredicateTimeout,
-                "predicate-timeout",
-                ProofStatus::PredicateTimeout,
-            ),
-            (
-                AutomationReadinessStatus::WorkflowFailure,
-                "workflow-failure",
-                ProofStatus::ApplicationFailure,
-            ),
-            (
-                AutomationReadinessStatus::AutomationUnavailable,
-                "automation-unavailable",
-                ProofStatus::ApplicationFailure,
-            ),
-            (
-                AutomationReadinessStatus::UnsupportedHostTooling,
-                "unsupported-host-tooling",
-                ProofStatus::UnsupportedHost,
-            ),
-            (
-                AutomationReadinessStatus::UnknownPredicate,
-                "unknown-predicate",
-                ProofStatus::UnknownPredicate,
-            ),
-        ];
-
-        for (status, name, proof_status) in cases {
-            assert_eq!(status.as_str(), name);
-            assert_eq!(
-                AutomationReadinessStatus::from_status_str(name),
-                Some(status)
-            );
-            assert_eq!(status.to_proof_status(), proof_status);
-        }
-
-        assert_eq!(
-            AutomationReadinessStatus::from_status_str("future-status"),
-            None
-        );
-    }
-
-    #[test]
-    fn readiness_result_projects_to_proof_spine_without_status_drift() {
-        let result = AutomationReadinessResult {
-            predicate: AutomationReadinessPredicate::VisualGeometrySettled
-                .as_str()
-                .to_string(),
-            ok: false,
-            status: AutomationReadinessStatus::PredicateTimeout.as_str(),
-            detail: "timed out waiting for visual-geometry-settled".to_string(),
-            blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
-        };
-
-        let proof_result = result.to_proof_result();
-        let automation_json =
-            serde_json::to_value(&result).expect("readiness result should serialize");
-
-        assert_eq!(automation_json["status"], "predicate-timeout");
-        assert_eq!(
-            proof_result.predicate.as_str(),
-            AutomationReadinessPredicate::VisualGeometrySettled.as_str()
-        );
-        assert_eq!(proof_result.status, ProofStatus::PredicateTimeout);
-        assert!(!proof_result.ready);
-        assert_eq!(
-            proof_result
-                .blocker
-                .as_ref()
-                .map(|blocker| blocker.kind.as_str()),
-            Some(READINESS_BLOCKER_MINIMAP_REFRESH)
-        );
-
-        let unknown = AutomationReadinessResult {
-            status: "future-status",
-            ..result
-        };
-        assert_eq!(
-            unknown.to_proof_result().status,
-            ProofStatus::ApplicationFailure
-        );
-    }
-
-    #[test]
-    fn snapshot_projects_bounded_visual_surfaces_to_proof_spine() {
-        let snapshot = AutomationSnapshot {
-            interface_version: 1,
-            enabled: true,
-            app_id: "dev.cominotti.lushtext".to_string(),
-            app_version: "0.0.0-test".to_string(),
-            build_profile: "test".to_string(),
-            idle: false,
-            idle_blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
-            window: None,
-        };
-
-        let proof_snapshot = snapshot.to_proof_snapshot(12);
-        let automation_json = serde_json::to_value(snapshot).expect("snapshot should serialize");
-
-        assert_eq!(
-            automation_json["idle_blocker"],
-            READINESS_BLOCKER_MINIMAP_REFRESH
-        );
-        assert_eq!(proof_snapshot.sequence, 12);
-        assert_eq!(
-            proof_snapshot.version.interface_version.as_deref(),
-            Some("1")
-        );
-        assert_eq!(proof_snapshot.status, ProofStatus::Blocked);
-        assert!(proof_snapshot.surfaces.is_empty());
-    }
-
-    #[test]
-    fn visual_geometry_snapshot_serializes_bounded_rects_and_absence_reasons() {
-        let snapshot = AutomationVisualGeometrySnapshot {
-            scale_factor: 1,
-            coordinate_space: "window-logical-pixels".to_string(),
-            ready: false,
-            blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
-            surfaces: vec![
-                AutomationVisualSurfaceSnapshot {
-                    name: "header-bar".to_string(),
-                    visible: true,
-                    rect: Some(AutomationVisualRect {
-                        x: 0,
-                        y: 0,
-                        width: 1280,
-                        height: 48,
-                    }),
-                    allocation: Some(AutomationVisualSize {
-                        width: 1280,
-                        height: 48,
-                    }),
-                    absence_reason: None,
-                },
-                AutomationVisualSurfaceSnapshot {
-                    name: "minimap-source-map".to_string(),
-                    visible: false,
-                    rect: None,
-                    allocation: None,
-                    absence_reason: Some("minimap-disabled".to_string()),
-                },
-            ],
-            pixel_anchors: vec![
-                AutomationVisualPixelAnchorSnapshot {
-                    name: "minimap-viewport-top-edge".to_string(),
-                    surface: "minimap-native-viewport".to_string(),
-                    visible: true,
-                    rect: Some(AutomationVisualRect {
-                        x: 1180,
-                        y: 64,
-                        width: 96,
-                        height: 3,
-                    }),
-                    absence_reason: None,
-                },
-                AutomationVisualPixelAnchorSnapshot {
-                    name: "minimap-viewport-fill".to_string(),
-                    surface: "minimap-native-viewport".to_string(),
-                    visible: true,
-                    rect: Some(AutomationVisualRect {
-                        x: 1180,
-                        y: 66,
-                        width: 96,
-                        height: 10,
-                    }),
-                    absence_reason: None,
-                },
-                AutomationVisualPixelAnchorSnapshot {
-                    name: "minimap-viewport-bottom-edge".to_string(),
-                    surface: "minimap-native-viewport".to_string(),
-                    visible: true,
-                    rect: Some(AutomationVisualRect {
-                        x: 1180,
-                        y: 280,
-                        width: 96,
-                        height: 10,
-                    }),
-                    absence_reason: None,
-                },
-            ],
-            native_minimap: AutomationNativeMinimapDiagnosticSnapshot {
-                visible: true,
-                absence_reason: None,
-                projection_source: Some("upstream-visible-rect-estimate".to_string()),
-                source_map_allocation: Some(AutomationVisualSize {
-                    width: 94,
-                    height: 660,
-                }),
-                source_map_rect: Some(AutomationVisualRect {
-                    x: 1180,
-                    y: 48,
-                    width: 94,
-                    height: 660,
-                }),
-                editor_visible_rect: Some(AutomationVisualRect {
-                    x: 0,
-                    y: 0,
-                    width: 1024,
-                    height: 660,
-                }),
-                source_map_visible_rect: Some(AutomationVisualRect {
-                    x: 0,
-                    y: 2,
-                    width: 94,
-                    height: 660,
-                }),
-                source_view_vadjustment: Some(AutomationVisualAdjustmentSnapshot {
-                    at_lower: true,
-                    value_milli: 0,
-                    lower_milli: 0,
-                    upper_milli: 980_000,
-                    page_size_milli: 660_000,
-                }),
-                source_map_vadjustment: Some(AutomationVisualAdjustmentSnapshot {
-                    at_lower: false,
-                    value_milli: 2_000,
-                    lower_milli: 0,
-                    upper_milli: 662_000,
-                    page_size_milli: 660_000,
-                }),
-                editor_document_height: Some(980),
-                source_map_document_height: Some(480),
-                border_left: Some(0),
-                border_right: Some(0),
-                native_slider_estimate: Some(AutomationVisualRect {
-                    x: 1167,
-                    y: 46,
-                    width: 120,
-                    height: 323,
-                }),
-                native_slider_visible_bounds: Some(AutomationVisualRect {
-                    x: 1167,
-                    y: 48,
-                    width: 120,
-                    height: 321,
-                }),
-                line_projection_rect: Some(AutomationVisualRect {
-                    x: 1167,
-                    y: 48,
-                    width: 120,
-                    height: 323,
-                }),
-                first_content_row_rect: Some(AutomationVisualRect {
-                    x: 1180,
-                    y: 50,
-                    width: 94,
-                    height: 1,
-                }),
-            },
-            scroll_anchors: vec![AutomationVisualScrollAnchorSnapshot {
-                name: "source-view".to_string(),
-                at_left: Some(true),
-                at_top: Some(true),
-                x_value_milli: Some(0),
-                x_lower_milli: Some(0),
-                y_value_milli: Some(0),
-                y_lower_milli: Some(0),
-            }],
-        };
-
-        let value =
-            serde_json::to_value(snapshot).expect("visual geometry snapshot should serialize");
-        let fields = value
-            .as_object()
-            .expect("visual geometry snapshot should serialize as an object");
-
-        assert_eq!(value["scale_factor"], 1);
-        assert_eq!(value["coordinate_space"], "window-logical-pixels");
-        assert_eq!(value["ready"], false);
-        assert_eq!(value["blocker"], READINESS_BLOCKER_MINIMAP_REFRESH);
-        assert_eq!(value["surfaces"][0]["name"], "header-bar");
-        assert_eq!(value["surfaces"][0]["rect"]["width"], 1280);
-        assert_eq!(value["surfaces"][1]["absence_reason"], "minimap-disabled");
-        assert_eq!(
-            value["pixel_anchors"][0]["name"],
-            "minimap-viewport-top-edge"
-        );
-        assert_eq!(
-            value["pixel_anchors"][0]["surface"],
-            "minimap-native-viewport"
-        );
-        assert_eq!(value["pixel_anchors"][0]["rect"]["height"], 3);
-        assert_eq!(value["pixel_anchors"][1]["name"], "minimap-viewport-fill");
-        assert_eq!(value["pixel_anchors"][1]["rect"]["height"], 10);
-        assert_eq!(
-            value["pixel_anchors"][2]["name"],
-            "minimap-viewport-bottom-edge"
-        );
-        assert_eq!(value["pixel_anchors"][2]["rect"]["height"], 10);
-        assert_eq!(
-            value["native_minimap"]["projection_source"],
-            "upstream-visible-rect-estimate"
-        );
-        assert_eq!(value["native_minimap"]["source_map_visible_rect"]["y"], 2);
-        assert_eq!(
-            value["native_minimap"]["source_map_vadjustment"]["at_lower"],
-            false
-        );
-        assert_eq!(value["native_minimap"]["native_slider_estimate"]["y"], 46);
-        assert_eq!(
-            value["native_minimap"]["native_slider_visible_bounds"]["y"],
-            48
-        );
-        assert_eq!(value["scroll_anchors"][0]["at_top"], true);
-        assert!(!fields.contains_key("document_text"));
-        assert!(!fields.contains_key("minimap_text"));
-        assert!(!fields.contains_key("note_body"));
-        assert!(!fields.contains_key("draft_body"));
-        assert!(!fields.contains_key("local_history_contents"));
-    }
-}
-
 /// Stable serialized blocker ID for startup before an active window exists.
 pub const READINESS_BLOCKER_APP_STARTUP: &str = "app-startup";
 /// Stable serialized blocker ID for close or quit safety flows.
@@ -1846,4 +1144,706 @@ pub struct AutomationNotificationSnapshot {
     pub generation: u64,
     /// Whether the delayed workspace-search progress message is allowed to render.
     pub search_progress_visible: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workflow_event_log_records_start_and_finish_transitions() {
+        let mut log = AutomationWorkflowEventLog::default();
+
+        log.observe([AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_FILE_LOAD,
+            true,
+            Some(READINESS_BLOCKER_FILE_LOAD),
+        )]);
+        log.observe([AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_FILE_LOAD,
+            true,
+            Some(READINESS_BLOCKER_FILE_LOAD),
+        )]);
+        log.observe([AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_FILE_LOAD,
+            false,
+            None,
+        )]);
+
+        let snapshot = log.snapshot();
+        assert_eq!(snapshot.last_sequence, 2);
+        assert!(!snapshot.capped);
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.events[0].sequence, 1);
+        assert_eq!(snapshot.events[0].phase, "started");
+        assert_eq!(snapshot.events[0].status, "running");
+        assert_eq!(
+            snapshot.events[0].blocker.as_deref(),
+            Some(READINESS_BLOCKER_FILE_LOAD)
+        );
+        assert_eq!(snapshot.events[1].phase, "finished");
+        assert_eq!(snapshot.events[1].status, "settled");
+    }
+
+    #[test]
+    fn workflow_event_log_uses_zero_as_empty_sequence_sentinel() {
+        let mut log = AutomationWorkflowEventLog::default();
+
+        assert_eq!(log.snapshot().last_sequence, 0);
+        log.observe([AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_SAVE,
+            true,
+            Some(READINESS_BLOCKER_SAVE),
+        )]);
+
+        let snapshot = log.snapshot();
+        assert_eq!(snapshot.last_sequence, 1);
+        assert_eq!(snapshot.events[0].sequence, 1);
+    }
+
+    #[test]
+    fn workflow_event_log_caps_old_events() {
+        let mut log = AutomationWorkflowEventLog::default();
+
+        for _ in 0..=AUTOMATION_WORKFLOW_EVENT_LIMIT {
+            log.observe([AutomationWorkflowObservation::new(
+                AUTOMATION_WORKFLOW_SAVE,
+                true,
+                Some(READINESS_BLOCKER_SAVE),
+            )]);
+            log.observe([AutomationWorkflowObservation::new(
+                AUTOMATION_WORKFLOW_SAVE,
+                false,
+                None,
+            )]);
+        }
+
+        let snapshot = log.snapshot();
+        assert!(snapshot.capped);
+        assert_eq!(snapshot.events.len(), AUTOMATION_WORKFLOW_EVENT_LIMIT);
+        assert_eq!(
+            snapshot.events.first().map(|event| event.sequence),
+            Some(snapshot.last_sequence + 1 - AUTOMATION_WORKFLOW_EVENT_LIMIT as u64)
+        );
+    }
+
+    #[test]
+    fn workflow_event_log_keeps_state_until_inactive_observed() {
+        let mut log = AutomationWorkflowEventLog::default();
+
+        log.observe([AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_FILE_LOAD,
+            true,
+            Some(READINESS_BLOCKER_FILE_LOAD),
+        )]);
+        log.observe([]);
+
+        let snapshot = log.snapshot();
+        assert_eq!(snapshot.last_sequence, 1);
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].phase, "started");
+
+        log.observe([AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_FILE_LOAD,
+            false,
+            None,
+        )]);
+
+        let snapshot = log.snapshot();
+        assert_eq!(snapshot.last_sequence, 2);
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.events[1].phase, "finished");
+        assert_eq!(snapshot.events[1].status, "settled");
+    }
+
+    #[test]
+    fn automation_snapshot_serializes_disabled_no_window_state() {
+        let snapshot = AutomationSnapshot {
+            interface_version: 1,
+            enabled: false,
+            app_id: "dev.cominotti.lushtext".to_string(),
+            app_version: "0.0.0-test".to_string(),
+            build_profile: "test".to_string(),
+            idle: false,
+            idle_blocker: Some(READINESS_BLOCKER_APP_STARTUP.to_string()),
+            window: None,
+        };
+
+        let value = serde_json::to_value(snapshot).expect("snapshot should serialize");
+
+        assert_eq!(value["interface_version"], 1);
+        assert_eq!(value["enabled"], false);
+        assert_eq!(value["app_id"], "dev.cominotti.lushtext");
+        assert_eq!(value["app_version"], "0.0.0-test");
+        assert_eq!(value["build_profile"], "test");
+        assert_eq!(value["idle"], false);
+        assert_eq!(value["idle_blocker"], READINESS_BLOCKER_APP_STARTUP);
+        assert!(value["window"].is_null());
+    }
+
+    #[test]
+    fn tab_snapshot_serializes_redacted_file_and_draft_metadata_only() {
+        let tab = AutomationTabSnapshot {
+            index: 0,
+            active: true,
+            title: "Draft tab".to_string(),
+            document_kind: "file".to_string(),
+            path: Some("/tmp/lushtext-automation.txt".to_string()),
+            modified: true,
+            saving: false,
+            load_state: "loaded".to_string(),
+            file_size: Some(42),
+            draft_present: true,
+            evicted: false,
+            pinned: true,
+        };
+
+        let value = serde_json::to_value(tab).expect("tab snapshot should serialize");
+        let fields = value
+            .as_object()
+            .expect("tab snapshot should serialize as an object");
+
+        assert_eq!(fields["draft_present"], true);
+        assert_eq!(fields["path"], "/tmp/lushtext-automation.txt");
+        assert_eq!(fields["file_size"], 42);
+        assert!(!fields.contains_key("draft_id"));
+        assert!(!fields.contains_key("document_text"));
+        assert!(!fields.contains_key("content"));
+        assert!(!fields.contains_key("bookmark_ids"));
+        assert!(!fields.contains_key("local_history_snapshots"));
+    }
+
+    #[test]
+    fn surface_snapshot_serializes_accessibility_readiness_without_content() {
+        let surfaces = AutomationSurfaceSnapshot {
+            workspace_sidebar_visible: true,
+            workspace_sidebar_requested: true,
+            document_properties_visible: false,
+            document_properties_requested: false,
+            compact_surface: Some("workspace-sidebar".to_string()),
+            command_palette_visible: false,
+            search_panel_visible: true,
+            open_popover_visible: false,
+            preview_pane_visible: false,
+            preview_mode: false,
+            focus_mode: false,
+            minimap_requested: true,
+            status_bar_visible: true,
+            active_transient_surface: Some("workspace-search".to_string()),
+            accessibility_ready: false,
+            accessibility_blocker: Some(READINESS_BLOCKER_WORKSPACE_SEARCH.to_string()),
+        };
+
+        let value = serde_json::to_value(surfaces).expect("surface snapshot should serialize");
+        let fields = value
+            .as_object()
+            .expect("surface snapshot should serialize as an object");
+
+        assert_eq!(fields["accessibility_ready"], false);
+        assert_eq!(
+            fields["accessibility_blocker"],
+            READINESS_BLOCKER_WORKSPACE_SEARCH
+        );
+        assert_eq!(fields["active_transient_surface"], "workspace-search");
+        assert!(!fields.contains_key("document_text"));
+        assert!(!fields.contains_key("note_body"));
+        assert!(!fields.contains_key("search_results"));
+    }
+
+    #[test]
+    fn workflow_events_snapshot_serializes_stable_contract() {
+        let snapshot = AutomationWorkflowEventsSnapshot {
+            last_sequence: 7,
+            capped: true,
+            events: vec![AutomationWorkflowEvent {
+                sequence: 7,
+                workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
+                phase: "finished",
+                status: "settled",
+                summary: "save finished".to_string(),
+                blocker: Some(READINESS_BLOCKER_SAVE.to_string()),
+            }],
+        };
+
+        let value =
+            serde_json::to_value(snapshot).expect("workflow event snapshot should serialize");
+
+        assert_eq!(value["last_sequence"], 7);
+        assert_eq!(value["capped"], true);
+        assert_eq!(value["events"][0]["sequence"], 7);
+        assert_eq!(value["events"][0]["workflow_id"], AUTOMATION_WORKFLOW_SAVE);
+        assert_eq!(value["events"][0]["phase"], "finished");
+        assert_eq!(value["events"][0]["status"], "settled");
+        assert_eq!(value["events"][0]["summary"], "save finished");
+        assert_eq!(value["events"][0]["blocker"], READINESS_BLOCKER_SAVE);
+    }
+
+    #[test]
+    fn workflow_event_projects_to_proof_spine_without_renaming_automation_fields() {
+        let event = AutomationWorkflowEvent {
+            sequence: 9,
+            workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
+            phase: "started",
+            status: "running",
+            summary: "save started".to_string(),
+            blocker: Some(READINESS_BLOCKER_SAVE.to_string()),
+        };
+
+        let proof_event = event.to_proof_event();
+        let automation_json =
+            serde_json::to_value(event).expect("automation event should serialize");
+
+        assert_eq!(automation_json["phase"], "started");
+        assert_eq!(automation_json["status"], "running");
+        assert_eq!(proof_event.phase, WorkflowPhase::Start);
+        assert_eq!(proof_event.status, ProofStatus::Blocked);
+        assert_eq!(
+            proof_event
+                .blocker
+                .as_ref()
+                .map(|blocker| blocker.kind.as_str()),
+            Some(READINESS_BLOCKER_SAVE)
+        );
+    }
+
+    #[test]
+    fn finished_workflow_event_projects_to_ready_finish_proof_event() {
+        let event = AutomationWorkflowEvent {
+            sequence: 10,
+            workflow_id: AUTOMATION_WORKFLOW_SAVE.to_string(),
+            phase: "finished",
+            status: "settled",
+            summary: "save finished".to_string(),
+            blocker: None,
+        };
+
+        let proof_event = event.to_proof_event();
+
+        assert_eq!(proof_event.phase, WorkflowPhase::Finish);
+        assert_eq!(proof_event.status, ProofStatus::Ready);
+        assert_eq!(proof_event.detail.as_deref(), Some("save finished"));
+        assert!(proof_event.blocker.is_none());
+    }
+
+    #[test]
+    fn readiness_predicates_round_trip_stable_reference_fields() {
+        let cases = [
+            (
+                AutomationReadinessPredicate::AppStartup,
+                "app-startup",
+                "Application startup",
+                READINESS_BLOCKER_APP_STARTUP,
+            ),
+            (
+                AutomationReadinessPredicate::WindowActionsExported,
+                "window-actions-exported",
+                "active window",
+                READINESS_BLOCKER_APP_STARTUP,
+            ),
+            (
+                AutomationReadinessPredicate::FileOpenComplete,
+                "file-open-complete",
+                "File-backed editor tabs",
+                READINESS_BLOCKER_FILE_LOAD,
+            ),
+            (
+                AutomationReadinessPredicate::SearchComplete,
+                "search-complete",
+                "Editor search",
+                READINESS_BLOCKER_WORKSPACE_SEARCH,
+            ),
+            (
+                AutomationReadinessPredicate::SaveComplete,
+                "save-complete",
+                "Editor saves",
+                READINESS_BLOCKER_SAVE,
+            ),
+            (
+                AutomationReadinessPredicate::WorkspaceRefreshComplete,
+                "workspace-refresh-complete",
+                "Workspace watcher",
+                READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+            ),
+            (
+                AutomationReadinessPredicate::SessionRestoreComplete,
+                "session-restore-complete",
+                "Session restore",
+                READINESS_BLOCKER_SESSION_RESTORE,
+            ),
+            (
+                AutomationReadinessPredicate::RecoveryRestoreComplete,
+                "recovery-restore-complete",
+                "Startup recovery restore",
+                READINESS_BLOCKER_SESSION_RESTORE,
+            ),
+            (
+                AutomationReadinessPredicate::VisualGeometrySettled,
+                "visual-geometry-settled",
+                "GTK layout",
+                READINESS_BLOCKER_MINIMAP_REFRESH,
+            ),
+            (
+                AutomationReadinessPredicate::Idle,
+                "idle",
+                "Every tracked",
+                READINESS_BLOCKER_SAVE,
+            ),
+            (
+                AutomationReadinessPredicate::AccessibilitySettled,
+                "accessibility-settled",
+                "Accessibility tree",
+                READINESS_BLOCKER_PREVIEW_ANIMATION,
+            ),
+        ];
+
+        assert_eq!(AutomationReadinessPredicate::ALL.len(), cases.len());
+        let rows = AutomationReadinessPredicate::reference_rows();
+        assert_eq!(rows.len(), cases.len());
+
+        for (index, (predicate, name, description_fragment, expected_blocker)) in
+            cases.into_iter().enumerate()
+        {
+            assert_eq!(predicate.as_str(), name);
+            assert_eq!(
+                AutomationReadinessPredicate::from_name(name),
+                Some(predicate)
+            );
+            assert_eq!(predicate.anchor(), format!("readiness-predicate-{name}"));
+            assert!(predicate.description().contains(description_fragment));
+            assert!(predicate.includes_blocker(expected_blocker));
+            assert!(!predicate.includes_blocker("not-a-real-readiness-blocker"));
+
+            let row = &rows[index];
+            assert_eq!(row.predicate, name);
+            assert_eq!(row.anchor, format!("readiness-predicate-{name}"));
+            assert!(row.description.contains(description_fragment));
+            assert!(row.blockers.contains(&expected_blocker));
+            assert_eq!(row.stability, "stable");
+        }
+
+        assert_eq!(
+            AutomationReadinessPredicate::from_name("future-ready"),
+            None
+        );
+    }
+
+    #[test]
+    fn readiness_status_strings_round_trip_to_proof_statuses() {
+        let cases = [
+            (
+                AutomationReadinessStatus::Ready,
+                "ready",
+                ProofStatus::Ready,
+            ),
+            (
+                AutomationReadinessStatus::PredicateTimeout,
+                "predicate-timeout",
+                ProofStatus::PredicateTimeout,
+            ),
+            (
+                AutomationReadinessStatus::WorkflowFailure,
+                "workflow-failure",
+                ProofStatus::ApplicationFailure,
+            ),
+            (
+                AutomationReadinessStatus::AutomationUnavailable,
+                "automation-unavailable",
+                ProofStatus::ApplicationFailure,
+            ),
+            (
+                AutomationReadinessStatus::UnsupportedHostTooling,
+                "unsupported-host-tooling",
+                ProofStatus::UnsupportedHost,
+            ),
+            (
+                AutomationReadinessStatus::UnknownPredicate,
+                "unknown-predicate",
+                ProofStatus::UnknownPredicate,
+            ),
+        ];
+
+        for (status, name, proof_status) in cases {
+            assert_eq!(status.as_str(), name);
+            assert_eq!(
+                AutomationReadinessStatus::from_status_str(name),
+                Some(status)
+            );
+            assert_eq!(status.to_proof_status(), proof_status);
+        }
+
+        assert_eq!(
+            AutomationReadinessStatus::from_status_str("future-status"),
+            None
+        );
+    }
+
+    #[test]
+    fn readiness_result_projects_to_proof_spine_without_status_drift() {
+        let result = AutomationReadinessResult {
+            predicate: AutomationReadinessPredicate::VisualGeometrySettled
+                .as_str()
+                .to_string(),
+            ok: false,
+            status: AutomationReadinessStatus::PredicateTimeout.as_str(),
+            detail: "timed out waiting for visual-geometry-settled".to_string(),
+            blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
+        };
+
+        let proof_result = result.to_proof_result();
+        let automation_json =
+            serde_json::to_value(&result).expect("readiness result should serialize");
+
+        assert_eq!(automation_json["status"], "predicate-timeout");
+        assert_eq!(
+            proof_result.predicate.as_str(),
+            AutomationReadinessPredicate::VisualGeometrySettled.as_str()
+        );
+        assert_eq!(proof_result.status, ProofStatus::PredicateTimeout);
+        assert!(!proof_result.ready);
+        assert_eq!(
+            proof_result
+                .blocker
+                .as_ref()
+                .map(|blocker| blocker.kind.as_str()),
+            Some(READINESS_BLOCKER_MINIMAP_REFRESH)
+        );
+
+        let unknown = AutomationReadinessResult {
+            status: "future-status",
+            ..result
+        };
+        assert_eq!(
+            unknown.to_proof_result().status,
+            ProofStatus::ApplicationFailure
+        );
+    }
+
+    #[test]
+    fn snapshot_projects_bounded_visual_surfaces_to_proof_spine() {
+        let snapshot = AutomationSnapshot {
+            interface_version: 1,
+            enabled: true,
+            app_id: "dev.cominotti.lushtext".to_string(),
+            app_version: "0.0.0-test".to_string(),
+            build_profile: "test".to_string(),
+            idle: false,
+            idle_blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
+            window: None,
+        };
+
+        let proof_snapshot = snapshot.to_proof_snapshot(12);
+        let automation_json = serde_json::to_value(snapshot).expect("snapshot should serialize");
+
+        assert_eq!(
+            automation_json["idle_blocker"],
+            READINESS_BLOCKER_MINIMAP_REFRESH
+        );
+        assert_eq!(proof_snapshot.sequence, 12);
+        assert_eq!(
+            proof_snapshot.version.interface_version.as_deref(),
+            Some("1")
+        );
+        assert_eq!(proof_snapshot.status, ProofStatus::Blocked);
+        assert!(proof_snapshot.surfaces.is_empty());
+    }
+
+    #[test]
+    fn visual_geometry_snapshot_serializes_bounded_rects_and_absence_reasons() {
+        let snapshot = AutomationVisualGeometrySnapshot {
+            scale_factor: 1,
+            coordinate_space: "window-logical-pixels".to_string(),
+            ready: false,
+            blocker: Some(READINESS_BLOCKER_MINIMAP_REFRESH.to_string()),
+            surfaces: vec![
+                AutomationVisualSurfaceSnapshot {
+                    name: "header-bar".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 0,
+                        y: 0,
+                        width: 1280,
+                        height: 48,
+                    }),
+                    allocation: Some(AutomationVisualSize {
+                        width: 1280,
+                        height: 48,
+                    }),
+                    absence_reason: None,
+                },
+                AutomationVisualSurfaceSnapshot {
+                    name: "minimap-source-map".to_string(),
+                    visible: false,
+                    rect: None,
+                    allocation: None,
+                    absence_reason: Some("minimap-disabled".to_string()),
+                },
+            ],
+            pixel_anchors: vec![
+                AutomationVisualPixelAnchorSnapshot {
+                    name: "minimap-viewport-top-edge".to_string(),
+                    surface: "minimap-native-viewport".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 1180,
+                        y: 64,
+                        width: 96,
+                        height: 3,
+                    }),
+                    absence_reason: None,
+                },
+                AutomationVisualPixelAnchorSnapshot {
+                    name: "minimap-viewport-fill".to_string(),
+                    surface: "minimap-native-viewport".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 1180,
+                        y: 66,
+                        width: 96,
+                        height: 10,
+                    }),
+                    absence_reason: None,
+                },
+                AutomationVisualPixelAnchorSnapshot {
+                    name: "minimap-viewport-bottom-edge".to_string(),
+                    surface: "minimap-native-viewport".to_string(),
+                    visible: true,
+                    rect: Some(AutomationVisualRect {
+                        x: 1180,
+                        y: 280,
+                        width: 96,
+                        height: 10,
+                    }),
+                    absence_reason: None,
+                },
+            ],
+            native_minimap: AutomationNativeMinimapDiagnosticSnapshot {
+                visible: true,
+                absence_reason: None,
+                projection_source: Some("upstream-visible-rect-estimate".to_string()),
+                source_map_allocation: Some(AutomationVisualSize {
+                    width: 94,
+                    height: 660,
+                }),
+                source_map_rect: Some(AutomationVisualRect {
+                    x: 1180,
+                    y: 48,
+                    width: 94,
+                    height: 660,
+                }),
+                editor_visible_rect: Some(AutomationVisualRect {
+                    x: 0,
+                    y: 0,
+                    width: 1024,
+                    height: 660,
+                }),
+                source_map_visible_rect: Some(AutomationVisualRect {
+                    x: 0,
+                    y: 2,
+                    width: 94,
+                    height: 660,
+                }),
+                source_view_vadjustment: Some(AutomationVisualAdjustmentSnapshot {
+                    at_lower: true,
+                    value_milli: 0,
+                    lower_milli: 0,
+                    upper_milli: 980_000,
+                    page_size_milli: 660_000,
+                }),
+                source_map_vadjustment: Some(AutomationVisualAdjustmentSnapshot {
+                    at_lower: false,
+                    value_milli: 2_000,
+                    lower_milli: 0,
+                    upper_milli: 662_000,
+                    page_size_milli: 660_000,
+                }),
+                editor_document_height: Some(980),
+                source_map_document_height: Some(480),
+                border_left: Some(0),
+                border_right: Some(0),
+                native_slider_estimate: Some(AutomationVisualRect {
+                    x: 1167,
+                    y: 46,
+                    width: 120,
+                    height: 323,
+                }),
+                native_slider_visible_bounds: Some(AutomationVisualRect {
+                    x: 1167,
+                    y: 48,
+                    width: 120,
+                    height: 321,
+                }),
+                line_projection_rect: Some(AutomationVisualRect {
+                    x: 1167,
+                    y: 48,
+                    width: 120,
+                    height: 323,
+                }),
+                first_content_row_rect: Some(AutomationVisualRect {
+                    x: 1180,
+                    y: 50,
+                    width: 94,
+                    height: 1,
+                }),
+            },
+            scroll_anchors: vec![AutomationVisualScrollAnchorSnapshot {
+                name: "source-view".to_string(),
+                at_left: Some(true),
+                at_top: Some(true),
+                x_value_milli: Some(0),
+                x_lower_milli: Some(0),
+                y_value_milli: Some(0),
+                y_lower_milli: Some(0),
+            }],
+        };
+
+        let value =
+            serde_json::to_value(snapshot).expect("visual geometry snapshot should serialize");
+        let fields = value
+            .as_object()
+            .expect("visual geometry snapshot should serialize as an object");
+
+        assert_eq!(value["scale_factor"], 1);
+        assert_eq!(value["coordinate_space"], "window-logical-pixels");
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["blocker"], READINESS_BLOCKER_MINIMAP_REFRESH);
+        assert_eq!(value["surfaces"][0]["name"], "header-bar");
+        assert_eq!(value["surfaces"][0]["rect"]["width"], 1280);
+        assert_eq!(value["surfaces"][1]["absence_reason"], "minimap-disabled");
+        assert_eq!(
+            value["pixel_anchors"][0]["name"],
+            "minimap-viewport-top-edge"
+        );
+        assert_eq!(
+            value["pixel_anchors"][0]["surface"],
+            "minimap-native-viewport"
+        );
+        assert_eq!(value["pixel_anchors"][0]["rect"]["height"], 3);
+        assert_eq!(value["pixel_anchors"][1]["name"], "minimap-viewport-fill");
+        assert_eq!(value["pixel_anchors"][1]["rect"]["height"], 10);
+        assert_eq!(
+            value["pixel_anchors"][2]["name"],
+            "minimap-viewport-bottom-edge"
+        );
+        assert_eq!(value["pixel_anchors"][2]["rect"]["height"], 10);
+        assert_eq!(
+            value["native_minimap"]["projection_source"],
+            "upstream-visible-rect-estimate"
+        );
+        assert_eq!(value["native_minimap"]["source_map_visible_rect"]["y"], 2);
+        assert_eq!(
+            value["native_minimap"]["source_map_vadjustment"]["at_lower"],
+            false
+        );
+        assert_eq!(value["native_minimap"]["native_slider_estimate"]["y"], 46);
+        assert_eq!(
+            value["native_minimap"]["native_slider_visible_bounds"]["y"],
+            48
+        );
+        assert_eq!(value["scroll_anchors"][0]["at_top"], true);
+        assert!(!fields.contains_key("document_text"));
+        assert!(!fields.contains_key("minimap_text"));
+        assert!(!fields.contains_key("note_body"));
+        assert!(!fields.contains_key("draft_body"));
+        assert!(!fields.contains_key("local_history_contents"));
+    }
 }

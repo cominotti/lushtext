@@ -51,7 +51,7 @@ mod imp {
     // this application extends Libadwaita's Application class.
     #[glib::object_subclass]
     impl ObjectSubclass for LushtextApplication {
-        const NAME: &'static str = "LushtextApplication";
+        const NAME: &str = "LushtextApplication";
         type Type = super::LushtextApplication;
         type ParentType = libadwaita::Application;
     }

@@ -173,7 +173,7 @@ impl Default for LushtextPreferences {
 // ObjectSubclass registers this Rust struct as the GLib runtime type;
 // ObjectImpl below owns lifecycle hooks after GTK initializes template children.
 impl ObjectSubclass for LushtextPreferences {
-    const NAME: &'static str = "LushtextPreferences";
+    const NAME: &str = "LushtextPreferences";
     type Type = super::LushtextPreferences;
     type ParentType = libadwaita::PreferencesDialog;
 

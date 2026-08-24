@@ -36,7 +36,7 @@ mod imp {
     // ObjectSubclass registers this struct with GLib's runtime type system.
     #[glib::object_subclass]
     impl ObjectSubclass for PaletteItem {
-        const NAME: &'static str = "LushtextPaletteItem";
+        const NAME: &str = "LushtextPaletteItem";
         type Type = super::PaletteItem;
         type ParentType = glib::Object;
     }

@@ -148,7 +148,7 @@ impl Default for LushtextSidebar {
 
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextSidebar {
-    const NAME: &'static str = "LushtextSidebar";
+    const NAME: &str = "LushtextSidebar";
     type Type = super::LushtextSidebar;
     type ParentType = gtk4::Box;
 

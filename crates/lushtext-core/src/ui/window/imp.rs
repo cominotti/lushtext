@@ -609,7 +609,7 @@ impl Default for LushtextWindow {
 // GTK can construct it from templates, properties, and signal dispatch.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextWindow {
-    const NAME: &'static str = "LushtextWindow";
+    const NAME: &str = "LushtextWindow";
     type Type = super::LushtextWindow;
     type ParentType = libadwaita::ApplicationWindow;
 

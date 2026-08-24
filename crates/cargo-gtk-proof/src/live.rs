@@ -9,6 +9,7 @@
 //! responsible for deciding when those artifacts can be counted as proof.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -1686,7 +1687,7 @@ fn frame_paths(frames_dir: &Path) -> Result<Vec<PathBuf>, String> {
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name()
-                .and_then(|name| name.to_str())
+                .and_then(OsStr::to_str)
                 .is_some_and(|name| {
                     name.starts_with("stream-frame-")
                         && Path::new(name)

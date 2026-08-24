@@ -112,13 +112,19 @@ ROW_ID_RE = re.compile(r"^WFR-[A-Z0-9-]+$")
 # The programme record's machine-readable slot ledger, documented beside itself
 # in `docs/next/workflow-readability.md`.
 SLOT_LEDGER_RE = re.compile(
-    r"^-\s+slot\s+(\S+)\s+\((complete|outstanding)\):\s*(.+)$", re.IGNORECASE
+    r"^-\s+slot\s+(\S+)\s+\((complete|outstanding)\):\s*(\S.*)$", re.IGNORECASE
 )
 SLOT_ENTRY_RE = re.compile(r"(WFR-[A-Z0-9-]+)(\s*\(partial\))?", re.IGNORECASE)
 # Statuses that owe no outstanding-slot entry: the work is either done or the row
 # is deliberately never migrated.
 SETTLED_STATUSES = ("migrated", "exempt")
-ROLE_LINE_RE = re.compile(r"^-\s+([A-Za-z][A-Za-z ]*?):\s*(.+)$")
+# Both this pattern and `SLOT_LEDGER_RE` end their value group with
+# `\s*(\S.*)$` rather than `\s*(.+)$`: the sets `\s` and `.` overlap, so the
+# looser form is an ambiguous adjacent-quantifier pair a scanner reports as
+# super-linear backtracking. Callers match against an already-stripped line and
+# strip each captured group, so requiring a non-space first character is
+# behaviour-identical.
+ROLE_LINE_RE = re.compile(r"^-\s+([A-Za-z][A-Za-z ]*?):\s*(\S.*)$")
 EXAMINE_GLOBS_RE = re.compile(r"^examine_globs\s*=\s*\[", re.MULTILINE)
 
 
@@ -238,7 +244,7 @@ def parse_examine_globs(config_path: Path) -> list[str]:
     if end < 0:
         return []
     body = tail[:end]
-    return [entry for entry in re.findall(r'"([^"]+)"', body)]
+    return re.findall(r'"([^"]+)"', body)
 
 
 def glob_to_regex(pattern: str) -> re.Pattern[str]:

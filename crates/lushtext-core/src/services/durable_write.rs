@@ -23,6 +23,7 @@
 //!   always "report failure, previous content preserved."
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +44,7 @@ pub fn unique_temp_path(path: &Path, tmp_tag: &str) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
-        .map_or_else(|| "untitled".into(), |name| name.to_string_lossy());
+        .map_or_else(|| "untitled".into(), OsStr::to_string_lossy);
     let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
         ".{file_name}.{tmp_tag}.{}.{}.tmp",

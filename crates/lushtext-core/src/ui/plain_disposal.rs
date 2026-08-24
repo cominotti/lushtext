@@ -22,6 +22,7 @@ use crossbeam_channel::{Sender, TrySendError, unbounded};
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt;
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -655,12 +656,16 @@ impl<T: Send + 'static> Drop for DisposalOwned<T> {
             Err(DisposalSubmitError::Full(job)) => {
                 // A live reservation already occupies one of the channel's
                 // physical slots, so `Full` would mean the lane invariant is
-                // broken. Leak instead of running a document-sized nested
-                // destructor on GTK.
+                // broken. Retain the payload instead of running a
+                // document-sized nested destructor on GTK: `ManuallyDrop`
+                // makes that non-drop path a type, not a bare `mem::forget`.
+                // Admission accounting stays exact because `submit_reserved`
+                // already cancelled this job's queued charge before returning
+                // `Full`.
                 tracing::error!(
                     "Reserved plain-data disposal could not enter its guaranteed channel slot"
                 );
-                std::mem::forget(job);
+                let _retained_payload = ManuallyDrop::new(job);
             }
         }
     }

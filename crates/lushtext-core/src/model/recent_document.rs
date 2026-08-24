@@ -7,6 +7,7 @@
 //! the recent-document file so the feature remains privacy-bounded.
 
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Persisted recent-document collection.
@@ -84,7 +85,7 @@ impl RecentDocumentRow {
         let title = entry
             .path
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(OsStr::to_str)
             .map_or_else(|| entry.path.display().to_string(), ToOwned::to_owned);
         let subtitle = entry
             .path

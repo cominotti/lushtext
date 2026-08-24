@@ -326,7 +326,7 @@ pub struct LushtextMarkdownPreview {
 // Register the preview as a GtkBox subclass so anchored child widgets and
 // deferred layout repairs stay owned by one template-backed widget instance.
 impl ObjectSubclass for LushtextMarkdownPreview {
-    const NAME: &'static str = "LushtextMarkdownPreview";
+    const NAME: &str = "LushtextMarkdownPreview";
     type Type = super::LushtextMarkdownPreview;
     type ParentType = gtk4::Box;
 

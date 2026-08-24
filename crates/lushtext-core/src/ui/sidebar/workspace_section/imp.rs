@@ -387,7 +387,7 @@ pub struct LushtextWorkspaceSection {
 // GLib's runtime type system; ParentType makes it behave as a GtkBox.
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextWorkspaceSection {
-    const NAME: &'static str = "LushtextWorkspaceSection";
+    const NAME: &str = "LushtextWorkspaceSection";
     type Type = super::LushtextWorkspaceSection;
     type ParentType = gtk4::Box;
 

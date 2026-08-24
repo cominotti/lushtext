@@ -113,7 +113,7 @@ impl Default for LushtextInfoBar {
 
 #[glib::object_subclass]
 impl ObjectSubclass for LushtextInfoBar {
-    const NAME: &'static str = "LushtextInfoBar";
+    const NAME: &str = "LushtextInfoBar";
     type Type = super::LushtextInfoBar;
     type ParentType = gtk4::Box;
 

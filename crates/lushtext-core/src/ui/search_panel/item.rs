@@ -57,7 +57,7 @@ mod imp {
     // ObjectSubclass registers this row type with GLib's runtime type system.
     #[glib::object_subclass]
     impl ObjectSubclass for SearchResultItem {
-        const NAME: &'static str = "LushtextSearchResultItem";
+        const NAME: &str = "LushtextSearchResultItem";
         type Type = super::SearchResultItem;
         type ParentType = glib::Object;
     }

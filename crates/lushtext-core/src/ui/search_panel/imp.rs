@@ -403,7 +403,7 @@ impl Default for LushtextSearchPanel {
 // Register the search panel as a GtkBox subclass so the window can mount it as
 // ordinary chrome while this implementation owns its template children.
 impl ObjectSubclass for LushtextSearchPanel {
-    const NAME: &'static str = "LushtextSearchPanel";
+    const NAME: &str = "LushtextSearchPanel";
     type Type = super::LushtextSearchPanel;
     type ParentType = gtk4::Box;
 

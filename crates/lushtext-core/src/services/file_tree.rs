@@ -8,6 +8,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use unicase::UniCase;
@@ -588,11 +589,11 @@ fn compare_entries(
     is_dir_b.cmp(&is_dir_a).then_with(|| {
         let a = path_a
             .file_name()
-            .map(|n| n.to_string_lossy())
+            .map(OsStr::to_string_lossy)
             .unwrap_or_default();
         let b = path_b
             .file_name()
-            .map(|n| n.to_string_lossy())
+            .map(OsStr::to_string_lossy)
             .unwrap_or_default();
         UniCase::new(a)
             .cmp(&UniCase::new(b))

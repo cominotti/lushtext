@@ -6,6 +6,7 @@
 //! updates. It remains GTK-free and returns only domain types.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1042,7 +1043,7 @@ fn intern_folder(workspace_folders: &mut Vec<Arc<PathBuf>>, folder: &Arc<PathBuf
 
 fn is_ignored_index_dir(dir: &Path) -> bool {
     dir.file_name()
-        .and_then(|name| name.to_str())
+        .and_then(OsStr::to_str)
         .is_some_and(|name| IGNORED_INDEX_DIRS.contains(&name))
 }
 

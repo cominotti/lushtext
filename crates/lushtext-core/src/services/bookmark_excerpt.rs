@@ -7,6 +7,7 @@
 //! `GtkTextBuffer` access and rendering, while this module owns plain text,
 //! disk-read, size, UTF-8, and budget policy.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::services::filesystem::{metadata, read};
@@ -208,7 +209,7 @@ pub type BookmarkExcerptPreviewCoordinator =
 pub fn presentation_for_path(path: &Path) -> BookmarkExcerptPresentation {
     let markdown_like = path
         .extension()
-        .and_then(|extension| extension.to_str())
+        .and_then(OsStr::to_str)
         .map(str::to_ascii_lowercase)
         .is_some_and(|extension| {
             matches!(

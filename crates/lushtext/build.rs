@@ -7,6 +7,7 @@
 //! process with shared setup.
 
 use std::env;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use lushtext_build_support::filesystem as build_fs;
@@ -82,7 +83,7 @@ fn main() {
 
 fn file_stem(path: &Path) -> String {
     path.file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(OsStr::to_str)
         .expect("utf-8 file stem")
         .to_string()
 }

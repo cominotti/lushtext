@@ -7,6 +7,7 @@
 //! filesystem boundary so callers can use it from background workers.
 
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -1139,7 +1140,7 @@ fn quarantine_hash(config: &RecoveryLoadConfig<'_>, problem: &RecoveryProblem) -
 fn sanitized_extension(path: &Path) -> String {
     let extension = path
         .extension()
-        .and_then(|extension| extension.to_str())
+        .and_then(OsStr::to_str)
         .map(sanitize_component)
         .filter(|extension| !extension.is_empty());
 
