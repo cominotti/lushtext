@@ -49,51 +49,51 @@
 
 ## 3. Global enablers: mutation scope and policy checking
 
-- [ ] 3.1 Add `crates/lushtext-core/src/ui/**/policy.rs` to `examine_globs` in
+- [x] 3.1 Add `crates/lushtext-core/src/ui/**/policy.rs` to `examine_globs` in
       `.cargo/mutants.toml` and document the convention beside it.
-- [ ] 3.2 Capture a baseline mutation run for the exemplar's current policy modules
+- [x] 3.2 Capture a baseline mutation run for the exemplar's current policy modules
       (`model/search_flight.rs`, `model/search_retirement.rs`) so relocation parity
       can be proved in section 5.
-- [ ] 3.3 Add a policy check script that fails when: a `policy.rs` module imports
+- [x] 3.3 Add a policy check script that fails when: a `policy.rs` module imports
       `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`; a `policy.rs` exists at
       a path the mutation scope cannot reach; a workflow marked migrated in the
       matrix lacks its required roles; or a matrix row claims evidence that is
       absent.
-- [ ] 3.4 Wire the policy check into `make check-policy` and add a dedicated
+- [x] 3.4 Wire the policy check into `make check-policy` and add a dedicated
       `make check-workflow-boundaries` target for focused local runs.
-- [ ] 3.5 Verify the new check fails on a deliberately broken fixture and passes on
+- [x] 3.5 Verify the new check fails on a deliberately broken fixture and passes on
       the current tree, so it cannot silently no-op.
 
 ## 4. Standing guidance revision
 
-- [ ] 4.1 Amend `.agents/rules/build.md:378-381` so the mutation scope rule
+- [x] 4.1 Amend `.agents/rules/build.md:378-381` so the mutation scope rule
       distinguishes pure policy modules by convention (in scope) from GTK adapters
       (out of scope), instead of distinguishing by directory. Add the new
       `make check-workflow-boundaries` target and the matrix to the build-target
       documentation.
-- [ ] 4.2 Reframe the "Coordination Vocabulary" section of `.agents/rules/rust.md`
+- [x] 4.2 Reframe the "Coordination Vocabulary" section of `.agents/rules/rust.md`
       as an implementation tier reached from a workflow, presented after the
       workflow/domain vocabulary rather than as the first thing to learn.
-- [ ] 4.3 Add to `.agents/rules/rust.md` the seam value-object rule (bundle crossing
+- [x] 4.3 Add to `.agents/rules/rust.md` the seam value-object rule (bundle crossing
       two or more boundaries), the prohibition on renaming a value while crossing a
       seam, and the `policy.rs` purity requirement.
-- [ ] 4.4 Update `.agents/rules/widget-wiring.md` so widget tests read workflow
+- [x] 4.4 Update `.agents/rules/widget-wiring.md` so widget tests read workflow
       evidence surfaces instead of adding per-field `*_for_test` inspection
       functions, and so new inspection needs extend the evidence surface.
-- [ ] 4.5 Add `docs/workflow-readability-matrix.md` to the mandatory-update trigger
+- [x] 4.5 Add `docs/workflow-readability-matrix.md` to the mandatory-update trigger
       list in `.agents/rules/documentation.md`.
-- [ ] 4.6 Update the `rust-hex-arch` skill to own the workflow module shape, role
+- [x] 4.6 Update the `rust-hex-arch` skill to own the workflow module shape, role
       assignment, and policy co-location guidance.
-- [ ] 4.7 Update the `gtk-testing` skill to own the test-seam taxonomy and
+- [x] 4.7 Update the `gtk-testing` skill to own the test-seam taxonomy and
       evidence-surface usage, including the deferred status of actuation seams.
-- [ ] 4.8 Update the `rust-comments` skill with the narrative-facade documentation
+- [x] 4.8 Update the `rust-comments` skill with the narrative-facade documentation
       expectation, including how to narrate inverted control flow.
 - [ ] 4.9 Update the `gtk-perf-review` and `data-safety` skills for any policy paths
       that the exemplar relocates, and audit every maintained skill and rule for
       references to relocated paths.
-- [ ] 4.10 Update `AGENTS.md` module layout and key design decisions, and `README.md`
+- [x] 4.10 Update `AGENTS.md` module layout and key design decisions, and `README.md`
       architecture overview, for the workflow role convention.
-- [ ] 4.11 Run `make check-agent-docs` and `make check-agent-skills` and fix all
+- [x] 4.11 Run `make check-agent-docs` and `make check-agent-skills` and fix all
       findings.
 
 ## 5. Exemplar: migrate the search panel

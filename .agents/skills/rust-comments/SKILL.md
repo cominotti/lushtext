@@ -56,6 +56,32 @@ for avoidable complexity.
   resource, protocol, retry, timeout, or geometry decision.
 - Give a module `//!` documentation when its architectural role, boundary, or
   split-workflow ownership is not obvious from the module path.
+- Give a workflow's narrative facade module `//!` documentation that names the
+  workflow's entry points and its ordered stages, in order, with each stage
+  pointing at the role that performs it. This is the one place where narration is
+  the deliverable: the facade exists so a reader can follow the workflow without
+  opening the coordination or policy modules.
+
+### Narrating inverted control flow
+
+A workflow stage that resumes from a `glib::idle_add_once` drain, a timer, a
+worker completion closure, or a bounded per-turn continuation is not readable
+from the call graph. In the facade documentation, mark each inversion and name
+where control resumes and what revalidates freshness there:
+
+```rust
+//! 4. `submit` queues the save and schedules the drain.
+//! 5. **Inversion:** control resumes in `begin_admitted_save` from an
+//!    `idle_add_once` drain; `QueuedSaveTicket` freshness is rechecked there
+//!    before any bytes are captured.
+```
+
+State the inversion at the facade, not only at the callback. A comment on the
+closure explains the callback; it does not tell the reader following the workflow
+that the story continues elsewhere. Name the freshness guard that protects the
+resumption, since that is the invariant a later change is most likely to break.
+Do not restate stage bodies — the facade documents order, resumption points, and
+delegation, and the owning module keeps the mechanism detail.
 
 These are not blanket requirements. Obvious getters, private delegators,
 descriptive fields, enum variants, fixtures, and conventional GObject boilerplate

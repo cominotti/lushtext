@@ -1,9 +1,10 @@
 # cargo-mutants configuration for LushText.
 #
 # The default scope intentionally targets deterministic model, service, and
-# pure-helper logic. GTK widget harness coverage remains in
-# scripts/run-widget-tests.sh, where Mutter, D-Bus, renderer settings, retries,
-# and warning filtering are controlled.
+# pure-helper logic, plus workflow policy modules included by convention rather
+# than by name (see the examine_globs note below). GTK widget harness coverage
+# remains in scripts/run-widget-tests.sh, where Mutter, D-Bus, renderer
+# settings, retries, and warning filtering are controlled.
 
 test_tool = "nextest"
 test_workspace = true
@@ -17,9 +18,19 @@ build_timeout_multiplier = 3.0
 
 gitignore = true
 
+# `ui/**/policy.rs` is a naming convention, not a hand-listed file set: a
+# workflow's pure decision logic lives in a `policy.rs` beside the workflow it
+# serves, and that module must contain no `gtk4`, `glib`, `gio`, `libadwaita`,
+# or `sourceview5` import. Including it by convention is what lets pure policy
+# be co-located with its consumer without losing mutation coverage, so no new
+# entry is needed here when a workflow migrates. `make check-workflow-boundaries`
+# enforces both halves: policy purity, and that every `policy.rs` in the crate
+# is reachable from this glob list. The remaining two UI entries are the
+# pre-convention hand-listed files; they retire as their workflows migrate.
 examine_globs = [
     "crates/lushtext-core/src/model/**/*.rs",
     "crates/lushtext-core/src/services/**/*.rs",
+    "crates/lushtext-core/src/ui/**/policy.rs",
     "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes.rs",
     "crates/lushtext-core/src/ui/editor_page/minimap.rs",
 ]

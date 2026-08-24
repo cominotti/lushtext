@@ -111,6 +111,46 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
   accessibility, packaging, or benchmark support.
 - The widget harness supports `--list --format terse`, which matters for CI and nextest-style discovery.
 
+## Test Seams And Evidence Surfaces
+
+Test-only production seams are four different things under one `_for_test`
+suffix. Classify before adding one, and check the workflow's row in
+`docs/workflow-readability-matrix.md` for its current counts and status.
+
+| Kind | Recognized by | Disposition |
+|---|---|---|
+| Inspection | a gated getter so a test can read internal state: counters, pending flags, queue depth, bounds, freshness | consolidate into the workflow's `evidence.rs` surface |
+| Configuration | a gated `static` or setter that shortens a delay, lowers a byte limit, or otherwise overrides a policy value | collapse into one per-workflow test policy value |
+| Actuation | a gated function that drives a workflow step otherwise reachable only through a file chooser, alert dialog, timer, or worker completion | **deferred**; a missing workflow/presentation boundary, not a pattern to extend |
+| Lifecycle probe | a gated hook observing thread identity, disposal completion, or another lifecycle fact with no non-test equivalent | retain |
+
+Rules for reading state in tests:
+
+- A migrated workflow exposes **one** typed evidence surface (`evidence.rs`) that
+  is the single source of its observable state. Read it. When a test needs a fact
+  the surface does not carry, extend the surface — do not add another per-field
+  `pub fn *_for_test` getter.
+- Reading the surface must not mutate state, timers, queues, or generation
+  counters, and must not require the workflow to be in a particular stage. If an
+  accessor advances or resets anything, it is a probe, not evidence.
+- Evidence is an internal crate type at the narrowest visibility its readers
+  need, never part of the public D-Bus schema. Once a workflow migrates, its
+  automation snapshot fields project from that surface, and
+  `make check-automation-docs` covers the projection as it lands.
+- Test-only timing and limit overrides live in the workflow's single test policy
+  value, and no override storage may compile without the test feature. Do not
+  scatter new module-level override statics.
+- Actuation seams are deferred by decision, not by oversight. Needing a new one
+  is a finding to report — name the dialog or timer boundary that is missing —
+  rather than a seam to add quietly.
+- Unmigrated workflows keep their existing `_for_test` inspection functions;
+  consult the matrix row before choosing where to read state, and do not grow the
+  count in a workflow whose migration slot is upcoming.
+
+Seam counts have two denominators: gated declarations and gate attribute sites.
+State which one you are reporting; one gated `impl` or `mod` block can cover many
+functions.
+
 ## Default Workflow
 
 1. Pick the lowest level that can prove the behavior.
@@ -232,6 +272,8 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
 - Known fuzz seed regression checks that should not require nightly or sanitizer setup: stable corpus replay.
 - New service or persistence behavior: service or integration tests with `TestContext`.
 - New widget state, signal wiring, or window orchestration: widget tests.
+- New internal state a test must observe: a field on the workflow's evidence
+  surface, plus the matrix row update — not a new per-field inspection seam.
 - Bug fix: add the lowest-level regression test that reproduces the bug reliably.
 - Workflow that truly needs compositor behavior beyond the current widget harness: discuss whether a new dedicated target is justified before creating one.
 - Large adapter refactor with no intended behavior change: rerun the widget suites for the touched widget plus neighboring window/sidebar/search orchestration so extracted helper visibility and callback wiring stay covered.

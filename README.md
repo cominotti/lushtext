@@ -424,6 +424,29 @@ Cargo workspace:
 - `workspace-hack` - generated cargo-hakari crate for unified dependency
   features.
 
+Inside that layering, one *workflow* — a single user-initiated operation with
+ordered stages, such as save, workspace search, or draft recovery — is arranged by
+role so its whole story stays in one place:
+
+- a **narrative facade** (the workflow's public module surface) that narrates the
+  ordered stages, delegates each one, and names every point where control resumes
+  from an idle drain, timer, or worker completion;
+- **seam value objects** for identity/freshness/intent bundles that cross two or
+  more boundaries, constructed once at the entry point and validated as a unit;
+- co-located pure **`policy.rs`** with no GTK-family imports, which keeps it in
+  mutation-testing scope wherever its workflow lives;
+- **coordination** modules named for the job they do (`admission`, `execution`,
+  `retirement`, `watch`);
+- one typed **`evidence.rs`** surface that is the workflow's observable state:
+  tests read it, and the read-only D-Bus automation snapshots project from it
+  without changing the exported contract.
+
+Migration to this shape is a staged programme. Per-workflow status, owned pure
+policy, seam value objects, risk tiers, and migration slots live in
+[`docs/workflow-readability-matrix.md`](docs/workflow-readability-matrix.md), and
+`make check-workflow-boundaries` checks conformance. Unmigrated workflows are
+behaviorally unchanged.
+
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
 and [`docs/automation-reference.md`](docs/automation-reference.md). The
 developer/agent client is `scripts/lushtext-automation.py`.

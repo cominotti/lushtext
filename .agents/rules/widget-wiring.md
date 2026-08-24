@@ -276,6 +276,35 @@ Code that "looks wired correctly" can silently fail if GTK4's internal gesture s
 
 Every wired signal must have a widget test that asserts the expected state change (button click hides widget, entry propagates value, toggle flips state). Tests must also cover the action enabled/disabled lifecycle (disabled when no tabs, enabled after tab creation, disabled again after closing all tabs).
 
+**Read the workflow's evidence surface, not per-field test getters.** A migrated
+workflow exposes one typed evidence surface (`evidence.rs`) that is the single
+source of its observable state. Widget tests read that value. Do not add another
+`pub fn *_for_test` getter for a counter, pending flag, queue depth, bound, or
+freshness token: when a test needs a fact the surface does not expose, extend the
+evidence surface with that field and read it from there. A new per-field
+inspection function is a regression back to the shadow introspection API the
+evidence surface replaced.
+
+- Reading an evidence surface must not mutate workflow state, timers, queues, or
+  generation counters, and must not require the workflow to be in a particular
+  stage.
+- An evidence surface is an internal type of the owning crate at the narrowest
+  visibility its readers need. It is never added to the public D-Bus automation
+  schema; once a workflow migrates, its automation snapshot fields *project*
+  from that surface instead, and drift coverage extends as workflows migrate
+  (see `docs/automation-reference.md` and the Action Catalog section above).
+- Test-only timing and limit overrides belong in the workflow's one test policy
+  value, not in several independent module-level statics, and no override storage
+  may compile without the test feature.
+- Test-only actuation seams that drive a step otherwise reachable only through a
+  file chooser, alert dialog, timer, or worker completion are a known deferred
+  category, not a pattern to extend. See the `gtk-testing` skill for the seam
+  taxonomy before adding one.
+
+Workflows that are not yet migrated keep their existing `*_for_test` inspection
+functions; consult `docs/workflow-readability-matrix.md` for the workflow's
+status and evidence surface before choosing where to read state.
+
 **State-extreme coverage is mandatory for collection and browser surfaces:** If a
 widget presents rows, tabs, notes, bookmarks, snapshots, command results, search
 results, workspaces, files, or any other variable-sized set, do not test only

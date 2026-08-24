@@ -39,6 +39,7 @@ make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
 make check-accessibility-policy # accessibility helper/proof guardrail for new UI-sensitive lines
 make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
+make check-workflow-boundaries # workflow readability convention and matrix conformance
 make check-gtk-lush-policy # validate GTK Lush family scaffolding/dependency direction
 make check-gtk-lush-adoption # run GTK Lush adoption lab, stock fixture, and matrix checks
 make gtk-lush-adoption-lab # build/test the maintained GTK Lush adoption lab
@@ -130,6 +131,18 @@ generated scenario under headless visual geometry before claiming coverage.
 Visual geometry runners must start from a clean artifact root; stale case
 directories from a previous run can make the root summary report failures or
 evidence that the current binary did not produce.
+
+Workflow-readability changes should pass `make check-workflow-boundaries`; it is
+also part of `make check-policy`. It fails when a `policy.rs` module imports
+`gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`; when a `policy.rs` sits at
+a path the mutation scope cannot reach; when a workflow marked migrated in
+`docs/workflow-readability-matrix.md` lacks its required roles; or when a matrix
+row claims evidence that is absent. `docs/workflow-readability-matrix.md` is the
+completion source of truth for that convention: every workflow has a stable
+`WFR-*` row id, and a workflow may be marked `migrated` only when the row's
+facade, coordination, policy, and evidence roles, seam value object, mutation
+parity evidence, and evidence-surface consolidation all exist. Update the
+matching row in the same change as the code.
 
 Portal and headless smoke scripts must keep their temporary runtime directories
 short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than
@@ -376,11 +389,27 @@ value other than `true` for normal PR, scheduled, and manual CI. Use the local
 Makefile targets above while the lane is disabled.
 
 The default mutation scope is intentionally deterministic: model code, service
-code, and a few pure helper-heavy UI modules. Do not add GTK widget construction,
-live signal wiring, file dialogs, or display-server-dependent code directly to
-the cargo-mutants scope; keep that behavior in `scripts/run-widget-tests.sh`,
-where Mutter, D-Bus, renderer settings, retries, and warning filtering are
-controlled.
+code, and pure workflow policy modules. Scope membership is decided by
+**convention, not by directory**: `examine_globs` covers `model/**`,
+`services/**`, and `crates/lushtext-core/src/ui/**/policy.rs`, so a workflow's
+pure decision logic keeps mutation coverage wherever its owning workflow lives.
+A `policy.rs` module must contain no `gtk4`, `glib`, `gio`, `libadwaita`, or
+`sourceview5` import; that purity is what makes it eligible.
+
+GTK adapters stay out of scope because they are not policy modules, not because
+they sit under `ui/`. Do not add GTK widget construction, live signal wiring,
+file dialogs, or display-server-dependent code to the cargo-mutants scope; keep
+that behavior in `scripts/run-widget-tests.sh`, where Mutter, D-Bus, renderer
+settings, retries, and warning filtering are controlled. The remaining
+hand-listed UI file entries and the `exclude_re` entries enumerating GTK adapter
+method names are legacy: each retires when its own workflow migrates and its
+pure logic lands in a `policy.rs`, not by being widened.
+
+When pure policy relocates between directories, mutation-coverage parity is
+required evidence, not an optional check. Record the generated and killed mutant
+counts before and after the move via `make mutants-diff`. A relocation whose
+mutants are no longer generated is a coverage regression, not an acceptable
+consequence of the move.
 
 Default mutation runs must also omit `lushtext-core/property-tests`. Generated
 property cases belong in `make test-prop`; otherwise mutation runtime becomes

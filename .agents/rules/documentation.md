@@ -15,7 +15,8 @@ Whenever code changes are made, evaluate whether the following files need update
 4. **`docs/accessibility.md`** — keyboard paths, screen-reader expectations, visual accessibility behavior, smoke coverage, release reference checks, and platform caveats when UI accessibility behavior changes
 5. **`docs/accessibility-matrix.md`** — accessibility surface/state row ids, smoke/visual/manual proof mapping, stable anchors, and uncovered row status when UI accessibility behavior changes
 6. **`docs/accessibility-orca-checklist.md`** — manual Orca validation fields, workflow matrix rows, privacy boundaries, and sample bounded release artifact when manual screen-reader expectations change
-7. **`.agents/skills/*/references/*.md`** — testing patterns, async patterns, architecture references
+7. **`docs/workflow-readability-matrix.md`** — workflow `WFR-*` row ids, file sets, owned pure policy, test-seam counts, seam value objects, evidence surfaces, risk tiers, and migration status when workflow structure changes
+8. **`.agents/skills/*/references/*.md`** — testing patterns, async patterns, architecture references
 
 **CRITICAL: `README.md` must always be kept in sync with the code.** It is the project's public-facing documentation and the first thing contributors and users see. When any of the following change, the README must be updated in the same commit or PR:
 - Features added, removed, or significantly changed
@@ -32,6 +33,7 @@ Whenever code changes are made, evaluate whether the following files need update
 - New or changed accessible name, role, description, state, relation, announcement, keyboard path, stable AT-SPI anchor, accessibility smoke scenario, visual accessibility caveat, or manual screen-reader expectation → update `docs/accessibility.md` and the relevant rows in `docs/accessibility-matrix.md`; update `docs/end-user-coverage.md` when release or smoke-lane expectations change; update `docs/automation.md` and `docs/automation-reference.md` when stable anchors, helper flags, snapshot fields, readiness predicates, or artifact fields change
 - Automation, portal/sandbox, or Flatpak permission posture changes → update
   the user/developer automation docs and run `make check-flatpak-permissions`
+- Workflow structure changed (module role added or renamed, pure policy relocated, seam value object introduced, evidence surface added or extended, test seam retired, or a workflow migrated to the readability convention) → update the workflow's row in `docs/workflow-readability-matrix.md` and run `make check-workflow-boundaries`
 - New pattern introduced (timer, signal, async) → document in the appropriate rules file
 - New convention discovered or existing one refined → update rust.md or widget-wiring.md
 - Testing pitfall encountered → add to gtk-testing skill references

@@ -82,9 +82,89 @@ context's vocabulary.
 ### Split by workflow, not size alone
 
 Split a module when it mixes responsibilities, churns in unrelated features, or
-forces readers to hold several lifecycles at once. Prefer workflow names such as
-`history`, `runtime`, or `replace` over `helpers`, `misc`, or arbitrary line-count
-splits. A cohesive large module can be better than several coupled fragments.
+forces readers to hold several lifecycles at once. A cohesive large module can be
+better than several coupled fragments. When you do split, assign roles — a
+line-count split whose siblings each still mix narration, coordination, and
+policy does not satisfy the convention. Avoid `helpers`, `misc`, and `runtime`:
+the first two name nothing and `runtime` says only that the module is machinery.
+
+### Assign one workflow role per module
+
+A **workflow** is one user-initiated operation with ordered stages that crosses
+the adapter boundary into coordination and pure policy. Each module of a migrated
+workflow carries exactly one role:
+
+| Role | File | Owns |
+|---|---|---|
+| Narrative facade | the workflow's public module surface | ordered stages, intent names, delegation |
+| Seam value objects | with the workflow | identity/freshness/intent bundles |
+| Pure policy | `policy.rs` | pure decisions, no GTK-family imports |
+| Coordination | `admission`, `execution`, `retirement`, `watch` | timers, budgets, generations, dispatch |
+| Evidence | `evidence.rs` | the workflow's observable state, one typed value |
+
+Rules to enforce when reviewing a decomposition:
+
+- The facade must not also be a coordination or policy module. If a stage needs
+  timers, admission bookkeeping, generation counters, or widget mutation, that
+  work stays in coordination or the adapter and the facade calls it by a named
+  operation.
+- The facade narrates inversions. Where stages connect through a deferred drain,
+  idle callback, or worker completion, the facade must name where control
+  resumes; a reader must not have to reconstruct it from the coordination module.
+- Facades have a normative size budget, set from the first migration's measured
+  facade and recorded in the "Facade size budget" section of
+  `docs/workflow-readability-matrix.md`; changing that number follows the
+  retroactive amendment rule.
+- Coordination file names come from the bounded set above and state the job. A
+  workflow may own more than one. A directory hosting several workflows keeps
+  flat role names scoped per workflow rather than being restructured into one
+  subdirectory per workflow. A job no listed name describes requires amending
+  `openspec/specs/gtk-adapter-module-boundaries/spec.md`.
+- `policy.rs` and `evidence.rs` are fixed names, one of each per workflow.
+- Do not introduce a trait, manager type, or crate to express a role split. Plain
+  modules and narrow owner references only.
+
+`docs/workflow-readability-matrix.md` is the completion source of truth: check the
+workflow's `WFR-*` row for its status, owned policy, seam value object, and risk
+tier before recommending a restructure. A row marked `exempt` or `deferred` must
+not be forced into the convention.
+
+### Co-locate pure policy with its owning workflow
+
+Pure decision logic belongs in its workflow's `policy.rs` when the policy has a
+single **owning workflow**. Count owning workflows, not consuming files: policy
+whose only consumer is its own coordination adapter is cross-cutting when that
+adapter serves several workflows, and it stays in its shared location with the
+matrix recording it as cross-cutting (for example `plain_disposal`); the matrix's
+cross-cutting eligibility list is the authoritative set.
+
+- `[FLAG]` a module placed in `model/` solely to obtain test or mutation tooling
+  reach. Mutation scope reaches `ui/**/policy.rs` by convention, so that is no
+  longer a reason to hoist.
+- `[FLAG]` any GTK-family import (`gtk4`, `glib`, `gio`, `libadwaita`,
+  `sourceview5`) in a `policy.rs`. Purity is what keeps it in mutation scope, and
+  `make check-workflow-boundaries` fails on it.
+- Relocating policy requires mutation-coverage parity evidence via
+  `make mutants-diff`; a relocation that stops generating mutants is a coverage
+  regression.
+- Dependency direction `ui -> services -> model` is unchanged by co-location:
+  policy moves *down* beside its consumer, never upward.
+
+### Reify seam bundles, and never rename across a seam
+
+Require a named value object when a field bundle crosses two or more function
+boundaries or is reconstructed at two or more call sites; a bundle used by one
+private helper does not need one. Construct it once at the workflow entry point
+and validate it as a unit. Reuse the shape the codebase already has — `*Ticket`
+plus `*Facts` plus one `*_is_current` predicate, or a coordinator that already
+owns the generation and exposes `is_current(generation)` — rather than adding a
+parallel one.
+
+`[FLAG]` a value passed into a parameter that names it something else: the rename
+is invisible to review and to tests while both names denote the same value.
+Treat `#[expect(clippy::too_many_arguments)]` at a cross-module workflow boundary
+as an unreified seam, not an accepted exception; domain catalog constructors whose
+parameters each name a documented external contract field are outside this rule.
 
 ### Prefer direct ports until a seam pays for itself
 

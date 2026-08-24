@@ -113,9 +113,108 @@ autosave, encoding analysis, preview flows, or optional marker scans.
   `spawn_blocking_then`, applying it only while the editor is still mounted and
   still owns the same path.
 
+## Workflow Vocabulary And Boundaries
+
+A workflow is the reader's entry point: one user-initiated operation with
+ordered stages that crosses the adapter boundary into coordination and pure
+policy — Ctrl+S, workspace search, draft recovery. The workflow and its domain
+vocabulary are what
+a reader must learn first; the coordination machinery below is the tier a
+workflow reaches into, not the entry point.
+
+`docs/workflow-readability-matrix.md` is the completion source of truth for which
+workflows follow the convention. Every workflow has a stable `WFR-*` row; update
+its row in the same change as the code, and read the row before restructuring a
+workflow so an `exempt` or `deferred` classification is not silently overridden.
+
+A migrated workflow assigns each of its modules exactly one role:
+
+- **Narrative facade** — the workflow's public module surface. It narrates the
+  ordered stages with their intent named and delegates every stage to another
+  role. It must not own timers, admission bookkeeping, generation counters, or
+  GTK widget mutation. Where stages are connected by a deferred drain, idle
+  callback, or worker completion instead of a direct call, the facade documents
+  that inversion and names the point where control resumes. Facades have a
+  normative size budget, set from the first migration's measured facade and
+  recorded in the "Facade size budget" section of
+  `docs/workflow-readability-matrix.md`; changing that number follows the
+  retroactive-amendment rule.
+- **Seam value objects** — the reified identity/freshness/intent values described
+  below.
+- **Pure policy** — `policy.rs`, one per workflow, inside that workflow's own
+  directory.
+- **Coordination** — one module per coordination job, named from the bounded set
+  `admission`, `execution`, `retirement`, `watch`. A workflow may own more than
+  one. `runtime.rs` is not a role name: it says only that the module is
+  machinery. A coordination job no listed name describes requires amending
+  `openspec/specs/gtk-adapter-module-boundaries/spec.md`, not overloading an
+  existing name.
+- **Evidence** — `evidence.rs`, one per workflow, at the narrowest visibility its
+  readers require. See the evidence-surface rules in
+  `.agents/rules/widget-wiring.md`.
+
+Splitting a large file into siblings without assigning roles does not satisfy the
+convention. Roles are expressed with plain modules and narrow owner references;
+do not add a trait, manager type, or crate solely to move code.
+
+### Seam value objects
+
+Reify a field bundle as a named value object when it crosses **two or more**
+function boundaries or is reconstructed at two or more call sites. Construct it
+once at the workflow entry point and validate it as a unit. A bundle used by
+exactly one private helper and reconstructed nowhere else does not need one — the
+rule targets seams, not every long signature.
+
+**A value must not be renamed while crossing a seam.** Passing a value that means
+one thing into a parameter that names it something else is the archetype defect
+this rule exists to make unrepresentable: it is invisible to review and invisible
+to tests while both names denote the same value. Reify the bundle so the
+mismatched call becomes a type error.
+
+Reuse the shape the codebase already uses rather than inventing a parallel one:
+
+- **Ticket + Facts + predicate** — a `*Ticket` captures the expectation at
+  dispatch, a `*Facts` captures observed live state at completion, and one
+  `*_is_current(ticket, facts)` predicate validates them together. Existing
+  instances include `DraftRestoreTicket` + `DraftRestoreFacts` and
+  `BaselineCaptureTicket` + `BaselineCaptureFacts`. The `Ticket::is_current(&editor)`
+  variant reads live state directly (`SaveCompletionTicket`).
+- **Coordinator generation identity** — where a coordinator already owns the
+  generation and exposes `is_current(generation)`, that coordinator *is* the seam
+  value object and no additional type is required.
+
+Treat `#[expect(clippy::too_many_arguments)]` on a cross-module workflow boundary
+as a marker of an unreified seam to be fixed, not as an accepted exception.
+Domain catalog construction in `model/` whose parameters each name a documented
+external contract field is outside this rule and keeps its reasoned suppression.
+
+### Policy purity
+
+A `policy.rs` module must contain no `gtk4`, `glib`, `gio`, `libadwaita`, or
+`sourceview5` import. That purity is what keeps it inside the default mutation
+scope, which reaches `ui/**/policy.rs` by convention. `make
+check-workflow-boundaries` fails on a violation and names the file and import.
+
+Pure policy moves beside its consumer only when it has a single **owning
+workflow**. Eligibility is counted in owning workflows, not consuming files: pure
+policy whose only consumer is its own coordination adapter is cross-cutting when
+that adapter serves several workflows, and stays in its shared location with the
+matrix recording it as cross-cutting. Do not place a module in `model/` solely to
+obtain test or mutation tooling reach.
+
+### Intent-first naming
+
+Public, `pub(crate)`, `pub(super)`, and cross-module workflow operations are named
+for the workflow intent they express, not the mechanism they happen to use.
+Private helpers inside a coordination module may keep mechanism names when the
+owning module makes the mechanism obvious.
+
 ## Coordination Vocabulary
 
-The bounded-work programme reuses a small set of coordination concepts. Learn
+This is the implementation tier a workflow reaches into, beneath the workflow and
+domain vocabulary above. Read it after you know which workflow you are in; it
+answers "how is this stage bounded", not "what is this workflow". The
+bounded-work programme reuses a small set of coordination concepts, so learn
 these names once instead of re-deriving each subsystem's bookkeeping:
 
 - **Admission** — a gate that decides whether new work may start against a
@@ -334,7 +433,7 @@ When production code approaches 1000 lines:
 2. **Never split mid-impl block.** Keep all trait impls for a type in one file. Split by extracting private helper functions into sibling modules, then calling them from the main impl.
 3. **Prefer vertical, not horizontal splitting.** A 900-line file with one clear responsibility is better than 3 files that constantly cross-reference each other.
 4. **Split GTK adapters by workflow before inventing new abstraction layers.** If a widget starts mixing unrelated flows (actions, notifications, persistence, search runtime, focus recovery), prefer sibling modules under the widget folder over new traits or faux-manager types.
-5. **Promote repeated field bundles into named value objects or state groupings.** If multiple call sites rebuild the same shape (for example query text + toggle state), move it into `model/`. If an `imp` struct accumulates unrelated timers/counters/maps, group them into small helper structs with clear workflow ownership.
+5. **Promote repeated field bundles into named value objects or state groupings.** Where the bundle lands depends on what it means. A domain-concept bundle — real domain vocabulary shared across several workflows — belongs in `model/`. A workflow seam bundle (identity, freshness, or intent values crossing that one workflow's boundaries, for example query text + toggle state) is reified beside its workflow per the seam value-object rule; never place a module in `model/` merely to obtain tooling reach. See the Workflow Vocabulary And Boundaries section. If an `imp` struct accumulates unrelated timers/counters/maps, group them into small helper structs with clear workflow ownership.
 
 ## Testing
 

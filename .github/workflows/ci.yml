@@ -72,6 +72,9 @@ jobs:
       - name: Workflow timeout policy
         run: make check-workflow-timeouts
 
+      - name: Workflow boundary policy
+        run: make check-workflow-boundaries
+
       - name: Blueprint template drift and contract
         run: make check-blueprint
 

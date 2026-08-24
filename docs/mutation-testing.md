@@ -8,16 +8,35 @@ generated input invariants; it does not replace mutation testing either.
 
 ## Scope
 
-The default scope is configured in `.cargo/mutants.toml`:
+The default scope is configured in `.cargo/mutants.toml`, and membership is
+decided by **convention, not by directory**. The `examine_globs` list covers:
 
-- Domain model code under `crates/lushtext-core/src/model`
-- Service code under `crates/lushtext-core/src/services`
-- A narrow set of pure helper-heavy UI modules that do not need a display server
+- Domain model code under `crates/lushtext-core/src/model/**`
+- Service code under `crates/lushtext-core/src/services/**`
+- Pure workflow policy modules matching
+  `crates/lushtext-core/src/ui/**/policy.rs`
 
-Do not add broad GTK widget modules to the default mutation scope. Widget
-construction, signal wiring, focus behavior, dialogs, file choosers, and live
-allocation behavior belong in `scripts/run-widget-tests.sh`, where the harness
-owns Mutter, D-Bus, renderer settings, retries, and warning filtering.
+The `policy.rs` glob is a naming convention: a workflow's pure decision logic
+lives in a `policy.rs` beside the workflow it serves, so that logic keeps
+mutation coverage wherever its owning workflow lives and no new entry is needed
+here when a workflow migrates. The precondition is purity — a `policy.rs` must
+contain no `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5` import.
+`make check-workflow-boundaries` enforces both halves: policy purity, and that
+every `policy.rs` in the crate is reachable from the glob list. The remaining
+hand-listed UI file entries are pre-convention; each retires as its own workflow
+migrates and its pure logic lands in a `policy.rs`.
+
+When pure policy relocates, the change must prove mutation parity: run
+`make mutants-diff` for the relocated logic and record the before/after
+generated and killed mutant counts. A relocation that stops generating mutants
+is a coverage regression, not an acceptable consequence of the move.
+
+Do not add broad GTK widget modules to the default mutation scope. GTK adapters
+stay out of scope because they are not policy modules, not because they sit
+under `ui/`. Widget construction, signal wiring, focus behavior, dialogs, file
+choosers, and live allocation behavior belong in
+`scripts/run-widget-tests.sh`, where the harness owns Mutter, D-Bus, renderer
+settings, retries, and warning filtering.
 
 ## Local Setup
 

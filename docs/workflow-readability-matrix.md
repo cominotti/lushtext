@@ -726,6 +726,33 @@ cross-cutting when that adapter serves several workflows. This is what keeps
 `plain_disposal`, `buffer_snapshot`, `buffer_replacement`, `editor_memory`, and
 `migration_ledger` in shared locations.
 
+## Migrated Workflow Roles
+
+Every row whose status is `migrated` MUST have a subsection here naming the
+roles it gained. `make check-workflow-boundaries` reads this section: it fails
+when a `migrated` row has no subsection, when a required role is unnamed, and
+when a named path does not exist. It also fails when this section declares roles
+for a row that is not marked `migrated`, so the two halves cannot drift.
+
+Format, one subsection per migrated row id:
+
+```
+### WFR-EXAMPLE
+
+- facade: `ui/example/mod.rs`
+- coordination: `ui/example/execution.rs`, `ui/example/retirement.rs`
+- policy: `ui/example/policy.rs`
+- evidence: `ui/example/evidence.rs`
+- mutation parity: `openspec/changes/<change>/evidence/<file>.md`
+```
+
+`facade` and `evidence` MUST name real paths. `coordination`, `policy`, and
+`mutation parity` MAY be the literal `none` when the workflow owns no
+coordination module, owns no pure policy, or relocated no policy module.
+
+No row is marked `migrated` yet, so this section is intentionally empty. The
+exemplar migration (this change, section 5.12) adds the first subsection.
+
 ## Completion Rule
 
 A workflow may be marked `migrated` only when all of the following hold, and
