@@ -66,8 +66,6 @@ src/
 │   ├── editor_memory.rs # Plain-Rust live editor residency estimates, LRU eviction decisions, and soft-budget outcomes
 │   ├── file_load.rs    # Plain-Rust transient byte admission, fairness/exclusive policy, and UTF-8-safe GTK slice planning
 │   ├── save_admission.rs # Plain-Rust byte-weighted save admission, close priority, and exact permit accounting
-│   ├── search_flight.rs # Plain-Rust active-plus-latest workspace-search ownership
-│   ├── search_retirement.rs # Plain-Rust per-turn retirement budget for detached search generations
 │   ├── workspace_scan.rs # Plain-Rust per-store active-plus-latest directory-scan ownership
 │   ├── workspace_search.rs # Plain-Rust normalized workspace-search traversal and fallback identity bounds
 │   ├── workspace_persistence.rs # Plain-Rust requested/in-flight/durable/failed workspace-save generations
@@ -121,7 +119,7 @@ src/
     ├── editor_page/     # Per-tab adapter plus process-wide weak/scalar load admission, bounded GTK installation, Focus Mode, local-history, minimap, bookmarks, save, monitor, and search helpers
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     │   └── workspace_section/ # Per-workspace state plus row factory, accessibility, and context-menu wiring
-    ├── search_panel/    # Workspace-wide content search panel plus history, list factory, replace, results, and runtime flows
+    ├── search_panel/    # Workspace search + Replace All, first workflow migrated to the readability role convention: mod.rs narrative facade, policy.rs pure policy (search single-flight, retirement budget, preview freshness seam), execution.rs + retirement.rs + replace.rs coordination, evidence.rs observation surface, plus history/list_factory/results/accessibility adapter detail and test-utils-only test_policy.rs
     ├── command_palette/ # Ctrl+Shift+P search: files + note records + commands
     ├── plain_disposal.rs # Non-blocking weighted Send-payload destruction with producer-owned latest retry
     ├── open_popover/    # Ctrl+K searchable recent-document Open popover

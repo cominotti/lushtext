@@ -66,7 +66,7 @@ convention has been proven on at least two completed lower-risk migrations.
 
 | Row id | Workflow | Current size | Entry points | Owned pure policy | Seams (i/c/a/p) | Seam value object | Evidence surface | Risk | Slot | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | `model/search_flight.rs` (2 consumer files, 1 workflow → single-consumer, relocates); `model/search_retirement.rs` (1 consumer → single-consumer, relocates) | 9/14/15/1 = 39 fns, 55 sites, 8 override statics | exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side). required: `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side) | partial: `WorkspaceSearchFlightSnapshot`, `FileIndexRetirementSnapshot`; no single surface | tier-2 (search/preview half), tier-3 (Replace All write half) | 1 (this change, search/preview half) + 2 (replace/undo half) | pending |
+| WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs` (was the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census)); mutation parity proved | panel half migrated: 8 inspection fns retired into `evidence.rs`, 5 configuration setters plus 6 override statics collapsed into `SearchPanelTestPolicy`; actuation seams deferred | exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side) | exists: `SearchPanelEvidence` via `evidence()`; automation `window.content_search` projects from it | tier-2 (search/preview half), tier-3 (Replace All write half) | 1 (this change, search/preview half) + 2 (replace/undo half) | migrated |
 | WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | 16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897) | `Ctrl+P`, `Ctrl+K` palette modes, `win.notes-show-notes` | none in `model/` beyond domain `model/palette.rs` (17 consumers → domain, stays) | 15/10/2/0 = 27 fns, 40 sites, 4 override statics | exists: `FileIndexBuildCoordinator` + `NoteSourceRefreshCoordinator` generation identity | partial: `FileIndexBuildCoordinatorSnapshot`, `NoteSourceRefreshCoordinatorSnapshot`, `PaletteSearchCoordinatorSnapshot` | tier-2 | 2 | pending |
 | WFR-DOCUMENT-SAVE | Save, Save As, save formatting, durability | 7 files, 6,672 lines (ui 2,132 / model 991 / services 3,549) | `win.save`, `win.save-as`, `Ctrl+S`, close-with-changes dialog, autosave-on-close | `model/save_admission.rs` (2 consumer files, 1 workflow → single-consumer, relocates) | 10/11/9/4 = 34 fns, 44 sites, 5 override statics | exists: `SaveCompletionTicket` (completion seam). required: `QueuedSaveTicket` + `QueuedSaveFacts` (admission seam; carries the renamed field) | partial: `SaveAdmissionSnapshot` | tier-3 | 3 | pending |
 | WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | 10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375) | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore | `model/file_load.rs` (4 consumers → domain-shaped, stays pending review in slot 3) | 23/7/3/1 = 34 fns, 55 sites, 3 override statics | required: `LoadRequestTicket` (carries `{load_generation, cancel_token}`, exploded at 2 call sites today) | partial: `FileLoadAdmissionSnapshot`, `OpenPopoverRowLayoutSnapshot` | tier-3 | 3 | pending |
@@ -119,7 +119,18 @@ checked replacements, resuming in a second completion closure → replace callba
 into the content-search write path with its undo journal → Undo →
 `BufferReplacementTicket` install ⇢ bounded slices across turns.
 
-Six inversions. The two preview completions are the unreified seam.
+Six inversions. The two preview completions were the unreified seam.
+
+**Post-migration note.** This trace is the census snapshot, kept as the record of
+what the exemplar started from. The migration renamed several of these steps for
+intent and split the coordination modules: `clear_results` now delegates to
+`detach_visible_results`, `enqueue_search_retirement` became
+`retire_detached_results`, `advance_preview_generation` split into
+`invalidate_active_preview` plus `issue_preview_ticket`, `retire_preview_state`
+became `release_superseded_preview`, and `spawn_preview_selection` became
+`apply_checked_replacements` taking one `ReplacePreviewTicket`. The current
+stage order and every resumption point are narrated in the facade,
+`crates/lushtext-core/src/ui/search_panel/mod.rs`.
 
 ### WFR-DOCUMENT-SAVE
 
@@ -351,13 +362,25 @@ module, excluding the module itself.
 | Module | Lines | Consumer files | Owning workflows | Classification |
 | --- | --- | --- | --- | --- |
 | `save_admission.rs` | 405 | `ui/editor_page/save_runtime.rs`, `ui/editor_page/load_save.rs` | 1 (`WFR-DOCUMENT-SAVE`) | single-consumer → relocates to `ui/editor_page/policy.rs` |
-| `search_flight.rs` | 191 | `ui/search_panel/imp.rs`, `ui/search_panel/runtime.rs` | 1 (`WFR-SEARCH-REPLACE`) | single-consumer → relocates to `ui/search_panel/policy.rs` |
-| `search_retirement.rs` | 80 | `ui/search_panel/runtime.rs` | 1 (`WFR-SEARCH-REPLACE`) | single-consumer → relocates to `ui/search_panel/policy.rs` |
+| `search_flight.rs` | 191 | `ui/search_panel/imp.rs`, `runtime.rs` (both in `ui/search_panel/`) | 1 (`WFR-SEARCH-REPLACE`) | single-consumer → relocates to `ui/search_panel/policy.rs` |
+| `search_retirement.rs` | 80 | `runtime.rs` (in `ui/search_panel/`) | 1 (`WFR-SEARCH-REPLACE`) | single-consumer → relocates to `ui/search_panel/policy.rs` |
 | `minimap_analysis.rs` | 186 | `ui/editor_page/minimap.rs` | 1 (`WFR-MINIMAP`) | single-consumer → relocates to `ui/editor_page/minimap/policy.rs` |
 | `plain_disposal.rs` | 692 | `ui/plain_disposal.rs` | its own adapter, serving 10 workflows | cross-cutting → stays |
 | `buffer_replacement.rs` | 186 | `ui/window/local_history.rs`, `ui/editor_page/buffer_replacement.rs` | 2 (`WFR-LOCAL-HISTORY`, Replace All undo) | cross-cutting → stays |
 | `editor_memory.rs` | 469 | `ui/window/focus_indexing.rs`, `ui/window/imp.rs`, `ui/editor_page/mod.rs`, `ui/editor_page/save_runtime.rs`, `ui/editor_page/load_runtime.rs` | 3 | cross-cutting → stays, exempt |
 | `migration_ledger.rs` | 225 | `ui/window/notes/mod.rs`, `ui/window/local_history.rs`, `services/migration_ledger.rs` | 2 plus a service | cross-cutting → stays |
+
+**Post-migration note.** This table is the census snapshot, kept as the record
+of what each classification was decided from; its line counts and consumer
+names are as-censused and are deliberately not rewritten. Two rows have since
+been acted on. `search_flight.rs` and `search_retirement.rs` are gone from
+`model/`: both relocated into `ui/search_panel/policy.rs`, with mutation-coverage
+parity recorded in
+`openspec/changes/normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md`.
+Their consuming `runtime.rs` is also gone, split by the same migration into
+`ui/search_panel/execution.rs` (streaming search) and
+`ui/search_panel/retirement.rs` (bounded disposal). See
+[Migrated Workflow Roles](#migrated-workflow-roles) for the current shape.
 
 ### Additional single-workflow modules the census found
 
@@ -383,7 +406,9 @@ rather than inheriting this row.
 domain concept and has three or more consumers, or is a domain type with a
 single natural owner.
 
-After the relocations above, `model/` retains 22 of its current 29 files.
+After the relocations above, `model/` retains 22 of its current 29 files. The
+first two have happened: `model/` now holds 27 files, and the two search policy
+modules live in `ui/search_panel/policy.rs`.
 
 ## Test Seam Census
 
@@ -454,20 +479,23 @@ at both call sites (`ui/editor_page/load_runtime.rs:209`,
 `ui/editor_page/load_save.rs:553`) against
 `ui/editor_page/load_save.rs:1012`.
 
-### required: `ReplacePreviewTicket` + `ReplacePreviewFacts` (`WFR-SEARCH-REPLACE`)
+### done: `ReplacePreviewTicket` + `ReplacePreviewFacts` (`WFR-SEARCH-REPLACE`)
 
-Carries `{generation, query_spec}` validated against live
-`{preview_generation, preview_pending, current_query_spec}`. The pair is
-constructed at two sites (`ui/search_panel/replace.rs:521`,
-`ui/search_panel/mod.rs:174`), exploded across the
-`spawn_preview_selection(generation, expected_query_spec, ...)` boundary, and
-its three-clause freshness comparison is duplicated at
-`ui/search_panel/replace.rs:594` and `:748`, with generation-only variants at
-`:637` and `:711`.
+Reified by this change in `ui/search_panel/policy.rs`. The ticket carries
+`{generation, query_spec}` and is validated as one unit against live
+`ReplacePreviewFacts {generation, pending, query_spec}` by
+`ReplacePreviewTicket::is_current`. It is constructed at exactly one place,
+`issue_preview_ticket`, which both preview entry points (preview generation and
+checked apply) call, so generation and query spec can no longer drift apart.
 
-`ReplacePreviewRequest` already groups `{search_matches, query_spec,
-replacement_text, generation}` for dispatch; the ticket is its identity subset,
-so the exemplar extends an existing type rather than adding an unrelated one.
+What it removed: the loose
+`spawn_preview_selection(generation, expected_query_spec, ...)` boundary is now
+`apply_checked_replacements(ticket, ...)`; the duplicated three-clause freshness
+comparison at the two worker completions is one `is_current` call; and the two
+generation-only re-dispatch variants are one documented `may_dispatch`
+predicate, which deliberately omits the query clause because a retained request
+has not produced a result yet. `ReplacePreviewRequest` now holds the ticket
+instead of separate generation and query-spec fields.
 
 ### required: `WorkspaceWatchTicket` (`WFR-WORKSPACE-TREE`)
 
@@ -661,7 +689,7 @@ These are enumerated so census completeness is provable. None is a workflow:
 each is a widget, helper, or infrastructure module with no ordered stages and no
 coordination role, and none carries a seam value object obligation.
 
-`ui/preferences/**`, `ui/properties_panel/**`, `ui/shrinkable_bin/**`,
+`ui/preferences/**`, `ui/properties_panel/**`,
 `ui/theme.rs`, `ui/accessibility.rs`, `ui/editor_page/accessibility.rs`,
 `ui/sidebar/file_tree_item.rs`, `services/filesystem/**`,
 `services/durable_write.rs`, `services/json_store.rs`,
@@ -670,6 +698,13 @@ coordination role, and none carries a seam value object obligation.
 `services/single_flight.rs` and `services/sync.rs` are shared coordination
 primitives consumed through the workflows that own their generations; they are
 covered by `WFR-*` rows rather than owning one.
+
+The census originally also listed a shrinkable-bin module under `ui/` here. That
+widget had already graduated into the GTK Lush family as
+`crates/gtk-lush/widgets/src/clip_bin/`, so the entry named a path that no
+longer exists; it is dropped rather than repointed, because GTK Lush crates are
+governed by `crates/gtk-lush/GOVERNANCE.md` and are outside this convention's
+scope.
 
 Crate infrastructure outside the census: `lib.rs`, `main.rs`, `app.rs`,
 `config.rs`, `fuzzing.rs`.
@@ -704,11 +739,39 @@ listed role name describes requires a spec amendment to add the name.
 
 ### Facade size budget
 
-A budget is required, but the number is **not yet set**. The first migration change
-measures its facade and sets the number; every later migration is held to it. Chosen
-this way because no measurement supports a number today: the smallest existing thin
-public surface is 247 lines, the exemplar's own `mod.rs` is 578 for 6 inversions, and
-facades must narrate 3 to 7 inversions.
+**Measured, not yet normative.** The exemplar's facade
+(`crates/lushtext-core/src/ui/search_panel/mod.rs`) is **357 physical lines**, of
+which 74 are the module-doc stage narration and 175 are non-comment, non-blank
+lines, narrating 6 inversions across two stage orders. It replaced a 578-line
+`mod.rs` that also held the accessibility projection and 23 observation getters;
+those moved to `accessibility.rs` and `evidence.rs` respectively. Physical lines
+are the metric the mechanical check uses, so that is the number a budget should
+be compared against.
+
+Per `openspec/specs/workflow-readability-boundaries/spec.md`, the **first
+migration change after this exemplar** sets the normative number from the
+exemplar's measured facade. This change is the exemplar, not that migration, so
+it records the measurement and leaves the number unset; migration change 2 sets
+it, and under the retroactive-amendment rule that is also the cheapest moment to
+correct it, because exactly one workflow is migrated. The measurement above is
+the input: a budget below roughly 370 lines would force this facade's narration
+to be split, which defeats the facade.
+
+**How to declare it.** The budget lives in this section as one
+machine-readable line, exactly:
+
+```
+- normative facade line budget: <integer>
+```
+
+`make check-workflow-boundaries` reads that line. While it is absent the facade
+size check is inert. Once present, the check counts the physical lines of every
+`migrated` row's declared `facade` path and fails when one exceeds the budget.
+Only the first such line in this section is read, so the budget cannot be
+declared twice. Changing the number is a convention amendment: it must go
+through the spec and re-check every already-migrated row in the same change.
+
+No budget is declared yet.
 
 ### Argument-count suppressions
 
@@ -750,8 +813,39 @@ Format, one subsection per migrated row id:
 `mutation parity` MAY be the literal `none` when the workflow owns no
 coordination module, owns no pure policy, or relocated no policy module.
 
-No row is marked `migrated` yet, so this section is intentionally empty. The
-exemplar migration (this change, section 5.12) adds the first subsection.
+### WFR-SEARCH-REPLACE
+
+- facade: `ui/search_panel/mod.rs`
+- coordination: `ui/search_panel/execution.rs`, `ui/search_panel/retirement.rs`, `ui/search_panel/replace.rs`
+- policy: `ui/search_panel/policy.rs`
+- evidence: `ui/search_panel/evidence.rs`
+- mutation parity: `openspec/changes/normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md`
+
+Notes on this row, which is the exemplar and therefore the reference for the
+migrations that follow:
+
+- `runtime.rs` is gone. Its streaming-search half became `execution.rs` and its
+  bounded-disposal half became `retirement.rs`, which is what the two-role split
+  the census predicted looks like in practice.
+- `replace.rs` keeps its workflow-descriptive name rather than taking a bounded
+  role name. It owns the Replace All preview *and* the durable undo journal, and
+  the journal half is slot-2 scope, so naming its coordination job now would
+  have to be redone when that half migrates. Slot 2 must decide its final role
+  name (or names) as part of finishing this workflow.
+- `accessibility.rs` holds the accessible-state projection that used to sit in
+  `mod.rs`. It is adapter detail, not a coordination role: the facade may not own
+  widget mutation.
+- `test_policy.rs` holds `SearchPanelTestPolicy`, the workflow's single
+  test-only timing/limit value. The whole module is behind
+  `#[cfg(feature = "test-utils")]`, so a production build compiles no override
+  storage at all.
+- `policy.rs` is `pub` because the GTK-free policy benchmarks in
+  `crates/lushtext-core/benches/benchmarks.rs` address `WorkspaceSearchFlight`
+  and `SearchRetirementSliceBudget` directly. Nothing else outside the workflow
+  uses it.
+- The row is `migrated` for the panel workflow's search and preview half. The
+  Replace All write path, its undo journal, and `model/workspace_search.rs`
+  remain slot-2 scope; slot 1 deliberately scoped to the non-writing half.
 
 ## Completion Rule
 

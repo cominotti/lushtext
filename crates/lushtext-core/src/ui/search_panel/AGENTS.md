@@ -4,7 +4,13 @@ This folder owns the workspace-wide content search panel adapter.
 
 ## Responsibilities
 
-- Keep the panel as the driving adapter and keep its major workflows split into `history`, `list_factory`, `replace`, `results`, and `runtime`.
+- Keep the panel as the driving adapter, and keep the workflow readability roles this folder now carries (it is the exemplar for `docs/workflow-readability-matrix.md` row `WFR-SEARCH-REPLACE`):
+  - `mod.rs` is the **narrative facade**: it narrates the search and Replace All stage orders, names each control-flow inversion and where control resumes, and delegates every stage. It must not gain timers, generation counters, admission bookkeeping, or stage machinery. Beyond the trivial entry-point reads and writes of the visible query controls, widget mutation belongs in the coordination and adapter roles: a stage that needs to take state and repaint controls is delegated to a named intent-first operation such as `replace::begin_confirmed_replacement`.
+  - `policy.rs` is the **pure policy** module: search single-flight ownership, the per-turn retirement budget, and the `ReplacePreviewTicket`/`ReplacePreviewFacts` freshness seam. It must stay free of `gtk4`, `glib`, `gio`, `libadwaita`, and `sourceview5` imports so the default mutation scope keeps reaching it.
+  - `execution.rs` (streaming search), `retirement.rs` (bounded disposal), and `replace.rs` (preview and apply) are the **coordination** modules. Do not reintroduce a `runtime.rs`: a coordination file is named for the job it performs.
+  - `evidence.rs` is the **evidence surface**: `SearchPanelEvidence` plus the scalar observation accessors. New inspection needs extend that surface; do not add per-field `*_for_test` getters.
+  - `history`, `list_factory`, `item`, `results`, and `accessibility` are adapter detail.
+  - `test_policy.rs` holds the workflow's single test-only timing/limit value and is entirely behind `#[cfg(feature = "test-utils")]`. Do not add module-level override statics elsewhere.
 - Keep shell-level toggling, shortcuts, and window integration in `ui/window/search.rs`; keep panel-internal widget behavior here.
 - Keep GTK list/tree model construction in this folder; services should return plain Rust search events and replacement data.
 

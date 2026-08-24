@@ -1,39 +1,117 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Workspace-wide content search panel.
+//! Workspace-wide content search and Replace All preview: the workflow facade.
 //!
-//! Opened via Ctrl+Shift+F, this panel slides up from below the content stack
-//! and provides streaming file content search across all workspace folders. The
-//! widget remains the driving adapter, while runtime search, history, replace
-//! flows, and result rendering live in separate files for readability.
+//! Opened with Ctrl+Shift+F, this panel slides up from below the content stack
+//! and searches file contents across every workspace folder. This module is the
+//! workflow's narrative facade: it names the ordered stages and delegates each
+//! one. It owns no timers, generation counters, admission bookkeeping, or stage
+//! machinery. Apart from the trivial reads and writes of the visible query
+//! controls that make up the panel's entry-point surface, widget mutation
+//! belongs to the coordination and adapter roles.
+//!
+//! # Stage order: search
+//!
+//! 1. **Capture the query.** Ctrl+Shift+F, a search-entry edit, or an option
+//!    toggle snapshots query text plus every option into one `SearchQuerySpec`
+//!    (`evidence::current_query_spec`). Typed input is debounced in `imp`.
+//! 2. **Apply retirement backpressure.** If two detached result generations are
+//!    still being released, the latest query is retained instead of started
+//!    (`retirement::result_retirement_saturated`).
+//! 3. **Detach the previous generation.** Visible results, navigation caches,
+//!    and the accepted snapshot move out of live state into the bounded
+//!    disposer (`retirement::detach_visible_results`), and any superseded
+//!    Replace All preview is released with them
+//!    (`replace::release_superseded_preview`).
+//! 4. **Admit one flight.** The single-flight policy either starts this request
+//!    or keeps it as the one replaceable latest request
+//!    (`policy::WorkspaceSearchFlight`).
+//! 5. **Stream results.** `execution` spawns the walker thread and a paced GTK
+//!    turn appends match rows into the grouped tree model.
+//!
+//! Two inversions connect those stages:
+//!
+//! - Stage 5 returns as soon as the worker and its poll timer are armed.
+//!   Control resumes in the 50 ms poll callback in `execution`, once per tick.
+//!   The terminal tick finishes the flight and, if a latest query was retained,
+//!   re-enters stage 3 from there rather than returning to this facade.
+//! - The bounded retirement started in stage 3 resumes in a
+//!   `glib::idle_add_local` callback in `retirement`, once per GTK turn. Its
+//!   final turn is also where a query deferred by stage 2 restarts.
+//!
+//! # Stage order: Replace All
+//!
+//! 1. **Open one preview attempt.** The Replace All button, or
+//!    [`LushtextSearchPanel::activate_replace_preview`], opens a preview
+//!    generation and captures its identity once as a
+//!    `policy::ReplacePreviewTicket` (`replace::issue_preview_ticket`).
+//! 2. **Generate the preview.** `replace::enter_preview_mode` reserves disposal
+//!    capacity and hands the accepted match snapshot to a worker.
+//! 3. **Confirm the checked rows.**
+//!    [`LushtextSearchPanel::activate_confirm_replacements`] delegates to
+//!    `replace::begin_confirmed_replacement`, which claims the single apply
+//!    transaction, opens a fresh attempt, and hands the partition to
+//!    `replace::apply_checked_replacements`.
+//! 4. **Offer undo.** A successful apply publishes the journal-backed undo
+//!    affordance, and [`LushtextSearchPanel::activate_undo_replacements`] hands
+//!    the backup back to the window.
+//!
+//! Stages 2 and 3 are each inverted once: control resumes in a worker
+//! completion closure in `replace`, which revalidates that attempt's ticket
+//! against live `policy::ReplacePreviewFacts`. A stale completion publishes
+//! nothing and routes its payload to bounded retirement instead. The durable
+//! write, journal, and undo restore live in `services/content_search` and
+//! `ui/window/search.rs`.
+//!
+//! # Roles
+//!
+//! | Role | Module |
+//! | --- | --- |
+//! | facade | this module |
+//! | pure policy | `policy` |
+//! | coordination | `execution` (streaming search), `retirement` (bounded disposal), `replace` (preview and apply) |
+//! | evidence | `evidence` |
+//! | adapter detail | `imp`, `list_factory`, `item`, `results`, `history`, `accessibility` |
+//!
+//! See `docs/workflow-readability-matrix.md`, row `WFR-SEARCH-REPLACE`.
 
+mod accessibility;
+mod evidence;
+mod execution;
 mod history;
 // Private implementation module required by gtk-rs: imp.rs owns template
 // children, state, and trait impls; this file exposes the public widget API.
 mod imp;
 pub mod item;
 mod list_factory;
+// Public because the GTK-free policy benchmarks in `benches/benchmarks.rs`
+// address these pure types directly; nothing else outside this workflow does.
+pub mod policy;
 mod replace;
 mod results;
-mod runtime;
+mod retirement;
+#[cfg(feature = "test-utils")]
+mod test_policy;
 
+#[cfg(feature = "test-utils")]
+pub use accessibility::apply_search_result_row_accessibility_for_test;
+// Internal typed evidence surface: `evidence()` is callable in-crate by
+// `ui/automation.rs`, and only the external widget harness needs to name the
+// type. Re-exporting it unconditionally would widen this crate's default public
+// API for an internal readability goal.
+#[cfg(feature = "test-utils")]
+pub use evidence::SearchPanelEvidence;
 pub(crate) use replace::own_reserved_undo_backup;
 #[cfg(feature = "test-utils")]
-pub use replace::{
-    set_preview_selection_delay_for_test, set_replace_preview_budget_for_test,
-    set_replace_preview_delay_for_test, set_undo_backup_disk_delay_for_test,
-};
+pub use retirement::{SearchRetirementOwnership, SearchRetirementSliceObservation};
 #[cfg(feature = "test-utils")]
-pub use runtime::{
-    SearchRetirementOwnership, SearchRetirementSliceObservation, set_search_worker_delay_for_test,
-};
+pub use test_policy::SearchPanelTestPolicy;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::model::content_search::{Replacement, SearchQuerySpec};
+use crate::model::content_search::Replacement;
 use crate::services::content_search::ReplaceUndoBackup;
-use crate::ui::accessibility;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -74,7 +152,7 @@ pub enum SearchProgressUpdate {
 /// Grouped GTK state for one file section in the hierarchical results list.
 ///
 /// The search panel keeps the file-header item together with its child store so
-/// runtime result streaming and list-factory lookups share one named bundle.
+/// result streaming and list-factory lookups share one named bundle.
 #[derive(Clone)]
 pub struct SearchFileGroup {
     /// Root-level row representing one file in the results tree.
@@ -121,6 +199,10 @@ impl LushtextSearchPanel {
     }
 
     /// Called when the panel is being hidden.
+    ///
+    /// Closing cancels pending search intent and detaches the visible
+    /// generation. That generation is still released over later GTK turns by
+    /// `retirement`, so readiness stays pending until the disposer drains.
     pub fn close(&self) {
         self.cancel_active_search();
         self.clear_results(false, false);
@@ -145,9 +227,9 @@ impl LushtextSearchPanel {
 
     /// Activate the same Replace All preview step as the panel button.
     ///
-    /// The method stays main-thread-only because it reads GTK widget state and
-    /// then delegates expensive preview construction to the existing background
-    /// worker in `enter_preview_mode`.
+    /// Replace stages 1 and 2: read the visible replacement text on the main
+    /// thread, then delegate preview construction to the worker owned by
+    /// `replace::enter_preview_mode`.
     pub fn activate_replace_preview(&self) {
         let imp = self.imp();
         let text = imp.replace_entry.text().to_string();
@@ -156,38 +238,21 @@ impl LushtextSearchPanel {
 
     /// Confirm the checked replacement preview rows through the normal callback.
     ///
-    /// This preserves the panel's two-step preview/apply workflow: callers can
-    /// only apply rows that were generated and checked by the current preview.
+    /// Replace stage 3. The two-step preview/apply split is a safety contract:
+    /// only rows generated and checked by the current preview can be applied.
+    /// `replace::begin_confirmed_replacement` claims the single apply
+    /// transaction, opens one preview attempt so the worker completion can prove
+    /// it is still current, and hands the partition to
+    /// `replace::apply_checked_replacements`.
     pub fn activate_confirm_replacements(&self) {
-        let imp = self.imp();
-        if imp.preview.replace_transaction_pending.get() || !imp.preview.preview_mode.get() {
-            return;
-        }
-        let Some(outcome) = imp.preview.preview_outcome.take() else {
-            return;
-        };
-        if self.begin_replace_transaction().is_none() {
-            imp.preview.preview_outcome.replace(Some(outcome));
-            return;
-        }
-        let checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
-        let expected_query_spec = self.current_query_spec();
-        let generation = self.advance_preview_generation();
-        imp.preview.preview_mode.set(false);
-        imp.preview.preview_pending.set(true);
-        imp.replace_all_button.set_label("Preparing Selection…");
-        imp.replace_all_button.set_sensitive(false);
-        self.restore_search_summary();
-        self.refresh_results_display();
-        self.refresh_accessibility_state();
-        self.spawn_preview_selection(generation, expected_query_spec, outcome, checked);
+        self.begin_confirmed_replacement();
     }
 
     /// Trigger the visible Undo Replacements affordance through the normal callback.
     ///
-    /// The durable undo journal and generation guards remain owned by the
-    /// existing Replace All workflow; this method only mirrors the button
-    /// activation path for action-driven smoke tests.
+    /// Replace stage 4. The durable undo journal and its generation guards stay
+    /// in `replace` and `services/content_search`; this only hands the current
+    /// backup to the window callback.
     pub fn activate_undo_replacements(&self) {
         let imp = self.imp();
         if imp.preview.replace_transaction_pending.get() {
@@ -199,204 +264,6 @@ impl LushtextSearchPanel {
                 callback(backup);
             }
         }
-    }
-
-    /// Get the current query text.
-    #[must_use]
-    pub fn query(&self) -> String {
-        self.imp().search_entry.text().to_string()
-    }
-
-    /// Return whether worker cancellation/search or result retirement is pending.
-    #[must_use]
-    pub fn is_searching(&self) -> bool {
-        self.imp().runtime.searching.get() || self.result_retirement_pending()
-    }
-
-    /// Return total matches accumulated for the current workspace search.
-    #[must_use]
-    pub fn total_matches(&self) -> u32 {
-        self.imp().runtime.total_matches.get()
-    }
-
-    /// Return the number of files with matches for the current workspace search.
-    #[must_use]
-    pub fn total_files(&self) -> u32 {
-        self.imp().runtime.total_files.get()
-    }
-
-    /// Return whether the current workspace search hit its result cap.
-    #[must_use]
-    pub fn result_capped(&self) -> bool {
-        self.imp().runtime.result_capped.get()
-    }
-
-    /// Return whether the case-sensitive option is active.
-    #[must_use]
-    pub fn case_sensitive(&self) -> bool {
-        self.imp().case_toggle.is_active()
-    }
-
-    /// Return whether regular-expression search is active.
-    #[must_use]
-    pub fn regex_enabled(&self) -> bool {
-        self.imp().regex_toggle.is_active()
-    }
-
-    /// Return whether whole-word matching is active.
-    #[must_use]
-    pub fn whole_word_enabled(&self) -> bool {
-        self.imp().word_toggle.is_active()
-    }
-
-    /// Return whether .gitignore filtering is active.
-    #[must_use]
-    pub fn gitignore_enabled(&self) -> bool {
-        self.imp().gitignore_toggle.is_active()
-    }
-
-    /// Return the current glob filter text, if any.
-    #[must_use]
-    pub fn glob_filter(&self) -> Option<String> {
-        let text = self.imp().glob_entry.text();
-        (!text.is_empty()).then(|| text.to_string())
-    }
-
-    /// Return the current replacement text without applying it.
-    #[must_use]
-    pub fn replace_query(&self) -> String {
-        self.imp().replace_entry.text().to_string()
-    }
-
-    /// Return whether the result list is showing Replace All preview rows.
-    #[must_use]
-    pub fn replace_preview_mode(&self) -> bool {
-        self.imp().preview.preview_mode.get()
-    }
-
-    /// Return whether replacement preview generation, selection, or retirement is pending.
-    #[must_use]
-    pub fn replace_preview_pending(&self) -> bool {
-        let preview = &self.imp().preview;
-        preview.preview_pending.get()
-            || preview.replace_transaction_pending.get()
-            || preview.preview_worker_running.get()
-            || preview.queued_preview_request.borrow().is_some()
-            || preview
-                .preview_retirement_pending
-                .load(std::sync::atomic::Ordering::Acquire)
-                > 0
-    }
-
-    /// Return the number of replacement preview rows currently held in memory.
-    #[must_use]
-    pub fn replace_preview_count(&self) -> u32 {
-        let imp = self.imp();
-        u32::try_from(
-            imp.preview
-                .preview_outcome
-                .borrow()
-                .as_ref()
-                .map_or(0, |outcome| outcome.replacements.len()),
-        )
-        .unwrap_or(u32::MAX)
-    }
-
-    /// Return the number of replacement preview rows selected for apply.
-    #[must_use]
-    pub fn checked_replacement_count(&self) -> u32 {
-        u32::try_from(self.imp().preview.checked_match_ids.borrow().len()).unwrap_or(u32::MAX)
-    }
-
-    /// Return eligible matches omitted by the current preview resource budget.
-    #[must_use]
-    pub fn omitted_replacement_count(&self) -> u32 {
-        u32::try_from(
-            self.imp()
-                .preview
-                .preview_outcome
-                .borrow()
-                .as_ref()
-                .map_or(0, |outcome| outcome.omitted_eligible),
-        )
-        .unwrap_or(u32::MAX)
-    }
-
-    /// Return source-truncated or invalid matches skipped by the current preview.
-    #[must_use]
-    pub fn skipped_replacement_count(&self) -> u32 {
-        u32::try_from(
-            self.imp()
-                .preview
-                .preview_outcome
-                .borrow()
-                .as_ref()
-                .map_or(0, |outcome| outcome.skipped_source_count()),
-        )
-        .unwrap_or(u32::MAX)
-    }
-
-    /// Return whether a Replace All undo backup is currently available.
-    #[must_use]
-    pub fn has_undo_backup(&self) -> bool {
-        self.imp().preview.undo_backup.borrow().is_some()
-    }
-
-    /// Return the number of recent search-history entries loaded into the panel.
-    #[must_use]
-    pub fn history_count(&self) -> u32 {
-        u32::try_from(self.imp().history.history_entries.borrow().len()).unwrap_or(u32::MAX)
-    }
-
-    /// Return the number of named saved searches loaded into the panel.
-    #[must_use]
-    pub fn saved_search_count(&self) -> u32 {
-        u32::try_from(self.imp().history.saved_searches.borrow().len()).unwrap_or(u32::MAX)
-    }
-
-    /// Return the number of flat match targets available for keyboard navigation.
-    #[must_use]
-    pub fn navigation_match_count(&self) -> u32 {
-        u32::try_from(self.imp().navigation.match_positions.borrow().len()).unwrap_or(u32::MAX)
-    }
-
-    /// Return the number of file groups currently represented in search results.
-    #[must_use]
-    pub fn result_file_count(&self) -> u32 {
-        self.imp().runtime.total_files.get()
-    }
-
-    /// Return the current flat navigation index, if a match has been selected.
-    #[must_use]
-    pub fn current_navigation_match_index(&self) -> Option<u32> {
-        self.imp()
-            .navigation
-            .current_match_index
-            .get()
-            .and_then(|index| u32::try_from(index).ok())
-    }
-
-    /// Snapshot the current query text plus all search toggles into one value object.
-    #[must_use]
-    pub(super) fn current_query_spec(&self) -> SearchQuerySpec {
-        let imp = self.imp();
-        SearchQuerySpec::new(
-            imp.search_entry.text().to_string(),
-            crate::model::content_search::ContentSearchOptions {
-                case_sensitive: imp.case_toggle.is_active(),
-                regex: imp.regex_toggle.is_active(),
-                whole_word: imp.word_toggle.is_active(),
-                gitignore: imp.gitignore_toggle.is_active(),
-                glob: {
-                    let text = imp.glob_entry.text();
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(text.to_string())
-                    }
-                },
-            },
-        )
     }
 
     /// Update the workspace folders to search. Called when workspaces change.
@@ -487,92 +354,4 @@ impl LushtextSearchPanel {
             .message_callback
             .replace(Some(Box::new(f)));
     }
-
-    /// Project the panel's live workflow state into GTK accessible metadata.
-    ///
-    /// Search and replace update several widgets from split modules. Keeping the
-    /// accessibility state projection here prevents each caller from carrying a
-    /// parallel set of rules for busy, invalid, hidden, and value text states.
-    pub(crate) fn refresh_accessibility_state(&self) {
-        let imp = self.imp();
-        let searching = imp.runtime.searching.get();
-        let preview_pending = imp.preview.preview_pending.get();
-        let replace_transaction_pending = imp.preview.replace_transaction_pending.get();
-        let count_text = imp.count_label.text();
-        let count_value = if count_text.is_empty() {
-            "No workspace search results".to_string()
-        } else {
-            count_text.to_string()
-        };
-
-        accessibility::set_busy(&*imp.search_entry, searching);
-        accessibility::set_busy(
-            &*imp.results_list,
-            searching || preview_pending || replace_transaction_pending,
-        );
-        accessibility::set_busy(
-            &*imp.replace_all_button,
-            preview_pending || replace_transaction_pending,
-        );
-        accessibility::set_invalid(&*imp.search_entry, imp.error_label.is_visible());
-        accessibility::set_hidden(
-            &*imp.results_list,
-            !imp.results_body_revealer.reveals_child(),
-        );
-        accessibility::set_value_text(&*imp.count_label, &count_value);
-
-        for toggle in [
-            &*imp.case_toggle,
-            &*imp.regex_toggle,
-            &*imp.word_toggle,
-            &*imp.more_toggle,
-            &*imp.gitignore_toggle,
-        ] {
-            accessibility::set_pressed(toggle, toggle.is_active());
-        }
-        accessibility::set_expanded(&*imp.more_toggle, Some(imp.more_toggle.is_active()));
-
-        accessibility::set_disabled(
-            &*imp.replace_all_button,
-            !imp.replace_all_button.is_sensitive(),
-        );
-        accessibility::set_disabled(
-            &*imp.undo_button,
-            !imp.undo_button.is_sensitive() || !self.has_undo_backup(),
-        );
-        accessibility::set_hidden(&*imp.undo_button, !imp.undo_button.is_visible());
-        accessibility::set_hidden(&*imp.save_button, !imp.save_button.is_visible());
-
-        let replace_label = imp
-            .replace_all_button
-            .label()
-            .unwrap_or_else(|| "Replace All".into());
-        accessibility::set_value_text(&*imp.replace_all_button, replace_label.as_str());
-
-        if !searching && !preview_pending && !count_text.is_empty() {
-            imp.results_announcement_throttler.announce_if_allowed(
-                &*imp.count_label,
-                accessibility::AnnouncementLane::DebouncedResults,
-                "workspace-search-results",
-                count_text.as_str(),
-            );
-        }
-    }
-
-    /// Test seam for forcing the same accessibility projection used by runtime
-    /// and replace workflows after a widget test mutates private state.
-    #[cfg(feature = "test-utils")]
-    pub fn refresh_accessibility_state_for_test(&self) {
-        self.refresh_accessibility_state();
-    }
-}
-
-/// Test seam for asserting the search-result row metadata used by the list factory.
-#[cfg(feature = "test-utils")]
-pub fn apply_search_result_row_accessibility_for_test(
-    row_widget: &gtk4::TreeExpander,
-    result_item: &SearchResultItem,
-    expanded: Option<bool>,
-) {
-    list_factory::apply_result_row_accessibility(row_widget, result_item, expanded);
 }

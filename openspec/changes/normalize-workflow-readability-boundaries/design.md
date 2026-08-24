@@ -132,6 +132,18 @@ The existing `#[expect(clippy::too_many_arguments)]` at `load_save.rs:1373` is
 treated as a marker of an unreified seam, not as an accepted exception. The
 sweep change asserts zero such expectations remain in workflow code.
 
+**Note added after the exemplar shipped.** The paragraph above names "the search
+flight identity" as the exemplar's value object; the shipped seam is
+`ReplacePreviewTicket` + `ReplacePreviewFacts` instead, and that is spec-legal
+rather than a deviation to be corrected later. The search side already had its
+value object: `WorkspaceSearchFlight` is a `SingleFlightCoordinator` that owns
+the search generation and exposes its own currency predicate, which the
+`workflow-readability-boundaries` capability explicitly accepts as the seam
+value object with no additional type required. The unreified bundle the census
+actually found in this workflow was the preview-freshness pair, exploded across
+the two preview completions. A later session should not "fix" this by adding a
+redundant search-flight identity type on top of the coordinator.
+
 ### D4: Evidence surfaces are internal types; automation snapshots project from them
 
 The exploration left open whether test evidence should converge with the

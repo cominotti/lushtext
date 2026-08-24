@@ -20,10 +20,8 @@ use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_core::ui::plain_disposal::hold_disposal_capacity_for_test;
 use lushtext_core::ui::search_panel::item::SearchResultItem;
 use lushtext_core::ui::search_panel::{
-    LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchProgressUpdate,
-    apply_search_result_row_accessibility_for_test, set_preview_selection_delay_for_test,
-    set_replace_preview_budget_for_test, set_replace_preview_delay_for_test,
-    set_search_worker_delay_for_test, set_undo_backup_disk_delay_for_test,
+    LushtextSearchPanel, SearchFileGroup, SearchMatchLocation, SearchPanelTestPolicy,
+    SearchProgressUpdate, apply_search_result_row_accessibility_for_test,
 };
 use lushtext_core::ui::status_bar::LushtextStatusBar;
 use lushtext_core::ui::window::LushtextWindow;
@@ -316,11 +314,7 @@ struct SearchPanelDelayReset;
 
 impl Drop for SearchPanelDelayReset {
     fn drop(&mut self) {
-        set_undo_backup_disk_delay_for_test(0);
-        set_replace_preview_delay_for_test(0);
-        set_preview_selection_delay_for_test(0);
-        set_replace_preview_budget_for_test(0, 0);
-        set_search_worker_delay_for_test(0);
+        SearchPanelTestPolicy::reset();
     }
 }
 
@@ -638,7 +632,9 @@ fn test_start_search_uses_passed_query_spec_instead_of_live_widget_state() {
 fn test_rapid_workspace_queries_keep_one_worker_and_publish_latest_generation() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
-    set_search_worker_delay_for_test(300);
+    SearchPanelTestPolicy::current()
+        .with_search_worker_delay(Duration::from_millis(300))
+        .install();
     let dir = tempfile::tempdir().expect("single-flight search tempdir");
     fixture::write_text(
         &dir.path().join("matches.txt"),
@@ -657,14 +653,28 @@ fn test_rapid_workspace_queries_keep_one_worker_and_publish_latest_generation() 
     let _ = panel.imp().runtime.search_debounce.invalidate();
     panel.start_search(&search_spec("latest"));
 
-    let (active, high_water, pending, _) = panel.search_runtime_counters_for_test();
-    assert_eq!((active, high_water, pending), (1, 1, 1));
+    let evidence = panel.evidence();
+    assert_eq!(
+        (
+            evidence.active_worker_groups,
+            evidence.active_worker_groups_high_water,
+            evidence.pending_search_requests
+        ),
+        (1, 1, 1)
+    );
     wait_until(Duration::from_secs(10), || {
         !panel.is_searching() && panel.total_matches() == 1
     });
 
-    let (active, high_water, pending, _) = panel.search_runtime_counters_for_test();
-    assert_eq!((active, high_water, pending), (0, 1, 0));
+    let evidence = panel.evidence();
+    assert_eq!(
+        (
+            evidence.active_worker_groups,
+            evidence.active_worker_groups_high_water,
+            evidence.pending_search_requests
+        ),
+        (0, 1, 0)
+    );
     let accepted = panel
         .imp()
         .runtime
@@ -749,10 +759,10 @@ fn test_search_retirement_categories_release_actual_ownership_over_bounded_turns
         populate_retirement_category(&panel, category, ITEM_COUNT);
         panel.close();
         wait_until(Duration::from_secs(10), || {
-            panel.retirement_backlog_counters_for_test().0 == 0
+            panel.evidence().retirement_backlog == 0
         });
 
-        let observations = panel.retirement_observations_for_test();
+        let observations = panel.evidence().retirement_observations;
         assert!(
             observations.len() > 1,
             "{category:?} must span multiple bounded turns"
@@ -786,7 +796,9 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
     panel.set_query("needle");
     let _ = panel.imp().runtime.search_debounce.invalidate();
     populate_large_result_generation(&panel, "/large-results.txt", 10_000);
-    set_replace_preview_delay_for_test(300);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_delay(Duration::from_millis(300))
+        .install();
     panel.enter_preview_mode("replacement");
     assert!(panel.imp().preview.preview_pending.get());
 
@@ -804,9 +816,10 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
         !panel.is_searching() && !panel.imp().preview.preview_worker_running.get()
     });
 
-    let (_, _, _, retirement_high_water) = panel.search_runtime_counters_for_test();
+    let evidence = panel.evidence();
+    let retirement_high_water = evidence.retirement_rows_per_slice_high_water;
     assert!(retirement_high_water <= 250);
-    let observations = panel.retirement_observations_for_test();
+    let observations = evidence.retirement_observations;
     assert!(observations.len() > 1);
     assert!(observations.iter().all(|observation| {
         let actual_release = observation.released.total();
@@ -817,10 +830,11 @@ fn test_large_result_retirement_is_sliced_and_cannot_clear_new_generation() {
             .last()
             .is_some_and(|observation| observation.terminal_drain && !observation.pending)
     );
-    let (_, generation_high_water, generation_limit, deferred) =
-        panel.retirement_backlog_counters_for_test();
+    let evidence = panel.evidence();
+    let generation_high_water = evidence.retirement_generations_high_water;
+    let generation_limit = evidence.retirement_backlog_limit;
     assert!(generation_high_water <= generation_limit);
-    assert_eq!(deferred, 0);
+    assert!(!evidence.deferred_search_pending);
     eprintln!(
         "search-live-retirement-evidence results=10000 rows_per_slice_high_water={retirement_high_water} generation_high_water={generation_high_water} generation_limit={generation_limit}"
     );
@@ -852,17 +866,17 @@ fn test_retirement_backpressure_retains_only_latest_query_and_bounds_generations
 
     panel.start_search(&search_spec("older deferred"));
     panel.start_search(&search_spec("latest"));
-    let (backlog, _, limit, deferred) = panel.retirement_backlog_counters_for_test();
-    assert_eq!(backlog, 2);
-    assert_eq!(limit, 3);
-    assert_eq!(deferred, 1);
+    let evidence = panel.evidence();
+    assert_eq!(evidence.retirement_backlog, 2);
+    assert_eq!(evidence.retirement_backlog_limit, 3);
+    assert!(evidence.deferred_search_pending);
 
     wait_until(Duration::from_secs(10), || {
         !panel.is_searching() && panel.total_matches() == 1
     });
-    let (_, high_water, limit, deferred) = panel.retirement_backlog_counters_for_test();
-    assert!(high_water <= limit);
-    assert_eq!(deferred, 0);
+    let evidence = panel.evidence();
+    assert!(evidence.retirement_generations_high_water <= evidence.retirement_backlog_limit);
+    assert!(!evidence.deferred_search_pending);
     let accepted = panel
         .imp()
         .runtime
@@ -1382,7 +1396,7 @@ fn test_exit_preview_mode_clears_state() {
     assert!(panel.imp().preview.preview_outcome.borrow().is_none());
     assert!(panel.imp().preview.checked_match_ids.borrow().is_empty());
     wait_until(Duration::from_secs(10), || !panel.replace_preview_pending());
-    assert_eq!(panel.preview_retirement_pending_for_test(), 0);
+    assert_eq!(panel.evidence().preview_retirement_pending, 0);
 }
 
 #[test]
@@ -1391,7 +1405,9 @@ fn test_enter_preview_mode_shows_pending_until_worker_finishes() {
     let _reset = SearchPanelDelayReset;
     let panel = panel_with_one_search_match();
 
-    set_replace_preview_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_delay(Duration::from_millis(250))
+        .install();
     panel.enter_preview_mode("goodbye");
 
     assert!(panel.imp().preview.preview_pending.get());
@@ -1417,7 +1433,9 @@ fn test_stale_replace_preview_result_is_rejected_after_replacement_change() {
     let _reset = SearchPanelDelayReset;
     let panel = panel_with_one_search_match();
 
-    set_replace_preview_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_delay(Duration::from_millis(250))
+        .install();
     panel.enter_preview_mode("goodbye");
     assert!(panel.imp().preview.preview_pending.get());
 
@@ -1472,7 +1490,9 @@ fn test_superseding_preview_requests_coalesce_to_latest_result() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
     let panel = panel_with_one_search_match();
-    set_replace_preview_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_delay(Duration::from_millis(250))
+        .install();
 
     panel.enter_preview_mode("first");
     panel.enter_preview_mode("second");
@@ -1495,9 +1515,10 @@ fn test_superseding_preview_requests_coalesce_to_latest_result() {
         .expect("latest preview row");
     assert_eq!(replacement.replacement.as_ref(), "latest");
     assert!(!panel.imp().preview.preview_worker_running.get());
-    assert!(panel.preview_worker_counters_for_test().0 >= 1);
-    assert_eq!(panel.preview_retirement_pending_for_test(), 0);
-    assert!(!panel.replace_preview_pending());
+    let evidence = panel.evidence();
+    assert!(evidence.preview_retirement_jobs >= 1);
+    assert_eq!(evidence.preview_retirement_pending, 0);
+    assert!(!evidence.replace_preview_pending);
 }
 
 #[test]
@@ -1505,7 +1526,9 @@ fn test_new_search_cancels_active_preview_before_latest_request_runs() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
     let panel = panel_with_one_search_match();
-    set_replace_preview_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_delay(Duration::from_millis(250))
+        .install();
 
     panel.enter_preview_mode("stale");
     panel.start_search(&search_spec(""));
@@ -1579,7 +1602,9 @@ fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows
         .replace(Some(Arc::new(matches)));
     panel.imp().runtime.total_matches.set(3);
     panel.imp().runtime.total_files.set(3);
-    set_replace_preview_budget_for_test(2, u64::MAX);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_budget(2, u64::MAX)
+        .install();
 
     let confirmed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Replacement>::new()));
     let captured = confirmed.clone();
@@ -1617,7 +1642,7 @@ fn test_bounded_preview_reports_omitted_and_confirms_only_generated_checked_rows
     let confirmed = confirmed.borrow();
     assert_eq!(confirmed.len(), 1);
     assert_eq!(confirmed[0].match_id, SearchMatchId::from_index(0));
-    assert_eq!(panel.preview_worker_counters_for_test().1, 1);
+    assert_eq!(panel.evidence().preview_selection_jobs, 1);
 }
 
 #[test]
@@ -1698,12 +1723,11 @@ fn test_all_unchecked_preview_rows_retire_without_apply() {
             && !panel.imp().preview.preview_worker_running.get()
     });
     assert!(confirmed.borrow().is_empty());
-    let (retirement_jobs, selection_jobs, running, queued) =
-        panel.preview_worker_counters_for_test();
-    assert_eq!(selection_jobs, 1);
-    assert_eq!(retirement_jobs, 0);
-    assert!(!running);
-    assert_eq!(queued, 0);
+    let evidence = panel.evidence();
+    assert_eq!(evidence.preview_selection_jobs, 1);
+    assert_eq!(evidence.preview_retirement_jobs, 0);
+    assert!(!evidence.preview_worker_running);
+    assert_eq!(evidence.queued_preview_requests, 0);
 }
 
 #[test]
@@ -1725,7 +1749,9 @@ fn test_confirmation_selection_rejects_stale_generation_off_main() {
     });
     panel.enter_preview_mode("goodbye");
     wait_until(Duration::from_secs(10), || panel.is_preview_mode());
-    set_preview_selection_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_preview_selection_delay(Duration::from_millis(250))
+        .install();
 
     panel.activate_confirm_replacements();
     assert!(panel.imp().preview.preview_pending.get());
@@ -1742,12 +1768,11 @@ fn test_confirmation_selection_rejects_stale_generation_off_main() {
     assert!(confirmed.borrow().is_empty());
     assert!(!panel.is_preview_mode());
     assert!(!panel.imp().preview.preview_pending.get());
-    let (retirement_jobs, selection_jobs, running, queued) =
-        panel.preview_worker_counters_for_test();
-    assert_eq!(selection_jobs, 1);
-    assert!(retirement_jobs >= 1);
-    assert!(!running);
-    assert_eq!(queued, 0);
+    let evidence = panel.evidence();
+    assert_eq!(evidence.preview_selection_jobs, 1);
+    assert!(evidence.preview_retirement_jobs >= 1);
+    assert!(!evidence.preview_worker_running);
+    assert_eq!(evidence.queued_preview_requests, 0);
     assert!(panel.imp().undo_button.is_sensitive());
     panel.activate_undo_replacements();
     assert_eq!(*undo_calls.borrow(), 1);
@@ -1775,7 +1800,7 @@ fn test_entering_new_preview_retires_visible_outcome_before_latest_generation() 
             .as_ref(),
         "latest"
     );
-    assert!(panel.preview_worker_counters_for_test().0 >= 1);
+    assert!(panel.evidence().preview_retirement_jobs >= 1);
 }
 
 #[test]
@@ -1828,7 +1853,9 @@ fn test_byte_limited_preview_reports_omitted_when_no_row_fits() {
     ensure_gtk_init();
     let _reset = SearchPanelDelayReset;
     let panel = panel_with_one_search_match();
-    set_replace_preview_budget_for_test(u64::MAX, 1);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_budget(u64::MAX, 1)
+        .install();
 
     panel.enter_preview_mode(&"replacement".repeat(1024));
 
@@ -1865,7 +1892,9 @@ fn test_large_and_empty_replacement_previews_remain_accessible() {
     panel.enter_preview_mode("");
     wait_until(Duration::from_secs(10), || panel.is_preview_mode());
     assert_eq!(panel.replace_preview_count(), 1);
-    assert_eq!(panel.result_snapshot_sharing_counters_for_test(), (2, 0));
+    let sharing_evidence = panel.evidence();
+    assert_eq!(sharing_evidence.shared_snapshot_handoffs, 2);
+    assert_eq!(sharing_evidence.whole_result_clones, 0);
     assert_eq!(
         panel
             .imp()
@@ -1930,7 +1959,7 @@ fn test_search_panel_restores_active_persisted_undo_backup_on_construction() {
     wait_until(Duration::from_secs(2), || {
         panel.has_undo_backup() && panel.imp().undo_button.property::<bool>("visible")
     });
-    assert!(panel.undo_backup_matches_for_test(&backup));
+    assert!(panel.evidence().undo_backup_matches(&backup));
     assert_eq!(
         search_backup::load(&data_dir).expect("expected operation to succeed"),
         backup
@@ -1950,17 +1979,17 @@ fn test_clearing_persisted_undo_cancels_capacity_retry_before_it_can_reload() {
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     wait_until(Duration::from_secs(2), || {
-        panel.undo_capacity_retry_pending_for_test()
+        panel.evidence().undo_capacity_retry_pending
     });
     assert!(!panel.has_undo_backup());
 
     panel.clear_undo_backup_for_test();
-    assert!(!panel.undo_capacity_retry_pending_for_test());
+    assert!(!panel.evidence().undo_capacity_retry_pending);
     drop(capacity_hold);
     flush_after_delay(Duration::from_millis(350));
 
     assert!(!panel.has_undo_backup());
-    assert!(!panel.undo_capacity_retry_pending_for_test());
+    assert!(!panel.evidence().undo_capacity_retry_pending);
     wait_until(Duration::from_secs(2), || {
         search_backup::load(&data_dir)
             .expect("load cleared persisted undo")
@@ -1979,15 +2008,15 @@ fn test_persisted_undo_load_resumes_after_disposal_capacity_clears() {
 
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     wait_until(Duration::from_secs(2), || {
-        panel.undo_capacity_retry_pending_for_test()
+        panel.evidence().undo_capacity_retry_pending
     });
     assert!(!panel.has_undo_backup());
 
     drop(capacity_hold);
     wait_until(Duration::from_secs(5), || {
-        panel.has_undo_backup() && panel.undo_backup_matches_for_test(&backup)
+        panel.has_undo_backup() && panel.evidence().undo_backup_matches(&backup)
     });
-    assert!(!panel.undo_capacity_retry_pending_for_test());
+    assert!(!panel.evidence().undo_capacity_retry_pending);
 
     let _ = search_backup::delete(&data_dir);
 }
@@ -2008,7 +2037,7 @@ fn test_search_panel_close_preserves_durable_undo_backup() {
 
     panel.close();
 
-    assert!(panel.undo_backup_matches_for_test(&backup));
+    assert!(panel.evidence().undo_backup_matches(&backup));
     assert!(panel.imp().undo_button.property::<bool>("visible"));
     assert_eq!(
         search_backup::load(&data_dir).expect("expected operation to succeed"),
@@ -2046,7 +2075,9 @@ fn test_set_undo_backup_updates_ui_before_delayed_disk_save() {
     let _ = search_backup::delete(&data_dir);
     let backup = sample_replace_backup("/delayed-save.rs");
 
-    set_undo_backup_disk_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_undo_backup_disk_delay(Duration::from_millis(250))
+        .install();
     panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
 
@@ -2080,7 +2111,9 @@ fn test_clear_undo_backup_updates_ui_before_delayed_disk_delete() {
         search_backup::load(&data_dir).expect("expected operation to succeed") == backup
     });
 
-    set_undo_backup_disk_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_undo_backup_disk_delay(Duration::from_millis(250))
+        .install();
     panel.clear_undo_backup_for_test();
 
     assert!(panel.imp().preview.undo_backup.borrow().is_none());
@@ -2106,7 +2139,9 @@ fn test_clear_after_delayed_undo_backup_save_keeps_disk_empty() {
     let _ = search_backup::delete(&data_dir);
     let backup = sample_replace_backup("/clear-after-save.rs");
 
-    set_undo_backup_disk_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_undo_backup_disk_delay(Duration::from_millis(250))
+        .install();
     panel.set_undo_backup(backup);
     panel.clear_undo_backup_for_test();
 
@@ -2133,7 +2168,9 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
         search_backup::load(&data_dir).expect("expected operation to succeed") == old_backup
     });
 
-    set_undo_backup_disk_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_undo_backup_disk_delay(Duration::from_millis(250))
+        .install();
     panel.clear_undo_backup_for_test();
     panel.set_undo_backup(new_backup.clone());
 
@@ -2157,7 +2194,9 @@ fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
         search_backup::load(&data_dir).expect("load old journal") == old_backup
     });
 
-    set_undo_backup_disk_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_undo_backup_disk_delay(Duration::from_millis(250))
+        .install();
     panel.clear_undo_backup_for_test();
     let reserved = panel.reserve_undo_backup_generation_for_test();
     search_backup::save(&data_dir, &new_backup).expect("simulate committed Replace All journal");
@@ -2168,7 +2207,7 @@ fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
         search_backup::load(&data_dir).expect("load current journal"),
         new_backup
     );
-    assert!(panel.undo_backup_matches_for_test(&new_backup));
+    assert!(panel.evidence().undo_backup_matches(&new_backup));
 }
 
 #[test]

@@ -565,6 +565,15 @@ bookmark IDs, local-history snapshot IDs, and sidecar identity keys remain
 private. Free-form text fields are capped to 4 KiB of UTF-8 and
 receive a ` [truncated]` suffix when shortened.
 
+Where a workflow exposes an internal typed evidence surface, its snapshot
+fields project from that surface instead of re-deriving the same state from
+widgets. `window.content_search` is the first such projection: every field
+except `content_search.visible` comes from the search panel's evidence surface,
+and `content_search.visible` remains window shell state. Evidence fields that
+are not listed below — internal high-water counters, worker-lane job counts, and
+retirement backlog detail — are not part of this contract and are not
+serialized. Projection does not change any field name, type, or meaning.
+
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |
 | <span id="snapshot-field-interface-version"></span>`snapshot-field-interface-version` | `interface_version` | `u32` | Version of the automation interface that produced the snapshot. |

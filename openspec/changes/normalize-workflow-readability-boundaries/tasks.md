@@ -88,7 +88,7 @@
       evidence-surface usage, including the deferred status of actuation seams.
 - [x] 4.8 Update the `rust-comments` skill with the narrative-facade documentation
       expectation, including how to narrate inverted control flow.
-- [ ] 4.9 Update the `gtk-perf-review` and `data-safety` skills for any policy paths
+- [x] 4.9 Update the `gtk-perf-review` and `data-safety` skills for any policy paths
       that the exemplar relocates, and audit every maintained skill and rule for
       references to relocated paths.
 - [x] 4.10 Update `AGENTS.md` module layout and key design decisions, and `README.md`
@@ -98,36 +98,36 @@
 
 ## 5. Exemplar: migrate the search panel
 
-- [ ] 5.1 Read `ui/search_panel/**` (`imp.rs` 841 lines, `replace.rs` 1,024 lines,
+- [x] 5.1 Read `ui/search_panel/**` (`imp.rs` 841 lines, `replace.rs` 1,024 lines,
       `runtime.rs`, `item.rs`) plus `model/search_flight.rs` and
       `model/search_retirement.rs`, and write down the current ordered stages before
       changing anything.
-- [ ] 5.2 Relocate `model/search_flight.rs` and `model/search_retirement.rs` into the
+- [x] 5.2 Relocate `model/search_flight.rs` and `model/search_retirement.rs` into the
       search-panel workflow as pure policy, preserving purity and behavior.
-- [ ] 5.3 Prove mutation parity for the relocated policy against the section 3.2
+- [x] 5.3 Prove mutation parity for the relocated policy against the section 3.2
       baseline via `make mutants-diff`, and record the before/after generated and
       killed counts.
-- [ ] 5.4 Introduce the search-panel seam value object identified in task 1.5,
+- [x] 5.4 Introduce the search-panel seam value object identified in task 1.5,
       constructed once at the workflow entry point and validated as a unit. Remove
       the now-redundant loose parameters from the seams it covers.
-- [ ] 5.5 Rename cross-module search-panel operations from mechanism names to
+- [x] 5.5 Rename cross-module search-panel operations from mechanism names to
       workflow-intent names. Leave mechanism names on private helpers inside the
       coordination module.
-- [ ] 5.6 Add the search-panel evidence surface exposing every field the panel's
+- [x] 5.6 Add the search-panel evidence surface exposing every field the panel's
       inspection seams exposed, and migrate the panel's widget tests to read it.
-- [ ] 5.7 Remove the retired per-field `*_for_test` inspection functions for the
+- [x] 5.7 Remove the retired per-field `*_for_test` inspection functions for the
       search panel and confirm no callers remain. The project test count must not
       decrease.
-- [ ] 5.8 Collapse the search panel's test-only timing and limit overrides into one
+- [x] 5.8 Collapse the search panel's test-only timing and limit overrides into one
       per-workflow test policy value, and confirm no override storage compiles
       without the test feature.
-- [ ] 5.9 Project the search-related automation snapshot fields from the new evidence
+- [x] 5.9 Project the search-related automation snapshot fields from the new evidence
       surface, keeping the exported D-Bus fields, names, and semantics unchanged.
-- [ ] 5.10 Write the narrative facade for the search panel and measure its resulting
+- [x] 5.10 Write the narrative facade for the search panel and measure its resulting
       size as the input to task 2.3.
-- [ ] 5.11 Update `docs/automation-reference.md` and `docs/automation.md` for the
+- [x] 5.11 Update `docs/automation-reference.md` and `docs/automation.md` for the
       evidence projection, then run `make check-automation-docs`.
-- [ ] 5.12 Mark the search-panel row migrated in the matrix with its evidence
+- [x] 5.12 Mark the search-panel row migrated in the matrix with its evidence
       pointers.
 
 ## 6. Verification

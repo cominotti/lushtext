@@ -3889,7 +3889,14 @@ fn test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live() {
         let section = LushtextWorkspaceSection::new(WorkspaceId::new(format!(
             "aggregate-scan-{index}"
         )));
-        section.set_child_scan_delay_for_test(Duration::from_millis(250));
+        // The saturated-admission state below is transient: it exists only while
+        // the first four scans are still inside their injected delay. With a
+        // 250ms delay the whole window was under a second, so a loaded machine
+        // could finish every scan between two polls of the wait predicate and
+        // then never satisfy it again — observed as a suite-level FLAKY retry.
+        // One second per scan keeps the window comfortably wider than the poll
+        // interval while leaving the test bounded.
+        section.set_child_scan_delay_for_test(Duration::from_secs(1));
         section.load_workspace_folders(&[WorkspaceFolder::with_id(
             WorkspaceFolderId::new(format!("aggregate-folder-{index}")),
             folder.path().to_path_buf(),
@@ -3899,7 +3906,7 @@ fn test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live() {
         folders.push(folder);
     }
 
-    wait_until(Duration::from_secs(5), || {
+    wait_until(Duration::from_secs(10), || {
         let evidence = sections[0].child_scan_pressure_for_test();
         let waiting = sections
             .iter()

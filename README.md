@@ -441,6 +441,13 @@ role so its whole story stays in one place:
   tests read it, and the read-only D-Bus automation snapshots project from it
   without changing the exported contract.
 
+`crates/lushtext-core/src/ui/search_panel/` is the first workflow arranged this
+way and is the reference example: `mod.rs` narrates the search and Replace All
+stages, `policy.rs` holds the pure single-flight, retirement-budget, and
+preview-freshness policy, `execution.rs`/`retirement.rs`/`replace.rs` are its
+coordination jobs, and `evidence.rs` is the surface its widget tests and the
+`window.content_search` automation snapshot both read.
+
 Migration to this shape is a staged programme. Per-workflow status, owned pure
 policy, seam value objects, risk tiers, and migration slots live in
 [`docs/workflow-readability-matrix.md`](docs/workflow-readability-matrix.md), and

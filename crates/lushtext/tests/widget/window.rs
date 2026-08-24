@@ -78,7 +78,7 @@ use lushtext_core::ui::plain_disposal::{
     lane_snapshot_for_test, progress_lane_snapshot_for_test,
 };
 use lushtext_core::ui::preferences::LushtextPreferences;
-use lushtext_core::ui::search_panel::set_replace_preview_delay_for_test;
+use lushtext_core::ui::search_panel::SearchPanelTestPolicy;
 use lushtext_core::ui::window::{
     DraftFlushError, LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
     fail_next_draft_mutations_for_test, local_history_preview_install_snapshot_for_test,
@@ -217,7 +217,7 @@ struct ReplacePreviewDelayReset;
 
 impl Drop for ReplacePreviewDelayReset {
     fn drop(&mut self) {
-        set_replace_preview_delay_for_test(0);
+        SearchPanelTestPolicy::reset();
     }
 }
 
@@ -4364,6 +4364,20 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
         .expect("window should have an application")
         .downcast::<lushtext_core::app::LushtextApplication>()
         .expect("test app should be LushtextApplication");
+    // Draining minimap work is necessary but not sufficient: a loaded machine can
+    // arm another settle burst (or leave a notification/search blocker pending)
+    // between that drain and this snapshot, which shows up as a bare
+    // `assertion failed: snapshot.idle` on the first attempt. Wait on the real
+    // readiness predicate with an async-scale budget so the assertions below
+    // still fail loudly when something is genuinely stuck.
+    wait_until(Duration::from_secs(10), || {
+        current_idle_blocker(&app).is_none()
+    });
+    assert_eq!(
+        current_idle_blocker(&app),
+        None,
+        "window did not reach automation idle before the snapshot"
+    );
     let snapshot = app_snapshot(&app);
     let json = serde_json::to_string(&snapshot).expect("snapshot should serialize");
 
@@ -4503,7 +4517,9 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     });
 
     let _replace_preview_reset = ReplacePreviewDelayReset;
-    set_replace_preview_delay_for_test(250);
+    SearchPanelTestPolicy::current()
+        .with_replace_preview_delay(Duration::from_millis(250))
+        .install();
     // Seed enough search-panel state to enter Replace Preview; the preview
     // delay is the blocker under test for `search-complete`.
     window.imp().search_panel.set_query("hello");

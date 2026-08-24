@@ -21,6 +21,11 @@ Four mechanical guarantees, all derived from
    evidence must exist on disk. Planned relocation targets are exempt only on
    the line that writes `relocates to <path>`; the same path named as a role in
    the `Migrated Workflow Roles` section is always a claim about the tree.
+5. Facade size budget: when the matrix's `Facade size budget` section declares
+   a normative budget as `- normative facade line budget: <integer>`, no
+   `migrated` row's declared facade file may exceed it. The budget is set by the
+   first migration change after the exemplar, so while no line declares one this
+   rule is inert rather than assuming a default.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ GTK_FAMILY_CRATES = ("gtk4", "glib", "gio", "libadwaita", "sourceview5")
 POLICY_MODULE_NAME = "policy.rs"
 
 # Layer-relative shorthand the matrix uses for crate-internal modules, e.g.
-# `model/search_flight.rs` rather than the full crate path.
+# `model/plain_disposal.rs` rather than the full crate path.
 CORE_LAYER_PREFIXES = ("ui/", "model/", "services/")
 # Repository-rooted prefixes that identify a backticked token as a path claim
 # rather than a Rust identifier, action name, or accelerator.
@@ -76,6 +81,10 @@ KNOWN_STATUS_LABELS = (
     "cross-cutting",
 )
 ROLES_SECTION_HEADING = "## Migrated Workflow Roles"
+FACADE_BUDGET_SECTION_HEADING = "### Facade size budget"
+# The machine-readable declaration documented beside it in that matrix section.
+# Absent means "not set yet", which is the exemplar's recorded state.
+FACADE_BUDGET_RE = re.compile(r"^-\s+normative facade line budget:\s*(\d+)\s*$")
 REQUIRED_ROLES = ("facade", "coordination", "policy", "evidence", "mutation parity")
 # Roles whose value may be the literal `none` because not every migrated
 # workflow owns pure policy, a coordination module, or a relocation.
@@ -473,6 +482,78 @@ def evidence_findings(text: str, root: Path) -> list[str]:
     return findings
 
 
+# --- Check 5: facade size budget --------------------------------------------
+
+
+def parse_facade_budget(text: str) -> int | None:
+    """Read the normative facade line budget, or None while it is unset.
+
+    Only the `Facade size budget` section is read, and only its first
+    declaration line, so a budget cannot be smuggled in from prose elsewhere or
+    declared twice with different numbers.
+    """
+    in_section = False
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            # The section documents the declaration's own format in a fence.
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if line.startswith("#"):
+            in_section = line.strip() == FACADE_BUDGET_SECTION_HEADING
+            continue
+        if not in_section:
+            continue
+        match = FACADE_BUDGET_RE.match(line.strip())
+        if match is not None:
+            return int(match.group(1))
+    return None
+
+
+def declared_facade_path(value: str) -> str | None:
+    """Extract the single path a `facade:` role line claims, when it has one."""
+    tokens = BACKTICKED_RE.findall(value)
+    if len(tokens) != 1:
+        return None
+    return normalize_claim(tokens[0])
+
+
+def facade_size_findings(
+    rows: list[MatrixRow],
+    declarations: dict[str, RoleDeclaration],
+    budget: int | None,
+    root: Path,
+) -> list[str]:
+    """Return findings for migrated facades that exceed the declared budget."""
+    if budget is None:
+        return []
+    findings: list[str] = []
+    for row in rows:
+        if row.status != MIGRATED_STATUS:
+            continue
+        declaration = declarations.get(row.row_id)
+        if declaration is None:
+            # Rule 3 already reports the missing declaration.
+            continue
+        claim = declared_facade_path(declaration.roles.get("facade", ""))
+        if claim is None:
+            continue
+        path = root / claim
+        if not path.is_file():
+            # Rule 4 already reports the absent path.
+            continue
+        size = len(path.read_text(encoding="utf-8").splitlines())
+        if size > budget:
+            findings.append(
+                f"{display_path(MATRIX_PATH)}:{declaration.line_number} row {row.row_id} "
+                f"declares facade `{claim}`, which is {size} lines and exceeds the "
+                f"normative facade line budget of {budget}"
+            )
+    return findings
+
+
 # --- Orchestration ----------------------------------------------------------
 
 
@@ -502,9 +583,13 @@ def check_tree(root: Path, matrix_path: Path, mutants_config: Path) -> list[str]
         findings.append(f"{display_path(matrix_path)}: no product matrix rows were parsed")
         return findings
 
+    declarations = parse_role_declarations(text)
     findings.extend(status_findings(rows))
-    findings.extend(role_findings(rows, parse_role_declarations(text)))
+    findings.extend(role_findings(rows, declarations))
     findings.extend(evidence_findings(text, root))
+    findings.extend(
+        facade_size_findings(rows, declarations, parse_facade_budget(text), root)
+    )
     return findings
 
 
@@ -534,11 +619,31 @@ MATRIX_HEADER = """
 """.lstrip()
 
 
-def build_fixture(root: Path, *, matrix_body: str, roles: str = "") -> tuple[Path, Path]:
+def facade_budget_section(budget: int | None) -> str:
+    """Render the matrix's facade-budget section for a fixture.
+
+    Passing None renders the section without a declaration, which is the
+    exemplar's recorded state and must leave the rule inert.
+    """
+    declaration = "" if budget is None else f"- normative facade line budget: {budget}\n"
+    return (
+        "\n## Conventions\n\n### Facade size budget\n\n"
+        "Declared as:\n\n```\n- normative facade line budget: <integer>\n```\n\n"
+        f"{declaration}"
+    )
+
+
+def build_fixture(
+    root: Path,
+    *,
+    matrix_body: str,
+    roles: str = "",
+    budget_section: str = "",
+) -> tuple[Path, Path]:
     """Create a minimal checkout-shaped fixture and return its two inputs."""
     write(root / ".cargo/mutants.toml", MINIMAL_MUTANTS_CONFIG)
     matrix = root / "docs/workflow-readability-matrix.md"
-    write(matrix, MATRIX_HEADER + matrix_body + roles)
+    write(matrix, MATRIX_HEADER + matrix_body + budget_section + roles)
     return matrix, root / ".cargo/mutants.toml"
 
 
@@ -810,6 +915,68 @@ def run_self_test() -> None:
             raise AssertionError(
                 f"expected a suffixed `migrated` status to require roles, got {findings}"
             )
+
+    migrated_row = "| WFR-EXAMPLE | Example | none | migrated |\n"
+    migrated_roles = (
+        "\n## Migrated Workflow Roles\n\n### WFR-EXAMPLE\n\n"
+        "- facade: `ui/search_panel/mod.rs`\n"
+        "- coordination: none\n"
+        "- policy: none\n"
+        "- evidence: `ui/search_panel/evidence.rs`\n"
+        "- mutation parity: none\n"
+    )
+
+    def write_migrated_workflow(root: Path, *, facade_lines: int) -> None:
+        write(
+            root / CORE_SRC / "ui/search_panel/mod.rs",
+            "".join(f"// line {index}\n" for index in range(facade_lines)),
+        )
+        write(root / CORE_SRC / "ui/search_panel/evidence.rs", "pub struct Facts;\n")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A declared budget the facade respects must pass.
+        matrix, config = build_fixture(
+            root,
+            matrix_body=migrated_row,
+            budget_section=facade_budget_section(400),
+            roles=migrated_roles,
+        )
+        write_migrated_workflow(root, facade_lines=400)
+        findings = check_tree(root, matrix, config)
+        if findings:
+            raise AssertionError(f"expected a respected budget to pass, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # One line over the declared budget must fail and name the numbers.
+        matrix, config = build_fixture(
+            root,
+            matrix_body=migrated_row,
+            budget_section=facade_budget_section(400),
+            roles=migrated_roles,
+        )
+        write_migrated_workflow(root, facade_lines=401)
+        findings = check_tree(root, matrix, config)
+        if not any(
+            "is 401 lines and exceeds the normative facade line budget of 400" in finding
+            for finding in findings
+        ):
+            raise AssertionError(f"expected a facade budget finding, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # With no declaration the rule is inert, however large the facade is.
+        matrix, config = build_fixture(
+            root,
+            matrix_body=migrated_row,
+            budget_section=facade_budget_section(None),
+            roles=migrated_roles,
+        )
+        write_migrated_workflow(root, facade_lines=5000)
+        findings = check_tree(root, matrix, config)
+        if findings:
+            raise AssertionError(f"expected an undeclared budget to be inert, got {findings}")
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

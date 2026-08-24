@@ -88,6 +88,14 @@ includes worker-side checked-identity selection and retirement of rejected or
 stale plain payloads before the generation is terminal.
 Workspace-search snapshots expose only whether replacement text is present;
 they never serialize the replacement template or expanded replacement content.
+Every `window.content_search` field except `content_search.visible` now projects
+from the search panel's internal workflow evidence surface rather than being
+re-derived from widget state, so the workflow and the automation contract share
+one derivation. `content_search.visible` stays shell state read from the window's
+search-panel revealer. The projection is deliberately narrower than the evidence
+surface: internal high-water counters, worker-lane job counts, and retirement
+backlog detail are not part of the exported contract and are not serialized.
+Field names, types, and meanings are unchanged by the projection.
 Screenshot scenario helpers should use
 `visual-geometry-settled` before capture so layout, adaptive shell state,
 workspace sidebar transitions, minimap refresh/debounce, and visual workflow

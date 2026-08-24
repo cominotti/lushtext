@@ -56,17 +56,40 @@ follow the workflow's ordered stages from the facade without opening the
 coordination or policy modules.
 
 A normative maximum size for facade modules SHALL be set by the first migration
-change, derived from the measured size of the exemplar facade rather than chosen in
-advance. Once set, that budget MUST apply to every workflow migrated afterwards,
-and changing it later MUST follow the retroactive amendment rule. Until it is set,
-a facade is judged by the delegation and narration requirements below.
+change that follows the exemplar, derived from the exemplar facade's measured size
+rather than chosen in advance. The exemplar change itself records that measurement
+and leaves the number unset: a budget fixed before any facade exists risks forcing
+the narration itself to be split, and under the retroactive amendment rule the
+cheapest moment to correct a wrong number is when exactly one workflow is
+migrated. Once set, that budget MUST apply to every migrated workflow, and
+changing it later MUST follow the retroactive amendment rule. Until it is set, a
+facade is judged by the delegation and narration requirements below.
+
+The budget SHALL be declared in `docs/workflow-readability-matrix.md` in a
+machine-readable form documented beside the declaration, and `make check-policy`
+MUST fail when a `migrated` row's declared facade file exceeds it.
 
 #### Scenario: Facade budget is measured before it is normative
 
-- **WHEN** the first migration change completes its facade
-- **THEN** it records that facade's measured size and sets the normative budget from
-  it
-- **AND** later migrations are held to that budget
+- **WHEN** the exemplar migration completes its facade
+- **THEN** it records that facade's measured size and leaves the normative budget
+  unset
+- **AND** the next migration change sets the budget from that measurement, and it
+  and every later migration are held to it
+
+#### Scenario: Declared budget is mechanically enforced
+
+- **WHEN** the matrix declares a normative facade line budget and a `migrated`
+  row's declared facade file exceeds it
+- **THEN** `make check-policy` fails
+- **AND** the failure names the row, the facade path, its measured size, and the
+  budget
+
+#### Scenario: Undeclared budget is not silently enforced
+
+- **WHEN** the matrix declares no normative facade line budget yet
+- **THEN** the facade size check is inert rather than inventing a default
+- **AND** facades are judged only by the delegation and narration requirements
 
 #### Scenario: Facade narrates the ordered stages
 

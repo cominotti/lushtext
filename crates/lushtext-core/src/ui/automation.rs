@@ -962,34 +962,42 @@ fn local_history_snapshot(window: &LushtextWindow) -> AutomationLocalHistorySnap
 }
 
 /// Summarize workspace search and Replace All state without match bodies or file content.
+///
+/// Every field except `visible` projects from the search panel's evidence
+/// surface, so the automation contract and the workflow's own observation share
+/// one derivation. `visible` stays here because panel visibility is shell state
+/// owned by the window revealer, not by the search workflow. Evidence fields
+/// that are not part of the documented automation contract, such as the
+/// workflow's high-water and worker-lane counters, are deliberately not
+/// serialized.
 fn content_search_snapshot(window: &LushtextWindow) -> AutomationContentSearchSnapshot {
     let imp = window.imp();
-    let search_panel: &crate::ui::search_panel::LushtextSearchPanel = imp.search_panel.as_ref();
+    let evidence = imp.search_panel.evidence();
 
     AutomationContentSearchSnapshot {
         visible: imp.search_panel_revealer.reveals_child(),
-        query: bounded_snapshot_text(search_panel.query()),
-        regex_enabled: search_panel.regex_enabled(),
-        case_sensitive: search_panel.case_sensitive(),
-        whole_word_enabled: search_panel.whole_word_enabled(),
-        gitignore_enabled: search_panel.gitignore_enabled(),
-        glob_filter: search_panel.glob_filter().map(bounded_snapshot_text),
-        searching: search_panel.is_searching(),
-        file_count: search_panel.total_files(),
-        match_count: search_panel.total_matches(),
-        result_capped: search_panel.result_capped(),
-        replace_query_present: !search_panel.replace_query().is_empty(),
-        replace_preview_mode: search_panel.replace_preview_mode(),
-        replace_preview_pending: search_panel.replace_preview_pending(),
-        replace_preview_count: search_panel.replace_preview_count(),
-        checked_replacement_count: search_panel.checked_replacement_count(),
-        omitted_replacement_count: search_panel.omitted_replacement_count(),
-        skipped_replacement_count: search_panel.skipped_replacement_count(),
-        has_undo_backup: search_panel.has_undo_backup(),
-        history_count: search_panel.history_count(),
-        saved_search_count: search_panel.saved_search_count(),
-        navigation_match_count: search_panel.navigation_match_count(),
-        current_navigation_match_index: search_panel.current_navigation_match_index(),
+        query: bounded_snapshot_text(evidence.query),
+        regex_enabled: evidence.regex_enabled,
+        case_sensitive: evidence.case_sensitive,
+        whole_word_enabled: evidence.whole_word_enabled,
+        gitignore_enabled: evidence.gitignore_enabled,
+        glob_filter: evidence.glob_filter.map(bounded_snapshot_text),
+        searching: evidence.searching,
+        file_count: evidence.file_count,
+        match_count: evidence.match_count,
+        result_capped: evidence.result_capped,
+        replace_query_present: !evidence.replace_query.is_empty(),
+        replace_preview_mode: evidence.replace_preview_mode,
+        replace_preview_pending: evidence.replace_preview_pending,
+        replace_preview_count: evidence.replace_preview_count,
+        checked_replacement_count: evidence.checked_replacement_count,
+        omitted_replacement_count: evidence.omitted_replacement_count,
+        skipped_replacement_count: evidence.skipped_replacement_count,
+        has_undo_backup: evidence.has_undo_backup,
+        history_count: evidence.history_count,
+        saved_search_count: evidence.saved_search_count,
+        navigation_match_count: evidence.navigation_match_count,
+        current_navigation_match_index: evidence.current_navigation_match_index,
     }
 }
 

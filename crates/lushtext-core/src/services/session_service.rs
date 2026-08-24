@@ -76,7 +76,8 @@ pub fn save(data_dir: &Path, session: &SessionData) -> Result<()> {
 /// with each other.
 ///
 /// If an earlier ordered save panicked and poisoned the process-local ordering
-/// lock, this recovers the guard through [`lock_unpoisoned`] rather than
+/// lock, this recovers the guard through `services::sync::lock_unpoisoned`
+/// (crate-internal, so it is not linkable from this public item) rather than
 /// panicking a second time, so a close-time session save cannot be lost to a
 /// prior panic. The generation map is rebuildable, so recovering it keeps
 /// ordering semantics correct for subsequent saves.

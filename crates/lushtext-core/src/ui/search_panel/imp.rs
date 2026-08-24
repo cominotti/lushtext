@@ -64,13 +64,13 @@ pub struct SearchRuntimeState {
     /// Cancel token for the currently running worker thread, if any.
     pub cancel_token: RefCell<Option<Arc<AtomicBool>>>,
     /// Plain-Rust active-plus-latest ownership policy.
-    pub flight: RefCell<crate::model::search_flight::WorkspaceSearchFlight>,
+    pub flight: RefCell<super::policy::WorkspaceSearchFlight>,
     /// Direct active-group count; the single-flight invariant keeps this at zero or one.
     pub active_worker_groups: Cell<u8>,
     /// High-water active-group count for deterministic concurrency evidence.
     pub active_worker_groups_high_water: Cell<u8>,
     /// Coalesced detached-generation GTK disposal session.
-    pub(super) retirement: RefCell<Option<super::runtime::SearchRetirementSession>>,
+    pub(super) retirement: RefCell<Option<super::retirement::SearchRetirementSession>>,
     /// Replaceable latest query held while detached-generation disposal is saturated.
     pub deferred_search: RefCell<Option<crate::model::content_search::SearchQuerySpec>>,
     /// Whether the one bounded retirement idle callback is armed.
@@ -81,7 +81,7 @@ pub struct SearchRuntimeState {
     pub retirement_rows_per_slice_high_water: Cell<usize>,
     /// Test-only before/after ownership evidence from each retirement turn.
     #[cfg(feature = "test-utils")]
-    pub retirement_observations: RefCell<Vec<super::runtime::SearchRetirementSliceObservation>>,
+    pub retirement_observations: RefCell<Vec<super::retirement::SearchRetirementSliceObservation>>,
     /// High-water detached generations retained by the bounded disposer.
     pub retirement_generations_high_water: Cell<usize>,
     /// Debounce for search-entry input.
@@ -112,7 +112,7 @@ impl Default for SearchRuntimeState {
             shared_snapshot_handoffs: Cell::new(0),
             whole_result_clones: Cell::new(0),
             cancel_token: RefCell::new(None),
-            flight: RefCell::new(crate::model::search_flight::WorkspaceSearchFlight::default()),
+            flight: RefCell::new(super::policy::WorkspaceSearchFlight::default()),
             active_worker_groups: Cell::new(0),
             active_worker_groups_high_water: Cell::new(0),
             retirement: RefCell::new(None),

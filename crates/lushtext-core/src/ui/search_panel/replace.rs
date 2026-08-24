@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Replace-preview and undo state for the search panel widget.
+//! Replace All preview construction, apply selection, and undo-journal state.
 //!
 //! These methods stay on the widget because they mutate GTK state and preview
-//! models, but isolating them here keeps the runtime search loop separate from
-//! replace/undo behavior.
+//! models, but isolating them here keeps streaming search execution separate
+//! from replace/undo behavior.
+//!
+//! Control inversion: preview generation and checked-row selection both run on
+//! worker threads, and both resume in a completion closure that revalidates the
+//! attempt's [`ReplacePreviewTicket`] against the panel's live
+//! [`ReplacePreviewFacts`]. A stale completion never publishes; it routes its
+//! payload straight to bounded retirement instead.
 
 use crate::model::content_search::{
     ReplacePreviewBudget, ReplacePreviewOutcome, ReplacePreviewSkipReason, Replacement,
-    SearchMatchId, SearchQuerySpec, generate_replacement_preview_with_budget_and_cancel,
+    SearchMatchId, generate_replacement_preview_with_budget_and_cancel,
 };
 use crate::services::content_search::{
     MAX_REPLACE_UNDO_RETAINED_BYTES, ReplaceJournalFreshness, ReplaceUndoBackup,
@@ -20,18 +26,17 @@ use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use std::collections::HashSet;
 use std::sync::Arc;
-#[cfg(feature = "test-utils")]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::LushtextSearchPanel;
+use super::policy::{ReplacePreviewFacts, ReplacePreviewTicket};
 
 /// Latest plain-Rust preview request retained by the panel's single-flight worker.
 pub(super) struct ReplacePreviewRequest {
     search_matches: std::sync::Arc<Vec<crate::model::content_search::SearchMatch>>,
-    query_spec: crate::model::content_search::SearchQuerySpec,
     replacement_text: String,
-    generation: u32,
+    /// Identity of this attempt, validated as a unit when the worker resumes.
+    ticket: ReplacePreviewTicket,
 }
 
 struct PersistedUndoStartupLoad {
@@ -177,25 +182,6 @@ impl LushtextSearchPanel {
             guard_undo_backup_on_worker(backup)
                 .expect("test persisted undo backup should fit disposal admission"),
         );
-    }
-
-    /// Compare the guarded in-memory journal without exposing its owner type.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn undo_backup_matches_for_test(&self, expected: &ReplaceUndoBackup) -> bool {
-        self.imp()
-            .preview
-            .undo_backup
-            .borrow()
-            .as_ref()
-            .is_some_and(|backup| &***backup == expected)
-    }
-
-    /// Return whether persisted Undo owns its single capacity-retry source.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn undo_capacity_retry_pending_for_test(&self) -> bool {
-        self.imp().preview.undo_capacity_wakeup.is_armed()
     }
 
     /// Reserve the journal generation before Replace All can commit on a worker.
@@ -456,7 +442,8 @@ impl LushtextSearchPanel {
             self.clone(),
             move || {
                 let _retired = retired;
-                delay_undo_backup_disk_for_test();
+                #[cfg(feature = "test-utils")]
+                super::test_policy::delay_undo_backup_disk();
                 let _disk_guard = search_backup::acquire_journal_guard()?;
                 if generation_counter.load(Ordering::Acquire) != generation {
                     return Ok(());
@@ -482,7 +469,8 @@ impl LushtextSearchPanel {
             self.clone(),
             move || {
                 let _retired = retired;
-                delay_undo_backup_disk_for_test();
+                #[cfg(feature = "test-utils")]
+                super::test_policy::delay_undo_backup_disk();
                 let _disk_guard = search_backup::acquire_journal_guard()?;
                 if generation_counter.load(Ordering::Acquire) != generation {
                     return Ok(());
@@ -518,8 +506,7 @@ impl LushtextSearchPanel {
             return;
         };
 
-        let query_spec = self.current_query_spec();
-        let generation = self.advance_preview_generation();
+        let ticket = self.issue_preview_ticket();
         let retired_outcome = imp.preview.preview_outcome.take();
         let retired_checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
         imp.preview.preview_pending.set(true);
@@ -528,31 +515,28 @@ impl LushtextSearchPanel {
         imp.replace_all_button.set_sensitive(false);
         self.refresh_accessibility_state();
 
-        self.retire_preview_state(retired_outcome, retired_checked);
+        self.release_superseded_preview(retired_outcome, retired_checked);
         if imp.preview.preview_worker_running.get() {
             if let Some(queued) = imp.preview.queued_preview_request.borrow_mut().as_mut() {
                 queued.search_matches = search_matches;
-                queued.query_spec = query_spec;
                 queued.replacement_text.clear();
                 queued.replacement_text.push_str(replacement_text);
-                queued.generation = generation;
+                queued.ticket.supersede(ticket);
             } else {
                 imp.preview
                     .queued_preview_request
                     .replace(Some(ReplacePreviewRequest {
                         search_matches,
-                        query_spec,
                         replacement_text: replacement_text.to_string(),
-                        generation,
+                        ticket,
                     }));
             }
             return;
         }
         self.spawn_preview_request(ReplacePreviewRequest {
             search_matches,
-            query_spec,
             replacement_text: replacement_text.to_string(),
-            generation,
+            ticket,
         });
     }
 
@@ -571,17 +555,17 @@ impl LushtextSearchPanel {
         imp.preview
             .preview_cancel_token
             .replace(Some(cancel.clone()));
-        let expected_query_spec = request.query_spec.clone();
-        let generation = request.generation;
+        let ticket = request.ticket.clone();
         spawn_blocking_then(
             self.clone(),
             move || {
-                delay_replace_preview_for_test();
+                #[cfg(feature = "test-utils")]
+                super::test_policy::delay_replace_preview();
                 let outcome = generate_replacement_preview_with_budget_and_cancel(
                     &request.search_matches,
-                    &request.query_spec.query,
+                    &request.ticket.query_spec().query,
                     &request.replacement_text,
-                    &request.query_spec.options,
+                    &request.ticket.query_spec().options,
                     budget,
                     || cancel.load(std::sync::atomic::Ordering::Relaxed),
                 );
@@ -591,10 +575,7 @@ impl LushtextSearchPanel {
             move |panel, outcome| {
                 let imp = panel.imp();
                 imp.preview.preview_cancel_token.replace(None);
-                if imp.preview.preview_generation.get() == generation
-                    && imp.preview.preview_pending.get()
-                    && panel.current_query_spec() == expected_query_spec
-                {
+                if ticket.is_current(&panel.preview_facts()) {
                     imp.preview.preview_pending.set(false);
 
                     let checked = outcome
@@ -634,8 +615,7 @@ impl LushtextSearchPanel {
                 let request = panel.imp().preview.queued_preview_request.take();
                 panel.imp().preview.preview_worker_running.set(false);
                 if let Some(request) = request
-                    && request.generation == panel.imp().preview.preview_generation.get()
-                    && panel.imp().preview.preview_pending.get()
+                    && request.ticket.may_dispatch(&panel.preview_facts())
                 {
                     panel.spawn_preview_request(request);
                 }
@@ -644,7 +624,7 @@ impl LushtextSearchPanel {
 
     /// Detach accepted preview state in O(1) and release its plain payload on
     /// the same serial worker lane used by preview generation.
-    pub(super) fn retire_preview_state(
+    pub(super) fn release_superseded_preview(
         &self,
         outcome: Option<crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>>,
         checked_match_ids: HashSet<SearchMatchId>,
@@ -708,9 +688,7 @@ impl LushtextSearchPanel {
     fn finish_preview_worker(&self) {
         let imp = self.imp();
         if let Some(request) = imp.preview.queued_preview_request.take() {
-            if request.generation == imp.preview.preview_generation.get()
-                && imp.preview.preview_pending.get()
-            {
+            if request.ticket.may_dispatch(&self.preview_facts()) {
                 imp.preview.preview_worker_running.set(false);
                 self.spawn_preview_request(request);
             } else {
@@ -722,10 +700,45 @@ impl LushtextSearchPanel {
         imp.preview.preview_worker_running.set(false);
     }
 
-    pub(super) fn spawn_preview_selection(
+    /// Commit the user's confirmation of the visible preview selection.
+    ///
+    /// Replace stage 3 in one operation: claim the sole apply transaction, take
+    /// the accepted outcome and its checked identities out of live state, open a
+    /// fresh attempt so a resuming worker can prove it is still current, switch
+    /// the visible summary and Replace All button into the preparing state, and
+    /// hand the partition to [`Self::apply_checked_replacements`].
+    ///
+    /// Every early return leaves live state exactly as it was, including
+    /// restoring the accepted outcome when the transaction is already claimed.
+    pub(super) fn begin_confirmed_replacement(&self) {
+        let imp = self.imp();
+        if imp.preview.replace_transaction_pending.get() || !imp.preview.preview_mode.get() {
+            return;
+        }
+        let Some(outcome) = imp.preview.preview_outcome.take() else {
+            return;
+        };
+        if self.begin_replace_transaction().is_none() {
+            imp.preview.preview_outcome.replace(Some(outcome));
+            return;
+        }
+        let checked = std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut());
+        let ticket = self.issue_preview_ticket();
+        imp.preview.preview_mode.set(false);
+        imp.preview.preview_pending.set(true);
+        imp.replace_all_button.set_label("Preparing Selection…");
+        imp.replace_all_button.set_sensitive(false);
+        self.restore_search_summary();
+        self.refresh_results_display();
+        self.refresh_accessibility_state();
+        self.apply_checked_replacements(ticket, outcome, checked);
+    }
+
+    /// Partition the checked preview rows on a worker, then hand them to the
+    /// window's Replace All callback if the attempt is still current.
+    pub(super) fn apply_checked_replacements(
         &self,
-        generation: u32,
-        expected_query_spec: SearchQuerySpec,
+        ticket: ReplacePreviewTicket,
         outcome: crate::ui::plain_disposal::DisposalOwned<ReplacePreviewOutcome>,
         checked_match_ids: HashSet<SearchMatchId>,
     ) {
@@ -738,17 +751,15 @@ impl LushtextSearchPanel {
         spawn_blocking_then(
             self.clone(),
             move || {
-                delay_preview_selection_for_test();
+                #[cfg(feature = "test-utils")]
+                super::test_policy::delay_preview_selection();
                 outcome.map_preserving_reservation(|outcome| {
                     outcome.into_checked_replacements(&checked_match_ids)
                 })
             },
             move |panel, selected| {
                 let imp = panel.imp();
-                if imp.preview.preview_generation.get() == generation
-                    && imp.preview.preview_pending.get()
-                    && panel.current_query_spec() == expected_query_spec
-                {
+                if ticket.is_current(&panel.preview_facts()) {
                     imp.preview.preview_pending.set(false);
                     imp.replace_all_button.set_label("Replace All");
                     panel.update_replace_button_sensitivity();
@@ -774,36 +785,13 @@ impl LushtextSearchPanel {
         );
     }
 
-    /// Direct worker-route evidence for preview selection and plain-data retirement.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn preview_worker_counters_for_test(&self) -> (u64, u64, bool, usize) {
-        let imp = self.imp();
-        (
-            imp.preview.preview_retirement_jobs.get(),
-            imp.preview.preview_selection_jobs.get(),
-            imp.preview.preview_worker_running.get(),
-            usize::from(imp.preview.queued_preview_request.borrow().is_some()),
-        )
-    }
-
-    /// Direct pending-destruction evidence for Replace Preview readiness tests.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn preview_retirement_pending_for_test(&self) -> usize {
-        self.imp()
-            .preview
-            .preview_retirement_pending
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-
     /// Exit preview mode: clear preview state and restore normal result display.
     pub fn exit_preview_mode(&self) {
         let imp = self.imp();
-        self.advance_preview_generation();
+        self.invalidate_active_preview();
         imp.preview.preview_pending.set(false);
         imp.preview.preview_mode.set(false);
-        self.retire_preview_state(
+        self.release_superseded_preview(
             imp.preview.preview_outcome.take(),
             std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
         );
@@ -839,10 +827,10 @@ impl LushtextSearchPanel {
         if !imp.preview.preview_pending.get() && !imp.preview.preview_mode.get() {
             return;
         }
-        self.advance_preview_generation();
+        self.invalidate_active_preview();
         imp.preview.preview_pending.set(false);
         imp.preview.preview_mode.set(false);
-        self.retire_preview_state(
+        self.release_superseded_preview(
             imp.preview.preview_outcome.take(),
             std::mem::take(&mut *imp.preview.checked_match_ids.borrow_mut()),
         );
@@ -852,7 +840,41 @@ impl LushtextSearchPanel {
         self.refresh_accessibility_state();
     }
 
-    pub(super) fn advance_preview_generation(&self) -> u32 {
+    /// Retire the current preview attempt so no in-flight result can publish.
+    ///
+    /// Advancing the generation is what makes a late worker completion fail its
+    /// ticket check; the cancel token only lets the worker stop early.
+    pub(super) fn invalidate_active_preview(&self) {
+        let _ = self.open_preview_generation();
+    }
+
+    /// Open one preview attempt and capture its identity at the entry point.
+    ///
+    /// This is the only place a [`ReplacePreviewTicket`] is constructed, so
+    /// generation and query spec cannot drift apart between the two preview
+    /// entry points (preview generation and checked apply).
+    pub(super) fn issue_preview_ticket(&self) -> ReplacePreviewTicket {
+        let generation = self.open_preview_generation();
+        ReplacePreviewTicket::new(generation, self.current_query_spec())
+    }
+
+    /// Live preview state a resuming worker completion must be validated against.
+    ///
+    /// Built eagerly at each of the four validation sites rather than behind a
+    /// generation-first short-circuit: `current_query_spec()` is a pure read of
+    /// visible GTK controls, and these sites are rare workflow completion and
+    /// dispatch points, so one string/options clone there is accepted in
+    /// exchange for validating the seam as a single value.
+    pub(super) fn preview_facts(&self) -> ReplacePreviewFacts {
+        let imp = self.imp();
+        ReplacePreviewFacts {
+            generation: imp.preview.preview_generation.get(),
+            pending: imp.preview.preview_pending.get(),
+            query_spec: self.current_query_spec(),
+        }
+    }
+
+    fn open_preview_generation(&self) -> u32 {
         let imp = self.imp();
         if let Some(cancel) = imp.preview.preview_cancel_token.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -942,83 +964,10 @@ fn report_startup_diagnostics(
     }
 }
 
-#[cfg(feature = "test-utils")]
-static UNDO_BACKUP_DISK_DELAY_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "test-utils")]
-static REPLACE_PREVIEW_DELAY_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "test-utils")]
-static PREVIEW_SELECTION_DELAY_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "test-utils")]
-static REPLACE_PREVIEW_MAX_ROWS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "test-utils")]
-static REPLACE_PREVIEW_MAX_BYTES: AtomicU64 = AtomicU64::new(0);
-
-/// Configure an artificial Replace All undo persistence delay for widget tests.
-#[cfg(feature = "test-utils")]
-pub fn set_undo_backup_disk_delay_for_test(delay_ms: u64) {
-    UNDO_BACKUP_DISK_DELAY_MS.store(delay_ms, Ordering::Release);
-}
-
-/// Configure an artificial Replace preview generation delay for widget tests.
-#[cfg(feature = "test-utils")]
-pub fn set_replace_preview_delay_for_test(delay_ms: u64) {
-    REPLACE_PREVIEW_DELAY_MS.store(delay_ms, Ordering::Release);
-}
-
-/// Configure an artificial checked-row partition delay for freshness tests.
-#[cfg(feature = "test-utils")]
-pub fn set_preview_selection_delay_for_test(delay_ms: u64) {
-    PREVIEW_SELECTION_DELAY_MS.store(delay_ms, Ordering::Release);
-}
-
-/// Override Replace Preview limits for state-extreme widget tests; zero restores production.
-#[cfg(feature = "test-utils")]
-pub fn set_replace_preview_budget_for_test(max_rows: u64, max_bytes: u64) {
-    REPLACE_PREVIEW_MAX_ROWS.store(max_rows, Ordering::Release);
-    REPLACE_PREVIEW_MAX_BYTES.store(max_bytes, Ordering::Release);
-}
-
 fn replace_preview_budget() -> ReplacePreviewBudget {
     #[cfg(feature = "test-utils")]
-    {
-        let max_rows = REPLACE_PREVIEW_MAX_ROWS.load(Ordering::Acquire);
-        let max_bytes = REPLACE_PREVIEW_MAX_BYTES.load(Ordering::Acquire);
-        if max_rows > 0 || max_bytes > 0 {
-            return ReplacePreviewBudget {
-                max_rows: usize::try_from(max_rows).unwrap_or(usize::MAX),
-                max_bytes: usize::try_from(max_bytes).unwrap_or(usize::MAX),
-            };
-        }
+    if let Some(budget) = super::test_policy::replace_preview_budget_override() {
+        return budget;
     }
     ReplacePreviewBudget::default()
-}
-
-fn delay_undo_backup_disk_for_test() {
-    #[cfg(feature = "test-utils")]
-    {
-        let delay_ms = UNDO_BACKUP_DISK_DELAY_MS.load(Ordering::Acquire);
-        if delay_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        }
-    }
-}
-
-fn delay_replace_preview_for_test() {
-    #[cfg(feature = "test-utils")]
-    {
-        let delay_ms = REPLACE_PREVIEW_DELAY_MS.load(Ordering::Acquire);
-        if delay_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        }
-    }
-}
-
-fn delay_preview_selection_for_test() {
-    #[cfg(feature = "test-utils")]
-    {
-        let delay_ms = PREVIEW_SELECTION_DELAY_MS.load(Ordering::Acquire);
-        if delay_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        }
-    }
 }

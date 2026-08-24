@@ -53,10 +53,6 @@ use lushtext_core::model::save_admission::{
     ExternalTransientPressure, SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveAdmissionPolicy,
     SaveAdmissionPriority, SaveAdmissionRequest,
 };
-use lushtext_core::model::search_flight::{
-    WorkspaceSearchFlight, WorkspaceSearchRequest, WorkspaceSearchSubmission,
-};
-use lushtext_core::model::search_retirement::SearchRetirementSliceBudget;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
 use lushtext_core::model::workspace::{
@@ -90,6 +86,10 @@ use lushtext_core::services::{
     bookmark_service, draft_service,
     local_history_service::{self, LocalHistoryCapturePolicy},
     migration_ledger, session_service,
+};
+use lushtext_core::ui::search_panel::policy::{
+    SearchRetirementSliceBudget, WorkspaceSearchFlight, WorkspaceSearchRequest,
+    WorkspaceSearchSubmission,
 };
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
 use lushtext_core::ui::sidebar::workspace_section::child_cache_rebuild_operation_evidence_for_benchmark;
