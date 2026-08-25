@@ -1461,6 +1461,15 @@ fn persist_undo_backup(data_dir: &Path, backup: &ReplaceUndoBackup) -> anyhow::R
 }
 
 /// Restore already-written files in reverse order when cancellation interrupts a run.
+///
+/// Each file is validated before it is rewritten, for the same reason
+/// [`undo_replacements_for_open_identities`] validates: the per-file
+/// [`fs_write::TargetWriteGuard`] is released as the loop moves on, so an editor
+/// save of a later target can land while rollback is still working. Writing
+/// `original_bytes` unconditionally would then discard content the user just
+/// saved — and a fully "successful" rollback deletes the journal, leaving no
+/// copy of it. A file that no longer holds this run's `replaced_bytes` is
+/// therefore reported as an unrestored path, which keeps the journal.
 fn rollback_applied_files(backup: &ReplaceUndoBackup) -> BoundedDiagnosticSample {
     let mut errors = BoundedDiagnosticSample::default();
     for (path, entry) in backup.iter().rev() {
@@ -1468,11 +1477,58 @@ fn rollback_applied_files(backup: &ReplaceUndoBackup) -> BoundedDiagnosticSample
             errors.push(format!("Failed to lock {} for rollback", path.display()));
             continue;
         };
-        if let Err(e) = atomic_write(path, &entry.original_bytes) {
-            errors.push(format!("Failed to restore {}: {e}", path.display()));
+        match rollback_file_disposition(path, entry) {
+            RollbackDisposition::AlreadyOriginal => {}
+            RollbackDisposition::Restore => {
+                if let Err(e) = atomic_write(path, &entry.original_bytes) {
+                    errors.push(format!("Failed to restore {}: {e}", path.display()));
+                }
+            }
+            RollbackDisposition::ChangedSinceReplacement => {
+                errors.push(format!(
+                    "Skipped rollback of {}: changed after Replace All wrote it",
+                    path.display()
+                ));
+            }
         }
     }
     errors
+}
+
+/// What rollback may do with one already-written file.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RollbackDisposition {
+    /// The file already holds its pre-replacement bytes; nothing to write.
+    AlreadyOriginal,
+    /// The file still holds this run's replacement bytes; restore it.
+    Restore,
+    /// The file holds neither; restoring would destroy newer content.
+    ChangedSinceReplacement,
+}
+
+/// Classify one rollback target by its current bytes.
+///
+/// Any read or metadata failure classifies as changed rather than restorable, so
+/// an unverifiable file is reported and its journal entry kept instead of being
+/// overwritten on a guess.
+fn rollback_file_disposition(path: &Path, entry: &ReplaceUndoEntry) -> RollbackDisposition {
+    let Ok(facts) = fs_metadata::file_facts(path) else {
+        return RollbackDisposition::ChangedSinceReplacement;
+    };
+    // No separate size pre-check: `bounded_bytes` already refuses a file larger
+    // than the limit, and every read failure classifies the same way here.
+    let Ok(current_bytes) =
+        fs_read::bounded_bytes(path, MAX_REPLACE_FILE_BYTES, facts.byte_size, || false)
+    else {
+        return RollbackDisposition::ChangedSinceReplacement;
+    };
+    if current_bytes == entry.original_bytes {
+        return RollbackDisposition::AlreadyOriginal;
+    }
+    if current_bytes == entry.replaced_bytes {
+        return RollbackDisposition::Restore;
+    }
+    RollbackDisposition::ChangedSinceReplacement
 }
 
 #[cfg(test)]
@@ -2805,6 +2861,81 @@ mod tests {
         assert!(result.is_err(), "cancelled replace should roll back");
         assert_eq!(fixture::read_text(&file_a), "needle\n");
         assert_eq!(fixture::read_text(&file_b), "needle\n");
+    }
+
+    #[test]
+    fn rollback_disposition_refuses_a_file_changed_after_replacement() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let file = dir.path().join("test.rs");
+        let entry = ReplaceUndoEntry::new(b"original\n".to_vec(), b"replaced\n".to_vec());
+
+        fixture::write_text(&file, "replaced\n");
+        assert_eq!(
+            rollback_file_disposition(&file, &entry),
+            RollbackDisposition::Restore,
+            "a file still holding this run's replacement bytes is restorable",
+        );
+
+        fixture::write_text(&file, "original\n");
+        assert_eq!(
+            rollback_file_disposition(&file, &entry),
+            RollbackDisposition::AlreadyOriginal,
+            "a file already back at its original bytes needs no write",
+        );
+
+        // The per-file target guard is released as rollback moves on, so an
+        // editor save of a later target can land mid-rollback. Restoring
+        // `original_bytes` over it would discard content the user just saved,
+        // and a clean rollback deletes the journal.
+        fixture::write_text(&file, "user saved this after Replace All\n");
+        assert_eq!(
+            rollback_file_disposition(&file, &entry),
+            RollbackDisposition::ChangedSinceReplacement,
+        );
+
+        fixture::remove_file(&file);
+        assert_eq!(
+            rollback_file_disposition(&file, &entry),
+            RollbackDisposition::ChangedSinceReplacement,
+            "an unreadable target must be reported, never overwritten on a guess",
+        );
+    }
+
+    #[test]
+    fn rollback_keeps_the_journal_when_a_target_changed_mid_rollback() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let restorable = dir.path().join("restorable.rs");
+        let changed = dir.path().join("changed.rs");
+        fixture::write_text(&restorable, "replaced\n");
+        fixture::write_text(&changed, "user saved this after Replace All\n");
+
+        let mut backup = ReplaceUndoBackup::new();
+        backup.insert(
+            restorable.clone(),
+            ReplaceUndoEntry::new(b"original\n".to_vec(), b"replaced\n".to_vec()),
+        );
+        backup.insert(
+            changed.clone(),
+            ReplaceUndoEntry::new(b"original\n".to_vec(), b"replaced\n".to_vec()),
+        );
+
+        let errors = rollback_applied_files(&backup);
+
+        assert_eq!(
+            fixture::read_text(&restorable),
+            "original\n",
+            "an unchanged target is still rolled back",
+        );
+        assert_eq!(
+            fixture::read_text(&changed),
+            "user saved this after Replace All\n",
+            "a target changed after replacement must not be overwritten",
+        );
+        assert_eq!(
+            errors.total_count(),
+            1,
+            "the unrestored target must be reported so the journal is kept",
+        );
     }
 
     #[test]
