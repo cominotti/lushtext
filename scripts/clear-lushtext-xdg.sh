@@ -11,6 +11,7 @@ dry_run="${LUSHTEXT_CLEAR_DRY_RUN:-${DRY_RUN:-0}}"
 include_flatpak="${LUSHTEXT_CLEAR_INCLUDE_FLATPAK:-${INCLUDE_FLATPAK:-1}}"
 reset_gsettings="${LUSHTEXT_CLEAR_RESET_GSETTINGS:-${RESET_GSETTINGS:-1}}"
 allow_running="${LUSHTEXT_CLEAR_ALLOW_RUNNING:-${ALLOW_RUNNING:-0}}"
+assume_yes="${LUSHTEXT_CLEAR_ASSUME_YES:-${ASSUME_YES:-0}}"
 
 declare -a removal_paths=()
 declare -a removal_labels=()
@@ -31,6 +32,53 @@ fail() {
     echo "Error: $*" >&2
     exit 1
 }
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/clear-lushtext-xdg.sh [--yes] [--dry-run] [--help]
+
+Remove LushText-owned XDG data/config/cache/state, development desktop/icon
+staging, the Flatpak app-private XDG home, and reset the app's GSettings.
+
+This is destructive: it deletes drafts, local history, sessions, and settings.
+The exact list of paths is printed for confirmation before anything is removed.
+
+Options:
+  -y, --yes      Skip the interactive confirmation (required for automation).
+      --dry-run  Print what would be removed without deleting anything.
+  -h, --help     Print this help and exit without removing anything.
+
+Environment overrides (all accept 1/true/yes/on):
+  DRY_RUN / LUSHTEXT_CLEAR_DRY_RUN                  report only, remove nothing
+  ASSUME_YES / LUSHTEXT_CLEAR_ASSUME_YES            skip the confirmation prompt
+  INCLUDE_FLATPAK / LUSHTEXT_CLEAR_INCLUDE_FLATPAK  include ~/.var/app (default 1)
+  RESET_GSETTINGS / LUSHTEXT_CLEAR_RESET_GSETTINGS  reset GSettings (default 1)
+  ALLOW_RUNNING / LUSHTEXT_CLEAR_ALLOW_RUNNING      proceed while LushText runs
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -y | --yes)
+            assume_yes=1
+            shift
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            echo >&2
+            echo "Error: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
 
 strip_trailing_slashes() {
     local value="$1"
@@ -179,7 +227,40 @@ else
     echo "Skipping Flatpak app-private XDG home because INCLUDE_FLATPAK=0."
 fi
 
+confirm_removal() {
+    truthy "$dry_run" && return 0
+    truthy "$assume_yes" && return 0
+
+    echo "About to permanently remove LushText-owned state, including drafts,"
+    echo "local history, sessions, and settings:"
+    for index in "${!removal_paths[@]}"; do
+        printf '  - %s (%s)\n' "${removal_labels[$index]}" "${removal_paths[$index]}"
+    done
+    if truthy "$reset_gsettings"; then
+        printf '  - GSettings schema %s (reset-recursively)\n' "$app_id"
+    fi
+    echo
+    echo "Re-run with --dry-run to preview, or --yes to skip this prompt."
+
+    if [[ ! -t 0 ]]; then
+        fail "stdin is not a terminal and --yes was not given; refusing to remove anything."
+    fi
+
+    local reply=""
+    read -r -p "Type 'yes' to continue: " reply || reply=""
+    case "$reply" in
+        y | Y | yes | YES | Yes)
+            return 0
+            ;;
+        *)
+            echo "Aborted; nothing was removed."
+            exit 1
+            ;;
+    esac
+}
+
 check_lushtext_not_running
+confirm_removal
 
 echo "Clearing LushText-owned XDG/config state."
 for index in "${!removal_paths[@]}"; do

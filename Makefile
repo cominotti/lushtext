@@ -202,8 +202,9 @@ refresh-dock-icon:
 	LUSHTEXT_DEV_RUN_FORCE_RESTART=1 LUSHTEXT_DEV_RUN_TERMINATE_STALE=1 ./scripts/run-dev-app.sh
 
 # Remove only LushText-owned user XDG/config state. Use DRY_RUN=1 to preview.
+# Prompts for confirmation; pass ASSUME_YES=1 for non-interactive use.
 clear-lushtext-xdg:
-	@DRY_RUN="$(DRY_RUN)" INCLUDE_FLATPAK="$(INCLUDE_FLATPAK)" RESET_GSETTINGS="$(RESET_GSETTINGS)" ALLOW_RUNNING="$(ALLOW_RUNNING)" ./scripts/clear-lushtext-xdg.sh
+	@DRY_RUN="$(DRY_RUN)" INCLUDE_FLATPAK="$(INCLUDE_FLATPAK)" RESET_GSETTINGS="$(RESET_GSETTINGS)" ALLOW_RUNNING="$(ALLOW_RUNNING)" ASSUME_YES="$(ASSUME_YES)" ./scripts/clear-lushtext-xdg.sh
 
 # Run all tests
 test:

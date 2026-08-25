@@ -240,7 +240,7 @@ XDG_CACHE_HOME="$clear_home/.cache" \
 XDG_STATE_HOME="$clear_home/.local/state" \
 RESET_GSETTINGS=0 \
 ALLOW_RUNNING=1 \
-    "$repo_root/scripts/clear-lushtext-xdg.sh" > "$tmpdir/clear.log"
+    "$repo_root/scripts/clear-lushtext-xdg.sh" --yes > "$tmpdir/clear.log"
 
 for path in \
     "$clear_home/.local/share/applications/$prod_app_id.desktop" \

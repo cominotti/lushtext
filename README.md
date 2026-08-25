@@ -232,6 +232,11 @@ The target removes only LushText-owned XDG paths and the Flatpak app-private
 directory, then resets the `dev.cominotti.lushtext` GSettings schema when
 available. Close LushText before resetting state.
 
+It lists every path it is about to delete and asks for confirmation first. Pass
+`ASSUME_YES=1` (or `--yes` when calling `scripts/clear-lushtext-xdg.sh`
+directly) for non-interactive use; without it, a non-TTY invocation refuses to
+delete anything. `--help` prints usage and removes nothing.
+
 Without a source checkout, close the app, remove the relevant app-data
 directory, and reset GSettings if you also want preferences back at defaults.
 
