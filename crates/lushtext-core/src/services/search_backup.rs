@@ -228,6 +228,96 @@ pub fn save(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
     Ok(())
 }
 
+/// Re-arm a journal that a partial undo reduced, without any inactive window.
+///
+/// [`save`] is a delete-then-rebuild: it removes the whole journal directory
+/// before writing the new one. For a partial undo that is a data-loss window —
+/// the files it could **not** restore still hold Replace All output, and while
+/// the rebuild is in flight there is no durable rollback copy for them at all,
+/// which is the in-memory-only failure the journal exists to prevent.
+///
+/// A partial undo only ever *shrinks* the journal, and every retained entry file
+/// is already on disk and byte-identical, so this does the shrink in the safe
+/// order instead: write the smaller active manifest first, then remove the entry
+/// files it no longer lists. Neither window is ever inactive.
+///
+/// - Interrupted before the new manifest lands: the previous manifest stays
+///   active and lists a superset. Undo re-validates each file's current bytes,
+///   so an already-restored entry is recognised as restored and never rewritten.
+/// - Interrupted after it lands: the smaller manifest is active and the
+///   already-restored entry files are orphans, which recovery reports as
+///   diagnostics without deactivating the journal.
+///
+/// Falls back to [`save`] when the on-disk journal is not a superset of
+/// `backup`, which is the one case a shrink cannot express.
+///
+/// # Errors
+///
+/// Returns an error when the smaller active manifest cannot be written durably,
+/// or when the fallback full rewrite fails.
+pub fn shrink_journal_to(data_dir: &Path, backup: &ReplaceUndoBackup) -> Result<()> {
+    if backup.is_empty() {
+        return delete(data_dir);
+    }
+
+    let journal_dir = data_dir.join(JOURNAL_DIR);
+    let retained = backup
+        .keys()
+        .map(|path| entry_file_name(path))
+        .collect::<HashSet<_>>();
+    let is_superset = fs_metadata::path_status(&journal_dir)
+        .is_ok_and(super::filesystem::types::PathStatus::is_directory)
+        && !fs_metadata::exists(&journal_dir.join(CLEANUP_MARKER_FILE))
+        && retained
+            .iter()
+            .all(|entry_file| fs_metadata::exists(&journal_dir.join(entry_file)));
+    if !is_superset {
+        return save(data_dir, backup);
+    }
+
+    mark_journal_active(data_dir, backup)?;
+    remove_unlisted_journal_entries(&journal_dir, &retained);
+    Ok(())
+}
+
+/// Delete payload entries the freshly written active manifest no longer lists.
+///
+/// Best-effort by design: the manifest is already durable and correct, and a
+/// leftover entry is only an orphan diagnostic, so a removal failure must not be
+/// reported as a failed journal write.
+fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String>) {
+    let entries = match fs_tree::scan_directory(
+        journal_dir,
+        DirectoryScanPolicy {
+            max_entries: JOURNAL_SCAN_MAX_ENTRIES,
+            include_hidden: false,
+        },
+    ) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!("Failed to scan replace undo journal for shrink cleanup: {error}");
+            return;
+        }
+    };
+    for entry in entries {
+        if !is_journal_payload_file(&entry.path) {
+            continue;
+        }
+        let Some(file_name) = entry.path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if retained.contains(file_name) {
+            continue;
+        }
+        if let Err(error) = fs_mutate::remove_file_if_exists(&entry.path) {
+            tracing::warn!(
+                "Failed to remove superseded replace undo journal entry {}: {error}",
+                entry.path.display()
+            );
+        }
+    }
+}
+
 /// Remove any previous undo run before staging an incremental Replace All journal.
 ///
 /// # Errors
@@ -321,7 +411,7 @@ pub fn mark_journal_active(data_dir: &Path, backup: &ReplaceUndoBackup) -> Resul
     if backup.is_empty() {
         return delete(data_dir);
     }
-    if backup.len() > JOURNAL_SCAN_MAX_ENTRIES {
+    if entry_count_exceeds_cap(backup.len()) {
         anyhow::bail!(
             "replace undo journal has {} entries, above the {JOURNAL_SCAN_MAX_ENTRIES} entry cap",
             backup.len()
@@ -432,7 +522,7 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
     if manifest.incremental {
         return load_incremental_journal(data_dir, journal_dir, diagnostics);
     }
-    if manifest.entries.len() > JOURNAL_SCAN_MAX_ENTRIES {
+    if entry_count_exceeds_cap(manifest.entries.len()) {
         diagnostics.push(RecoveryDiagnostic::repair_skipped(
             RecoveryMetadataClass::ReplaceAllUndoJournal,
             &manifest_path,
@@ -449,26 +539,28 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
     }
 
     let mut backup = ReplaceUndoBackup::new();
-    let mut seen_entry_files = HashSet::new();
-    let mut seen_paths = HashSet::new();
+    let mut dedup = ManifestEntryDedup::default();
     let mut undo_payload_bytes = 0u64;
 
     for entry in &manifest.entries {
-        if !seen_entry_files.insert(entry.entry_file.clone()) {
-            diagnostics.push(RecoveryDiagnostic::repair_skipped(
-                RecoveryMetadataClass::ReplaceAllUndoJournal,
-                journal_dir.join(&entry.entry_file),
-                "replace undo journal manifest contains a duplicate entry file",
-            ));
-            continue;
-        }
-        if !seen_paths.insert(entry.path.clone()) {
-            diagnostics.push(RecoveryDiagnostic::repair_skipped(
-                RecoveryMetadataClass::ReplaceAllUndoJournal,
-                &entry.path,
-                "replace undo journal manifest contains a duplicate target path",
-            ));
-            continue;
+        match dedup.admit(&entry.entry_file, &entry.path) {
+            Ok(()) => {}
+            Err(ManifestDuplicate::EntryFile) => {
+                diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                    RecoveryMetadataClass::ReplaceAllUndoJournal,
+                    journal_dir.join(&entry.entry_file),
+                    "replace undo journal manifest contains a duplicate entry file",
+                ));
+                continue;
+            }
+            Err(ManifestDuplicate::TargetPath) => {
+                diagnostics.push(RecoveryDiagnostic::repair_skipped(
+                    RecoveryMetadataClass::ReplaceAllUndoJournal,
+                    &entry.path,
+                    "replace undo journal manifest contains a duplicate target path",
+                ));
+                continue;
+            }
         }
 
         let entry_path = journal_dir.join(&entry.entry_file);
@@ -502,9 +594,11 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
             continue;
         }
         let entry_payload_bytes = replace_entry_payload_bytes(&disk);
-        if undo_payload_bytes.saturating_add(entry_payload_bytes)
-            > effective_max_replace_undo_bytes()
-        {
+        if payload_budget_exceeded(
+            undo_payload_bytes,
+            entry_payload_bytes,
+            effective_max_replace_undo_bytes(),
+        ) {
             diagnostics.push(RecoveryDiagnostic::repair_skipped(
                 RecoveryMetadataClass::ReplaceAllUndoJournal,
                 &entry_path,
@@ -530,12 +624,15 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
         ));
     }
 
-    let active = diagnostics.is_empty() && backup.len() == manifest.entries.len();
+    let active = journal_is_active(
+        diagnostics.len(),
+        Some((backup.len(), manifest.entries.len())),
+    );
     if active {
         diagnostics.extend(detect_orphan_journal_entries(
             data_dir,
             journal_dir,
-            &seen_entry_files,
+            dedup.admitted_entry_files(),
         ));
         ReplaceBackupRecoveryLoad {
             backup,
@@ -546,7 +643,7 @@ fn load_journal(data_dir: &Path, journal_dir: &Path) -> ReplaceBackupRecoveryLoa
         diagnostics.extend(detect_orphan_journal_entries(
             data_dir,
             journal_dir,
-            &seen_entry_files,
+            dedup.admitted_entry_files(),
         ));
         ReplaceBackupRecoveryLoad {
             backup: ReplaceUndoBackup::new(),
@@ -596,17 +693,10 @@ fn load_incremental_journal(
 
     let mut entry_paths = entries
         .into_iter()
-        .filter_map(|entry| {
-            let file_name = entry.path.file_name()?.to_str()?;
-            if file_name == JOURNAL_MANIFEST_FILE || file_name == CLEANUP_MARKER_FILE {
-                return None;
-            }
-            (entry.path.extension().and_then(|ext| ext.to_str()) == Some("json"))
-                .then_some(entry.path)
-        })
+        .filter_map(|entry| is_journal_payload_file(&entry.path).then_some(entry.path))
         .collect::<Vec<_>>();
     entry_paths.sort();
-    if entry_paths.len() > JOURNAL_SCAN_MAX_ENTRIES {
+    if entry_count_exceeds_cap(entry_paths.len()) {
         diagnostics.push(RecoveryDiagnostic::repair_skipped(
             RecoveryMetadataClass::ReplaceAllUndoJournal,
             journal_dir,
@@ -642,9 +732,11 @@ fn load_incremental_journal(
         };
         diagnostics.extend(entry_load.diagnostics);
         let entry_payload_bytes = replace_entry_payload_bytes(&disk);
-        if undo_payload_bytes.saturating_add(entry_payload_bytes)
-            > effective_max_replace_undo_bytes()
-        {
+        if payload_budget_exceeded(
+            undo_payload_bytes,
+            entry_payload_bytes,
+            effective_max_replace_undo_bytes(),
+        ) {
             diagnostics.push(RecoveryDiagnostic::repair_skipped(
                 RecoveryMetadataClass::ReplaceAllUndoJournal,
                 &entry_path,
@@ -670,7 +762,7 @@ fn load_incremental_journal(
                 "incremental replace undo journal contains duplicate target paths",
             ));
         }
-        if replace_undo_retained_byte_weight(&backup) > MAX_REPLACE_UNDO_RETAINED_BYTES {
+        if retained_weight_exceeds_cap(replace_undo_retained_byte_weight(&backup)) {
             diagnostics.push(RecoveryDiagnostic::repair_skipped(
                 RecoveryMetadataClass::ReplaceAllUndoJournal,
                 &entry_path,
@@ -687,7 +779,7 @@ fn load_incremental_journal(
             "incremental replace undo journal contains no usable entries",
         ));
     }
-    let active = diagnostics.is_empty();
+    let active = journal_is_active(diagnostics.len(), None);
     ReplaceBackupRecoveryLoad {
         backup: if active {
             backup
@@ -696,6 +788,98 @@ fn load_incremental_journal(
         },
         active,
         diagnostics,
+    }
+}
+
+/// Whether a loaded journal may be exposed as a user-visible undo affordance.
+///
+/// Two loader shapes share this rule. A manifest-backed journal must have no
+/// diagnostics **and** must have loaded exactly as many entries as its manifest
+/// lists; an incremental journal has no manifest list to agree with, so only the
+/// diagnostic clause applies. Any diagnostic at all is disqualifying: a journal
+/// that needed repair is preserved as evidence rather than offered as undo.
+fn journal_is_active(diagnostic_count: usize, manifest_agreement: Option<(usize, usize)>) -> bool {
+    diagnostic_count == 0 && manifest_agreement.is_none_or(|(loaded, listed)| loaded == listed)
+}
+
+/// Whether admitting one more entry would exceed the undo payload budget.
+///
+/// Saturating, so an implausibly large accumulated total rejects rather than
+/// wrapping into an accepting value.
+fn payload_budget_exceeded(accumulated: u64, entry: u64, cap: u64) -> bool {
+    accumulated.saturating_add(entry) > cap
+}
+
+/// Whether an entry count is above the supported journal entry cap.
+///
+/// Applied on the write side before a manifest is committed and on both read
+/// sides before entries are walked, so one cap decision governs all three.
+fn entry_count_exceeds_cap(count: usize) -> bool {
+    count > JOURNAL_SCAN_MAX_ENTRIES
+}
+
+/// Whether a journal-directory file is a per-file undo payload entry.
+///
+/// The manifest and the cleanup marker live in the same directory and are not
+/// payloads, and anything that is not a `.json` file is not ours.
+fn is_journal_payload_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if file_name == JOURNAL_MANIFEST_FILE || file_name == CLEANUP_MARKER_FILE {
+        return false;
+    }
+    path.extension().and_then(|ext| ext.to_str()) == Some("json")
+}
+
+/// Whether the complete retained journal is above the in-memory retention cap.
+fn retained_weight_exceeds_cap(weight: u64) -> bool {
+    weight > MAX_REPLACE_UNDO_RETAINED_BYTES
+}
+
+/// Whether recovery diagnostics permit destroying the state they describe.
+///
+/// Cleanup replaces user-recoverable state, so it may only proceed when every
+/// diagnostic explicitly allows replacement.
+fn cleanup_replacement_allowed(diagnostics: &[RecoveryDiagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic.replacement_allowed)
+}
+
+/// Which uniqueness rule rejected a manifest entry row.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ManifestDuplicate {
+    /// Two manifest rows name the same per-file journal entry file.
+    EntryFile,
+    /// Two manifest rows name the same replacement target path.
+    TargetPath,
+}
+
+/// One-pass uniqueness rejection for an active manifest's entry rows.
+///
+/// Entry-file uniqueness is checked first and is recorded even when the target
+/// path then rejects the row, because that entry file is still accounted for by
+/// the manifest and must not later be reported as an orphan.
+#[derive(Debug, Default)]
+struct ManifestEntryDedup {
+    admitted_entry_files: HashSet<String>,
+    admitted_paths: HashSet<PathBuf>,
+}
+
+impl ManifestEntryDedup {
+    fn admit(&mut self, entry_file: &str, path: &Path) -> Result<(), ManifestDuplicate> {
+        if !self.admitted_entry_files.insert(entry_file.to_string()) {
+            return Err(ManifestDuplicate::EntryFile);
+        }
+        if !self.admitted_paths.insert(path.to_path_buf()) {
+            return Err(ManifestDuplicate::TargetPath);
+        }
+        Ok(())
+    }
+
+    fn admitted_entry_files(&self) -> &HashSet<String> {
+        &self.admitted_entry_files
     }
 }
 
@@ -786,10 +970,7 @@ fn mark_cleanup_in_progress(data_dir: &Path) -> Result<()> {
 
     if has_legacy {
         let recovery = load_retired_backup(data_dir);
-        let replacement_safe = recovery
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.replacement_allowed);
+        let replacement_safe = cleanup_replacement_allowed(&recovery.diagnostics);
         for diagnostic in recovery.diagnostics {
             tracing::warn!("{}", diagnostic.summary());
         }
@@ -856,15 +1037,12 @@ fn detect_orphan_journal_entries(
         ));
     }
     for entry in entries {
+        if !is_journal_payload_file(&entry.path) {
+            continue;
+        }
         let Some(file_name) = entry.path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if file_name == JOURNAL_MANIFEST_FILE || file_name == CLEANUP_MARKER_FILE {
-            continue;
-        }
-        if entry.path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
         if active_entry_files.contains(file_name) {
             continue;
         }
@@ -897,6 +1075,318 @@ mod tests {
     use super::*;
     use crate::services::filesystem::fixture;
     use tempfile::TempDir;
+
+    // --- pure rule tests: no tempdir, no disk ---
+
+    #[test]
+    fn activation_requires_no_diagnostics_and_manifest_agreement() {
+        assert!(journal_is_active(0, Some((3, 3))));
+        assert!(!journal_is_active(1, Some((3, 3))));
+        assert!(!journal_is_active(0, Some((2, 3))));
+        assert!(!journal_is_active(0, Some((3, 2))));
+    }
+
+    #[test]
+    fn incremental_activation_has_no_manifest_to_agree_with() {
+        assert!(journal_is_active(0, None));
+        assert!(!journal_is_active(1, None));
+    }
+
+    #[test]
+    fn payload_budget_rejects_only_above_the_cap() {
+        assert!(!payload_budget_exceeded(0, 10, 10));
+        assert!(!payload_budget_exceeded(4, 6, 10));
+        assert!(payload_budget_exceeded(5, 6, 10));
+        assert!(payload_budget_exceeded(0, 11, 10));
+        // A zero cap rejects any nonzero entry but admits an empty one.
+        assert!(!payload_budget_exceeded(0, 0, 0));
+        assert!(payload_budget_exceeded(0, 1, 0));
+    }
+
+    #[test]
+    fn payload_budget_saturates_instead_of_wrapping_into_acceptance() {
+        assert!(payload_budget_exceeded(u64::MAX, 1, u64::MAX - 1));
+        assert!(!payload_budget_exceeded(u64::MAX, 1, u64::MAX));
+    }
+
+    #[test]
+    fn entry_count_cap_admits_the_exact_limit_and_rejects_one_over() {
+        assert!(!entry_count_exceeds_cap(0));
+        assert!(!entry_count_exceeds_cap(JOURNAL_SCAN_MAX_ENTRIES - 1));
+        assert!(!entry_count_exceeds_cap(JOURNAL_SCAN_MAX_ENTRIES));
+        assert!(entry_count_exceeds_cap(JOURNAL_SCAN_MAX_ENTRIES + 1));
+    }
+
+    #[test]
+    fn retained_weight_cap_admits_the_exact_limit_and_rejects_one_over() {
+        assert!(!retained_weight_exceeds_cap(0));
+        assert!(!retained_weight_exceeds_cap(
+            MAX_REPLACE_UNDO_RETAINED_BYTES
+        ));
+        assert!(retained_weight_exceeds_cap(
+            MAX_REPLACE_UNDO_RETAINED_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn payload_filter_accepts_entries_and_rejects_journal_bookkeeping() {
+        let dir = Path::new("/journal");
+        assert!(is_journal_payload_file(&dir.join("abcd1234.json")));
+        assert!(!is_journal_payload_file(&dir.join(JOURNAL_MANIFEST_FILE)));
+        assert!(!is_journal_payload_file(&dir.join(CLEANUP_MARKER_FILE)));
+        assert!(!is_journal_payload_file(&dir.join("notes.txt")));
+        assert!(!is_journal_payload_file(&dir.join("no-extension")));
+        assert!(!is_journal_payload_file(Path::new("/")));
+    }
+
+    #[test]
+    fn dedup_rejects_a_duplicate_entry_file_and_a_duplicate_target_path() {
+        let mut dedup = ManifestEntryDedup::default();
+        assert_eq!(dedup.admit("a.json", Path::new("/tmp/a.rs")), Ok(()));
+        assert_eq!(
+            dedup.admit("a.json", Path::new("/tmp/other.rs")),
+            Err(ManifestDuplicate::EntryFile)
+        );
+        assert_eq!(
+            dedup.admit("b.json", Path::new("/tmp/a.rs")),
+            Err(ManifestDuplicate::TargetPath)
+        );
+        assert_eq!(dedup.admit("c.json", Path::new("/tmp/c.rs")), Ok(()));
+    }
+
+    #[test]
+    fn dedup_accounts_for_an_entry_file_whose_target_path_was_rejected() {
+        // The entry file is still named by the manifest, so it must not later be
+        // reported as an orphan outside the active manifest.
+        let mut dedup = ManifestEntryDedup::default();
+        assert_eq!(dedup.admit("a.json", Path::new("/tmp/a.rs")), Ok(()));
+        assert_eq!(
+            dedup.admit("b.json", Path::new("/tmp/a.rs")),
+            Err(ManifestDuplicate::TargetPath)
+        );
+        assert!(dedup.admitted_entry_files().contains("b.json"));
+    }
+
+    #[test]
+    fn cleanup_is_refused_when_any_diagnostic_disallows_replacement() {
+        let allowed = RecoveryDiagnostic::repaired(
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+            Path::new("/tmp/a.json"),
+            "quarantined and replaced",
+        );
+        // `repair_skipped` deliberately preserves the file in place, so it must
+        // never be treated as safe to delete.
+        let disallowed = RecoveryDiagnostic::repair_skipped(
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+            Path::new("/tmp/b.json"),
+            "preserved in place",
+        );
+        assert!(allowed.replacement_allowed);
+        assert!(!disallowed.replacement_allowed);
+        assert!(cleanup_replacement_allowed(&[]));
+        assert!(cleanup_replacement_allowed(std::slice::from_ref(&allowed)));
+        assert!(!cleanup_replacement_allowed(std::slice::from_ref(
+            &disallowed
+        )));
+        assert!(!cleanup_replacement_allowed(&[allowed, disallowed]));
+    }
+
+    // --- shrink path ---
+
+    fn journal_with(paths: &[&str]) -> ReplaceUndoBackup {
+        let mut backup = ReplaceUndoBackup::new();
+        for path in paths {
+            backup.insert(
+                PathBuf::from(path),
+                ReplaceUndoEntry::new(
+                    format!("before-{path}").into_bytes(),
+                    format!("after-{path}").into_bytes(),
+                ),
+            );
+        }
+        backup
+    }
+
+    #[test]
+    fn active_journal_with_a_duplicate_target_path_is_inactive() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let target = PathBuf::from("/tmp/a.rs");
+        let entry = ReplaceUndoEntry::new(b"before".to_vec(), b"after".to_vec());
+        save_entry(dir.path(), &target, &entry).expect("save the single entry file");
+        let manifest_path = dir.path().join(JOURNAL_DIR).join(JOURNAL_MANIFEST_FILE);
+        let manifest = ReplaceJournalManifest {
+            incremental: false,
+            entries: vec![
+                ReplaceJournalManifestEntry {
+                    path: target.clone(),
+                    entry_file: entry_file_name(&target),
+                },
+                ReplaceJournalManifestEntry {
+                    path: target.clone(),
+                    entry_file: "duplicate-target.json".to_string(),
+                },
+            ],
+        };
+        let config = RecoveryLoadConfig::new(
+            dir.path(),
+            &manifest_path,
+            RecoveryMetadataClass::ReplaceAllUndoJournal,
+        );
+        save_enveloped_json_path(&config, KIND_REPLACE_UNDO_MANIFEST, &manifest)
+            .expect("write duplicate-target manifest fixture");
+
+        let load = load_recovering(dir.path());
+
+        assert!(!load.active);
+        assert!(load.backup.is_empty());
+        assert!(load.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.problem,
+                RecoveryProblem::RepairSkipped { ref detail }
+                    if detail.contains("duplicate target path")
+            )
+        }));
+    }
+
+    #[test]
+    fn incremental_journal_over_the_retained_memory_cap_is_inactive() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        mark_incremental_journal_active(dir.path()).expect("arm incremental journal");
+        // Each entry carries enough bytes that a bounded number of them crosses
+        // the retained-memory ceiling without needing a huge fixture.
+        let entry_bytes = 1usize << 20;
+        let mut index = 0usize;
+        let mut retained = ReplaceUndoBackup::new();
+        while retained_byte_weight_probe(&retained) <= MAX_REPLACE_UNDO_RETAINED_BYTES {
+            let path = PathBuf::from(format!("/tmp/retained-{index}.rs"));
+            let entry = ReplaceUndoEntry::new(vec![b'o'; entry_bytes], vec![b'r'; entry_bytes]);
+            save_entry(dir.path(), &path, &entry).expect("save retained-cap entry");
+            retained.insert(path, entry);
+            index = index.saturating_add(1);
+            assert!(index < 4_096, "retained-cap fixture should stay bounded");
+        }
+
+        // The payload cap must not be what rejects this fixture.
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(Some(u64::MAX)));
+        let load = load_recovering(dir.path());
+        TEST_MAX_REPLACE_UNDO_BYTES.with(|cap| cap.set(None));
+
+        assert!(!load.active);
+        assert!(load.backup.is_empty());
+        assert!(load.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.problem,
+                RecoveryProblem::RepairSkipped { ref detail }
+                    if detail.contains("retained-memory limit")
+            )
+        }));
+    }
+
+    fn retained_byte_weight_probe(backup: &ReplaceUndoBackup) -> u64 {
+        replace_undo_retained_byte_weight(backup)
+    }
+
+    #[test]
+    fn shrink_keeps_the_journal_active_and_drops_only_restored_entries() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let full = journal_with(&["/tmp/a.rs", "/tmp/b.rs", "/tmp/c.rs"]);
+        save(dir.path(), &full).expect("save full journal");
+        let retained_entry = dir
+            .path()
+            .join(JOURNAL_DIR)
+            .join(entry_file_name(Path::new("/tmp/b.rs")));
+        let retained_inode = fs_metadata::inode(&retained_entry).expect("stat retained entry");
+
+        let remaining = journal_with(&["/tmp/b.rs"]);
+        shrink_journal_to(dir.path(), &remaining).expect("shrink journal");
+
+        let load = load_recovering(dir.path());
+        assert!(load.active, "a shrunken journal must stay active");
+        assert_eq!(load.backup, remaining);
+        assert!(!fs_metadata::exists(
+            &dir.path()
+                .join(JOURNAL_DIR)
+                .join(entry_file_name(Path::new("/tmp/a.rs")))
+        ));
+        // The load-bearing property, and what distinguishes a shrink from a full
+        // rewrite: the retained entry file is never destroyed and recreated, so
+        // there is no window in which the unrestored file has no durable
+        // rollback copy. A `save` would replace this inode.
+        assert_eq!(
+            fs_metadata::inode(&retained_entry).expect("stat retained entry after shrink"),
+            retained_inode,
+            "a shrink must leave every retained entry file in place",
+        );
+    }
+
+    #[test]
+    fn shrink_interrupted_before_cleanup_still_loads_an_active_journal() {
+        // Simulates the crash window: the smaller manifest is durable but the
+        // superseded entry files have not been removed yet. Recovery must report
+        // the orphans and still activate, or a partial undo would leave the
+        // unrestored files with no usable rollback copy.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let full = journal_with(&["/tmp/a.rs", "/tmp/b.rs"]);
+        save(dir.path(), &full).expect("save full journal");
+        let remaining = journal_with(&["/tmp/b.rs"]);
+        mark_journal_active(dir.path(), &remaining).expect("commit smaller manifest only");
+
+        let load = load_recovering(dir.path());
+
+        assert!(load.active);
+        assert_eq!(load.backup, remaining);
+        assert!(load.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.problem,
+                RecoveryProblem::RepairSkipped { ref detail }
+                    if detail.contains("orphaned entry")
+            )
+        }));
+    }
+
+    #[test]
+    fn shrink_falls_back_to_a_full_rewrite_when_the_journal_is_not_a_superset() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let unrelated = journal_with(&["/tmp/x.rs"]);
+        save(dir.path(), &unrelated).expect("save unrelated journal");
+
+        let fresh = journal_with(&["/tmp/a.rs", "/tmp/b.rs"]);
+        shrink_journal_to(dir.path(), &fresh).expect("shrink falls back to save");
+
+        let load = load_recovering(dir.path());
+        assert!(load.active);
+        assert_eq!(load.backup, fresh);
+    }
+
+    #[test]
+    fn shrink_falls_back_when_a_cleanup_marker_is_present() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let full = journal_with(&["/tmp/a.rs", "/tmp/b.rs"]);
+        save(dir.path(), &full).expect("save full journal");
+        mark_cleanup_in_progress(dir.path()).expect("mark interrupted cleanup");
+
+        let remaining = journal_with(&["/tmp/b.rs"]);
+        shrink_journal_to(dir.path(), &remaining).expect("shrink falls back to save");
+
+        let load = load_recovering(dir.path());
+        assert!(load.active, "the fallback rewrite must clear the marker");
+        assert_eq!(load.backup, remaining);
+    }
+
+    #[test]
+    fn shrink_to_an_empty_journal_deletes_it() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        save(dir.path(), &journal_with(&["/tmp/a.rs"])).expect("save journal");
+
+        shrink_journal_to(dir.path(), &ReplaceUndoBackup::new()).expect("shrink to empty");
+
+        assert!(
+            load(dir.path())
+                .expect("empty journal loads empty")
+                .is_empty()
+        );
+        assert!(!fs_metadata::exists(&dir.path().join(JOURNAL_DIR)));
+    }
 
     #[test]
     fn save_load_delete_roundtrip() {

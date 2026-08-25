@@ -149,7 +149,10 @@ impl LushtextSearchPanel {
 
                 saved_searches::add(&mut panel.imp().history.saved_searches.borrow_mut(), entry);
                 if let Some(ref cb) = *panel.imp().callbacks.message_callback.borrow() {
-                    cb(&format!("Search saved as '{display_name}'"));
+                    cb(
+                        &format!("Search saved as '{display_name}'"),
+                        crate::services::notifications::NotificationSeverity::Info,
+                    );
                 }
                 // Persist a snapshot so later UI edits do not race this
                 // background save.

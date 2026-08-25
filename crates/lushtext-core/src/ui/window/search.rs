@@ -17,6 +17,7 @@ use crate::services::{
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_panel::SearchProgressUpdate;
+use crate::ui::search_panel::journal::UndoRestoreClaim;
 use crate::ui::status_bar::MessageKind;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
@@ -181,9 +182,25 @@ pub fn setup_search_panel(window: &LushtextWindow) {
 
     // --- Status messages from search panel (e.g., "Search saved as '...'" ) ---
     let window_weak = window.downgrade();
-    imp.search_panel.connect_message(move |text| {
-        if let Some(window) = window_weak.upgrade() {
-            window.publish_status_message(text, MessageKind::Info);
+    imp.search_panel.connect_message(move |text, severity| {
+        let Some(window) = window_weak.upgrade() else {
+            return;
+        };
+        window.publish_status_message(text, severity);
+        // A warning or error from this panel is a recovery-relevant alert, not
+        // chatter: an undo journal that failed to persist is the case that
+        // exists today, and a screen-reader user must not have to notice the
+        // status lane changed colour to learn it. Informational messages such
+        // as "Search saved as ..." stay silent.
+        if matches!(
+            severity,
+            NotificationSeverity::Warning | NotificationSeverity::Error
+        ) {
+            window.announce_workflow_update(
+                AnnouncementLane::Alert,
+                "workspace-search-alert",
+                text,
+            );
         }
     });
 
@@ -277,7 +294,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                                 GuardedReplaceApplyResult::Applied {
                                     result: Box::new(result),
                                     backup: Some(
-                                        crate::ui::search_panel::own_reserved_undo_backup(
+                                        crate::ui::search_panel::own_undo_journal_payload(
                                             undo_reservation,
                                             backup,
                                         ),
@@ -297,6 +314,16 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                             backup,
                         } => {
                             let replace_result = *replace_result;
+                            imp.search_panel.record_replace_apply_counts(
+                                crate::ui::search_panel::policy::ReplaceApplyCounts {
+                                    replaced: u32::try_from(replace_result.replaced_count)
+                                        .unwrap_or(u32::MAX),
+                                    skipped: u32::try_from(replace_result.skipped_count)
+                                        .unwrap_or(u32::MAX),
+                                    errors: u32::try_from(replace_result.error_count)
+                                        .unwrap_or(u32::MAX),
+                                },
+                            );
                             let mut msg = format!(
                                 "Replaced {} of {} matches in {} files",
                                 replace_result.replaced_count,
@@ -327,11 +354,10 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                             }
 
                             if let Some(backup) = backup {
-                                if imp.search_panel.set_persisted_undo_backup_for_generation(
-                                    backup,
-                                    undo_generation,
-                                ) {
-                                    imp.search_panel.show_undo_button();
+                                if imp
+                                    .search_panel
+                                    .publish_undo_journal_for_generation(backup, undo_generation)
+                                {
                                     window.announce_workflow_update(
                                         AnnouncementLane::StatusUpdate,
                                         "replace-all-undo-available",
@@ -375,19 +401,19 @@ pub fn setup_search_panel(window: &LushtextWindow) {
             return;
         };
 
-        let Some(_freshness) = window.imp().search_panel.begin_replace_transaction() else {
-            window.imp().search_panel.show_undo_button();
-            return;
-        };
-        let Some(undo_reservation) = window.imp().search_panel.try_reserve_undo_replacement(None)
-        else {
-            window.publish_status_message(
-                "Undo deferred while memory pressure clears; try again shortly",
-                MessageKind::Warning,
-            );
-            window.imp().search_panel.finish_replace_transaction();
-            window.imp().search_panel.show_undo_button();
-            return;
+        // The panel owns the transaction gate, the disposal reservation, and the
+        // affordance each refusal must put back, so this stage delegates the
+        // whole claim rather than re-reading and re-mutating panel state here.
+        let undo_reservation = match window.imp().search_panel.begin_undo_restore() {
+            UndoRestoreClaim::Claimed(reservation) => reservation,
+            UndoRestoreClaim::TransactionBusy => return,
+            UndoRestoreClaim::CapacityDeferred => {
+                window.publish_status_message(
+                    "Undo deferred while memory pressure clears; try again shortly",
+                    MessageKind::Warning,
+                );
+                return;
+            }
         };
 
         let mut open_canonical_identities = HashSet::new();
@@ -412,7 +438,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                     drop(undo_reservation);
                     None
                 } else {
-                    Some(crate::ui::search_panel::own_reserved_undo_backup(
+                    Some(crate::ui::search_panel::own_undo_journal_payload(
                         undo_reservation,
                         remaining,
                     ))
@@ -456,8 +482,7 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                     window
                         .imp()
                         .search_panel
-                        .set_guarded_undo_backup(remaining_backup);
-                    window.imp().search_panel.show_undo_button();
+                        .finish_undo_restore(Some(remaining_backup));
                 } else {
                     let message = format!("Reverted {} files", outcome.restored_count());
                     window.publish_status_message(&message, MessageKind::Info);
@@ -466,9 +491,8 @@ pub fn setup_search_panel(window: &LushtextWindow) {
                         "replace-all-undo-complete",
                         &message,
                     );
-                    window.imp().search_panel.clear_undo_backup();
+                    window.imp().search_panel.finish_undo_restore(None);
                 }
-                window.imp().search_panel.finish_replace_transaction();
             },
         );
     });

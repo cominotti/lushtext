@@ -110,10 +110,41 @@ pub struct SearchPanelEvidence {
     pub preview_selection_jobs: u64,
     /// Superseded preview payloads still awaiting final off-main destruction.
     pub preview_retirement_pending: usize,
+    /// Generation identifying the current preview attempt.
+    pub preview_generation: u32,
+    /// Whether the preview owns its single disposal-capacity retry source.
+    ///
+    /// Test-gated for the same reason as
+    /// [`SearchPanelEvidence::undo_capacity_retry_pending`]: the underlying
+    /// wakeup only reports armed state under the `test-utils` feature.
+    #[cfg(feature = "test-utils")]
+    pub preview_capacity_retry_pending: bool,
+
+    // --- durable apply transaction ---
+    /// Whether one Replace All apply or undo transaction owns journal mutation.
+    ///
+    /// Distinct from [`SearchPanelEvidence::replace_preview_pending`], which
+    /// folds this together with preview and retirement work. Only this field
+    /// answers "is the apply transaction claimed".
+    pub replace_transaction_pending: bool,
+    /// Journal generation the claimed transaction reserved and has not handed off.
+    pub replace_transaction_generation: Option<u32>,
+    /// Counts published by the most recent durable Replace All apply.
+    pub last_apply_counts: Option<super::policy::ReplaceApplyCounts>,
 
     // --- undo journal ---
     /// Whether a Replace All undo backup is available.
     pub has_undo_backup: bool,
+    /// Generation invalidating stale journal installs, clears, saves, and deletes.
+    pub undo_backup_generation: u32,
+    /// Files the installed undo journal can restore.
+    pub undo_backup_entry_count: usize,
+    /// Disposal weight the installed undo journal retains.
+    pub undo_backup_retained_bytes: u64,
+    /// Undo-journal disk save, delete, and recovery jobs dispatched to workers.
+    pub journal_disk_jobs: u64,
+    /// Dispatched undo-journal disk jobs whose GTK completion has not run yet.
+    pub journal_disk_jobs_in_flight: usize,
     /// Whether persisted Undo owns its single capacity-retry source.
     ///
     /// Test-gated because the underlying wakeup only reports armed state under
@@ -159,6 +190,26 @@ impl LushtextSearchPanel {
     pub fn evidence(&self) -> SearchPanelEvidence {
         let imp = self.imp();
         let preview = &imp.preview;
+        // Derive everything the installed journal contributes inside one short
+        // block, then let the borrow end. The struct literal below calls two
+        // dozen accessors, and holding a `RefCell` borrow across them is what
+        // would make this module's reentrancy constraint a matter of care rather
+        // than of structure: nothing in that literal can re-borrow a cell this
+        // function is no longer holding.
+        let (has_undo_backup, undo_backup_entry_count, undo_backup_retained_bytes) = {
+            let installed_journal = preview.undo_backup.borrow();
+            (
+                installed_journal.is_some(),
+                installed_journal.as_ref().map_or(0, |backup| backup.len()),
+                installed_journal
+                    .as_ref()
+                    .and_then(|backup| backup.reservation_weight())
+                    .unwrap_or(0),
+            )
+        };
+        // The identity clone is a separate short borrow for the same reason.
+        #[cfg(feature = "test-utils")]
+        let undo_backup = preview.undo_backup.borrow().clone();
         SearchPanelEvidence {
             query: self.query(),
             case_sensitive: self.case_sensitive(),
@@ -203,12 +254,26 @@ impl LushtextSearchPanel {
             preview_retirement_pending: preview
                 .preview_retirement_pending
                 .load(std::sync::atomic::Ordering::Acquire),
+            preview_generation: preview.preview_generation.get(),
+            #[cfg(feature = "test-utils")]
+            preview_capacity_retry_pending: preview.preview_capacity_wakeup.is_armed(),
 
-            has_undo_backup: self.has_undo_backup(),
+            replace_transaction_pending: self.replace_transaction_claimed(),
+            replace_transaction_generation: preview.replace_transaction_generation.get(),
+            last_apply_counts: preview.last_apply_counts.get(),
+
+            has_undo_backup,
+            undo_backup_generation: preview
+                .undo_backup_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            undo_backup_entry_count,
+            undo_backup_retained_bytes,
+            journal_disk_jobs: preview.journal_disk_jobs.get(),
+            journal_disk_jobs_in_flight: preview.journal_disk_jobs_in_flight.get(),
             #[cfg(feature = "test-utils")]
             undo_capacity_retry_pending: preview.undo_capacity_wakeup.is_armed(),
             #[cfg(feature = "test-utils")]
-            undo_backup: preview.undo_backup.borrow().clone(),
+            undo_backup,
 
             history_count: self.history_count(),
             saved_search_count: self.saved_search_count(),
@@ -295,7 +360,7 @@ impl LushtextSearchPanel {
     pub fn replace_preview_pending(&self) -> bool {
         let preview = &self.imp().preview;
         preview.preview_pending.get()
-            || preview.replace_transaction_pending.get()
+            || self.replace_transaction_claimed()
             || preview.preview_worker_running.get()
             || preview.queued_preview_request.borrow().is_some()
             || preview

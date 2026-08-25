@@ -83,7 +83,7 @@ convention has been proven on at least two completed lower-risk migrations.
 
 | Row id | Workflow | Current size | Entry points | Owned pure policy | Seams (i/c/a/p) | Seam value object | Evidence surface | Risk | Slot | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs` (was the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census)); mutation parity proved | panel half migrated: 8 inspection fns retired into `evidence.rs`, 5 configuration setters plus 6 override statics collapsed into `SearchPanelTestPolicy`; actuation seams deferred | exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side) | exists: `SearchPanelEvidence` via `evidence()`; automation `window.content_search` projects from it | tier-2 (search/preview half), tier-3 (Replace All write half) | 1 (search/preview half, complete) + 2 (replace/undo half) | migrated |
+| WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs`: slot 1 moved the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census); slot 2b added the Replace All durable half's decisions (preview reservation and shrink-to weights, the saturating retained-byte cast, the undo-capacity admission plan, the journal generation predicate, `ReplaceApplyCounts`). Mutation parity proved for both, and slot 2b's move was out-of-scope-to-in-scope, so it *gained* 11 mutants with zero survivors. Domain `model/workspace_search.rs` stays | both halves migrated: slot 1 retired 8 inspection fns into `evidence.rs` and collapsed 5 configuration setters plus 6 override statics into `SearchPanelTestPolicy`; slot 2b added 10 evidence fields and needed no new inspection fn, no new override, and no new actuation seam. 5 actuation seams remain on the replace/undo transaction (`clear_undo_backup_for_test`, `reserve_undo_backup_generation_for_test`, `set_persisted_undo_backup_for_generation_for_test`, `begin_replace_transaction_for_test`, `finish_replace_transaction_for_test`) plus 2 accessibility probes, all deferred at programme level. Write-side seams in `services/content_search/replace.rs` are classified under [Migrated Workflow Roles](#wfr-search-replace) | **3 seams reified** (the programme's primary unit; long signatures shortened remains 0 for this row, and no function in it has 6 or more non-receiver parameters, so neither the receiver-counted 88 nor the strict 43 signature figure applies here). exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side). new: `UndoRestoreClaim` (the window's undo-restore claim seam, naming the transaction-busy and capacity-deferred refusals the panel must restore the affordance for) | exists: `SearchPanelEvidence` via `evidence()`, extended by slot 2b with the apply transaction's own pending flag, all three generations, the preview capacity-retry state, the installed journal's entry count and retained weight, in-flight and cumulative journal disk-job counters, and the last apply's counts; automation `window.content_search` projects from it and slot 2b widened nothing | tier-2 (search/preview half), tier-3 (Replace All write half) — **both now covered** | 1 (search/preview half) + 2b (replace/undo half) | migrated |
 | WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | 16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897); the `ui` subtotal is `ui/command_palette/**` (1,672) plus `ui/window/focus_indexing.rs` (856), which the census attributed to this row but which stays window code | `win.toggle-command-palette` (`Ctrl+Shift+P`), palette mode dropdown and Tab cycling, sidebar file create/delete/rename and watcher reconciliation, `win.notes-show-notes` (the census cell said `Ctrl+P` / `Ctrl+K`; the real palette accelerator is `Ctrl+Shift+P` and `Ctrl+K` belongs to the recent-Open popover) | relocated to `crates/lushtext-core/src/ui/command_palette/policy.rs` (queue admission byte/cap math, batch-kind selection and flush guard, mutation-generation arbitration and replay, retirement-cap classification, header-skipping navigation, presentation decisions); mutation coverage gained, not relocated — see [Migrated Workflow Roles](#wfr-command-palette). Domain `model/palette.rs` (17 consumers) stays | palette half migrated: 5 inspection fns retired into `evidence.rs`, 2 configuration setters plus 2 override statics collapsed into `CommandPaletteTestPolicy`; 3 process-global retirement counters retained as lifecycle probes (per-widget folding would change their meaning from "this process observed a last-owned at-cap retirement" to a count no test asks for); 3 actuation seams deferred. The pre-migration cell read `15/10/2/0 = 27 fns, 40 sites, 4 override statics`, which was row-scoped: `ui/command_palette/**` held 12 of those functions and 22 of the gate-attribute sites, and the other 15 live in `services/palette/**` and `ui/window/notes/**` shared with `WFR-NOTES-BOOKMARKS` (slot 5) | exists: `PaletteSearchCoordinator` generation identity + `is_current` (query seam; the convention accepts a coordinator that owns the generation as the seam value object). new: `FileIndexMutationTicket` + `FileIndexMutationFacts` + `arbitrate` (file-index mutation seam) | exists: `CommandPaletteEvidence` via `evidence()`; automation `window.command_palette` and both palette readiness blockers project from it | tier-2 | 2a | migrated |
 | WFR-DOCUMENT-SAVE | Save, Save As, save formatting, durability | 7 files, 6,672 lines (ui 2,132 / model 991 / services 3,549) | `win.save`, `win.save-as`, `Ctrl+S`, close-with-changes dialog, autosave-on-close | `model/save_admission.rs` (2 consumer files, 1 workflow → single-consumer, relocates) | 10/11/9/4 = 34 fns, 44 sites, 5 override statics | exists: `SaveCompletionTicket` (completion seam). required: `QueuedSaveTicket` + `QueuedSaveFacts` (admission seam; carries the renamed field) | partial: `SaveAdmissionSnapshot` | tier-3 | 3 | pending |
 | WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | 10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375) | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore | `model/file_load.rs` (4 consumers → domain-shaped, stays pending review in slot 3) | 23/7/3/1 = 34 fns, 55 sites, 3 override statics | required: `LoadRequestTicket` (carries `{load_generation, cancel_token}`, exploded at 2 call sites today) | partial: `FileLoadAdmissionSnapshot`, `OpenPopoverRowLayoutSnapshot` | tier-3 | 3 | pending |
@@ -150,6 +150,43 @@ hand-back became `hand_back_undo_backup` so replace stage 4 is delegated like
 the other stages instead of being inlined in the facade. The current
 stage order and every resumption point are narrated in the facade,
 `crates/lushtext-core/src/ui/search_panel/mod.rs`.
+
+**Post-migration note, slot 2b (replace/undo half).** The Replace All trace now
+reads: preview button -> `activate_replace_preview` -> `enter_preview_mode`
+(`replace_execution`) -> `issue_preview_ticket` -> `spawn_preview_request` (whose
+capacity refusal parks the request on `preview_capacity_wakeup`) -> worker builds
+rows under `ReplacePreviewBudget`, resuming in a completion closure that
+revalidates the ticket -> `activate_confirm_replacements` ->
+`begin_confirmed_replacement`, which claims `journal::begin_replace_transaction`
+-> `apply_checked_replacements` -> worker partitions the checked rows, resuming
+in a second completion closure -> the window's Replace All callback takes
+`journal::take_replace_transaction`, reserves capacity through
+`journal::try_reserve_undo_replacement`, calls
+`journal::supersede_prior_undo_for_replace`, performs the durable write in
+`services/content_search`, then returns through
+`journal::record_replace_apply_counts` and either
+`journal::publish_undo_journal_for_generation` or
+`journal::clear_undo_backup_for_generation`, always ending in
+`journal::finish_replace_transaction` -> Undo -> `activate_undo_replacements` ->
+`journal::hand_back_undo_backup` -> the window claims the panel with
+`journal::begin_undo_restore` (returning `UndoRestoreClaim`) and reports with
+`journal::finish_undo_restore`, which reinstalls a remaining journal or clears it
+and releases the transaction. Startup recovery is a fifth entry point:
+`journal::load_persisted_undo_backup`, which re-enters itself from
+`undo_capacity_wakeup` when disposal admission defers it.
+
+Post-split owner of each shared field, because the two Replace All modules are
+not state-disjoint: `journal.rs` owns `replace_transaction_pending`,
+`replace_transaction_generation`, and `undo_backup_generation`, and
+`replace_execution` reads the first two only through
+`replace_transaction_claimed` and `replace_transaction_generation_reserved`.
+
+**Twelve** inversions across both stage orders — 2 in the search stage order and
+10 in Replace All, counting one per point where control leaves the workflow and
+later resumes at a named place. The census recorded six, and the facade narrated
+four of the Replace All ten until slot 2b's review caught the gap: the trace's
+counts were floors, as slot 2a also found. The facade, `replace_execution.rs`, and
+`journal.rs` now agree on twelve.
 
 **Stop semantics at the content-search boundary.** The walker's stop reasons are
 now distinguished by owner (`WalkStop` in
@@ -429,7 +466,7 @@ workflow's migration change.
 | --- | --- | --- | --- |
 | `workspace_scan.rs` | 231 | 3, all in `ui/sidebar/workspace_section/` | single-workflow → relocates with `WFR-WORKSPACE-TREE` |
 | `workspace_persistence.rs` | 338 | 2, both workspace sidebar | single-workflow → relocates with `WFR-WORKSPACE-TREE` |
-| `workspace_search.rs` | 503 | 2, both search | single-workflow → review with `WFR-SEARCH-REPLACE` slot 2 |
+| ~~`workspace_search.rs`~~ | 503 | the census cell said "2, both search" and undercounted | **resolved by slot 2b: it is domain and stays in `model/`.** See [Modules confirmed as domain and staying in `model/`](#modules-confirmed-as-domain-and-staying-in-model) |
 
 `model/file_load.rs` (4 consumers) is domain-shaped but sits close to the
 boundary; `WFR-DOCUMENT-LOAD`'s migration in slot 3 must decide it explicitly
@@ -443,6 +480,26 @@ rather than inheriting this row.
 `formatting_overrides.rs`, `folder_note.rs`, `document_note.rs`. Each names a
 domain concept and has three or more consumers, or is a domain type with a
 single natural owner.
+
+**`workspace_search.rs` (503 lines) joins this list — decided by slot 2b.** The
+census listed it above as a single-workflow module awaiting a relocation
+decision on the strength of "2 consumers, both search". Slot 2b re-derived the
+reference set and it is larger, and it forbids the move:
+
+| Consumer | What it uses |
+| --- | --- |
+| `services/content_search/search.rs` | imports `WorkspaceSearchFallbackClaim`, `WorkspaceSearchFallbackLedger`, `WorkspaceSearchFallbackLimits`, `WorkspaceSearchFallbackMetrics`, `WorkspaceSearchTraversalPlan`, and names `WorkspaceSearchIncompleteReason` |
+| `model/content_search.rs` | embeds `WorkspaceSearchFallbackMetrics` and `WorkspaceSearchIncompleteReason` in public enum variants |
+| `ui/search_panel/execution.rs` | imports `WorkspaceSearchTraversalPlan` |
+| `crates/lushtext-core/benches/benchmarks.rs` | addresses `WorkspaceSearchFallbackMetrics` and `WorkspaceSearchTraversalPlan` directly |
+| `crates/lushtext-core/tests/workspace_terminology.rs` | names the file path literally |
+
+A service and a `model/` sibling both depend on it, so relocating it under
+`ui/search_panel/` would invert dependency direction (`services -> ui`), which
+the convention forbids outright. It is already pure (no GTK-family import),
+already mutation-scoped through `model/**`, and already carries co-located unit
+tests, so the relocation would trade a dependency-direction violation for
+nothing. **This decision is closed; a later slot must not re-open it.**
 
 After the relocations above, `model/` retains 22 of its current 29 files. The
 first two have happened: `model/` now holds 27 files, and the two search policy
@@ -703,19 +760,23 @@ convention already sanctions. Slot 6 (minimap) is the expected exception for a
 a migration does need a new obligation or capability, the retroactive-amendment
 rule in [Completion Rule](#completion-rule) applies to the fix.
 
-**Slot 1 residue, and what slot 2b still inherits.** `WFR-SEARCH-REPLACE` is
-`migrated` for its search and preview half only. Two of the six obligations are
-discharged by slot 2a: ~~the normative facade line budget number~~ (declared at
-370, see [Facade size budget](#facade-size-budget)) and ~~the first
-`WFR-AUTOMATION-SPINE` projections beyond the search fields~~ (`window.command_palette`
-and both palette readiness blockers now project from palette evidence). Four
-remain, and all four are **slot 2b's**: the Replace All write path and its undo
-journal (`services/search_backup.rs`); `replace.rs`'s final coordination role
-name or names; making `activate_undo_replacements` a delegation instead of
-facade-inlined transaction bookkeeping and widget mutation; and
-`model/workspace_search.rs`'s relocation decision. Slot 2b must **not** re-plan
-the capped-result delivery fix or the `WalkStop` stop-semantics split — both
-landed in slot 1 and are recorded under
+**Slot 1 residue: all six obligations are discharged.** `WFR-SEARCH-REPLACE` is
+now `migrated` end to end. Two obligations were paid by slot 2a — the normative
+facade line budget number (declared at 370, see
+[Facade size budget](#facade-size-budget)) and the first
+`WFR-AUTOMATION-SPINE` projections beyond the search fields
+(`window.command_palette` and both palette readiness blockers). The remaining
+four were paid by slot 2b:
+
+| Obligation | Outcome |
+| --- | --- |
+| the Replace All write path and its undo journal | migrated; `journal.rs` owns it, and the write-side seams are classified under [WFR-SEARCH-REPLACE](#wfr-search-replace) |
+| `replace.rs`'s final coordination role name or names | `replace_execution.rs` plus `journal.rs`; `journal` was added to the bounded set |
+| making `activate_undo_replacements` a delegation | **already done by slot 1's result-cap fix.** The residue text was stale: the facade holds a one-line call to `journal::hand_back_undo_backup` that reads no transaction state and mutates no widget. The residual asymmetry was one layer out, in `ui/window/search.rs`'s undo path, which claimed the transaction, re-showed the undo button on two early returns, reserved capacity, and installed the remainder backup inline. Slot 2b fixed **that**, through `journal::begin_undo_restore` (returning `UndoRestoreClaim`) and `journal::finish_undo_restore`. A future session must not re-open the facade item, nor conclude the window-side work was skipped |
+| `model/workspace_search.rs`'s relocation decision | **it stays in `model/`**; see [Modules confirmed as domain and staying in `model/`](#modules-confirmed-as-domain-and-staying-in-model) |
+
+Slot 2b did **not** re-plan the capped-result delivery fix or the `WalkStop`
+stop-semantics split — both landed in slot 1 and are recorded under
 [WFR-SEARCH-REPLACE](#wfr-search-replace).
 
 The change-level view of these slots, with the same list in a machine-readable
@@ -824,7 +885,7 @@ amend the spec and re-migrate every already-migrated row in the same change.
 | Facade | the workflow's public module surface | narrates stages, delegates everything |
 | Pure policy | `policy.rs` | one per workflow; no GTK-family imports |
 | Evidence | `evidence.rs` | one per workflow; one visibility rule — the narrowest visibility its readers require, and a pre-existing wider evidence type is narrowed to it rather than left wide |
-| Coordination | bounded set of job names: `admission`, `execution`, `retirement`, `watch`, optionally prefixed with the stage order served (`index_execution`) | a workflow may own more than one |
+| Coordination | bounded set of job names: `admission`, `execution`, `retirement`, `watch`, `journal`, optionally prefixed with the stage order served (`index_execution`, `replace_execution`) | a workflow may own more than one |
 
 The convention deliberately does **not** fix a single coordination file name. The
 census found `runtime` already naming three different jobs across four files, and
@@ -852,12 +913,16 @@ a gate to reject an off-set name.
 
 ### Facade size budget
 
-**Declared and active.** The exemplar's facade
-(`crates/lushtext-core/src/ui/search_panel/mod.rs`) is **350 physical lines**, of
-which 75 are the module-doc stage narration and 166 are non-comment, non-blank
-lines, narrating 6 inversions across two stage orders. It measured 357 lines when
-the migration landed and 350 after the result-cap fix delegated the undo
-hand-back out of the facade. It replaced a 578-line
+**Declared and active.** The number was derived from the exemplar's facade
+(`crates/lushtext-core/src/ui/search_panel/mod.rs`) as it measured **at slot 1**:
+**350 physical lines**, of which 75 were the module-doc stage narration and 166
+were non-comment, non-blank lines, narrating 6 of its inversions across two stage
+orders. It measured 357 lines when the migration landed and 350 after the
+result-cap fix delegated the undo hand-back out of the facade. **That 350 is
+history, not the current size**: slot 2b migrated the row's Replace All half, and
+the facade now measures **369 physical lines** narrating **all twelve** of the
+workflow's inversions (2 in the search stage order, 10 in Replace All). It
+replaced a 578-line
 `mod.rs` that also held the accessibility projection and 23 observation getters;
 those moved to `accessibility.rs` and `evidence.rs` respectively. Physical lines
 are the metric the mechanical check uses, so that is the number a budget should
@@ -875,7 +940,29 @@ would force the exemplar facade's narration to be split, which defeats the
 facade. Slot 2a re-measured the exemplar at 350 before declaring the number and
 verified that facade against it (see [Retroactive amendment](#retroactive-amendment)).
 
-**The 20 lines of headroom are a stated risk, deliberately taken.** A loose
+**The headroom is now 1 line, and that is this section's own "real evidence"
+trigger firing.** The risk this paragraph described was taken deliberately and has
+now materialized. Slot 2a declared 370 against a 350-line facade — 20 lines of
+headroom. Slot 2b finished that same workflow and the facade reached **369**,
+leaving **one line**. Getting there was not free: the first honest narration of
+the completed Replace All stage order landed at 379, and it was brought back under
+budget only by folding module-ownership detail into the role table, compressing
+every inversion bullet, and delegating the options-row reveal out of the facade
+entirely. The budget was never edited, which is the rule working — but a facade
+one line from its ceiling is not a margin, and **slot 3 must plan against 1 line,
+not 20.**
+
+The paragraph below still states the correct response, and it still applies. What
+has changed is the honest reading of its last sentence: this section says that if
+an honest role split cannot fit 370, that is "real evidence the number is wrong,
+and it must be corrected while as few workflows as possible are migrated." Slot 2b
+*did* fit, so the number is not yet proven wrong — but the next workflow to narrate
+two stage orders will decide it, and only two workflows are migrated today. A
+slot-3 facade that cannot fit after honest delegation should raise the number
+through the spec rather than mangle its narration, and should do it then rather
+than later, because the re-migration cost grows with every migrated row.
+
+A loose
 budget enforces nothing, so the number is tight; the consequence is that a facade
 narrating two stage orders may not fit on the first attempt. The response is
 always to delegate more work into the coordination modules, never to raise the
@@ -946,36 +1033,88 @@ coordination module, owns no pure policy, or relocated no policy module.
 ### WFR-SEARCH-REPLACE
 
 - facade: `ui/search_panel/mod.rs`
-- coordination: `ui/search_panel/execution.rs`, `ui/search_panel/retirement.rs`, `ui/search_panel/replace.rs`
+- coordination: `ui/search_panel/execution.rs`, `ui/search_panel/retirement.rs`, `ui/search_panel/replace_execution.rs`, `ui/search_panel/journal.rs`
 - policy: `ui/search_panel/policy.rs`
 - evidence: `ui/search_panel/evidence.rs`
-- mutation parity: `openspec/changes/normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md`
+- mutation parity: `openspec/changes/normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md` (slot 1), `openspec/changes/complete-search-replace-workflow-readability/evidence/mutation-parity-replace-policy.md` (slot 2b)
+- slot 2b's other evidence, all under `openspec/changes/complete-search-replace-workflow-readability/evidence/`: `test-counts.md` (before/after counts and their counting method), `widget-test-search-backup-site-migration.md` (the per-site categorization of the 35 around-the-widget service reaches), `live-run.md` plus `live-run-stderr.log` (the live-session Replace All and undo, including why `make run` itself was unsafe here)
 
 Notes on this row, which is the exemplar and therefore the reference for the
-migrations that follow:
+migrations that follow. Slot 1 migrated its search and preview half; slot 2b
+migrated the Replace All write path and its undo journal, so the row is now
+migrated end to end.
 
 - `runtime.rs` is gone. Its streaming-search half became `execution.rs` and its
   bounded-disposal half became `retirement.rs`, which is what the two-role split
   the census predicted looks like in practice.
-- `replace.rs` keeps its workflow-descriptive name rather than taking a bounded
-  role name. It owns the Replace All preview *and* the durable undo journal, and
-  the journal half is slot-2 scope, so naming its coordination job now would
-  have to be redone when that half migrates. Slot 2 must decide its final role
-  name (or names) as part of finishing this workflow.
+- **`replace.rs` is gone, and its role name is decided.** Slot 1 left it with a
+  workflow-descriptive name because it owned both the Replace All preview *and*
+  the durable undo journal. Reading it for slot 2b confirmed those are two
+  cohesive coordination jobs, so it split along that seam:
+  - `replace_execution.rs` — the preview attempt and the checked apply: ticket
+    issue, generation open, capacity reservation and its retry parking,
+    single-flight coalescing, worker dispatch, publish-or-retire, the queued
+    drain, preview mode enter/exit, search-state invalidation, the
+    checked-selection claim and apply, and the three preview widget-mutation
+    helpers. It has the same submit/dispatch/arbitrate shape as `execution`, and
+    `execution.rs` in this directory is already the *search* stage order's
+    execution module, so it takes the **stage-order qualifier**.
+  - `journal.rs` — the durable undo journal: the transaction gate, the
+    generation reservation, the generation-guarded install and clear, the
+    worker-side disk save and delete, startup recovery with stale cleanup and
+    diagnostics, the disposal-capacity retry, the undo affordance, and the
+    hand-back. **No pre-existing bounded role name described this job**, and
+    `retirement` means its opposite, so slot 2b amended
+    `gtk-adapter-module-boundaries` to add `journal`. It is unqualified because
+    nothing else in the directory claims that role.
+
+  `execution.rs` was deliberately **not** renamed to `search_execution.rs`. The
+  spec's qualification rule puts the qualifier on the module whose fitting name is
+  already spent, and renaming a stable already-migrated coordination module —
+  plus, for symmetry, `retirement.rs` — would add churn to a tier-3 change that
+  rewrites the user's files. Slot 2a qualified both palette execution modules
+  because it created both in one change; here only one is new.
+- **The two Replace All modules are not state-disjoint, and the split names the
+  handoff.** Three fields on `imp::SearchPreviewState` are touched by both
+  halves; `journal.rs` owns all three, and `replace_execution` reaches them only
+  through named crossing predicates:
+
+  | Shared field | Owner | Crossing operation |
+  | --- | --- | --- |
+  | `replace_transaction_pending` | `journal.rs` | `replace_transaction_claimed` |
+  | `replace_transaction_generation` | `journal.rs` | `replace_transaction_generation_reserved` |
+  | `undo_backup_generation` | `journal.rs` | none in-panel; crosses to the window inside `ReplaceJournalFreshness` |
+- `retire_undo_backup_off_main` became `release_superseded_undo_journal`. Slot 1's
+  residue text claimed the old name promised off-main retirement that the body did
+  not deliver; **that premise was wrong** and is recorded here so it is not
+  re-litigated. Releasing the last `Arc` runs `DisposalOwned`'s drop, which submits
+  the payload to the disposal lane, so destruction *is* off-main. The rename fixes
+  two different problems: `retire_` collided with the `retirement` role name, and
+  `_off_main` attributed to this function a guarantee that belongs to the guarded
+  owner it releases.
 - `accessibility.rs` holds the accessible-state projection that used to sit in
   `mod.rs`. It is adapter detail, not a coordination role: the facade may not own
   widget mutation.
 - `test_policy.rs` holds `SearchPanelTestPolicy`, the workflow's single
   test-only timing/limit value. The whole module is behind
   `#[cfg(feature = "test-utils")]`, so a production build compiles no override
-  storage at all.
+  storage at all. Slot 2b added no new override.
 - `policy.rs` is `pub` because the GTK-free policy benchmarks in
   `crates/lushtext-core/benches/benchmarks.rs` address `WorkspaceSearchFlight`
   and `SearchRetirementSliceBudget` directly. Nothing else outside the workflow
-  uses it.
-- The row is `migrated` for the panel workflow's search and preview half. The
-  Replace All write path, its undo journal, and `model/workspace_search.rs`
-  remain slot-2 scope; slot 1 deliberately scoped to the non-writing half.
+  uses it. Slot 2b added the Replace All weights, the undo-reservation plan, the
+  journal generation predicate, and `ReplaceApplyCounts` to it.
+- **Write-side seam classification** (`services/content_search/replace.rs`):
+  configuration — the undo-byte-cap thread-local plus its setter; probe — the
+  active-journal assertion before each write; actuation — the before-rename
+  fault-injection guard and the after-metadata hook registry; inspection — three
+  functions over those fault-injection registries. The actuation seams stay: they
+  are the fault-injection mechanism this row's failure-path verification depends
+  on.
+- **`model/workspace_search.rs` stays in `model/`.** Slot 2b re-derived its
+  reference set, found it larger than the census cell recorded, and closed the
+  decision; see
+  [Modules confirmed as domain and staying in `model/`](#modules-confirmed-as-domain-and-staying-in-model).
 
 ### WFR-COMMAND-PALETTE
 
@@ -1050,6 +1189,52 @@ A workflow may be marked `migrated` only when all of the following hold, and
   count has not decreased.
 - Any automation snapshot field for this workflow projects from the evidence
   surface, with the exported D-Bus fields, names, and semantics unchanged.
+
+### Slot 2b amendment re-check
+
+**Slot 2b's amendment, and the per-row re-check it owed.** Slot 2b added
+`journal` to the bounded coordination role set. Adding a role name cannot
+invalidate an existing correct name, so the obligation was a confirmation rather
+than a rename, and each already-migrated row was checked explicitly:
+
+| Row | Declared coordination names | Verdict under the amended set |
+| --- | --- | --- |
+| `WFR-SEARCH-REPLACE` | `execution`, `retirement`, `replace_execution`, `journal` | correct. `journal` is the newly added name and is the accurate one for that module; the other three are unchanged and still accurate |
+| `WFR-COMMAND-PALETTE` | `query_execution`, `index_admission`, `index_execution`, `retirement` | correct and unchanged. None of the four is a durable generation-guarded record a later stage reads back, so none should become `journal`. `retirement.rs` there is index-retirement accounting, which is destruction, not preservation |
+
+No rename was required, and no second generation of the convention exists in the
+tree. The other settled conventions were re-checked too and are unchanged by this
+amendment: the facade budget stays 370 (both migrated facades measured against
+it — search 369, palette 335), the seam value-object shape is unchanged, and the
+evidence-surface visibility rule is unchanged.
+
+**Two things about the amendment a future adopter must not have to rediscover.**
+
+- **The role list is now closed, where it used to read as open.** The
+  pre-amendment spec sentence said the coordination role is named "from a bounded
+  set of role names that state the job the module performs, **such as** admission,
+  execution, retirement, or watch". Slot 2b's delta replaces that with a closed
+  enumeration: "`admission`, `execution`, `retirement`, `watch`, and `journal`".
+  That is a deliberate tightening, disclosed here because it is easy to miss in a
+  diff that reads like it only appends a fifth name. It changes nothing
+  operationally — the same requirement already said a job no existing name
+  describes "MUST be added to the bounded set by amending this specification", so
+  an off-list name always required an amendment — and it matches how the
+  convention is written everywhere else it is normative (`.agents/rules/rust.md`'s
+  bounded set and the programme record both enumerate rather than exemplify). Any
+  future off-list name still requires amending
+  `openspec/specs/gtk-adapter-module-boundaries/spec.md`.
+- **`journal` includes its admission gate; it is not a persistence-only role.**
+  The role covers the mutual-exclusion gate that serializes the workflow's apply
+  and undo transactions, and the disposal reservation those transactions take,
+  as well as the generation-guarded install and clear, the worker-side write and
+  delete, startup recovery with stale-record cleanup, and the hand-back. Slot 2b
+  considered splitting the gate and the reservation into a separate
+  `undo_admission.rs` and **rejected it**: two small jobs whose whole purpose is
+  to protect one durable record do not justify a third module plus the facade
+  narration churn of a sixth stage. The next `journal` adopter should copy that
+  boundary rather than re-derive it — a `journal` module is expected to own the
+  admission of the thing it journals.
 
 ### Retroactive amendment
 

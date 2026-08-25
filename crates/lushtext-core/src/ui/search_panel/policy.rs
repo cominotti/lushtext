@@ -12,12 +12,137 @@
 //! * [`ReplacePreviewTicket`] plus [`ReplacePreviewFacts`] — the Replace All
 //!   preview freshness seam, validated as one unit by
 //!   [`ReplacePreviewTicket::is_current`].
+//! * [`preview_reservation_weight`], [`completed_preview_reservation_weight`],
+//!   and [`retained_byte_weight`] — the disposal weights the Replace All
+//!   preview reserves up front and shrinks to once its outcome is known.
+//! * [`plan_undo_reservation`] plus [`UndoReservationPlan`] — the undo-journal
+//!   admission arithmetic that decides whether a reservation replaces guarded
+//!   owners and what weight it credits back.
+//! * [`journal_generation_is_current`] — the freshness predicate every
+//!   generation-guarded journal install, clear, disk save, and disk delete
+//!   compares against.
+//! * [`ReplaceApplyCounts`] — the last durable apply's observable counts.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::model::content_search::SearchQuerySpec;
+use crate::model::content_search::{
+    ReplacePreviewBudget, ReplacePreviewOutcome, Replacement, SearchMatchId, SearchQuerySpec,
+};
 use crate::services::single_flight::SingleFlightCoordinator;
+
+/// Bytes one generated preview row retains besides its charged source text.
+///
+/// A reserved preview row costs the replacement value itself plus its two
+/// generation-scoped identity-map slots. Naming the composition keeps the
+/// reservation estimate and the shrink-to measurement describing the same row.
+const PREVIEW_ROW_RETAINED_BYTES: usize = std::mem::size_of::<Replacement>()
+    .saturating_add(std::mem::size_of::<Option<usize>>())
+    .saturating_add(std::mem::size_of::<SearchMatchId>());
+
+/// Charge a byte count against the disposal lane's `u64` weight, saturating.
+///
+/// Disposal weights are `u64` while buffer and capacity measurements are
+/// `usize`. Saturating keeps an implausibly large measurement admitting as the
+/// heaviest possible payload instead of wrapping into a small one.
+#[must_use]
+pub fn retained_byte_weight(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+/// Weight one preview attempt reserves before its worker starts.
+///
+/// The attempt has produced nothing yet, so the reservation is the budget's
+/// worst case: every charged source byte plus one retained row per budgeted row.
+#[must_use]
+pub fn preview_reservation_weight(budget: ReplacePreviewBudget) -> u64 {
+    retained_byte_weight(budget.max_bytes).saturating_add(retained_byte_weight(
+        budget.max_rows.saturating_mul(PREVIEW_ROW_RETAINED_BYTES),
+    ))
+}
+
+/// Weight a completed preview attempt shrinks its reservation to.
+///
+/// Measured from what the outcome actually retains — charged source bytes plus
+/// the two identity-map allocations' capacities — so the lane stops holding the
+/// budgeted worst case once the real cost is known.
+#[must_use]
+pub fn completed_preview_reservation_weight(outcome: &ReplacePreviewOutcome) -> u64 {
+    retained_byte_weight(outcome.charged_bytes)
+        .saturating_add(retained_byte_weight(
+            outcome
+                .replacements
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Replacement>()),
+        ))
+        .saturating_add(retained_byte_weight(
+            outcome
+                .match_to_preview
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Option<usize>>()),
+        ))
+}
+
+/// How one undo-journal reservation relates to the guarded owners it displaces.
+///
+/// Undo admission is not a plain "reserve the ceiling" decision: the installed
+/// journal and the transient worker input are both already charged against the
+/// same retained-bytes ceiling, so a reservation that will replace them must
+/// credit their weight back or it would double-count itself out of capacity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UndoReservationPlan {
+    /// Nothing guarded is being displaced: reserve against the bare ceiling.
+    Fresh,
+    /// Guarded owners are being displaced, and this much weight is credited.
+    Replacement {
+        /// Combined weight of the installed journal and the transient input.
+        replaced_weight: u64,
+    },
+}
+
+/// Decide how an undo-journal reservation must be admitted.
+///
+/// `installed_weight` is the currently published journal's reservation weight,
+/// when it holds one; `transient_input_weight` is the guarded input the caller
+/// is about to hand to a worker, when there is one. Either being present means
+/// the new reservation replaces a guarded owner.
+#[must_use]
+pub fn plan_undo_reservation(
+    installed_weight: Option<u64>,
+    transient_input_weight: Option<u64>,
+) -> UndoReservationPlan {
+    if installed_weight.is_none() && transient_input_weight.is_none() {
+        return UndoReservationPlan::Fresh;
+    }
+    UndoReservationPlan::Replacement {
+        replaced_weight: installed_weight
+            .unwrap_or(0)
+            .saturating_add(transient_input_weight.unwrap_or(0)),
+    }
+}
+
+/// Whether a journal mutation still owns the generation it reserved.
+///
+/// Every generation-guarded journal step — the in-memory install, the in-memory
+/// clear, the worker-side disk save, and the worker-side disk delete — compares
+/// the live counter against the generation it reserved before it may proceed. A
+/// mismatch means a newer Replace All or undo already superseded this one, so
+/// the step must abandon its payload rather than resurrect stale journal state.
+#[must_use]
+pub const fn journal_generation_is_current(observed: u32, reserved: u32) -> bool {
+    observed == reserved
+}
+
+/// Observable counts from the most recent durable Replace All apply.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReplaceApplyCounts {
+    /// Matches actually rewritten on disk.
+    pub replaced: u32,
+    /// Files skipped because they were unsaved, saving, or externally changed.
+    pub skipped: u32,
+    /// Files whose replacement reported an error.
+    pub errors: u32,
+}
 
 /// Compact latest query retained while one active search disconnects.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -444,5 +569,160 @@ mod retirement_budget_tests {
         assert_eq!(bounded.take(usize::MAX), 249);
         assert_eq!(bounded.retired(), 250);
         assert!(bounded.exhausted());
+    }
+}
+
+#[cfg(test)]
+mod replace_weight_tests {
+    use super::*;
+
+    fn budget(max_bytes: usize, max_rows: usize) -> ReplacePreviewBudget {
+        ReplacePreviewBudget {
+            max_rows,
+            max_bytes,
+        }
+    }
+
+    #[test]
+    fn retained_byte_weight_saturates_instead_of_wrapping() {
+        assert_eq!(retained_byte_weight(0), 0);
+        assert_eq!(retained_byte_weight(4_096), 4_096);
+        assert_eq!(
+            retained_byte_weight(usize::MAX),
+            u64::try_from(usize::MAX).unwrap_or(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn preview_reservation_charges_source_bytes_plus_one_row_each() {
+        let row = retained_byte_weight(PREVIEW_ROW_RETAINED_BYTES);
+        assert_eq!(preview_reservation_weight(budget(0, 0)), 0);
+        assert_eq!(preview_reservation_weight(budget(1_000, 0)), 1_000);
+        assert_eq!(
+            preview_reservation_weight(budget(0, 4)),
+            row.saturating_mul(4)
+        );
+        assert_eq!(
+            preview_reservation_weight(budget(1_000, 4)),
+            1_000 + row.saturating_mul(4),
+        );
+    }
+
+    #[test]
+    fn preview_reservation_saturates_on_an_implausible_budget() {
+        assert_eq!(
+            preview_reservation_weight(budget(usize::MAX, usize::MAX)),
+            u64::MAX,
+        );
+    }
+
+    fn empty_outcome(charged_bytes: usize) -> ReplacePreviewOutcome {
+        ReplacePreviewOutcome {
+            replacements: Vec::new(),
+            match_to_preview: Vec::new(),
+            omitted_eligible: 0,
+            skipped: crate::model::content_search::ReplacePreviewSkipCounts::default(),
+            charged_bytes,
+            limiting_reason: None,
+        }
+    }
+
+    #[test]
+    fn completed_reservation_measures_real_retention_not_the_budget() {
+        let mut outcome = empty_outcome(512);
+        assert_eq!(completed_preview_reservation_weight(&outcome), 512);
+
+        outcome.replacements.reserve_exact(2);
+        outcome.match_to_preview.reserve_exact(3);
+        let expected =
+            512 + retained_byte_weight(
+                outcome
+                    .replacements
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Replacement>()),
+            ) + retained_byte_weight(
+                outcome
+                    .match_to_preview
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Option<usize>>()),
+            );
+        assert_eq!(completed_preview_reservation_weight(&outcome), expected);
+    }
+
+    #[test]
+    fn nothing_guarded_reserves_the_bare_ceiling() {
+        assert_eq!(
+            plan_undo_reservation(None, None),
+            UndoReservationPlan::Fresh
+        );
+    }
+
+    #[test]
+    fn each_guarded_owner_alone_still_makes_it_a_replacement() {
+        assert_eq!(
+            plan_undo_reservation(Some(700), None),
+            UndoReservationPlan::Replacement {
+                replaced_weight: 700
+            }
+        );
+        assert_eq!(
+            plan_undo_reservation(None, Some(300)),
+            UndoReservationPlan::Replacement {
+                replaced_weight: 300
+            }
+        );
+    }
+
+    #[test]
+    fn both_guarded_owners_credit_their_combined_weight() {
+        assert_eq!(
+            plan_undo_reservation(Some(700), Some(300)),
+            UndoReservationPlan::Replacement {
+                replaced_weight: 1_000
+            }
+        );
+    }
+
+    #[test]
+    fn a_zero_weight_guarded_owner_is_still_a_replacement() {
+        // `Some(0)` means "a guarded owner exists and measures nothing", which
+        // is not the same admission decision as "no guarded owner exists".
+        assert_eq!(
+            plan_undo_reservation(Some(0), None),
+            UndoReservationPlan::Replacement { replaced_weight: 0 }
+        );
+    }
+
+    #[test]
+    fn combined_replaced_weight_saturates() {
+        assert_eq!(
+            plan_undo_reservation(Some(u64::MAX), Some(1)),
+            UndoReservationPlan::Replacement {
+                replaced_weight: u64::MAX
+            }
+        );
+    }
+
+    #[test]
+    fn journal_generation_matches_only_its_own_reservation() {
+        assert!(journal_generation_is_current(7, 7));
+        assert!(!journal_generation_is_current(8, 7));
+        assert!(!journal_generation_is_current(6, 7));
+        assert!(journal_generation_is_current(0, 0));
+        // The counter wraps, so the far side of a wrap must not be accepted.
+        assert!(!journal_generation_is_current(0, u32::MAX));
+        assert!(journal_generation_is_current(u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn apply_counts_default_to_an_empty_result() {
+        assert_eq!(
+            ReplaceApplyCounts::default(),
+            ReplaceApplyCounts {
+                replaced: 0,
+                skipped: 0,
+                errors: 0,
+            }
+        );
     }
 }

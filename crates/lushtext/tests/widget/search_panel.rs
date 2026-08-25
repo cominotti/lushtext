@@ -80,6 +80,20 @@ fn sample_replace_backup(path: &str) -> ReplaceUndoBackup {
     backup
 }
 
+/// Wait until the panel's undo-journal disk work has drained.
+///
+/// "Has the journal's disk save or delete landed" is a question about the
+/// workflow, and the workflow's evidence surface answers it directly. Polling
+/// the journal directory instead answers a weaker question — it can observe a
+/// partially written directory, and it cannot distinguish "not written yet" from
+/// "written differently". Tests wait here and then assert the on-disk bytes,
+/// which keeps the disk assertion an assertion instead of a timeout.
+fn wait_for_journal_disk_idle(panel: &LushtextSearchPanel) {
+    wait_until(Duration::from_secs(10), || {
+        panel.evidence().journal_disk_jobs_in_flight == 0
+    });
+}
+
 fn panel_with_one_search_match() -> LushtextSearchPanel {
     let panel = glib::Object::builder::<LushtextSearchPanel>().build();
     panel.set_query("hello");
@@ -1924,9 +1938,11 @@ fn test_clear_results_preserves_undo_backup() {
     panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
     assert!(panel.imp().preview.undo_backup.borrow().is_some());
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("expected operation to succeed") == backup
-    });
+    wait_for_journal_disk_idle(&panel);
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
 
     // Starting a new search should not discard the rollback path for a
     // previous Replace All. Undo remains available until it is used or a new
@@ -1993,11 +2009,12 @@ fn test_clearing_persisted_undo_cancels_capacity_retry_before_it_can_reload() {
 
     assert!(!panel.has_undo_backup());
     assert!(!panel.evidence().undo_capacity_retry_pending);
-    wait_until(Duration::from_secs(2), || {
+    wait_for_journal_disk_idle(&panel);
+    assert!(
         search_backup::load(&data_dir)
             .expect("load cleared persisted undo")
             .is_empty()
-    });
+    );
 }
 
 #[test]
@@ -2034,9 +2051,11 @@ fn test_search_panel_close_preserves_durable_undo_backup() {
     let backup = sample_replace_backup("/persisted-close.rs");
     panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("expected operation to succeed") == backup
-    });
+    wait_for_journal_disk_idle(&panel);
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
 
     panel.close();
 
@@ -2092,9 +2111,11 @@ fn test_set_undo_backup_updates_ui_before_delayed_disk_save() {
             .is_empty(),
         "disk persistence should still be sleeping while UI undo state is visible",
     );
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("expected operation to succeed") == backup
-    });
+    wait_for_journal_disk_idle(&panel);
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
 
     let _ = search_backup::delete(&data_dir);
 }
@@ -2110,9 +2131,11 @@ fn test_clear_undo_backup_updates_ui_before_delayed_disk_delete() {
 
     panel.set_undo_backup(backup.clone());
     panel.show_undo_button();
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("expected operation to succeed") == backup
-    });
+    wait_for_journal_disk_idle(&panel);
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        backup
+    );
 
     SearchPanelTestPolicy::current()
         .with_undo_backup_disk_delay(Duration::from_millis(250))
@@ -2126,11 +2149,12 @@ fn test_clear_undo_backup_updates_ui_before_delayed_disk_delete() {
         backup,
         "disk backup should still exist while delayed delete is sleeping",
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_for_journal_disk_idle(&panel);
+    assert!(
         search_backup::load(&data_dir)
             .expect("expected operation to succeed")
             .is_empty()
-    });
+    );
 }
 
 #[test]
@@ -2149,11 +2173,12 @@ fn test_clear_after_delayed_undo_backup_save_keeps_disk_empty() {
     panel.clear_undo_backup_for_test();
 
     assert!(panel.imp().preview.undo_backup.borrow().is_none());
-    wait_until(Duration::from_secs(2), || {
+    wait_for_journal_disk_idle(&panel);
+    assert!(
         search_backup::load(&data_dir)
             .expect("expected operation to succeed")
             .is_empty()
-    });
+    );
 }
 
 #[test]
@@ -2167,9 +2192,11 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
     let new_backup = sample_replace_backup("/new-backup.rs");
 
     panel.set_undo_backup(old_backup.clone());
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("expected operation to succeed") == old_backup
-    });
+    wait_for_journal_disk_idle(&panel);
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        old_backup
+    );
 
     SearchPanelTestPolicy::current()
         .with_undo_backup_disk_delay(Duration::from_millis(250))
@@ -2177,9 +2204,11 @@ fn test_save_after_delayed_undo_backup_clear_keeps_newer_disk_backup() {
     panel.clear_undo_backup_for_test();
     panel.set_undo_backup(new_backup.clone());
 
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("expected operation to succeed") == new_backup
-    });
+    wait_for_journal_disk_idle(&panel);
+    assert_eq!(
+        search_backup::load(&data_dir).expect("expected operation to succeed"),
+        new_backup
+    );
 }
 
 #[test]
@@ -2193,9 +2222,11 @@ fn test_reserved_replace_generation_blocks_stale_delete_after_service_commit() {
     let new_backup = sample_replace_backup("/new-committed.rs");
 
     panel.set_undo_backup(old_backup.clone());
-    wait_until(Duration::from_secs(2), || {
-        search_backup::load(&data_dir).expect("load old journal") == old_backup
-    });
+    wait_for_journal_disk_idle(&panel);
+    assert_eq!(
+        search_backup::load(&data_dir).expect("load old journal"),
+        old_backup
+    );
 
     SearchPanelTestPolicy::current()
         .with_undo_backup_disk_delay(Duration::from_millis(250))
@@ -2992,6 +3023,463 @@ fn test_replace_all_then_undo_restores_original_file_bytes() {
     });
     fixture::assert_text(&first, original_first);
     fixture::assert_text(&second, original_second);
+
+    // A fully consumed journal is cleared, so a second Undo has nothing to hand
+    // back and must be refused rather than writing the replacement bytes again.
+    wait_until(Duration::from_secs(20), || {
+        let evidence = panel.evidence();
+        !evidence.has_undo_backup && !evidence.replace_transaction_pending
+    });
+    assert!(!panel.imp().undo_button.property::<bool>("visible"));
+    panel.activate_undo_replacements();
+    flush_after_delay(Duration::from_millis(250));
+    fixture::assert_text(&first, original_first);
+    fixture::assert_text(&second, original_second);
+    assert!(
+        !panel.evidence().replace_transaction_pending,
+        "a refused second undo must not leave the apply transaction claimed",
+    );
+}
+
+/// Directory the Replace All undo journal is written into.
+///
+/// Named here rather than imported because the constant is private to the
+/// service; the on-disk layout is what these tests are asserting about.
+const JOURNAL_DIR: &str = "replace-backup-journal";
+
+/// Per-file journal payload names present on disk, sorted.
+///
+/// Goes through the `services::filesystem::fixture` boundary rather than raw
+/// standard-library calls, per `.agents/rules/rust.md`. Returns empty when the
+/// journal directory is absent,
+/// which is the state a fully cleaned-up journal leaves behind.
+fn journal_payload_files(data_dir: &std::path::Path) -> Vec<String> {
+    let journal_dir = data_dir.join(JOURNAL_DIR);
+    if !fixture::exists(&journal_dir) {
+        return Vec::new();
+    }
+    let mut names = fixture::entry_names(&journal_dir)
+        .into_iter()
+        .filter(|name| {
+            // The service writes these names itself, so an exact extension match
+            // is the contract here, not a user-supplied filename.
+            std::path::Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "json")
+                && name != "manifest.json"
+                && name != "cleanup-in-progress.json"
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn journal_entry_file_for(path: &std::path::Path) -> String {
+    format!(
+        "{}.json",
+        lushtext_core::model::sidecar_identity::stable_path_hash(path)
+    )
+}
+
+/// Run one workspace search plus Replace All over a prepared fixture folder.
+///
+/// Returns the panel so the caller can keep asserting on it.
+fn replace_all_over(
+    window: &LushtextWindow,
+    dir: &std::path::Path,
+    expected_matches: u32,
+    replacement: &str,
+) -> lushtext_core::ui::search_panel::LushtextSearchPanel {
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get()
+            && panel.imp().runtime.total_matches.get() == expected_matches
+    });
+
+    panel.enter_preview_mode(replacement);
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == expected_matches && !evidence.replace_preview_pending
+    });
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().last_apply_counts.is_some() && !panel.evidence().replace_preview_pending
+    });
+    panel
+}
+
+#[test]
+fn test_partial_undo_shrinks_the_journal_and_keeps_the_skipped_entry_on_disk() {
+    // The sole production caller of `search_backup::shrink_journal_to`: a partial
+    // undo whose skipped file still holds Replace All output. That file's durable
+    // rollback copy must survive the shrink, and the journal must stay active, or
+    // the user loses the only way back to their original content.
+    ensure_gtk_init();
+    let data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let restored = dir.path().join("restored.txt");
+    let skipped = dir.path().join("skipped.txt");
+    let original_restored = "alpha needle beta\n";
+    fixture::write_text(&restored, original_restored);
+    fixture::write_text(&skipped, "needle only\n");
+
+    let panel = replace_all_over(&window, dir.path(), 2, "thread");
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().undo_backup_entry_count == 2
+    });
+    assert_eq!(
+        journal_payload_files(&data_dir).len(),
+        2,
+        "a two-file Replace All journals both files",
+    );
+
+    // Change one target after the replacement, so undo must refuse to restore it
+    // and keep it in the remaining journal instead.
+    fixture::write_text(&skipped, "the user edited this after Replace All\n");
+
+    panel.activate_undo_replacements();
+    wait_until(Duration::from_secs(20), || {
+        fixture::read_text(&restored) == original_restored
+            && panel.evidence().undo_backup_entry_count == 1
+    });
+    wait_for_journal_disk_idle(&panel);
+
+    fixture::assert_text(&restored, original_restored);
+    fixture::assert_text(&skipped, "the user edited this after Replace All\n");
+
+    // The journal must still be *active* on disk, holding exactly the skipped
+    // file. `load` returns an empty backup for an inactive journal, so a
+    // non-empty result is itself the activation assertion.
+    let on_disk = search_backup::load(&data_dir).expect("load journal after partial undo");
+    assert_eq!(
+        on_disk.len(),
+        1,
+        "the shrunken journal stays active with only the unrestored file",
+    );
+    let (journalled_path, _) = on_disk
+        .iter()
+        .next()
+        .expect("the shrunken journal has one entry");
+    assert_eq!(
+        journalled_path.file_name(),
+        Some(std::ffi::OsStr::new("skipped.txt")),
+    );
+
+    let payloads = journal_payload_files(&data_dir);
+    assert_eq!(
+        payloads,
+        vec![journal_entry_file_for(journalled_path)],
+        "exactly the skipped file's entry survives; the restored file's is gone",
+    );
+    assert!(
+        !payloads.contains(&journal_entry_file_for(&restored)),
+        "the restored file's journal entry must not linger",
+    );
+    drop(data);
+}
+
+#[test]
+fn test_replace_all_with_no_matches_writes_nothing_and_journals_nothing() {
+    ensure_gtk_init();
+    let data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let only = dir.path().join("only.txt");
+    let original = "nothing to see here\n";
+    fixture::write_text(&only, original);
+
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get()
+    });
+    assert_eq!(panel.evidence().match_count, 0);
+
+    panel.enter_preview_mode("thread");
+    panel.activate_confirm_replacements();
+    flush_after_delay(Duration::from_millis(400));
+
+    fixture::assert_text(&only, original);
+    assert!(
+        !panel.evidence().has_undo_backup,
+        "nothing was written, so no undo affordance may appear",
+    );
+    assert!(
+        search_backup::load(&data_dir)
+            .expect("load journal after a no-match Replace All")
+            .is_empty(),
+        "a Replace All that wrote nothing must journal nothing",
+    );
+    assert!(journal_payload_files(&data_dir).is_empty());
+    drop(data);
+}
+
+#[test]
+fn test_replace_all_one_match_one_file_writes_and_journals_exactly_that_file() {
+    ensure_gtk_init();
+    let data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let target = dir.path().join("target.txt");
+    let bystander = dir.path().join("bystander.txt");
+    let original_bystander = "unrelated content\n";
+    fixture::write_text(&target, "alpha needle beta\n");
+    fixture::write_text(&bystander, original_bystander);
+
+    let panel = replace_all_over(&window, dir.path(), 1, "thread");
+
+    fixture::assert_text(&target, "alpha thread beta\n");
+    fixture::assert_text(&bystander, original_bystander);
+    let counts = panel
+        .evidence()
+        .last_apply_counts
+        .expect("apply counts recorded");
+    assert_eq!(counts.replaced, 1);
+    assert_eq!(counts.errors, 0);
+
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().undo_backup_entry_count == 1
+    });
+    wait_for_journal_disk_idle(&panel);
+    let on_disk = search_backup::load(&data_dir).expect("load one-file journal");
+    assert_eq!(on_disk.len(), 1);
+    assert_eq!(
+        on_disk
+            .keys()
+            .next()
+            .expect("one journalled file")
+            .file_name(),
+        Some(std::ffi::OsStr::new("target.txt")),
+    );
+    assert_eq!(journal_payload_files(&data_dir).len(), 1);
+    drop(data);
+}
+
+#[test]
+fn test_replace_all_many_matches_many_files_writes_and_journals_every_file() {
+    ensure_gtk_init();
+    let data = isolated_data_dir();
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    const FILES: u32 = 5;
+    const MATCHES_PER_FILE: u32 = 2;
+    for index in 0..FILES {
+        fixture::write_text(
+            &dir.path().join(format!("file_{index}.txt")),
+            "needle one\nplain\nneedle two\n",
+        );
+    }
+
+    let panel = replace_all_over(&window, dir.path(), FILES * MATCHES_PER_FILE, "thread");
+
+    for index in 0..FILES {
+        fixture::assert_text(
+            &dir.path().join(format!("file_{index}.txt")),
+            "thread one\nplain\nthread two\n",
+        );
+    }
+    let counts = panel
+        .evidence()
+        .last_apply_counts
+        .expect("apply counts recorded");
+    assert_eq!(counts.replaced, FILES * MATCHES_PER_FILE);
+    assert_eq!(counts.errors, 0);
+
+    wait_until(Duration::from_secs(30), || {
+        panel.evidence().undo_backup_entry_count == FILES as usize
+    });
+    wait_for_journal_disk_idle(&panel);
+    let on_disk = search_backup::load(&data_dir).expect("load many-file journal");
+    assert_eq!(
+        on_disk.len(),
+        FILES as usize,
+        "every written file must have a durable rollback entry",
+    );
+    assert_eq!(journal_payload_files(&data_dir).len(), FILES as usize);
+    drop(data);
+}
+
+#[test]
+fn test_replace_all_applies_only_checked_rows_and_records_apply_counts() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    let original_first = "alpha needle beta\n";
+    let original_second = "needle only\n";
+    fixture::write_text(&first, original_first);
+    fixture::write_text(&second, original_second);
+
+    let panel = window.imp().search_panel.get();
+    panel.set_workspace_folders(vec![dir.path().to_path_buf()]);
+    panel.start_search(&search_spec("needle"));
+    wait_until(Duration::from_secs(15), || {
+        !panel.imp().runtime.searching.get() && panel.imp().runtime.total_matches.get() == 2
+    });
+
+    panel.enter_preview_mode("thread");
+    wait_until(Duration::from_secs(15), || {
+        let evidence = panel.evidence();
+        evidence.replace_preview_count == 2 && !evidence.replace_preview_pending
+    });
+
+    // Uncheck the row belonging to the second file, so only the first is written.
+    let unchecked = panel
+        .imp()
+        .preview
+        .preview_outcome
+        .borrow()
+        .as_ref()
+        .expect("preview outcome")
+        .replacements
+        .iter()
+        .find(|replacement| replacement.path == second)
+        .expect("a preview row for the second file")
+        .match_id;
+    panel.imp().preview.checked_match_ids.borrow_mut().remove(&unchecked);
+    assert_eq!(panel.evidence().checked_replacement_count, 1);
+
+    panel.activate_confirm_replacements();
+    wait_until(Duration::from_secs(20), || {
+        fixture::read_text(&first).contains("thread")
+    });
+    fixture::assert_text(&first, "alpha thread beta\n");
+    fixture::assert_text(
+        &second,
+        original_second,
+    );
+
+    wait_until(Duration::from_secs(20), || {
+        panel.evidence().last_apply_counts.is_some()
+    });
+    let evidence = panel.evidence();
+    let counts = evidence.last_apply_counts.expect("apply counts recorded");
+    assert_eq!(counts.replaced, 1);
+    assert_eq!(counts.errors, 0);
+    assert_eq!(
+        evidence.undo_backup_entry_count, 1,
+        "only the written file may enter the undo journal",
+    );
+    assert!(
+        evidence.undo_backup_retained_bytes > 0,
+        "an installed journal retains disposal weight",
+    );
+}
+
+#[test]
+fn test_evidence_reports_transaction_state_separately_from_preview_pending() {
+    ensure_gtk_init();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+
+    let idle = panel.evidence();
+    assert!(!idle.replace_transaction_pending);
+    assert!(!idle.replace_preview_pending);
+    assert_eq!(idle.replace_transaction_generation, None);
+
+    let reserved = panel
+        .begin_replace_transaction_for_test()
+        .expect("an idle panel grants the transaction");
+    let claimed = panel.evidence();
+    assert!(
+        claimed.replace_transaction_pending,
+        "the apply transaction must be observable on its own field",
+    );
+    assert_eq!(claimed.replace_transaction_generation, Some(reserved));
+    assert_eq!(
+        claimed.undo_backup_generation, reserved,
+        "claiming the transaction reserves the journal generation it reports",
+    );
+    assert!(
+        claimed.replace_preview_pending,
+        "the folded field still reports the transaction, which is why the \
+         separate field is needed to tell the two apart",
+    );
+
+    assert!(
+        panel.begin_replace_transaction_for_test().is_none(),
+        "the transaction is single-owner",
+    );
+
+    panel.finish_replace_transaction_for_test();
+    let released = panel.evidence();
+    assert!(!released.replace_transaction_pending);
+    assert_eq!(released.replace_transaction_generation, None);
+    assert!(!released.replace_preview_pending);
+}
+
+#[test]
+fn test_evidence_reads_stay_side_effect_free_across_journal_mutation() {
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    let backup = sample_replace_backup("/evidence-reentrancy.rs");
+
+    // Read at every point the workflow mutates journal state, including
+    // immediately after operations that take `borrow_mut()` on the queued
+    // preview request and the checked-identity set. A live path holding one of
+    // those borrows across an evidence read would panic here.
+    let before = panel.evidence();
+    panel.set_query("needle");
+    let _ = panel.evidence();
+    panel.enter_preview_mode("thread");
+    let _ = panel.evidence();
+    panel.exit_preview_mode();
+    let _ = panel.evidence();
+    panel.set_undo_backup(backup);
+    let installed = panel.evidence();
+    assert!(installed.has_undo_backup);
+    assert_eq!(installed.undo_backup_entry_count, 1);
+    let _ = panel.evidence();
+    panel.clear_undo_backup_for_test();
+    let cleared = panel.evidence();
+    assert!(!cleared.has_undo_backup);
+    assert_eq!(cleared.undo_backup_entry_count, 0);
+    assert_eq!(cleared.undo_backup_retained_bytes, 0);
+
+    // Repeated reads of the same state must be identical: reading evidence must
+    // not advance a generation, drain a queue, or charge a job.
+    let first_read = panel.evidence();
+    let second_read = panel.evidence();
+    assert_eq!(
+        first_read.undo_backup_generation,
+        second_read.undo_backup_generation
+    );
+    assert_eq!(first_read.preview_generation, second_read.preview_generation);
+    assert_eq!(first_read.journal_disk_jobs, second_read.journal_disk_jobs);
+    assert_eq!(
+        first_read.journal_disk_jobs_in_flight,
+        second_read.journal_disk_jobs_in_flight
+    );
+    assert!(
+        second_read.undo_backup_generation > before.undo_backup_generation,
+        "the journal generation advanced from real workflow steps, not from reads",
+    );
+
+    wait_for_journal_disk_idle(&panel);
+    assert!(
+        panel.evidence().journal_disk_jobs >= 2,
+        "one install and one clear each dispatch a journal disk job",
+    );
 }
 
 /// Write a workspace whose match count exceeds the content-search result cap.

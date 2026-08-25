@@ -5,10 +5,9 @@
 //! Opened with Ctrl+Shift+F, this panel slides up from below the content stack
 //! and searches file contents across every workspace folder. This module is the
 //! workflow's narrative facade: it names the ordered stages and delegates each
-//! one. It owns no timers, generation counters, admission bookkeeping, or stage
-//! machinery. Apart from the trivial reads and writes of the visible query
-//! controls that make up the panel's entry-point surface, widget mutation
-//! belongs to the coordination and adapter roles.
+//! one. It owns no timers, generation counters, admission bookkeeping, stage
+//! machinery, or widget mutation beyond reading and writing the visible query
+//! controls that make up its entry-point surface.
 //!
 //! # Stage order: search
 //!
@@ -22,7 +21,7 @@
 //!    and the accepted snapshot move out of live state into the bounded
 //!    disposer (`retirement::detach_visible_results`), and any superseded
 //!    Replace All preview is released with them
-//!    (`replace::release_superseded_preview`).
+//!    (`replace_execution::release_superseded_preview`).
 //! 4. **Admit one flight.** `execution::start_search` submits the request to the
 //!    single-flight policy, which either starts it or keeps it as the one
 //!    replaceable latest request (`policy::WorkspaceSearchFlight`).
@@ -31,38 +30,60 @@
 //!
 //! Two inversions connect those stages:
 //!
-//! - Stage 5 returns as soon as the worker and its poll timer are armed.
-//!   Control resumes in the 50 ms poll callback in `execution`, once per tick.
-//!   The terminal tick finishes the flight and, if a latest query was retained,
-//!   re-enters stage 3 from there rather than returning to this facade.
-//! - The bounded retirement started in stage 3 resumes in a
-//!   `glib::idle_add_local` callback in `retirement`, once per GTK turn. Its
-//!   final turn is also where a query deferred by stage 2 restarts.
+//! - Stage 5 returns once the worker and its poll timer are armed, resuming in
+//!   the 50 ms poll callback in `execution` once per tick. The terminal tick
+//!   finishes the flight and, if a latest query was retained, re-enters stage 3
+//!   from there rather than returning to this facade.
+//! - Stage 3's bounded retirement resumes in a `glib::idle_add_local` callback
+//!   in `retirement`, once per GTK turn. Its final turn is also where a query
+//!   deferred by stage 2 restarts.
 //!
 //! # Stage order: Replace All
 //!
 //! 1. **Open one preview attempt.** The Replace All button, or
 //!    [`LushtextSearchPanel::activate_replace_preview`], opens a preview
 //!    generation and captures its identity once as a
-//!    `policy::ReplacePreviewTicket` (`replace::issue_preview_ticket`).
-//! 2. **Generate the preview.** `replace::enter_preview_mode` reserves disposal
-//!    capacity and hands the accepted match snapshot to a worker.
+//!    `policy::ReplacePreviewTicket` (`replace_execution::issue_preview_ticket`).
+//! 2. **Generate the preview.** `replace_execution::enter_preview_mode`
+//!    reserves disposal capacity and hands the accepted match snapshot to a
+//!    worker.
 //! 3. **Confirm the checked rows.**
 //!    [`LushtextSearchPanel::activate_confirm_replacements`] delegates to
-//!    `replace::begin_confirmed_replacement`, which claims the single apply
-//!    transaction, opens a fresh attempt, and hands the partition to
-//!    `replace::apply_checked_replacements`.
-//! 4. **Offer undo.** A successful apply publishes the journal-backed undo
-//!    affordance, and [`LushtextSearchPanel::activate_undo_replacements`]
-//!    delegates to `replace::hand_back_undo_backup`, which hands the backup
-//!    back to the window.
+//!    `replace_execution::begin_confirmed_replacement`, which claims `journal`'s
+//!    single apply transaction, opens a fresh attempt, and hands the partition
+//!    to `replace_execution::apply_checked_replacements`.
+//! 4. **Write the files and record the journal.** The window's Replace All
+//!    callback takes `journal`'s reserved generation, writes the files, and
+//!    publishes the resulting undo journal back through
+//!    `journal::publish_undo_journal_for_generation`.
+//! 5. **Offer undo.** [`LushtextSearchPanel::activate_undo_replacements`]
+//!    delegates to `journal::hand_back_undo_backup`, which hands the backup
+//!    back to the window; the window claims the panel through
+//!    `journal::begin_undo_restore` and reports through
+//!    `journal::finish_undo_restore`.
 //!
-//! Stages 2 and 3 are each inverted once: control resumes in a worker
-//! completion closure in `replace`, which revalidates that attempt's ticket
-//! against live `policy::ReplacePreviewFacts`. A stale completion publishes
-//! nothing and routes its payload to bounded retirement instead. The durable
-//! write, journal, and undo restore live in `services/content_search` and
-//! `ui/window/search.rs`.
+//! Ten inversions connect those stages — one per point where control leaves
+//! this workflow and later resumes at a named place. With the search order's
+//! two above, the workflow has twelve. Each module documents its own in detail.
+//!
+//! - Stage 2's reservation may be refused: the request parks and resumes in
+//!   `replace_execution`'s `preview_capacity_wakeup`, revalidated by `may_dispatch`.
+//! - Stages 2 and 3 each return once their worker is dispatched, resuming in a
+//!   `replace_execution` completion closure that revalidates the attempt's
+//!   ticket against live `policy::ReplacePreviewFacts`. A stale completion
+//!   publishes nothing and routes its payload to bounded retirement.
+//! - That preview retirement resumes in a `glib::idle_add_once` callback which
+//!   re-enters `replace_execution::finish_preview_worker`; that drain re-enters
+//!   *itself* by tail recursion while the retained request is undispatchable.
+//! - Stages 4 and 5 each leave the panel for `ui/window/search.rs`, which
+//!   performs the durable write in `services/content_search`. Control resumes
+//!   in `journal` — stage 4 via the publish/clear and finish operations above,
+//!   stage 5 via `begin_undo_restore` and `finish_undo_restore`.
+//! - `journal`'s disk save and delete resume in completion closures that only
+//!   report, the in-memory journal being already published under its guard.
+//! - Startup recovery re-enters `journal::load_persisted_undo_backup` from a
+//!   disposal-capacity wakeup when admission defers it, and otherwise resumes
+//!   in a worker completion that re-checks the journal generation.
 //!
 //! # Roles
 //!
@@ -70,7 +91,7 @@
 //! | --- | --- |
 //! | facade | this module |
 //! | pure policy | `policy` |
-//! | coordination | `execution` (streaming search), `retirement` (bounded disposal), `replace` (preview and apply) |
+//! | coordination | `execution` (streaming search), `retirement` (bounded result disposal), `replace_execution` (the Replace All preview attempt and checked apply), `journal` (the durable undo journal, its transaction gate, and its three generation-guarded fields) |
 //! | evidence | `evidence` |
 //! | adapter detail | `imp`, `list_factory`, `item`, `results`, `history`, `accessibility` |
 //!
@@ -80,6 +101,7 @@ mod accessibility;
 mod evidence;
 mod execution;
 mod history;
+pub(crate) mod journal;
 // Private implementation module required by gtk-rs: imp.rs owns template
 // children, state, and trait impls; this file exposes the public widget API.
 mod imp;
@@ -88,7 +110,7 @@ mod list_factory;
 // Public because the GTK-free policy benchmarks in `benches/benchmarks.rs`
 // address these pure types directly; nothing else outside this workflow does.
 pub mod policy;
-mod replace;
+mod replace_execution;
 mod results;
 mod retirement;
 #[cfg(feature = "test-utils")]
@@ -102,7 +124,7 @@ pub use accessibility::apply_search_result_row_accessibility_for_test;
 // API for an internal readability goal.
 #[cfg(feature = "test-utils")]
 pub use evidence::SearchPanelEvidence;
-pub(crate) use replace::own_reserved_undo_backup;
+pub(crate) use journal::own_undo_journal_payload;
 #[cfg(feature = "test-utils")]
 pub use retirement::{SearchRetirementOwnership, SearchRetirementSliceObservation};
 #[cfg(feature = "test-utils")]
@@ -113,6 +135,7 @@ use std::sync::Arc;
 
 use crate::model::content_search::Replacement;
 use crate::services::content_search::ReplaceUndoBackup;
+use crate::services::notifications::NotificationSeverity;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -217,20 +240,17 @@ impl LushtextSearchPanel {
 
     /// Pre-fill the replacement entry without starting a Replace All preview.
     ///
-    /// This is a main-thread GTK adapter method used by the visible entry and
-    /// automation-friendly window actions; applying replacements still requires
-    /// the explicit preview and confirm steps.
+    /// Applying replacements still requires the explicit preview and confirm
+    /// steps. Revealing the options row that holds the entry is presentation,
+    /// not an entry-point query write, so it is delegated.
     pub fn set_replace_query(&self, text: &str) {
-        let imp = self.imp();
-        imp.more_toggle.set_active(true);
-        imp.replace_entry.set_text(text);
+        self.reveal_replacement_entry(text);
     }
 
     /// Activate the same Replace All preview step as the panel button.
     ///
     /// Replace stages 1 and 2: read the visible replacement text on the main
-    /// thread, then delegate preview construction to the worker owned by
-    /// `replace::enter_preview_mode`.
+    /// thread, then delegate to `replace_execution::enter_preview_mode`.
     pub fn activate_replace_preview(&self) {
         let imp = self.imp();
         let text = imp.replace_entry.text().to_string();
@@ -239,22 +259,19 @@ impl LushtextSearchPanel {
 
     /// Confirm the checked replacement preview rows through the normal callback.
     ///
-    /// Replace stage 3. The two-step preview/apply split is a safety contract:
-    /// only rows generated and checked by the current preview can be applied.
-    /// `replace::begin_confirmed_replacement` claims the single apply
-    /// transaction, opens one preview attempt so the worker completion can prove
-    /// it is still current, and hands the partition to
-    /// `replace::apply_checked_replacements`.
+    /// Replace stage 3, delegated to
+    /// `replace_execution::begin_confirmed_replacement`. The two-step
+    /// preview/apply split is a safety contract: only rows generated and checked
+    /// by the current preview can be applied.
     pub fn activate_confirm_replacements(&self) {
         self.begin_confirmed_replacement();
     }
 
     /// Trigger the visible Undo Replacements affordance through the normal callback.
     ///
-    /// Replace stage 4. `replace::hand_back_undo_backup` checks the apply
-    /// transaction, takes the current backup, and retracts the affordance before
-    /// handing the backup to the window callback. The durable undo journal and
-    /// its generation guards stay in `replace` and `services/content_search`.
+    /// Replace stage 5, delegated to `journal::hand_back_undo_backup`. The
+    /// durable undo journal and its generation guards stay in `journal` and
+    /// `services/content_search`.
     pub fn activate_undo_replacements(&self) {
         self.hand_back_undo_backup();
     }
@@ -340,8 +357,10 @@ impl LushtextSearchPanel {
         });
     }
 
-    /// Register a callback for pushing status messages to the window's status bar.
-    pub fn connect_message<F: Fn(&str) + 'static>(&self, f: F) {
+    /// Register a callback pushing status messages to the window's status bar.
+    ///
+    /// Carries a severity like the sidebar's: a failed journal write is a warning.
+    pub fn connect_message<F: Fn(&str, NotificationSeverity) + 'static>(&self, f: F) {
         self.imp()
             .callbacks
             .message_callback

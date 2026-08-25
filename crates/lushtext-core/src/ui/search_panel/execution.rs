@@ -2,6 +2,11 @@
 
 //! Streaming execution of one workspace content search.
 //!
+//! This is the `execution` role for the **search** stage order only. The Replace
+//! All stage order has its own execution module, `replace_execution.rs`, which
+//! carries the stage-order qualifier because this unqualified name was taken
+//! first; neither serves the other's stages.
+//!
 //! This module owns the coordination job that runs between "the user asked for
 //! results" and "the panel has them": single-flight admission of the latest
 //! query, the worker thread that walks the workspace, and the paced GTK turn

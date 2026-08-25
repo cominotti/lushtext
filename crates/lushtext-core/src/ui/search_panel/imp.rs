@@ -38,7 +38,7 @@ type ReplaceCallback = Box<dyn Fn(super::GuardedReplacements)>;
 
 /// Callback type for Undo All: receives the backup map to restore.
 type UndoCallback = Box<dyn Fn(Arc<super::GuardedReplaceUndoBackup>)>;
-type MessageCallback = Box<dyn Fn(&str)>;
+type MessageCallback = Box<dyn Fn(&str, crate::services::notifications::NotificationSeverity)>;
 
 /// Delay text-entry searches long enough to batch normal typing without making
 /// the workspace search panel feel sluggish.
@@ -172,7 +172,8 @@ pub struct SearchPreviewState {
     /// Cancellation token for the active worker; superseding generations set it immediately.
     pub preview_cancel_token: RefCell<Option<Arc<AtomicBool>>>,
     /// Latest superseding request retained while the single worker is active.
-    pub(super) queued_preview_request: RefCell<Option<super::replace::ReplacePreviewRequest>>,
+    pub(super) queued_preview_request:
+        RefCell<Option<super::replace_execution::ReplacePreviewRequest>>,
     /// One paced capacity wakeup for the latest preview request.
     pub(super) preview_capacity_wakeup: crate::ui::plain_disposal::DisposalCapacityWakeup,
     /// Accepted bounded preview plus its dense generation-scoped identity map.
@@ -186,6 +187,12 @@ pub struct SearchPreviewState {
     pub preview_retirement_pending: Arc<AtomicUsize>,
     /// Number of checked-row partitions executed on the worker lane.
     pub preview_selection_jobs: Cell<u64>,
+    /// Undo-journal disk save, delete, and recovery jobs dispatched to workers.
+    pub journal_disk_jobs: Cell<u64>,
+    /// Dispatched undo-journal disk jobs whose GTK completion has not run yet.
+    pub journal_disk_jobs_in_flight: Cell<usize>,
+    /// Counts published by the most recent durable Replace All apply.
+    pub last_apply_counts: Cell<Option<super::policy::ReplaceApplyCounts>>,
 }
 
 /// Match-navigation state used by F4 / Shift+F4.

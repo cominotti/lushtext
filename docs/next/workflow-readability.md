@@ -1,12 +1,13 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slot 2a complete, six migration changes
+Status: **Phase 0 complete, slots 1, 2a, and 2b complete, five migration changes
 outstanding.** The convention is normative, the census is complete, the
 mechanical gate is wired into `make check-policy`, the normative facade line
 budget is declared and enforced, and two workflows are migrated:
-`WFR-SEARCH-REPLACE` (search and preview half, slot 1) and
+`WFR-SEARCH-REPLACE` (**both halves** — search and preview in slot 1, the
+Replace All write path and its undo journal in slot 2b) and
 `WFR-COMMAND-PALETTE` (slot 2a). Everything else in `ui/` and `model/` is
-unchanged and behaviorally untouched. Slots 2b through 7 are authorable now; two
+unchanged and behaviorally untouched. Slots 3 through 7 are authorable now; two
 items are deliberately deferred and may never be taken on.
 
 This document answers, in one read: what problem the programme solves, how much
@@ -19,19 +20,24 @@ that touch its scope:
 | --- | --- |
 | `openspec/specs/workflow-readability-boundaries/spec.md` | the workflow module shape, the facade contract and its size-budget rule, seam value objects, intent-first naming, the census matrix, risk tiers, retroactive amendment |
 | `openspec/specs/workflow-evidence-surfaces/spec.md` | evidence surfaces, their single visibility rule, the inspection/configuration/actuation/probe seam taxonomy, the evidence→automation projection relationship |
-| `openspec/specs/gtk-adapter-module-boundaries/spec.md` | the decomposition contract and **the bounded set of coordination role names** (`admission`, `execution`, `retirement`, `watch`); adding a role name amends *this* spec, not the two above |
+| `openspec/specs/gtk-adapter-module-boundaries/spec.md` | the decomposition contract and **the bounded set of coordination role names** (`admission`, `execution`, `retirement`, `watch`, `journal`); adding a role name amends *this* spec, not the two above |
 | `openspec/specs/mutation-testing/spec.md` | the `ui/**/policy.rs` scope convention and the mutation-parity requirement for relocated policy |
 | `openspec/specs/dbus-automation-spine/spec.md` | snapshots project from evidence while the exported D-Bus contract stays unchanged |
 | `docs/workflow-readability-matrix.md` | per-workflow status, roles, seams, risk tier, slot; gated by `make check-workflow-boundaries` |
 | this file | why, baseline, sequencing, remaining scope, deferrals |
 
-Slot 2b's `replace.rs` role-name decision lands on the third row: if no listed
-role name describes what that module does, the slot must amend
-`gtk-adapter-module-boundaries` rather than overload an existing name. Slot 2a
-already amended that spec once, adding the stage-order qualification rule for a
-single workflow owning two stage orders that each need the same coordination
-shape; 2b should check whether that rule already covers `replace.rs` before
-proposing a new role name.
+Slot 2b's `replace.rs` role-name decision landed on the third row, and it needed
+both mechanisms. The stage-order qualification rule slot 2a added covered the
+preview half (`replace_execution.rs`, because `execution.rs` in that directory is
+already the search stage order's execution module), but no listed role name
+described the journal half's job, so 2b amended
+`gtk-adapter-module-boundaries` to add **`journal`**: maintaining a durable,
+generation-guarded record that a later stage of the same workflow reads back.
+`retirement` was the closest existing name and means its opposite. That amendment
+triggered the section 8 re-check of every migrated row; both passed as
+confirmations, recorded in the matrix's
+[Retroactive amendment](../workflow-readability-matrix.md#retroactive-amendment)
+section.
 
 Full rationale for every decision below lives in the OpenSpec change
 **`normalize-workflow-readability-boundaries`** (`proposal.md` + `design.md`,
@@ -120,6 +126,19 @@ why the reconciliation above exists.
 | Automation projections | 1 (`window.content_search`) | 2 (plus `window.command_palette` and both palette readiness blockers), now gated by an implemented evidence-to-snapshot drift check |
 | Facade line budget | measured 350, not declared | **declared at 370 and enforced** |
 
+### Baseline after slot 2b
+
+| Quantity | After slot 2a | After slot 2b |
+| --- | --- | --- |
+| Workflows migrated | 2 | still 2, but `WFR-SEARCH-REPLACE` is now migrated **end to end** rather than for its search/preview half only |
+| Share of `ui/` + `model/` migrated | 8,044 of 79,017 censused lines ≈ 10% | unchanged at ≈10%. Slot 2b finished a row already counted; the censused footprint is per workflow, not per half |
+| Policy modules relocated | 2 of 7 relocation candidates | **still 2, and the denominator drops to 6.** `model/workspace_search.rs` was resolved as domain and stays, so it is no longer a candidate. Slot 2b's own policy work was an extraction from an unscoped GTK adapter into `ui/search_panel/policy.rs`, like the palette's — a coverage gain from zero, not a relocation |
+| Test seams addressed | palette directory holds 6 `*_for_test` functions | `ui/search_panel/**` unchanged at 7 (5 replace/undo actuation seams plus 2 accessibility probes). Slot 2b retired **no** inspection function, because slot 1 already retired all eight, and it added no new seam, no new override static, and no new `.imp()` reach-through. Instead it added 10 fields to the existing evidence surface and migrated 10 widget-test waits off direct `search_backup` reads |
+| Seams reified | 2 | **3** (plus `UndoRestoreClaim`, the panel/window undo-restore claim seam). Long signatures shortened: still 0 — no function in this half has ≥6 non-receiver parameters, so *seams reified* remains the primary unit and the receiver-counted 88 / strict 43 signature figures stay uninformative here |
+| Automation projections | 2 | still 2, by design. Slot 2b's obligation was no-widening, proved by a zero-difference before/after `content_search` and readiness diff |
+| Facade line budget | declared at 370 and enforced | **held on its third test, with 1 line to spare.** The search facade grew from 350 to **369** while gaining a fifth Replace All stage, two module names, and the six Replace All inversions it had not been narrating. Reaching 369 took folding module-ownership detail into the role table, compressing every inversion bullet, and delegating the options-row reveal out of the facade; the first honest narration measured 379. **The 20 lines of headroom slot 2a declared are now 1**, which the matrix's budget section records as its own "real evidence" trigger firing — slot 3 must plan against 1 line |
+| Bounded coordination role names | `admission`, `execution`, `retirement`, `watch` | **plus `journal`**, the one amendment the convention sanctions. Both migrated rows re-checked as confirmations |
+
 Slot 2a also closed one Phase-0 gap that was specified but never built: the
 evidence-to-snapshot drift check `workflow-evidence-surfaces` requires of
 `make check-automation-docs`. Slot 1 could leave it unnoticed with one
@@ -158,8 +177,8 @@ this table is the change-level view.
 | --- | --- | --- | --- |
 | 1 | **complete** — census, convention, enablers, exemplar | `WFR-SEARCH-REPLACE` search and preview half | proposal + design + tasks + 2 capability specs (`normalize-workflow-readability-boundaries`) |
 | 2a | **complete** — migrated the palette, set the facade budget at 370, first automation projections beyond search (`migrate-command-palette-workflow-readability`) | `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections beyond the search fields | proposal + tasks + 2 spec deltas |
-| 2b | Finish search/replace: the Replace All write path and its undo journal (`complete-search-replace-workflow-readability`) | `WFR-SEARCH-REPLACE` replace/undo half, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + minimum delta |
-| 3 | Save and load | `WFR-DOCUMENT-SAVE`, `WFR-DOCUMENT-LOAD` | proposal + tasks |
+| 2b | **complete** — finished search/replace: the Replace All write path and its undo journal, added the `journal` role name, and proved no automation widening (`complete-search-replace-workflow-readability`) | `WFR-SEARCH-REPLACE` replace/undo half, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
+| 3 | Save and load | `WFR-DOCUMENT-SAVE`, `WFR-DOCUMENT-LOAD`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks |
 | 4 | User-content restore family | `WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-BUFFER-REPLACEMENT` | proposal + tasks |
 | 5 | Workspace tree and notes | `WFR-WORKSPACE-TREE`, `WFR-NOTES-BOOKMARKS` | proposal + tasks |
 | 6 | Minimap | `WFR-MINIMAP` | proposal + design + tasks |
@@ -232,40 +251,33 @@ genuine design question (pixel-verified geometry under animation frames). When a
 migration does find it needs a new obligation or capability, the
 retroactive-amendment rule in section 8 applies to the fix.
 
-### Slot 1 residue — what slot 2b inherits
+### Slot 1 residue — all six obligations discharged
 
-Slot 1 deliberately migrated only the non-writing half of `WFR-SEARCH-REPLACE`,
-so the row is `migrated` for the search and preview half while real obligations
-remain. Two of the six are **discharged by slot 2a** and struck through below;
-the remaining four are slot 2b's. This section is kept rather than deleted so a
-cold session can see which obligations existed and which were paid.
+Slot 1 deliberately migrated only the non-writing half of `WFR-SEARCH-REPLACE`.
+That is finished: slot 2a paid two of the six obligations and **slot 2b paid the
+remaining four**, so the row is `migrated` end to end. The list is kept rather
+than deleted so a cold session can see which obligations existed, which change
+paid each one, and — importantly — which one turned out to already be done.
 
-- **The Replace All write path and its undo journal.** The row's tier-3 half:
-  `services/search_backup.rs` plus the durable rewrite path.
-- **`replace.rs`'s role name.** It kept a workflow-descriptive name rather than a
-  bounded coordination role name, because it owns both the preview and the
-  durable undo journal and naming its job before the journal migrates would have
-  to be redone. Slot 2 decides its final role name, or names.
-- **`activate_undo_replacements` delegation.** The cold facade re-read (task 6.8)
-  found this stage reads transaction state and mutates widgets inline in the
-  facade, which the facade role forbids. The result-cap fix already extracted
-  `hand_back_undo_backup`; slot 2 must finish making stage 4 a delegation like
-  its three siblings.
-- **`model/workspace_search.rs`** (503 lines, 2 consumers, both search) — a
-  census-found single-workflow module still awaiting its relocation decision.
-- ~~**The normative facade line budget.**~~ **Discharged by slot 2a**, which
-  declared it at **370** physical lines from the exemplar's measured 350 plus
-  modest headroom, activated the previously inert check, observed it failing, and
-  verified the exemplar facade against it. Changing that number is now a
-  convention amendment under section 8.
-- ~~**The first `WFR-AUTOMATION-SPINE` projections beyond the search fields.**~~
-  **Discharged by slot 2a**: `window.command_palette` and both palette readiness
-  blockers project from `CommandPaletteEvidence`, and `make check-automation-docs`
-  now gates both projections against a documented `Evidence Projection Map`. The
-  row itself stays `pending`, because it continues in later slots.
+| Obligation | Paid by | Outcome |
+| --- | --- | --- |
+| The Replace All write path and its undo journal | 2b | migrated. `ui/search_panel/journal.rs` owns the transaction gate, the generation-guarded install/clear, the worker disk save/delete, startup recovery, the capacity retry, the affordance, and the hand-back |
+| `replace.rs`'s role name | 2b | split into `replace_execution.rs` (stage-order-qualified) and `journal.rs` (a new bounded role name) |
+| `activate_undo_replacements` delegation | **already discharged by slot 1's own result-cap fix** | The residue text was stale. The facade already held a documented one-line call to `journal::hand_back_undo_backup` reading no transaction state and mutating no widget. **The real residual asymmetry was on the window side**, in `ui/window/search.rs`'s undo path, which claimed the transaction, re-showed the undo button on two early-return paths, reserved undo capacity, and installed the remainder backup inline. Slot 2b fixed that, giving the panel one named operation per step: `journal::begin_undo_restore` (returning the `UndoRestoreClaim` seam value, which names the transaction-busy and capacity-deferred refusals so the panel owns restoring the affordance for both) and `journal::finish_undo_restore`. Do not re-open the facade item; do not conclude the window-side work was skipped |
+| `model/workspace_search.rs` | 2b | **stays in `model/`.** Its reference set is larger than the census cell recorded, and a service plus a `model/` sibling both depend on it, so a move under `ui/` would invert dependency direction. Decision closed; see the matrix |
+| ~~The normative facade line budget~~ | 2a | declared at **370** physical lines |
+| ~~The first `WFR-AUTOMATION-SPINE` projections beyond the search fields~~ | 2a | `window.command_palette` plus both palette readiness blockers, gated by an implemented drift check |
 
-Slot 2b must **not** re-plan the result-cap delivery fix (section 2) or the
-`WalkStop` stop-semantics split; both landed in slot 1.
+`WFR-AUTOMATION-SPINE` itself stays `pending`, because it continues in later
+slots. Slot 2b's share of it was a **no-widening** obligation rather than a new
+projection, and it was proved rather than asserted: the exported schema and the
+`content_search` projection function are byte-identical to before, all ten new
+evidence fields are declared on the surface and read by no projection, and a
+before/after Automation1 capture of the same app state diffed the
+`content_search` object and the readiness fields to zero differences.
+
+Slot 2b did **not** re-plan the result-cap delivery fix or the `WalkStop`
+stop-semantics split; both landed in slot 1.
 
 ### Slot ledger (machine-readable)
 
@@ -306,8 +318,8 @@ in both directions, which some rows need:
 
 - slot 1 (complete): WFR-SEARCH-REPLACE
 - slot 2a (complete): WFR-COMMAND-PALETTE, WFR-AUTOMATION-SPINE (partial)
-- slot 2b (outstanding): WFR-SEARCH-REPLACE (partial), WFR-AUTOMATION-SPINE
-- slot 3 (outstanding): WFR-DOCUMENT-SAVE, WFR-DOCUMENT-LOAD
+- slot 2b (complete): WFR-SEARCH-REPLACE, WFR-AUTOMATION-SPINE (partial)
+- slot 3 (outstanding): WFR-DOCUMENT-SAVE, WFR-DOCUMENT-LOAD, WFR-AUTOMATION-SPINE
 - slot 4 (outstanding): WFR-DRAFT-RECOVERY, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-BUFFER-REPLACEMENT
 - slot 5 (outstanding): WFR-WORKSPACE-TREE, WFR-NOTES-BOOKMARKS
 - slot 6 (outstanding): WFR-MINIMAP
@@ -328,11 +340,15 @@ recorded now rather than rediscovered.
   should check the qualification rule against `replace.rs` before proposing a new
   role name.
 - **The 370-line budget held on a second facade, with room to spare.** The palette
-  facade narrates *two* stage orders and eight inversions in 328 lines, 42 under
-  budget. The risk the budget section states did not materialize, and the reason is
-  informative: what makes a facade long is stage *bodies*, not stage narration, so
-  delegating aggressively keeps two stage orders comfortably inside a budget
-  derived from a one-and-a-half-stage-order facade.
+  facade narrates *two* stage orders and eight inversions; slot 2a measured it at
+  328 lines, 42 under budget, and it measures **335** today, 35 under. The risk the
+  budget section states did not materialize *for the palette*, and the reason
+  slot 2a gave is still informative: what makes a facade long is stage *bodies*,
+  not stage narration, so delegating aggressively keeps two stage orders inside a
+  budget derived from a one-and-a-half-stage-order facade. **Slot 2b qualifies this
+  conclusion**, though: finishing the search workflow's second stage order took its
+  facade to 369, one line under, so "room to spare" is a property of the palette
+  rather than of two-stage-order facades in general.
 - **The evidence-surface visibility pattern needed no deviation.** Internal type
   plus a `#[cfg(feature = "test-utils")]` re-export worked unchanged, because the
   palette's readers are the same two the exemplar's are: `ui/automation.rs`
@@ -347,6 +363,60 @@ recorded now rather than rediscovered.
   the palette had five inversions, all coordinator-guarded; the code has eight,
   three of them timer- or wakeup-driven. Write the facade narration from the code
   and correct the trace, as slot 2a did.
+
+### Convention friction slot 2b hit, recorded for slots 3 through 7
+
+Three workflows' worth of the convention now exist, so the retroactive-amendment
+rule is materially more expensive than it was at slot 2. These are recorded to
+keep the next amendment cheap.
+
+- **The bounded role set needed one addition, and the escape hatch worked as
+  designed.** `journal` was the first genuinely missing name: durable,
+  generation-guarded persistence that a later stage reads back, with startup
+  recovery. Expect this shape again in slot 3 (save) and slot 4 (drafts, session,
+  local history) — those workflows all keep durable records a later stage restores
+  from, and `retirement` will keep looking superficially close while meaning the
+  opposite. **Check `journal` before proposing a fourth mechanism.**
+- **The stage-order qualifier read well, and the "qualify only the new module"
+  reading is the one to keep.** Slot 2a qualified both palette execution modules
+  because it created both at once; slot 2b qualified only the new one, leaving
+  `execution.rs` and `retirement.rs` alone. Renaming stable already-migrated
+  modules for symmetry is churn, and on a tier-3 path it is churn next to a
+  durable write. The spec's wording supports the narrow reading; keep it.
+- **The 370-line budget held on a facade narrating two stage orders including a
+  durable write — at 369, with exactly 1 line left.** It required real discipline:
+  the first honest narration of the completed stage order measured 379, and it came
+  back under budget only by folding module-ownership detail into the role table,
+  compressing every inversion bullet, shortening per-method doc comments that
+  duplicated the module-doc narration, and delegating the options-row reveal out
+  of the facade. The budget is doing its job and was never edited — but **the
+  headroom is gone**, so slot 3 must plan against 1 line rather than the 20 slot 2a
+  declared, and **slot 6 (minimap) is the one most likely to prove the number
+  wrong.** If an honest split genuinely cannot fit, the matrix's budget section
+  says to correct the number through the spec while few workflows are migrated;
+  that window is closing, since every migrated row adds re-migration cost.
+- **The evidence surface's reentrancy constraint should become a stated
+  convention, not a per-workflow module note.** Slot 2b added ten fields to a
+  surface whose module doc records that the accessor takes shared `RefCell`
+  borrows, so no field may be read from inside a `borrow_mut()`. That constraint
+  is not workflow-specific — it follows from "one accessor reads the whole
+  surface" plus `RefCell` — and every later slot will re-derive it. A future
+  change should promote it into `workflow-evidence-surfaces`, with the
+  read-inside-mutation test slot 2b wrote as the pattern.
+- **An evidence surface needs a field the workflow does not yet record.** Slot 2b
+  had to expose the last durable apply's counts, which the window computed and
+  published to the status bar but never told the panel. The honest fix was a named
+  workflow operation (`record_replace_apply_counts`) rather than a test getter that
+  reaches into the window. Expect the same in save and load: the workflow's
+  observable outcome is often already computed somewhere that throws it away.
+- **A readability slot found two real pre-existing data-loss defects.** The
+  mandatory `data-safety` pass over the replace/undo surface produced two
+  confirmed findings, and `preexisting-blockers.md` made fixing them
+  non-negotiable even though the change's own non-goals said "no behavior change".
+  **Later slots should expect this and budget for it**: a readability slot over a
+  durable path is the first time anyone reads that path end to end, which is
+  exactly when such defects surface. Do not treat the non-goal as permission to
+  defer one.
 
 ## 4. The unblock point
 
