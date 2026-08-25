@@ -1003,7 +1003,7 @@ def run_evidence_projection_self_tests() -> None:
     documented = documented_projection_map(reference)
     wrongly_documented = sorted(
         field
-        for (snapshot_object, field) in documented
+        for (snapshot_object, field), _snapshot_field in documented.items()
         if snapshot_object == "window.command_palette" and field in internal
     )
     if wrongly_documented:
