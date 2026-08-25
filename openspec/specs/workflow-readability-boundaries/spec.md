@@ -1,0 +1,295 @@
+# workflow-readability-boundaries Specification
+
+## Purpose
+Define LushText's workflow readability convention: the completion matrix that enumerates every workflow, the narrative facade a migrated workflow presents, the reified seam value objects that carry identity and freshness across workflow boundaries, the co-location and purity rules for pure workflow policy, intent-first boundary naming, risk-ordered vertical migration slices, retroactive amendment, and the standing guidance that must stay consistent with it.
+
+## Requirements
+### Requirement: Every workflow is enumerated before any workflow is migrated
+The project SHALL maintain `docs/workflow-readability-matrix.md` as the completion
+source of truth for workflow readability migration. Every LushText workflow MUST
+have a row with a stable row id, its current file set, the roles it must gain to
+satisfy the convention, its seam value object, its consumer count for any pure
+policy it owns, its risk tier, and its migration status. The matrix MUST be
+complete for all workflows before the first workflow is migrated, so that outliers
+are classified before the convention becomes normative.
+
+A row MUST NOT restate the target file set as a literal file list. The target file
+set is fully derivable from the role naming convention, so duplicating it per row
+creates a second source of truth that can drift from the convention.
+
+#### Scenario: Census precedes exemplar migration
+- **WHEN** the exemplar workflow migration begins
+- **THEN** the matrix already contains a row for every workflow, including
+  unmigrated ones
+- **AND** each row names the roles it must gain, its seam value object, and its
+  risk tier
+
+#### Scenario: Workflow with no seam value object is still a complete row
+- **WHEN** a workflow has no field bundle crossing two or more boundaries, because
+  it is synchronous or delegates its seam to another workflow
+- **THEN** the row records that no value object is required together with the
+  evidence for that conclusion
+- **AND** the row counts as complete rather than unresolved
+
+#### Scenario: Known outlier is classified explicitly
+- **WHEN** the census reaches a workflow that may not fit the convention, such as
+  the minimap adapter, a policy module with several unrelated consumers, or a
+  workflow decomposed by an earlier change
+- **THEN** the row records it as conforming, exempt, or deferred with a stated
+  reason
+- **AND** a later migration change MUST NOT silently force an exempt workflow into
+  the convention
+
+#### Scenario: Migrated workflow without a row fails policy
+- **WHEN** a workflow is migrated to the convention but has no matrix row, or its
+  row claims evidence that does not exist
+- **THEN** `make check-policy` fails
+- **AND** the failure names the workflow and the missing row or evidence
+
+### Requirement: A migrated workflow presents one narrative facade
+A migrated workflow SHALL expose one facade module that narrates the workflow from
+user action to completion. The facade MUST delegate to policy, coordination,
+adapter, and evidence roles rather than implementing them. A reader MUST be able to
+follow the workflow's ordered stages from the facade without opening the
+coordination or policy modules.
+
+A normative maximum size for facade modules SHALL be set by the first migration
+change that follows the exemplar, derived from the exemplar facade's measured size
+rather than chosen in advance. The exemplar change itself records that measurement
+and leaves the number unset: a budget fixed before any facade exists risks forcing
+the narration itself to be split, and under the retroactive amendment rule the
+cheapest moment to correct a wrong number is when exactly one workflow is
+migrated. Once set, that budget MUST apply to every migrated workflow, and
+changing it later MUST follow the retroactive amendment rule. Until it is set, a
+facade is judged by the delegation and narration requirements below.
+
+The budget SHALL be declared in `docs/workflow-readability-matrix.md` in a
+machine-readable form documented beside the declaration, and `make check-policy`
+MUST fail when a `migrated` row's declared facade file exceeds it.
+
+#### Scenario: Facade budget is measured before it is normative
+- **WHEN** the exemplar migration completes its facade
+- **THEN** it records that facade's measured size and leaves the normative budget
+  unset
+- **AND** the next migration change sets the budget from that measurement, and it
+  and every later migration are held to it
+
+#### Scenario: Declared budget is mechanically enforced
+- **WHEN** the matrix declares a normative facade line budget and a `migrated`
+  row's declared facade file exceeds it
+- **THEN** `make check-policy` fails
+- **AND** the failure names the row, the facade path, its measured size, and the
+  budget
+
+#### Scenario: Undeclared budget is not silently enforced
+- **WHEN** the matrix declares no normative facade line budget yet
+- **THEN** the facade size check is inert rather than inventing a default
+- **AND** facades are judged only by the delegation and narration requirements
+
+#### Scenario: Facade narrates the ordered stages
+- **WHEN** a reader opens the facade of a migrated workflow
+- **THEN** the workflow's stages appear in order with their intent named
+- **AND** each stage delegates to a named role rather than inlining machinery
+
+#### Scenario: Inverted control flow is narrated, not hidden
+- **WHEN** a workflow's stages are connected by a deferred drain, idle callback, or
+  worker completion rather than by direct calls
+- **THEN** the facade documents that inversion and names the point where control
+  resumes
+- **AND** the reader is not required to reconstruct the resumption point from the
+  coordination module
+
+#### Scenario: Facade does not become a second implementation
+- **WHEN** the facade would need to own timers, admission bookkeeping, generation
+  counters, or GTK widget mutation to express a stage
+- **THEN** that work stays in the coordination or adapter role
+- **AND** the facade calls it through a named operation
+
+### Requirement: Field bundles crossing workflow seams are reified value objects
+The project SHALL represent a workflow's identity, freshness, and intent fields as
+named value objects when the bundle crosses two or more function boundaries or is
+reconstructed at two or more call sites. Such a bundle MUST be constructed once at
+the workflow entry point and validated as a unit. A field MUST NOT be renamed while
+crossing a seam.
+
+The project already expresses this shape as a captured-expectation value, an
+observed-live-state value, and one predicate that validates the two together. A
+migration MUST reuse that established shape for its seam rather than introduce a
+parallel one, so the codebase does not accumulate several ways to express the same
+freshness check. Where a workflow's coordinator already owns the generation and
+exposes a currency predicate, that coordinator is the seam value object and no
+additional type is required.
+
+#### Scenario: Migration reuses the established seam shape
+- **WHEN** a migration reifies a freshness or identity bundle
+- **THEN** it expresses that bundle in the shape the codebase already uses for the
+  same purpose
+- **AND** it does not introduce a second, differently shaped convention for the same
+  kind of check
+
+#### Scenario: Freshness tuple is validated as a unit
+- **WHEN** a workflow needs to decide whether a queued or completing operation is
+  still current
+- **THEN** it validates one value object rather than comparing several loose
+  parameters
+- **AND** the validation lives with the value object rather than being duplicated
+  at each seam
+
+#### Scenario: Cross-seam rename becomes unrepresentable
+- **WHEN** a value that means one thing is passed to a boundary that names it
+  something else
+- **THEN** the reified value object makes that call a type error
+- **AND** the workflow cannot compile until the intent is named consistently
+
+#### Scenario: Local helper does not require a value object
+- **WHEN** a bundle of parameters is used by exactly one private helper and is not
+  reconstructed elsewhere
+- **THEN** no value object is required
+- **AND** the convention does not force reification of every long signature
+
+#### Scenario: Argument-count suppression signals an unreified seam
+- **WHEN** workflow code carries `#[expect(clippy::too_many_arguments)]` at a
+  boundary that crosses modules
+- **THEN** that boundary is treated as an unreified seam to be fixed
+- **AND** it is not accepted as a standing exception
+
+#### Scenario: Workflow code reaches zero argument-count suppressions
+- **WHEN** the residual sweep completes
+- **THEN** no `#[expect(clippy::too_many_arguments)]` remains in workflow adapter or
+  coordination code
+- **AND** the sweep asserts that zero rather than maintaining an allowlist of
+  accepted workflow exceptions
+
+#### Scenario: Domain catalog construction is outside the seam rule
+- **WHEN** a domain module builds static catalog rows whose parameters each name a
+  documented external contract field
+- **THEN** that constructor is not a workflow seam and the zero assertion does not
+  cover it
+- **AND** its suppression MUST carry a reason naming the contract it enumerates
+
+### Requirement: Pure workflow policy is co-located with its consumer and stays pure
+The project SHALL place a workflow's pure decision logic in a `policy.rs` module
+inside that workflow's own directory when the policy has a single owning workflow.
+A `policy.rs` module MUST NOT import `gtk4`, `glib`, `gio`, `libadwaita`, or
+`sourceview5`. Policy with several genuinely unrelated consumers MUST remain in a
+shared location, and the matrix MUST record it as cross-cutting.
+
+Relocation eligibility SHALL be decided by the number of **owning workflows**, not
+by the number of consuming files. Pure policy whose only consumer is its own
+coordination adapter is cross-cutting when that adapter serves several workflows,
+and MUST NOT be relocated beneath any one of them. Shared coordination that encodes
+LushText-specific budget, admission, or retirement policy MUST NOT be treated as
+generic toolkit machinery for extraction into a separate reusable crate.
+
+#### Scenario: Single consuming file is not sufficient grounds to relocate
+- **WHEN** pure policy has exactly one consuming file, and that file is the
+  coordination adapter that many workflows call
+- **THEN** the policy is recorded as cross-cutting and stays in its shared location
+- **AND** the matrix records the breadth of the adapter's consumers as the reason
+
+#### Scenario: Single-consumer policy moves beside its workflow
+- **WHEN** pure policy in `model/` has exactly one owning workflow
+- **THEN** it moves to that workflow's `policy.rs`
+- **AND** it remains free of GTK, GLib, GIO, Libadwaita, and SourceView imports
+
+#### Scenario: Cross-cutting policy does not move
+- **WHEN** pure policy is consumed by several unrelated workflows
+- **THEN** it stays in its shared location
+- **AND** the matrix records it as cross-cutting with its consumer list
+
+#### Scenario: Policy purity is mechanically enforced
+- **WHEN** a `policy.rs` module gains a GTK-family import
+- **THEN** `make check-policy` fails
+- **AND** the failure names the file and the disallowed import
+
+#### Scenario: Domain layer keeps only domain concepts
+- **WHEN** the census and exemplar are complete
+- **THEN** modules remaining in `model/` name domain concepts or recorded
+  cross-cutting policy
+- **AND** no module is placed in `model/` solely to obtain test or mutation
+  tooling reach
+
+### Requirement: Workflow boundaries are named for intent, not mechanism
+Public, `pub(crate)`, `pub(super)`, and cross-module workflow operations SHALL be
+named for the workflow intent they express. Names whose meaning depends on knowing
+the coordination mechanism MUST be renamed at these boundaries. Private helpers
+inside a coordination module MAY keep mechanism names when the owning module makes
+the mechanism obvious.
+
+#### Scenario: Cross-module operation is renamed for intent
+- **WHEN** a cross-module operation is named after the mechanism it happens to use
+  rather than the workflow step it performs
+- **THEN** the migration renames it to the workflow intent
+- **AND** the mechanism remains documented in the module that owns it
+
+#### Scenario: Mechanism name is acceptable inside its owning module
+- **WHEN** a private helper inside a coordination module refers to that module's own
+  mechanism
+- **THEN** the mechanism name is acceptable
+- **AND** no rename is required
+
+### Requirement: Migration proceeds in vertical slices ordered by risk
+The project SHALL migrate workflows one workflow at a time, landing that workflow's
+facade, value objects, policy, and evidence together. Migration order MUST proceed
+from lower to higher risk, and workflows that persist user data MUST NOT be
+migrated before the convention has been proven on at least two lower-risk
+workflows.
+
+#### Scenario: A workflow migrates as a complete slice
+- **WHEN** a migration change lands
+- **THEN** the affected workflow is readable end to end under the convention
+- **AND** the change does not leave that workflow half-converted
+
+#### Scenario: Partial programme remains coherent
+- **WHEN** the programme has migrated some workflows and not others
+- **THEN** the matrix states which workflows follow the convention
+- **AND** unmigrated workflows remain behaviorally unchanged
+
+#### Scenario: User-data workflow waits for two proofs
+- **WHEN** a workflow persists drafts, sessions, local history, or document
+  content
+- **THEN** its migration follows at least two completed lower-risk migrations
+- **AND** the matrix records the prerequisite
+
+### Requirement: Convention amendments are applied retroactively
+When a later change amends this convention, that change SHALL re-migrate every
+already-migrated workflow to the amended shape within the same change. The project
+MUST NOT leave two generations of the convention coexisting in the tree.
+
+#### Scenario: Amendment re-migrates earlier workflows
+- **WHEN** a migration reveals that the convention must change
+- **THEN** the amending change updates the specification and re-migrates all
+  previously migrated workflows
+- **AND** the matrix reflects the amended shape for every migrated row
+
+#### Scenario: Amendment cannot be deferred as debt
+- **WHEN** an amendment is proposed without re-migrating earlier workflows
+- **THEN** the change is incomplete
+- **AND** it MUST NOT be archived as accepted debt
+
+### Requirement: Standing guidance stays consistent with the convention
+The project SHALL keep `AGENTS.md`, `README.md`, `.agents/rules/*.md`, and
+maintained skill documents consistent with this convention. A standing instruction
+that contradicts the convention MUST be amended in the same change that introduces
+or changes the convention. `make check-agent-docs` MUST pass with the revised
+guidance.
+
+#### Scenario: Contradicting rule is amended with the convention
+- **WHEN** the convention permits or requires something a standing rule forbids
+- **THEN** that rule is amended in the same change
+- **AND** the amended rule distinguishes the permitted case from the case it was
+  originally protecting against
+
+#### Scenario: Coordination vocabulary is presented beneath domain vocabulary
+- **WHEN** guidance introduces the coordination vocabulary such as admission,
+  budget, coordinator, ledger, retirement, continuation, and generation counter
+- **THEN** it presents that vocabulary as an implementation tier reached from a
+  workflow
+- **AND** a reader learns the workflow's domain vocabulary before the coordination
+  vocabulary
+
+#### Scenario: Skills point at relocated policy
+- **WHEN** pure policy relocates during a migration
+- **THEN** skills and rules referencing its former location are updated in the same
+  change
+- **AND** no maintained guidance references a path that no longer exists
