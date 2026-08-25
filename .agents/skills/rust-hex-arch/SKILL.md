@@ -99,7 +99,7 @@ workflow carries exactly one role:
 | Narrative facade | the workflow's public module surface | ordered stages, intent names, delegation |
 | Seam value objects | with the workflow | identity/freshness/intent bundles |
 | Pure policy | `policy.rs` | pure decisions, no GTK-family imports |
-| Coordination | `admission`, `execution`, `retirement`, `watch` | timers, budgets, generations, dispatch |
+| Coordination | `admission`, `execution`, `retirement`, `watch`, `journal` | timers, budgets, generations, dispatch, durable generation-guarded records |
 | Evidence | `evidence.rs` | the workflow's observable state, one typed value |
 
 Rules to enforce when reviewing a decomposition:

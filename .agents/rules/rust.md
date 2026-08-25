@@ -153,15 +153,22 @@ A migrated workflow assigns each of its modules exactly one role:
 - **Pure policy** — `policy.rs`, one per workflow, inside that workflow's own
   directory.
 - **Coordination** — one module per coordination job, named from the bounded set
-  `admission`, `execution`, `retirement`, `watch`. A workflow may own more than
+  `admission`, `execution`, `retirement`, `watch`, `journal`. A workflow may own
+  more than
   one. `runtime.rs` is not a role name: it says only that the module is
-  machinery. A coordination job no listed name describes requires amending
+  machinery. `journal` is the job of maintaining a durable, generation-guarded
+  record that a later stage of the same workflow reads back — installing and
+  clearing it under a freshness guard, writing and deleting it on a worker,
+  recovering it at startup with stale-record cleanup, and handing it back. It is
+  the opposite of `retirement`, which destroys a payload the workflow is finished
+  with. A coordination job no listed name describes requires amending
   `openspec/specs/gtk-adapter-module-boundaries/spec.md`, not overloading an
   existing name. Where **one** workflow owns several ordered stage orders in one
   directory and more than one of them needs a coordination module of the same
   shape, the module name may qualify a bounded role name with the stage order it
   serves (`query_execution.rs` and `index_execution.rs` in
-  `ui/command_palette/`), using the workflow's own domain vocabulary for the
+  `ui/command_palette/`, `replace_execution.rs` in `ui/search_panel/`), using the
+  workflow's own domain vocabulary for the
   qualifier while the suffix stays a bounded role name. Do not take an
   ill-fitting bounded name because the fitting one is already spent on another
   stage order of the same workflow. The bounded set is a review contract:

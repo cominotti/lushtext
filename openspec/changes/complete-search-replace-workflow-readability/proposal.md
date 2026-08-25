@@ -207,7 +207,32 @@ None.
   stage order's journal half is exactly that job, and `retirement` — the closest
   name — means the opposite, destroying a payload the workflow is finished with.
   The delta adds `journal` to the bounded set, with a scenario distinguishing it
-  from `retirement` and `execution`. That is its only content.
+  from `retirement` and `execution`.
+
+  **Two properties of the delta that are easy to miss in the diff, disclosed
+  explicitly.**
+
+  1. **The role list becomes a closed enumeration.** The pre-amendment sentence
+     read "a bounded set of role names that state the job the module performs,
+     **such as** admission, execution, retirement, or watch"; the delta replaces
+     it with "`admission`, `execution`, `retirement`, `watch`, and `journal`". The
+     diff looks like it only appends a fifth name, so the tightening is called out
+     here. It is deliberate and it changes nothing operationally: the same
+     requirement already stated that a job no existing name describes "MUST be
+     added to the bounded set by amending this specification", so an off-list name
+     always required an amendment. It also aligns the spec with how the convention
+     is written everywhere else it is normative — `.agents/rules/rust.md` and
+     `docs/next/workflow-readability.md` both enumerate the set rather than
+     exemplify it. Any future off-list name still requires amending this spec.
+  2. **`journal` is defined to include its admission gate.** The role covers the
+     mutual-exclusion gate serializing the workflow's apply and undo transactions
+     and the disposal reservation those transactions take, alongside the
+     generation-guarded install and clear, the worker-side write and delete,
+     startup recovery with stale-record cleanup, and the hand-back. Splitting the
+     gate and reservation into a separate `undo_admission.rs` was considered and
+     rejected: two small jobs whose only purpose is protecting one durable record
+     do not justify a third module plus a sixth narrated stage in the facade. The
+     definition says so, so the next adopter copies the true boundary.
 
 **Flag for the reviewer, per the record's instruction to raise spec-delta needs
 loudly.** This delta *is* the sanctioned kind — the bounded-role-name requirement

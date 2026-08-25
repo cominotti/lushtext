@@ -454,18 +454,20 @@ role so its whole story stays in one place:
 - co-located pure **`policy.rs`** with no GTK-family imports, which keeps it in
   mutation-testing scope wherever its workflow lives;
 - **coordination** modules named for the job they do (`admission`, `execution`,
-  `retirement`, `watch`), optionally prefixed with the stage order served when one
-  workflow owns several stage orders that need the same role;
+  `retirement`, `watch`, `journal`), optionally prefixed with the stage order
+  served when one workflow owns several stage orders that need the same role;
 - one typed **`evidence.rs`** surface that is the workflow's observable state:
   tests read it, and the read-only D-Bus automation snapshots project from it
   without changing the exported contract.
 
 `crates/lushtext-core/src/ui/search_panel/` is the first workflow arranged this
-way and is the reference example: `mod.rs` narrates the search and Replace All
-stages, `policy.rs` holds the pure single-flight, retirement-budget, and
-preview-freshness policy, `execution.rs`/`retirement.rs`/`replace.rs` are its
-coordination jobs, and `evidence.rs` is the surface its widget tests and the
-`window.content_search` automation snapshot both read.
+way, the reference example, and the first migrated end to end: `mod.rs` narrates
+the search and Replace All stages, `policy.rs` holds the pure single-flight,
+retirement-budget, preview-freshness, and Replace All admission policy,
+`execution.rs`/`retirement.rs`/`replace_execution.rs`/`journal.rs` are its
+coordination jobs — `journal.rs` owning the durable, generation-guarded undo
+record that Undo restores from — and `evidence.rs` is the surface its widget
+tests and the `window.content_search` automation snapshot both read.
 
 `crates/lushtext-core/src/ui/command_palette/` is the second: `mod.rs` narrates
 *two* stage orders — the query flight and the incremental file-index mutation —

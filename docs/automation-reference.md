@@ -578,9 +578,11 @@ surface's `visible` flag comes from the owning workflow's evidence surface, whil
 `content_search.visible` and `command_palette.visible` remain window shell state
 read from the relevant revealer. Evidence fields that are not listed below —
 internal high-water counters, worker-lane job counts, retirement backlog detail,
-queued-byte counters, the queue's declared ceilings, and test-gated cancellation
-counters — are not part of this contract and are not serialized. Projection does
-not change any field name, type, or meaning.
+queued-byte counters, the queue's declared ceilings, test-gated cancellation
+counters, **freshness generation counters, apply/undo transaction-claim state,
+last-durable-apply result counts, and the installed undo journal's retained
+weight and entry count** — are not part of this contract and are not serialized.
+Projection does not change any field name, type, or meaning.
 
 #### Evidence Projection Map
 

@@ -21,11 +21,15 @@ to the bounded set by amending this specification, rather than reusing an ill-fi
 name or inventing an unlisted one.
 
 `journal` names the coordination job of maintaining a durable, generation-guarded
-record that a later stage of the same workflow reads back: installing and clearing it
-under a freshness guard, writing and deleting it on a worker, recovering it at
-startup with stale-record cleanup, and handing it back to the stage that consumes it.
-It is distinct from `retirement`, which destroys a payload the workflow is finished
-with, and from `execution`, which performs the workflow's primary work.
+record that a later stage of the same workflow reads back: admitting the mutations
+that may touch it, installing and clearing it under a freshness guard, writing and
+deleting it on a worker, recovering it at startup with stale-record cleanup, and
+handing it back to the stage that consumes it. Admission is part of this role
+rather than a separate one: the mutual-exclusion gate that serializes the
+workflow's writes to the record, and any resource reservation those writes take,
+exist only to protect that record and SHALL live with it. It is distinct from
+`retirement`, which destroys a payload the workflow is finished with, and from
+`execution`, which performs the workflow's primary work.
 
 Where **one** workflow owns more than one ordered stage order in a single directory,
 and more than one of those stage orders needs a coordination module of the same
@@ -76,6 +80,15 @@ module surface.
 - **THEN** that module takes the `journal` role name
 - **AND** it is not named `retirement`, which destroys payloads rather than
   preserving them for restoration
+
+#### Scenario: The gate protecting a journal belongs to the journal
+
+- **WHEN** a workflow serializes the mutations of its durable record behind a
+  mutual-exclusion gate, or reserves a resource budget for them
+- **THEN** that gate and reservation live in the same `journal` module as the record
+  they protect
+- **AND** they are not split into a separate `admission` module, because a job whose
+  only purpose is protecting one durable record does not justify its own role
 
 #### Scenario: Role naming is reviewed rather than gated
 
