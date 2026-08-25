@@ -97,23 +97,29 @@
 - [x] 10.6 Run `make fuzz-corpus-replay` and confirm the new seeds replay clean without corpus mutation. Also check replay wall time: the largest committed seed is now ~75 KB (the raised `MARKDOWN_FUZZ_MAX_INPUT_LEN` makes large seeds representable), so confirm the lane stays fast enough to remain an ordinary PR job.
 - [x] 10.7 Re-run the **exact** command recorded in `evidence/mutation-baseline-markdown-render.md` (scoped `scripts/run-mutants.sh full` with the same `MUTANTS_RE` / `MUTANTS_EXCLUDE_RE`), not `make mutants-diff`, and compare generated/killed counts for `services/markdown_render.rs` against the 1.6 baseline; a different command yields a different mutant set and is not parity evidence. Kill new survivors with deterministic tests rather than exclusions. Parity is shown on `services/markdown_render.rs` only: `ui/markdown_preview/**` is outside the mutation scope by design, because a deferred workflow gets no `policy.rs` and GTK adapters are not policy modules — that is not a coverage gap for 10.11 to flag.
 - [x] 10.8 Run `make performance-smoke` and record planning/projection counters for the oversized-table and oversized-code fixtures without adding an absolute timing gate.
-- [ ] 10.9 Run `make run`, open a real Helm-style README with an oversized values table, and confirm the full document renders, the table is one continuous widget, and stderr carries no GTK/GLib/pixman warning. Watch specifically for zero-width `Gtk::Grid::attach` criticals from sub-sliced table rows: the fix lands with the projector work, but only a live run confirms it, since a zero-width attach is exactly the class of defect a partially applied table can produce.
+- [x] 10.9 Run `make run`, open a real Helm-style README with an oversized values table, and confirm the full document renders, the table is one continuous widget, and stderr carries no GTK/GLib/pixman warning. Watch specifically for zero-width `Gtk::Grid::attach` criticals from sub-sliced table rows: the fix lands with the projector work, but only a live run confirms it, since a zero-width attach is exactly the class of defect a partially applied table can produce.
 
-      **BLOCKED — not run.** A user-owned installed Flatpak instance of
-      `dev.cominotti.lushtext` was running for the whole session (`flatpak ps`:
-      instance `59484467`, pid `1479462`, runtime `org.gnome.Platform`; session-bus
-      name `dev.cominotti.lushtext` owned via `xdg-dbus-proxy` pid `1479495`). It
-      was not started by this work stream. `make run` force-quits the existing
-      owner before staging its dev desktop entry, so running it would have killed
-      the user's live editor session. The check is prepared and one command away: a
-      representative Helm chart README fixture (40-row `| Key | Default |
-      Description |` values table with realistic cell text, prose sections before
-      and after, and a `PAGE-TAIL-MARKER:` line last) is written to the session
-      scratchpad at `helm-values-README.md`. Headless equivalents of the same shape
-      do pass: widget task 7.4's 5x100 (500-cell) table renders as one grid with
-      every row, and the 10.8 performance evidence plans a 300x3 values table to
-      completion in 14 batches with zero omissions and a 254-event per-slice high
-      water. What remains unproven is only the live-session stderr scan for
-      zero-width `Gtk::Grid::attach` criticals.
+      Verified live 2026-08-25 with the user's approval to close their running
+      instance; see `evidence/live-run-helm-readme.md`. The existing owner was
+      asked to quit through its own exported `quit` action and exited cleanly,
+      so no signal was needed. A fresh debug instance was proven
+      (`before_pids=` empty, `launched_pids=2301224`) and a 40-row x 3-column
+      Helm values README was opened via `org.gtk.Application.Open`. With preview
+      enabled and both `visual-geometry-settled` and `idle` awaited, AT-SPI
+      reported **1** `Markdown table` widget, **120** table cells (all 40 rows),
+      **0** omission markers, and **0** fallbacks; the preview text interface
+      ended with the `PAGE-TAIL-MARKER` line, so the whole document rendered.
+      Four preview-mode transitions (preview-only off, side-by-side on, off,
+      preview-only on) left all of those unchanged. Session stderr was 12 lines
+      with **no** `Gtk-WARNING`, `Gtk-CRITICAL`, `GLib-GObject-WARNING`,
+      `GLib-CRITICAL`, `Gdk` warning, `*** BUG ***` pixman line, `assertion`, or
+      zero-width `Gtk::Grid::attach` critical; the harness also reported no
+      GtkBox measurement warnings. The only two app messages were a stale
+      restored tab and recent-document entry pointing at a deleted temp file
+      from an unrelated earlier debug session. Two harness caveats are recorded
+      in the evidence file: the documented `--pid-pattern` does not match an
+      absolute-path command line, and `make run <path>` treats the path as a
+      make target rather than an app argument.
+
 - [x] 10.10 Run `openspec validate continue-markdown-preview-past-oversized-blocks --strict` and `openspec validate --all --strict --no-interactive`.
 - [x] 10.11 Review the final diff against the responsiveness, data-safety, hexagonal-boundary, GTK lifecycle, and comment-quality contracts; confirm no new dependency, action, D-Bus member, persisted format, evidence surface, or `policy.rs` entered the deferred markdown preview workflow.
