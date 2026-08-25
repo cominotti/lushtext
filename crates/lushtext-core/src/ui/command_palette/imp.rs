@@ -7,7 +7,8 @@ use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow
 use crate::services::palette::{self, FileIndex};
 use crate::ui::accessibility::{self, RowAccessibility};
 use crate::ui::command_palette::item::PaletteItem;
-use crate::ui::command_palette::runtime::CommandPaletteSearchRequest;
+use crate::ui::command_palette::policy;
+use crate::ui::command_palette::query_execution::PaletteQueryRequest;
 use crate::ui::plain_disposal::DisposalOwned;
 use glib::prelude::*;
 use gtk_lush_settle::Debounce;
@@ -93,12 +94,22 @@ pub struct LushtextCommandPalette {
     /// Whether normal source updates may enqueue visible palette work.
     pub palette_open: Cell<bool>,
     /// One-active/one-latest query coordinator shared by direct and debounced entry points.
-    pub(super) search_runtime:
-        RefCell<palette::PaletteSearchCoordinator<CommandPaletteSearchRequest>>,
+    ///
+    /// This coordinator owns the query generation and exposes `is_current`,
+    /// which is what makes it the query seam's value object: no separate ticket
+    /// type is needed on this side of the workflow.
+    pub(super) search_flight: RefCell<palette::PaletteSearchCoordinator<PaletteQueryRequest>>,
     /// Number of workers that cooperatively observed a superseding cancellation.
-    pub observed_search_cancellations: Cell<usize>,
+    ///
+    /// Test-gated: no production path reads it, so a default-feature build
+    /// compiles no storage for it.
+    #[cfg(feature = "test-utils")]
+    pub(super) observed_search_cancellations: Cell<usize>,
     /// Candidate progress retained from the most recent cancelled worker.
-    pub last_cancelled_search_examined: Cell<usize>,
+    ///
+    /// Test-gated for the same reason as `observed_search_cancellations`.
+    #[cfg(feature = "test-utils")]
+    pub(super) last_cancelled_search_examined: Cell<usize>,
     /// Callback invoked when the user activates a result (Enter or click).
     pub activate_callback: RefCell<Option<ActivateCallback>>,
     /// Callback invoked when the palette should close (Escape key).
@@ -106,7 +117,7 @@ pub struct LushtextCommandPalette {
     /// Debounce for non-empty text queries; the runtime coordinator owns freshness.
     pub search_debounce: Debounce,
     /// Queue of incremental index mutations waiting to be flushed.
-    pub(super) pending_index_updates: RefCell<Vec<super::FileIndexUpdate>>,
+    pub(super) pending_index_updates: RefCell<Vec<policy::FileIndexUpdate>>,
     /// Exact conservative bytes owned by the pending mutation queue.
     pub(super) pending_index_update_bytes: Cell<u64>,
     /// Whether bounded queue overflow requires a filesystem rebuild.
@@ -141,8 +152,10 @@ impl Default for LushtextCommandPalette {
             syncing_mode_selector: Cell::new(false),
             searching: Cell::new(false),
             palette_open: Cell::new(false),
-            search_runtime: RefCell::default(),
+            search_flight: RefCell::default(),
+            #[cfg(feature = "test-utils")]
             observed_search_cancellations: Cell::new(0),
+            #[cfg(feature = "test-utils")]
             last_cancelled_search_examined: Cell::new(0),
             activate_callback: RefCell::default(),
             close_callback: RefCell::default(),
@@ -367,8 +380,7 @@ impl LushtextCommandPalette {
                 return;
             }
             imp.set_mode(SearchMode::from_position(dropdown.selected()));
-            let query = imp.search_entry.text();
-            imp.rebuild_results(&query);
+            imp.restart_query();
             imp.search_entry.grab_focus();
         });
     }
@@ -388,15 +400,17 @@ impl LushtextCommandPalette {
             // Empty queries bypass debounce so default results update
             // immediately when the query is cleared.
             if query.is_empty() {
-                imp.rebuild_results_owned(query);
+                obj.start_query_flight(query);
                 return;
             }
 
+            // Inversion: control resumes in this callback, which re-enters
+            // query stage 1 with the query text captured at keystroke time.
             imp.search_debounce.schedule(
                 &obj,
-                std::time::Duration::from_millis(150),
+                std::time::Duration::from_millis(policy::SEARCH_DEBOUNCE_MS),
                 move |obj, _| {
-                    obj.imp().rebuild_results_owned(query);
+                    obj.start_query_flight(query);
                 },
             );
         });
@@ -417,14 +431,12 @@ impl LushtextCommandPalette {
             match keyval {
                 gdk4::Key::Tab => {
                     imp.set_mode(imp.mode.get().next());
-                    let query = imp.search_entry.text();
-                    imp.rebuild_results(&query);
+                    imp.restart_query();
                     glib::Propagation::Stop
                 }
                 gdk4::Key::ISO_Left_Tab => {
                     imp.set_mode(imp.mode.get().previous());
-                    let query = imp.search_entry.text();
-                    imp.rebuild_results(&query);
+                    imp.restart_query();
                     glib::Propagation::Stop
                 }
                 gdk4::Key::Up | gdk4::Key::KP_Up => {
@@ -467,81 +479,20 @@ impl LushtextCommandPalette {
         });
     }
 
-    /// Rebuild the results list from the current query and mode.
-    /// Runs the SIMD fuzzy search on a background thread to keep the main
-    /// thread under the 16ms frame budget, even at 100k indexed files.
-    /// Uses `splice` to emit a single `items-changed` signal for the batch.
+    /// Restart the query flight from the currently visible entry text.
     ///
-    /// Advances `search_debounce` to supersede any pending debounced search from
-    /// `setup_search`. Direct callers (e.g., `set_file_index`, `open`, Tab
-    /// mode-switch) rely on this to cancel stale timers.
-    pub fn rebuild_results(&self, query: &str) {
-        self.rebuild_results_owned(query.to_string());
+    /// Query stage 1 for every adapter-owned entry point: the mode dropdown,
+    /// Tab and Shift+Tab cycling, and source installation.
+    pub(super) fn restart_query(&self) {
+        self.obj()
+            .start_query_flight(self.search_entry.text().to_string());
     }
 
-    /// Rebuild results from an owned query snapshot.
+    /// Query stage 4's widget mutation: replace the whole visible model with one splice.
     ///
-    /// Direct and debounced callers replace the same latest request. At most
-    /// one worker owns source snapshots while one compact request waits.
-    pub fn rebuild_results_owned(&self, query: String) {
-        let _ = self.search_debounce.advance();
-        let request = CommandPaletteSearchRequest {
-            query: Arc::from(query),
-            mode: self.mode.get(),
-            index: Arc::clone(&self.file_index.borrow()),
-            open_tabs: Arc::clone(&self.open_tabs.borrow()),
-            note_entries: Arc::clone(&self.note_entries.borrow()),
-            workspace_group_label: Arc::from(self.workspace_group_label.borrow().as_str()),
-        };
-        let start = self.search_runtime.borrow_mut().submit(request);
-        if let Some(start) = start {
-            self.spawn_search(start);
-        }
-        self.refresh_searching_state();
-    }
-
-    fn spawn_search(&self, start: palette::PaletteSearchStart<CommandPaletteSearchRequest>) {
-        let generation = start.generation;
-        let cancellation = start.cancellation;
-        let request = start.request;
-        gtk_lush_tasks::spawn_blocking_then(
-            self.obj().clone(),
-            move || {
-                let outcome =
-                    super::runtime::execute_search(&request, &cancellation, MAX_RESULTS_PER_SOURCE);
-                (outcome, request.query)
-            },
-            move |obj, (outcome, query)| {
-                let imp = obj.imp();
-                let (is_current, next) = {
-                    let mut runtime = imp.search_runtime.borrow_mut();
-                    let is_current = runtime.is_current(generation);
-                    let next = runtime.finish(generation);
-                    (is_current, next)
-                };
-
-                match outcome {
-                    palette::PaletteSearchOutcome::Complete { value, .. } if is_current => {
-                        imp.apply_search_rows(value, &query);
-                    }
-                    palette::PaletteSearchOutcome::Cancelled { metrics } => {
-                        imp.observed_search_cancellations
-                            .set(imp.observed_search_cancellations.get().saturating_add(1));
-                        imp.last_cancelled_search_examined
-                            .set(metrics.candidates_examined);
-                    }
-                    palette::PaletteSearchOutcome::Complete { .. } => {}
-                }
-
-                if let Some(next) = next {
-                    imp.spawn_search(next);
-                }
-                imp.refresh_searching_state();
-            },
-        );
-    }
-
-    fn apply_search_rows(&self, rows: Vec<PaletteSearchRow>, query: &str) {
+    /// `query_execution::settle_query_flight` owns stage 4 and calls this once it
+    /// has proved the completion is still current.
+    pub(super) fn publish_search_rows(&self, rows: Vec<PaletteSearchRow>, query: &str) {
         let items: Vec<PaletteItem> = rows.into_iter().map(palette_row_into_item).collect();
 
         // One splice keeps GTK projection work independent of the match count.
@@ -550,19 +501,13 @@ impl LushtextCommandPalette {
 
         let has_results = items.iter().any(PaletteItem::is_activatable);
         self.no_results_label
-            .set_visible(!has_results && !query.is_empty());
+            .set_visible(policy::no_results_visible(has_results, query.is_empty()));
 
         if let Some(first_result) = self.first_activatable_position()
             && let Some(selection) = self.selection_model()
         {
             selection.set_selected(first_result);
         }
-        self.refresh_accessibility_state();
-    }
-
-    pub(super) fn refresh_searching_state(&self) {
-        let searching = self.palette_open.get() && self.search_runtime.borrow().has_work();
-        self.searching.set(searching);
         self.refresh_accessibility_state();
     }
 
@@ -622,51 +567,26 @@ impl LushtextCommandPalette {
         self.refresh_accessibility_state();
     }
 
+    /// Project the visible model into the activatable-flag sequence policy reads.
+    fn activatable_flags(&self) -> Vec<bool> {
+        (0..self.results_store.n_items())
+            .map(|position| {
+                self.results_store
+                    .item(position)
+                    .and_downcast_ref::<PaletteItem>()
+                    .is_some_and(PaletteItem::is_activatable)
+            })
+            .collect()
+    }
+
     /// Find the first row that can actually be opened or executed.
     fn first_activatable_position(&self) -> Option<u32> {
-        (0..self.results_store.n_items()).find(|position| self.position_is_activatable(*position))
+        policy::first_activatable(&self.activatable_flags())
     }
 
     /// Move keyboard selection across result rows while skipping source headers.
     fn next_activatable_position(&self, current: u32, delta: i32) -> Option<u32> {
-        let n = self.results_store.n_items();
-        if n == 0 {
-            return None;
-        }
-        if current >= n {
-            return self.first_activatable_position();
-        }
-
-        if delta > 0 {
-            let mut position = current.saturating_add(1);
-            while position < n {
-                if self.position_is_activatable(position) {
-                    return Some(position);
-                }
-                position = position.saturating_add(1);
-            }
-        } else {
-            let mut position = current.saturating_sub(1);
-            loop {
-                if self.position_is_activatable(position) {
-                    return Some(position);
-                }
-                if position == 0 {
-                    break;
-                }
-                position = position.saturating_sub(1);
-            }
-        }
-
-        Some(current).filter(|position| self.position_is_activatable(*position))
-    }
-
-    /// Check whether a row should receive keyboard focus and activation.
-    fn position_is_activatable(&self, position: u32) -> bool {
-        self.results_store
-            .item(position)
-            .and_downcast_ref::<PaletteItem>()
-            .is_some_and(PaletteItem::is_activatable)
+        policy::next_activatable(&self.activatable_flags(), current, delta)
     }
 
     fn selection_model(&self) -> Option<gtk4::SingleSelection> {
@@ -677,47 +597,78 @@ impl LushtextCommandPalette {
 
     /// Project live palette search state into accessible states and values.
     pub(super) fn refresh_accessibility_state(&self) {
-        let has_results = (0..self.results_store.n_items()).any(|position| {
-            self.results_store
-                .item(position)
-                .and_downcast_ref::<PaletteItem>()
-                .is_some_and(PaletteItem::is_activatable)
-        });
-        let no_results_visible =
-            self.no_results_label.is_visible() && !has_results && !self.searching.get();
-        let result_count = (0..self.results_store.n_items())
-            .filter(|position| {
-                self.results_store
-                    .item(*position)
-                    .and_downcast_ref::<PaletteItem>()
-                    .is_some_and(PaletteItem::is_activatable)
-            })
-            .count();
+        let activatable = self.activatable_flags();
+        let result_count = activatable.iter().filter(|flag| **flag).count();
+        let searching = self.searching.get();
+        // The label's own visibility already encodes the non-empty-query half of
+        // the no-results decision, set by `publish_search_rows`; this only adds
+        // the live "and nothing is activatable, and we are not still searching"
+        // half that AT-SPI hiding needs.
+        let status_visible = self.no_results_label.is_visible() && result_count == 0 && !searching;
 
-        accessibility::set_busy(&*self.search_entry, self.searching.get());
-        accessibility::set_busy(&*self.results_view, self.searching.get());
-        accessibility::set_hidden(&*self.no_results_label, !no_results_visible);
-        accessibility::set_hidden(&*self.results_view, no_results_visible);
+        accessibility::set_busy(&*self.search_entry, searching);
+        accessibility::set_busy(&*self.results_view, searching);
+        accessibility::set_hidden(&*self.no_results_label, !status_visible);
+        accessibility::set_hidden(&*self.results_view, status_visible);
 
-        let selected_text = self
+        let selected_name = self
             .selection_model()
             .and_then(|selection| self.results_store.item(selection.selected()))
             .and_downcast::<PaletteItem>()
             .filter(PaletteItem::is_activatable)
-            .map(|item| format!("Selected {}", item.display_name()));
-        let value_text = if let Some(selected_text) = selected_text {
-            selected_text
-        } else if self.searching.get() {
-            "Searching command palette".to_string()
-        } else {
-            match result_count {
-                0 => "No command palette results".to_string(),
-                1 => "1 command palette result".to_string(),
-                count => format!("{count} command palette results"),
-            }
-        };
+            .map(|item| item.display_name());
+        let value_text =
+            policy::accessible_value_text(selected_name.as_deref(), searching, result_count);
         accessibility::set_value_text(&*self.results_view, &value_text);
-        accessibility::set_value_text(&*self.no_results_label, "No command palette results");
+        accessibility::set_value_text(&*self.no_results_label, &policy::result_count_text(0));
+    }
+
+    /// Replace the open file-backed tab source and repaint if the palette is open.
+    pub(super) fn install_open_tabs(&self, open_tabs: Vec<PaletteFileEntry>) {
+        *self.open_tabs.borrow_mut() = Arc::from(open_tabs);
+        self.restart_query_if_open();
+    }
+
+    /// Replace the cached note rows and repaint if a note-showing mode is active.
+    pub(super) fn install_note_entries(
+        &self,
+        note_entries: DisposalOwned<Box<[PaletteNoteEntry]>>,
+    ) {
+        let note_entries = note_entries.into_retained_current();
+        let previous =
+            std::mem::replace(&mut *self.note_entries.borrow_mut(), Arc::new(note_entries));
+        drop(previous);
+        if self.palette_open.get() && matches!(self.mode.get(), SearchMode::All | SearchMode::Notes)
+        {
+            self.restart_query();
+        }
+    }
+
+    /// Replace the workspace group label and repaint if it actually changed.
+    pub(super) fn install_workspace_group_label(&self, label: String) {
+        if *self.workspace_group_label.borrow() == label {
+            return;
+        }
+        *self.workspace_group_label.borrow_mut() = label;
+        self.restart_query_if_open();
+    }
+
+    /// Replace every window-owned source in one turn.
+    pub(super) fn install_sources(
+        &self,
+        open_tabs: Vec<PaletteFileEntry>,
+        workspace_group_label: &str,
+    ) {
+        *self.open_tabs.borrow_mut() = Arc::from(open_tabs);
+        *self.workspace_group_label.borrow_mut() = workspace_group_label.to_string();
+        self.restart_query_if_open();
+    }
+
+    /// Restart the query only while the palette is showing results.
+    pub(super) fn restart_query_if_open(&self) {
+        if self.palette_open.get() {
+            self.restart_query();
+        }
     }
 }
 
@@ -752,10 +703,3 @@ pub(super) fn apply_palette_row_accessibility(
             .position(position, set_size),
     );
 }
-
-/// Maximum fuzzy matches to show from any one source group.
-///
-/// The palette already caps visible results at a small, scannable list; keeping
-/// the same cap per source prevents one group from monopolizing mixed results
-/// while staying cheap for list-model replacement and keyboard navigation.
-const MAX_RESULTS_PER_SOURCE: usize = 50;

@@ -1,165 +1,146 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Command palette widget — floating search overlay for files and commands.
+//! Command palette: the workflow facade for palette search and file indexing.
+//!
+//! Opened with Ctrl+Shift+P (`win.toggle-command-palette`), this floating
+//! overlay searches open tabs, workspace files, notes, and commands. This module is the workflow's narrative facade:
+//! it names the ordered stages of both of the workflow's stage orders and
+//! delegates each one. It owns no timers, generation counters, ledgers, or
+//! admission bookkeeping. Apart from installing the sources the window shell
+//! hands it and the trivial reads and writes of the visible query controls that
+//! make up the palette's entry-point surface, widget mutation belongs to the
+//! coordination and adapter roles.
+//!
+//! # Stage order: query search
+//!
+//! 1. **Capture the query with its sources.** Opening the palette
+//!    ([`LushtextCommandPalette::open`]), a mode change
+//!    ([`LushtextCommandPalette::set_search_mode`], Tab cycling in `imp`),
+//!    [`LushtextCommandPalette::set_query`], a source
+//!    replacement, or a search-entry edit snapshots the query text, the mode,
+//!    and all four shared sources into one compact `PaletteQueryRequest`
+//!    (`query_execution::start_query_flight`). Typed input is debounced in
+//!    `imp`; an empty query bypasses the debounce.
+//! 2. **Admit one flight.** The one-active/one-latest coordinator either starts
+//!    the request or keeps it as the single replaceable latest request.
+//! 3. **Score on a worker.** `query_execution` hands the request to
+//!    `grouped_search` with the per-source result cap.
+//! 4. **Publish rows.** One `splice` replaces the whole model, the first
+//!    activatable row is auto-selected, and the accessible projection refreshes
+//!    (`imp::publish_search_rows`).
+//!
+//! Three inversions connect those stages:
+//!
+//! - Typed input returns after arming a 150 ms debounce. Control resumes in the
+//!   debounce callback in `imp`, which re-enters stage 1.
+//! - Stage 3 returns as soon as the worker is spawned. Control resumes in the
+//!   worker completion closure in `query_execution`, which asks the coordinator
+//!   whether that generation is still current before publishing anything.
+//! - A completion that finds a retained latest request starts it **from inside
+//!   the completion** rather than returning to this facade, so the chain can run
+//!   several generations deep without the facade being re-entered.
+//!
+//! # Stage order: incremental file-index mutation
+//!
+//! This half has no visible surface. It keeps the palette's index consistent
+//! with the filesystem after sidebar operations and watcher reconciliation.
+//!
+//! 1. **Retain the mutation.** [`LushtextCommandPalette::update_index_file_created`],
+//!    [`LushtextCommandPalette::update_index_file_deleted`], and
+//!    [`LushtextCommandPalette::update_index_file_renamed`] hand one
+//!    mutation to `index_admission::admit_index_update`, which retains it under
+//!    a bounded count cap and an exact retained-byte cap. Overflow escalates the
+//!    queue to a full filesystem rebuild rather than dropping anything.
+//! 2. **Coalesce the burst.** A 75 ms debounce collapses a burst of mutations
+//!    into one flush turn.
+//! 3. **Reserve replacement capacity.** `index_admission::flush_index_updates`
+//!    reserves the replacement index's byte weight from the disposal budget.
+//! 4. **Build and dispatch the batch.** `index_execution` takes the queue,
+//!    selects the batch kind, and captures the batch's identity once as a
+//!    `policy::FileIndexMutationTicket`.
+//! 5. **Mutate on a worker.** The worker clones and mutates the index under its
+//!    mutation ledger, or rebuilds from the workspace folders.
+//! 6. **Arbitrate the applied batch.** The ticket is validated against live
+//!    `policy::FileIndexMutationFacts`. A current batch is installed and the
+//!    generation advances; a stale batch is rejected and replayed.
+//! 7. **Retire the released index.** `retirement` classifies whether a
+//!    last-owned at-cap index reached the bounded worker lane; the disposal lane
+//!    performs the destruction itself.
+//! 8. **Drain the tail.** A queue that refilled while the worker ran gets one
+//!    more flush turn, re-entering stage 3.
+//!
+//! Five inversions connect those stages:
+//!
+//! - Stage 2's debounce resumes in its callback in `index_admission`, re-entering
+//!   stage 3.
+//! - When stage 3's reservation is refused, the flush arms the
+//!   disposal-capacity wakeup and returns. Control resumes in that wakeup when
+//!   the capacity epoch changes, re-entering the same flush. A refusal delays a
+//!   mutation; it never loses one.
+//! - Stage 5 returns as soon as the worker is spawned. Control resumes in the
+//!   worker completion closure in `index_execution`, holding the ticket.
+//! - A rejected batch in stage 6 re-arms the flush debounce rather than calling
+//!   the worker, so the lost mutations are replayed through a rebuild. Control
+//!   resumes in `index_admission` again.
+//! - Stage 8 is armed from that same completion rather than called: the tail
+//!   flush turn resumes in the flush debounce callback in `index_admission`,
+//!   which is why a refilled queue never runs a second worker concurrently.
+//!
+//! A **full** index replacement (`set_guarded_file_index`, driven by workspace
+//! folder changes rather than by file operations) is not part of that queue. It
+//! installs a new index directly through
+//! `index_execution::install_replacement_file_index`, advancing the same
+//! generation counter, which is exactly what makes stage 6's arbitration
+//! necessary.
+//!
+//! # Roles
+//!
+//! | Role | Module |
+//! | --- | --- |
+//! | facade | this module |
+//! | pure policy | `policy` |
+//! | coordination | `query_execution` (query flight), `index_admission` (bounded mutation queue), `index_execution` (mutation worker), `retirement` (index retirement accounting) |
+//! | evidence | `evidence` |
+//! | adapter detail | `imp`, `item` |
+//!
+//! See `docs/workflow-readability-matrix.md`, row `WFR-COMMAND-PALETTE`.
 
+mod evidence;
 // Private implementation module required by gtk-rs: imp.rs owns template
 // children, state, and trait impls; this file exposes the public widget API.
 mod imp;
+mod index_admission;
+mod index_execution;
 pub mod item;
-mod runtime;
+// Public because the GTK-free policy benchmarks and the widget harness address
+// these pure types directly; nothing else outside this workflow does.
+pub mod policy;
+mod query_execution;
+mod retirement;
+#[cfg(feature = "test-utils")]
+mod test_policy;
+
+// Internal typed evidence surface: `evidence()` is callable in-crate by
+// `ui/automation.rs`, and only the external widget harness needs to name the
+// type. Re-exporting it unconditionally would widen this crate's default public
+// API for an internal readability goal.
+#[cfg(feature = "test-utils")]
+pub use evidence::CommandPaletteEvidence;
+#[cfg(feature = "test-utils")]
+pub use retirement::{FileIndexRetirementSnapshot, file_index_retirement_snapshot_for_test};
+#[cfg(feature = "test-utils")]
+pub use test_policy::CommandPaletteTestPolicy;
 
 use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, SearchMode};
-use crate::services::palette::{FileIndex, FileIndexMutationLedger};
+use crate::services::palette::FileIndex;
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 use item::PaletteItem;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::path::Path;
 
-#[derive(Clone, Copy)]
-enum FileIndexRetirementKind {
-    FullReplacement,
-    AcceptedIncremental,
-    RejectedIncremental,
-}
-
-/// Scalar evidence that last-owned indexes reached the bounded worker lane.
-#[cfg(feature = "test-utils")]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FileIndexRetirementSnapshot {
-    /// Last-owned full replacements destroyed on the worker lane.
-    pub full_replacements: usize,
-    /// Last-owned accepted incremental bases destroyed on the worker lane.
-    pub accepted_incremental: usize,
-    /// Last-owned rejected incremental outputs destroyed on the worker lane.
-    pub rejected_incremental: usize,
-}
-
-#[cfg(feature = "test-utils")]
-static FULL_REPLACEMENT_RETIREMENTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-#[cfg(feature = "test-utils")]
-static ACCEPTED_INCREMENTAL_RETIREMENTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-#[cfg(feature = "test-utils")]
-static REJECTED_INCREMENTAL_RETIREMENTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(feature = "test-utils")]
-fn record_file_index_retirement(kind: FileIndexRetirementKind, last_owned: bool) {
-    use std::sync::atomic::Ordering;
-
-    if !last_owned {
-        return;
-    }
-    let counter = match kind {
-        FileIndexRetirementKind::FullReplacement => &FULL_REPLACEMENT_RETIREMENTS,
-        FileIndexRetirementKind::AcceptedIncremental => &ACCEPTED_INCREMENTAL_RETIREMENTS,
-        FileIndexRetirementKind::RejectedIncremental => &REJECTED_INCREMENTAL_RETIREMENTS,
-    };
-    counter.fetch_add(1, Ordering::Release);
-}
-
-#[cfg(not(feature = "test-utils"))]
-fn record_file_index_retirement(_kind: FileIndexRetirementKind, _last_owned: bool) {}
-
-#[cfg(feature = "test-utils")]
-#[must_use]
-/// Return process-local retirement evidence for deterministic widget tests.
-pub fn file_index_retirement_snapshot_for_test() -> FileIndexRetirementSnapshot {
-    use std::sync::atomic::Ordering;
-
-    FileIndexRetirementSnapshot {
-        full_replacements: FULL_REPLACEMENT_RETIREMENTS.load(Ordering::Acquire),
-        accepted_incremental: ACCEPTED_INCREMENTAL_RETIREMENTS.load(Ordering::Acquire),
-        rejected_incremental: REJECTED_INCREMENTAL_RETIREMENTS.load(Ordering::Acquire),
-    }
-}
-
-#[cfg(feature = "test-utils")]
-static INDEX_UPDATE_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(feature = "test-utils")]
-/// Delay incremental index workers so replacement races can be tested deterministically.
-pub fn set_index_update_delay_for_test(delay_ms: u64) {
-    INDEX_UPDATE_DELAY_MS.store(delay_ms, std::sync::atomic::Ordering::Release);
-}
-
-fn delay_index_update_for_test() {
-    #[cfg(feature = "test-utils")]
-    {
-        let delay_ms = INDEX_UPDATE_DELAY_MS.load(std::sync::atomic::Ordering::Acquire);
-        if delay_ms > 0 {
-            std::thread::sleep(Duration::from_millis(delay_ms));
-        }
-    }
-}
-
-/// A pending incremental mutation to the palette's file index.
-///
-/// Sidebar file operations queue these and a short main-loop debounce coalesces
-/// bursts before a serialized background worker applies them to the index.
-#[derive(Clone)]
-pub(super) enum FileIndexUpdate {
-    Create {
-        path: PathBuf,
-        workspace_folder: Arc<PathBuf>,
-    },
-    Delete(PathBuf),
-    Rename {
-        old_path: PathBuf,
-        new_path: PathBuf,
-    },
-}
-
-impl FileIndexUpdate {
-    fn apply(&self, index: &mut FileIndex, ledger: &mut FileIndexMutationLedger) {
-        match self {
-            Self::Create {
-                path,
-                workspace_folder,
-            } => {
-                index.add_path_for_bounded_batch(
-                    path.clone(),
-                    Arc::clone(workspace_folder),
-                    ledger,
-                );
-            }
-            Self::Delete(path) => index.remove_path_for_bounded_batch(path, ledger),
-            Self::Rename { old_path, new_path } => {
-                index.rename_path_for_bounded_batch(old_path, new_path, ledger);
-            }
-        }
-    }
-
-    fn retained_byte_weight(&self) -> u64 {
-        let path_bytes = |path: &PathBuf| u64::try_from(path.capacity()).unwrap_or(u64::MAX);
-        u64::try_from(std::mem::size_of::<Self>())
-            .unwrap_or(u64::MAX)
-            .saturating_add(match self {
-                Self::Create { path, .. } | Self::Delete(path) => path_bytes(path),
-                Self::Rename { old_path, new_path } => {
-                    path_bytes(old_path).saturating_add(path_bytes(new_path))
-                }
-            })
-    }
-}
-
-enum FileIndexUpdateBatch {
-    Incremental(Vec<FileIndexUpdate>),
-    Rebuild(Vec<FileIndexUpdate>),
-}
-
-enum AppliedFileIndexUpdateBatch {
-    Incremental,
-    Rebuild,
-}
-
-const MAX_PENDING_INDEX_UPDATES: usize = 1_024;
-const MAX_PENDING_INDEX_UPDATE_BYTES: u64 = 4 * 1024 * 1024;
+use self::policy::FileIndexUpdate;
 
 // glib::wrapper! generates the public wrapper type for this widget.
 // @extends declares the GTK class hierarchy; @implements lists interfaces.
@@ -179,28 +160,62 @@ impl LushtextCommandPalette {
         Object::builder().build()
     }
 
-    /// Replace the file index. Called when workspace folders change.
+    /// Open the palette: reset to All mode, clear the query, show initial results.
+    ///
+    /// Query stage 1 for the empty query, which bypasses the input debounce.
+    pub fn open(&self) {
+        let imp = self.imp();
+        imp.palette_open.set(true);
+        imp.set_mode(SearchMode::All);
+        imp.search_entry.set_text("");
+        self.start_query_flight(String::new());
+        imp.search_entry.grab_focus();
+    }
+
+    /// Close the palette: abandon query intent and clear the visible surface.
+    ///
+    /// `query_execution::abandon_query_flight` cancels the active generation and
+    /// discards the retained latest request. The active worker still drains on
+    /// its own; it publishes nothing, because its generation is no longer
+    /// current.
+    pub fn close(&self) {
+        let imp = self.imp();
+        imp.palette_open.set(false);
+        self.abandon_query_flight();
+        imp.search_entry.set_text("");
+        imp.results_store.remove_all();
+        imp.no_results_label.set_visible(false);
+        imp.refresh_accessibility_state();
+    }
+
+    /// Set the visible search mode and restart the query through the normal path.
+    pub fn set_search_mode(&self, mode: SearchMode) {
+        let imp = self.imp();
+        imp.set_mode(mode);
+        self.start_query_flight(imp.search_entry.text().to_string());
+        imp.search_entry.grab_focus();
+    }
+
+    /// Set the visible query text and restart the query through the normal path.
+    pub fn set_query(&self, query: &str) {
+        let imp = self.imp();
+        if imp.search_entry.text().as_str() != query {
+            imp.search_entry.set_text(query);
+        }
+        self.start_query_flight(query.to_string());
+        imp.search_entry.grab_focus();
+    }
+
+    /// Replace the whole file index. Called when workspace folders change.
+    ///
+    /// This is the full-replacement path, not the incremental queue: it installs
+    /// the index directly and advances the generation that the incremental
+    /// stage order's stage-6 arbitration compares against.
     pub(crate) fn set_guarded_file_index(
         &self,
         index: crate::ui::plain_disposal::DisposalOwned<FileIndex>,
     ) {
-        let imp = self.imp();
-        let index = index.into_retained_current();
-        let previous = std::mem::replace(&mut *imp.file_index.borrow_mut(), Arc::new(index));
-        let last_owned = Arc::strong_count(&previous) == 1;
-        let reached_policy_cap = previous.len() == crate::services::palette::MAX_INDEXED_FILES;
-        drop(previous);
-        record_file_index_retirement(
-            FileIndexRetirementKind::FullReplacement,
-            last_owned && reached_policy_cap,
-        );
-        imp.file_index_generation
-            .set(imp.file_index_generation.get().wrapping_add(1));
-        // Re-run search if the palette is currently showing results
-        if self.imp().palette_open.get() {
-            let query = self.imp().search_entry.text();
-            self.imp().rebuild_results(&query);
-        }
+        self.install_replacement_file_index(index);
     }
 
     /// Install an in-memory index through the widget-test compatibility surface.
@@ -218,11 +233,7 @@ impl LushtextCommandPalette {
 
     /// Replace the open file-backed tab source used by grouped file results.
     pub fn set_open_tabs(&self, open_tabs: Vec<PaletteFileEntry>) {
-        *self.imp().open_tabs.borrow_mut() = Arc::from(open_tabs);
-        if self.imp().palette_open.get() {
-            let query = self.imp().search_entry.text();
-            self.imp().rebuild_results(&query);
-        }
+        self.imp().install_open_tabs(open_tabs);
     }
 
     /// Replace the cached note rows used by Notes and All mode.
@@ -230,18 +241,7 @@ impl LushtextCommandPalette {
         &self,
         note_entries: crate::ui::plain_disposal::DisposalOwned<Box<[PaletteNoteEntry]>>,
     ) {
-        let note_entries = note_entries.into_retained_current();
-        let previous = std::mem::replace(
-            &mut *self.imp().note_entries.borrow_mut(),
-            Arc::new(note_entries),
-        );
-        drop(previous);
-        if self.imp().palette_open.get()
-            && matches!(self.mode(), SearchMode::All | SearchMode::Notes)
-        {
-            let query = self.imp().search_entry.text();
-            self.imp().rebuild_results(&query);
-        }
+        self.imp().install_note_entries(note_entries);
     }
 
     /// Install in-memory note rows through the widget-test compatibility surface.
@@ -258,6 +258,7 @@ impl LushtextCommandPalette {
         self.set_guarded_note_entries(entries);
     }
 
+    /// Drop the cached note rows without replacing them.
     pub(crate) fn clear_note_entries(&self) {
         self.set_guarded_note_entries(crate::ui::plain_disposal::DisposalOwned::small_unreserved(
             Vec::<PaletteNoteEntry>::new().into_boxed_slice(),
@@ -266,48 +267,12 @@ impl LushtextCommandPalette {
 
     /// Set the label for the workspace-indexed file group.
     pub fn set_workspace_group_label(&self, label: impl Into<String>) {
-        let label = label.into();
-        if *self.imp().workspace_group_label.borrow() == label {
-            return;
-        }
-        *self.imp().workspace_group_label.borrow_mut() = label;
-        if self.imp().palette_open.get() {
-            let query = self.imp().search_entry.text();
-            self.imp().rebuild_results(&query);
-        }
+        self.imp().install_workspace_group_label(label.into());
     }
 
     /// Refresh all source metadata that is owned by the window shell.
     pub fn set_sources(&self, open_tabs: Vec<PaletteFileEntry>, workspace_group_label: &str) {
-        *self.imp().open_tabs.borrow_mut() = Arc::from(open_tabs);
-        *self.imp().workspace_group_label.borrow_mut() = workspace_group_label.to_string();
-        if self.imp().palette_open.get() {
-            let query = self.imp().search_entry.text();
-            self.imp().rebuild_results(&query);
-        }
-    }
-
-    /// Open the palette: focus the search entry and show initial results.
-    pub fn open(&self) {
-        let imp = self.imp();
-        imp.palette_open.set(true);
-        imp.set_mode(SearchMode::All);
-        imp.search_entry.set_text("");
-        imp.rebuild_results("");
-        imp.search_entry.grab_focus();
-    }
-
-    /// Close the palette: clear the search entry.
-    pub fn close(&self) {
-        let imp = self.imp();
-        imp.palette_open.set(false);
-        let _ = imp.search_debounce.advance();
-        imp.search_runtime.borrow_mut().invalidate();
-        imp.searching.set(false);
-        imp.search_entry.set_text("");
-        imp.results_store.remove_all();
-        imp.no_results_label.set_visible(false);
-        imp.refresh_accessibility_state();
+        self.imp().install_sources(open_tabs, workspace_group_label);
     }
 
     /// Register a callback for when an item is activated (Enter or click).
@@ -320,322 +285,34 @@ impl LushtextCommandPalette {
         *self.imp().close_callback.borrow_mut() = Some(Box::new(f));
     }
 
-    /// The current search mode.
-    #[must_use]
-    pub fn mode(&self) -> SearchMode {
-        self.imp().mode.get()
-    }
-
-    /// Set the visible search mode and rebuild the current result list.
-    pub fn set_search_mode(&self, mode: SearchMode) {
-        let imp = self.imp();
-        imp.set_mode(mode);
-        let query = imp.search_entry.text();
-        imp.rebuild_results(&query);
-        imp.search_entry.grab_focus();
-    }
-
-    /// Current query text in the palette entry.
-    #[must_use]
-    pub fn query(&self) -> String {
-        self.imp().search_entry.text().to_string()
-    }
-
-    /// Set the visible query text and rebuild through the normal search pipeline.
-    pub fn set_query(&self, query: &str) {
-        let imp = self.imp();
-        if imp.search_entry.text().as_str() != query {
-            imp.search_entry.set_text(query);
-        }
-        imp.rebuild_results(query);
-        imp.search_entry.grab_focus();
-    }
-
-    /// Number of rows currently rendered by the palette results model.
-    #[must_use]
-    pub fn result_count(&self) -> u32 {
-        self.imp().results_store.n_items()
-    }
-
-    /// Number of files in the current index (used as capacity hint for rebuilds).
-    #[must_use]
-    pub fn file_index_len(&self) -> usize {
-        self.imp().file_index.borrow().len()
-    }
-
-    /// Byte credit held by the currently installed guarded file index.
-    #[must_use]
-    pub(crate) fn file_index_reservation_weight(&self) -> Option<u64> {
-        self.imp().file_index.borrow().reservation_weight()
-    }
-
-    /// Byte credit held by the currently installed guarded note source.
-    #[must_use]
-    pub(crate) fn note_source_reservation_weight(&self) -> Option<u64> {
-        self.imp().note_entries.borrow().reservation_weight()
-    }
-
-    /// Number of open file-backed tabs supplied by the window shell.
-    #[must_use]
-    pub fn open_tab_source_count(&self) -> usize {
-        self.imp().open_tabs.borrow().len()
-    }
-
-    /// Number of queued mutations plus any active index-mutation worker.
-    #[must_use]
-    pub fn pending_index_update_count(&self) -> usize {
-        self.imp()
-            .pending_index_updates
-            .borrow()
-            .len()
-            .saturating_add(usize::from(self.imp().index_update_rebuild_pending.get()))
-            .saturating_add(usize::from(self.imp().index_update_worker_running.get()))
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    /// Report whether the serialized incremental index worker is active.
-    pub fn index_update_worker_running_for_test(&self) -> bool {
-        self.imp().index_update_worker_running.get()
-    }
-
-    /// Direct retained queue evidence for incremental-index pressure tests.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn index_update_queue_snapshot_for_test(&self) -> (usize, u64, bool, usize, u64) {
-        let imp = self.imp();
-        (
-            imp.pending_index_updates.borrow().len(),
-            imp.pending_index_update_bytes.get(),
-            imp.index_update_rebuild_pending.get(),
-            MAX_PENDING_INDEX_UPDATES,
-            MAX_PENDING_INDEX_UPDATE_BYTES,
-        )
-    }
-
-    /// Whether the visible palette owns active or latest query work.
-    #[must_use]
-    pub fn is_searching(&self) -> bool {
-        self.imp().searching.get()
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn search_runtime_snapshot_for_test(
-        &self,
-    ) -> crate::services::palette::PaletteSearchCoordinatorSnapshot {
-        self.imp().search_runtime.borrow().snapshot()
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn observed_search_cancellations_for_test(&self) -> usize {
-        self.imp().observed_search_cancellations.get()
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn last_cancelled_search_examined_for_test(&self) -> usize {
-        self.imp().last_cancelled_search_examined.get()
-    }
-
-    /// Test seam for forcing accessibility projection after mutating adapter state.
-    #[cfg(feature = "test-utils")]
-    pub fn refresh_accessibility_state_for_test(&self) {
-        self.imp().refresh_accessibility_state();
-    }
-
-    // --- Incremental index updates ---
-
-    /// Add a newly created file to the search index.
+    /// Index stage 1: add a newly created file to the search index.
     pub fn update_index_file_created(&self, path: &Path) {
         let folder = self.imp().file_index.borrow().workspace_folder_for(path);
         if let Some(workspace_folder) = folder {
-            self.enqueue_index_update(FileIndexUpdate::Create {
+            self.admit_index_update(FileIndexUpdate::Create {
                 path: path.to_path_buf(),
                 workspace_folder,
             });
         }
     }
 
-    /// Remove a deleted file (or all files under a directory) from the index.
+    /// Index stage 1: remove a deleted file, or every file under a directory.
     pub fn update_index_file_deleted(&self, path: &Path) {
-        self.enqueue_index_update(FileIndexUpdate::Delete(path.to_path_buf()));
+        self.admit_index_update(FileIndexUpdate::Delete(path.to_path_buf()));
     }
 
-    /// Update a renamed file (or directory prefix) in the index.
+    /// Index stage 1: update a renamed file, or a renamed directory prefix.
     pub fn update_index_file_renamed(&self, old_path: &Path, new_path: &Path) {
-        self.enqueue_index_update(FileIndexUpdate::Rename {
+        self.admit_index_update(FileIndexUpdate::Rename {
             old_path: old_path.to_path_buf(),
             new_path: new_path.to_path_buf(),
         });
     }
 
-    fn enqueue_index_update(&self, update: FileIndexUpdate) {
-        self.retain_bounded_index_update(update);
-        self.schedule_index_update_flush();
-    }
-
-    fn retain_bounded_index_update(&self, update: FileIndexUpdate) {
-        let imp = self.imp();
-        if imp.index_update_rebuild_pending.get() {
-            return;
-        }
-        let mut pending = imp.pending_index_updates.borrow_mut();
-        let shell_growth = if pending.len() == pending.capacity() {
-            let next_capacity = pending.capacity().max(4).saturating_mul(2);
-            u64::try_from(
-                next_capacity
-                    .saturating_sub(pending.capacity())
-                    .saturating_mul(std::mem::size_of::<FileIndexUpdate>()),
-            )
-            .unwrap_or(u64::MAX)
-        } else {
-            0
-        };
-        let update_bytes = update.retained_byte_weight();
-        let next_bytes = imp
-            .pending_index_update_bytes
-            .get()
-            .checked_add(shell_growth)
-            .and_then(|bytes| bytes.checked_add(update_bytes));
-        if pending.len() >= MAX_PENDING_INDEX_UPDATES
-            || next_bytes.is_none_or(|bytes| bytes > MAX_PENDING_INDEX_UPDATE_BYTES)
-        {
-            imp.index_update_rebuild_pending.set(true);
-            return;
-        }
-        if shell_growth > 0 {
-            let next_capacity = pending.capacity().max(4).saturating_mul(2);
-            let additional = next_capacity.saturating_sub(pending.capacity());
-            pending.reserve_exact(additional);
-        }
-        pending.push(update);
-        imp.pending_index_update_bytes
-            .set(next_bytes.expect("bounded update byte sum was checked"));
-    }
-
-    fn schedule_index_update_flush(&self) {
-        self.imp().index_update_debounce.schedule(
-            self,
-            Duration::from_millis(INDEX_UPDATE_DEBOUNCE_MS),
-            move |palette, _| palette.flush_index_updates(),
-        );
-    }
-
-    fn flush_index_updates(&self) {
-        let imp = self.imp();
-        if imp.index_update_worker_running.get()
-            || (imp.pending_index_updates.borrow().is_empty()
-                && !imp.index_update_rebuild_pending.get())
-        {
-            return;
-        }
-
-        let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
-        let replacement_weight = crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES;
-        let reservation = imp.file_index.borrow().reservation_weight().map_or_else(
-            || crate::ui::plain_disposal::try_reserve_for_gtk(replacement_weight),
-            |current_weight| {
-                crate::ui::plain_disposal::try_reserve_replacement_for_gtk(
-                    replacement_weight,
-                    current_weight,
-                )
-            },
-        );
-        let Some(reservation) = reservation else {
-            let palette_weak = self.downgrade();
-            imp.index_update_capacity_wakeup
-                .arm(observed_epoch, move || {
-                    if let Some(palette) = palette_weak.upgrade() {
-                        palette.flush_index_updates();
-                    }
-                });
-            return;
-        };
-
-        let updates = std::mem::take(&mut *imp.pending_index_updates.borrow_mut());
-        imp.pending_index_update_bytes.set(0);
-        let batch = if imp.index_update_rebuild_pending.replace(false) {
-            FileIndexUpdateBatch::Rebuild(updates)
-        } else {
-            FileIndexUpdateBatch::Incremental(updates)
-        };
-        let base = Arc::clone(&imp.file_index.borrow());
-        let base_generation = imp.file_index_generation.get();
-        imp.index_update_worker_running.set(true);
-        gtk_lush_tasks::spawn_blocking_then(
-            self.clone(),
-            move || {
-                delay_index_update_for_test();
-                let (index, applied_batch) = match batch {
-                    FileIndexUpdateBatch::Incremental(updates) => {
-                        let mut index = (**base).clone();
-                        let mut ledger = index.incremental_mutation_ledger();
-                        for update in &updates {
-                            update.apply(&mut index, &mut ledger);
-                        }
-                        debug_assert_eq!(ledger.retained_bytes(), index.retained_byte_weight());
-                        debug_assert!(
-                            ledger.peak_retained_bytes()
-                                <= crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES
-                        );
-                        drop(updates);
-                        (index, AppliedFileIndexUpdateBatch::Incremental)
-                    }
-                    FileIndexUpdateBatch::Rebuild(discarded_updates) => {
-                        drop(discarded_updates);
-                        (
-                            (**base).rebuild_current_workspace_folders(),
-                            AppliedFileIndexUpdateBatch::Rebuild,
-                        )
-                    }
-                };
-                let retained_bytes = index.retained_byte_weight();
-                let mut reservation = reservation;
-                reservation.shrink_to(retained_bytes);
-                let index = reservation.own(index);
-                (index, applied_batch)
-            },
-            move |palette, (index, applied_batch)| {
-                let imp = palette.imp();
-                imp.index_update_worker_running.set(false);
-                if imp.file_index_generation.get() == base_generation {
-                    let previous =
-                        std::mem::replace(&mut *imp.file_index.borrow_mut(), Arc::new(index));
-                    let last_owned = Arc::strong_count(&previous) == 1;
-                    let reached_policy_cap =
-                        previous.len() == crate::services::palette::MAX_INDEXED_FILES;
-                    drop(previous);
-                    record_file_index_retirement(
-                        FileIndexRetirementKind::AcceptedIncremental,
-                        last_owned && reached_policy_cap,
-                    );
-                    imp.file_index_generation
-                        .set(base_generation.wrapping_add(1));
-                    if imp.palette_open.get() {
-                        let query = imp.search_entry.text();
-                        imp.rebuild_results(&query);
-                    }
-                } else {
-                    let at_cap = index.len() == crate::services::palette::MAX_INDEXED_FILES;
-                    drop(index);
-                    record_file_index_retirement(
-                        FileIndexRetirementKind::RejectedIncremental,
-                        at_cap,
-                    );
-                    // A full replacement won the race. Replay this worker's
-                    // mutations before newer queued ones so neither source of
-                    // truth is silently lost.
-                    let _ = applied_batch;
-                    imp.index_update_rebuild_pending.set(true);
-                    palette.schedule_index_update_flush();
-                }
-                if !imp.pending_index_updates.borrow().is_empty() {
-                    palette.schedule_index_update_flush();
-                }
-            },
-        );
+    /// Test seam for forcing accessibility projection after mutating adapter state.
+    #[cfg(feature = "test-utils")]
+    pub fn refresh_accessibility_state_for_test(&self) {
+        self.imp().refresh_accessibility_state();
     }
 }
 
@@ -656,12 +333,3 @@ pub fn apply_palette_row_accessibility_for_test(
 ) {
     imp::apply_palette_row_accessibility(row, item, selected, position, set_size);
 }
-
-/// Debounce interval for handing incremental index updates to the worker.
-///
-/// Seventy-five milliseconds coalesces rapid sidebar mutations while keeping
-/// file creation, deletion, and rename projections responsive.
-const INDEX_UPDATE_DEBOUNCE_MS: u64 = 75;
-
-#[cfg(feature = "test-utils")]
-pub use runtime::set_search_delay_for_test;

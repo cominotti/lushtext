@@ -15,6 +15,9 @@ use crate::model::palette::{
 };
 use crate::services::file_tree;
 use crate::services::filesystem::metadata as fs_metadata;
+use crate::services::single_flight::{
+    SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart,
+};
 
 use super::fuzzy::{
     SearchProgressPolicy, search_items, search_items_cancellable,
@@ -243,116 +246,22 @@ pub struct FileIndexBuildRequest {
 }
 
 /// One request admitted as the sole active file-index build.
-#[derive(Debug)]
-pub struct FileIndexBuildStart {
-    pub generation: u64,
-    pub request: FileIndexBuildRequest,
-    pub cancellation: PaletteSearchCancellation,
-}
-
-#[derive(Debug)]
-struct ActiveFileIndexBuild {
-    generation: u64,
-    cancellation: PaletteSearchCancellation,
-}
-
-#[derive(Debug)]
-struct PendingFileIndexBuild {
-    generation: u64,
-    request: FileIndexBuildRequest,
-}
+pub type FileIndexBuildStart = SingleFlightStart<FileIndexBuildRequest>;
 
 /// Scalar ownership evidence for file-index rebuild tests and readiness.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FileIndexBuildCoordinatorSnapshot {
-    pub active: usize,
-    pub pending: usize,
-    pub started: usize,
-    pub cancellation_requests: usize,
-}
+///
+/// This is the shared single-flight snapshot, which additionally carries the
+/// active/pending high-water marks the palette's own snapshot did not track.
+pub type FileIndexBuildCoordinatorSnapshot = SingleFlightSnapshot;
 
 /// Retain at most one active file-index build and one latest compact request.
-#[derive(Debug, Default)]
-pub struct FileIndexBuildCoordinator {
-    current_generation: u64,
-    active: Option<ActiveFileIndexBuild>,
-    pending: Option<PendingFileIndexBuild>,
-    snapshot: FileIndexBuildCoordinatorSnapshot,
-}
-
-impl FileIndexBuildCoordinator {
-    pub fn submit(&mut self, request: FileIndexBuildRequest) -> Option<FileIndexBuildStart> {
-        self.current_generation = self.current_generation.wrapping_add(1);
-        let generation = self.current_generation;
-        if let Some(active) = self.active.as_ref() {
-            if active.cancellation.cancel() {
-                self.snapshot.cancellation_requests =
-                    self.snapshot.cancellation_requests.saturating_add(1);
-            }
-            self.pending = Some(PendingFileIndexBuild {
-                generation,
-                request,
-            });
-            None
-        } else {
-            Some(self.start(generation, request))
-        }
-    }
-
-    pub fn finish(&mut self, generation: u64) -> Option<FileIndexBuildStart> {
-        if self.active.as_ref().map(|active| active.generation) != Some(generation) {
-            return None;
-        }
-        self.active = None;
-        self.pending
-            .take()
-            .map(|pending| self.start(pending.generation, pending.request))
-    }
-
-    pub fn invalidate(&mut self) {
-        self.current_generation = self.current_generation.wrapping_add(1);
-        if let Some(active) = self.active.as_ref()
-            && active.cancellation.cancel()
-        {
-            self.snapshot.cancellation_requests =
-                self.snapshot.cancellation_requests.saturating_add(1);
-        }
-        self.pending = None;
-    }
-
-    #[must_use]
-    pub fn is_current(&self, generation: u64) -> bool {
-        self.current_generation == generation
-    }
-
-    #[must_use]
-    pub fn has_work(&self) -> bool {
-        self.active.is_some() || self.pending.is_some()
-    }
-
-    #[must_use]
-    pub fn snapshot(&self) -> FileIndexBuildCoordinatorSnapshot {
-        FileIndexBuildCoordinatorSnapshot {
-            active: usize::from(self.active.is_some()),
-            pending: usize::from(self.pending.is_some()),
-            ..self.snapshot
-        }
-    }
-
-    fn start(&mut self, generation: u64, request: FileIndexBuildRequest) -> FileIndexBuildStart {
-        let cancellation = PaletteSearchCancellation::default();
-        self.active = Some(ActiveFileIndexBuild {
-            generation,
-            cancellation: cancellation.clone(),
-        });
-        self.snapshot.started = self.snapshot.started.saturating_add(1);
-        FileIndexBuildStart {
-            generation,
-            request,
-            cancellation,
-        }
-    }
-}
+///
+/// A palette-named alias over the shared one-active/one-latest coordinator, the
+/// way `services::palette::runtime` already aliases `PaletteSearchCoordinator`.
+/// The hand-rolled duplicate this replaced had identical submit, finish,
+/// invalidate, `is_current`, and `has_work` semantics; the shared type adds
+/// `clear_pending()`, `active_generation()`, and the two high-water fields.
+pub type FileIndexBuildCoordinator = SingleFlightCoordinator<FileIndexBuildRequest>;
 
 /// In-memory index of all files across workspace folders.
 #[derive(Debug, Default, Clone)]

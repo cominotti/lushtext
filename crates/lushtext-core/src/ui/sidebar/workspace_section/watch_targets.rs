@@ -134,6 +134,7 @@ impl MaterializedWatchTargets {
             return false;
         };
         if *previous == contribution {
+            #[cfg(feature = "test-utils")]
             self.record_touched_rows(1);
             return false;
         }
@@ -199,7 +200,10 @@ impl MaterializedWatchTargets {
     }
 
     fn finish_full_mutation(&mut self, before: &[WorkspaceWatchTarget], touched: usize) -> bool {
+        #[cfg(feature = "test-utils")]
         self.record_touched_rows(touched);
+        #[cfg(not(feature = "test-utils"))]
+        let _ = touched;
         let changed = before != self.effective_targets();
         if changed {
             self.generation.0 = self.generation.0.wrapping_add(1);
@@ -208,20 +212,24 @@ impl MaterializedWatchTargets {
     }
 
     fn finish_incremental_mutation(&mut self, changed: bool, touched: usize) -> bool {
+        #[cfg(feature = "test-utils")]
         self.record_touched_rows(touched);
+        #[cfg(not(feature = "test-utils"))]
+        let _ = touched;
         if changed {
             self.generation.0 = self.generation.0.wrapping_add(1);
         }
         changed
     }
 
+    /// Accumulate the row-touch probe counter.
+    ///
+    /// Gated with its call sites rather than kept as a production no-op: a
+    /// `&mut self` receiver that only the test build reads is an unused receiver
+    /// in a default-feature build, which `clippy::unused_self` denies.
+    #[cfg(feature = "test-utils")]
     fn record_touched_rows(&mut self, touched: usize) {
-        #[cfg(feature = "test-utils")]
-        {
-            self.touched_rows = self.touched_rows.saturating_add(touched);
-        }
-        #[cfg(not(feature = "test-utils"))]
-        let _ = touched;
+        self.touched_rows = self.touched_rows.saturating_add(touched);
     }
 
     #[cfg(feature = "test-utils")]

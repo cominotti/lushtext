@@ -710,16 +710,23 @@ fn window_readiness_blocker(
     ) {
         return Some(blocker);
     }
+    // Both palette blockers project from the palette's evidence surface. Their
+    // documented semantics are unchanged: `command-palette-search` is one
+    // current active or latest palette query still owning background work, and
+    // `command-palette-index` is a rebuild or mutation, *or* a bounded
+    // note-source refresh, being active or retained. The note-source disjunct is
+    // `WFR-NOTES-BOOKMARKS` surface area and is untouched here.
+    let palette_evidence = imp.command_palette.evidence();
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.command_palette.is_searching(),
+        palette_evidence.searching,
         READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     ) {
         return Some(blocker);
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.command_palette.pending_index_update_count() > 0
+        palette_evidence.pending_index_update_count > 0
             || imp.file_index_builds.borrow().has_work()
             || imp.command_palette_note_refreshes.borrow().has_work(),
         READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
@@ -900,18 +907,27 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
 }
 
 /// Summarize command-palette visibility, query, and index counts without result bodies.
+///
+/// Every field except `visible` projects from the palette workflow's internal
+/// typed evidence surface, read once, so the workflow and the exported contract
+/// share one derivation. `visible` stays window shell state, exactly as
+/// `content_search.visible` does. Evidence fields that are not part of the
+/// documented contract — queue byte counters, the queue's two caps, the
+/// coordinator's high-water marks, and the test-gated cancellation counters —
+/// are deliberately not serialized.
 fn command_palette_snapshot(window: &LushtextWindow) -> AutomationCommandPaletteSnapshot {
     let imp = window.imp();
+    let evidence = imp.command_palette.evidence();
 
     AutomationCommandPaletteSnapshot {
         visible: imp.palette_revealer.reveals_child(),
-        searching: imp.command_palette.is_searching(),
-        query: bounded_snapshot_text(imp.command_palette.query()),
-        mode: search_mode_name(imp.command_palette.mode()).to_string(),
-        result_count: imp.command_palette.result_count(),
-        file_index_count: bounded_len(imp.command_palette.file_index_len()),
-        open_tab_source_count: bounded_len(imp.command_palette.open_tab_source_count()),
-        pending_index_update_count: bounded_len(imp.command_palette.pending_index_update_count()),
+        searching: evidence.searching,
+        query: bounded_snapshot_text(evidence.query),
+        mode: search_mode_name(evidence.mode).to_string(),
+        result_count: evidence.result_count,
+        file_index_count: bounded_len(evidence.file_index_len),
+        open_tab_source_count: bounded_len(evidence.open_tab_source_count),
+        pending_index_update_count: bounded_len(evidence.pending_index_update_count),
     }
 }
 

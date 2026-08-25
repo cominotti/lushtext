@@ -1627,6 +1627,7 @@ impl super::LushtextWindow {
                         intent: candidate.intent,
                     };
                     let window_weak = window.downgrade();
+                    #[cfg(feature = "test-utils")]
                     window.note_complete_draft_body_admitted();
                     // The worker owns the only complete body and drops it as
                     // soon as the durable write finishes.
@@ -1652,6 +1653,7 @@ impl super::LushtextWindow {
                             let Some(window) = window_weak.upgrade() else {
                                 return;
                             };
+                            #[cfg(feature = "test-utils")]
                             window.note_complete_draft_body_released();
                             let mut accepted = accepted;
                             let mut failures = failures;
@@ -1801,6 +1803,11 @@ impl super::LushtextWindow {
         self.drive_pending_draft_mutations();
     }
 
+    /// Record that the worker now owns the one complete draft body.
+    ///
+    /// Gated with its call site rather than kept as a production no-op: a
+    /// `&self` receiver that only the test build reads is an unused receiver in
+    /// a default-feature build, which `clippy::unused_self` denies.
     #[cfg(feature = "test-utils")]
     fn note_complete_draft_body_admitted(&self) {
         let retained = self.imp().drafts.retained_complete_bodies.get() + 1;
@@ -1814,16 +1821,10 @@ impl super::LushtextWindow {
         );
     }
 
-    #[cfg(not(feature = "test-utils"))]
-    fn note_complete_draft_body_admitted(&self) {}
-
     #[cfg(feature = "test-utils")]
     fn note_complete_draft_body_released(&self) {
         self.imp().drafts.retained_complete_bodies.set(0);
     }
-
-    #[cfg(not(feature = "test-utils"))]
-    fn note_complete_draft_body_released(&self) {}
 
     /// Remember that a fresh autosave pass is needed after the active batch.
     pub(crate) fn mark_draft_autosave_pending_if_inflight(&self) {

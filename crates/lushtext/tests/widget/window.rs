@@ -561,7 +561,7 @@ fn wait_for_workspace_consumers(
             .borrow()
             .len()
             == expected_folders
-            && window.imp().command_palette.file_index_len() == expected_index
+            && window.imp().command_palette.evidence().file_index_len == expected_index
     });
 }
 
@@ -9827,7 +9827,7 @@ fn test_selecting_empty_workspace_scope_keeps_empty_coverage() {
                 .workspace_folders
                 .borrow()
                 .is_empty()
-            && window.imp().command_palette.file_index_len() == 0
+            && window.imp().command_palette.evidence().file_index_len == 0
     });
 
     assert_eq!(dropdown.selected(), 1);

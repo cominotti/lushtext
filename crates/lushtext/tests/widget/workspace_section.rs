@@ -5524,6 +5524,17 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
     for index in 100..400 {
         fixture::remove_file(&nested.join(format!("mid-{index:05}.txt")));
     }
+    // The wait below samples a *transient*: an in-flight child-reconcile source,
+    // which exists only between batches. `wait_until` polls every
+    // `DEFAULT_POLL_INTERVAL` (20 ms) and then drains every ready source to
+    // exhaustion, so a batch delay of 20 ms is exactly the poll interval and the
+    // transient becomes unobservable whenever applying a batch makes one drain
+    // span the next timer: the drain consumes the final batch, the source is
+    // released, and no later poll can ever see a non-zero count. Widening the
+    // delay past one poll-plus-drain decouples the two and makes the in-flight
+    // window deterministic, without weakening what the drop assertion below
+    // proves — that disposal releases a genuinely live source's weak owner.
+    section.set_reconciliation_batch_delay_for_test(Duration::from_millis(200));
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(30), || {
         section.reconciliation_metrics_for_test().4 > 0

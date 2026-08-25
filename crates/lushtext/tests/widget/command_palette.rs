@@ -23,9 +23,8 @@ use lushtext_core::services::palette::{
 };
 use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
 use lushtext_core::ui::command_palette::{
-    LushtextCommandPalette, apply_palette_row_accessibility_for_test,
-    file_index_retirement_snapshot_for_test, set_index_update_delay_for_test,
-    set_search_delay_for_test,
+    CommandPaletteTestPolicy, LushtextCommandPalette, apply_palette_row_accessibility_for_test,
+    file_index_retirement_snapshot_for_test,
 };
 use lushtext_core::ui::command_palette::item::PaletteItem;
 use lushtext_core::ui::plain_disposal::{
@@ -37,20 +36,28 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-struct PaletteSearchDelayReset;
+/// Restores the palette workflow's production timing posture on scope exit.
+///
+/// One guard covers both of the workflow's worker delays because the workflow
+/// has one test policy value, not one static per delay.
+struct PaletteTestPolicyReset;
 
-impl Drop for PaletteSearchDelayReset {
+impl Drop for PaletteTestPolicyReset {
     fn drop(&mut self) {
-        set_search_delay_for_test(0);
+        CommandPaletteTestPolicy::reset();
     }
 }
 
-struct IndexUpdateDelayReset;
+fn delay_palette_search_worker(delay: Duration) {
+    CommandPaletteTestPolicy::current()
+        .with_search_worker_delay(delay)
+        .install();
+}
 
-impl Drop for IndexUpdateDelayReset {
-    fn drop(&mut self) {
-        set_index_update_delay_for_test(0);
-    }
+fn delay_palette_index_update_worker(delay: Duration) {
+    CommandPaletteTestPolicy::current()
+        .with_index_update_worker_delay(delay)
+        .install();
 }
 
 fn in_memory_palette_index(prefix: &str, count: usize) -> FileIndex {
@@ -215,7 +222,7 @@ fn text_note(
 }
 
 fn rebuild_and_wait_for_label(palette: &LushtextCommandPalette, query: &str, label: &str) {
-    palette.imp().rebuild_results(query);
+    palette.restart_query_for_test(query);
     spin_until(|| palette_labels(palette).iter().any(|item| item == label));
 }
 
@@ -224,7 +231,7 @@ fn rebuild_and_wait_until(
     query: &str,
     predicate: impl Fn(&[String]) -> bool,
 ) {
-    palette.imp().rebuild_results(query);
+    palette.restart_query_for_test(query);
     wait_until(Duration::from_secs(5), || {
         let labels = palette_labels(palette);
         predicate(&labels)
@@ -623,7 +630,7 @@ fn test_command_palette_search_filters_results() {
     palette.set_file_index(index);
 
     // Search for "main" — should match main.rs but not Cargo.toml
-    palette.imp().rebuild_results("main");
+    palette.restart_query_for_test("main");
 
     let store = palette.imp().results_store.clone();
     spin_until(|| {
@@ -654,8 +661,8 @@ fn test_command_palette_search_filters_results() {
 #[test]
 fn test_command_palette_rapid_queries_keep_one_active_one_latest_and_final_accessibility() {
     ensure_gtk_init();
-    let _delay_reset = PaletteSearchDelayReset;
-    set_search_delay_for_test(150);
+    let _delay_reset = PaletteTestPolicyReset;
+    delay_palette_search_worker(Duration::from_millis(150));
     let palette = LushtextCommandPalette::new();
     palette.set_file_index(in_memory_palette_index("rapid-final", 2_000));
     palette.open();
@@ -664,7 +671,7 @@ fn test_command_palette_rapid_queries_keep_one_active_one_latest_and_final_acces
     palette.set_query("rapid-intermediate");
     palette.set_query("rapid-final-01999");
 
-    let pressure = palette.search_runtime_snapshot_for_test();
+    let pressure = palette.evidence().search_flight;
     assert_eq!(pressure.active, 1);
     assert_eq!(pressure.pending, 1);
     assert_eq!(pressure.active_high_water, 1);
@@ -682,8 +689,8 @@ fn test_command_palette_rapid_queries_keep_one_active_one_latest_and_final_acces
                 .any(|label| label == "rapid-final-01999.rs")
     });
 
-    assert!(palette.observed_search_cancellations_for_test() > 0);
-    assert!(palette.last_cancelled_search_examined_for_test() <= 2_000);
+    assert!(palette.evidence().observed_search_cancellations > 0);
+    assert!(palette.evidence().last_cancelled_search_examined <= 2_000);
     assert!(!palette_labels(&palette)
         .iter()
         .any(|label| label.contains("intermediate")));
@@ -699,8 +706,8 @@ fn test_command_palette_rapid_queries_keep_one_active_one_latest_and_final_acces
 #[test]
 fn test_command_palette_latest_mode_index_and_scope_snapshot_wins() {
     ensure_gtk_init();
-    let _delay_reset = PaletteSearchDelayReset;
-    set_search_delay_for_test(150);
+    let _delay_reset = PaletteTestPolicyReset;
+    delay_palette_search_worker(Duration::from_millis(150));
     let palette = LushtextCommandPalette::new();
     palette.set_file_index(in_memory_palette_index("old-scope", 512));
     palette.set_workspace_group_label("Old Scope");
@@ -727,26 +734,26 @@ fn test_command_palette_latest_mode_index_and_scope_snapshot_wins() {
 #[test]
 fn test_command_palette_close_cancels_active_and_pending_without_stale_projection() {
     ensure_gtk_init();
-    let _delay_reset = PaletteSearchDelayReset;
-    set_search_delay_for_test(200);
+    let _delay_reset = PaletteTestPolicyReset;
+    delay_palette_search_worker(Duration::from_millis(200));
     let palette = LushtextCommandPalette::new();
     palette.set_file_index(in_memory_palette_index("close-search", 2_000));
     palette.open();
     palette.set_query("close-search-00001");
     palette.set_query("close-search-01999");
-    assert_eq!(palette.search_runtime_snapshot_for_test().pending, 1);
+    assert_eq!(palette.evidence().search_flight.pending, 1);
 
     palette.close();
     assert!(!palette.is_searching());
     assert_eq!(palette.result_count(), 0);
-    assert_eq!(palette.search_runtime_snapshot_for_test().pending, 0);
+    assert_eq!(palette.evidence().search_flight.pending, 0);
 
     wait_until(Duration::from_secs(10), || {
-        palette.search_runtime_snapshot_for_test().active == 0
+        palette.evidence().search_flight.active == 0
     });
     assert_eq!(palette.result_count(), 0);
     assert!(!palette.imp().no_results_label.property::<bool>("visible"));
-    assert!(palette.observed_search_cancellations_for_test() > 0);
+    assert!(palette.evidence().observed_search_cancellations > 0);
 }
 
 #[test]
@@ -780,6 +787,136 @@ fn test_command_palette_incremental_index_worker_publishes_then_clears_readiness
 }
 
 #[test]
+fn test_incremental_index_delete_reaches_the_index() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let root = Arc::new(PathBuf::from("/synthetic/incremental-delete"));
+    let keep = root.join("keep-me.rs");
+    let doomed = root.join("delete-me.rs");
+    palette.set_file_index(FileIndex::from(vec![
+        IndexedFile::new(
+            keep.clone(),
+            PaletteFileIdentity::canonical(keep),
+            Arc::clone(&root),
+        ),
+        IndexedFile::new(
+            doomed.clone(),
+            PaletteFileIdentity::canonical(doomed.clone()),
+            Arc::clone(&root),
+        ),
+    ]));
+    palette.open();
+    palette.set_search_mode(SearchMode::Files);
+    palette.set_query("me");
+    wait_until(Duration::from_secs(10), || {
+        palette_labels(&palette)
+            .iter()
+            .any(|label| label == "delete-me.rs")
+    });
+
+    palette.update_index_file_deleted(&doomed);
+    assert!(palette.evidence().pending_index_update_count > 0);
+    wait_until(Duration::from_secs(10), || {
+        palette.evidence().pending_index_update_count == 0
+            && !palette_labels(&palette)
+                .iter()
+                .any(|label| label == "delete-me.rs")
+    });
+
+    let labels = palette_labels(&palette);
+    assert!(
+        !labels.iter().any(|label| label == "delete-me.rs"),
+        "a deleted file must leave the index, got: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "keep-me.rs"),
+        "the surviving file must stay indexed, got: {labels:?}"
+    );
+    assert_eq!(palette.evidence().file_index_len, 1);
+}
+
+#[test]
+fn test_incremental_index_rename_reaches_the_index() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let root = Arc::new(PathBuf::from("/synthetic/incremental-rename"));
+    let before = root.join("before-rename.rs");
+    palette.set_file_index(FileIndex::from(vec![IndexedFile::new(
+        before.clone(),
+        PaletteFileIdentity::canonical(before.clone()),
+        Arc::clone(&root),
+    )]));
+    palette.open();
+    palette.set_search_mode(SearchMode::Files);
+    palette.set_query("rename");
+    wait_until(Duration::from_secs(10), || {
+        palette_labels(&palette)
+            .iter()
+            .any(|label| label == "before-rename.rs")
+    });
+
+    let after = root.join("after-rename.rs");
+    palette.update_index_file_renamed(&before, &after);
+    wait_until(Duration::from_secs(10), || {
+        palette.evidence().pending_index_update_count == 0
+            && palette_labels(&palette)
+                .iter()
+                .any(|label| label == "after-rename.rs")
+    });
+
+    let labels = palette_labels(&palette);
+    assert!(
+        labels.iter().any(|label| label == "after-rename.rs"),
+        "the renamed path must be indexed, got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label == "before-rename.rs"),
+        "the old path must be retired, got: {labels:?}"
+    );
+    assert_eq!(
+        palette.evidence().file_index_len,
+        1,
+        "a rename keeps the file count"
+    );
+}
+
+#[test]
+fn test_incremental_index_count_cap_escalates_independently_of_the_byte_cap() {
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+    let caps = palette.evidence();
+    let count_limit = caps.max_queued_index_updates;
+
+    // Short paths, so the count ceiling is reached long before the byte
+    // ceiling. The sibling overflow test uses 8 KiB path segments and therefore
+    // proves the *byte* ceiling; this one isolates the count ceiling.
+    for index in 0..=count_limit {
+        palette.update_index_file_deleted(&PathBuf::from(format!("/s/{index:05}")));
+    }
+
+    let overflowed = palette.evidence();
+    assert!(
+        overflowed.index_rebuild_pending,
+        "exceeding the count ceiling must escalate to a full rebuild"
+    );
+    assert!(overflowed.queued_index_updates <= count_limit);
+    assert!(
+        overflowed.queued_index_update_bytes < overflowed.max_queued_index_update_bytes / 2,
+        "this case must not be the byte ceiling in disguise: {} of {}",
+        overflowed.queued_index_update_bytes,
+        overflowed.max_queued_index_update_bytes
+    );
+
+    wait_until(Duration::from_secs(10), || {
+        palette.evidence().pending_index_update_count == 0
+    });
+    let drained = palette.evidence();
+    assert!(!drained.index_rebuild_pending);
+    assert_eq!(drained.queued_index_updates, 0);
+    assert_eq!(drained.queued_index_update_bytes, 0);
+}
+
+#[test]
 fn test_incremental_index_capacity_retry_is_paced_and_resumes_after_release() {
     ensure_gtk_init();
     wait_until(Duration::from_secs(5), || {
@@ -794,7 +931,7 @@ fn test_incremental_index_capacity_retry_is_paced_and_resumes_after_release() {
     flush_after_delay(Duration::from_millis(200));
 
     assert_eq!(palette.pending_index_update_count(), 1);
-    assert!(!palette.index_update_worker_running_for_test());
+    assert!(!palette.evidence().index_update_worker_running);
     let full_after_first_attempt = lane_snapshot_for_test().full_outcomes;
     assert_eq!(full_after_first_attempt, full_before + 1);
     flush_after_delay(Duration::from_millis(200));
@@ -808,7 +945,7 @@ fn test_incremental_index_capacity_retry_is_paced_and_resumes_after_release() {
     wait_until(Duration::from_secs(10), || {
         palette.pending_index_update_count() == 0
     });
-    assert!(!palette.index_update_worker_running_for_test());
+    assert!(!palette.evidence().index_update_worker_running);
 }
 
 #[test]
@@ -823,19 +960,30 @@ fn test_incremental_index_update_queue_coalesces_overflow_to_one_rebuild() {
         )));
     }
 
-    let (queued, bytes, rebuild_pending, count_limit, byte_limit) =
-        palette.index_update_queue_snapshot_for_test();
-    assert!(queued <= count_limit);
-    assert!(bytes <= byte_limit);
-    assert!(rebuild_pending);
-    assert_eq!(palette.pending_index_update_count(), queued + 1);
+    let overflowed = palette.evidence();
+    assert!(overflowed.queued_index_updates <= overflowed.max_queued_index_updates);
+    assert!(overflowed.queued_index_update_bytes <= overflowed.max_queued_index_update_bytes);
+    assert!(overflowed.index_rebuild_pending);
+    assert_eq!(
+        overflowed.pending_index_update_count,
+        overflowed.queued_index_updates + 1
+    );
 
     wait_until(Duration::from_secs(10), || {
-        palette.pending_index_update_count() == 0
+        palette.evidence().pending_index_update_count == 0
     });
+    let drained = palette.evidence();
+    assert_eq!(drained.queued_index_updates, 0);
+    assert_eq!(drained.queued_index_update_bytes, 0);
+    assert!(!drained.index_rebuild_pending);
     assert_eq!(
-        palette.index_update_queue_snapshot_for_test(),
-        (0, 0, false, count_limit, byte_limit)
+        drained.max_queued_index_updates,
+        overflowed.max_queued_index_updates,
+        "the queue's declared ceilings are policy, not state"
+    );
+    assert_eq!(
+        drained.max_queued_index_update_bytes,
+        overflowed.max_queued_index_update_bytes
     );
 }
 
@@ -882,8 +1030,8 @@ fn test_command_palette_retires_last_owned_accepted_incremental_index_off_gtk() 
 #[test]
 fn test_command_palette_retires_last_owned_rejected_incremental_index_off_gtk() {
     ensure_gtk_init();
-    let _delay_reset = IndexUpdateDelayReset;
-    set_index_update_delay_for_test(200);
+    let _delay_reset = PaletteTestPolicyReset;
+    delay_palette_index_update_worker(Duration::from_millis(200));
     let palette = LushtextCommandPalette::new();
     palette.set_file_index(in_memory_palette_index(
         "retire-rejected",
@@ -893,7 +1041,7 @@ fn test_command_palette_retires_last_owned_rejected_incremental_index_off_gtk() 
         "/synthetic/retire-rejected/missing.rs",
     ));
     wait_until(Duration::from_secs(10), || {
-        palette.index_update_worker_running_for_test()
+        palette.evidence().index_update_worker_running
     });
 
     palette.set_file_index(in_memory_palette_index("replacement", 1));
@@ -1109,7 +1257,7 @@ fn test_command_palette_workspace_file_group_deduplicates_overlapping_folder_row
     assert_eq!(row_with_label(&palette, "main.rs").subtitle(), "src/main.rs");
 
     palette.set_file_index(FileIndex::rebuild(&[nested_folder, workspace_folder]));
-    palette.imp().rebuild_results("main");
+    palette.restart_query_for_test("main");
     wait_until(Duration::from_secs(5), || {
         row_subtitle(&palette, "main.rs").as_deref() == Some("main.rs")
     });
@@ -1251,7 +1399,7 @@ fn test_command_palette_notes_mode_empty_source_has_no_fake_rows() {
     let palette = LushtextCommandPalette::new();
     palette.imp().set_mode(SearchMode::Notes);
 
-    palette.imp().rebuild_results("");
+    palette.restart_query_for_test("");
     wait_until(Duration::from_secs(5), || palette_labels(&palette).is_empty());
 
     assert!(palette_labels(&palette).is_empty());
@@ -1260,7 +1408,7 @@ fn test_command_palette_notes_mode_empty_source_has_no_fake_rows() {
         "empty default Notes mode should not show a no-results warning"
     );
 
-    palette.imp().rebuild_results("missing-note");
+    palette.restart_query_for_test("missing-note");
     wait_until(Duration::from_secs(5), || {
         palette.imp().no_results_label.property::<bool>("visible")
     });
@@ -1557,7 +1705,7 @@ fn test_command_palette_no_results_label_on_no_match() {
     spin_until(|| store.n_items() > 0);
 
     // Search for something that won't match anything
-    palette.imp().rebuild_results("xyzzynonexistent");
+    palette.restart_query_for_test("xyzzynonexistent");
 
     let no_results_label = palette.imp().no_results_label.clone();
     spin_until(|| no_results_label.property::<bool>("visible"));
@@ -1766,8 +1914,8 @@ fn test_toggle_reveals_palette() {
 #[test]
 fn test_command_palette_current_query_blocks_search_readiness_until_final_completion() {
     ensure_gtk_init();
-    let _delay_reset = PaletteSearchDelayReset;
-    set_search_delay_for_test(250);
+    let _delay_reset = PaletteTestPolicyReset;
+    delay_palette_search_worker(Duration::from_millis(250));
     let window = test_window();
     window.new_tab();
     present_window(&window);
@@ -2284,7 +2432,7 @@ fn test_palette_empty_selected_workspace_scope_has_no_workspace_file_rows() {
     });
     let palette = window.imp().command_palette.clone();
     palette.imp().set_mode(SearchMode::Files);
-    palette.imp().rebuild_results("beta");
+    palette.restart_query_for_test("beta");
     wait_until(Duration::from_secs(10), || {
         palette.imp().no_results_label.property::<bool>("visible")
             && palette_labels(&palette).is_empty()
@@ -2319,7 +2467,7 @@ fn test_palette_open_tabs_can_appear_outside_selected_workspace() {
     activate_action(&window, "toggle-command-palette");
     let palette = window.imp().command_palette.clone();
     palette.imp().set_mode(SearchMode::Files);
-    palette.imp().rebuild_results("beta");
+    palette.restart_query_for_test("beta");
     wait_until(Duration::from_secs(5), || {
         let labels = palette_labels(&palette);
         labels.iter().any(|label| label == "beta.rs")
