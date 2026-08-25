@@ -8,6 +8,7 @@
 use lushtext_core::services::filesystem::{
     DirectoryScanPolicy, PathStatus, metadata as fs_metadata, read as fs_read, tree as fs_tree,
 };
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 struct ForbiddenTerm {
@@ -233,7 +234,7 @@ const fn terminology_scan_policy() -> DirectoryScanPolicy {
 
 fn is_scannable_file(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|extension| extension.to_str()),
+        path.extension().and_then(OsStr::to_str),
         Some("json" | "md" | "rs" | "ui" | "xml" | "in")
     )
 }

@@ -7,6 +7,7 @@
 //! after in-app renames, and collect workspace-scoped rows for note browsers.
 
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::model::document_note::DocumentNoteDocument;
@@ -168,7 +169,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         .with_context(|| format!("failed to read {}", dir.display()))?
     {
         let sidecar_path = entry.path;
-        if sidecar_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+        if sidecar_path.extension().and_then(OsStr::to_str) != Some("json") {
             continue;
         }
 
@@ -426,7 +427,7 @@ mod tests {
         )
         .expect("expected operation to succeed")
         .into_iter()
-        .filter(|entry| entry.path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .filter(|entry| entry.path.extension().and_then(OsStr::to_str) == Some("json"))
         .count();
         assert_eq!(json_sidecars, 1);
     }

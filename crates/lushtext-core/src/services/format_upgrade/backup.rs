@@ -6,6 +6,7 @@
 //! never touch user document folders. The manifest records app-data-relative
 //! paths and enough classification detail to support retry and support triage.
 
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -201,7 +202,7 @@ impl BackupSession {
         let extension = item
             .absolute_path
             .extension()
-            .and_then(|ext| ext.to_str())
+            .and_then(OsStr::to_str)
             .unwrap_or("bin");
         self.items_dir.join(format!("{hash}.{extension}"))
     }

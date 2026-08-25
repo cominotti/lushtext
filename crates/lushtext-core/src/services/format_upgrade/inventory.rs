@@ -293,7 +293,7 @@ impl<'a> InventoryBuilder<'a> {
         for entry in
             self.scan_bounded_directory(&dir, relative_dir, self.bounds.max_replace_journal_entries)
         {
-            let file_name = entry.path.file_name().and_then(|name| name.to_str());
+            let file_name = entry.path.file_name().and_then(OsStr::to_str);
             if file_name == Some("manifest.json") || file_name == Some("cleanup-in-progress.json") {
                 continue;
             }

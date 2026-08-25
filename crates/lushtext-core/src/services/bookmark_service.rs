@@ -7,6 +7,7 @@
 //! in-app renames, and collect bookmark rows for browse surfaces.
 
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::model::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
@@ -187,7 +188,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         .with_context(|| format!("failed to read {}", dir.display()))?
     {
         let sidecar_path = entry.path;
-        if sidecar_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+        if sidecar_path.extension().and_then(OsStr::to_str) != Some("json") {
             continue;
         }
 

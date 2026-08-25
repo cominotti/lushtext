@@ -6,6 +6,7 @@
 //! proof runner needs deterministic byte-level crop, mask, and anchor behavior
 //! that can be compared against the existing Python oracle.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -957,17 +958,11 @@ fn compare_crops(
     if let Some(prefix) = artifact_prefix {
         let before_artifact = prefix.with_file_name(format!(
             "{}-before.png",
-            prefix
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("crop")
+            prefix.file_name().and_then(OsStr::to_str).unwrap_or("crop")
         ));
         let after_artifact = prefix.with_file_name(format!(
             "{}-after.png",
-            prefix
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("crop")
+            prefix.file_name().and_then(OsStr::to_str).unwrap_or("crop")
         ));
         write_png(&before_artifact, &before, &before_rows)?;
         write_png(&after_artifact, &after, &after_rows)?;

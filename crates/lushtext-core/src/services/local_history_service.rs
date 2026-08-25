@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 // `AtomicU64`/`Ordering` back only the test-utils preview-read delay seam now
 // that the cancellation token aliases the shared single-flight primitive.
@@ -933,11 +934,11 @@ fn repair_history_index_from_snapshots(
         .with_context(|| format!("failed to read {}", document_dir.display()))?
     {
         if entry.kind != FileKind::File
-            || entry.path.file_name().and_then(|name| name.to_str()) == Some(INDEX_FILENAME)
+            || entry.path.file_name().and_then(OsStr::to_str) == Some(INDEX_FILENAME)
         {
             continue;
         }
-        if entry.path.extension().and_then(|ext| ext.to_str()) != Some(SNAPSHOT_EXTENSION) {
+        if entry.path.extension().and_then(OsStr::to_str) != Some(SNAPSHOT_EXTENSION) {
             return Ok(LocalHistoryIndexRepair::Skipped(format!(
                 "unsupported local-history file {} prevents deterministic repair",
                 entry.path.display()
@@ -946,7 +947,7 @@ fn repair_history_index_from_snapshots(
         let Some(snapshot_id) = entry
             .path
             .file_stem()
-            .and_then(|stem| stem.to_str())
+            .and_then(OsStr::to_str)
             .map(ToOwned::to_owned)
         else {
             return Ok(LocalHistoryIndexRepair::Skipped(format!(

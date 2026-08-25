@@ -95,6 +95,7 @@ use lushtext_core::ui::window::{
 };
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13449,7 +13450,7 @@ fn test_multi_tab_close_admits_one_save_payload_at_a_time() {
         .map(|path| {
             let title = path
                 .file_name()
-                .and_then(|name| name.to_str())
+                .and_then(OsStr::to_str)
                 .expect("fixture file name");
             find_tab_page_by_title(&window, title)
                 .child()
