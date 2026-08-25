@@ -14,8 +14,12 @@ type(scope): short description
 
 Optional longer explanation.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Authored-By: <active Claude model name> <noreply@anthropic.com>
 ```
+
+The `Co-Authored-By` trailer names the Claude model that authored the commit
+(for example `Claude Fable 5`); use the model actually running, not a
+hardcoded historical one.
 
 **Types:** `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `chore`
 **Scopes (optional):** `ui`, `sidebar`, `editor`, `workspace`, `session`, `build`, `flatpak`
