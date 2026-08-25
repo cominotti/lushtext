@@ -93,7 +93,7 @@ convention has been proven on at least two completed lower-risk migrations.
 | WFR-BUFFER-REPLACEMENT | Bounded buffer install and clear slices | 2 files, 1,215 lines (ui 1,029 / model 186) | local-history restore, Replace All undo, draft restore install | `model/buffer_replacement.rs` (2 consumer files, 2 workflows → cross-cutting between local-history and Replace All undo; stays) | 4/0/4/0 = 8 fns, 26 sites | exists: `BufferReplacementTicket` + `BufferReplacementSession` | none | tier-3 | 4 | partially-conforming |
 | WFR-WORKSPACE-TREE | Workspace folders, file tree, watch, reconcile | 28 files, 16,947 lines (ui 11,682 / model 1,368 / services 3,897) | New Workspace, Add Folder, refresh button, row activation, context menus, `Space` peek, watcher events | `model/workspace_scan.rs` (3 consumers → single-workflow, relocates); `model/workspace.rs` (28 consumers → domain, stays); `model/workspace_persistence.rs` (2 consumers → single-workflow, relocates) | 24/7/29/5 = 65 fns, 116 sites | exists: `WorkspaceScanTicket` (scan side). required: `WorkspaceWatchTicket` (watch-install side; `{targets_generation, lifetime_generation}` compared loosely at 2 sites) | partial: `WorkspaceScanPressureEvidence`, `WorkspaceWatchMailboxSnapshot` | tier-3 | 5 | pending |
 | WFR-NOTES-BOOKMARKS | Notes, bookmarks, sidecar migration, format upgrade | 22 files, 12,521 lines (ui 4,977 / model 770 / services 6,774) | `win.notes-*`, `win.toggle-bookmark`, `win.edit-bookmark-label`, rename-driven sidecar migration, startup reconcile | `model/note.rs`, `model/bookmark.rs`, `model/sidecar_identity.rs` (6/9/11 consumers → domain, stay) | 2/4/4/0 = 10 fns, 16 sites, 2 override statics | required: `NotesBrowserTicket` (carries `{generation, mode}`; the `is_current(generation) && mode == mode && !disposed` triple is duplicated at 2 sites) | partial: `NotesBrowserRuntimeSnapshot` | tier-3 | 5 | pending |
-| WFR-MARKDOWN-PREVIEW | Markdown preview render, images, footnotes, tables | 9 files, 7,860 lines (ui 7,304 / services 556) | `Alt+P`, `win.toggle-preview-mode`, side-by-side action, buffer changed | none in `model/` | 12/4/3/2 = 21 fns, 56 sites, 3 override statics | exists: `MarkdownRenderSession::is_current(generation)` | partial: `MarkdownImageAdmissionSnapshot` | tier-2 | 7 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
+| WFR-MARKDOWN-PREVIEW | Markdown preview render, images, footnotes, tables | 11 files, 11,274 lines (ui 8,334 / services 2,940); re-measured after `continue-markdown-preview-past-oversized-blocks` added `ui/markdown_preview/continuation.rs` (1,170) and `text_flow.rs` (265) while `mod.rs` fell 2,541 → 1,985, and grew `services/markdown_render.rs` 556 → 2,940, of which ~1,700 are co-located `#[cfg(test)]` planner tests. The `ui` subtotal spans `ui/markdown_preview/**` (7,762) plus `ui/window/preview.rs` (572) | `Alt+P`, `win.toggle-preview-mode`, side-by-side action, buffer changed | none in `model/` | 12/4/3/2 = 21 fns, 56 sites, 3 override statics (unchanged by the continuation change) | exists: `MarkdownRenderSession::is_current(generation)`; plus the planner/projector batch seam `MarkdownCarrySignature` + `MarkdownOpenContainer` (expected/open containers per batch, chained across turns), `MarkdownBlockOmission` (omission reason, scope, and unretained charge crossing the same seam), and the projector-side `MarkdownProjectionContinuation` + `ContinuationBreach` that holds and validates it | partial: `MarkdownImageAdmissionSnapshot` | tier-2 | 7 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
 | WFR-MINIMAP | Minimap strip, markers, native source map geometry | 2 files, 3,965 lines (ui 3,779 / model 186) | `win.toggle-minimap`, `Ctrl+Shift+M`, buffer/viewport/sidebar reflow | `model/minimap_analysis.rs` (1 consumer → single-consumer, relocates) | 9/1/1/0 = 11 fns, 16 sites | exists: `MinimapAnalysisSession` (`{generation, lifetime}`) | partial: `MinimapAnalysisSnapshot` | tier-2 logic, high proof cost | 6 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
 | WFR-BUFFER-SNAPSHOT | Bounded GTK buffer text capture | 1 file, 1,149 lines (ui) | called by save, draft autosave, encoding analysis, preview, local history | `model/plain_disposal.rs` is consumed through `plain-disposal`, not owned here | 5/0/4/0 = 9 fns, 40 sites | exists: `BufferSnapshotHandle` + `BufferSnapshotPayload` | partial: `BufferSnapshotMetrics`, `BufferSnapshotStateForTest`, `BufferSnapshotCountersForTest` | tier-2 | 7 | cross-cutting |
 | WFR-PLAIN-DISPOSAL | Off-GTK retirement of large owned payloads | 2 files, 2,227 lines (ui 1,535 / model 692) | called by 21 files across 10 workflows | `model/plain_disposal.rs` (1 consumer file, but its consumer is this module's own adapter → cross-cutting, stays) | 4/1/1/2 = 8 fns, 18 sites | exists: `DisposalOwned<T>` + `DisposalPermit` | exists: `DisposalPressureEvidence` | tier-3 | 7 | cross-cutting — see [Cross-Cutting Coordination](#cross-cutting-coordination) |
@@ -601,13 +601,20 @@ unrelated workflows import a third workflow's private policy module.
 
 ### `ui/markdown_preview/**` — deferred
 
-Decomposed by an earlier change into 2,541 lines plus four modules (7,860 lines
-across 9 files including `services/markdown_render.rs`). That decomposition
-already satisfies the module-boundary half of the convention: responsibilities
-are split, and `MarkdownRenderSession::is_current(generation)` already reifies
-the seam.
+Decomposed by an earlier change into 2,541 lines plus four modules, then
+further split by `continue-markdown-preview-past-oversized-blocks` into
+`continuation.rs` (generation-owned cross-turn projection state) and
+`text_flow.rs` (stateless text-flow primitives), leaving `mod.rs` at 1,985 lines
+(11,274 lines across 11 files including `ui/window/preview.rs` and
+`services/markdown_render.rs`). That
+decomposition already satisfies the module-boundary half of the convention:
+responsibilities are split, and `MarkdownRenderSession::is_current(generation)`,
+`MarkdownCarrySignature`/`MarkdownOpenContainer`, and `MarkdownBlockOmission`
+already reify the workflow's seams.
 
-What it lacks is the narrative facade and a single evidence surface. Because the
+What it lacks is the narrative facade and a single evidence surface; the
+continuation split was forced by the file-size rule and deliberately declared no
+coordination roles, so the row stays `deferred` rather than advancing. Because the
 expensive half is done and must not be redone, it does not justify its own
 migration change; it is deferred to the residual sweep (slot 7), which adds the
 facade and evidence surface only.

@@ -140,7 +140,13 @@ they are not default PR gates:
   AT-SPI path, verifies stable anchors across shell/editor/search/Open
   popover/command palette/workspace/properties/preferences/Markdown preview/
   notes/local-history surfaces, and records focus plus text-interface evidence where the host
-  exposes it. The lane writes bounded per-scenario manifests, assertion JSONL,
+  exposes it. Markdown preview omission markers are covered with a deliberately
+  split anchor scope: the marker that replaces one table row is asserted as a
+  labelled AT-SPI cell inside the table grid, while the list-item marker — which
+  renders as preview buffer text and so has no accessible object of its own — is
+  asserted by a single text-interface assertion. The quoted-paragraph,
+  definition-body, and code-block-line markers are not smoke-asserted; anchoring
+  them would require giving each its own accessible object. The lane writes bounded per-scenario manifests, assertion JSONL,
   warning status, screenshots, AT-SPI tree/focus excerpts, `summary.txt`, and
   `summary.json`; unsupported AT-SPI or compositor hosts skip with an explicit
   reason that does not count as coverage. It complements widget tests that

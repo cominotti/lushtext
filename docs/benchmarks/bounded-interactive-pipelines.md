@@ -45,8 +45,12 @@ scripts/run-performance-smoke.sh \
   Inline-footnote lowering separately caps source, parser events, replacements,
   retained/output bytes, and source-relative close-scan work; malformed dense
   suffixes therefore reach a deterministic limited terminal.
-  Projection applies at most 256 complete-block events and 256 KiB of retained
-  event text per GTK turn. Replacing a render detaches its text buffer in O(1),
+  Projection applies at most 256 events and 256 KiB of retained event text per
+  GTK turn. A batch is a bounded slice rather than a whole-block run: a turn may
+  end inside a table, list, blockquote, code block, or definition list wherever
+  no inline state is open, and the projector carries the matching continuation
+  plus at most one in-flight embedded block (64 KiB of code text or 1,000 table
+  cells) across turns. Replacing a render detaches its text buffer in O(1),
   then retires at most 64 Ki characters and 64 widget/link references per GTK
   turn. Local images retain at most four compact work descriptors under a
   conservative byte ceiling, with only one decoder active. Image ingestion is

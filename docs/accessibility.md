@@ -93,9 +93,45 @@ Expected screen-reader behavior includes:
   preview-only mode, or a failure state temporarily prevents editing.
 - Search fields expose names, options, invalid/no-result states, match counts,
   and debounced result announcements without announcing every keystroke.
-- Markdown preview exposes explicit pending, limited, failed, cancelled, and
-  complete descriptions; budget limits and unsupported images resolve to a
-  readable fallback instead of an unlabeled partial preview.
+- Markdown preview exposes explicit pending, complete, complete-with-omissions
+  (`Simplified`), limited, failed, and cancelled descriptions; budget limits and
+  unsupported images resolve to a readable fallback instead of an unlabeled
+  partial preview. `Simplified` and `Limited` are deliberately distinct: the
+  first says the document rendered to its end with named holes, the second says
+  a whole-document ceiling stopped rendering early.
+- When the preview replaces a unit it cannot render, the omission count is
+  announced **once** through the preview surface's accessible description at the
+  terminal, not once per marker. The count reports user-visible omissions only;
+  an oversized table or code block that the preview already replaces with its
+  own in-place summary widget still reports `Complete`, because that widget
+  already names the block and its true size in place.
+- Omission markers have two affordances, and the distinction is intentional:
+  - the marker that replaces one **table row** is a real accessible object — a
+    full-width cell inside the table's `Table` role, labelled with the bare
+    marker text rather than the `Table cell ...` prefix used for real data
+    cells, because it reports a missing row instead of carrying table data — so
+    it is reachable by object navigation. The table's own announced shape counts
+    source rows only, so a marker row never inflates the reported row count;
+  - the markers for a **list item**, **quoted paragraph**, **definition body**,
+    **code-block line**, and a top-level omission past the placeholder-widget
+    cap are plain preview buffer text with no accessible object of their own.
+    They are reachable through the preview's text interface, in reading order at
+    the position of the content they replaced, and each names both the budget and
+    the omitted unit. Giving each one its own accessible object would be a
+    presentation change and is deliberately out of scope.
+  - a top-level omission within the placeholder-widget cap reuses the same
+    labelled group fallback widget as the existing table/code/image fallbacks.
+- Proof coverage for those markers is uneven on purpose, and the split is
+  recorded rather than implied. The **table-row** marker is asserted end to end:
+  a widget test checks the spanning row and its text, and the
+  `markdown-preview-omissions` accessibility smoke case asserts it as a labelled
+  AT-SPI cell. The **list-item** marker is asserted by a widget test plus one
+  text-interface assertion in that same smoke case. The **quoted-paragraph**,
+  **definition-body**, and **code-block-line** markers currently have unit
+  coverage of their unit-naming projection only
+  (`enclosing_unit_name_reads_the_live_continuation`), with no widget or smoke
+  assertion; extending the smoke case to them would mean giving each its own
+  accessible object, which is the presentation change held out of scope above.
 - Open popover, command palette, workspace search, file tree, notes, bookmarks,
   local history, preferences, and properties rows refresh accessible metadata
   when GTK recycles row widgets.

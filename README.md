@@ -331,6 +331,17 @@ Markdown preview is available for Markdown files from **Main Menu > Markdown
 Preview** or `Alt+P` for preview-only mode. Canonical sample content lives in
 [`samples/markdown-test.md`](samples/markdown-test.md).
 
+The preview renders in bounded slices so a long document never blocks the UI,
+and a large table, list, code block, blockquote, or definition list is rendered
+completely across those slices as one continuous block. When a single unit is
+too dense to render — one enormous paragraph, heading, or table row — only that
+unit is replaced by an in-place marker; its siblings and the rest of the
+document still render, and the preview reports that it completed with a count of
+simplified units. A very large table or code block keeps its existing behavior
+of being replaced by one summary widget naming its true size. Whole-document
+ceilings (4 MiB of source, 50,000 parser elements, 128 levels of nesting) still
+stop the preview and say so.
+
 ## Building from Source
 
 ### Dependencies
@@ -408,7 +419,9 @@ Cargo workspace:
   `ui/window/notes/{bookmarks,editors,browser}.rs` modules. The Markdown preview
   adapter is likewise split under `ui/markdown_preview/` into behavior-neutral
   workflow siblings (`images.rs`, `tables.rs`, `code_blocks.rs`, `links.rs`,
-  `inline_footnotes.rs`) around the render-orchestration `mod.rs`. Recycled workspace
+  `inline_footnotes.rs`, plus `continuation.rs` for the generation-owned
+  cross-turn projection state and `text_flow.rs` for its stateless text-flow
+  primitives) around the render-orchestration `mod.rs`. Recycled workspace
   row wiring is split under `ui/sidebar/workspace_section/` into
   `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`. Plain policy
   for per-store scan ownership, weighted disposal, and minimap analysis lives
