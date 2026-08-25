@@ -572,12 +572,55 @@ receive a ` [truncated]` suffix when shortened.
 
 Where a workflow exposes an internal typed evidence surface, its snapshot
 fields project from that surface instead of re-deriving the same state from
-widgets. `window.content_search` is the first such projection: every field
-except `content_search.visible` comes from the search panel's evidence surface,
-and `content_search.visible` remains window shell state. Evidence fields that
-are not listed below — internal high-water counters, worker-lane job counts, and
-retirement backlog detail — are not part of this contract and are not
-serialized. Projection does not change any field name, type, or meaning.
+widgets. `window.content_search` is the first such projection and
+`window.command_palette` is the second: in both, every field except the
+surface's `visible` flag comes from the owning workflow's evidence surface, while
+`content_search.visible` and `command_palette.visible` remain window shell state
+read from the relevant revealer. Evidence fields that are not listed below —
+internal high-water counters, worker-lane job counts, retirement backlog detail,
+queued-byte counters, the queue's declared ceilings, and test-gated cancellation
+counters — are not part of this contract and are not serialized. Projection does
+not change any field name, type, or meaning.
+
+#### Evidence Projection Map
+
+`make check-automation-docs` reads this table and fails when a projected
+evidence field is added, removed, or renamed without the table being updated,
+naming both the evidence field and the snapshot field. The authority for "is this
+field projected" is the Rust snapshot function: a field the projection does not
+read is internal and must not appear here.
+
+| Projection | Evidence type | Evidence field | Snapshot field |
+| --- | --- | --- | --- |
+| `window.content_search` | `SearchPanelEvidence` | `query` | `content_search.query` |
+| `window.content_search` | `SearchPanelEvidence` | `regex_enabled` | `content_search.regex_enabled` |
+| `window.content_search` | `SearchPanelEvidence` | `case_sensitive` | `content_search.case_sensitive` |
+| `window.content_search` | `SearchPanelEvidence` | `whole_word_enabled` | `content_search.whole_word_enabled` |
+| `window.content_search` | `SearchPanelEvidence` | `gitignore_enabled` | `content_search.gitignore_enabled` |
+| `window.content_search` | `SearchPanelEvidence` | `glob_filter` | `content_search.glob_filter` |
+| `window.content_search` | `SearchPanelEvidence` | `searching` | `content_search.searching` |
+| `window.content_search` | `SearchPanelEvidence` | `file_count` | `content_search.file_count` |
+| `window.content_search` | `SearchPanelEvidence` | `match_count` | `content_search.match_count` |
+| `window.content_search` | `SearchPanelEvidence` | `result_capped` | `content_search.result_capped` |
+| `window.content_search` | `SearchPanelEvidence` | `replace_query` | `content_search.replace_query_present` |
+| `window.content_search` | `SearchPanelEvidence` | `replace_preview_mode` | `content_search.replace_preview_mode` |
+| `window.content_search` | `SearchPanelEvidence` | `replace_preview_pending` | `content_search.replace_preview_pending` |
+| `window.content_search` | `SearchPanelEvidence` | `replace_preview_count` | `content_search.replace_preview_count` |
+| `window.content_search` | `SearchPanelEvidence` | `checked_replacement_count` | `content_search.checked_replacement_count` |
+| `window.content_search` | `SearchPanelEvidence` | `omitted_replacement_count` | `content_search.omitted_replacement_count` |
+| `window.content_search` | `SearchPanelEvidence` | `skipped_replacement_count` | `content_search.skipped_replacement_count` |
+| `window.content_search` | `SearchPanelEvidence` | `has_undo_backup` | `content_search.has_undo_backup` |
+| `window.content_search` | `SearchPanelEvidence` | `history_count` | `content_search.history_count` |
+| `window.content_search` | `SearchPanelEvidence` | `saved_search_count` | `content_search.saved_search_count` |
+| `window.content_search` | `SearchPanelEvidence` | `navigation_match_count` | `content_search.navigation_match_count` |
+| `window.content_search` | `SearchPanelEvidence` | `current_navigation_match_index` | `content_search.current_navigation_match_index` |
+| `window.command_palette` | `CommandPaletteEvidence` | `searching` | `command_palette.searching` |
+| `window.command_palette` | `CommandPaletteEvidence` | `query` | `command_palette.query` |
+| `window.command_palette` | `CommandPaletteEvidence` | `mode` | `command_palette.mode` |
+| `window.command_palette` | `CommandPaletteEvidence` | `result_count` | `command_palette.result_count` |
+| `window.command_palette` | `CommandPaletteEvidence` | `file_index_len` | `command_palette.file_index_count` |
+| `window.command_palette` | `CommandPaletteEvidence` | `open_tab_source_count` | `command_palette.open_tab_source_count` |
+| `window.command_palette` | `CommandPaletteEvidence` | `pending_index_update_count` | `command_palette.pending_index_update_count` |
 
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |

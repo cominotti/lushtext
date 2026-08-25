@@ -8,6 +8,7 @@ import argparse
 import ast
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +53,38 @@ REQUIRED_HELPER_TABLE_ROWS = (
 class CheckResult:
     label: str
     missing: list[str]
+
+
+@dataclass(frozen=True)
+class EvidenceProjection:
+    """One workflow evidence surface that an automation snapshot projects from.
+
+    `snapshot_object` is the documented `window.<object>` name, `evidence_type`
+    is the Rust surface type, `evidence_source` is the file declaring it, and
+    `snapshot_fn` is the projection function in `ui/automation.rs` whose
+    `evidence.<field>` reads define which fields are actually projected.
+    """
+
+    snapshot_object: str
+    evidence_type: str
+    evidence_source: Path
+    snapshot_fn: str
+
+
+EVIDENCE_PROJECTIONS = (
+    EvidenceProjection(
+        "window.content_search",
+        "SearchPanelEvidence",
+        REPO_ROOT / "crates/lushtext-core/src/ui/search_panel/evidence.rs",
+        "content_search_snapshot",
+    ),
+    EvidenceProjection(
+        "window.command_palette",
+        "CommandPaletteEvidence",
+        REPO_ROOT / "crates/lushtext-core/src/ui/command_palette/evidence.rs",
+        "command_palette_snapshot",
+    ),
+)
 
 
 def camel_to_kebab(value: str) -> str:
@@ -406,6 +439,164 @@ def missing_anchors(reference_text: str, anchors: list[str]) -> list[str]:
     return sorted(anchor for anchor in anchors if f'id="{anchor}"' not in reference_text)
 
 
+def evidence_struct_fields(source: str, evidence_type: str) -> list[str]:
+    """Public field names declared by one evidence surface struct."""
+    match = re.search(
+        rf"pub struct {evidence_type} \{{(.*?)\n\}}",
+        source,
+        flags=re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"{evidence_type} struct was not found")
+    return re.findall(r"^\s+pub ([a-z0-9_]+):", match.group(1), flags=re.MULTILINE)
+
+
+def projection_fn_body(automation_source: str, snapshot_fn: str) -> str:
+    """Source text of one snapshot projection function."""
+    match = re.search(
+        rf"\nfn {snapshot_fn}\(.*?\n\}}",
+        automation_source,
+        flags=re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"{snapshot_fn} projection function was not found")
+    return match.group(0)
+
+
+def projected_evidence_fields(automation_source: str, snapshot_fn: str) -> list[str]:
+    """Evidence fields one snapshot projection function actually reads.
+
+    This is the authority for "is this field projected". A field the projection
+    never reads is internal to the workflow — a high-water mark, a queued-byte
+    counter, a declared cap, a test-gated probe — and must not be documented as
+    part of the exported contract.
+    """
+    body = projection_fn_body(automation_source, snapshot_fn)
+    fields = re.findall(r"\bevidence\.([a-z0-9_]+)", body)
+    # Preserve first-read order without duplicates so failures read predictably.
+    return list(dict.fromkeys(fields))
+
+
+def projected_snapshot_keys(automation_source: str, snapshot_fn: str) -> set[str]:
+    """Snapshot struct-init keys one projection function actually writes.
+
+    This is the authority for the map's *snapshot* column. Without it a snapshot
+    field could be renamed in Rust and the Evidence Projection Map would keep
+    naming the old key: the pre-existing anchor check would catch the renamed
+    documentation anchor, but the map itself could silently rot, and the map is
+    what the evidence half of this check is compared against.
+    """
+    body = projection_fn_body(automation_source, snapshot_fn)
+    literal = re.search(r"Automation[A-Za-z0-9]*Snapshot \{", body)
+    if not literal:
+        raise ValueError(f"{snapshot_fn} has no snapshot struct literal")
+    return set(
+        re.findall(r"^\s+([a-z0-9_]+):", body[literal.end() :], flags=re.MULTILINE)
+    )
+
+
+def documented_projection_map(reference_text: str) -> dict[tuple[str, str], str]:
+    """Read the reference doc's Evidence Projection Map table.
+
+    Returns `{(snapshot_object, evidence_field): snapshot_field}`.
+    """
+    documented: dict[tuple[str, str], str] = {}
+    row = re.compile(
+        r"^\|\s*`(window\.[a-z_]+)`\s*\|\s*`([A-Za-z0-9]+)`\s*\|"
+        r"\s*`([a-z0-9_]+)`\s*\|\s*`([a-z0-9_.]+)`\s*\|\s*$"
+    )
+    for line in reference_text.splitlines():
+        match = row.match(line)
+        if match:
+            snapshot_object, _evidence_type, evidence_field, snapshot_field = match.groups()
+            documented[(snapshot_object, evidence_field)] = snapshot_field
+    return documented
+
+
+def evidence_projection_findings(
+    reference_text: str,
+    automation_source: str,
+    projections: tuple[EvidenceProjection, ...] = EVIDENCE_PROJECTIONS,
+) -> list[str]:
+    """Fail when a projected evidence field drifts from the documented mapping.
+
+    Required by `openspec/specs/workflow-evidence-surfaces/spec.md`'s "Projection
+    drift is detected" scenario. Every finding names both the evidence field and
+    the snapshot field so a reader does not have to look up which side moved.
+    """
+    findings: list[str] = []
+    documented = documented_projection_map(reference_text)
+    for projection in projections:
+        source_label = (
+            projection.evidence_source.relative_to(REPO_ROOT)
+            if projection.evidence_source.is_relative_to(REPO_ROOT)
+            else projection.evidence_source
+        )
+        evidence_source = projection.evidence_source.read_text(encoding="utf-8")
+        declared = set(evidence_struct_fields(evidence_source, projection.evidence_type))
+        projected = projected_evidence_fields(automation_source, projection.snapshot_fn)
+        snapshot_keys = projected_snapshot_keys(automation_source, projection.snapshot_fn)
+        snapshot_prefix = projection.snapshot_object.removeprefix("window.")
+        documented_for_object = {
+            field: snapshot_field
+            for (snapshot_object, field), snapshot_field in documented.items()
+            if snapshot_object == projection.snapshot_object
+        }
+
+        for field in projected:
+            if field not in declared:
+                # The projection reads a field the surface does not declare:
+                # either the surface renamed it or the projection is stale.
+                findings.append(
+                    f"{projection.snapshot_object}: projection function "
+                    f"`{projection.snapshot_fn}` reads evidence field "
+                    f"`{projection.evidence_type}.{field}`, which "
+                    f"`{source_label}` does not declare"
+                )
+            if field not in documented_for_object:
+                findings.append(
+                    f"{projection.snapshot_object}: evidence field "
+                    f"`{projection.evidence_type}.{field}` is projected but the "
+                    "Evidence Projection Map in docs/automation-reference.md "
+                    "documents no snapshot field for it"
+                )
+
+        for field, snapshot_field in sorted(documented_for_object.items()):
+            # The snapshot half of the map must also stay live: a snapshot field
+            # renamed in Rust would otherwise leave this row naming a key the
+            # projection no longer writes.
+            expected_prefix = f"{snapshot_prefix}."
+            if not snapshot_field.startswith(expected_prefix):
+                findings.append(
+                    f"{projection.snapshot_object}: Evidence Projection Map row for "
+                    f"evidence field `{projection.evidence_type}.{field}` names "
+                    f"snapshot field `{snapshot_field}`, which is not under "
+                    f"`{expected_prefix}`"
+                )
+            elif snapshot_field.removeprefix(expected_prefix) not in snapshot_keys:
+                findings.append(
+                    f"{projection.snapshot_object}: Evidence Projection Map documents "
+                    f"evidence field `{projection.evidence_type}.{field}` -> snapshot "
+                    f"field `{snapshot_field}`, but `{projection.snapshot_fn}` writes "
+                    "no such snapshot field"
+                )
+            if field not in declared:
+                findings.append(
+                    f"{projection.snapshot_object}: Evidence Projection Map documents "
+                    f"evidence field `{projection.evidence_type}.{field}` -> snapshot "
+                    f"field `{snapshot_field}`, but that evidence field no longer "
+                    "exists"
+                )
+            elif field not in projected:
+                findings.append(
+                    f"{projection.snapshot_object}: Evidence Projection Map documents "
+                    f"evidence field `{projection.evidence_type}.{field}` -> snapshot "
+                    f"field `{snapshot_field}`, but `{projection.snapshot_fn}` does not "
+                    "project it"
+                )
+    return sorted(set(findings))
+
+
 def run_checks(
     *,
     guide_text: str | None = None,
@@ -481,6 +672,10 @@ def run_checks(
         CheckResult(
             "automation client artifact field anchors",
             missing_anchors(reference, client_artifact_field_anchors(client_source)),
+        ),
+        CheckResult(
+            "evidence projection map",
+            evidence_projection_findings(reference, automation_source),
         ),
     ]
 
@@ -624,6 +819,198 @@ def run_self_tests() -> None:
     failures = {result.label: result.missing for result in run_checks(reference_text=reference)}
     if not failures.get("helper table rows"):
         raise AssertionError("self-test did not detect missing helper table row")
+
+    run_evidence_projection_self_tests()
+
+
+def run_evidence_projection_self_tests() -> None:
+    """Prove the evidence-to-snapshot drift check can fail, and how.
+
+    Each case mutates one artifact in memory and asserts both that the check
+    fails and that the failure names the field a reader needs. The in-agreement
+    case is covered by the ordinary `run_checks()` pass in `main`.
+    """
+    reference = REFERENCE_DOC.read_text(encoding="utf-8")
+    automation_source = AUTOMATION_UI.read_text(encoding="utf-8")
+    palette_source_path = REPO_ROOT / "crates/lushtext-core/src/ui/command_palette/evidence.rs"
+    palette_source = palette_source_path.read_text(encoding="utf-8")
+
+    def findings_with(
+        *,
+        reference_text: str = reference,
+        automation_text: str = automation_source,
+        palette_text: str = palette_source,
+    ) -> list[str]:
+        # A temporary projection descriptor whose evidence source is the mutated
+        # text, written to a scratch file only for the duration of the case.
+        with tempfile.TemporaryDirectory() as scratch:
+            mutated = Path(scratch) / "evidence.rs"
+            mutated.write_text(palette_text, encoding="utf-8")
+            projection = EvidenceProjection(
+                "window.command_palette",
+                "CommandPaletteEvidence",
+                mutated,
+                "command_palette_snapshot",
+            )
+            try:
+                return evidence_projection_findings(
+                    reference_text, automation_text, (projection,)
+                )
+            except ValueError as error:
+                return [str(error)]
+
+    def require(case: str, findings: list[str], *terms: str) -> None:
+        if not findings:
+            raise AssertionError(
+                f"evidence projection self-test case {case!r} did not fail"
+            )
+        blob = "\n".join(findings)
+        for term in terms:
+            if term not in blob:
+                raise AssertionError(
+                    f"evidence projection self-test case {case!r} did not name {term!r};"
+                    f" got:\n{blob}"
+                )
+
+    # Baseline: the real tree must agree, or the cases below prove nothing.
+    baseline = findings_with()
+    if baseline:
+        raise AssertionError(
+            "evidence projection self-test baseline is not in agreement: "
+            f"{baseline}"
+        )
+
+    # Case 1: an evidence field renamed without a doc update. The failure must
+    # name both the evidence field and the snapshot field.
+    require(
+        "renamed evidence field",
+        findings_with(
+            palette_text=palette_source.replace(
+                "pub open_tab_source_count: usize,",
+                "pub open_tab_count: usize,",
+                1,
+            )
+        ),
+        "open_tab_source_count",
+        "command_palette.open_tab_source_count",
+    )
+
+    # Case 2: an evidence field removed while still documented as projected.
+    require(
+        "removed evidence field",
+        findings_with(
+            palette_text=palette_source.replace(
+                "    pub result_count: u32,",
+                "",
+                1,
+            )
+        ),
+        "result_count",
+        "command_palette.result_count",
+    )
+
+    # Case 3: a newly projected field absent from the docs. Adding a read of an
+    # already-declared but undocumented internal field is the realistic shape of
+    # this mistake.
+    require(
+        "newly projected field missing from docs",
+        findings_with(
+            automation_text=automation_source.replace(
+                "        result_count: evidence.result_count,",
+                "        result_count: evidence.result_count + "
+                "u32::from(evidence.index_rebuild_pending),",
+                1,
+            )
+        ),
+        "index_rebuild_pending",
+        "documents no snapshot field",
+    )
+
+    # Case 4: a documented row whose evidence field is no longer projected.
+    require(
+        "documented row no longer projected",
+        findings_with(
+            reference_text=reference.replace(
+                "| `window.command_palette` | `CommandPaletteEvidence` | "
+                "`file_index_len` | `command_palette.file_index_count` |",
+                "| `window.command_palette` | `CommandPaletteEvidence` | "
+                "`queued_index_updates` | `command_palette.file_index_count` |",
+                1,
+            )
+        ),
+        "queued_index_updates",
+        "does not project it",
+    )
+
+    # Case 5: a stale snapshot column. The evidence field is still projected and
+    # still declared, but the map names a snapshot key the projection function
+    # does not write — the direction the pre-existing anchor check cannot see,
+    # because the anchor and the map are separate strings.
+    require(
+        "stale snapshot column in the map",
+        findings_with(
+            reference_text=reference.replace(
+                "| `window.command_palette` | `CommandPaletteEvidence` | "
+                "`result_count` | `command_palette.result_count` |",
+                "| `window.command_palette` | `CommandPaletteEvidence` | "
+                "`result_count` | `command_palette.rendered_row_count` |",
+                1,
+            )
+        ),
+        "command_palette.rendered_row_count",
+        "writes no such snapshot field",
+    )
+
+    # Case 6: a map row pointing at the wrong snapshot object entirely.
+    require(
+        "snapshot column under the wrong object",
+        findings_with(
+            reference_text=reference.replace(
+                "| `window.command_palette` | `CommandPaletteEvidence` | "
+                "`mode` | `command_palette.mode` |",
+                "| `window.command_palette` | `CommandPaletteEvidence` | "
+                "`mode` | `content_search.mode` |",
+                1,
+            )
+        ),
+        "content_search.mode",
+        "is not under `command_palette.`",
+    )
+
+    # Case 7: internal, non-projected evidence fields are ignored rather than
+    # demanding documentation. The palette surface declares queued byte counters,
+    # two declared caps, and a coordinator snapshot; none is documented, and the
+    # baseline above already passed, so this asserts the fields really exist
+    # rather than that the check happens to be blind.
+    internal = {
+        "queued_index_updates",
+        "queued_index_update_bytes",
+        "index_rebuild_pending",
+        "index_update_worker_running",
+        "max_queued_index_updates",
+        "max_queued_index_update_bytes",
+        "search_flight",
+        "file_index_reservation_weight",
+        "note_source_reservation_weight",
+    }
+    declared = set(evidence_struct_fields(palette_source, "CommandPaletteEvidence"))
+    absent = sorted(internal - declared)
+    if absent:
+        raise AssertionError(
+            "evidence projection self-test expected these internal fields to "
+            f"exist and be ignored, but they are not declared: {absent}"
+        )
+    documented = documented_projection_map(reference)
+    wrongly_documented = sorted(
+        field
+        for (snapshot_object, field) in documented
+        if snapshot_object == "window.command_palette" and field in internal
+    )
+    if wrongly_documented:
+        raise AssertionError(
+            "internal evidence fields must not appear in the Evidence Projection "
+            f"Map: {wrongly_documented}"
+        )
 
 
 def main() -> int:
