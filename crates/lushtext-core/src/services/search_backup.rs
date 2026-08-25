@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -303,7 +304,7 @@ fn remove_unlisted_journal_entries(journal_dir: &Path, retained: &HashSet<String
         if !is_journal_payload_file(&entry.path) {
             continue;
         }
-        let Some(file_name) = entry.path.file_name().and_then(|name| name.to_str()) else {
+        let Some(file_name) = entry.path.file_name().and_then(OsStr::to_str) else {
             continue;
         };
         if retained.contains(file_name) {
@@ -823,13 +824,13 @@ fn entry_count_exceeds_cap(count: usize) -> bool {
 /// The manifest and the cleanup marker live in the same directory and are not
 /// payloads, and anything that is not a `.json` file is not ours.
 fn is_journal_payload_file(path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
         return false;
     };
     if file_name == JOURNAL_MANIFEST_FILE || file_name == CLEANUP_MARKER_FILE {
         return false;
     }
-    path.extension().and_then(|ext| ext.to_str()) == Some("json")
+    path.extension().and_then(OsStr::to_str) == Some("json")
 }
 
 /// Whether the complete retained journal is above the in-memory retention cap.
@@ -1040,7 +1041,7 @@ fn detect_orphan_journal_entries(
         if !is_journal_payload_file(&entry.path) {
             continue;
         }
-        let Some(file_name) = entry.path.file_name().and_then(|name| name.to_str()) else {
+        let Some(file_name) = entry.path.file_name().and_then(OsStr::to_str) else {
             continue;
         };
         if active_entry_files.contains(file_name) {

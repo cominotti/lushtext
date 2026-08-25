@@ -180,3 +180,49 @@ tests (`activation_requires_no_diagnostics_and_manifest_agreement`,
 `dedup_accounts_for_an_entry_file_whose_target_path_was_rejected`,
 `cleanup_is_refused_when_any_diagnostic_disallows_replacement`, plus the two
 recovery-state tests) are what keep them caught.
+
+## Addendum, 2026-08-25: post-ship lint fix shifts line anchors by one
+
+After this change shipped, SonarQube's quality gate flagged two `rust:S1612`
+findings ("replace this closure with a reference to the `to_str` method") in
+`services/search_backup.rs`. They were fixed by replacing
+`.and_then(|name| name.to_str())` with `.and_then(OsStr::to_str)`; two further
+identical instances in the same file, which Sonar did not flag, were fixed in the
+same pass for consistency. Clippy's `redundant_closure_for_method_calls` does not
+fire on these because the closure parameter needs an auto-ref adjustment, which is
+why the workspace lint gate was already green and Sonar caught them instead.
+
+**The mutant population for `services/search_backup.rs` is unchanged.** Verified
+rather than assumed, by listing the whole-file scoped population on both sides of
+the fix:
+
+```
+MUTANTS_RE='crates/lushtext-core/src/services/search_backup\.rs' \
+  ./scripts/run-mutants.sh list
+```
+
+| | Generated for `search_backup.rs` |
+| --- | --- |
+| before the lint fix | 83 |
+| after the lint fix | 83 |
+
+Diffing the two lists with file/line/column stripped shows **no difference**: the
+same 83 mutated operations on the same functions. A closure-to-method-reference
+swap changes no branch, so this is the expected result, but the check was run
+because the file is mutation-anchored by this document.
+
+**One thing did change: line anchors below the import shifted by +1.** The fix
+added `use std::ffi::OsStr;`, so every anchor in this document that names a line
+in `services/search_backup.rs` is one lower than the current file. Concretely, the
+survivor recorded above as
+
+```
+services/search_backup.rs:270:12: delete ! in shrink_journal_to
+```
+
+is now at `:271:12`. The mutant, the function, and its disposition are unchanged —
+only the line number moved. The narrative above is left as written, because it
+records the state at the time of the run; read it with the +1 offset.
+
+The scoped sweep was **not** re-run, because the requirement in the covering
+instruction was to re-run it only if the generated count shifted, and it did not.
