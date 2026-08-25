@@ -356,3 +356,10 @@ rationale = "GTK object and subclass types rarely benefit from automatic Debug d
 code = "unsafe_code"
 classification = "accepted_advisory"
 rationale = "Unsafe inventory stays visible while existing `undocumented_unsafe_blocks` enforces local safety explanations."
+
+[[rules]]
+code = "clippy::option_option"
+classification = "accepted_advisory"
+path_globs = ["crates/lushtext-core/src/model/workspace_search.rs"]
+max_count = 1
+rationale = "`WorkspaceSearchRootIndex::canonical_candidate` returns `Option<Option<PathBuf>>` because the two layers report different facts: the outer `None` means the walked path is not under that traversal root, and the inner `None` means the traversal root itself has no canonical identity. Both callers consume them differently — `?` on the outer, a `match` arm on the inner — so flattening would make a non-member path indistinguishable from a member whose root has no canonical form, which is exactly the confusion that produced duplicate search results. The nesting is documented at the definition and this classification is scoped to that one file so a new occurrence elsewhere still fails the lane."
