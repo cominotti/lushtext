@@ -1036,8 +1036,8 @@ coordination module, owns no pure policy, or relocated no policy module.
 - coordination: `ui/search_panel/execution.rs`, `ui/search_panel/retirement.rs`, `ui/search_panel/replace_execution.rs`, `ui/search_panel/journal.rs`
 - policy: `ui/search_panel/policy.rs`
 - evidence: `ui/search_panel/evidence.rs`
-- mutation parity: `openspec/changes/normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md` (slot 1), `openspec/changes/complete-search-replace-workflow-readability/evidence/mutation-parity-replace-policy.md` (slot 2b)
-- slot 2b's other evidence, all under `openspec/changes/complete-search-replace-workflow-readability/evidence/`: `test-counts.md` (before/after counts and their counting method), `widget-test-search-backup-site-migration.md` (the per-site categorization of the 35 around-the-widget service reaches), `live-run.md` plus `live-run-stderr.log` (the live-session Replace All and undo, including why `make run` itself was unsafe here)
+- mutation parity: `openspec/changes/archive/2026-08-25-normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md` (slot 1), `openspec/changes/archive/2026-08-25-complete-search-replace-workflow-readability/evidence/mutation-parity-replace-policy.md` (slot 2b)
+- slot 2b's other evidence, all under `openspec/changes/archive/2026-08-25-complete-search-replace-workflow-readability/evidence/`: `test-counts.md` (before/after counts and their counting method), `widget-test-search-backup-site-migration.md` (the per-site categorization of the 35 around-the-widget service reaches), `live-run.md` plus `live-run-stderr.log` (the live-session Replace All and undo, including why `make run` itself was unsafe here)
 
 Notes on this row, which is the exemplar and therefore the reference for the
 migrations that follow. Slot 1 migrated its search and preview half; slot 2b

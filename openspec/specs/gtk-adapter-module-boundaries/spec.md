@@ -152,12 +152,23 @@ crates, generic repository or controller traits, or manager objects solely to mo
 code, and services and models MUST remain GTK-free.
 
 The coordination role SHALL be named from a bounded set of role names that state the
-job the module performs, such as admission, execution, retirement, or watch. The
-convention MUST NOT fix one single coordination file name, because a workflow may
-own more than one coordination job and a directory may host more than one workflow.
-A coordination job that no existing role name describes MUST be added to the bounded
-set by amending this specification, rather than reusing an ill-fitting name or
-inventing an unlisted one.
+job the module performs: `admission`, `execution`, `retirement`, `watch`, and
+`journal`. The convention MUST NOT fix one single coordination file name, because a
+workflow may own more than one coordination job and a directory may host more than
+one workflow. A coordination job that no existing role name describes MUST be added
+to the bounded set by amending this specification, rather than reusing an ill-fitting
+name or inventing an unlisted one.
+
+`journal` names the coordination job of maintaining a durable, generation-guarded
+record that a later stage of the same workflow reads back: admitting the mutations
+that may touch it, installing and clearing it under a freshness guard, writing and
+deleting it on a worker, recovering it at startup with stale-record cleanup, and
+handing it back to the stage that consumes it. Admission is part of this role
+rather than a separate one: the mutual-exclusion gate that serializes the
+workflow's writes to the record, and any resource reservation those writes take,
+exist only to protect that record and SHALL live with it. It is distinct from
+`retirement`, which destroys a payload the workflow is finished with, and from
+`execution`, which performs the workflow's primary work.
 
 Where **one** workflow owns more than one ordered stage order in a single directory,
 and more than one of those stage orders needs a coordination module of the same
@@ -200,6 +211,23 @@ module surface.
   order it serves
 - **AND** it does not take a different bounded name that describes its job less
   accurately
+
+#### Scenario: Durable generation-guarded record is a journal role
+
+- **WHEN** a workflow's coordination module installs, persists, recovers, and hands
+  back a durable record under a freshness guard so a later stage can restore from it
+- **THEN** that module takes the `journal` role name
+- **AND** it is not named `retirement`, which destroys payloads rather than
+  preserving them for restoration
+
+#### Scenario: The gate protecting a journal belongs to the journal
+
+- **WHEN** a workflow serializes the mutations of its durable record behind a
+  mutual-exclusion gate, or reserves a resource budget for them
+- **THEN** that gate and reservation live in the same `journal` module as the record
+  they protect
+- **AND** they are not split into a separate `admission` module, because a job whose
+  only purpose is protecting one durable record does not justify its own role
 
 #### Scenario: Role naming is reviewed rather than gated
 
