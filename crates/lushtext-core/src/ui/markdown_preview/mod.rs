@@ -19,20 +19,22 @@
 
 // Private GObject implementation for the template-backed preview surface.
 mod code_blocks;
+mod continuation;
 mod images;
 mod imp;
 mod inline_footnotes;
 mod links;
 mod tables;
+mod text_flow;
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 #[cfg(any(test, feature = "fuzzing"))]
 use pulldown_cmark::Parser;
-use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
+#[cfg(test)]
+use pulldown_cmark::{Event, Tag, TagEnd};
 use sourceview5::prelude::*;
-use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,22 +55,12 @@ use crate::ui::buffer_snapshot::{BufferSnapshotHandle, BufferSnapshotPayload};
 use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
 use gtk_lush_tasks::spawn_blocking_then;
 
-use code_blocks::{ActiveCodeBlock, CodeBlockTheme};
-use images::{ActiveImageWork, BufferedImage, PendingImageWork};
-use imp::{
-    ALERT_BODY_LEFT_MARGIN, ALERT_BODY_RIGHT_MARGIN, DEFINITION_DEF_LEFT_MARGIN,
-    DEFINITION_DEF_RIGHT_MARGIN, FOOTNOTE_DEF_LEFT_MARGIN, FOOTNOTE_DEF_RIGHT_MARGIN,
-    TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_BOLD, TAG_CODE, TAG_DEFINITION_DEF, TAG_DEFINITION_TERM,
-    TAG_FOOTNOTE_DEF, TAG_FOOTNOTE_DEF_LABEL, TAG_FOOTNOTE_REF, TAG_HRULE, TAG_ITALIC, TAG_LINK,
-    TAG_LIST_ITEM, TAG_STRIKETHROUGH, TAG_TASK_MARKER, alert_title, alert_title_tag_name,
-    blockquote_left_margin, blockquote_rail_prefix, ensure_blockquote_depth_tag,
-    ensure_list_item_depth_tag, heading_tag_name, list_item_text_margin,
-};
+use code_blocks::CodeBlockTheme;
+use continuation::{ContinuationBreach, MarkdownProjectionContinuation};
+use images::{ActiveImageWork, PendingImageWork};
 use inline_footnotes::{
     InlineFootnoteLowering, lower_inline_footnotes, lower_inline_footnotes_cancellable,
 };
-use links::resolve_link_target;
-use tables::BufferedTableBuilder;
 
 fn inline_footnote_limited_plan(source_bytes: usize) -> MarkdownRenderPlan {
     MarkdownRenderPlan {
@@ -120,6 +112,16 @@ fn lower_inline_footnotes_for_generated_test(markdown: &str) -> Option<String> {
 #[cfg(feature = "property-tests")]
 #[must_use]
 pub fn lower_inline_footnotes_for_property_test(markdown: &str) -> Option<String> {
+    lower_inline_footnotes_for_generated_test(markdown)
+}
+
+/// Expose the preview's inline-footnote lowering result to fuzz harnesses.
+///
+/// The real preview plans the *lowered* text, not the raw source, so a fuzz
+/// harness that plans raw input would cover shapes the app never plans.
+#[cfg(feature = "fuzzing")]
+#[must_use]
+pub fn lowered_markdown_for_fuzzing(markdown: &str) -> Option<String> {
     lower_inline_footnotes_for_generated_test(markdown)
 }
 
@@ -507,9 +509,56 @@ impl Drop for PlainRetirementTerminal {
 const MARKDOWN_PLAN_RESERVATION_BYTES: u64 =
     (MAX_MARKDOWN_RETAINED_BYTES + MAX_MARKDOWN_SOURCE_BYTES) as u64;
 
+/// One generation's remaining batches plus the continuation they resume into.
+///
+/// The continuation travels with the projection so a generation change,
+/// cancellation, or widget teardown releases both together through the same
+/// guarded disposal path, and any in-flight embedded-block text it still owns is
+/// freed off the GTK thread.
 struct GuardedMarkdownProjection {
     batches: VecDeque<MarkdownEventBatch>,
     limit: Option<MarkdownPlanLimit>,
+    /// Omissions a reader can notice, which is what the terminal reports.
+    user_visible_omissions: usize,
+    continuation: MarkdownProjectionContinuation,
+}
+
+/// What one finished projection publishes as its terminal state.
+///
+/// Reading this once, when the last batch has been applied, keeps the terminal
+/// decision out of the per-turn loop and keeps the two independent facts — a
+/// global budget stopped planning, and the document contained omissions — from
+/// being collapsed into one flag.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MarkdownProjectionTerminal {
+    limit: Option<MarkdownPlanLimit>,
+    user_visible_omissions: usize,
+}
+
+impl GuardedMarkdownProjection {
+    /// Describe the terminal this projection's plan reached.
+    fn terminal(&self) -> MarkdownProjectionTerminal {
+        MarkdownProjectionTerminal {
+            limit: self.limit,
+            user_visible_omissions: self.user_visible_omissions,
+        }
+    }
+}
+
+/// User-facing completion copy for a preview that rendered with omissions.
+///
+/// The count is the plan's user-visible omission total, never the raw marker
+/// total: the carried-embed markers are charge carriers for a block the preview
+/// already replaces with its own in-place fallback, so counting them would
+/// report omissions for a document that renders exactly as it does today.
+fn simplified_render_description(user_visible_omissions: usize) -> String {
+    if user_visible_omissions == 1 {
+        "Markdown preview complete; 1 block was too complex to render".to_string()
+    } else {
+        format!(
+            "Markdown preview complete; {user_visible_omissions} blocks were too complex to render"
+        )
+    }
 }
 
 /// One detached render generation awaiting bounded main-loop cleanup.
@@ -776,485 +825,6 @@ impl LushtextMarkdownPreview {
             &*self.imp().text_view,
             "Markdown preview rendering is pending",
         );
-    }
-
-    /// Apply one complete-block event batch. State never crosses a batch
-    /// boundary, so the planner only emits boundaries at top-level depth zero.
-    fn render_event_batch(
-        &self,
-        batch: MarkdownEventBatch,
-        context: &MarkdownPreviewRenderContext,
-    ) {
-        let imp = self.imp();
-        let buffer = imp.text_view.buffer();
-        let mut iter = buffer.end_iter();
-        let code_block_theme =
-            CodeBlockTheme::from_settings(&gtk4::gio::Settings::new(crate::config::APP_ID));
-
-        // Tag stack: tracks which TextTag names are currently active.
-        // When we insert text, all tags in the stack are applied.
-        let mut tag_stack: Vec<String> = Vec::new();
-        // Generic blockquote depth is tracked separately from typed GFM alerts
-        // so alert callouts can keep their card-like rendering while ordinary
-        // nested quotes get depth-aware rail glyphs.
-        let mut generic_blockquote_depth = 0usize;
-
-        // Track list nesting and the active list items separately so paragraph
-        // row-flow inside lists cannot leak into top-level block spacing.
-        let mut list_stack: Vec<ListFrame> = Vec::new();
-        let mut list_item_stack: Vec<ListItemRenderState> = Vec::new();
-        // Definition entries have no markers, so they track paragraph flow
-        // separately from ordinary lists while sharing the same inline tag path.
-        let mut definition_stack: Vec<DefinitionRenderState> = Vec::new();
-        // List markers need one event of lookahead because task list state
-        // arrives after `Tag::Item`; delay insertion until real item content.
-        let mut pending_list_prefix: Option<String> = None;
-        // Keep track of launchable text-buffer links so click and hover
-        // controllers can resolve them after the render is complete.
-        let mut active_text_links: Vec<ActiveTextLink> = Vec::new();
-
-        // Track whether we need a paragraph separator before the next block.
-        let mut needs_block_separator = false;
-
-        // Tables and code blocks need one complete buffered pass before GTK can
-        // lay out their embedded widgets, so we accumulate them separately from
-        // text blocks.
-        let mut active_table: Option<BufferedTableBuilder> = None;
-        let mut active_code_block: Option<ActiveCodeBlock> = None;
-        // Images become anchored GTK widgets, so we buffer their alt text until
-        // pulldown-cmark closes the image span.
-        let mut active_image: Option<BufferedImage> = None;
-        // Footnote numbering stays local to the preview render so references and
-        // definitions can agree on a stable ordinal without a second parse pass.
-        let mut footnote_numbers: HashMap<String, usize> = HashMap::new();
-        let mut next_footnote_number = 1usize;
-
-        for event in batch.into_events() {
-            if let Some(table) = &mut active_table {
-                match event {
-                    Event::End(TagEnd::Table) => {
-                        let table = active_table.take().expect("active table should exist");
-                        let table = table.finish();
-                        self.insert_table_widget(&buffer, &mut iter, &table);
-                        buffer.insert(&mut iter, "\n");
-                        mark_current_definition_content(&mut definition_stack);
-                        needs_block_separator = true;
-                    }
-                    other => table.push_event(other),
-                }
-                continue;
-            }
-
-            if let Some(code_block) = &mut active_code_block {
-                match event {
-                    Event::End(TagEnd::CodeBlock) => {
-                        let active_code_block = active_code_block
-                            .take()
-                            .expect("active code block should exist");
-                        self.insert_code_block_widget(
-                            &buffer,
-                            &mut iter,
-                            &active_code_block.code_block,
-                            &code_block_theme,
-                            active_code_block.layout,
-                        );
-                        buffer.insert(&mut iter, "\n");
-                        mark_current_list_item_content(&mut list_item_stack);
-                        mark_current_definition_content(&mut definition_stack);
-                        needs_block_separator = true;
-                    }
-                    other => code_block.push_event(other),
-                }
-                continue;
-            }
-
-            if let Some(image) = &mut active_image {
-                match event {
-                    Event::End(TagEnd::Image) => {
-                        let image = active_image.take().expect("active image should exist");
-                        self.insert_image_widget(&buffer, &mut iter, &image, context);
-                        buffer.insert(&mut iter, "\n");
-                        mark_current_definition_content(&mut definition_stack);
-                        needs_block_separator = true;
-                    }
-                    other => image.push_event(other),
-                }
-                continue;
-            }
-
-            if pending_list_prefix.is_some() && should_flush_pending_list_prefix(&event) {
-                insert_blockquote_rail_if_needed(
-                    &buffer,
-                    &mut iter,
-                    &tag_stack,
-                    generic_blockquote_depth,
-                );
-                if flush_pending_list_prefix(
-                    &buffer,
-                    &mut iter,
-                    &tag_stack,
-                    &mut pending_list_prefix,
-                ) {
-                    mark_current_list_item_content(&mut list_item_stack);
-                }
-            }
-
-            match event {
-                Event::Start(Tag::Table(alignments)) => {
-                    if needs_block_separator {
-                        buffer.insert(&mut iter, "\n");
-                    }
-                    active_table = Some(BufferedTableBuilder::new(alignments, context.clone()));
-                    needs_block_separator = false;
-                }
-                Event::Start(tag) => match tag {
-                    Tag::Heading { level, .. } => {
-                        if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        let idx = heading_level_to_index(level);
-                        tag_stack.push(heading_tag_name(idx));
-                        needs_block_separator = false;
-                    }
-                    Tag::Paragraph => {
-                        if current_list_item_needs_paragraph_separator(&list_item_stack) {
-                            buffer.insert(&mut iter, "\n");
-                            clear_current_list_item_paragraph_end(&mut list_item_stack);
-                        } else if current_definition_needs_paragraph_separator(&definition_stack) {
-                            buffer.insert(&mut iter, "\n");
-                            clear_current_definition_paragraph_end(&mut definition_stack);
-                        } else if needs_block_separator
-                            && (list_item_stack.is_empty() || !definition_stack.is_empty())
-                        {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        needs_block_separator = false;
-                    }
-                    Tag::DefinitionList => {
-                        if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        needs_block_separator = false;
-                    }
-                    Tag::DefinitionListTitle => {
-                        if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        } else {
-                            ensure_rendered_line_break(&buffer, &mut iter);
-                        }
-                        tag_stack.push(TAG_DEFINITION_TERM.to_string());
-                        needs_block_separator = false;
-                    }
-                    Tag::DefinitionListDefinition => {
-                        if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        } else {
-                            ensure_rendered_line_break(&buffer, &mut iter);
-                        }
-                        tag_stack.push(TAG_DEFINITION_DEF.to_string());
-                        definition_stack.push(DefinitionRenderState::default());
-                        needs_block_separator = false;
-                    }
-                    Tag::BlockQuote(kind) => {
-                        if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        if let Some(kind) = kind {
-                            let mut title_tags: Vec<&str> =
-                                tag_stack.iter().map(std::string::String::as_str).collect();
-                            title_tags.push(TAG_ALERT_BODY);
-                            title_tags.push(alert_title_tag_name(kind));
-                            insert_with_tags(
-                                &buffer,
-                                &mut iter,
-                                &format!("{}\n", alert_title(kind)),
-                                &title_tags,
-                            );
-                            tag_stack.push(TAG_ALERT_BODY.to_string());
-                        } else {
-                            generic_blockquote_depth += 1;
-                            tag_stack.push(TAG_BLOCKQUOTE.to_string());
-                            let depth_tag =
-                                ensure_blockquote_depth_tag(&buffer, generic_blockquote_depth);
-                            tag_stack.push(depth_tag);
-                        }
-                        needs_block_separator = false;
-                    }
-                    Tag::CodeBlock(kind) => {
-                        if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        let layout = embedded_block_layout(
-                            &tag_stack,
-                            &list_stack,
-                            &list_item_stack,
-                            generic_blockquote_depth,
-                            &definition_stack,
-                        );
-                        active_code_block = Some(ActiveCodeBlock::new(kind, layout));
-                        needs_block_separator = false;
-                    }
-                    Tag::List(start_num) => {
-                        if !list_item_stack.is_empty() {
-                            if flush_pending_list_prefix(
-                                &buffer,
-                                &mut iter,
-                                &tag_stack,
-                                &mut pending_list_prefix,
-                            ) {
-                                mark_current_list_item_content(&mut list_item_stack);
-                            }
-                            ensure_rendered_line_break(&buffer, &mut iter);
-                            clear_current_list_item_paragraph_end(&mut list_item_stack);
-                        } else if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        list_stack.push(ListFrame::new(start_num));
-                        needs_block_separator = false;
-                    }
-                    Tag::Item => {
-                        pending_list_prefix = Some(match list_stack.last() {
-                            Some(frame) => frame.prefix(),
-                            None => ListMarker::Unordered.prefix(),
-                        });
-                        let depth_tag =
-                            ensure_list_item_depth_tag(&buffer, list_stack.len().max(1));
-                        tag_stack.push(TAG_LIST_ITEM.to_string());
-                        tag_stack.push(depth_tag);
-                        list_item_stack.push(ListItemRenderState::default());
-                    }
-                    Tag::FootnoteDefinition(label) => {
-                        if needs_block_separator {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        tag_stack.push(TAG_FOOTNOTE_DEF.to_string());
-                        let number = footnote_number(
-                            &mut footnote_numbers,
-                            &mut next_footnote_number,
-                            label.as_ref(),
-                        );
-                        let mut tags: Vec<&str> =
-                            tag_stack.iter().map(std::string::String::as_str).collect();
-                        tags.push(TAG_FOOTNOTE_DEF_LABEL);
-                        insert_with_tags(&buffer, &mut iter, &format!("[{number}] "), &tags);
-                        needs_block_separator = false;
-                    }
-                    Tag::Emphasis => tag_stack.push(TAG_ITALIC.to_string()),
-                    Tag::Strong => tag_stack.push(TAG_BOLD.to_string()),
-                    Tag::Strikethrough => tag_stack.push(TAG_STRIKETHROUGH.to_string()),
-                    Tag::Link { dest_url, .. } => {
-                        insert_blockquote_rail_if_needed(
-                            &buffer,
-                            &mut iter,
-                            &tag_stack,
-                            generic_blockquote_depth,
-                        );
-                        let target = resolve_link_target(dest_url.as_ref(), context);
-                        let pushed_tag = target.is_some();
-                        if pushed_tag {
-                            tag_stack.push(TAG_LINK.to_string());
-                        }
-                        active_text_links.push(ActiveTextLink {
-                            start_offset: iter.offset(),
-                            target,
-                            pushed_tag,
-                        });
-                    }
-                    Tag::Image { dest_url, .. } => {
-                        if needs_block_separator || (!iter.starts_line() && iter.offset() > 0) {
-                            buffer.insert(&mut iter, "\n");
-                        }
-                        active_image = Some(BufferedImage::new(dest_url.as_ref()));
-                        needs_block_separator = false;
-                    }
-                    // Skip elements we don't render natively (HTML, math, metadata, etc.).
-                    _ => {}
-                },
-                Event::End(tag_end) => match tag_end {
-                    TagEnd::Heading(_) => {
-                        pop_tag(&mut tag_stack);
-                        buffer.insert(&mut iter, "\n");
-                        needs_block_separator = true;
-                    }
-                    TagEnd::Paragraph => {
-                        if list_item_stack.is_empty() {
-                            ensure_rendered_line_break(&buffer, &mut iter);
-                            if definition_stack.is_empty() {
-                                needs_block_separator = true;
-                            } else {
-                                mark_current_definition_paragraph_end(&mut definition_stack);
-                                needs_block_separator = false;
-                            }
-                        } else {
-                            ensure_rendered_line_break(&buffer, &mut iter);
-                            mark_current_list_item_paragraph_end(&mut list_item_stack);
-                            needs_block_separator = false;
-                        }
-                    }
-                    TagEnd::BlockQuote(kind) => {
-                        if kind.is_some() {
-                            pop_tag(&mut tag_stack);
-                        } else {
-                            pop_tag(&mut tag_stack);
-                            pop_tag(&mut tag_stack);
-                            generic_blockquote_depth = generic_blockquote_depth.saturating_sub(1);
-                        }
-                        needs_block_separator = true;
-                    }
-                    TagEnd::FootnoteDefinition => {
-                        pop_tag(&mut tag_stack);
-                        needs_block_separator = true;
-                    }
-                    TagEnd::DefinitionList => {
-                        ensure_rendered_line_break(&buffer, &mut iter);
-                        needs_block_separator = true;
-                    }
-                    TagEnd::DefinitionListTitle => {
-                        pop_tag(&mut tag_stack);
-                        ensure_rendered_line_break(&buffer, &mut iter);
-                        needs_block_separator = false;
-                    }
-                    TagEnd::DefinitionListDefinition => {
-                        pop_tag(&mut tag_stack);
-                        ensure_rendered_line_break(&buffer, &mut iter);
-                        definition_stack.pop();
-                        needs_block_separator = false;
-                    }
-                    TagEnd::List(_) => {
-                        list_stack.pop();
-                        if list_stack.is_empty() {
-                            needs_block_separator = true;
-                        } else {
-                            mark_current_list_item_content(&mut list_item_stack);
-                            needs_block_separator = false;
-                        }
-                    }
-                    TagEnd::Item => {
-                        if flush_pending_list_prefix(
-                            &buffer,
-                            &mut iter,
-                            &tag_stack,
-                            &mut pending_list_prefix,
-                        ) {
-                            mark_current_list_item_content(&mut list_item_stack);
-                        }
-                        pop_tag(&mut tag_stack);
-                        pop_tag(&mut tag_stack);
-                        ensure_rendered_line_break(&buffer, &mut iter);
-                        list_item_stack.pop();
-                        if let Some(frame) = list_stack.last_mut() {
-                            frame.advance();
-                        }
-                    }
-                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
-                        pop_tag(&mut tag_stack);
-                    }
-                    TagEnd::Link => {
-                        if let Some(link) = active_text_links.pop() {
-                            if link.pushed_tag {
-                                pop_tag(&mut tag_stack);
-                            }
-                            if let Some(target) = link.target
-                                && link.start_offset < iter.offset()
-                            {
-                                imp.text_link_targets.borrow_mut().push(RenderedTextLink {
-                                    start_offset: link.start_offset,
-                                    end_offset: iter.offset(),
-                                    target,
-                                });
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-                Event::Text(text) => {
-                    insert_blockquote_rail_if_needed(
-                        &buffer,
-                        &mut iter,
-                        &tag_stack,
-                        generic_blockquote_depth,
-                    );
-                    let tags: Vec<&str> =
-                        tag_stack.iter().map(std::string::String::as_str).collect();
-                    insert_with_tags(&buffer, &mut iter, &text, &tags);
-                    mark_current_list_item_content(&mut list_item_stack);
-                    mark_current_definition_content(&mut definition_stack);
-                }
-                Event::Code(code) => {
-                    insert_blockquote_rail_if_needed(
-                        &buffer,
-                        &mut iter,
-                        &tag_stack,
-                        generic_blockquote_depth,
-                    );
-                    let mut tags: Vec<&str> =
-                        tag_stack.iter().map(std::string::String::as_str).collect();
-                    tags.push(TAG_CODE);
-                    insert_with_tags(&buffer, &mut iter, &code, &tags);
-                    mark_current_list_item_content(&mut list_item_stack);
-                    mark_current_definition_content(&mut definition_stack);
-                }
-                Event::FootnoteReference(label) => {
-                    insert_blockquote_rail_if_needed(
-                        &buffer,
-                        &mut iter,
-                        &tag_stack,
-                        generic_blockquote_depth,
-                    );
-                    let number = footnote_number(
-                        &mut footnote_numbers,
-                        &mut next_footnote_number,
-                        label.as_ref(),
-                    );
-                    let mut tags: Vec<&str> =
-                        tag_stack.iter().map(std::string::String::as_str).collect();
-                    tags.push(TAG_FOOTNOTE_REF);
-                    insert_with_tags(&buffer, &mut iter, &format!("[{number}]"), &tags);
-                    mark_current_list_item_content(&mut list_item_stack);
-                    mark_current_definition_content(&mut definition_stack);
-                }
-                Event::TaskListMarker(checked) => {
-                    insert_blockquote_rail_if_needed(
-                        &buffer,
-                        &mut iter,
-                        &tag_stack,
-                        generic_blockquote_depth,
-                    );
-                    insert_task_list_marker(
-                        &buffer,
-                        &mut iter,
-                        &tag_stack,
-                        &mut pending_list_prefix,
-                        checked,
-                    );
-                    mark_current_list_item_content(&mut list_item_stack);
-                    mark_current_definition_content(&mut definition_stack);
-                }
-                Event::SoftBreak => {
-                    buffer.insert(&mut iter, " ");
-                }
-                Event::HardBreak => {
-                    buffer.insert(&mut iter, "\n");
-                    mark_current_list_item_content(&mut list_item_stack);
-                    mark_current_definition_content(&mut definition_stack);
-                }
-                Event::Rule => {
-                    if needs_block_separator {
-                        buffer.insert(&mut iter, "\n");
-                    }
-                    insert_with_tags(
-                        &buffer,
-                        &mut iter,
-                        "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-                        &[TAG_HRULE],
-                    );
-                    buffer.insert(&mut iter, "\n");
-                    needs_block_separator = true;
-                }
-                // Skip HTML, math, images, and metadata — out of scope for native rendering.
-                _ => {}
-            }
-        }
     }
 
     /// Invalidate older work and open one new generation-owned render session.
@@ -1581,30 +1151,50 @@ impl LushtextMarkdownPreview {
             .borrow_mut()
             .transition(generation, MarkdownRenderState::Projecting);
 
+        let user_visible_omissions = plan.user_visible_omissions();
+        // One palette per generation instead of one per projection turn. It stays
+        // outside the guarded projection payload because a GtkSourceView style
+        // scheme is not `Send` and that payload is retired off the GTK thread.
+        let code_block_theme =
+            CodeBlockTheme::from_settings(&gtk4::gio::Settings::new(crate::config::APP_ID));
         let mut projection =
             Some(
                 plan.map_preserving_reservation(|plan| GuardedMarkdownProjection {
                     batches: VecDeque::from(plan.batches),
                     limit: plan.limit,
+                    user_visible_omissions,
+                    continuation: MarkdownProjectionContinuation::new(),
                 }),
             );
         // Preserve immediate small-document rendering while the planner's
         // event-and-byte ceilings bound this initial GTK turn exactly like
         // every deferred projection slice.
-        if let Some(batch) = projection
-            .as_mut()
-            .and_then(|projection| projection.batches.pop_front())
-        {
-            self.apply_render_batch(generation, &batch);
-            self.render_event_batch(batch, &context);
+        if let Some(breach) = self.project_next_batch(
+            generation,
+            projection.as_deref_mut(),
+            &context,
+            &code_block_theme,
+        ) {
+            // A refused batch leaves the continuation holding an in-flight embed
+            // buffer, so this takes the same accounted retirement path the
+            // deferred slice uses: dropping it here would skip the pending
+            // counter `render_pending()` consults and let readiness report
+            // settled while a document-sized payload is still queued.
+            if let Some(retired) = projection.take() {
+                self.retire_guarded_markdown(retired);
+            }
+            self.finish_render_breach(generation, breach);
+            return;
         }
         if projection
             .as_ref()
             .is_none_or(|projection| projection.batches.is_empty())
         {
-            let limit = projection.as_ref().and_then(|projection| projection.limit);
+            let terminal = projection
+                .as_deref()
+                .map(GuardedMarkdownProjection::terminal);
             drop(projection.take());
-            self.finish_render_plan(generation, limit);
+            self.finish_render_plan(generation, terminal.unwrap_or_default());
             return;
         }
         accessibility::set_description(
@@ -1624,25 +1214,54 @@ impl LushtextMarkdownPreview {
                 }
                 return glib::ControlFlow::Break;
             }
-            if let Some(batch) = projection
-                .as_mut()
-                .and_then(|projection| projection.batches.pop_front())
-            {
-                preview.apply_render_batch(generation, &batch);
-                preview.render_event_batch(batch, &context);
+            if let Some(breach) = preview.project_next_batch(
+                generation,
+                projection.as_deref_mut(),
+                &context,
+                &code_block_theme,
+            ) {
+                if let Some(retired) = projection.take() {
+                    preview.retire_guarded_markdown(retired);
+                }
+                preview.finish_render_breach(generation, breach);
+                return glib::ControlFlow::Break;
             }
             if projection
                 .as_ref()
                 .is_none_or(|projection| projection.batches.is_empty())
             {
-                let limit = projection.as_ref().and_then(|projection| projection.limit);
+                let terminal = projection
+                    .as_deref()
+                    .map(GuardedMarkdownProjection::terminal);
                 drop(projection.take());
-                preview.finish_render_plan(generation, limit);
+                preview.finish_render_plan(generation, terminal.unwrap_or_default());
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
             }
         });
+    }
+
+    /// Apply at most one batch into the generation-owned continuation.
+    ///
+    /// Returns the breach that made the batch unusable, if any: the continuation
+    /// validates each batch's expected structure before applying it, so a
+    /// mis-chained carry becomes an explicit terminal instead of corrupted
+    /// rendered content.
+    fn project_next_batch(
+        &self,
+        generation: u64,
+        projection: Option<&mut GuardedMarkdownProjection>,
+        context: &MarkdownPreviewRenderContext,
+        code_block_theme: &CodeBlockTheme,
+    ) -> Option<ContinuationBreach> {
+        let projection = projection?;
+        let batch = projection.batches.pop_front()?;
+        self.apply_render_batch(generation, &batch);
+        projection
+            .continuation
+            .apply_batch(self, batch, context, code_block_theme)
+            .err()
     }
 
     /// Record direct slice evidence before applying a current batch.
@@ -1660,30 +1279,66 @@ impl LushtextMarkdownPreview {
         }
     }
 
-    /// Publish the complete or explicit limited terminal for the current generation.
-    fn finish_render_plan(&self, generation: u64, limit: Option<MarkdownPlanLimit>) {
+    /// Publish the terminal this generation's projection reached.
+    ///
+    /// Three terminals stay distinguishable here. A global budget still stops
+    /// planning and publishes `Limited` with that budget's own copy. A plan that
+    /// reached the end of the document but replaced named units with markers
+    /// publishes `Simplified` and reports the count once, rather than announcing
+    /// each marker as it is projected. Everything else publishes `Complete`.
+    fn finish_render_plan(&self, generation: u64, terminal: MarkdownProjectionTerminal) {
         let imp = self.imp();
         if !imp.render_session.borrow().is_current(generation) {
             return;
         }
-        if let Some(limit) = limit {
-            let description = limit.description();
-            let buffer = imp.text_view.buffer();
-            let mut end = buffer.end_iter();
-            if end.offset() > 0 {
-                buffer.insert(&mut end, "\n\n");
+        let (state, description) = match terminal.limit {
+            Some(limit) => (
+                MarkdownRenderState::Limited,
+                Some(limit.description().to_string()),
+            ),
+            None if terminal.user_visible_omissions > 0 => (
+                MarkdownRenderState::Simplified,
+                Some(simplified_render_description(
+                    terminal.user_visible_omissions,
+                )),
+            ),
+            None => (MarkdownRenderState::Complete, None),
+        };
+        match description {
+            Some(description) => {
+                let buffer = imp.text_view.buffer();
+                let mut end = buffer.end_iter();
+                if end.offset() > 0 {
+                    buffer.insert(&mut end, "\n\n");
+                }
+                buffer.insert(&mut end, &description);
+                accessibility::set_description(&*imp.text_view, &description);
             }
-            buffer.insert(&mut end, description);
-            accessibility::set_description(&*imp.text_view, description);
-            imp.render_session
-                .borrow_mut()
-                .transition(generation, MarkdownRenderState::Limited);
-        } else {
-            accessibility::set_description(&*imp.text_view, "Rendered Markdown preview");
-            imp.render_session
-                .borrow_mut()
-                .transition(generation, MarkdownRenderState::Complete);
+            None => accessibility::set_description(&*imp.text_view, "Rendered Markdown preview"),
         }
+        imp.render_session
+            .borrow_mut()
+            .transition(generation, state);
+        self.queue_code_block_width_refresh();
+    }
+
+    /// Publish the explicit terminal for a batch the continuation refused.
+    fn finish_render_breach(&self, generation: u64, breach: ContinuationBreach) {
+        let imp = self.imp();
+        if !imp.render_session.borrow().is_current(generation) {
+            return;
+        }
+        let description = breach.description();
+        let buffer = imp.text_view.buffer();
+        let mut end = buffer.end_iter();
+        if end.offset() > 0 {
+            buffer.insert(&mut end, "\n\n");
+        }
+        buffer.insert(&mut end, description);
+        accessibility::set_description(&*imp.text_view, description);
+        imp.render_session
+            .borrow_mut()
+            .transition(generation, MarkdownRenderState::Failed);
         self.queue_code_block_width_refresh();
     }
 
@@ -2124,204 +1779,6 @@ impl Default for LushtextMarkdownPreview {
     }
 }
 
-/// Derive the effective text column for an embedded block from active Markdown state.
-fn embedded_block_layout(
-    tag_stack: &[String],
-    list_stack: &[ListFrame],
-    list_item_stack: &[ListItemRenderState],
-    generic_blockquote_depth: usize,
-    definition_stack: &[DefinitionRenderState],
-) -> EmbeddedBlockLayout {
-    let mut layout = EmbeddedBlockLayout::default();
-
-    if !definition_stack.is_empty() {
-        layout.include_margin(DEFINITION_DEF_LEFT_MARGIN, DEFINITION_DEF_RIGHT_MARGIN);
-    }
-
-    if !list_item_stack.is_empty() {
-        layout.include_margin(list_item_text_margin(list_stack.len().max(1)), 0);
-    }
-
-    if generic_blockquote_depth > 0 {
-        layout.include_margin(blockquote_left_margin(generic_blockquote_depth), 0);
-    }
-
-    if tag_stack.iter().any(|tag| tag == TAG_ALERT_BODY) {
-        layout.include_margin(ALERT_BODY_LEFT_MARGIN, ALERT_BODY_RIGHT_MARGIN);
-    }
-
-    if tag_stack.iter().any(|tag| tag == TAG_FOOTNOTE_DEF) {
-        layout.include_margin(FOOTNOTE_DEF_LEFT_MARGIN, FOOTNOTE_DEF_RIGHT_MARGIN);
-    }
-
-    layout
-}
-
-/// Insert text at the given iter with the specified tag names applied.
-fn insert_with_tags(
-    buffer: &gtk4::TextBuffer,
-    iter: &mut gtk4::TextIter,
-    text: &str,
-    tag_names: &[&str],
-) {
-    if tag_names.is_empty() {
-        buffer.insert(iter, text);
-        return;
-    }
-
-    let start_offset = iter.offset();
-    buffer.insert(iter, text);
-    let start = buffer.iter_at_offset(start_offset);
-
-    for name in tag_names {
-        if let Some(tag) = buffer.tag_table().lookup(name) {
-            buffer.apply_tag(&tag, &start, iter);
-        }
-    }
-}
-
-/// Insert the visible generic blockquote rail when the next rendered content
-/// starts a quoted line.
-///
-/// The rail carries only quote-structure tags so a line that starts with
-/// emphasis or a link does not make the structural rail look like inline text.
-fn insert_blockquote_rail_if_needed(
-    buffer: &gtk4::TextBuffer,
-    iter: &mut gtk4::TextIter,
-    tag_stack: &[String],
-    depth: usize,
-) {
-    if depth == 0 || !iter.starts_line() {
-        return;
-    }
-
-    let tags: Vec<&str> = tag_stack
-        .iter()
-        .map(std::string::String::as_str)
-        .filter(|name| *name == TAG_BLOCKQUOTE || name.starts_with("blockquote-depth-"))
-        .collect();
-    insert_with_tags(buffer, iter, &blockquote_rail_prefix(depth), &tags);
-}
-
-/// Insert one newline only when the current rendered position is mid-row.
-fn ensure_rendered_line_break(buffer: &gtk4::TextBuffer, iter: &mut gtk4::TextIter) {
-    if iter.offset() > 0 && !iter.starts_line() {
-        buffer.insert(iter, "\n");
-    }
-}
-
-/// Mark the current list item as having emitted visible content.
-fn mark_current_list_item_content(items: &mut [ListItemRenderState]) {
-    if let Some(item) = items.last_mut() {
-        item.has_content = true;
-    }
-}
-
-/// Record that a paragraph ended inside the current list item.
-fn mark_current_list_item_paragraph_end(items: &mut [ListItemRenderState]) {
-    if let Some(item) = items.last_mut() {
-        item.paragraph_ended = true;
-    }
-}
-
-/// Clear the pending loose-list paragraph separator for the current item.
-fn clear_current_list_item_paragraph_end(items: &mut [ListItemRenderState]) {
-    if let Some(item) = items.last_mut() {
-        item.paragraph_ended = false;
-    }
-}
-
-/// Return whether the next paragraph in this list item should be separated.
-fn current_list_item_needs_paragraph_separator(items: &[ListItemRenderState]) -> bool {
-    items
-        .last()
-        .is_some_and(|item| item.has_content && item.paragraph_ended)
-}
-
-/// Mark the current definition as having emitted visible content.
-fn mark_current_definition_content(definitions: &mut [DefinitionRenderState]) {
-    if let Some(definition) = definitions.last_mut() {
-        definition.has_content = true;
-    }
-}
-
-/// Record that a paragraph ended inside the current definition body.
-fn mark_current_definition_paragraph_end(definitions: &mut [DefinitionRenderState]) {
-    if let Some(definition) = definitions.last_mut() {
-        definition.paragraph_ended = true;
-    }
-}
-
-/// Clear the pending loose-definition paragraph separator for the current body.
-fn clear_current_definition_paragraph_end(definitions: &mut [DefinitionRenderState]) {
-    if let Some(definition) = definitions.last_mut() {
-        definition.paragraph_ended = false;
-    }
-}
-
-/// Return whether the next paragraph in this definition should be separated.
-fn current_definition_needs_paragraph_separator(definitions: &[DefinitionRenderState]) -> bool {
-    definitions
-        .last()
-        .is_some_and(|definition| definition.has_content && definition.paragraph_ended)
-}
-
-/// Return whether the current event should force any delayed list marker to be
-/// inserted before the renderer processes the event itself.
-fn should_flush_pending_list_prefix(event: &Event<'_>) -> bool {
-    !matches!(event, Event::TaskListMarker(_) | Event::End(TagEnd::Item))
-}
-
-/// Insert a delayed list marker using whatever formatting tags are active for
-/// the current list item.
-fn flush_pending_list_prefix(
-    buffer: &gtk4::TextBuffer,
-    iter: &mut gtk4::TextIter,
-    tag_stack: &[String],
-    pending_list_prefix: &mut Option<String>,
-) -> bool {
-    let Some(prefix) = pending_list_prefix.take() else {
-        return false;
-    };
-
-    let tags: Vec<&str> = tag_stack.iter().map(std::string::String::as_str).collect();
-    insert_with_tags(buffer, iter, &prefix, &tags);
-    true
-}
-
-/// Insert the checked or unchecked marker for a task list item and clear the
-/// delayed default bullet/number prefix for that item.
-fn insert_task_list_marker(
-    buffer: &gtk4::TextBuffer,
-    iter: &mut gtk4::TextIter,
-    tag_stack: &[String],
-    pending_list_prefix: &mut Option<String>,
-    checked: bool,
-) {
-    pending_list_prefix.take();
-
-    let mut tags: Vec<&str> = tag_stack.iter().map(std::string::String::as_str).collect();
-    tags.push(TAG_TASK_MARKER);
-    let marker = if checked { "\u{2611} " } else { "\u{2610} " };
-    insert_with_tags(buffer, iter, marker, &tags);
-}
-
-/// Assign or look up the stable preview-local number for one footnote label.
-fn footnote_number(
-    footnote_numbers: &mut HashMap<String, usize>,
-    next_footnote_number: &mut usize,
-    label: &str,
-) -> usize {
-    if let Some(number) = footnote_numbers.get(label) {
-        return *number;
-    }
-
-    let number = *next_footnote_number;
-    *next_footnote_number += 1;
-    footnote_numbers.insert(label.to_string(), number);
-    number
-}
-
 /// Build one compact fallback for Markdown structures that exceed preview budgets.
 fn build_preview_limit_fallback_widget(title: &str, body: &str, css_class: &str) -> gtk4::Widget {
     let container = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -2360,27 +1817,34 @@ fn build_preview_limit_fallback_widget(title: &str, body: &str, css_class: &str)
     container.upcast()
 }
 
-/// Convert a `HeadingLevel` to a 0-based index for the tag name array.
-fn heading_level_to_index(level: HeadingLevel) -> usize {
-    match level {
-        HeadingLevel::H1 => 0,
-        HeadingLevel::H2 => 1,
-        HeadingLevel::H3 => 2,
-        HeadingLevel::H4 => 3,
-        HeadingLevel::H5 => 4,
-        HeadingLevel::H6 => 5,
-    }
-}
-
-/// Pop the last tag from the stack. No-op if the stack is empty.
-fn pop_tag(stack: &mut Vec<String>) {
-    stack.pop();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::markdown_preview::imp::list_item_text_margin;
+
+    #[test]
+    fn simplified_terminal_copy_reports_completion_and_a_count() {
+        assert_eq!(
+            simplified_render_description(1),
+            "Markdown preview complete; 1 block was too complex to render"
+        );
+        assert_eq!(
+            simplified_render_description(7),
+            "Markdown preview complete; 7 blocks were too complex to render"
+        );
+    }
+
+    #[test]
+    fn a_projection_terminal_separates_a_global_stop_from_omissions() {
+        let projection = MarkdownProjectionTerminal::default();
+        assert_eq!(projection.limit, None);
+        assert_eq!(projection.user_visible_omissions, 0);
+        // A stopped preview keeps its own budget copy, which never changes.
+        assert_eq!(
+            MarkdownPlanLimit::Events.description(),
+            "Markdown preview limited after 50,000 render events"
+        );
+    }
 
     #[test]
     fn test_definition_list_parser_events_for_colon_syntax() {
@@ -2474,26 +1938,6 @@ mod tests {
         assert_eq!(list_item_text_margin(1), 60);
         assert_eq!(list_item_text_margin(2), 88);
         assert_eq!(list_item_text_margin(3), 116);
-    }
-
-    #[test]
-    fn test_footnote_number_reuses_existing_labels() {
-        let mut footnote_numbers = HashMap::new();
-        let mut next_footnote_number = 1;
-
-        assert_eq!(
-            footnote_number(&mut footnote_numbers, &mut next_footnote_number, "alpha"),
-            1
-        );
-        assert_eq!(
-            footnote_number(&mut footnote_numbers, &mut next_footnote_number, "beta"),
-            2
-        );
-        assert_eq!(
-            footnote_number(&mut footnote_numbers, &mut next_footnote_number, "alpha"),
-            1
-        );
-        assert_eq!(next_footnote_number, 3);
     }
 
     fn parser_event_labels(markdown: &str) -> Vec<String> {

@@ -71,7 +71,7 @@ use lushtext_core::ui::editor_page::{
     MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
     set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
 };
-use lushtext_core::ui::markdown_preview::LushtextMarkdownPreview;
+use lushtext_core::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
 use lushtext_core::ui::plain_disposal::{
     fill_disposal_capacity_for_test, hold_disposal_capacity_for_test,
     hold_progress_disposal_capacity_for_test,
@@ -14588,6 +14588,133 @@ fn test_side_by_side_definition_list_code_block_uses_live_column() {
     });
     wait_for_markdown_preview_shell(&window);
     assert_live_code_block_uses_preview_column(&window);
+}
+
+/// Rows and columns of the oversized values table used for continuation proof.
+///
+/// 505 cells stays inside the preview's 1,000-cell widget budget while ~1,700
+/// parser events are far past one projection slice, so this table can only
+/// render completely if its rows accumulate into one widget across GTK turns.
+const CONTINUATION_TABLE_ROWS: usize = 100;
+const CONTINUATION_TABLE_COLUMNS: usize = 5;
+
+fn oversized_table_markdown() -> String {
+    let mut markdown = String::from("# Values\n\n| c0 | c1 | c2 | c3 | c4 |\n");
+    markdown.push_str("| --- | --- | --- | --- | --- |\n");
+    for row in 0..CONTINUATION_TABLE_ROWS {
+        for column in 0..CONTINUATION_TABLE_COLUMNS {
+            markdown.push_str(&format!("| r{row}c{column} "));
+        }
+        markdown.push_str("|\n");
+    }
+    markdown.push_str("\nTAIL-AFTER-TABLE\n");
+    markdown
+}
+
+fn markdown_tables(window: &LushtextWindow) -> Vec<gtk4::Grid> {
+    let preview: &LushtextMarkdownPreview = &window.imp().markdown_preview;
+    widgets_with_css_class::<gtk4::Grid>(preview, "markdown-table")
+}
+
+fn markdown_preview_has_label_containing(window: &LushtextWindow, text: &str) -> bool {
+    let preview: &LushtextMarkdownPreview = &window.imp().markdown_preview;
+    widgets_with_css_class::<gtk4::Label>(preview, "markdown-table-cell")
+        .iter()
+        .any(|label| label.label().contains(text))
+}
+
+/// Wait until the preview shell transition, projection, and layout settle.
+///
+/// A directly mounted preview can finish projecting while the Adwaita slot is
+/// still switching layouts, so continuation proof under the real shell has to
+/// wait for the transition *and* the projection, then let the layout-settle
+/// path run before anything is asserted.
+fn wait_for_projected_preview_shell(window: &LushtextWindow) {
+    wait_until(Duration::from_secs(20), || {
+        let preview = &window.imp().markdown_preview;
+        !window.preview_transition_pending_for_test()
+            && !preview.render_pending()
+            && preview.is_showing_content()
+            && preview.text_view().width() > 0
+    });
+    flush_after_delay(Duration::from_millis(80));
+}
+
+fn assert_continuation_table_is_whole(window: &LushtextWindow) {
+    let preview: &LushtextMarkdownPreview = &window.imp().markdown_preview;
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Complete
+    );
+    assert!(
+        preview.projection_counters_for_test().0 > 1,
+        "the fixture must be projected over several GTK turns"
+    );
+    assert_eq!(
+        markdown_tables(window).len(),
+        1,
+        "a carried table must stay one continuous widget under the real shell"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(preview, "markdown-preview-limit-fallback").is_empty(),
+        "a table inside the cell budget must not degrade under the shell"
+    );
+    for row in [0, CONTINUATION_TABLE_ROWS / 2, CONTINUATION_TABLE_ROWS - 1] {
+        for column in [0, CONTINUATION_TABLE_COLUMNS - 1] {
+            assert!(
+                markdown_preview_has_label_containing(window, &format!("r{row}c{column}")),
+                "row {row} column {column} missing after the shell transition"
+            );
+        }
+    }
+    assert!(
+        preview.buffer_text().contains("TAIL-AFTER-TABLE"),
+        "the document tail must survive the shell transition"
+    );
+}
+
+// Continuation state crosses GTK turns, and the shell can reveal the preview
+// from a hidden Adwaita slot mid-projection. Both adaptive presentations get
+// their own proof: preview-only switches `preview_layout_view`, side-by-side
+// reveals `preview_split_view`'s sidebar.
+#[test]
+fn test_preview_only_shell_renders_a_carried_table_as_one_widget() {
+    let (window, _dir) = prepare_markdown_preview_window(&oversized_table_markdown(), 1180, 720);
+
+    activate_boolean_action(&window, "set-preview-mode", true);
+
+    wait_until(Duration::from_secs(5), || {
+        window.imp().preview_mode.get() && preview_layout_name(&window).as_deref() == Some("preview")
+    });
+    wait_for_projected_preview_shell(&window);
+    assert_continuation_table_is_whole(&window);
+}
+
+#[test]
+fn test_side_by_side_shell_renders_a_carried_table_as_one_widget() {
+    ensure_gtk_init();
+    gio::Settings::new(lushtext_core::config::APP_ID)
+        .set_int(keys::PREVIEW_PANE_POSITION, 520)
+        .expect("set wide preview pane for carried-table continuation proof");
+    let (window, _dir) = prepare_markdown_preview_window(&oversized_table_markdown(), 1800, 720);
+
+    activate_action(&window, "toggle-preview-pane");
+
+    wait_until(Duration::from_secs(5), || {
+        window.imp().preview_visible.get()
+            && window.imp().preview_split_view.shows_sidebar()
+            && preview_layout_name(&window).as_deref() == Some("editor")
+    });
+    wait_for_projected_preview_shell(&window);
+    assert_continuation_table_is_whole(&window);
+
+    // Switching presentations mid-life must not fragment the carried table.
+    activate_boolean_action(&window, "set-preview-mode", true);
+    wait_until(Duration::from_secs(5), || {
+        preview_layout_name(&window).as_deref() == Some("preview")
+    });
+    wait_for_projected_preview_shell(&window);
+    assert_continuation_table_is_whole(&window);
 }
 
 #[test]

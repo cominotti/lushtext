@@ -96,6 +96,17 @@ impl BufferedCodeBlock {
         self.text.push_str(&text[..end]);
     }
 
+    /// Charge source bytes the planner counted for this block but did not retain.
+    ///
+    /// A carried-embed crossing stops retaining code text and forwards its true
+    /// remaining byte count instead. Charging it here keeps
+    /// `exceeds_preview_widget_budget()` and the fallback's reported size
+    /// evaluating the block's real total, exactly as when the whole block
+    /// arrives in one projection turn.
+    fn charge_unretained_source_bytes(&mut self, bytes: usize) {
+        self.source_bytes = self.source_bytes.saturating_add(bytes);
+    }
+
     /// Return the first info-string word from a fenced block, if present.
     fn language_hint(&self) -> Option<&str> {
         match &self.kind {
@@ -140,6 +151,27 @@ impl ActiveCodeBlock {
     /// Fold one parser event into the underlying literal code buffer.
     pub(super) fn push_event(&mut self, event: Event<'_>) {
         self.code_block.push_event(event);
+    }
+
+    /// Charge counted-but-unretained source bytes onto this in-flight block.
+    pub(super) fn charge_unretained_source_bytes(&mut self, bytes: usize) {
+        self.code_block.charge_unretained_source_bytes(bytes);
+    }
+
+    /// Append one literal marker line standing in for an unprojected text run.
+    ///
+    /// The marker is preview-owned text rather than source content, so it is
+    /// appended through the same bounded literal path and is not charged as
+    /// observed source bytes.
+    pub(super) fn push_omission_line(&mut self, text: &str) {
+        let line = if self.code_block.text.is_empty() || self.code_block.text.ends_with('\n') {
+            format!("{text}\n")
+        } else {
+            format!("\n{text}\n")
+        };
+        let charged_before = self.code_block.source_bytes;
+        self.code_block.push_literal(&line);
+        self.code_block.source_bytes = charged_before;
     }
 }
 
@@ -491,6 +523,40 @@ mod tests {
 
         code_block.text.push('x');
         assert!(code_block.exceeds_preview_widget_budget());
+    }
+
+    #[test]
+    fn charged_unretained_bytes_still_trigger_the_preview_budget() {
+        // The planner stops retaining code text at its carried ceiling and
+        // forwards the remainder as a count. Charging it must reproduce the
+        // decision a single-turn render would have made.
+        let mut code_block = BufferedCodeBlock::new(CodeBlockKind::Indented);
+        code_block.push_literal("kept\n");
+        assert!(!code_block.exceeds_preview_widget_budget());
+
+        code_block.charge_unretained_source_bytes(MAX_PREVIEW_CODE_BLOCK_BYTES);
+        assert!(code_block.exceeds_preview_widget_budget());
+        assert_eq!(
+            code_block.source_byte_len(),
+            MAX_PREVIEW_CODE_BLOCK_BYTES + "kept\n".len()
+        );
+    }
+
+    #[test]
+    fn an_omission_line_is_not_charged_as_observed_source_bytes() {
+        let mut active =
+            ActiveCodeBlock::new(CodeBlockKind::Indented, EmbeddedBlockLayout::default());
+        active.push_event(Event::Text("kept\n".into()));
+        let charged = active.code_block.source_bytes;
+
+        active.push_omission_line("[omitted run]");
+
+        assert_eq!(
+            active.code_block.source_bytes, charged,
+            "a preview-owned marker is not source content"
+        );
+        assert!(active.code_block.text.contains("[omitted run]"));
+        assert!(active.code_block.text.starts_with("kept\n"));
     }
 
     #[test]

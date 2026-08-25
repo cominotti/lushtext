@@ -10,6 +10,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use crate::model::content_search::{
     ContentSearchOptions, SearchMatch, generate_replacement_preview,
@@ -19,13 +20,23 @@ use crate::model::encoding::{DocumentEncoding, LineEnding};
 use crate::model::formatting_overrides::FormattingOverrides;
 use crate::model::session::{SessionData, SessionTab};
 use crate::services::editor_io::{apply_save_formatting_overrides, classify_bytes_for_fuzzing};
-use crate::ui::markdown_preview::preprocess_markdown_for_fuzzing;
+use crate::services::markdown_render::plan_markdown_cancellable;
+use crate::ui::markdown_preview::{lowered_markdown_for_fuzzing, preprocess_markdown_for_fuzzing};
 
 /// Maximum raw bytes one byte-ingestion or Markdown fuzz case processes.
 ///
 /// Four KiB is large enough to mix encodings, Markdown constructs, and awkward
 /// line endings while keeping local smoke runs predictable.
 pub const FUZZ_MAX_INPUT_LEN: usize = 4096;
+/// Maximum raw bytes one Markdown fuzz case processes.
+///
+/// The Markdown lane also plans the parsed document, and two planner ceilings
+/// are only reachable from a larger input than byte ingestion needs: a fenced
+/// body must pass 64 KiB to cross the carried code-text ceiling, and a table
+/// must pass 1,000 cells to cross the carried cell ceiling. This bound admits
+/// committed seeds for both. Coverage-guided generation stays bounded by the
+/// smoke lane's own `-max_len`, which is far smaller.
+pub const MARKDOWN_FUZZ_MAX_INPUT_LEN: usize = 128 * 1024;
 /// Maximum raw bytes decoded into one operation script.
 ///
 /// Operation scripts perform several helper calls per input, so they share the
@@ -64,7 +75,7 @@ pub struct EditorBytesFuzzReport {
     pub file_health_findings: usize,
 }
 
-/// Summary returned after exercising Markdown preprocessing for one fuzz input.
+/// Summary returned after exercising Markdown preprocessing and planning.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MarkdownFuzzReport {
     /// Number of pulldown-cmark parser events produced for the input.
@@ -73,6 +84,12 @@ pub struct MarkdownFuzzReport {
     pub parser_input_len: usize,
     /// Whether inline-footnote lowering changed the parser input.
     pub lowered_inline_footnotes: bool,
+    /// Projection batches the GTK-free planner emitted for the input.
+    pub plan_batches: usize,
+    /// Units the planner replaced with an omission marker.
+    pub plan_omissions: usize,
+    /// Whether a global planning budget stopped before the end of the input.
+    pub plan_limited: bool,
 }
 
 /// Summary returned after executing one structured operation script.
@@ -114,20 +131,41 @@ pub fn exercise_editor_bytes_for_fuzzing(data: &[u8]) -> EditorBytesFuzzReport {
     report
 }
 
-/// Exercise Markdown preprocessing and parser setup for fuzzing/replay.
+/// Exercise Markdown preprocessing, parser setup, and GTK-free planning.
+///
+/// Planning is driven through the cancellable entry point the preview's own
+/// worker uses, with a token that is never set, so the fuzz lane covers the same
+/// checkpoint, sub-slicing, omission, and carried-embed arithmetic the app runs
+/// while staying deterministic and panic-free.
+///
+/// # Panics
+///
+/// Panics only if the planner reports cancellation for a token that was never
+/// set, which would violate its contract.
 #[must_use]
 pub fn exercise_markdown_for_fuzzing(data: &[u8]) -> MarkdownFuzzReport {
-    let bytes = bounded_input(data);
+    let bytes = &data[..data.len().min(MARKDOWN_FUZZ_MAX_INPUT_LEN)];
     // Markdown preprocessing is intentionally text-level coverage. Raw invalid
     // UTF-8 behavior belongs to `exercise_editor_bytes_for_fuzzing`; this lane
     // checks what happens after the editor has produced lossy display text.
     let markdown = String::from_utf8_lossy(bytes);
     let result = preprocess_markdown_for_fuzzing(&markdown);
 
+    // Plan the lowered text the preview actually plans, so inline-footnote
+    // lowering and planning are fuzzed as the one pipeline they form in the app.
+    let lowered = lowered_markdown_for_fuzzing(&markdown);
+    let plan_input = lowered.as_deref().unwrap_or(&markdown);
+    let cancel = AtomicBool::new(false);
+    let plan = plan_markdown_cancellable(plan_input, &cancel)
+        .expect("planning without a set cancellation token cannot cancel");
+
     MarkdownFuzzReport {
         parser_event_count: result.parser_event_count,
         parser_input_len: result.parser_input_len,
         lowered_inline_footnotes: result.lowered_inline_footnotes,
+        plan_batches: plan.batches.len(),
+        plan_omissions: plan.omissions(),
+        plan_limited: plan.limit.is_some(),
     }
 }
 

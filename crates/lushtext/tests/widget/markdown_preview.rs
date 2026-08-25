@@ -11,7 +11,8 @@ use glib::prelude::{Cast, IsA};
 use gtk4::prelude::*;
 use lushtext_core::config::{self, keys};
 use lushtext_core::services::markdown_render::{
-    MARKDOWN_EVENTS_PER_PROJECTION_SLICE, MAX_MARKDOWN_SOURCE_BYTES,
+    MARKDOWN_EVENTS_PER_PROJECTION_SLICE, MAX_MARKDOWN_PLACEHOLDER_WIDGETS,
+    MAX_MARKDOWN_SOURCE_BYTES,
 };
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::markdown_preview::{
@@ -1259,7 +1260,7 @@ fn test_large_render_teardown_is_detached_and_retired_in_bounded_turns() {
 }
 
 #[test]
-fn test_dense_single_block_uses_accessible_limited_terminal() {
+fn test_dense_single_block_uses_accessible_simplified_terminal() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
     let markdown = (0..300).map(|_| "**x** ").collect::<String>();
@@ -1267,16 +1268,827 @@ fn test_dense_single_block_uses_accessible_limited_terminal() {
     preview.render_markdown(&markdown);
 
     assert!(!preview.render_pending());
-    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Limited);
-    assert!(
-        preview
-            .buffer_text()
-            .contains("one block exceeds a projection slice")
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Simplified,
+        "a document planned to its end with one omission is complete-with-omissions, not stopped"
     );
+    let text = preview.buffer_text();
+    assert!(
+        text.contains("Markdown preview complete; 1 block was too complex to render"),
+        "expected the completion terminal copy, got: {text}"
+    );
+    assert!(
+        !text.contains("exceeds a projection slice"),
+        "the retired stopped-preview copy must not come back: {text}"
+    );
+
+    // The omitted top-level block is replaced in place by exactly one fallback.
+    let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback");
+    assert_eq!(fallbacks.len(), 1);
+    assert!(
+        find_label_with_text(&preview, "Markdown preview omitted one block that exceeds 256 render events")
+            .is_some(),
+        "the marker must name the crossed budget"
+    );
+    AccessibleAudit::new()
+        .role(gtk4::AccessibleRole::Group)
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&fallbacks[0]);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::TextBox)
         .properties(&[gtk4::AccessibleProperty::Description])
         .assert_on(&preview.text_view());
+}
+
+/// A document whose two footnote references land in different projection
+/// batches, so batch-local numbering restarts at the second reference.
+fn multi_batch_footnote_fixture() -> String {
+    let mut markdown = String::from("alpha-ref[^a]\n\n");
+    for index in 0..120 {
+        markdown.push_str(&format!("filler paragraph {index}\n\n"));
+    }
+    markdown.push_str("beta-ref[^b]\n\n[^a]: alpha definition\n\n[^b]: beta definition\n");
+    markdown
+}
+
+/// Footnote numbering is owned by the render generation, not by one batch.
+///
+/// This is the inverted form of the section 1 characterization test: numbering
+/// used to restart at every projection batch, so a reference and its definition
+/// in different GTK turns disagreed.
+#[test]
+fn test_footnote_numbering_continues_across_projection_batches() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&multi_batch_footnote_fixture());
+    wait_until(Duration::from_secs(10), || !preview.render_pending());
+
+    let text = preview.buffer_text();
+    assert!(
+        preview.projection_counters_for_test().0 > 1,
+        "the fixture must span several projection turns"
+    );
+    assert!(
+        text.contains("alpha-ref[1]"),
+        "first reference should be numbered 1: {text}"
+    );
+    assert!(
+        text.contains("beta-ref[2]"),
+        "the second reference must continue the generation numbering: {text}"
+    );
+    assert!(
+        !text.contains("beta-ref[1]"),
+        "numbering must not restart per batch: {text}"
+    );
+    // Each definition keeps the number its reference showed.
+    assert_rendered_text_order(&text, &["alpha-ref[1]", "beta-ref[2]", "[1] alpha definition", "[2] beta definition"]);
+}
+
+/// Rows and columns of the oversized-but-renderable values table.
+///
+/// 505 cells stays inside the preview's 1,000-cell widget budget while ~1,700
+/// parser events are far past one projection slice, so the table can only render
+/// completely if its rows accumulate into one continuous widget across turns.
+const OVERSIZED_TABLE_ROWS: usize = 100;
+const OVERSIZED_TABLE_COLUMNS: usize = 5;
+
+fn oversized_table_fixture() -> String {
+    let mut markdown = String::from("# Values\n\n| c0 | c1 | c2 | c3 | c4 |\n");
+    markdown.push_str("| --- | --- | --- | --- | --- |\n");
+    for row in 0..OVERSIZED_TABLE_ROWS {
+        for column in 0..OVERSIZED_TABLE_COLUMNS {
+            markdown.push_str(&format!("| r{row}c{column} "));
+        }
+        markdown.push_str("|\n");
+    }
+    markdown.push_str("\nTAIL-AFTER-TABLE\n");
+    markdown
+}
+
+fn oversized_ordered_list_fixture() -> String {
+    let mut markdown = String::from("# Ordered\n\n");
+    for index in 1..=100 {
+        markdown.push_str(&format!("{index}. item-{index}\n"));
+    }
+    markdown.push_str("\nTAIL-AFTER-ORDERED-LIST\n");
+    markdown
+}
+
+fn oversized_blockquote_fixture() -> String {
+    let mut markdown = String::from("# Quote\n\n");
+    for index in 0..90 {
+        markdown.push_str(&format!("> quoted-{index}\n>\n"));
+    }
+    markdown.push_str("> > nested-quoted\n\nTAIL-AFTER-QUOTE\n");
+    markdown
+}
+
+fn oversized_definition_list_fixture() -> String {
+    let mut markdown = String::from("# Definitions\n\n");
+    for index in 0..60 {
+        markdown.push_str(&format!("term-{index}\n: definition-{index}\n\n"));
+    }
+    markdown.push_str("\nTAIL-AFTER-DEFINITIONS\n");
+    markdown
+}
+
+/// Lines in the indented code fixture, which is over one projection slice in
+/// events but far inside the code-block byte budget.
+const INDENTED_CODE_LINES: usize = 400;
+
+fn indented_code_block_fixture() -> String {
+    let mut markdown = String::from("# Indented\n\n");
+    for index in 0..INDENTED_CODE_LINES {
+        markdown.push_str(&format!("    indented-line-{index}\n"));
+    }
+    markdown.push_str("\nTAIL-AFTER-INDENTED-CODE\n");
+    markdown
+}
+
+#[test]
+fn test_oversized_table_renders_one_widget_with_every_row() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&oversized_table_fixture());
+    wait_until(Duration::from_secs(15), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    let grids = widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table");
+    assert_eq!(
+        grids.len(),
+        1,
+        "an oversized table must stay one continuous table widget"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-limit-fallback").is_empty(),
+        "a table inside the cell budget must not degrade"
+    );
+    // Check every cell, not three sampled rows: a sub-slicing bug that dropped
+    // one interior batch would sit between the samples and pass unnoticed. The
+    // label set is collected once rather than walking the tree per cell.
+    let cell_labels: std::collections::HashSet<String> =
+        widgets_with_css_class::<gtk4::Label>(&preview, "markdown-table-cell")
+            .iter()
+            .map(|label| label.text().to_string())
+            .collect();
+    for row in 0..OVERSIZED_TABLE_ROWS {
+        for column in 0..OVERSIZED_TABLE_COLUMNS {
+            let cell = format!("r{row}c{column}");
+            assert!(
+                cell_labels.contains(&cell),
+                "row {row} column {column} missing from the rendered table"
+            );
+        }
+    }
+    assert!(preview.buffer_text().contains("TAIL-AFTER-TABLE"));
+    let (dispatches, high_water) = preview.projection_counters_for_test();
+    assert!(dispatches > 1, "the table must be projected over several turns");
+    assert!(high_water <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
+}
+
+#[test]
+fn test_oversized_ordered_list_keeps_continuous_numbering() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&oversized_ordered_list_fixture());
+    wait_until(Duration::from_secs(15), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    let text = preview.buffer_text();
+    assert!(preview.projection_counters_for_test().0 > 1);
+    for index in 1..=100 {
+        assert!(
+            text.contains(&format!("{index}. item-{index}")),
+            "ordered item {index} lost its numbering: {text}"
+        );
+    }
+    assert!(text.contains("TAIL-AFTER-ORDERED-LIST"));
+}
+
+#[test]
+fn test_oversized_blockquote_keeps_rail_depth_across_turns() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&oversized_blockquote_fixture());
+    wait_until(Duration::from_secs(15), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert!(preview.projection_counters_for_test().0 > 1);
+    let text = preview.buffer_text();
+    assert_rendered_text_order(&text, &["quoted-0", "quoted-89", "nested-quoted", "TAIL-AFTER-QUOTE"]);
+    assert!(
+        !text.contains("> quoted-89"),
+        "the raw quote marker must stay hidden after a projection boundary: {text}"
+    );
+    assert!(
+        preview.has_tag("blockquote-depth-2"),
+        "nested rail depth must survive the carried blockquote continuation"
+    );
+}
+
+#[test]
+fn test_oversized_definition_list_renders_every_entry() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&oversized_definition_list_fixture());
+    wait_until(Duration::from_secs(15), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert!(preview.projection_counters_for_test().0 > 1);
+    let text = preview.buffer_text();
+    for index in 0..60 {
+        assert!(
+            text.contains(&format!("term-{index}")),
+            "definition term {index} missing"
+        );
+        assert!(
+            text.contains(&format!("definition-{index}")),
+            "definition body {index} missing"
+        );
+    }
+    assert!(text.contains("TAIL-AFTER-DEFINITIONS"));
+}
+
+#[test]
+fn test_fenced_code_block_within_budget_renders_whole_in_one_slice() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let mut body = String::new();
+    for index in 0..400 {
+        body.push_str(&format!("echo fenced-line-{index}\n"));
+    }
+    assert!(body.len() < 64 * 1024, "fixture must stay inside the widget budget");
+    let markdown = format!("# Script\n\n```sh\n{body}```\n\nTAIL-AFTER-FENCE\n");
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(15), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    // A fenced body is one coalesced `Text` event, so the whole block fits one
+    // slice: this is a single-turn render, not a sub-sliced one.
+    assert_eq!(
+        preview.projection_counters_for_test().0,
+        1,
+        "a fenced block is three events regardless of line count"
+    );
+    let views = source_views(&preview);
+    assert_eq!(views.len(), 1, "one code block renders as one surface");
+    let buffer = views[0].buffer();
+    let rendered = buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string();
+    assert!(rendered.contains("echo fenced-line-0"));
+    assert!(rendered.contains("echo fenced-line-399"));
+    assert!(preview.buffer_text().contains("TAIL-AFTER-FENCE"));
+}
+
+#[test]
+fn test_indented_code_block_over_one_slice_renders_one_continuous_surface() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&indented_code_block_fixture());
+    wait_until(Duration::from_secs(15), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    let (dispatches, high_water) = preview.projection_counters_for_test();
+    assert!(
+        dispatches > 1,
+        "an indented block emits one text event per line, so it is sub-sliced"
+    );
+    assert!(high_water <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
+
+    let views = source_views(&preview);
+    assert_eq!(
+        views.len(),
+        1,
+        "a sub-sliced code block must not split into several surfaces"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-limit-fallback").is_empty()
+    );
+    let buffer = views[0].buffer();
+    let rendered = buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string();
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(lines.len(), INDENTED_CODE_LINES, "every line must be present once");
+    for index in [0usize, INDENTED_CODE_LINES / 2, INDENTED_CODE_LINES - 1] {
+        assert_eq!(lines[index], format!("indented-line-{index}"));
+    }
+    assert!(preview.buffer_text().contains("TAIL-AFTER-INDENTED-CODE"));
+}
+
+#[test]
+fn test_code_block_past_the_widget_budget_keeps_its_single_fallback_and_completes() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let body_bytes = 96 * 1024;
+    let markdown = format!(
+        "# Big\n\n```text\n{}\n```\n\nTAIL-AFTER-BIG-CODE\n",
+        "c".repeat(body_bytes)
+    );
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Complete,
+        "a carried-embed crossing is a charge carrier, not a user-visible omission"
+    );
+    assert!(
+        !preview.buffer_text().contains("too complex to render"),
+        "the block explains itself through its own fallback"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback").is_empty(),
+        "no omission marker may accompany the in-place fallback"
+    );
+    let fallbacks =
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block-fallback");
+    assert_eq!(fallbacks.len(), 1, "exactly today's single fallback widget");
+    assert!(source_views(&preview).is_empty(), "no partial code surface");
+    assert!(
+        find_label_with_text(&preview, &format!("This code block is {} bytes", body_bytes + 1))
+            .is_some(),
+        "the fallback must report the block's true source size"
+    );
+    assert!(preview.buffer_text().contains("TAIL-AFTER-BIG-CODE"));
+}
+
+/// Columns and rows of the table that crosses the 1,000-cell widget budget.
+const PAST_BUDGET_COLUMNS: usize = 4;
+const PAST_BUDGET_ROWS: usize = 250;
+
+fn cell_table(columns: usize, rows: usize) -> String {
+    let mut markdown = String::new();
+    for _ in 0..columns {
+        markdown.push_str("| h ");
+    }
+    markdown.push_str("|\n");
+    for _ in 0..columns {
+        markdown.push_str("| --- ");
+    }
+    markdown.push_str("|\n");
+    for _ in 0..rows {
+        for _ in 0..columns {
+            markdown.push_str("| c ");
+        }
+        markdown.push_str("|\n");
+    }
+    markdown
+}
+
+#[test]
+fn test_table_past_the_cell_budget_keeps_its_single_fallback_and_completes() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let markdown = format!(
+        "# Past budget\n\n{}\nTAIL-AFTER-PAST-BUDGET\n",
+        cell_table(PAST_BUDGET_COLUMNS, PAST_BUDGET_ROWS)
+    );
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Complete,
+        "a cell-ceiling crossing must not turn into a user-visible omission"
+    );
+    assert!(!preview.buffer_text().contains("too complex to render"));
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback").is_empty()
+    );
+    let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-table-fallback");
+    assert_eq!(fallbacks.len(), 1);
+    assert!(
+        widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").is_empty(),
+        "no partially rendered grid may accompany the fallback"
+    );
+    let total_cells = PAST_BUDGET_COLUMNS * (PAST_BUDGET_ROWS + 1);
+    assert!(
+        find_label_with_text(&preview, &format!("This table has {total_cells} cells")).is_some(),
+        "the fallback must report the table's true cell count"
+    );
+    assert!(preview.buffer_text().contains("TAIL-AFTER-PAST-BUDGET"));
+}
+
+#[test]
+fn test_table_past_the_cell_budget_inside_a_footnote_charges_an_empty_builder() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    // A footnote definition forbids cuts, so the planner has no checkpoint
+    // inside it and withdraws the whole table body: the projector receives
+    // `Start(Table)` immediately followed by `End(Table)` and must still charge
+    // the unretained cells onto the empty builder for the fallback to fire.
+    let mut markdown = String::from("See[^t].\n\n[^t]: footnote intro prose\n\n");
+    for line in cell_table(PAST_BUDGET_COLUMNS, PAST_BUDGET_ROWS).lines() {
+        markdown.push_str("    ");
+        markdown.push_str(line);
+        markdown.push('\n');
+    }
+    markdown.push_str("\nTAIL-AFTER-FOOTNOTE-TABLE\n");
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-table-fallback");
+    assert_eq!(fallbacks.len(), 1, "the empty builder must still degrade");
+    let total_cells = PAST_BUDGET_COLUMNS * (PAST_BUDGET_ROWS + 1);
+    assert!(
+        find_label_with_text(&preview, &format!("This table has {total_cells} cells")).is_some()
+    );
+    let text = preview.buffer_text();
+    assert!(text.contains("footnote intro prose"), "{text}");
+    assert!(text.contains("TAIL-AFTER-FOOTNOTE-TABLE"));
+}
+
+#[test]
+fn test_large_byte_table_within_the_cell_budget_renders_every_row() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    // 603 cells of ~100 bytes: far past the 64 KiB byte ceiling that bounds
+    // carried code text, and well inside the 1,000-cell table budget.
+    let filler = "z".repeat(100);
+    let mut markdown = String::from("# Wide bytes\n\n| a | b | c |\n| --- | --- | --- |\n");
+    for row in 0..200 {
+        markdown.push_str(&format!("| r{row}-{filler} | {filler} | {filler} |\n"));
+    }
+    markdown.push_str("\nTAIL-AFTER-WIDE-BYTES\n");
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert_eq!(
+        widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").len(),
+        1
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-limit-fallback").is_empty(),
+        "no retention ceiling may truncate a large-byte table"
+    );
+    for row in [0, 199] {
+        assert!(
+            find_label_with_text(&preview, &format!("r{row}-")).is_some(),
+            "row {row} missing from a large-byte table"
+        );
+    }
+    assert!(preview.buffer_text().contains("TAIL-AFTER-WIDE-BYTES"));
+}
+
+#[test]
+fn test_wide_cell_table_renders_every_row() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    // Eight cells holding ~192 KiB: few cells, huge bytes. This renders today
+    // and must keep rendering.
+    let cell = "q".repeat(24 * 1024);
+    let mut markdown = String::from("| a | b |\n| --- | --- |\n");
+    for row in 0..3 {
+        markdown.push_str(&format!("| r{row} {cell} | {cell} |\n"));
+    }
+    markdown.push_str("\nTAIL-AFTER-WIDE-CELLS\n");
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert_eq!(
+        widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").len(),
+        1
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-limit-fallback").is_empty()
+    );
+    assert!(preview.buffer_text().contains("TAIL-AFTER-WIDE-CELLS"));
+}
+
+#[test]
+fn test_one_overflowing_loose_list_item_keeps_siblings_and_marks_inside_the_item() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let dense = (0..300).map(|_| "**x** ").collect::<String>();
+    let mut markdown = String::from("# Mixed list\n\n");
+    for index in 0..60 {
+        if index == 17 {
+            markdown.push_str(&format!("- {dense}\n\n"));
+        } else {
+            markdown.push_str(&format!("- item-{index}\n\n"));
+        }
+    }
+    markdown.push_str("\nTAIL-AFTER-MIXED-LIST\n");
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Simplified
+    );
+    let text = preview.buffer_text();
+    for index in (0..60).filter(|index| *index != 17) {
+        assert!(text.contains(&format!("item-{index}")), "sibling {index} lost");
+    }
+    let markers: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("Markdown preview omitted"))
+        .collect();
+    assert_eq!(markers.len(), 1, "exactly one in-container marker: {markers:?}");
+    assert!(
+        markers[0].contains("one list item"),
+        "the marker must name the omitted unit: {markers:?}"
+    );
+    assert!(
+        markers[0].contains('\u{2022}'),
+        "the overflowing item must still render as an item: {markers:?}"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback").is_empty(),
+        "a container-segment omission must not add a widget"
+    );
+    assert!(
+        text.contains("Markdown preview complete; 1 block was too complex to render"),
+        "{text}"
+    );
+    assert!(text.contains("TAIL-AFTER-MIXED-LIST"));
+}
+
+#[test]
+fn test_one_overflowing_table_row_becomes_a_spanning_row_in_the_same_table() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let dense = (0..300).map(|_| "**x** ").collect::<String>();
+    let markdown = format!(
+        "# Rows\n\n| a | b |\n| --- | --- |\n| keep-0a | keep-0b |\n| {dense} | dropped-b |\n| keep-2a | keep-2b |\n\nTAIL-AFTER-ROW-OMISSION\n"
+    );
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Simplified
+    );
+    assert_eq!(
+        widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").len(),
+        1,
+        "the omitted row must stay inside the same table"
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-limit-fallback").is_empty(),
+        "one dropped row must not replace the whole table"
+    );
+    for kept in ["keep-0a", "keep-0b", "keep-2a", "keep-2b"] {
+        assert!(
+            find_label_with_text(&preview, kept).is_some(),
+            "sibling cell {kept} lost"
+        );
+    }
+    let omission_rows =
+        widgets_with_css_class::<gtk4::Label>(&preview, "markdown-table-omission-row");
+    assert_eq!(omission_rows.len(), 1);
+    assert!(
+        omission_rows[0].text().contains("one table row"),
+        "the spanning row must name the omitted unit: {}",
+        omission_rows[0].text()
+    );
+    assert!(
+        preview
+            .buffer_text()
+            .contains("Markdown preview complete; 1 block was too complex to render")
+    );
+    assert!(preview.buffer_text().contains("TAIL-AFTER-ROW-OMISSION"));
+}
+
+#[test]
+fn test_top_level_omissions_stop_building_widgets_at_the_placeholder_cap() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let dense = (0..100).map(|_| "**x** ").collect::<String>();
+    let blocks = MAX_MARKDOWN_PLACEHOLDER_WIDGETS + 4;
+    let mut markdown = String::new();
+    for _ in 0..blocks {
+        markdown.push_str(&dense);
+        markdown.push_str("\n\n");
+    }
+    markdown.push_str("TAIL-AFTER-MANY-OMISSIONS\n");
+
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(30), || !preview.render_pending());
+
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Simplified
+    );
+    let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback");
+    assert_eq!(
+        fallbacks.len(),
+        MAX_MARKDOWN_PLACEHOLDER_WIDGETS,
+        "omission widgets must stop at the placeholder cap"
+    );
+    let text = preview.buffer_text();
+    let inline_markers = text
+        .lines()
+        .filter(|line| line.contains("Markdown preview omitted one block"))
+        .count();
+    assert_eq!(
+        inline_markers, 4,
+        "omissions past the cap must still be accessible inline text: {text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "Markdown preview complete; {blocks} blocks were too complex to render"
+        )),
+        "the terminal must count every user-visible omission: {text}"
+    );
+    assert!(text.contains("TAIL-AFTER-MANY-OMISSIONS"));
+}
+
+/// Padding and leading span that put a projection boundary exactly on
+/// `Start(CodeBlock)`; the planner test
+/// `a_turn_boundary_can_fall_between_a_code_block_start_and_its_text` pins that
+/// property for this exact shape.
+const CODE_BLOCK_BOUNDARY_PAD_ITEMS: usize = 100;
+const CODE_BLOCK_BOUNDARY_LEAD_SPANS: usize = 1;
+
+fn code_block_start_boundary_fixture() -> String {
+    let mut markdown = String::from("# Boundary\n\n");
+    markdown.push_str(&format!(
+        "{}\n\n",
+        "`a` ".repeat(CODE_BLOCK_BOUNDARY_LEAD_SPANS)
+    ));
+    for index in 0..CODE_BLOCK_BOUNDARY_PAD_ITEMS {
+        markdown.push_str(&format!("- pad-{index}\n"));
+    }
+    markdown.push_str("- item with code\n\n  ```sh\n  echo tiny\n  ```\n\n");
+    markdown.push_str("- after-code\n\nTAIL-AFTER-BOUNDARY\n");
+    markdown
+}
+
+#[test]
+fn test_tiny_code_block_survives_a_content_free_turn_boundary() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&code_block_start_boundary_fixture());
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert!(
+        preview.projection_counters_for_test().0 > 1,
+        "the enclosing list must overflow into several turns"
+    );
+    let views = source_views(&preview);
+    assert_eq!(
+        views.len(),
+        1,
+        "a code block opened on one turn and filled on the next is still one surface"
+    );
+    let buffer = views[0].buffer();
+    let rendered = buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string();
+    assert!(rendered.contains("echo tiny"), "code text lost: {rendered}");
+    let text = preview.buffer_text();
+    assert!(text.contains("pad-0"));
+    assert!(text.contains("after-code"));
+    assert!(text.contains("TAIL-AFTER-BOUNDARY"));
+}
+
+#[test]
+fn test_continuation_survives_a_constrained_preview_shell() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+    let window = gtk4::Window::new();
+    window.set_default_size(420, 320);
+    window.set_child(Some(&preview));
+    present_window(&window);
+
+    let markdown = format!(
+        "{}\n{}",
+        oversized_table_fixture(),
+        oversized_ordered_list_fixture()
+    );
+    preview.render_markdown(&markdown);
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+    flush_after_delay(Duration::from_millis(50));
+
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert_eq!(
+        widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").len(),
+        1,
+        "the carried table must stay one widget inside a narrow shell"
+    );
+    let text = preview.buffer_text();
+    assert!(text.contains("TAIL-AFTER-TABLE"));
+    assert!(text.contains("100. item-100"), "{text}");
+    assert!(text.contains("TAIL-AFTER-ORDERED-LIST"));
+    window.destroy();
+}
+
+#[test]
+fn test_rerender_mid_sub_sliced_block_drops_the_stale_continuation() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&oversized_table_fixture());
+    assert!(
+        preview.render_pending(),
+        "the oversized table must still be projecting"
+    );
+    preview.render_markdown("latest generation");
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert_eq!(preview.buffer_text().trim(), "latest generation");
+    assert_eq!(preview.render_state_for_test(), MarkdownRenderState::Complete);
+    assert!(
+        widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").is_empty(),
+        "no stale table widget may survive the generation change"
+    );
+    let (chars, items) = preview.retirement_counters_for_test();
+    assert!(chars <= 64 * 1024);
+    assert!(items <= 64);
+    let (detached, high_water, deferred, limit, _, pending_plain_jobs, _) =
+        preview.retirement_backlog_counters_for_test();
+    assert_eq!(detached, 0);
+    assert!(high_water <= limit);
+    assert_eq!(deferred, 0);
+    assert_eq!(pending_plain_jobs, 0);
+}
+
+#[test]
+fn test_cancel_mid_sub_sliced_block_leaves_no_stale_widget() {
+    ensure_gtk_init();
+    let preview = LushtextMarkdownPreview::new();
+
+    preview.render_markdown(&oversized_table_fixture());
+    assert!(preview.render_pending());
+    preview.show_placeholder("Preview closed mid-table");
+    wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+    assert!(!preview.is_showing_content());
+    assert_eq!(
+        preview.render_state_for_test(),
+        MarkdownRenderState::Cancelled
+    );
+    assert!(
+        widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").is_empty(),
+        "cancellation must retire the carried table"
+    );
+    assert_eq!(preview.retirement_backlog_counters_for_test().5, 0);
+}
+
+#[test]
+fn test_teardown_mid_sub_sliced_block_releases_the_continuation() {
+    ensure_gtk_init();
+    {
+        let preview = LushtextMarkdownPreview::new();
+        preview.render_markdown(&oversized_table_fixture());
+        assert!(preview.render_pending());
+    }
+    // Dropping the preview mid-projection must let the idle projector observe a
+    // dead weak reference and release the continuation with its plan.
+    wait_until(Duration::from_secs(20), || {
+        let snapshot = lane_snapshot_for_test();
+        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+    });
+    flush_after_delay(Duration::from_millis(50));
+}
+
+#[test]
+fn test_oversized_fixtures_stay_within_the_projection_slice_budget() {
+    ensure_gtk_init();
+    for markdown in [
+        oversized_table_fixture(),
+        oversized_ordered_list_fixture(),
+        oversized_blockquote_fixture(),
+        oversized_definition_list_fixture(),
+        indented_code_block_fixture(),
+    ] {
+        let preview = LushtextMarkdownPreview::new();
+        preview.render_markdown(&markdown);
+        wait_until(Duration::from_secs(20), || !preview.render_pending());
+
+        let (dispatches, high_water) = preview.projection_counters_for_test();
+        assert!(dispatches > 1, "every fixture must span several turns");
+        assert!(
+            high_water <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE,
+            "a projection turn applied {high_water} events"
+        );
+    }
 }
 
 #[test]

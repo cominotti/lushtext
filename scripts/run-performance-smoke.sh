@@ -69,7 +69,7 @@ file_index_rebuild: generated common 10k-file workspace, 1k missing roots, 1k/10
 end_to_end_boundedness: generated one flat 10,000-entry directory, file/note source budget and cancellation fixtures, active/latest coordinator pressure, canonical top-one exclusion, a 2,048-row cleanup page, a 10,000-row middle reconciliation, and large replacement policy input
 content_search_smoke: generated 200-file trees plus one 10k-line file
 search_interactive_policies: generated 1,000-query latest-wins ownership, 10,000-result retirement counters, and a 260-event mixed non-match turn-budget proof
-markdown_render_planning: generated 10,000-paragraph complete and dense single-block limited plans plus rapid detached-generation ownership pressure
+markdown_render_planning: generated 10,000-paragraph complete, dense single-block omitted, oversized-table sub-sliced, and oversized-indented-code sub-sliced plans plus rapid detached-generation ownership pressure
 save_admission_policy: generated eight compact ordinary save requests under the shared byte budget
 editor_memory_policy: generated 1k/10k/100k scalar tab sets plus one-record incremental edit evidence
 json_persistence: generated workspace/session JSON save and load fixtures

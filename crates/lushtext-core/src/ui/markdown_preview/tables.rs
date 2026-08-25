@@ -41,6 +41,7 @@ impl BufferedTable {
     fn column_count(&self) -> usize {
         self.rows
             .iter()
+            .filter(|row| !row.spans_all_columns)
             .map(|row| row.cells.len())
             .max()
             .unwrap_or(self.alignments.len())
@@ -54,9 +55,27 @@ impl BufferedTable {
     }
 
     /// Number of GTK label cells needed to render the table at full fidelity.
+    ///
+    /// Spanning omission rows contribute one label each rather than a full row
+    /// of cells, so they are counted as one instead of as `column_count`:
+    /// counting them as a whole row could push a table that is otherwise inside
+    /// the budget over it just because one of its rows could not be projected,
+    /// while ignoring them entirely would under-count the labels actually built.
     fn cell_count(&self) -> usize {
-        self.observed_cells
-            .max(self.rows.len().saturating_mul(self.column_count()))
+        let mut source_rows = 0usize;
+        let mut spanning_rows = 0usize;
+        for row in &self.rows {
+            if row.spans_all_columns {
+                spanning_rows += 1;
+            } else {
+                source_rows += 1;
+            }
+        }
+        self.observed_cells.max(
+            source_rows
+                .saturating_mul(self.column_count())
+                .saturating_add(spanning_rows),
+        )
     }
 
     /// Whether this table would create too many child widgets in one render.
@@ -72,6 +91,12 @@ struct BufferedTableRow {
     is_header: bool,
     /// Cells in source order.
     cells: Vec<BufferedTableCell>,
+    /// Whether this row is one label spanning the table instead of source cells.
+    ///
+    /// Omission rows use this so a row the planner could not project still
+    /// reads as one full-width row at its own position inside the same table,
+    /// rather than as a stray first-column cell.
+    spans_all_columns: bool,
 }
 
 /// One buffered Markdown table cell.
@@ -117,6 +142,39 @@ impl BufferedTableBuilder {
         }
     }
 
+    /// Charge cells the planner counted for this table but did not retain.
+    ///
+    /// A carried-embed crossing stops retaining a table's remaining cells and
+    /// forwards their true count instead, so the widget budget below must be
+    /// evaluated against the block's real total. Charging here keeps
+    /// `exceeds_preview_widget_budget()` deciding exactly what it decides when
+    /// the whole table arrives in one projection turn.
+    pub(super) fn charge_unretained_cells(&mut self, cells: usize) {
+        self.observed_cells = self.observed_cells.saturating_add(cells);
+        if self.observed_cells > MAX_PREVIEW_TABLE_CELLS {
+            self.over_budget = true;
+            self.current_cell = None;
+            self.current_row = None;
+        }
+    }
+
+    /// Append one full-width row standing in for a row that was not projected.
+    pub(super) fn push_omission_row(&mut self, text: &str) {
+        // The marker is not source content, so it is never charged against the
+        // cell budget and never joins the header section.
+        self.current_cell = None;
+        if let Some(row) = self.current_row.take() {
+            self.rows.push(row);
+        }
+        self.rows.push(BufferedTableRow {
+            is_header: false,
+            cells: vec![BufferedTableCell {
+                markup: glib::markup_escape_text(text).to_string(),
+            }],
+            spans_all_columns: true,
+        });
+    }
+
     /// Fold one event from inside the active table into the buffered model.
     pub(super) fn push_event(&mut self, event: Event<'_>) {
         match event {
@@ -129,6 +187,7 @@ impl BufferedTableBuilder {
                 self.current_row = Some(BufferedTableRow {
                     is_header: true,
                     cells: Vec::new(),
+                    spans_all_columns: false,
                 });
             }
             Event::End(TagEnd::TableHead) => {
@@ -147,6 +206,7 @@ impl BufferedTableBuilder {
                 self.current_row = Some(BufferedTableRow {
                     is_header: self.in_header,
                     cells: Vec::new(),
+                    spans_all_columns: false,
                 });
             }
             Event::End(TagEnd::TableRow) => {
@@ -369,19 +429,43 @@ fn build_table_widget(preview: &LushtextMarkdownPreview, table: &BufferedTable) 
     grid.add_css_class("markdown-table");
     let column_count = table.column_count();
     accessibility::set_role(&grid, gtk4::AccessibleRole::Table);
+    // Report the same row population `column_count()` is derived from — source
+    // rows only — so the announced shape matches the rendered grid rather than
+    // counting preview-owned omission rows as table data.
+    let source_row_count = table
+        .rows
+        .iter()
+        .filter(|row| !row.spans_all_columns)
+        .count();
     accessibility::set_labelled_description(
         &grid,
         "Markdown table",
-        &format!(
-            "Rendered table with {} rows and {column_count} columns",
-            table.rows.len()
-        ),
+        &format!("Rendered table with {source_row_count} rows and {column_count} columns"),
     );
 
     let header_rows = table.header_row_count();
     let mut grid_row = 0usize;
 
     for (row_index, row) in table.rows.iter().enumerate() {
+        if row.spans_all_columns {
+            let markup = row.cells.first().map_or("", |cell| cell.markup.as_str());
+            let label = build_table_cell_label(preview, markup, false, Alignment::Left);
+            label.set_wrap(true);
+            label.add_css_class("markdown-table-omission-row");
+            accessibility::set_label(&label, &label.text());
+            // `column_count()` is already floored at 1; keep the floor explicit
+            // here because `Grid::attach` treats a zero width as a programmer
+            // error rather than an empty span.
+            grid.attach(
+                &label,
+                0,
+                usize_to_i32(grid_row),
+                usize_to_i32(column_count.max(1)),
+                1,
+            );
+            grid_row += 1;
+            continue;
+        }
         for column_index in 0..column_count {
             let markup = row
                 .cells
@@ -596,6 +680,7 @@ mod tests {
             rows: (0..row_count)
                 .map(|_| BufferedTableRow {
                     is_header: false,
+                    spans_all_columns: false,
                     cells: (0..column_count)
                         .map(|_| BufferedTableCell {
                             markup: "cell".to_string(),

@@ -23,6 +23,8 @@ mod file_load;
 mod format_upgrade;
 #[path = "properties/inline_footnotes.rs"]
 mod inline_footnotes;
+#[path = "properties/markdown_plan.rs"]
+mod markdown_plan;
 #[path = "properties/note.rs"]
 mod note;
 #[path = "properties/palette.rs"]

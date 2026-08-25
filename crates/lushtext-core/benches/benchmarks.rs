@@ -3572,6 +3572,17 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
     group.finish();
 }
 
+/// Largest event count any single projection batch of one plan carries.
+fn max_batch_events_of(
+    plan: &lushtext_core::services::markdown_render::MarkdownRenderPlan,
+) -> usize {
+    plan.batches
+        .iter()
+        .map(lushtext_core::services::markdown_render::MarkdownEventBatch::len)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Benchmark GTK-free Markdown planning and emit the direct projection bounds.
 fn bench_markdown_render_planning(c: &mut Criterion) {
     let mut dense = String::new();
@@ -3580,12 +3591,7 @@ fn bench_markdown_render_planning(c: &mut Criterion) {
     }
     let dense_plan = plan_markdown(&dense);
     assert!(dense_plan.is_complete());
-    let max_batch_events = dense_plan
-        .batches
-        .iter()
-        .map(lushtext_core::services::markdown_render::MarkdownEventBatch::len)
-        .max()
-        .unwrap_or(0);
+    let max_batch_events = max_batch_events_of(&dense_plan);
     assert!(max_batch_events <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
     eprintln!(
         "markdown-render-bound-evidence source_bytes={} events={} batches={} max_events_per_slice={} retained_bytes={} embeds={} limit=none",
@@ -3597,14 +3603,76 @@ fn bench_markdown_render_planning(c: &mut Criterion) {
         dense_plan.metrics.embed_descriptors,
     );
 
-    let limited = (0..300).map(|_| "**x** ").collect::<String>();
-    let limited_plan = plan_markdown(&limited);
+    // One indivisible dense block: planning now omits it and keeps going, so
+    // the interesting counters are the omission count and the surviving tail
+    // rather than a terminal limit.
+    let omitted = format!(
+        "{}\n\ntail paragraph\n",
+        (0..300).map(|_| "**x** ").collect::<String>()
+    );
+    let omitted_plan = plan_markdown(&omitted);
+    assert!(omitted_plan.is_complete());
+    assert_eq!(omitted_plan.omissions(), 1);
+    assert!(max_batch_events_of(&omitted_plan) <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
     eprintln!(
-        "markdown-render-limited-evidence source_bytes={} events={} batches={} limit={:?}",
-        limited_plan.metrics.source_bytes,
-        limited_plan.metrics.events,
-        limited_plan.batches.len(),
-        limited_plan.limit,
+        "markdown-render-omission-evidence source_bytes={} events={} batches={} omissions={} limit={:?}",
+        omitted_plan.metrics.source_bytes,
+        omitted_plan.metrics.events,
+        omitted_plan.batches.len(),
+        omitted_plan.omissions(),
+        omitted_plan.limit,
+    );
+
+    // The two shapes that used to lose the document tail. Both now sub-slice
+    // across turns, so the counters that matter are the batch count and the
+    // per-slice high water: they are what bounds one GTK projection turn.
+    let mut oversized_table =
+        String::from("| key | default | description |\n| --- | --- | --- |\n");
+    for row in 0..300 {
+        writeln!(
+            oversized_table,
+            "| image.tag{row} | v1.{row}.0 | container image tag for component {row} |"
+        )
+        .expect("write Markdown table benchmark fixture");
+    }
+    oversized_table.push_str("\ntail paragraph\n");
+    let table_plan = plan_markdown(&oversized_table);
+    assert!(table_plan.is_complete());
+    assert_eq!(table_plan.omissions(), 0);
+    assert!(max_batch_events_of(&table_plan) <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
+    eprintln!(
+        "markdown-render-oversized-table-evidence source_bytes={} events={} batches={} max_events_per_slice={} retained_bytes={} omissions={} limit={:?}",
+        table_plan.metrics.source_bytes,
+        table_plan.metrics.events,
+        table_plan.batches.len(),
+        max_batch_events_of(&table_plan),
+        table_plan.metrics.retained_bytes,
+        table_plan.omissions(),
+        table_plan.limit,
+    );
+
+    // Indented, not fenced: the pinned parser coalesces a fenced body into one
+    // event, while an indented block emits one event per line, which is the
+    // shape that actually sub-slices at text-run boundaries.
+    let mut oversized_code = String::new();
+    for line in 0..600 {
+        writeln!(oversized_code, "    let value_{line} = compute({line});")
+            .expect("write Markdown code benchmark fixture");
+    }
+    oversized_code.push_str("\ntail paragraph\n");
+    let code_plan = plan_markdown(&oversized_code);
+    assert!(code_plan.is_complete());
+    assert_eq!(code_plan.omissions(), 0);
+    assert!(max_batch_events_of(&code_plan) <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
+    eprintln!(
+        "markdown-render-oversized-code-evidence source_bytes={} events={} batches={} max_events_per_slice={} retained_bytes={} omissions={} limit={:?}",
+        code_plan.metrics.source_bytes,
+        code_plan.metrics.events,
+        code_plan.batches.len(),
+        max_batch_events_of(&code_plan),
+        code_plan.metrics.retained_bytes,
+        code_plan.omissions(),
+        code_plan.limit,
     );
 
     let mut group = c.benchmark_group("markdown_render_planning");
@@ -3612,8 +3680,14 @@ fn bench_markdown_render_planning(c: &mut Criterion) {
     group.bench_function("10000_paragraphs", |b| {
         b.iter(|| black_box(plan_markdown(black_box(&dense))));
     });
-    group.bench_function("dense_single_block_limited", |b| {
-        b.iter(|| black_box(plan_markdown(black_box(&limited))));
+    group.bench_function("dense_single_block_omitted", |b| {
+        b.iter(|| black_box(plan_markdown(black_box(&omitted))));
+    });
+    group.bench_function("oversized_table_sub_sliced", |b| {
+        b.iter(|| black_box(plan_markdown(black_box(&oversized_table))));
+    });
+    group.bench_function("oversized_indented_code_sub_sliced", |b| {
+        b.iter(|| black_box(plan_markdown(black_box(&oversized_code))));
     });
     group.finish();
 }

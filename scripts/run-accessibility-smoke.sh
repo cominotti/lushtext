@@ -15,6 +15,7 @@ ACCESSIBILITY_CASES=(
     properties-panel
     compact-properties
     markdown-preview
+    markdown-preview-omissions
     preview-mode-transition
     editor
     focus-mode
@@ -314,6 +315,7 @@ MATRIX_ROWS_BY_CASE = {
     "properties-panel": ["A11Y-PROPERTIES-NORMAL"],
     "compact-properties": ["A11Y-PROPERTIES-COMPACT", "A11Y-SHELL-DENSE-CONSTRAINED"],
     "markdown-preview": ["A11Y-MARKDOWN-REPRESENTATIVE"],
+    "markdown-preview-omissions": ["A11Y-MARKDOWN-REPRESENTATIVE"],
     "preview-mode-transition": ["A11Y-EDITOR-FOCUS-PREVIEW", "A11Y-MARKDOWN-CONSTRAINED"],
     "editor": ["A11Y-EDITOR-REPRESENTATIVE"],
     "focus-mode": ["A11Y-EDITOR-FOCUS-PREVIEW"],
@@ -687,6 +689,41 @@ assert_text_interface() {
     fi
 
     printf 'PASS surface=%s role=%s name=%s text_chars=%s tree=%s\n' "$surface" "$role" "$name" "$char_count" "$tree" >>"$report"
+    record_accessibility_assertion "$capture" "text" "$surface" "$role" "$name" "$tree"
+}
+
+assert_text_interface_contains() {
+    local capture="$1"
+    local surface="$2"
+    local role="$3"
+    local name="$4"
+    local expected="$5"
+    local tree="$ARTIFACT_DIR/assertions/${capture}-atspi-tree.txt"
+    local report="$ARTIFACT_DIR/assertions/accessibility-text.txt"
+    local pattern="role='$role' name='$name'"
+    local line
+
+    line="$(grep -F "$pattern" "$tree" | head -n 1 || true)"
+    if [[ -z "$line" ]]; then
+        smoke_fail "accessibility text target '${name}' missing from '${capture}'. Artifacts: $ARTIFACT_DIR"
+    fi
+
+    if [[ "$line" != *"text_sample="* ]]; then
+        smoke_fail "accessibility text target '${name}' has no text sample. Artifacts: $ARTIFACT_DIR"
+    fi
+
+    # The tree dump samples a bounded prefix of the text interface, so a fixture
+    # asserted this way must place the expected content near the start of the
+    # surface. That is deliberate for the omission markers, which have no
+    # accessible object of their own and are only reachable as buffer text.
+    # Fixed-string matching, not `[[ != *pattern* ]]`: the marker text contains
+    # `[` and `]`, which glob matching would treat as a bracket expression and
+    # could match text the marker does not actually contain.
+    if ! printf '%s' "${line#*text_sample=}" | grep -Fq -- "$expected"; then
+        smoke_fail "accessibility text target '${name}' does not expose '${expected}'. Artifacts: $ARTIFACT_DIR"
+    fi
+
+    printf 'PASS surface=%s role=%s name=%s text_contains=%s tree=%s\n' "$surface" "$role" "$name" "$expected" "$tree" >>"$report"
     record_accessibility_assertion "$capture" "text" "$surface" "$role" "$name" "$tree"
 }
 
@@ -1127,8 +1164,47 @@ index = {
 PY
 }
 
+create_markdown_omission_fixture() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    /usr/bin/python3 - "$path" <<'PY'
+import sys
+from pathlib import Path
+
+# 300 bold spans is over 256 parser events inside one inline span, so the run is
+# indivisible: the planner cannot cut inside it and replaces that one unit.
+DENSE = "**x** " * 300
+
+# The overflowing loose list item comes first on purpose. Its marker has no
+# accessible object of its own, so it is only provable through the preview's
+# text interface, and the AT-SPI tree dump samples a bounded prefix of that
+# text. Putting the item first keeps the marker inside that sampled prefix.
+lines = [
+    f"- {DENSE}",
+    "",
+    "- item-a",
+    "",
+    "- item-b",
+    "",
+    "Paragraph after the list.",
+    "",
+    "| a | b |",
+    "| --- | --- |",
+    "| keep-0a | keep-0b |",
+    f"| {DENSE} | dropped-b |",
+    "| keep-2a | keep-2b |",
+    "",
+    "Tail after the table.",
+    "",
+]
+Path(sys.argv[1]).write_text("\n".join(lines), encoding="utf-8")
+PY
+}
+
 FIXTURE="$ARTIFACT_DIR/fixtures/accessibility-smoke.txt"
 smoke_create_text_fixture "$FIXTURE"
+MARKDOWN_OMISSION_FIXTURE="$ARTIFACT_DIR/fixtures/markdown-preview-omissions.md"
+create_markdown_omission_fixture "$MARKDOWN_OMISSION_FIXTURE"
 
 unset NO_AT_BRIDGE
 : >"$ARTIFACT_DIR/assertions/accessibility-anchors.txt"
@@ -1217,6 +1293,35 @@ assert_anchor "markdown-preview" "markdown preview" "table" "Markdown table"
 assert_anchor "markdown-preview" "markdown preview" "table cell" "Table cell Headings"
 assert_anchor "markdown-preview" "markdown preview" "image" "Markdown image: Image could not be loaded"
 assert_anchor "markdown-preview" "markdown preview" "image" "Markdown image: Remote images are not supported"
+fi
+
+if case_selected "markdown-preview-omissions"; then
+# Anchor scope is deliberately split, and the split is a fact about the
+# presentation rather than a shortcut. A marker that replaces one table row
+# becomes a full-width table cell, so it is a real accessible object with its
+# own label and is asserted through AT-SPI. The markers that replace a list
+# item, quoted paragraph, definition body, or code-block line are plain preview
+# buffer text with no accessible object of their own, so they are asserted
+# through the preview's text interface instead. Giving each of those its own
+# accessible object would be a presentation change and is out of scope here;
+# widget tests in crates/lushtext/tests/widget/markdown_preview.rs carry the
+# per-marker copy, the Simplified terminal, and the accessible description.
+DEFAULT_FIXTURE="$FIXTURE"
+FIXTURE="$MARKDOWN_OMISSION_FIXTURE"
+run_accessibility_capture "markdown-preview-omissions" \
+    --window-bool-action set-preview-mode=true \
+    --wait-predicate visual-geometry-settled \
+    --wait-atspi-text "Rendered Markdown content" \
+    --wait-atspi-text "Markdown table"
+FIXTURE="$DEFAULT_FIXTURE"
+assert_anchor "markdown-preview-omissions" "markdown preview omissions" "table" "Markdown table"
+assert_anchor "markdown-preview-omissions" "markdown preview omissions" "table cell" "Table cell keep-0a"
+assert_anchor "markdown-preview-omissions" "markdown preview omissions" "table cell" "Table cell keep-2a"
+# The spanning marker row deliberately keeps the bare marker text as its
+# accessible name instead of the `Table cell ...` prefix used for real data
+# cells: it is not table data, it is a report about the row that is missing.
+assert_anchor "markdown-preview-omissions" "markdown preview omissions" "table cell" "[Markdown preview omitted part of one block that exceeds 256 render events: one table row]"
+assert_text_interface_contains "markdown-preview-omissions" "markdown preview omissions" "text" "Rendered Markdown content" "one list item"
 fi
 
 if case_selected "preview-mode-transition"; then
