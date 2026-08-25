@@ -441,6 +441,19 @@ Prefer the new standard-library helpers when they make intent clearer:
 
 Use the Rust 1.96 `core::range` value types only when they reduce real range-moving friction in named byte-span values. Range syntax still produces the legacy `std::ops` range types today, so do not mechanically rewrite every `std::ops::Range<usize>` import. Keep legacy ranges for proptest strategies, third-party APIs, and APIs meant to accept ordinary range syntax; prefer `impl RangeBounds<usize>` for new caller-facing range inputs.
 
+When mapping a `Path::file_name()` or `Path::extension()` result, write
+`.and_then(OsStr::to_str)` (with `use std::ffi::OsStr;`) rather than
+`.and_then(|name| name.to_str())`. This one is worth knowing because **a clean
+`make check` does not catch the closure form**: clippy's
+`redundant_closure_for_method_calls` cannot fire on it, because the closure
+parameter needs an auto-ref adjustment (`&&OsStr` -> `&OsStr`), so the closure
+reaches `main` through a green lint gate and SonarQube reports it there as
+`rust:S1612`. Note also that Sonar's suggested fix names `Path::to_str`, which
+does **not** compile for these receivers: both methods return `Option<&OsStr>`,
+so the method reference is `OsStr::to_str`. When fixing one instance, grep the
+file for the rest — this smell arrives in clusters, and a partial fix just
+re-opens the finding.
+
 ## Error Handling
 
 - Services return `anyhow::Result`.
