@@ -84,7 +84,7 @@ convention has been proven on at least two completed lower-risk migrations.
 | Row id | Workflow | Current size | Entry points | Owned pure policy | Seams (i/c/a/p) | Seam value object | Evidence surface | Risk | Slot | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs` (was the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census)); mutation parity proved | panel half migrated: 8 inspection fns retired into `evidence.rs`, 5 configuration setters plus 6 override statics collapsed into `SearchPanelTestPolicy`; actuation seams deferred | exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side) | exists: `SearchPanelEvidence` via `evidence()`; automation `window.content_search` projects from it | tier-2 (search/preview half), tier-3 (Replace All write half) | 1 (search/preview half, complete) + 2 (replace/undo half) | migrated |
-| WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | 16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897) | `Ctrl+P`, `Ctrl+K` palette modes, `win.notes-show-notes` | none in `model/` beyond domain `model/palette.rs` (17 consumers → domain, stays) | 15/10/2/0 = 27 fns, 40 sites, 4 override statics | exists: `FileIndexBuildCoordinator` + `NoteSourceRefreshCoordinator` generation identity | partial: `FileIndexBuildCoordinatorSnapshot`, `NoteSourceRefreshCoordinatorSnapshot`, `PaletteSearchCoordinatorSnapshot` | tier-2 | 2 | pending |
+| WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | 16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897); the `ui` subtotal is `ui/command_palette/**` (1,672) plus `ui/window/focus_indexing.rs` (856), which the census attributed to this row but which stays window code | `win.toggle-command-palette` (`Ctrl+Shift+P`), palette mode dropdown and Tab cycling, sidebar file create/delete/rename and watcher reconciliation, `win.notes-show-notes` (the census cell said `Ctrl+P` / `Ctrl+K`; the real palette accelerator is `Ctrl+Shift+P` and `Ctrl+K` belongs to the recent-Open popover) | relocated to `crates/lushtext-core/src/ui/command_palette/policy.rs` (queue admission byte/cap math, batch-kind selection and flush guard, mutation-generation arbitration and replay, retirement-cap classification, header-skipping navigation, presentation decisions); mutation coverage gained, not relocated — see [Migrated Workflow Roles](#wfr-command-palette). Domain `model/palette.rs` (17 consumers) stays | palette half migrated: 5 inspection fns retired into `evidence.rs`, 2 configuration setters plus 2 override statics collapsed into `CommandPaletteTestPolicy`; 3 process-global retirement counters retained as lifecycle probes (per-widget folding would change their meaning from "this process observed a last-owned at-cap retirement" to a count no test asks for); 3 actuation seams deferred. The pre-migration cell read `15/10/2/0 = 27 fns, 40 sites, 4 override statics`, which was row-scoped: `ui/command_palette/**` held 12 of those functions and 22 of the gate-attribute sites, and the other 15 live in `services/palette/**` and `ui/window/notes/**` shared with `WFR-NOTES-BOOKMARKS` (slot 5) | exists: `PaletteSearchCoordinator` generation identity + `is_current` (query seam; the convention accepts a coordinator that owns the generation as the seam value object). new: `FileIndexMutationTicket` + `FileIndexMutationFacts` + `arbitrate` (file-index mutation seam) | exists: `CommandPaletteEvidence` via `evidence()`; automation `window.command_palette` and both palette readiness blockers project from it | tier-2 | 2a | migrated |
 | WFR-DOCUMENT-SAVE | Save, Save As, save formatting, durability | 7 files, 6,672 lines (ui 2,132 / model 991 / services 3,549) | `win.save`, `win.save-as`, `Ctrl+S`, close-with-changes dialog, autosave-on-close | `model/save_admission.rs` (2 consumer files, 1 workflow → single-consumer, relocates) | 10/11/9/4 = 34 fns, 44 sites, 5 override statics | exists: `SaveCompletionTicket` (completion seam). required: `QueuedSaveTicket` + `QueuedSaveFacts` (admission seam; carries the renamed field) | partial: `SaveAdmissionSnapshot` | tier-3 | 3 | pending |
 | WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | 10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375) | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore | `model/file_load.rs` (4 consumers → domain-shaped, stays pending review in slot 3) | 23/7/3/1 = 34 fns, 55 sites, 3 override statics | required: `LoadRequestTicket` (carries `{load_generation, cancel_token}`, exploded at 2 call sites today) | partial: `FileLoadAdmissionSnapshot`, `OpenPopoverRowLayoutSnapshot` | tier-3 | 3 | pending |
 | WFR-DRAFT-RECOVERY | Draft autosave, crash recovery, orphan cleanup | 6 files, 8,930 lines (ui 2,578 / model 442 / services 5,910) | first-dirty autosave timer, startup recovery scan, restored-draft inline alert, `Discard...` / `Save...` | `model/draft.rs` (9 consumers → domain, stays) | 7/18/3/0 = 28 fns, 53 sites, 14 override statics | exists: `DraftRestoreTicket` + `DraftRestoreFacts`; `DraftMutationIntent`; `DraftCleanupContinuation` | partial: `OrphanCleanupRuntimeSnapshot` | tier-3 | 4 | partially-conforming |
@@ -92,7 +92,7 @@ convention has been proven on at least two completed lower-risk migrations.
 | WFR-LOCAL-HISTORY | Local history capture, preview, restore | 4 files, 5,536 lines (ui 2,586 / model 173 / services 2,777) | `win.show-local-history`, baseline capture on first edit, periodic capture timer, restore action | `model/local_history.rs` (6 consumers → domain, stays) | 9/11/4/0 = 24 fns, 33 sites, 4 override statics | exists: `BaselineCaptureTicket` + `BaselineCaptureFacts`; `PeriodicCaptureTicket` + `PeriodicCaptureFacts`; `LocalHistoryReplacementTicket` | partial: `LocalHistoryPreviewCoordinatorSnapshot`, `LocalHistoryPreviewInstallSnapshot` | tier-3 | 4 | partially-conforming |
 | WFR-BUFFER-REPLACEMENT | Bounded buffer install and clear slices | 2 files, 1,215 lines (ui 1,029 / model 186) | local-history restore, Replace All undo, draft restore install | `model/buffer_replacement.rs` (2 consumer files, 2 workflows → cross-cutting between local-history and Replace All undo; stays) | 4/0/4/0 = 8 fns, 26 sites | exists: `BufferReplacementTicket` + `BufferReplacementSession` | none | tier-3 | 4 | partially-conforming |
 | WFR-WORKSPACE-TREE | Workspace folders, file tree, watch, reconcile | 28 files, 16,947 lines (ui 11,682 / model 1,368 / services 3,897) | New Workspace, Add Folder, refresh button, row activation, context menus, `Space` peek, watcher events | `model/workspace_scan.rs` (3 consumers → single-workflow, relocates); `model/workspace.rs` (28 consumers → domain, stays); `model/workspace_persistence.rs` (2 consumers → single-workflow, relocates) | 24/7/29/5 = 65 fns, 116 sites | exists: `WorkspaceScanTicket` (scan side). required: `WorkspaceWatchTicket` (watch-install side; `{targets_generation, lifetime_generation}` compared loosely at 2 sites) | partial: `WorkspaceScanPressureEvidence`, `WorkspaceWatchMailboxSnapshot` | tier-3 | 5 | pending |
-| WFR-NOTES-BOOKMARKS | Notes, bookmarks, sidecar migration, format upgrade | 22 files, 12,521 lines (ui 4,977 / model 770 / services 6,774) | `win.notes-*`, `win.toggle-bookmark`, `win.edit-bookmark-label`, rename-driven sidecar migration, startup reconcile | `model/note.rs`, `model/bookmark.rs`, `model/sidecar_identity.rs` (6/9/11 consumers → domain, stay) | 2/4/4/0 = 10 fns, 16 sites, 2 override statics | required: `NotesBrowserTicket` (carries `{generation, mode}`; the `is_current(generation) && mode == mode && !disposed` triple is duplicated at 2 sites) | partial: `NotesBrowserRuntimeSnapshot` | tier-3 | 5 | pending |
+| WFR-NOTES-BOOKMARKS | Notes, bookmarks, sidecar migration, format upgrade | 22 files, 12,521 lines (ui 4,977 / model 770 / services 6,774) | `win.notes-*`, `win.toggle-bookmark`, `win.edit-bookmark-label`, rename-driven sidecar migration, startup reconcile | `model/note.rs`, `model/bookmark.rs`, `model/sidecar_identity.rs` (6/9/11 consumers → domain, stay) | 2/4/4/0 = 10 fns, 16 sites, 2 override statics; slot 2a additionally left this row the 15 palette-row seam functions that live in `services/palette/**` and `ui/window/notes/**` | required: `NotesBrowserTicket` (carries `{generation, mode}`; the `is_current(generation) && mode == mode && !disposed` triple is duplicated at 2 sites). **Named slot-5 task from slot 2a:** retire `NoteSourceRefreshCoordinator` into the shared `SingleFlightCoordinator`. Slot 2a deferred it, and the reason is **not** that the state is shared — there are two independent instances, `command_palette_note_refreshes` on the window imp serving the palette and `source_refreshes` in `ui/window/notes/mod.rs` serving the Notes browser. The reason is that deduping the *type* changes `NotesBrowserRuntimeSnapshot`'s shape, which is this row's surface area | partial: `NotesBrowserRuntimeSnapshot` | tier-3 | 5 | pending |
 | WFR-MARKDOWN-PREVIEW | Markdown preview render, images, footnotes, tables | 11 files, 11,274 lines (ui 8,334 / services 2,940); re-measured after `continue-markdown-preview-past-oversized-blocks` added `ui/markdown_preview/continuation.rs` (1,170) and `text_flow.rs` (265) while `mod.rs` fell 2,541 → 1,985, and grew `services/markdown_render.rs` 556 → 2,940, of which ~1,700 are co-located `#[cfg(test)]` planner tests. The `ui` subtotal spans `ui/markdown_preview/**` (7,762) plus `ui/window/preview.rs` (572) | `Alt+P`, `win.toggle-preview-mode`, side-by-side action, buffer changed | none in `model/` | 12/4/3/2 = 21 fns, 56 sites, 3 override statics (unchanged by the continuation change) | exists: `MarkdownRenderSession::is_current(generation)`; plus the planner/projector batch seam `MarkdownCarrySignature` + `MarkdownOpenContainer` (expected/open containers per batch, chained across turns), `MarkdownBlockOmission` (omission reason, scope, and unretained charge crossing the same seam), and the projector-side `MarkdownProjectionContinuation` + `ContinuationBreach` that holds and validates it | partial: `MarkdownImageAdmissionSnapshot` | tier-2 | 7 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
 | WFR-MINIMAP | Minimap strip, markers, native source map geometry | 2 files, 3,965 lines (ui 3,779 / model 186) | `win.toggle-minimap`, `Ctrl+Shift+M`, buffer/viewport/sidebar reflow | `model/minimap_analysis.rs` (1 consumer → single-consumer, relocates) | 9/1/1/0 = 11 fns, 16 sites | exists: `MinimapAnalysisSession` (`{generation, lifetime}`) | partial: `MinimapAnalysisSnapshot` | tier-2 logic, high proof cost | 6 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
 | WFR-BUFFER-SNAPSHOT | Bounded GTK buffer text capture | 1 file, 1,149 lines (ui) | called by save, draft autosave, encoding analysis, preview, local history | `model/plain_disposal.rs` is consumed through `plain-disposal`, not owned here | 5/0/4/0 = 9 fns, 40 sites | exists: `BufferSnapshotHandle` + `BufferSnapshotPayload` | partial: `BufferSnapshotMetrics`, `BufferSnapshotStateForTest`, `BufferSnapshotCountersForTest` | tier-2 | 7 | cross-cutting |
@@ -102,7 +102,7 @@ convention has been proven on at least two completed lower-risk migrations.
 | WFR-PRINT | Print document | 1 file, 172 lines (ui) | `win.print` | none | 0/0/0/1 = 1 fn, 8 sites | none required — one synchronous snapshot handed to the print runner | exists: `PrintDocumentSnapshot` | tier-1 | 7 | pending |
 | WFR-SHELL-LAYOUT | Window shell, tabs, split views, focus mode, zoom | 19 files, 8,449 lines (ui) | `win.toggle-sidebar`, `win.toggle-properties`, `F9`, `win.toggle-focus-mode`, `win.new-tab`, tab actions, breakpoints, resize | none | 1/2/8/0 = 11 fns, 47 sites, 1 override static | none required — allocation-driven geometry with no worker completion seam; `SettleBurst` readiness already carries the pending state | none needed | tier-1 | 7 | pending |
 | WFR-STATUS-NOTIFICATIONS | Status lane, inline alerts, notification lifecycle | 6 files, 2,019 lines (ui 887 / services 1,132) | any workflow result, progress heartbeat, inline alert actions | none | 1/0/0/0 = 1 fn, 1 site | none required — owner/surface identity is already a scalar pair validated inside `services/notifications.rs` | none needed | tier-1 | 7 | pending |
-| WFR-AUTOMATION-SPINE | Read-only D-Bus automation and action catalog | 5 files, 6,897 lines (ui 2,146 / model 2,195 / services 2,556) | D-Bus method calls, `scripts/lushtext-automation.py` | `model/action_catalog.rs` (3 consumers → domain, stays) | 0/0/2/0 = 2 fns, 2 sites | none required — the exported contract is the value object | exists: 18 `Automation*Snapshot` types; these become projections of workflow evidence | tier-1 | 2 onward, incrementally per migrated workflow | pending |
+| WFR-AUTOMATION-SPINE | Read-only D-Bus automation and action catalog | 5 files, 6,897 lines (ui 2,146 / model 2,195 / services 2,556) | D-Bus method calls, `scripts/lushtext-automation.py` | `model/action_catalog.rs` (3 consumers → domain, stays) | 0/0/2/0 = 2 fns, 2 sites | none required — the exported contract is the value object | exists: 18 `Automation*Snapshot` types; these become projections of workflow evidence as each workflow migrates. Two projections exist: `window.content_search` from `SearchPanelEvidence` (slot 1) and `window.command_palette` plus both palette readiness blockers from `CommandPaletteEvidence` (slot 2a). `make check-automation-docs` gates both against the `Evidence Projection Map` in `docs/automation-reference.md` | tier-1 | 2a onward, incrementally per migrated workflow | pending |
 | WFR-EDITOR-MEMORY | Editor residency and memory policy | 1 file, 469 lines (model) | consumed by editor page load/save and window focus indexing | `model/editor_memory.rs` (7 consumer files across 5 modules and 3 workflows → cross-cutting) | n/a | exists: `EditorResidencyLedger` | none | tier-2 | none | exempt — see [Outlier Resolutions](#outlier-resolutions) |
 | WFR-MIGRATION-LEDGER | Sidecar migration ledger | 2 files, 701 lines (model 225 / services 476) | note sidecar rename, startup reconcile | `model/migration_ledger.rs` (5 consumer files across notes, local history, and `services/` → cross-cutting) | n/a | exists: `MigrationLedgerEntry::matches_paths` | none | tier-3 | none | cross-cutting |
 
@@ -278,16 +278,25 @@ seam.
 
 ### WFR-COMMAND-PALETTE
 
-`Ctrl+P` → `open()` → mode selection → query changed → `Debounce` ⇢ debounce
-fires → `PaletteSearchCoordinator::submit` → `PaletteSearchStart` →
-`spawn_search` ⇢ worker search over `FileIndex`, resuming against
-`is_current(generation)` → row publish.
+Query: `Ctrl+Shift+P` → `open()` → mode selection → query changed → `Debounce` ⇢
+debounce fires → `PaletteSearchCoordinator::submit` → `PaletteSearchStart` →
+`query_execution::dispatch_query_worker` ⇢ worker search over `FileIndex`,
+resuming against `is_current(generation)` → row publish, and a retained latest
+request starts from inside that completion.
 
 Index: build request → `FileIndexBuildCoordinator` with `FileIndexBuildLedger`
-⇢ worker build → mutation through `FileIndexMutationLedger` ⇢ retirement of the
-replaced index.
+⇢ worker build → full replacement. Separately, incremental mutation: bounded
+queue admission → 75 ms flush debounce ⇢ flush → disposal-capacity reservation,
+which on refusal arms the capacity wakeup ⇢ retry → batch dispatch under
+`FileIndexMutationTicket` ⇢ worker mutation through `FileIndexMutationLedger` →
+arbitration, which on loss re-arms the flush debounce ⇢ replay through a
+rebuild, then a tail flush when the queue refilled ⇢ retirement of the released
+index.
 
-Five inversions, all coordinator-guarded.
+**Eight inversions across the two stage orders**, three of them (the two
+debounces and the disposal-capacity wakeup) timer- or wakeup-driven rather than
+coordinator-guarded. The pre-migration trace recorded "five inversions, all
+coordinator-guarded", which under-counted; slot 2a corrected it from the code.
 
 ### WFR-MARKDOWN-PREVIEW
 
@@ -652,18 +661,23 @@ same grounds and are recorded as such.
 Order is by increasing risk, and every `tier-3` slot follows at least two
 completed lower-risk migrations.
 
-**Slot 2 is the one place where that rule needs an explicit decision.** Slot 2
-carries a tier-3 half (the Replace All write path and its undo journal) but only
-one completed lower-risk migration precedes it, slot 1's tier-2 exemplar. Slot 2
-must therefore either land and verify its tier-2 `WFR-COMMAND-PALETTE` migration
-before opening the replace/undo half inside the same change, or split into 2a
-(palette, tier-2) and 2b (replace/undo, tier-3). Its position in this table is not
-a waiver of the two-proof rule; the proposal must say which option it takes.
+**Slot 2 was the one place where that rule needed an explicit decision, and the
+decision was to split it into 2a and 2b.** Slot 2 carried a tier-3 half (the
+Replace All write path and its undo journal) while only one completed lower-risk
+migration preceded it, slot 1's tier-2 exemplar. The alternative was to sequence
+the tier-2 `WFR-COMMAND-PALETTE` migration first inside one change. The split was
+taken because the two-proof rule wants a *completed* migration and completion is
+observable only at the change boundary: sequenced inside one change the gate is a
+promise in a task list, whereas as two changes `make check-workflow-boundaries`
+enforces it — 2b cannot pass until this matrix marks `WFR-COMMAND-PALETTE`
+migrated and the programme record's ledger marks slot 2a complete. Slots 3
+through 7 keep their numbers.
 
 | Slot | Change scope | Workflows | Highest tier |
 | --- | --- | --- | --- |
 | 1 | Census, convention, enablers, exemplar (`normalize-workflow-readability-boundaries`, complete) | `WFR-SEARCH-REPLACE` search and preview half only | tier-2 |
-| 2 | Search/replace completion plus palette | `WFR-SEARCH-REPLACE` replace and undo half, `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections | tier-3 |
+| 2a | Palette migration, facade budget, first automation projections beyond search (`migrate-command-palette-workflow-readability`) | `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections beyond the search fields | tier-2 |
+| 2b | Search/replace completion (`complete-search-replace-workflow-readability`) | `WFR-SEARCH-REPLACE` replace and undo half, continuing `WFR-AUTOMATION-SPINE` projections | tier-3 |
 | 3 | Save and load | `WFR-DOCUMENT-SAVE`, `WFR-DOCUMENT-LOAD` | tier-3 |
 | 4 | User-content restore family | `WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-BUFFER-REPLACEMENT` | tier-3 |
 | 5 | Workspace tree and notes | `WFR-WORKSPACE-TREE`, `WFR-NOTES-BOOKMARKS` | tier-3 |
@@ -675,24 +689,33 @@ the exemplar deliberately scopes to the non-writing half so the pattern is
 proven before any user-data path is touched.
 
 **Artifacts each slot is expected to need.** Slot 1 carried proposal, design,
-tasks, and two new capability specs. Slots 2 through 5 and 7 are expected to need
-only a **proposal and tasks**, because this matrix and the two capability specs
-already hold the contract: a migration consumes the convention and checks off
-rows. Slot 6 (minimap) is the expected exception and may need a design document
-for its pixel-verified geometry under animation frames. A migration that finds it
-needs a spec delta or a new capability is a signal that the phase-0 contract was
-incomplete, and the retroactive-amendment rule in
-[Completion Rule](#completion-rule) applies to the fix.
+tasks, and two new capability specs. Slots 2a through 5 and 7 are expected to
+need a **proposal and tasks, plus the minimum spec delta strict validation
+requires**, because this matrix and the capability specs already hold the
+contract: a migration consumes the convention and checks off rows. The earlier
+wording said "only a proposal and tasks", which `openspec validate --strict`
+cannot satisfy — it fails any change with no `specs/` delta ("Change must have at
+least one delta"), so every slot carries one. What still signals an incomplete
+phase-0 contract is a delta that *adds obligations or capabilities*, not a delta
+that restates a fulfilled future-tense requirement or closes an adjacency the
+convention already sanctions. Slot 6 (minimap) is the expected exception for a
+**design** document, for its pixel-verified geometry under animation frames. When
+a migration does need a new obligation or capability, the retroactive-amendment
+rule in [Completion Rule](#completion-rule) applies to the fix.
 
-**Slot 1 residue that slot 2 inherits.** `WFR-SEARCH-REPLACE` is `migrated` for
-its search and preview half only. Still outstanding: the Replace All write path
-and its undo journal (`services/search_backup.rs`); `replace.rs`'s final
-coordination role name or names; making `activate_undo_replacements` a delegation
-instead of facade-inlined transaction bookkeeping and widget mutation;
-`model/workspace_search.rs`'s relocation decision; the normative facade line
-budget number; and the first `WFR-AUTOMATION-SPINE` projections beyond the search
-fields. Slot 2 must **not** re-plan the capped-result delivery fix or the
-`WalkStop` stop-semantics split — both landed in slot 1 and are recorded under
+**Slot 1 residue, and what slot 2b still inherits.** `WFR-SEARCH-REPLACE` is
+`migrated` for its search and preview half only. Two of the six obligations are
+discharged by slot 2a: ~~the normative facade line budget number~~ (declared at
+370, see [Facade size budget](#facade-size-budget)) and ~~the first
+`WFR-AUTOMATION-SPINE` projections beyond the search fields~~ (`window.command_palette`
+and both palette readiness blockers now project from palette evidence). Four
+remain, and all four are **slot 2b's**: the Replace All write path and its undo
+journal (`services/search_backup.rs`); `replace.rs`'s final coordination role
+name or names; making `activate_undo_replacements` a delegation instead of
+facade-inlined transaction bookkeeping and widget mutation; and
+`model/workspace_search.rs`'s relocation decision. Slot 2b must **not** re-plan
+the capped-result delivery fix or the `WalkStop` stop-semantics split — both
+landed in slot 1 and are recorded under
 [WFR-SEARCH-REPLACE](#wfr-search-replace).
 
 The change-level view of these slots, with the same list in a machine-readable
@@ -801,7 +824,7 @@ amend the spec and re-migrate every already-migrated row in the same change.
 | Facade | the workflow's public module surface | narrates stages, delegates everything |
 | Pure policy | `policy.rs` | one per workflow; no GTK-family imports |
 | Evidence | `evidence.rs` | one per workflow; one visibility rule — the narrowest visibility its readers require, and a pre-existing wider evidence type is narrowed to it rather than left wide |
-| Coordination | bounded set of job names: `admission`, `execution`, `retirement`, `watch` | a workflow may own more than one |
+| Coordination | bounded set of job names: `admission`, `execution`, `retirement`, `watch`, optionally prefixed with the stage order served (`index_execution`) | a workflow may own more than one |
 
 The convention deliberately does **not** fix a single coordination file name. The
 census found `runtime` already naming three different jobs across four files, and
@@ -810,9 +833,26 @@ name would force a subdirectory-per-workflow restructuring of roughly 20 workflo
 Role names are scoped within a shared directory instead. A coordination job that no
 listed role name describes requires a spec amendment to add the name.
 
+**Stage-order qualification.** Where **one** workflow owns more than one ordered
+stage order in a single directory and more than one of those stage orders needs a
+coordination module of the same shape, the module name MAY qualify a bounded role
+name with the stage order it serves. The qualifier uses the workflow's own domain
+vocabulary and the suffix stays a bounded role name, so the bounded set is not
+widened. A workflow must not take an ill-fitting bounded name merely because the
+fitting one is already spent on a different stage order of the same workflow.
+Slot 2a hit this first: the palette owns a query search and an incremental
+file-index mutation, and both need an `execution` module, so they are
+`query_execution.rs` and `index_execution.rs` while `retirement.rs` stays
+unqualified because only one stage order retires anything.
+
+**The bounded set is reviewed, not gated.** `make check-workflow-boundaries`
+validates that a migrated row's declared role paths *exist*; it does not verify
+that a coordination module's name is drawn from the set. No migration may rely on
+a gate to reject an off-set name.
+
 ### Facade size budget
 
-**Measured, not yet normative.** The exemplar's facade
+**Declared and active.** The exemplar's facade
 (`crates/lushtext-core/src/ui/search_panel/mod.rs`) is **350 physical lines**, of
 which 75 are the module-doc stage narration and 166 are non-comment, non-blank
 lines, narrating 6 inversions across two stage orders. It measured 357 lines when
@@ -824,13 +864,26 @@ are the metric the mechanical check uses, so that is the number a budget should
 be compared against.
 
 Per `openspec/specs/workflow-readability-boundaries/spec.md`, the **first
-migration change after this exemplar** sets the normative number from the
+migration change after this exemplar** set the normative number from the
 exemplar's measured facade. Slot 1 was the exemplar, not that migration, so it
-recorded the measurement and left the number unset; slot 2 sets
-it, and under the retroactive-amendment rule that is also the cheapest moment to
-correct it, because exactly one workflow is migrated. The measurement above is
-the input: a budget below roughly 370 lines would force this facade's narration
-to be split, which defeats the facade.
+recorded the measurement and left the number unset. **Slot 2a
+(`migrate-command-palette-workflow-readability`) set it at 370**, and under the
+retroactive-amendment rule that was also the cheapest moment, because exactly one
+other workflow was migrated. The derivation: 350 measured, plus modest headroom,
+bounded below by this section's own finding that a budget under roughly 370 lines
+would force the exemplar facade's narration to be split, which defeats the
+facade. Slot 2a re-measured the exemplar at 350 before declaring the number and
+verified that facade against it (see [Retroactive amendment](#retroactive-amendment)).
+
+**The 20 lines of headroom are a stated risk, deliberately taken.** A loose
+budget enforces nothing, so the number is tight; the consequence is that a facade
+narrating two stage orders may not fit on the first attempt. The response is
+always to delegate more work into the coordination modules, never to raise the
+number, because raising it is a convention amendment that requires re-migrating
+every migrated row in the same change. If an honest role split still cannot fit
+370, that is real evidence the number is wrong, and it must be corrected while as
+few workflows as possible are migrated. Slot 2a's own palette facade fit within
+the budget, which is the number's first independent test.
 
 **How to declare it.** The budget lives in this section as one
 machine-readable line, exactly:
@@ -841,12 +894,14 @@ machine-readable line, exactly:
 
 `make check-workflow-boundaries` reads that line. While it is absent the facade
 size check is inert. Once present, the check counts the physical lines of every
-`migrated` row's declared `facade` path and fails when one exceeds the budget.
-Only the first such line in this section is read, so the budget cannot be
-declared twice. Changing the number is a convention amendment: it must go
-through the spec and re-check every already-migrated row in the same change.
+`migrated` row's declared `facade` path and fails when one exceeds the budget,
+naming the row, the facade path, its measured size, and the budget. Only the
+first such line in this section is read, so the budget cannot be declared twice.
+Changing the number is a convention amendment: it must go through the spec and
+re-check every already-migrated row in the same change. A later migration MUST
+NOT re-derive the number as if it were still unset.
 
-No budget is declared yet.
+- normative facade line budget: 370
 
 ### Argument-count suppressions
 
@@ -921,6 +976,62 @@ migrations that follow:
 - The row is `migrated` for the panel workflow's search and preview half. The
   Replace All write path, its undo journal, and `model/workspace_search.rs`
   remain slot-2 scope; slot 1 deliberately scoped to the non-writing half.
+
+### WFR-COMMAND-PALETTE
+
+- facade: `ui/command_palette/mod.rs`
+- coordination: `ui/command_palette/query_execution.rs`, `ui/command_palette/index_admission.rs`, `ui/command_palette/index_execution.rs`, `ui/command_palette/retirement.rs`
+- policy: `ui/command_palette/policy.rs`
+- evidence: `ui/command_palette/evidence.rs`
+- mutation parity: `openspec/changes/migrate-command-palette-workflow-readability/evidence/mutation-parity-palette-policy.md`
+
+Notes on this row, which is the second migration and the first to exercise the
+stage-order qualification rule:
+
+- `runtime.rs` is gone. It was the census's clearest example of the name the
+  convention rejects: 59 lines holding a seam value object, a worker entry
+  point, and a test-only delay static. The value object and the worker entry
+  moved to `query_execution.rs`; the static moved to `test_policy.rs`.
+- **The palette owns two `execution` modules, qualified by stage order.** The
+  query flight and the incremental file-index mutation are separate ordered stage
+  orders and each has a submit/dispatch/arbitrate shape, so they are
+  `query_execution.rs` and `index_execution.rs`. `index_admission.rs` is the
+  mutation queue's bounded retention, its 75 ms debounce, its disposal-capacity
+  retry, and its flush gate; `retirement.rs` needs no qualifier because only one
+  stage order retires anything. The recommended pre-implementation mapping put
+  the mutation worker inside `admission.rs`; that was rejected because it would
+  overload a bounded role name to avoid the collision, which is exactly what the
+  qualification rule exists to prevent.
+- `imp.rs` keeps the template children, the list factory, the accessible-state
+  projection, and the source-installation helpers. It is adapter detail, not a
+  coordination role.
+- `test_policy.rs` holds `CommandPaletteTestPolicy`, the workflow's single
+  test-only timing value, behind `#[cfg(feature = "test-utils")]`. It replaced
+  two independent statics with two public setters that sat ahead of the
+  workflow's logic in `mod.rs` and `runtime.rs`.
+- `policy.rs` is `pub` for the same reason the exemplar's is: GTK-free pure types
+  addressed directly from outside the workflow's private module tree. Nothing
+  outside the workflow mutates through it.
+- Two test-serving `Cell` fields (`observed_search_cancellations`,
+  `last_cancelled_search_examined`) were unconditional production fields before
+  this change. They are now behind the workflow's test feature, so a
+  default-feature build compiles no storage for them.
+- The three process-global retirement counters stay lifecycle probes rather than
+  evidence fields. They are monotonic process accumulators answering "did this
+  process ever observe a last-owned at-cap retirement", which a per-widget
+  evidence field cannot express; folding them in would silently change their
+  meaning. They moved into `retirement.rs` beside the classification policy they
+  instrument.
+- `FileIndexBuildCoordinator` in `services/palette/index.rs` is now a
+  palette-named alias over the shared `SingleFlightCoordinator`, the way
+  `services/palette/runtime.rs` already aliases `PaletteSearchCoordinator`. Its
+  snapshot gains the shared type's two high-water fields; the only readers were
+  `services/palette/tests.rs` and `benches/benchmarks.rs`, and both read only
+  `active`, `pending`, and `started`.
+- Mutation coverage is a **gain, not a relocation**: `ui/command_palette/**` was
+  outside `examine_globs` before this change, so the pre-move baseline is zero by
+  construction. The evidence file states that asymmetry rather than claiming
+  "0 → 0, parity holds".
 
 ## Completion Rule
 

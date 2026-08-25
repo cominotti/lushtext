@@ -120,7 +120,7 @@ src/
     ├── sidebar/         # Multi-workspace sidebar orchestrator plus dialogs, callbacks, and per-workspace sections
     │   └── workspace_section/ # Per-workspace state plus row factory, accessibility, and context-menu wiring
     ├── search_panel/    # Workspace search + Replace All, first workflow migrated to the readability role convention: mod.rs narrative facade, policy.rs pure policy (search single-flight, retirement budget, preview freshness seam), execution.rs + retirement.rs + replace.rs coordination, evidence.rs observation surface, plus history/list_factory/results/accessibility adapter detail and test-utils-only test_policy.rs
-    ├── command_palette/ # Ctrl+Shift+P search: files + note records + commands
+    ├── command_palette/ # Ctrl+Shift+P search over files + note records + commands, second workflow migrated to the readability role convention: mod.rs narrative facade narrating both stage orders, policy.rs pure policy (bounded index-update admission, batch selection, mutation-generation arbitration and replay, retirement classification, result navigation, presentation decisions), query_execution.rs + index_admission.rs + index_execution.rs + retirement.rs coordination (the two execution modules are stage-order-qualified because one workflow owns two stage orders needing the same role), evidence.rs observation surface, plus imp/item adapter detail and test-utils-only test_policy.rs
     ├── plain_disposal.rs # Non-blocking weighted Send-payload destruction with producer-owned latest retry
     ├── open_popover/    # Ctrl+K searchable recent-document Open popover
     ├── properties_panel/ # Right-side document metadata + formatting controls
@@ -144,7 +144,7 @@ recovery), and each of its modules carries exactly one role:
 | Narrative facade | the workflow's public module surface | ordered stages, intent names, delegation, and each control-flow inversion with its resumption point |
 | Seam value objects | with the workflow | identity/freshness/intent bundles that cross two or more boundaries, constructed once at the entry point and validated as a unit |
 | Pure policy | `policy.rs` | pure decisions; no `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5` imports |
-| Coordination | `admission`, `execution`, `retirement`, `watch` | timers, budgets, generations, dispatch; a workflow may own more than one |
+| Coordination | `admission`, `execution`, `retirement`, `watch`, optionally prefixed with the stage order served (`index_execution`) | timers, budgets, generations, dispatch; a workflow may own more than one |
 | Evidence | `evidence.rs` | one typed surface that is the single source of the workflow's observable state |
 
 - Pure policy lives beside its consumer when it has a single **owning workflow**;
@@ -158,6 +158,12 @@ recovery), and each of its modules carries exactly one role:
   per-field `*_for_test` inspection getters.
 - Cross-module workflow operations are named for intent, not mechanism, and a
   value is never renamed while crossing a seam.
+- Coordination role names come from the bounded set, and where one workflow owns
+  several stage orders in one directory that each need the same role, the name may
+  be qualified with the stage order it serves (`query_execution.rs` and
+  `index_execution.rs` in `ui/command_palette/`). The bounded set is a **review**
+  contract: `make check-workflow-boundaries` validates that declared role paths
+  exist, not that a name is drawn from the set.
 - `docs/workflow-readability-matrix.md` is the completion source of truth: every
   workflow has a stable `WFR-*` row with its status, owned policy, seam value
   object, evidence surface, risk tier, and migration slot. Migration is a
@@ -168,8 +174,8 @@ recovery), and each of its modules carries exactly one role:
 - Amending the convention requires re-migrating every already-migrated workflow in
   the same change. Two generations of the convention must not coexist.
 - `docs/next/workflow-readability.md` is the programme record: the measured problem
-  this solves, how much is actually migrated (one workflow, roughly six percent of
-  `ui/` + `model/`), the remaining per-change scope with its machine-readable slot
+  this solves, how much is actually migrated (two workflows, roughly ten percent
+  of `ui/` + `model/`), the remaining per-change scope with its machine-readable slot
   ledger, the sequencing rationale, the rejected alternatives, and the two
   deferred items with the bar that would justify taking them on. **Read it before
   planning any workflow-structure work**, and advance it in the same change as the
@@ -193,7 +199,7 @@ If you add another nested `AGENTS.md`, keep it local, non-duplicative, and worth
 
 ### Key Design Decisions
 
-- **Workflow readability**: A workflow's story lives in one place. Its facade narrates the ordered stages and names every point where control resumes from an idle drain, timer, or worker completion; its pure policy sits in `policy.rs` beside it; its coordination modules are named for the job they do (`admission`, `execution`, `retirement`, `watch`), never `runtime`; and its observable state is one typed `evidence.rs` surface that tests read and automation snapshots project from. Field bundles crossing two or more boundaries are reified value objects reusing the existing `*Ticket` + `*Facts` + `*_is_current` shape, and a value is never renamed while crossing a seam. Status per workflow lives in `docs/workflow-readability-matrix.md`; see the Workflow Role Convention section above.
+- **Workflow readability**: A workflow's story lives in one place. Its facade narrates the ordered stages and names every point where control resumes from an idle drain, timer, or worker completion, and it stays within the normative facade line budget declared in the matrix (370 physical lines); its pure policy sits in `policy.rs` beside it; its coordination modules are named for the job they do (`admission`, `execution`, `retirement`, `watch`, optionally stage-order-qualified), never `runtime`; and its observable state is one typed `evidence.rs` surface that tests read and automation snapshots project from. Field bundles crossing two or more boundaries are reified value objects reusing the existing `*Ticket` + `*Facts` + `*_is_current` shape, and a value is never renamed while crossing a seam. Status per workflow lives in `docs/workflow-readability-matrix.md`; see the Workflow Role Convention section above.
 - **GtkSourceView owns editing**: language detection, syntax highlighting, style schemes, and undo/redo are all delegated to GtkSourceView, not reimplemented.
 - **GSettings for preferences**: Editor settings (word wrap, tab width, line numbers, etc.) are stored in GSettings (`dev.cominotti.lushtext` schema). Preferences rows use two-way `gio::Settings::bind()` where the row value maps directly to the setting. Each `EditorPage` binds simple and pure mapped projections in `constructed()` so setting changes update all editors without manual iteration; formatting values that can be overridden by EditorConfig and workflow side effects such as minimap refresh stay in explicit handlers.
 - **Dark mode**: GtkSourceView has its own style scheme system separate from GTK CSS. The base scheme ID is read from GSettings (`style-scheme` key) and the dark variant (e.g., `"Adwaita-dark"`) is selected automatically based on `libadwaita::StyleManager::is_dark()`, with live switching via `connect_dark_notify()`.

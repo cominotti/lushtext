@@ -157,7 +157,16 @@ A migrated workflow assigns each of its modules exactly one role:
   one. `runtime.rs` is not a role name: it says only that the module is
   machinery. A coordination job no listed name describes requires amending
   `openspec/specs/gtk-adapter-module-boundaries/spec.md`, not overloading an
-  existing name.
+  existing name. Where **one** workflow owns several ordered stage orders in one
+  directory and more than one of them needs a coordination module of the same
+  shape, the module name may qualify a bounded role name with the stage order it
+  serves (`query_execution.rs` and `index_execution.rs` in
+  `ui/command_palette/`), using the workflow's own domain vocabulary for the
+  qualifier while the suffix stays a bounded role name. Do not take an
+  ill-fitting bounded name because the fitting one is already spent on another
+  stage order of the same workflow. The bounded set is a review contract:
+  `make check-workflow-boundaries` validates only that declared role paths exist,
+  so no gate rejects an off-set name.
 - **Evidence** — `evidence.rs`, one per workflow, at the narrowest visibility its
   readers require. See the evidence-surface rules in
   `.agents/rules/widget-wiring.md`.

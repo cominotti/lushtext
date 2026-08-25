@@ -454,7 +454,8 @@ role so its whole story stays in one place:
 - co-located pure **`policy.rs`** with no GTK-family imports, which keeps it in
   mutation-testing scope wherever its workflow lives;
 - **coordination** modules named for the job they do (`admission`, `execution`,
-  `retirement`, `watch`);
+  `retirement`, `watch`), optionally prefixed with the stage order served when one
+  workflow owns several stage orders that need the same role;
 - one typed **`evidence.rs`** surface that is the workflow's observable state:
   tests read it, and the read-only D-Bus automation snapshots project from it
   without changing the exported contract.
@@ -465,6 +466,14 @@ stages, `policy.rs` holds the pure single-flight, retirement-budget, and
 preview-freshness policy, `execution.rs`/`retirement.rs`/`replace.rs` are its
 coordination jobs, and `evidence.rs` is the surface its widget tests and the
 `window.content_search` automation snapshot both read.
+
+`crates/lushtext-core/src/ui/command_palette/` is the second: `mod.rs` narrates
+*two* stage orders — the query flight and the incremental file-index mutation —
+with all eight of their control-flow inversions named,
+`query_execution.rs`/`index_admission.rs`/`index_execution.rs`/`retirement.rs`
+are its coordination jobs, and `evidence.rs` backs both its widget tests and the
+`window.command_palette` automation snapshot. It is also where the facade line
+budget became normative, at 370 physical lines.
 
 Migration to this shape is a staged programme. Per-workflow status, owned pure
 policy, seam value objects, risk tiers, and migration slots live in

@@ -52,7 +52,7 @@ LushtextWindow (AdwApplicationWindow)
 │   │           └── [layout: sheet] AdwBottomSheet [properties_bottom_sheet]
 │   │               ├── [content] AdwLayoutSlot "primary"
 │   │               └── [sheet] AdwLayoutSlot "properties"
-│   ├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+P)
+│   ├── GtkRevealer [palette_revealer] → LushtextCommandPalette (Ctrl+Shift+P)
 │   └── GtkRevealer [focus_mode_revealer] → focus-mode affordance
 └── LushtextStatusBar (always visible, full width)
     ├── GtkToggleButton [sidebar_toggle_button] — toggle sidebar (action: win.toggle-sidebar)

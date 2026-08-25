@@ -1,11 +1,13 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, six migration changes outstanding.** The convention
-is normative, the census is complete, the mechanical gate is wired into
-`make check-policy`, and exactly one workflow (`WFR-SEARCH-REPLACE`, search and
-preview half) is migrated. Everything else in `ui/` and `model/` is unchanged
-and behaviorally untouched. Slots 2 through 7 are authorable now; two items are
-deliberately deferred and may never be taken on.
+Status: **Phase 0 complete, slot 2a complete, six migration changes
+outstanding.** The convention is normative, the census is complete, the
+mechanical gate is wired into `make check-policy`, the normative facade line
+budget is declared and enforced, and two workflows are migrated:
+`WFR-SEARCH-REPLACE` (search and preview half, slot 1) and
+`WFR-COMMAND-PALETTE` (slot 2a). Everything else in `ui/` and `model/` is
+unchanged and behaviorally untouched. Slots 2b through 7 are authorable now; two
+items are deliberately deferred and may never be taken on.
 
 This document answers, in one read: what problem the programme solves, how much
 is done, what is next, what is deferred and why, and what would justify taking
@@ -23,9 +25,13 @@ that touch its scope:
 | `docs/workflow-readability-matrix.md` | per-workflow status, roles, seams, risk tier, slot; gated by `make check-workflow-boundaries` |
 | this file | why, baseline, sequencing, remaining scope, deferrals |
 
-Slot 2's `replace.rs` role-name decision lands on the third row: if no listed
+Slot 2b's `replace.rs` role-name decision lands on the third row: if no listed
 role name describes what that module does, the slot must amend
-`gtk-adapter-module-boundaries` rather than overload an existing name.
+`gtk-adapter-module-boundaries` rather than overload an existing name. Slot 2a
+already amended that spec once, adding the stage-order qualification rule for a
+single workflow owning two stage orders that each need the same coordination
+shape; 2b should check whether that rule already covers `replace.rs` before
+proposing a new role name.
 
 Full rationale for every decision below lives in the OpenSpec change
 **`normalize-workflow-readability-boundaries`** (`proposal.md` + `design.md`,
@@ -102,15 +108,35 @@ consolidation acts on. `WFR-SEARCH-REPLACE`'s own cell no longer holds a tuple �
 once a row is migrated the cell records what the migration did instead, which is
 why the reconciliation above exists.
 
+### Baseline after slot 2a
+
+| Quantity | After slot 1 | After slot 2a |
+| --- | --- | --- |
+| Workflows migrated | 1 (`WFR-SEARCH-REPLACE`, search/preview half) | 2 (plus `WFR-COMMAND-PALETTE`) |
+| Share of `ui/` + `model/` migrated | 4,762 of 79,017 censused lines ≈ 6% | 4,762 + 3,282 = 8,044 ≈ 10%. The palette's censused `ui` + `model` footprint is 3,282 (ui 2,528 + model 754); as with slot 1 this is the *workflow's footprint*, not the diff size |
+| Policy modules relocated | 2 of 7 relocation candidates | still 2 of 7. The palette had **no** `model/` relocation candidate: its pure logic was inline in the GTK adapter, so `ui/command_palette/policy.rs` is newly extracted rather than moved, and its mutation coverage is a gain from zero rather than a parity claim |
+| Test seams addressed | repo-wide 639 → 631 sites, 351 → 335 `*_for_test` functions | the palette held 12 `*_for_test` functions and 22 gate-attribute sites in `ui/command_palette/**`; 5 inspection functions and 2 configuration setters retired, 1 renamed actuation seam added where tests previously reached through `imp()` untracked, so the directory now holds 6 |
+| Seams reified | 1 (`ReplacePreviewTicket` + `ReplacePreviewFacts`) | 2 (plus `FileIndexMutationTicket` + `FileIndexMutationFacts`). The query seam needed **no** new type: its coordinator owns the generation and exposes `is_current`, which the convention accepts. Long signatures shortened: still 0 — the palette had no function with ≥6 non-receiver parameters, so the secondary figure remains uninformative and *seams reified* stays the primary unit |
+| Automation projections | 1 (`window.content_search`) | 2 (plus `window.command_palette` and both palette readiness blockers), now gated by an implemented evidence-to-snapshot drift check |
+| Facade line budget | measured 350, not declared | **declared at 370 and enforced** |
+
+Slot 2a also closed one Phase-0 gap that was specified but never built: the
+evidence-to-snapshot drift check `workflow-evidence-surfaces` requires of
+`make check-automation-docs`. Slot 1 could leave it unnoticed with one
+projection; making projections plural made it load-bearing.
+
 Two further Phase 0 facts a later session should not have to rediscover:
 
 - **The exemplar's facade measures 350 physical lines** (75 module-doc narration
   lines, 166 non-comment non-blank), narrating 6 inversions across two stage
   orders, down from a 578-line `mod.rs` that also held the accessibility
   projection and 23 observation getters. It measured 357 when the migration
-  landed and 350 after the result-cap fix delegated one more stage. **No
-  normative facade line budget is declared yet**; slot 2 sets it, per the
-  matrix's "Facade size budget" section.
+  landed and 350 after the result-cap fix delegated one more stage. **The
+  normative facade line budget is declared and active at 370 physical lines**,
+  set by slot 2a from that measurement plus modest headroom; see the matrix's
+  "Facade size budget" section for the derivation, the stated headroom risk, and
+  the machine-readable declaration the gate reads. A later slot must treat 370 as
+  settled convention rather than re-deriving it.
 - **A pre-existing product defect was found and fixed while proving behavior
   equivalence** (commit `f0ab1d9`): capped workspace-search results were
   silently discarded because the service's result cap wrote the caller's
@@ -122,59 +148,97 @@ Two further Phase 0 facts a later session should not have to rediscover:
 
 ## 3. Remaining scope
 
-Six changes remain. Order is by increasing risk; every `tier-3` slot follows at
-least two completed lower-risk migrations. The matrix's
+Six changes remain (2b and 3 through 7). Order is by increasing risk; every
+`tier-3` slot follows at least two completed lower-risk migrations, which slot 2a
+is the second of. The matrix's
 "Migration Order And Risk Tiers" section is the authoritative per-row mapping;
 this table is the change-level view.
 
 | Slot | Scope | Workflows | Artifacts expected |
 | --- | --- | --- | --- |
 | 1 | **complete** — census, convention, enablers, exemplar | `WFR-SEARCH-REPLACE` search and preview half | proposal + design + tasks + 2 capability specs (`normalize-workflow-readability-boundaries`) |
-| 2 | Finish search/replace, migrate the palette, set the facade budget | `WFR-SEARCH-REPLACE` replace/undo half, `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections | proposal + tasks |
+| 2a | **complete** — migrated the palette, set the facade budget at 370, first automation projections beyond search (`migrate-command-palette-workflow-readability`) | `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections beyond the search fields | proposal + tasks + 2 spec deltas |
+| 2b | Finish search/replace: the Replace All write path and its undo journal (`complete-search-replace-workflow-readability`) | `WFR-SEARCH-REPLACE` replace/undo half, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + minimum delta |
 | 3 | Save and load | `WFR-DOCUMENT-SAVE`, `WFR-DOCUMENT-LOAD` | proposal + tasks |
 | 4 | User-content restore family | `WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-BUFFER-REPLACEMENT` | proposal + tasks |
 | 5 | Workspace tree and notes | `WFR-WORKSPACE-TREE`, `WFR-NOTES-BOOKMARKS` | proposal + tasks |
 | 6 | Minimap | `WFR-MINIMAP` | proposal + design + tasks |
 | 7 | Residual sweep | `WFR-MARKDOWN-PREVIEW`, `WFR-EDITOR-FIND`, `WFR-ENCODING`, `WFR-PRINT`, `WFR-SHELL-LAYOUT`, `WFR-STATUS-NOTIFICATIONS`, `WFR-BUFFER-SNAPSHOT`, `WFR-PLAIN-DISPOSAL`, remaining `exclude_re` entries and argument-count suppressions, matrix completion | proposal + tasks |
 
-**Slot 2 must resolve one ordering question before it starts.** The convention
-requires that a `tier-3` workflow not be migrated until the shape has been proven
-on **at least two completed lower-risk migrations** (matrix, "Risk Tiers"), and
-slot 2 contains a tier-3 half — the Replace All write path and its undo journal.
-Only one lower-risk migration is complete: slot 1's tier-2 exemplar. Slot 2
-therefore may not open the write half on slot 1's proof alone. It must either
-sequence its own tier-2 work (the `WFR-COMMAND-PALETTE` migration) to land and be
-verified before the replace/undo half inside the same change, or split into 2a
-(palette, tier-2) and 2b (replace/undo, tier-3). Pick one explicitly in the
-proposal; do not leave it implicit, and do not read slot 2's position in this
-table as a waiver.
+**Slot 2's ordering question is resolved: it was split into 2a and 2b.** The
+convention requires that a `tier-3` workflow not be migrated until the shape has
+been proven on **at least two completed lower-risk migrations** (matrix, "Risk
+Tiers"), and slot 2 carried a tier-3 half — the Replace All write path and its
+undo journal — while only one lower-risk migration was complete, slot 1's tier-2
+exemplar. The two options were to sequence the tier-2 palette work first inside
+one change, or to split the slot. **The split was taken**, for one reason: the
+two-proof rule wants a *completed* migration, and completion is observable only
+at the change boundary. Sequenced inside one change the gate would be a promise
+in a task list; as two changes it is enforced mechanically, because 2b cannot
+pass `make check-workflow-boundaries` until the matrix marks
+`WFR-COMMAND-PALETTE` migrated and the ledger marks slot 2a complete. A tier-3
+durable rewrite plus undo journal also deserves its own verification section
+rather than being bundled with an 11,179-line palette migration.
+
+Per the ledger grammar below, the split keeps the number and takes letter
+suffixes. Slots 3 through 7 are **not** renumbered: their numbers are cited from
+the matrix and from per-row `Slot` cells.
 
 **Naming and finding a slot's change.** Slot 1 is the OpenSpec change
-`normalize-workflow-readability-boundaries`. Later slots have no reserved names;
-name them for their scope with a `-workflow-readability` suffix (for example
-`migrate-palette-workflow-readability`) and record the chosen name in this table
-when the change is authored, so the next cold session can find it. Before
+`normalize-workflow-readability-boundaries`, slot 2a is
+`migrate-command-palette-workflow-readability`, and slot 2b is
+`complete-search-replace-workflow-readability`. Slots 3 through 7 have no
+reserved names; name them for their scope with a `-workflow-readability` suffix
+and record the chosen name in the remaining-scope table above when the change is
+authored, so the next cold session can find it without searching. Before
 authoring, check `openspec list` and `openspec/changes/archive/` for an existing
 change covering the slot.
+
+| Slot | Change name |
+| --- | --- |
+| 1 | `normalize-workflow-readability-boundaries` (archived) |
+| 2a | `migrate-command-palette-workflow-readability` |
+| 2b | `complete-search-replace-workflow-readability` |
+| 3–7 | not yet authored |
+
+**The gate slot 2b checks before it starts.** 2b is tier-3 and needs two
+completed lower-risk proofs. Both are observable mechanically rather than by
+reading a task list: `docs/workflow-readability-matrix.md` must mark
+`WFR-COMMAND-PALETTE` `migrated` with a complete `Migrated Workflow Roles`
+subsection, the ledger below must mark `slot 2a` `complete`, and
+`make check-workflow-boundaries` must pass — which it cannot do if either half of
+that is a false claim.
 
 `WFR-EDITOR-MEMORY` and `WFR-MIGRATION-LEDGER` have no slot: they are
 cross-cutting policy that stays where it is. Their rows exist so a later change
 cannot silently relocate them.
 
-**Migration changes are expected to need only a proposal and tasks.** Phase 0
-holds the contract; a migration consumes `workflow-readability-boundaries` and
-`workflow-evidence-surfaces` and checks off matrix rows. Slot 6 is the one
-expected exception, because minimap decomposition has a genuine design question
-(pixel-verified geometry under animation frames). **If any other migration finds
-it needs a spec delta or a new capability, that is a signal that Phase 0's
-contract was incomplete** — and the retroactive-amendment rule in section 7
-applies to the fix.
+**Migration changes are expected to need a proposal and tasks, plus the minimum
+spec delta strict validation requires.** Phase 0 holds the contract; a migration
+consumes `workflow-readability-boundaries` and `workflow-evidence-surfaces` and
+checks off matrix rows. The original wording said "only a proposal and tasks",
+which `openspec validate <change> --strict` cannot satisfy: it fails any change
+carrying no `specs/` delta with "Change must have at least one delta". Slot 2a
+verified that against itself before writing its deltas (exit 1). Every migration
+slot therefore carries at least one delta, and slots 3 through 7 will too.
 
-### Slot 1 residue — what slot 2 inherits
+That does **not** widen scope. The signal of an incomplete Phase-0 contract is a
+delta that *adds obligations or capabilities* — a new requirement, a new
+capability, or a widened role set. A delta that only restates a fulfilled
+future-tense requirement in the settled tense, or closes a small adjacency the
+convention already sanctions, is spec hygiene. Slot 6 remains the one slot
+expected to need a **design** document, because minimap decomposition has a
+genuine design question (pixel-verified geometry under animation frames). When a
+migration does find it needs a new obligation or capability, the
+retroactive-amendment rule in section 8 applies to the fix.
+
+### Slot 1 residue — what slot 2b inherits
 
 Slot 1 deliberately migrated only the non-writing half of `WFR-SEARCH-REPLACE`,
 so the row is `migrated` for the search and preview half while real obligations
-remain. Slot 2 owns all of these:
+remain. Two of the six are **discharged by slot 2a** and struck through below;
+the remaining four are slot 2b's. This section is kept rather than deleted so a
+cold session can see which obligations existed and which were paid.
 
 - **The Replace All write path and its undo journal.** The row's tier-3 half:
   `services/search_backup.rs` plus the durable rewrite path.
@@ -189,14 +253,18 @@ remain. Slot 2 owns all of these:
   its three siblings.
 - **`model/workspace_search.rs`** (503 lines, 2 consumers, both search) — a
   census-found single-workflow module still awaiting its relocation decision.
-- **The normative facade line budget.** Per the matrix, the first migration after
-  the exemplar sets the number from the measured facade (350 physical lines
-  today). A budget below roughly 370 would force this facade's narration to
-  split, which defeats the facade.
-- **The first `WFR-AUTOMATION-SPINE` projections beyond the search fields**, which
-  the exemplar already projects from `SearchPanelEvidence`.
+- ~~**The normative facade line budget.**~~ **Discharged by slot 2a**, which
+  declared it at **370** physical lines from the exemplar's measured 350 plus
+  modest headroom, activated the previously inert check, observed it failing, and
+  verified the exemplar facade against it. Changing that number is now a
+  convention amendment under section 8.
+- ~~**The first `WFR-AUTOMATION-SPINE` projections beyond the search fields.**~~
+  **Discharged by slot 2a**: `window.command_palette` and both palette readiness
+  blockers project from `CommandPaletteEvidence`, and `make check-automation-docs`
+  now gates both projections against a documented `Evidence Projection Map`. The
+  row itself stays `pending`, because it continues in later slots.
 
-Slot 2 must **not** re-plan the result-cap delivery fix (section 2) or the
+Slot 2b must **not** re-plan the result-cap delivery fix (section 2) or the
 `WalkStop` stop-semantics split; both landed in slot 1.
 
 ### Slot ledger (machine-readable)
@@ -237,12 +305,48 @@ in both directions, which some rows need:
   `migrated` to satisfy the gate would be a false claim.
 
 - slot 1 (complete): WFR-SEARCH-REPLACE
-- slot 2 (outstanding): WFR-SEARCH-REPLACE (partial), WFR-COMMAND-PALETTE, WFR-AUTOMATION-SPINE
+- slot 2a (complete): WFR-COMMAND-PALETTE, WFR-AUTOMATION-SPINE (partial)
+- slot 2b (outstanding): WFR-SEARCH-REPLACE (partial), WFR-AUTOMATION-SPINE
 - slot 3 (outstanding): WFR-DOCUMENT-SAVE, WFR-DOCUMENT-LOAD
 - slot 4 (outstanding): WFR-DRAFT-RECOVERY, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-BUFFER-REPLACEMENT
 - slot 5 (outstanding): WFR-WORKSPACE-TREE, WFR-NOTES-BOOKMARKS
 - slot 6 (outstanding): WFR-MINIMAP
 - slot 7 (outstanding): WFR-MARKDOWN-PREVIEW, WFR-EDITOR-FIND, WFR-ENCODING, WFR-PRINT, WFR-SHELL-LAYOUT, WFR-STATUS-NOTIFICATIONS, WFR-BUFFER-SNAPSHOT, WFR-PLAIN-DISPOSAL
+
+### Convention friction slot 2a hit, recorded for 2b and 3 through 7
+
+Convention corrections are cheapest while few workflows are migrated, so these are
+recorded now rather than rediscovered.
+
+- **The bounded coordination role set was sufficient, but only with
+  qualification.** The palette needed two `execution` modules because it owns two
+  ordered stage orders that each have a submit/dispatch/arbitrate shape. No new
+  role name was needed; the fix was the stage-order qualifier
+  (`query_execution.rs`, `index_execution.rs`), added to
+  `gtk-adapter-module-boundaries`. **Expect this again**: any workflow with a
+  visible surface plus a background reconciliation half is the same shape. Slot 2b
+  should check the qualification rule against `replace.rs` before proposing a new
+  role name.
+- **The 370-line budget held on a second facade, with room to spare.** The palette
+  facade narrates *two* stage orders and eight inversions in 328 lines, 42 under
+  budget. The risk the budget section states did not materialize, and the reason is
+  informative: what makes a facade long is stage *bodies*, not stage narration, so
+  delegating aggressively keeps two stage orders comfortably inside a budget
+  derived from a one-and-a-half-stage-order facade.
+- **The evidence-surface visibility pattern needed no deviation.** Internal type
+  plus a `#[cfg(feature = "test-utils")]` re-export worked unchanged, because the
+  palette's readers are the same two the exemplar's are: `ui/automation.rs`
+  in-crate and the external widget harness.
+- **One thing the exemplar did not have to solve: an ungated test reach-through.**
+  The palette's widget tests called `palette.imp().rebuild_results(..)` directly —
+  not a `*_for_test` function, so it appeared in no seam census, and not gated, so
+  it shaped a production signature. Consolidating evidence surfaced it. Later slots
+  should grep their workflow's tests for `\.imp()\.` reach-through, not only for
+  `_for_test`, when sizing seam work.
+- **The census's inversion counts are floors, not totals.** The matrix trace said
+  the palette had five inversions, all coordinator-guarded; the code has eight,
+  three of them timer- or wakeup-driven. Write the facade narration from the code
+  and correct the trace, as slot 2a did.
 
 ## 4. The unblock point
 
