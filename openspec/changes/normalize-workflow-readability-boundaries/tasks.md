@@ -225,31 +225,49 @@
       `WFR-SEARCH-REPLACE`. No automation snapshot field changed shape;
       `content_search.result_capped` keeps its documented meaning and now reports it
       honestly.
-- [ ] 6.6 Run the app via `make run`, exercise search, replace, and undo, and confirm
+- [x] 6.6 Run the app via `make run`, exercise search, replace, and undo, and confirm
       stderr has no new GTK, GLib-GObject, or pixman warnings.
-      **Substantially proven, deliberately left unchecked: the literal `make run`
-      variant remains for the maintainer.** The debug binary was run on the real
-      GNOME/Mutter Wayland session (not headless) and driven through
-      `scripts/lushtext-automation.py` over: open panel, query, wait
-      `search-complete`, replace query, preview, confirm, undo, plus
-      `set-sidebar-visible` and `set-properties-visible` toggles to exercise the
-      animated shell chrome, plus a no-results query and a many-results query.
-      Fixture files went from 7 matches to 0 after confirm and back to 7 after undo,
-      so search, Replace All, and Undo all really ran. Captured stderr contained no
-      pixman `*** BUG ***`, no `Gtk-WARNING`, no `Gtk-CRITICAL`, no `GLib-GObject`,
-      and no `Trying to measure` warning — only the host's unrelated
-      `radv is not a conformant Vulkan implementation` driver notice.
-      Two deliberate deviations from the literal instruction, both to avoid damaging
-      the maintainer's environment: the app ran on a private D-Bus session with
-      isolated `XDG_*` and `LUSHTEXT_DATA_DIR`, because (1) an installed Flatpak
-      instance already owned `dev.cominotti.lushtext` and `make run` would have asked
-      the maintainer's running LushText to quit, and (2) Replace All mutates files, so
-      it must not be pointed at the maintainer's real workspace folders. A first pass
-      without a11y isolation emitted three `Gtk-CRITICAL ... Could not activate remote
-      peer 'org.a11y.atspi.Registry'` lines; those are an artifact of the private bus
-      having no AT-SPI registry, and they disappeared under `GTK_A11Y=none`, leaving
-      the clean stderr above. Remaining for the maintainer: `make run` on the session
-      bus with dev desktop staging, which is the only part not covered.
+      **Done, including the literal `make run` variant.** Two passes were recorded.
+      The first pass ran the debug binary on the real GNOME/Mutter Wayland session on
+      a private D-Bus with isolated `XDG_*` and `LUSHTEXT_DATA_DIR`, because an
+      installed Flatpak instance still owned `dev.cominotti.lushtext` at the time. It
+      drove open panel, query, wait `search-complete`, replace query, preview,
+      confirm, undo, `set-sidebar-visible` / `set-properties-visible` toggles for the
+      animated shell chrome, and no-results plus many-results queries. Fixture files
+      went 7 matches -> 0 after confirm -> 7 after undo. Stderr was clean under
+      `GTK_A11Y=none`; without it, three `Gtk-CRITICAL ... Could not activate remote
+      peer 'org.a11y.atspi.Registry'` lines appeared, which are an artifact of a
+      private bus with no AT-SPI registry rather than an app defect.
+      The second pass closed the remaining literal gap: with no Flatpak instance
+      running, `make run` was invoked verbatim on the maintainer's real session bus
+      through the dev desktop staging path (`gtk-launch dev.cominotti.lushtext.Devel`),
+      under `.agents/skills/gtk-agentic-debugging/scripts/run-gtk-debug-session.sh`
+      with `--pid-pattern '/target/debug/lushtext$'`, so app stderr was captured on the
+      harness PTY (confirmed via `/proc/<pid>/fd/2 -> /dev/pts/3`) with journald
+      capture as a second lane. Replace All safety was preserved by scoping the single
+      workspace folder to a scratch fixture (four files, seven occurrences of a unique
+      nonsense token) with the maintainer's `workspaces.json` backed up and restored
+      afterwards, so no real workspace file could be rewritten.
+      Exercised on the session bus: `win.set-search-panel-visible` and the
+      Ctrl+Shift+F accelerator action `win.toggle-search-panel`; the token query
+      (7 matches in 4 files), a no-results query (0/0), and a denser query;
+      `win.set-search-panel-replace-query`, `win.preview-search-panel-replacements`
+      (7 preview rows, 7 checked), `win.confirm-search-panel-replacements`, and
+      `win.undo-search-panel-replacements` — twice, with two different replacement
+      templates. On-disk verification after each cycle: token count 7 -> 0 with 7
+      replacements present after confirm, then 7 -> 0 back after undo, so search,
+      Replace All, and Undo all really ran against real files. Sidebar and properties
+      panes were toggled four times each between passes to drive the animated shell
+      chrome, then `visual-geometry-settled` was awaited.
+      Verdict: the captured session stderr contained no `Trying to measure`, no
+      `Gtk-WARNING`, no `Gtk-CRITICAL`, no `Gdk-WARNING`, no `Gdk-CRITICAL`, no
+      `Adw-WARNING`, no `Adw-CRITICAL`, no `GLib-GObject-WARNING`, no `GLib-CRITICAL`,
+      and no pixman `*** BUG ***`. The only lines present were the host's unrelated
+      `radv is not a conformant Vulkan implementation` driver notice and two
+      pre-existing app-level tracing errors from session restore of files the
+      maintainer had already deleted (`Cannot stat ...`), neither of which is a
+      toolkit warning nor related to the search/replace/undo workflow. The user
+      journal showed no LushText entries for the run window.
 - [x] 6.7 Confirm `model/` no longer contains the two relocated modules and that the
       matrix records the remaining `model/` policy modules as cross-cutting or
       pending.
