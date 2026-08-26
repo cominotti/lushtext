@@ -520,6 +520,12 @@ fn current_readiness_failure(
         let Ok(editor) = page.child().downcast::<LushtextEditorPage>() else {
             continue;
         };
+        // Boolean-only site: read the load workflow's cheap lifecycle accessor
+        // rather than building a whole `LoadEvidence` per tab per poll. It reads
+        // the same `load_state` cell the surface's `load_state` field reads, so
+        // the two are identical by construction. A failed load stays a
+        // `workflow-failure` rather than readiness, which is documented
+        // behavior.
         if editor.load_state() == EditorLoadState::Failed {
             return Some(
                 "file-open-complete failed because an editor tab failed to load".to_string(),
@@ -586,6 +592,7 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
         let Ok(editor) = page.child().downcast::<LushtextEditorPage>() else {
             continue;
         };
+        // Boolean-only site, as above: same cell as `LoadEvidence::load_state`.
         file_load_active |= editor.load_state() == EditorLoadState::Loading;
         save_active |= editor.is_saving();
         editor_search_active |= editor
@@ -768,6 +775,9 @@ fn window_readiness_blocker(
         };
         if let Some(blocker) = included_blocker(
             predicate,
+            // Boolean-only site, as above: same cell as
+            // `LoadEvidence::load_state`. This one blocker gates six documented
+            // predicates, so it stays a scalar read per poll.
             editor.load_state() == EditorLoadState::Loading,
             READINESS_BLOCKER_FILE_LOAD,
         ) {
@@ -859,6 +869,11 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
     // The save workflow's exported field projects from its evidence surface
     // rather than re-deriving in-flight save state from the widget.
     let save = editor.as_ref().map(LushtextEditorPage::save_evidence);
+    // Same for the document-load workflow's exported field. The binding is
+    // deliberately not named `evidence`: two workflows project into this one
+    // snapshot object, and the drift gate attributes a projected field by the
+    // binding it is read through.
+    let load_evidence = editor.as_ref().map(LushtextEditorPage::load_evidence);
     let path = editor.as_ref().and_then(LushtextEditorPage::file_path);
     AutomationTabSnapshot {
         index,
@@ -871,9 +886,9 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
         path: path.map(|path| bounded_snapshot_text(path.display().to_string())),
         modified: editor.as_ref().is_some_and(LushtextEditorPage::is_modified),
         saving: save.as_ref().is_some_and(|evidence| evidence.inflight),
-        load_state: editor.as_ref().map_or_else(
+        load_state: load_evidence.as_ref().map_or_else(
             || "unknown".to_string(),
-            |editor| load_state_name(editor.load_state()).to_string(),
+            |load| load_state_name(load.load_state).to_string(),
         ),
         file_size: editor.as_ref().and_then(LushtextEditorPage::file_size),
         draft_present: editor

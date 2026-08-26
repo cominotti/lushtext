@@ -2668,3 +2668,89 @@ fn test_evidence_reads_survive_widget_disposal() {
     // Repeated reads after disposal stay identical and still do not panic.
     assert_eq!(after.query, palette.evidence().query);
 }
+
+#[test]
+fn test_evidence_reads_stay_side_effect_free_across_palette_mutation() {
+    // The reentrancy constraint is stated normatively in
+    // `openspec/specs/workflow-evidence-surfaces/spec.md`, and its proof pattern
+    // is required of every migrated workflow. This is the command palette's:
+    // drive the workflow through each operation that takes a mutable borrow of
+    // the state the accessor reads, read *after* each one, and assert that
+    // repeated reads of unchanged state are identical. It deliberately does not
+    // read the surface while a borrow is held — that is the panic the constraint
+    // prevents, not a proof of it.
+    ensure_gtk_init();
+    let palette = LushtextCommandPalette::new();
+
+    let idle = palette.evidence();
+    assert!(!idle.searching);
+    assert_eq!(idle.file_index_len, 0);
+    assert_eq!(idle.pending_index_update_count, 0);
+
+    // Installing sources replaces the guarded index and the open-tab source
+    // under their `borrow_mut()`s.
+    palette.set_file_index(in_memory_palette_index("reentrancy", 4));
+    let indexed = palette.evidence();
+    assert_eq!(indexed.file_index_len, 4);
+    let _ = palette.evidence();
+
+    palette.set_open_tabs(Vec::new());
+    let _ = palette.evidence();
+
+    // Query work submits into the single-flight coordinator's `borrow_mut()`.
+    palette.set_search_mode(SearchMode::Files);
+    let _ = palette.evidence();
+    palette.set_query("reentrancy");
+    let queried = palette.evidence();
+    assert_eq!(queried.query, "reentrancy");
+    let _ = palette.evidence();
+
+    // Incremental index mutations push into the bounded queue's `borrow_mut()`.
+    palette.update_index_file_created(Path::new("/synthetic/reentrancy/added.rs"));
+    let _ = palette.evidence();
+    palette.update_index_file_renamed(
+        Path::new("/synthetic/reentrancy/added.rs"),
+        Path::new("/synthetic/reentrancy/renamed.rs"),
+    );
+    let _ = palette.evidence();
+    palette.update_index_file_deleted(Path::new("/synthetic/reentrancy/renamed.rs"));
+    let _ = palette.evidence();
+
+    palette.close();
+    let _ = palette.evidence();
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not advance a generation, drain the bounded queue, or charge a source.
+    let first_read = palette.evidence();
+    let second_read = palette.evidence();
+    assert_eq!(first_read.query, second_read.query);
+    assert_eq!(first_read.mode, second_read.mode);
+    assert_eq!(first_read.result_count, second_read.result_count);
+    assert_eq!(first_read.searching, second_read.searching);
+    assert_eq!(first_read.file_index_len, second_read.file_index_len);
+    assert_eq!(
+        first_read.file_index_reservation_weight,
+        second_read.file_index_reservation_weight
+    );
+    assert_eq!(
+        first_read.open_tab_source_count,
+        second_read.open_tab_source_count
+    );
+    assert_eq!(
+        first_read.pending_index_update_count,
+        second_read.pending_index_update_count
+    );
+    assert_eq!(
+        first_read.queued_index_updates,
+        second_read.queued_index_updates
+    );
+    assert_eq!(
+        first_read.queued_index_update_bytes,
+        second_read.queued_index_update_bytes
+    );
+    assert_eq!(first_read.search_flight.started, second_read.search_flight.started);
+    assert_eq!(
+        first_read.search_flight.cancellation_requests,
+        second_read.search_flight.cancellation_requests
+    );
+}

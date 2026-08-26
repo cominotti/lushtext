@@ -9,18 +9,19 @@
 mod accessibility;
 mod bookmarks;
 mod buffer_replacement;
+mod document_identity;
 mod focus_mode;
 // Private implementation module. GTK's GObject bindings split custom widgets
 // into an `imp` struct for instance data/lifecycle hooks and this public wrapper
 // module for the type-safe API.
 mod imp;
 mod invisibles;
-mod load_runtime;
-mod load_save;
+pub mod load;
 mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
+mod restore_position;
 pub mod save;
 mod search;
 mod style_scheme;
@@ -58,10 +59,11 @@ pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementR
 pub(crate) use buffer_replacement::{BufferReplacementTicket, BufferReplacementWorkflow};
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::{EditorLoadState, PendingWarningAction};
+pub use load::{LoadEvidence, LoadInstallPhase, LoadOutcome};
 #[cfg(feature = "test-utils")]
-pub use load_runtime::set_next_load_body_disposal_probe_for_test;
-#[cfg(feature = "test-utils")]
-pub use load_runtime::set_next_load_disposal_reservation_weight_for_test;
+pub use load::{
+    set_next_load_body_disposal_probe_for_test, set_next_load_disposal_reservation_weight_for_test,
+};
 #[cfg(feature = "test-utils")]
 pub use local_history::{
     set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
@@ -568,15 +570,6 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn formatting_overrides(&self) -> FormattingOverrides {
         self.imp().formatting_overrides.get()
-    }
-
-    /// Register a callback fired after every successful file load or reload.
-    pub fn connect_file_loaded<F: Fn() + 'static>(&self, f: F) {
-        self.imp()
-            .load
-            .file_loaded_callbacks
-            .borrow_mut()
-            .push(Box::new(f));
     }
 
     /// Register a callback fired when bookmark state changes and should be persisted.

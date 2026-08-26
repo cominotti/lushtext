@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use lushtext_core::model::file_load::{
-    FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadPriority,
+    FileLoadAdmissionPolicy, FileLoadAdmissionRequest, FileLoadPriority, INSTALL_SLICE_BYTES,
     TRANSIENT_LOAD_FIXED_OVERHEAD_BYTES, TRANSIENT_LOAD_SOURCE_MULTIPLIER, next_install_boundary,
     transient_load_weight,
 };
@@ -38,6 +38,53 @@ proptest! {
             start = end;
         }
         prop_assert_eq!(reconstructed, text);
+    }
+
+    /// The paragraph-boundary contract, as a generated invariant.
+    ///
+    /// `.agents/rules/rust.md` states it normatively: an install slice must end
+    /// on a paragraph boundary, because `GtkTextBuffer` validates layout a whole
+    /// paragraph at a time and a slice stopping mid-paragraph re-lays-out
+    /// everything already installed in that paragraph on every later slice. The
+    /// escape hatch is that a paragraph larger than the slice budget installs in
+    /// **one** turn.
+    ///
+    /// Stated over the boundary function, that is: every non-final boundary ends
+    /// immediately after a newline, and an oversized slice is oversized only
+    /// because its terminating newline is its *first* one.
+    #[test]
+    fn install_boundaries_end_after_a_newline_or_consume_one_whole_paragraph(
+        paragraphs in prop::collection::vec(
+            prop::collection::vec(any::<char>(), 0..64),
+            0..400,
+        )
+    ) {
+        let text = paragraphs
+            .into_iter()
+            .map(|characters| characters.into_iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut start = 0usize;
+        while start < text.len() {
+            let end = next_install_boundary(&text, start);
+            prop_assert!(end > start);
+            prop_assert!(end <= text.len());
+            let slice = &text[start..end];
+            if end < text.len() {
+                prop_assert!(
+                    slice.ends_with('\n'),
+                    "a non-final slice must end just after a newline, got {:?}",
+                    slice.chars().rev().take(4).collect::<String>()
+                );
+                if slice.len() > INSTALL_SLICE_BYTES {
+                    // Over budget is only permitted when the paragraph itself is,
+                    // so the terminating newline must be the slice's only one.
+                    prop_assert_eq!(slice.matches('\n').count(), 1);
+                }
+            }
+            start = end;
+        }
     }
 
     #[test]

@@ -776,8 +776,10 @@ impl<const PROGRESS: bool> CapacityWakeup<PROGRESS> {
         }
     }
 
+    /// Whether this producer currently owns a paced capacity watch.
+    ///
+    /// Read by workflow evidence surfaces, so it is not `test-utils`-gated.
     #[must_use]
-    #[cfg(feature = "test-utils")]
     pub(crate) fn is_armed(&self) -> bool {
         self.source.borrow().is_some()
     }

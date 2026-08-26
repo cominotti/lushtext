@@ -294,6 +294,22 @@ evidence surface replaced.
   into a crash. This is a hazard consolidation creates: scattered per-field
   getters each read one narrow thing, while one surface makes every field
   reachable from every observation point.
+- **No evidence field may be read from inside a mutable borrow of the state the
+  accessor reads.** This follows from "one accessor reads the whole surface"
+  plus interior mutability, and it is a runtime panic rather than a compile
+  error, so it is stated here once instead of being rediscovered per workflow.
+  The accessor should compute every derived scalar first and drop each `Ref`
+  before building the surface's struct literal, so no borrow outlives the value
+  it produced; record the constraint in the module doc where the surface is
+  defined; and never add a second, narrower accessor to make a nested read
+  possible — that reintroduces the scattered getters the surface replaced.
+  Prove it with a test that **drives the workflow through each operation that
+  takes such a mutable borrow, reads the surface *after* each one, and asserts
+  that repeated reads of unchanged state are identical.** Do not write a test
+  that reads the surface *while* a borrow is held: that is the panic the
+  constraint prevents, not a demonstration of it. Reference implementations:
+  `search_panel::test_evidence_reads_stay_side_effect_free_across_journal_mutation`,
+  `editor_page::test_load_evidence_reads_stay_side_effect_free_across_load_mutation`.
 - An evidence surface is an internal type of the owning crate at the narrowest
   visibility its readers need. It is never added to the public D-Bus automation
   schema; once a workflow migrates, its automation snapshot fields *project*

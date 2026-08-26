@@ -147,6 +147,23 @@ pub(super) fn begin_admitted_save(
     let close_session_identity = ticket.close_session_identity;
 
     editor.cancel_load();
+    // Re-check the incomplete-installation gate **after** cancelling, not only
+    // at the queue stage.
+    //
+    // `cancel_load` on a live bounded installation deliberately empties the
+    // buffer in slices and sets `installation_incomplete`; the buffer at this
+    // instant holds a half-installed decode of the file. The queue stage checks
+    // this gate, but a load can start *between* queueing and admission — the
+    // shared byte budget can hold a queued save for as long as another save is
+    // writing, and no load entry point gates on `is_saving()`. Capturing text
+    // here without re-checking would write that partial decode over the user's
+    // file. Refuse exactly as the queue stage does, and let the retry come from
+    // the user once the load settles.
+    if editor.imp().load.installation_incomplete.get() {
+        admission::finish_queued_save_without_admission(editor, ticket.save_generation);
+        callback(Err(EditorSaveError::IncompleteLoadInstallation));
+        return;
+    }
     evidence::record_admitted_ticket(editor, ticket);
     let admitted = AdmittedSaveContext {
         ticket: SaveCompletionTicket::capture(editor, close_session_identity),

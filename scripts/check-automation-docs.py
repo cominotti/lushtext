@@ -62,13 +62,21 @@ class EvidenceProjection:
     `snapshot_object` is the documented `window.<object>` name, `evidence_type`
     is the Rust surface type, `evidence_source` is the file declaring it, and
     `snapshot_fn` is the projection function in `ui/automation.rs` whose
-    `evidence.<field>` reads define which fields are actually projected.
+    `<binding>.<field>` reads define which fields are actually projected.
+
+    `binding` exists because more than one workflow may project into the same
+    snapshot object: `tabs` carries both `SaveEvidence` and `LoadEvidence`. The
+    projection function reads each surface through a differently-named local, so
+    the binding is what attributes a projected field to the right surface.
+    Sharing one binding name across two surfaces would make each appear to
+    project the other's fields.
     """
 
     snapshot_object: str
     evidence_type: str
     evidence_source: Path
     snapshot_fn: str
+    binding: str = "evidence"
 
 
 EVIDENCE_PROJECTIONS = (
@@ -89,6 +97,13 @@ EVIDENCE_PROJECTIONS = (
         "SaveEvidence",
         REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/save/evidence.rs",
         "tab_snapshot",
+    ),
+    EvidenceProjection(
+        "window.tabs",
+        "LoadEvidence",
+        REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/load/evidence.rs",
+        "tab_snapshot",
+        binding="load",
     ),
 )
 
@@ -469,16 +484,21 @@ def projection_fn_body(automation_source: str, snapshot_fn: str) -> str:
     return match.group(0)
 
 
-def projected_evidence_fields(automation_source: str, snapshot_fn: str) -> list[str]:
+def projected_evidence_fields(
+    automation_source: str, snapshot_fn: str, binding: str = "evidence"
+) -> list[str]:
     """Evidence fields one snapshot projection function actually reads.
 
     This is the authority for "is this field projected". A field the projection
     never reads is internal to the workflow — a high-water mark, a queued-byte
     counter, a declared cap, a test-gated probe — and must not be documented as
     part of the exported contract.
+
+    Only reads through `binding` count, so two surfaces projecting into one
+    snapshot object stay attributed to the surface each one came from.
     """
     body = projection_fn_body(automation_source, snapshot_fn)
-    fields = re.findall(r"\bevidence\.([a-z0-9_]+)", body)
+    fields = re.findall(r"\b" + re.escape(binding) + r"\.([a-z0-9_]+)", body)
     # Preserve first-read order without duplicates so failures read predictably.
     return list(dict.fromkeys(fields))
 
@@ -501,12 +521,14 @@ def projected_snapshot_keys(automation_source: str, snapshot_fn: str) -> set[str
     )
 
 
-def documented_projection_map(reference_text: str) -> dict[tuple[str, str], str]:
+def documented_projection_map(reference_text: str) -> dict[tuple[str, str, str], str]:
     """Read the reference doc's Evidence Projection Map table.
 
-    Returns `{(snapshot_object, evidence_field): snapshot_field}`.
+    Returns `{(snapshot_object, evidence_type, evidence_field): snapshot_field}`.
+    The evidence type is part of the key because one snapshot object may be fed
+    by more than one workflow surface.
     """
-    documented: dict[tuple[str, str], str] = {}
+    documented: dict[tuple[str, str, str], str] = {}
     row = re.compile(
         r"^\|\s*`(window\.[a-z_]+)`\s*\|\s*`([A-Za-z0-9]+)`\s*\|"
         r"\s*`([a-z0-9_]+)`\s*\|\s*`([a-z0-9_.]+)`\s*\|\s*$"
@@ -514,8 +536,8 @@ def documented_projection_map(reference_text: str) -> dict[tuple[str, str], str]
     for line in reference_text.splitlines():
         match = row.match(line)
         if match:
-            snapshot_object, _evidence_type, evidence_field, snapshot_field = match.groups()
-            documented[(snapshot_object, evidence_field)] = snapshot_field
+            snapshot_object, evidence_type, evidence_field, snapshot_field = match.groups()
+            documented[(snapshot_object, evidence_type, evidence_field)] = snapshot_field
     return documented
 
 
@@ -540,13 +562,20 @@ def evidence_projection_findings(
         )
         evidence_source = projection.evidence_source.read_text(encoding="utf-8")
         declared = set(evidence_struct_fields(evidence_source, projection.evidence_type))
-        projected = projected_evidence_fields(automation_source, projection.snapshot_fn)
+        projected = projected_evidence_fields(
+            automation_source, projection.snapshot_fn, projection.binding
+        )
         snapshot_keys = projected_snapshot_keys(automation_source, projection.snapshot_fn)
         snapshot_prefix = projection.snapshot_object.removeprefix("window.")
         documented_for_object = {
             field: snapshot_field
-            for (snapshot_object, field), snapshot_field in documented.items()
+            for (
+                snapshot_object,
+                evidence_type,
+                field,
+            ), snapshot_field in documented.items()
             if snapshot_object == projection.snapshot_object
+            and evidence_type == projection.evidence_type
         }
 
         for field in projected:
@@ -600,6 +629,34 @@ def evidence_projection_findings(
                     f"field `{snapshot_field}`, but `{projection.snapshot_fn}` does not "
                     "project it"
                 )
+
+    # Orphan rows: a documented row whose (snapshot object, evidence type) pair
+    # matches no projection is invisible to the per-projection loop above,
+    # because that loop only ever looks at pairs it already knows. Keying the
+    # documented map by evidence type made this reachable, so it is checked
+    # explicitly rather than left to the reader.
+    #
+    # Scoped to the snapshot objects these projections own, so that callers
+    # passing a subset — the self-test probes each projection alone — do not see
+    # every other object's rows reported as orphans. For the full registered set
+    # this covers every documented object.
+    owned_objects = {projection.snapshot_object for projection in projections}
+    known_pairs = {
+        (projection.snapshot_object, projection.evidence_type)
+        for projection in projections
+    }
+    for (snapshot_object, evidence_type, field), snapshot_field in sorted(
+        documented.items()
+    ):
+        if snapshot_object not in owned_objects:
+            continue
+        if (snapshot_object, evidence_type) in known_pairs:
+            continue
+        findings.append(
+            f"{snapshot_object}: Evidence Projection Map documents evidence field "
+            f"`{evidence_type}.{field}` -> snapshot field `{snapshot_field}`, but "
+            f"no projection reads `{evidence_type}` into `{snapshot_object}`"
+        )
     return sorted(set(findings))
 
 
@@ -1009,7 +1066,11 @@ def run_evidence_projection_self_tests() -> None:
     documented = documented_projection_map(reference)
     wrongly_documented = sorted(
         field
-        for (snapshot_object, field), _snapshot_field in documented.items()
+        for (
+            snapshot_object,
+            _evidence_type,
+            field,
+        ), _snapshot_field in documented.items()
         if snapshot_object == "window.command_palette" and field in internal
     )
     if wrongly_documented:
@@ -1017,6 +1078,74 @@ def run_evidence_projection_self_tests() -> None:
             "internal evidence fields must not appear in the Evidence Projection "
             f"Map: {wrongly_documented}"
         )
+
+    # Two workflow surfaces project into `window.tabs`, so a projected field is
+    # attributed by the binding it is read through. Pointing the load surface at
+    # the save surface's binding must fail, naming the save field the load
+    # surface does not declare — otherwise each surface would silently appear to
+    # project the other's fields and the drift gate would pass on a real rename.
+    require(
+        "misattributed evidence binding",
+        evidence_projection_findings(
+            reference,
+            automation_source,
+            (
+                EvidenceProjection(
+                    "window.tabs",
+                    "LoadEvidence",
+                    REPO_ROOT
+                    / "crates/lushtext-core/src/ui/editor_page/load/evidence.rs",
+                    "tab_snapshot",
+                    binding="evidence",
+                ),
+            ),
+        ),
+        "LoadEvidence.inflight",
+    )
+
+    # The converse, which pins that the `binding` parameter is actually honoured
+    # rather than accepted and ignored. Reading the *save* surface through the
+    # *load* binding must surface `SaveEvidence.load_state`: if `binding` were
+    # ignored, this projection would read `evidence.inflight`, which
+    # `SaveEvidence` does declare, and the case would pass while the attribution
+    # was broken.
+    require(
+        "binding parameter is honoured",
+        evidence_projection_findings(
+            reference,
+            automation_source,
+            (
+                EvidenceProjection(
+                    "window.tabs",
+                    "SaveEvidence",
+                    REPO_ROOT
+                    / "crates/lushtext-core/src/ui/editor_page/save/evidence.rs",
+                    "tab_snapshot",
+                    binding="load",
+                ),
+            ),
+        ),
+        "SaveEvidence.load_state",
+    )
+
+    # An orphan row: documented, but no projection reads that evidence type into
+    # that snapshot object. The per-projection loop cannot see these, because it
+    # only ever looks at pairs it already knows, so the check that catches them
+    # gets its own case.
+    require(
+        "orphan documented row",
+        evidence_projection_findings(
+            reference.replace(
+                "| `window.tabs` | `SaveEvidence` | `inflight` | `tabs.saving` |\n",
+                "| `window.tabs` | `SaveEvidence` | `inflight` | `tabs.saving` |\n"
+                "| `window.tabs` | `RetiredEvidence` | `stale_field` "
+                "| `tabs.stale_field` |\n",
+                1,
+            ),
+            automation_source,
+        ),
+        "RetiredEvidence.stale_field",
+    )
 
 
 def main() -> int:

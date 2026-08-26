@@ -175,8 +175,10 @@ A migrated workflow assigns each of its modules exactly one role:
   `make check-workflow-boundaries` validates only that declared role paths exist,
   so no gate rejects an off-set name.
 - **Evidence** — `evidence.rs`, one per workflow, at the narrowest visibility its
-  readers require. See the evidence-surface rules in
-  `.agents/rules/widget-wiring.md`.
+  readers require. Because one accessor reads the whole surface through shared
+  borrows, **no evidence field may be read from inside a mutable borrow of the
+  same state**, and every surface owes the proof test for it. See the
+  evidence-surface rules in `.agents/rules/widget-wiring.md`.
 
 A workflow's roles live in one of **two permitted homes**. A workflow whose role
 file names do not collide with a sibling's keeps flat, workflow-scoped role names

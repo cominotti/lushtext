@@ -202,7 +202,7 @@ pub struct LoadState {
     /// Whether load installation is suppressing document-amplifying projections.
     pub projection_suspended: Cell<bool>,
     /// Current generation-bound chunked install session, if any.
-    pub(crate) installation: RefCell<Option<Rc<RefCell<super::load_save::ChunkedLoadInstall>>>>,
+    pub(crate) installation: RefCell<Option<Rc<RefCell<super::load::ChunkedLoadInstall>>>>,
     /// Whether signal-emitting final projection work owns the editor lifecycle.
     ///
     /// Reload requests are reduced to one latest pending intent while this is
@@ -212,7 +212,7 @@ pub struct LoadState {
     /// Whether widget disposal interrupted signal-emitting finalization.
     pub dispose_during_finalization: Cell<bool>,
     /// Latest replacement request waiting for bounded cancellation cleanup.
-    pub(crate) pending_load: RefCell<Option<super::load_save::PendingFileLoad>>,
+    pub(crate) pending_load: RefCell<Option<super::load::PendingFileLoad>>,
     /// Whether cancellation discarded a partially installed file payload.
     ///
     /// The buffer is intentionally cleared on that path, so saving must remain
@@ -222,6 +222,13 @@ pub struct LoadState {
     pub user_cancel_pending: Cell<bool>,
     /// Completed main-loop slices for the newest installation.
     pub installation_slice_count: Cell<u64>,
+    /// Whether the newest installation took the bounded slicing path.
+    pub installation_chunked: Cell<bool>,
+    /// How the newest load for this editor ended.
+    pub outcome: Cell<super::load::LoadOutcome>,
+    /// Whether the token the previous request carried was already cancelled
+    /// when this editor's newest request rotated load identity.
+    pub previous_request_cancelled: Cell<Option<bool>>,
 }
 
 /// User-visible file-load lifecycle for one editor tab.

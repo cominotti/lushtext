@@ -5,7 +5,26 @@ This folder owns one open editor tab: buffer state, file I/O choreography, exter
 ## Responsibilities
 
 - Keep `mod.rs` as the small public facade for `LushtextEditorPage`.
-- Keep file load/save flows and bounded GTK installation in `load_save.rs`, process-wide weak/scalar load admission in `load_runtime.rs`, process-wide byte-weighted save admission in `save_runtime.rs`, Focus Mode presentation in `focus_mode.rs`, minimap behavior in `minimap.rs`, dynamic editor overscroll in `overscroll.rs`, bookmark projection in `bookmarks.rs`, external monitor behavior in `monitor.rs`, and in-tab search-bar behavior in `search.rs`.
+- The two document workflows own **per-workflow role home subdirectories**, each
+  with a narrative facade `mod.rs`, coordination modules named from the bounded
+  set, `policy.rs`, and `evidence.rs`. Read the facade first; it narrates the
+  stage order and names every point where control leaves and comes back.
+  - `load/` — open, reopen-with-encoding, recent documents, session restore:
+    `admission.rs` (identity rotation, planning probe, the process-wide
+    coordinator, queue, drain, charge release), `execution.rs` (acceptance and
+    the four-phase bounded install state machine), `retirement.rs` (cancellation
+    and disposal: payload, charge, partial buffer, identity).
+  - `save/` — Ctrl+S, Save As, close-with-changes: `admission.rs` and
+    `execution.rs`.
+- Cross-cutting editor-page state that neither document workflow owns lives
+  beside them: shared document identity and metadata in `document_identity.rs`,
+  and the deferred cursor/scroll group in `restore_position.rs` (five owning
+  workflows). Both are reached through named operations, not by reaching into
+  another workflow's state.
+- Keep Focus Mode presentation in `focus_mode.rs`, minimap behavior in
+  `minimap.rs`, dynamic editor overscroll in `overscroll.rs`, bookmark projection
+  in `bookmarks.rs`, external monitor behavior in `monitor.rs`, and in-tab
+  search-bar behavior in `search.rs`.
 - Keep `imp.rs` focused on template/state wiring and helper routines shared by those workflows.
 
 ## Local Contracts

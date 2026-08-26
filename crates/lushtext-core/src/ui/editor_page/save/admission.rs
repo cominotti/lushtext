@@ -35,7 +35,7 @@ use super::policy::{
     conservative_save_payload_weight, queued_save_is_current, save_may_preempt_pending_load,
 };
 use super::{SaveCallback, execution};
-use crate::ui::editor_page::load_runtime;
+use crate::ui::editor_page::load;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 
 thread_local! {
@@ -98,6 +98,16 @@ pub(crate) fn queue_save_request(
     let may_preempt_pending_load = save_may_preempt_pending_load(explicit_destination);
     if editor.imp().load_state.get() == EditorLoadState::Loading {
         if may_preempt_pending_load {
+            // This is the first of two `cancel_load()` calls, and they are not
+            // duplication: they sit on opposite sides of the refusal gates
+            // below and observe different state. This one runs *before* the
+            // `installation_incomplete` gate on purpose — cancelling a live
+            // chunked install is what sets that flag, because the cancelled
+            // path deliberately empties the buffer, so the gate then refuses
+            // this save instead of queueing a write of content that is about to
+            // be cleared. `cancel_load` also advances the load generation on
+            // every call, which `SaveCompletionTicket` captures, so merging the
+            // two calls changes observable values as well as ordering.
             editor.cancel_load();
         } else {
             callback(Err(EditorSaveError::LoadInProgress));
@@ -118,6 +128,10 @@ pub(crate) fn queue_save_request(
     }
 
     if may_preempt_pending_load {
+        // The second call, *after* the gates. It covers the paths where
+        // `load_state` was not `Loading` — most importantly during final
+        // projection, where it withdraws a reload a file-loaded callback queued
+        // reentrantly and returns without advancing the generation.
         editor.cancel_load();
     }
     // Publish queued ownership before yielding so duplicate saves and an
@@ -183,7 +197,7 @@ fn submit(
         );
     });
     schedule_drain();
-    load_runtime::schedule_drain_for_external_change();
+    load::admission::schedule_drain_for_external_change();
 }
 
 /// Observe the live editor state one queued ticket must still match.
@@ -254,7 +268,7 @@ pub(crate) fn cancel_for_editor(editor: &LushtextEditorPage) {
         }
     }
     schedule_drain();
-    load_runtime::schedule_drain_for_external_change();
+    load::admission::schedule_drain_for_external_change();
 }
 
 fn schedule_drain() {
@@ -282,7 +296,7 @@ pub(crate) fn schedule_drain_for_external_change() {
 /// scheduled by [`schedule_drain`] calls this, and every admitted request
 /// continues into [`execution::begin_admitted_save`].
 fn drain() {
-    let (load_weight, load_exclusive) = load_runtime::active_pressure();
+    let (load_weight, load_exclusive) = load::admission::active_pressure();
     let (cancelled, dispatches) = COORDINATOR.with_borrow_mut(|coordinator| {
         coordinator.drain_scheduled = false;
 
@@ -358,7 +372,7 @@ fn drain() {
     if cancelled_any || admitted_any {
         // Removing a stale close save can be the event that makes queued loads
         // eligible again, even when this drain admits no replacement save.
-        load_runtime::schedule_drain_for_external_change();
+        load::admission::schedule_drain_for_external_change();
     }
 }
 
@@ -380,7 +394,7 @@ fn release_on_main(request_id: u64) {
         COORDINATOR.with_borrow_mut(|coordinator| coordinator.policy.release(request_id));
     if released {
         schedule_drain();
-        load_runtime::schedule_drain_for_external_change();
+        load::admission::schedule_drain_for_external_change();
     }
 }
 

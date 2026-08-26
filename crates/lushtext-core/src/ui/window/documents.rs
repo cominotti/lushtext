@@ -209,7 +209,7 @@ impl LushtextWindow {
         let path_for_recent = path.to_path_buf();
         let record_recent = intent.records_recent();
         let editor_weak = editor_page.downgrade();
-        *editor_page.imp().load.load_completed_callback.borrow_mut() = Some(Box::new(move || {
+        editor_page.connect_load_completed_once(move || {
             if let Some(window) = window_weak.upgrade()
                 && let Some(editor) = editor_weak.upgrade()
             {
@@ -238,13 +238,13 @@ impl LushtextWindow {
                     );
                 }
             }
-        }));
+        });
 
         let window_weak = self.downgrade();
         let editor_weak = editor_page.downgrade();
         let page_weak = page.downgrade();
         let path_for_failure = path.to_path_buf();
-        *editor_page.imp().load.load_failed_callback.borrow_mut() = Some(Box::new(move |error| {
+        editor_page.connect_load_failed_once(move |error| {
             let Some(window) = window_weak.upgrade() else {
                 return;
             };
@@ -294,7 +294,7 @@ impl LushtextWindow {
                 window.refresh_header_bar();
                 window.refresh_status_bar();
             }
-        }));
+        });
 
         tab_view.set_selected_page(&page);
         if !self.tab_projection_refresh_deferred() {

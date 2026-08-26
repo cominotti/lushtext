@@ -6277,8 +6277,8 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
     // order without relying on scheduler timing.
     first_editor.cancel_load();
     second_editor.cancel_load();
-    let first_generation = first_editor.load_generation_for_test();
-    let second_generation = second_editor.load_generation_for_test();
+    let first_generation = first_editor.load_evidence().generation;
+    let second_generation = second_editor.load_evidence().generation;
     let result = |content: &str, path: &Path| editor_io::LoadResult {
         metadata: editor_io::LoadMetadata {
             size: u64::try_from(content.len()).expect("fixture length"),
@@ -6308,8 +6308,8 @@ fn test_delayed_session_restore_completions_preserve_active_and_modified_pages()
 
     // Advance generations again, then inject captured results to prove stale
     // completions cannot overwrite either protected buffer.
-    let stale_first = first_editor.load_generation_for_test();
-    let stale_second = second_editor.load_generation_for_test();
+    let stale_first = first_editor.load_evidence().generation;
+    let stale_second = second_editor.load_evidence().generation;
     first_editor.cancel_load();
     second_editor.cancel_load();
     assert!(
@@ -6356,10 +6356,7 @@ fn test_selected_restore_tab_gets_bounded_priority_after_capacity_releases() {
     window.open_document_from_session_restore_for_test(&first_path);
     let first = active_editor(&window);
     wait_until(Duration::from_secs(10), || {
-        first
-            .transient_load_admission_snapshot_for_test()
-            .active_count
-            == 1
+        first.load_evidence().active_count == 1
     });
     window.open_document_from_session_restore_for_test(&second_path);
     window.open_document_from_session_restore_for_test(&third_path);
@@ -7069,16 +7066,13 @@ fn test_transient_load_budget_is_shared_across_windows_and_honors_protected_resi
     first_window.open_document(&first_path);
     let first_editor = active_editor(&first_window);
     wait_until(Duration::from_secs(10), || {
-        first_editor
-            .transient_load_admission_snapshot_for_test()
-            .active_count
-            == 1
+        first_editor.load_evidence().active_count == 1
     });
 
     second_window.open_document(&second_path);
     let second_editor = active_editor(&second_window);
     wait_until(Duration::from_secs(10), || {
-        let snapshot = second_editor.transient_load_admission_snapshot_for_test();
+        let snapshot = second_editor.load_evidence();
         snapshot.active_count == 1 && snapshot.queued_count == 1
     });
 
@@ -7093,10 +7087,7 @@ fn test_transient_load_budget_is_shared_across_windows_and_honors_protected_resi
     assert_eq!(editor_buffer_text(&protected), "protected unsaved work");
     assert!(protected.is_modified());
     wait_until(Duration::from_secs(5), || {
-        second_editor
-            .transient_load_admission_snapshot_for_test()
-            .active_count
-            == 0
+        second_editor.load_evidence().active_count == 0
     });
 }
 
@@ -10776,7 +10767,7 @@ fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destina
     let window = test_window();
     window.open_document(&source);
     let editor = active_editor(&window);
-    let stale_generation = editor.load_generation_for_test();
+    let stale_generation = editor.load_evidence().generation;
     editor.buffer().set_text("save before load settles\n");
     editor.buffer().set_modified(true);
 
@@ -13787,10 +13778,7 @@ fn test_stale_close_save_cancellation_wakes_queued_loads() {
     editor_io::set_transient_weight_override_for_test(Some(200 * 1024 * 1024));
     window.open_document(&files[1]);
     wait_until(Duration::from_secs(5), || {
-        close_editor
-            .transient_load_admission_snapshot_for_test()
-            .active_count
-            == 1
+        close_editor.load_evidence().active_count == 1
     });
     let active_load = find_tab_page_by_title(&window, "active-load.txt")
         .child()
@@ -13799,10 +13787,7 @@ fn test_stale_close_save_cancellation_wakes_queued_loads() {
 
     window.open_document(&files[2]);
     wait_until(Duration::from_secs(5), || {
-        close_editor
-            .transient_load_admission_snapshot_for_test()
-            .queued_count
-            == 1
+        close_editor.load_evidence().queued_count == 1
     });
     let queued_load = find_tab_page_by_title(&window, "queued-load.txt")
         .child()
@@ -13827,7 +13812,7 @@ fn test_stale_close_save_cancellation_wakes_queued_loads() {
             && active_load.file_size().is_some()
             && queued_load.file_size().is_some()
     });
-    let load_snapshot = close_editor.transient_load_admission_snapshot_for_test();
+    let load_snapshot = close_editor.load_evidence();
     assert_eq!(load_snapshot.active_count, 0);
     assert_eq!(load_snapshot.queued_count, 0);
     let save_snapshot = close_editor.save_evidence();

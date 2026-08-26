@@ -624,6 +624,7 @@ read is internal and must not appear here.
 | `window.command_palette` | `CommandPaletteEvidence` | `open_tab_source_count` | `command_palette.open_tab_source_count` |
 | `window.command_palette` | `CommandPaletteEvidence` | `pending_index_update_count` | `command_palette.pending_index_update_count` |
 | `window.tabs` | `SaveEvidence` | `inflight` | `tabs.saving` |
+| `window.tabs` | `LoadEvidence` | `load_state` | `tabs.load_state` |
 
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |

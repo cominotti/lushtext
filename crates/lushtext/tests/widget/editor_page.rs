@@ -12,7 +12,7 @@ use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use lushtext_core::config::{APP_ID, keys};
 use lushtext_core::model::editor_memory::EVICTED_EDITOR_BOOKKEEPING_BYTES;
-use lushtext_core::model::encoding::DocumentEncodingState;
+use lushtext_core::model::encoding::{DocumentEncoding, DocumentEncodingState};
 use lushtext_core::model::formatting_overrides::FormattingOverrides;
 use lushtext_core::services::editor_io::{self, EditorLoadError, LoadResult};
 use lushtext_core::services::file_limits::FileSizeCheck;
@@ -25,7 +25,8 @@ use lushtext_core::ui::editor_page::{
     BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
     BufferSnapshotHandle, BufferSnapshotOutcome, BufferSnapshotStateForTest, BufferSnapshotTestEdit,
     BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError,
-    LushtextEditorPage, MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
+    LoadOutcome, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind,
+    buffer_snapshot_counters_for_test,
     coalesce_snapshot_payload_for_test, snapshot_buffer_text_async_for_test,
     snapshot_payload_metrics_for_test, set_next_load_body_disposal_probe_for_test,
     set_next_load_disposal_reservation_weight_for_test,
@@ -36,8 +37,6 @@ use sourceview5::prelude::*;
 use std::assert_matches;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -413,7 +412,12 @@ fn rect_within(
 }
 
 fn wait_for_minimap_ready(page: &LushtextEditorPage) {
-    wait_until(std::time::Duration::from_secs(2), || {
+    // Realization, mapping and first allocation of the native source map are
+    // frame-clock driven, so this is the generous-budget class per
+    // `.agents/rules/build.md`: the predicate returns the instant the widgets
+    // are ready, so a high ceiling costs nothing on the fast path and only
+    // matters when a loaded machine delays a frame.
+    wait_until(std::time::Duration::from_secs(10), || {
         let source_map = minimap_source_map(page);
         let marker_strip = minimap_marker_strip(page);
         page.is_minimap_visible()
@@ -708,12 +712,16 @@ fn test_source_view_accessible() {
 #[test]
 fn test_source_view_accessibility_tracks_loading_state() {
     ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("accessibility loading tempdir");
+    let path = dir.path().join("accessibility-main.rs");
+    fixture::write_text(&path, "fn main() {}\n");
     let page = LushtextEditorPage::new();
 
-    page.imp()
-        .file_path
-        .replace(Some("/tmp/accessibility-main.rs".into()));
-    page.imp().load_state.set(EditorLoadState::Loading);
+    // Drive the real workflow rather than forging its state: the entry stage
+    // publishes provisional identity and `Loading` synchronously, and the
+    // background completion cannot run without a main-loop turn.
+    page.load_file_async(&path);
+    assert_eq!(page.load_evidence().load_state, EditorLoadState::Loading);
     page.refresh_accessibility_metadata_for_test();
 
     AccessibleAudit::new()
@@ -725,7 +733,8 @@ fn test_source_view_accessibility_tracks_loading_state() {
         .states(&[gtk4::AccessibleState::Busy])
         .assert_on(page.source_view());
 
-    page.imp().load_state.set(EditorLoadState::Loaded);
+    page.set_file_path(&path);
+    assert_eq!(page.load_evidence().load_state, EditorLoadState::Loaded);
     page.refresh_accessibility_metadata_for_test();
     assert!(!gtk4::test_accessible_has_state(
         page.source_view(),
@@ -736,12 +745,20 @@ fn test_source_view_accessibility_tracks_loading_state() {
 #[test]
 fn test_source_view_accessibility_tracks_failed_load_state() {
     ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("accessibility failure tempdir");
+    let path = dir.path().join("broken-document.txt");
+    fixture::write_text(&path, "unreadable\n");
     let page = LushtextEditorPage::new();
 
-    page.imp()
-        .file_path
-        .replace(Some("/tmp/broken-document.txt".into()));
-    page.imp().load_state.set(EditorLoadState::Failed);
+    // Reach `Failed` through the production publish path: a load request, then
+    // a failed completion accepted against its own generation.
+    page.load_file_async(&path);
+    let generation = page.load_evidence().generation;
+    assert!(page.apply_load_result_for_test(
+        generation,
+        Err(EditorLoadError::Changed { path: path.clone() })
+    ));
+    assert_eq!(page.load_evidence().load_state, EditorLoadState::Failed);
     page.refresh_accessibility_metadata_for_test();
 
     AccessibleAudit::new()
@@ -751,7 +768,7 @@ fn test_source_view_accessibility_tracks_failed_load_state() {
         ])
         .assert_on(page.source_view());
 
-    page.imp().load_state.set(EditorLoadState::Loaded);
+    page.set_file_path(&path);
     page.refresh_accessibility_metadata_for_test();
     assert!(!gtk4::test_accessible_has_state(
         page.source_view(),
@@ -1205,7 +1222,7 @@ fn test_stale_load_generation_result_does_not_mutate_current_editor_state() {
     let page = LushtextEditorPage::new();
     page.buffer().set_text("current buffer\n");
 
-    let stale_generation = page.load_generation_for_test();
+    let stale_generation = page.load_evidence().generation;
     page.cancel_load();
     let stale_result = LoadResult {
         metadata: editor_io::LoadMetadata {
@@ -1237,11 +1254,14 @@ fn test_failed_reload_restores_file_monitor_for_preserved_buffer() {
     let page = LushtextEditorPage::new();
     page.set_file_path(&path);
     page.buffer().set_text("preserved buffer\n");
-    page.imp().load_state.set(EditorLoadState::Loading);
+    // A real reload request, not a forged `Loading`: this rotates identity the
+    // same way the user's reload does, so the failure below is accepted against
+    // the generation the workflow actually published.
+    page.load_file_async(&path);
     page.stop_file_monitor();
     assert!(page.imp().monitor.file_monitor.borrow().is_none());
 
-    let generation = page.load_generation_for_test();
+    let generation = page.load_evidence().generation;
     assert!(page.apply_reload_error_for_test(generation, EditorLoadError::Changed { path },));
 
     assert_eq!(page.load_state(), EditorLoadState::Loaded);
@@ -1274,9 +1294,9 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
     let active_for_tick = Rc::clone(&maximum_active_weight);
     let queued_for_tick = Rc::clone(&maximum_queued_count);
     glib::timeout_add_local(Duration::from_millis(1), move || {
-        if page_for_tick.load_installation_active_for_test() {
+        if page_for_tick.load_evidence().installation_active {
             progress_for_tick.set(progress_for_tick.get().saturating_add(1));
-            let snapshot = page_for_tick.transient_load_admission_snapshot_for_test();
+            let snapshot = page_for_tick.load_evidence();
             active_for_tick.set(active_for_tick.get().max(snapshot.active_weight));
             queued_for_tick.set(queued_for_tick.get().max(snapshot.queued_count));
         }
@@ -1292,9 +1312,9 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
 
     page.load_file_async(&path);
     wait_until(Duration::from_secs(15), || {
-        page.load_installation_active_for_test()
+        page.load_evidence().installation_active
     });
-    assert!(page.load_projection_suspended_for_test());
+    assert!(page.load_evidence().projection_suspended);
     assert!(!page.minimap_projection_attached_for_test());
     assert!(!page.source_view().is_editable());
     wait_until(Duration::from_secs(15), || {
@@ -1302,9 +1322,9 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
     });
 
     assert_eq!(editor_buffer_text(&page), content);
-    assert!(page.load_installation_slice_count_for_test() > 1);
-    assert!(!page.load_installation_active_for_test());
-    assert!(!page.load_projection_suspended_for_test());
+    assert!(page.load_evidence().installation_slice_count > 1);
+    assert!(!page.load_evidence().installation_active);
+    assert!(!page.load_evidence().projection_suspended);
     assert!(page.minimap_projection_attached_for_test());
     assert!(!page.is_modified());
     assert!(!page.draft_dirty());
@@ -1318,14 +1338,12 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
         "transient-load-runtime-evidence active_payload_weight={} queued_scalar_count={} installation_slices={} main_loop_progress={} final_editor_residency={}",
         maximum_active_weight.get(),
         maximum_queued_count.get(),
-        page.load_installation_slice_count_for_test(),
+        page.load_evidence().installation_slice_count,
         main_loop_progress.get(),
         page.estimated_live_buffer_bytes()
     );
     wait_until(Duration::from_secs(5), || {
-        page.transient_load_admission_snapshot_for_test()
-            .active_count
-            == 0
+        page.load_evidence().active_count == 0
     });
     page.evict();
     wait_until(Duration::from_secs(10), || page.is_evicted());
@@ -1481,17 +1499,13 @@ fn test_cancelled_disposal_blocked_load_disarms_capacity_wakeup() {
 
     page.load_file_async(&path);
     wait_until(Duration::from_secs(5), || {
-        page.transient_load_admission_snapshot_for_test()
-            .queued_count
-            == 1
-            && page.transient_load_disposal_wakeup_armed_for_test()
+        page.load_evidence().queued_count == 1
+            && page.load_evidence().disposal_wakeup_armed
     });
     page.cancel_load();
     wait_until(Duration::from_secs(5), || {
-        page.transient_load_admission_snapshot_for_test()
-            .queued_count
-            == 0
-            && !page.transient_load_disposal_wakeup_armed_for_test()
+        page.load_evidence().queued_count == 0
+            && !page.load_evidence().disposal_wakeup_armed
     });
 
     assert_eq!(page.load_state(), EditorLoadState::Failed);
@@ -1533,24 +1547,21 @@ fn test_chunked_load_cancellation_clears_partial_text_and_releases_admission() {
 
     page.load_file_async(&path);
     wait_until(Duration::from_secs(15), || {
-        page.load_installation_active_for_test()
+        page.load_evidence().installation_active
     });
-    assert!(page.load_installation_weight_for_test().is_some());
+    assert!(page.load_evidence().installation_weight.is_some());
     page.cancel_load();
     assert_eq!(page.load_state(), EditorLoadState::Loading);
-    assert!(page.load_installation_active_for_test());
+    assert!(page.load_evidence().installation_active);
     assert!(!page.source_view().is_editable());
     wait_until(Duration::from_secs(5), || {
-        !page.load_installation_active_for_test()
-            && page
-                .transient_load_admission_snapshot_for_test()
-                .active_count
-                == 0
+        !page.load_evidence().installation_active
+            && page.load_evidence().active_count == 0
     });
 
     assert_eq!(editor_buffer_text(&page), "");
     assert_eq!(page.load_state(), EditorLoadState::Failed);
-    assert!(!page.load_projection_suspended_for_test());
+    assert!(!page.load_evidence().projection_suspended);
     assert!(page.source_view().is_editable());
     let info = page.info_bar().imp();
     assert_eq!(info.alert_title.label().as_str(), "Loading Cancelled");
@@ -1586,7 +1597,7 @@ fn test_reload_during_chunked_install_only_publishes_newest_content() {
 
     page.load_file_async(&first_path);
     wait_until(Duration::from_secs(15), || {
-        page.load_installation_active_for_test()
+        page.load_evidence().installation_active
     });
     page.load_file_async(&second_path);
     wait_until(Duration::from_secs(15), || {
@@ -1595,11 +1606,9 @@ fn test_reload_during_chunked_install_only_publishes_newest_content() {
     });
 
     assert_eq!(page.file_path().as_deref(), Some(second_path.as_path()));
-    assert_eq!(page.load_installation_slice_count_for_test(), 0);
+    assert_eq!(page.load_evidence().installation_slice_count, 0);
     wait_until(Duration::from_secs(5), || {
-        page.transient_load_admission_snapshot_for_test()
-            .active_count
-            == 0
+        page.load_evidence().active_count == 0
     });
 }
 
@@ -1621,7 +1630,7 @@ fn test_reload_reentrant_from_final_mark_deletion_is_drained_after_finalization(
         let Some(page) = page_weak.upgrade() else {
             return;
         };
-        if page.load_installation_active_for_test() && !requested_for_signal.replace(true) {
+        if page.load_evidence().installation_active && !requested_for_signal.replace(true) {
             page.load_file_async(&second_for_signal);
         }
     });
@@ -1634,8 +1643,8 @@ fn test_reload_reentrant_from_final_mark_deletion_is_drained_after_finalization(
     });
 
     assert_eq!(page.file_path().as_deref(), Some(second_path.as_path()));
-    assert!(!page.load_installation_active_for_test());
-    assert!(!page.load_projection_suspended_for_test());
+    assert!(!page.load_evidence().installation_active);
+    assert!(!page.load_evidence().projection_suspended);
 }
 
 #[test]
@@ -1651,7 +1660,7 @@ fn test_closing_search_during_chunked_install_does_not_reattach_stale_context() 
 
     page.load_file_async(&path);
     wait_until(Duration::from_secs(15), || {
-        page.load_installation_active_for_test()
+        page.load_evidence().installation_active
     });
     assert!(page.search_bar().search_context().is_none());
     page.hide_search();
@@ -1679,14 +1688,14 @@ fn test_small_reload_of_large_buffer_uses_bounded_clear_phase() {
     fixture::write_text(&path, "small replacement\n");
     page.load_file_async(&path);
     wait_until(Duration::from_secs(10), || {
-        page.load_installation_active_for_test()
+        page.load_evidence().installation_active
     });
-    assert!(page.load_projection_suspended_for_test());
+    assert!(page.load_evidence().projection_suspended);
     wait_until(Duration::from_secs(15), || {
         page.load_state() == EditorLoadState::Loaded
             && editor_buffer_text(&page) == "small replacement\n"
     });
-    assert_eq!(page.load_installation_slice_count_for_test(), 1);
+    assert_eq!(page.load_evidence().installation_slice_count, 1);
 }
 
 #[test]
@@ -1704,7 +1713,7 @@ fn test_reentrant_cancel_from_insert_signal_uses_bounded_cleanup_without_panic()
         let Some(page) = page_weak.upgrade() else {
             return;
         };
-        if page.load_installation_active_for_test() && !cancelled_for_signal.replace(true) {
+        if page.load_evidence().installation_active && !cancelled_for_signal.replace(true) {
             page.cancel_load();
         }
     });
@@ -1713,13 +1722,11 @@ fn test_reentrant_cancel_from_insert_signal_uses_bounded_cleanup_without_panic()
     wait_until(Duration::from_secs(15), || {
         cancelled.get()
             && page.load_state() == EditorLoadState::Failed
-            && !page.load_installation_active_for_test()
+            && !page.load_evidence().installation_active
     });
     assert_eq!(editor_buffer_text(&page), "");
     wait_until(Duration::from_secs(5), || {
-        page.transient_load_admission_snapshot_for_test()
-            .active_count
-            == 0
+        page.load_evidence().active_count == 0
     });
 }
 
@@ -1734,18 +1741,15 @@ fn test_dispose_during_chunked_install_releases_admission() {
 
     page.load_file_async(&path);
     wait_until(Duration::from_secs(15), || {
-        page.load_installation_active_for_test()
+        page.load_evidence().installation_active
     });
-    assert!(page.load_installation_weight_for_test().is_some());
+    assert!(page.load_evidence().installation_weight.is_some());
     let weak_page = page.downgrade();
     let admission_probe = LushtextEditorPage::new();
     drop(page);
     wait_until(Duration::from_secs(5), || {
         weak_page.upgrade().is_none()
-            && admission_probe
-                .transient_load_admission_snapshot_for_test()
-                .active_count
-                == 0
+            && admission_probe.load_evidence().active_count == 0
     });
 }
 
@@ -1850,25 +1854,26 @@ fn test_new_load_cancels_previous_token_without_reusing_identity() {
 
     let page = LushtextEditorPage::new();
     page.load_file_async(&first_path);
-    let first_token = page.load_cancel_token_for_test();
+    let first = page.load_evidence();
     assert!(
-        !first_token.load(Ordering::Acquire),
+        !first.cancel_requested,
         "newly started load token should begin active"
     );
 
     page.load_file_async(&second_path);
-    let second_token = page.load_cancel_token_for_test();
+    let second = page.load_evidence();
 
-    assert!(
-        first_token.load(Ordering::Acquire),
+    assert_eq!(
+        second.previous_request_cancelled,
+        Some(true),
         "starting a newer load must permanently cancel the previous token"
     );
     assert!(
-        !second_token.load(Ordering::Acquire),
+        !second.cancel_requested,
         "the replacement token should remain active for the newer load"
     );
-    assert!(
-        !Arc::ptr_eq(&first_token, &second_token),
+    assert_ne!(
+        first.cancel_token_identity, second.cancel_token_identity,
         "new loads should rotate token identity instead of clearing the old token"
     );
 }
@@ -2967,9 +2972,12 @@ fn test_minimap_native_viewport_effect_reprojects_after_mid_file_scroll() {
     page.source_view()
         .scroll_to_mark(&buffer.get_insert(), 0.0, true, 0.0, 0.0);
     // `scroll_to_mark` updates adjustments asynchronously through the GTK main
-    // loop; give it a short frame budget before polling projected minimap bounds.
+    // loop, so this waits on a frame clock rather than on a synchronous UI flip.
+    // That is the generous-budget class: 3s was enough in isolation but failed
+    // once under parallel load, which is a mis-budgeted wait rather than a
+    // machine problem.
     flush_after_delay(std::time::Duration::from_millis(100));
-    wait_until(std::time::Duration::from_secs(3), || {
+    wait_until(std::time::Duration::from_secs(10), || {
         page.source_view().visible_rect().y() > 0
             && page
                 .minimap_viewport_bounds_for_test()
@@ -4318,6 +4326,496 @@ fn test_save_evidence_reads_stay_side_effect_free_across_save_mutation() {
     assert_eq!(first_read.generation, second_read.generation);
     assert_eq!(first_read.queued_count, second_read.queued_count);
     assert_eq!(first_read.active_count, second_read.active_count);
+}
+
+/// Wait for one load request to reach a terminal, whatever that terminal is.
+fn wait_for_load_terminal(page: &LushtextEditorPage) {
+    wait_until(Duration::from_secs(20), || {
+        let evidence = page.load_evidence();
+        !evidence.installation_active
+            && matches!(
+                evidence.load_state,
+                EditorLoadState::Loaded | EditorLoadState::Failed
+            )
+    });
+}
+
+#[test]
+fn test_small_file_takes_the_direct_install_and_publishes_its_content() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("direct install tempdir");
+    let path = dir.path().join("small.txt");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&path);
+    wait_for_load_terminal(&page);
+
+    let evidence = page.load_evidence();
+    assert_eq!(evidence.load_state, EditorLoadState::Loaded);
+    assert_eq!(evidence.outcome, LoadOutcome::Loaded);
+    assert!(
+        !evidence.installation_chunked,
+        "a small payload into an empty buffer must install in one turn"
+    );
+    assert_eq!(
+        evidence.installation_slice_count, 0,
+        "the direct path runs no bounded slices"
+    );
+    assert!(!evidence.installation_incomplete);
+    assert!(!evidence.projection_suspended);
+    assert_eq!(editor_buffer_text(&page), "one\ntwo\nthree\n");
+}
+
+#[test]
+fn test_empty_file_loads_to_an_empty_buffer_without_slicing() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("empty load tempdir");
+    let path = dir.path().join("empty.txt");
+    fixture::write_text(&path, "");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&path);
+    wait_for_load_terminal(&page);
+
+    let evidence = page.load_evidence();
+    assert_eq!(evidence.load_state, EditorLoadState::Loaded);
+    assert_eq!(evidence.outcome, LoadOutcome::Loaded);
+    assert!(!evidence.installation_chunked);
+    assert_eq!(evidence.installation_slice_count, 0);
+    assert_eq!(editor_buffer_text(&page), "");
+    assert!(!page.is_modified());
+}
+
+#[test]
+fn test_a_paragraph_larger_than_the_slice_budget_installs_in_one_turn() {
+    // The paragraph-boundary contract, measured rather than asserted. GTK
+    // validates layout a paragraph at a time, so a slice that stopped inside one
+    // would re-lay-out the whole paragraph on every later slice — the quadratic
+    // behavior that once froze crash recovery of a 33 MB single-line draft. A
+    // paragraph over the slice budget must therefore install in exactly one
+    // turn, and a same-sized document made of ordinary lines must slice.
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("paragraph budget tempdir");
+
+    let single_paragraph = dir.path().join("single-paragraph.txt");
+    let one_line = "x".repeat(6 * 256 * 1024);
+    fixture::write_text(&single_paragraph, &one_line);
+
+    let many_paragraphs = dir.path().join("many-paragraphs.txt");
+    // Same decoded byte count, split into short lines.
+    let lines = "y".repeat(63) + "\n";
+    fixture::write_text(&many_paragraphs, &lines.repeat(6 * 256 * 1024 / 64));
+
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    let started = std::time::Instant::now();
+    page.load_file_async(&single_paragraph);
+    wait_for_load_terminal(&page);
+    let single_elapsed = started.elapsed();
+    let single = page.load_evidence();
+    assert_eq!(single.load_state, EditorLoadState::Loaded);
+    assert!(
+        single.installation_chunked,
+        "a payload over the synchronous threshold must take the bounded path"
+    );
+    assert_eq!(
+        single.installation_slice_count, 1,
+        "one oversized paragraph must install in exactly one turn"
+    );
+
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+    let started = std::time::Instant::now();
+    page.load_file_async(&many_paragraphs);
+    wait_for_load_terminal(&page);
+    let many_elapsed = started.elapsed();
+    let many = page.load_evidence();
+    assert_eq!(many.load_state, EditorLoadState::Loaded);
+    assert!(many.installation_chunked);
+    assert!(
+        many.installation_slice_count > 1,
+        "a paragraph-rich document of the same size must slice, got {}",
+        many.installation_slice_count
+    );
+
+    // Linear, not quadratic: the sliced document pays roughly one pass per
+    // slice, so its cost stays within a small multiple of the single-turn
+    // install of the same bytes. A mid-paragraph cut would make this ratio grow
+    // with the slice count instead.
+    eprintln!(
+        "load-install-linearity single_slices={} single_ms={} many_slices={} many_ms={}",
+        single.installation_slice_count,
+        single_elapsed.as_millis(),
+        many.installation_slice_count,
+        many_elapsed.as_millis()
+    );
+    assert!(
+        many_elapsed < single_elapsed * 40 + Duration::from_secs(10),
+        "bounded installation must stay linear in slice count: single={single_elapsed:?} many={many_elapsed:?}"
+    );
+}
+
+#[test]
+fn test_undecodable_bytes_in_the_requested_encoding_report_a_decode_failure() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("decode failure tempdir");
+    let path = dir.path().join("invalid.txt");
+    // Lone continuation bytes are not valid UTF-8 in any position.
+    fixture::write_bytes(&path, [0x41, 0x80, 0x81, 0x0a]);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async_with_encoding(&path, Some(DocumentEncoding::Utf8));
+    wait_for_load_terminal(&page);
+
+    let evidence = page.load_evidence();
+    assert_eq!(evidence.load_state, EditorLoadState::Failed);
+    assert_eq!(evidence.outcome, LoadOutcome::Failed);
+    assert_eq!(
+        editor_buffer_text(&page),
+        "",
+        "a failed decode must not publish partial text"
+    );
+}
+
+#[test]
+fn test_missing_and_unreadable_paths_fail_without_publishing_content() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("unreadable load tempdir");
+
+    let missing = dir.path().join("absent.txt");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+    page.load_file_async(&missing);
+    wait_for_load_terminal(&page);
+    let absent = page.load_evidence();
+    assert_eq!(absent.load_state, EditorLoadState::Failed);
+    assert_eq!(absent.outcome, LoadOutcome::Failed);
+    assert_eq!(editor_buffer_text(&page), "");
+
+    // A directory is an unreadable target that needs no ambient permission
+    // change, so this failure path is deterministic even when the test process
+    // runs as root.
+    let directory = dir.path().join("a-directory");
+    fixture::create_dir_all(&directory);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+    page.load_file_async(&directory);
+    wait_for_load_terminal(&page);
+    let unreadable = page.load_evidence();
+    assert_eq!(unreadable.load_state, EditorLoadState::Failed);
+    assert_eq!(unreadable.outcome, LoadOutcome::Failed);
+    assert_eq!(editor_buffer_text(&page), "");
+}
+
+#[test]
+fn test_reopen_with_a_different_encoding_replaces_the_loaded_content() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("reopen encoding tempdir");
+    let path = dir.path().join("windows1252.txt");
+    // `é` is the single byte 0xE9 in Windows-1252, which is not valid UTF-8.
+    fixture::write_bytes(&path, [0x63, 0x61, 0x66, 0xe9, 0x0a]);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async_with_encoding(&path, Some(DocumentEncoding::Utf8));
+    wait_for_load_terminal(&page);
+    let failed = page.load_evidence();
+    assert_eq!(failed.load_state, EditorLoadState::Failed);
+    assert_eq!(failed.outcome, LoadOutcome::Failed);
+    assert_eq!(editor_buffer_text(&page), "");
+
+    // Reopening is a new request against the same path: identity rotates and the
+    // content is replaced rather than appended to.
+    page.load_file_async_with_encoding(&path, Some(DocumentEncoding::Windows1252));
+    wait_for_load_terminal(&page);
+    let reopened = page.load_evidence();
+    assert_ne!(reopened.generation, failed.generation);
+    assert_eq!(reopened.load_state, EditorLoadState::Loaded);
+    assert_eq!(reopened.outcome, LoadOutcome::Loaded);
+    assert_eq!(
+        editor_buffer_text(&page),
+        "café\n",
+        "reopening with an encoding that can read the bytes must replace content"
+    );
+}
+
+#[test]
+fn test_a_newer_load_of_a_different_path_refuses_the_older_completion() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("supersession tempdir");
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    fixture::write_text(&first, "first content\n");
+    fixture::write_text(&second, "second content\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    // Hold the first read on the worker so the second request supersedes it
+    // while it is genuinely in flight.
+    editor_io::set_payload_load_delay_for_test(400);
+    page.load_file_async(&first);
+    let first_ticket_generation = page.load_evidence().generation;
+
+    editor_io::set_payload_load_delay_for_test(0);
+    page.load_file_async(&second);
+    let second_ticket_generation = page.load_evidence().generation;
+    assert_ne!(first_ticket_generation, second_ticket_generation);
+
+    wait_for_load_terminal(&page);
+    // Give the superseded worker time to come back and be refused.
+    flush_after_delay(Duration::from_millis(600));
+
+    let evidence = page.load_evidence();
+    assert_eq!(evidence.load_state, EditorLoadState::Loaded);
+    assert_eq!(
+        editor_buffer_text(&page),
+        "second content\n",
+        "the stale completion for a different path must publish nothing"
+    );
+    assert_eq!(
+        page.file_path().as_deref(),
+        Some(second.as_path()),
+        "the editor must keep the newest request's identity"
+    );
+}
+
+#[test]
+fn test_a_load_whose_editor_is_disposed_before_the_worker_returns_publishes_nothing() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("disposed load tempdir");
+    let path = dir.path().join("late.txt");
+    fixture::write_text(&path, "late content\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    editor_io::set_payload_load_delay_for_test(400);
+    page.load_file_async(&path);
+    let before = page.load_evidence();
+    assert_eq!(before.load_state, EditorLoadState::Loading);
+
+    // SAFETY: this standalone test page is disposed exactly once; afterwards the
+    // test only reads the evidence surface and drains the main loop.
+    unsafe { page.run_dispose() };
+    editor_io::set_payload_load_delay_for_test(0);
+    flush_after_delay(Duration::from_millis(800));
+
+    let after = page.load_evidence();
+    assert_ne!(
+        after.generation, before.generation,
+        "disposal must advance identity so the in-flight worker is refused"
+    );
+    assert!(after.cancel_requested);
+    assert_ne!(
+        after.load_state,
+        EditorLoadState::Loaded,
+        "a disposed page must not publish a late completion"
+    );
+    assert!(!after.installation_active);
+    // The lane must not be left holding the disposed request's charge.
+    wait_until(Duration::from_secs(10), || {
+        page.load_evidence().active_count == 0
+    });
+}
+
+#[test]
+fn test_cancelling_a_live_installation_blocks_saving_the_emptied_buffer() {
+    // The precondition the save workflow's admission-time guard depends on.
+    //
+    // A cancelled bounded installation empties the buffer on purpose, so a save
+    // allowed to run against it would write a truncated file over the user's
+    // document. `installation_incomplete` is what forbids that, and it must be
+    // set by the cancellation itself — before any save can be admitted — not by
+    // a later cleanup step.
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("incomplete install tempdir");
+    let path = dir.path().join("large.txt");
+    let original = "paragraph line\n".repeat(200_000);
+    fixture::write_text(&path, &original);
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(10), || {
+        page.load_evidence().installation_active
+    });
+    assert!(!page.load_evidence().installation_incomplete);
+
+    page.cancel_load();
+
+    // Set synchronously by the cancellation, so the flag is already true at the
+    // instant a queued save could be admitted.
+    assert!(
+        page.load_evidence().installation_incomplete,
+        "cancelling a live installation must mark the load incomplete immediately"
+    );
+
+    // A save queued now is refused rather than writing the emptied buffer. Which
+    // refusal it is depends on which gate is reached first: a plain save still
+    // sees `load_state == Loading` — cancellation defers the user-visible
+    // terminal until bounded cleanup finishes — so it is refused as
+    // `LoadInProgress`, while a save that pre-empts the load reaches the
+    // `installation_incomplete` gate and is refused as
+    // `IncompleteLoadInstallation`. Both protect the same thing, and the thing
+    // they protect is what this test asserts.
+    let outcome = Rc::new(RefCell::new(None));
+    let outcome_for_callback = Rc::clone(&outcome);
+    page.save_file_async(move |result| {
+        outcome_for_callback.borrow_mut().replace(result);
+    });
+    let refused = outcome
+        .borrow_mut()
+        .take()
+        .expect("save refused synchronously");
+    assert!(
+        matches!(
+            refused,
+            Err(EditorSaveError::LoadInProgress
+                | EditorSaveError::IncompleteLoadInstallation)
+        ),
+        "a save queued against a cancelled installation must be refused"
+    );
+
+    // And the file on disk is untouched — nothing partial was written.
+    fixture::assert_text(&path, &original);
+}
+
+#[test]
+fn test_load_evidence_reads_stay_side_effect_free_across_load_mutation() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("load-evidence tempdir");
+    let small = dir.path().join("small.txt");
+    let large = dir.path().join("large.txt");
+    fixture::write_text(&small, "small\n");
+    fixture::write_text(&large, &"paragraph line\n".repeat(200_000));
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+
+    // Read at every point the workflow mutates the state the accessor borrows,
+    // including immediately after operations that take `borrow_mut()` on the
+    // cancellation token, the installation session, the parked request, and the
+    // process-wide coordinator. A live path holding one of those borrows across
+    // an evidence read would panic here.
+    let idle = page.load_evidence();
+    assert_eq!(idle.outcome, LoadOutcome::None);
+    assert!(!idle.installation_active);
+    assert!(!idle.cancel_requested);
+
+    // Entry stage: identity rotates under the token's `borrow_mut()` and the
+    // planned request is queued under the coordinator's.
+    page.load_file_async(&large);
+    let started = page.load_evidence();
+    assert_eq!(started.outcome, LoadOutcome::InFlight);
+    assert_eq!(started.load_state, EditorLoadState::Loading);
+    assert_ne!(started.generation, idle.generation);
+    assert_eq!(started.previous_request_cancelled, Some(true));
+    let _ = page.load_evidence();
+
+    // Install stage: the session is installed under `installation`'s
+    // `borrow_mut()`, and each slice mutates it again.
+    wait_until(Duration::from_secs(10), || {
+        page.load_evidence().installation_active
+    });
+    let installing = page.load_evidence();
+    assert!(installing.installation_chunked);
+    assert!(installing.installation_weight.is_some());
+    assert!(installing.installation_phase.is_some());
+    assert!(installing.projection_suspended);
+    let _ = page.load_evidence();
+
+    // A newer request parks itself under `pending_load`'s `borrow_mut()` and
+    // asks the live installation to abort.
+    page.load_file_async(&small);
+    let _ = page.load_evidence();
+
+    wait_until(Duration::from_secs(20), || {
+        let evidence = page.load_evidence();
+        !evidence.installation_active
+            && matches!(
+                evidence.load_state,
+                EditorLoadState::Loaded | EditorLoadState::Failed
+            )
+    });
+    let settled = page.load_evidence();
+    let _ = page.load_evidence();
+
+    // Cancellation takes the parked request and the installation under
+    // `borrow_mut()` and advances identity.
+    page.cancel_load();
+    let cancelled = page.load_evidence();
+    assert_ne!(cancelled.generation, settled.generation);
+    let _ = page.load_evidence();
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not advance a generation, drain a queue, arm a wakeup, or charge an
+    // admission.
+    let first_read = page.load_evidence();
+    let second_read = page.load_evidence();
+    assert_eq!(first_read, second_read);
+    assert_eq!(first_read.generation, second_read.generation);
+    assert_eq!(first_read.queued_count, second_read.queued_count);
+    assert_eq!(first_read.active_count, second_read.active_count);
+    assert_eq!(
+        first_read.installation_slice_count,
+        second_read.installation_slice_count
+    );
+    assert_eq!(
+        first_read.disposal_wakeup_armed,
+        second_read.disposal_wakeup_armed
+    );
+}
+
+#[test]
+fn test_load_evidence_reads_survive_widget_disposal() {
+    // A disposed page is a legitimate observation point: a teardown test asks
+    // what the load workflow recorded after the tab went away. GTK4 clears
+    // template children in `dispose()` before Rust's `Drop`, so a surface that
+    // derived a field from one would panic here. This surface derives none, and
+    // that is proved rather than asserted.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("load-disposal tempdir");
+    let path = dir.path().join("disposed.txt");
+    fixture::write_text(&path, "content\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+    page.load_file_async(&path);
+
+    let before = page.load_evidence();
+    assert_eq!(before.load_state, EditorLoadState::Loading);
+    assert_eq!(before.outcome, LoadOutcome::InFlight);
+
+    // SAFETY: this standalone test page is disposed exactly once, and the
+    // assertions afterwards only read the evidence surface.
+    unsafe { page.run_dispose() };
+
+    let after = page.load_evidence();
+    assert!(!after.installation_active);
+    assert_eq!(after.installation_phase, None);
+    assert_eq!(after.installation_weight, None);
+    assert!(!after.pending_request_parked);
+    assert!(
+        after.cancel_requested,
+        "disposal must retire the in-flight request's cancellation token"
+    );
+    assert_ne!(
+        after.generation, before.generation,
+        "disposal must advance load identity so a live worker cannot publish"
+    );
+
+    // Repeated reads after disposal stay identical and still do not panic.
+    let second = page.load_evidence();
+    assert_eq!(after, second);
 }
 
 #[test]
