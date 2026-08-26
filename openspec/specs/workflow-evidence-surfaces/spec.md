@@ -2,7 +2,6 @@
 
 ## Purpose
 Define how LushText classifies feature-gated test seams, consolidates a migrated workflow's observable state into one typed evidence surface, projects automation snapshots from that surface, and collapses test-only timing and limit overrides into one per-workflow test policy value.
-
 ## Requirements
 ### Requirement: Test-only seams are classified before they are consolidated
 The project SHALL classify every feature-gated test seam in production source as
@@ -57,6 +56,19 @@ previously readable through the workflow's inspection seams. Tests MUST read the
 surface instead of per-field inspection functions, and the retired inspection
 functions MUST have no remaining callers.
 
+Because one accessor reads the whole surface, and because a GTK workflow's state
+lives behind interior mutability, reading the surface takes shared borrows of the
+workflow's state cells. It follows that **no evidence field may be read from
+inside a mutable borrow of the same state**: doing so panics at runtime rather
+than failing to compile. This constraint is a property of the convention rather
+than of any one workflow, so it SHALL be stated once here rather than
+rediscovered as a per-workflow module note. A migrating workflow MUST record the
+constraint where its surface is defined, MUST NOT introduce a second narrower
+accessor to work around it, and MUST prove it with a test that drives the
+workflow through each operation taking a mutable borrow of the state the accessor
+reads, reads the evidence surface after each such operation, and asserts that
+repeated reads of unchanged state are identical.
+
 #### Scenario: Evidence replaces scattered getters
 - **WHEN** a workflow is migrated
 - **THEN** its inspection state is readable from one typed evidence value
@@ -74,6 +86,21 @@ functions MUST have no remaining callers.
 - **THEN** reading it has no effect on workflow state, timers, queues, or generation
   counters
 - **AND** it does not require the workflow to be in a particular stage
+
+#### Scenario: Evidence surface is not read from inside a mutation
+- **WHEN** a workflow holds a mutable borrow of state that its evidence accessor
+  reads
+- **THEN** the workflow does not read its evidence surface until that borrow ends
+- **AND** it does not add a second narrower accessor to make the nested read
+  possible
+
+#### Scenario: Reentrancy is proved rather than assumed
+- **WHEN** a workflow's evidence surface is introduced or gains fields
+- **THEN** the change includes a test that drives the workflow through each
+  operation taking a mutable borrow of the state the accessor reads, reads the
+  evidence surface after each such operation, and asserts that repeated reads of
+  unchanged state are identical
+- **AND** the constraint is recorded where the surface is defined
 
 #### Scenario: Evidence surface remains internal
 - **WHEN** an evidence surface is defined
@@ -136,3 +163,4 @@ statics. Production code paths MUST NOT be able to select test overrides.
 - **THEN** test override declarations do not occupy the module's opening section
   ahead of its workflow logic
 - **AND** the overrides live with the workflow's test policy value
+
