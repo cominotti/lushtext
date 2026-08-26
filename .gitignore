@@ -30,6 +30,7 @@ _build/
 /build/blueprint-visual-diff/
 /build/gnome-50-ui-spikes/
 /build/gtk-proof/
+/build/live-run/
 /build/gtk-lush-adoption/
 /build/proof-corpus/
 /build/smoke/

@@ -1,13 +1,14 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slots 1, 2a, and 2b complete, five migration changes
-outstanding.** The convention is normative, the census is complete, the
+Status: **Phase 0 complete, slots 1, 2a, 2b, and 3a complete, five migration
+changes outstanding (3b and 4 through 7).** The convention is normative, the census is complete, the
 mechanical gate is wired into `make check-policy`, the normative facade line
-budget is declared and enforced, and two workflows are migrated:
+budget is declared and enforced, and three workflows are migrated:
 `WFR-SEARCH-REPLACE` (**both halves** — search and preview in slot 1, the
 Replace All write path and its undo journal in slot 2b) and
-`WFR-COMMAND-PALETTE` (slot 2a). Everything else in `ui/` and `model/` is
-unchanged and behaviorally untouched. Slots 3 through 7 are authorable now; two
+`WFR-COMMAND-PALETTE` (slot 2a), and `WFR-DOCUMENT-SAVE` (slot 3a, the first
+tier-3 workflow migrated on its own). Everything else in `ui/` and `model/` is
+unchanged and behaviorally untouched. Slots 3b and 4 through 7 are authorable now; two
 items are deliberately deferred and may never be taken on.
 
 This document answers, in one read: what problem the programme solves, how much
@@ -165,11 +166,105 @@ Two further Phase 0 facts a later session should not have to rediscover:
   service termination. **Slot 2 must not re-plan this.** The matrix records the
   stop semantics under `WFR-SEARCH-REPLACE`.
 
+### Baseline after slot 3a
+
+| Quantity | After slot 2b | After slot 3a |
+| --- | --- | --- |
+| Workflows migrated | 2 | **3** (plus `WFR-DOCUMENT-SAVE`). Counted as workflow *halves*, four are now migrated: search/preview, replace/undo, the palette, and save |
+| Share of `ui/` + `model/` migrated | 8,044 of 79,017 censused lines ≈ 10% | 8,044 + 2,132 = 10,176 ≈ **13%**. The save workflow's censused `ui` footprint is 2,132; the row's old 6,672 figure double-counted two whole shared service files and the load half of `load_save.rs`, and slot 3a corrected that cell |
+| Policy modules relocated | 2 of 6 relocation candidates | **3 of 6.** `save_admission.rs` is the **third** relocation and the first since slot 1; `model/` went 27 → 26 files. Slot 3a *also* extracted new pure decisions from the GTK adapter into the same `policy.rs`, which is a coverage gain from zero and is reported separately from the relocation's parity numbers |
+| Test seams addressed | `ui/search_panel/**` at 7, palette directory at 6 | the save workflow retired **every** inspection seam it had — 4 call surfaces over 3 mechanisms — and added **no** per-field getter. 3 editor-side actuation seams preserved plus 3 chooser-bound Save As seams, all programme-level deferrals. **1 new actuation seam, counted and justified** (`expire_close_save_session_for_test`), the first in the programme; 4 of the 5 ungated `imp()` write sites in the widget tests became real drives of the workflow instead |
+| Seams reified | 3 | **4** (plus `QueuedSaveTicket` + `QueuedSaveFacts`). **Long signatures shortened: 1 — the programme's first.** `begin_admitted_save` went from 8 parameters to 5 and lost the only non-catalog `#[expect(clippy::too_many_arguments)]`, so the workspace count drops 2 → 1 and the survivor is the exempt domain catalog constructor. The secondary signature figure is finally informative: under the strict non-receiver definition this workflow held one function at 8 parameters, and it is now gone |
+| Automation projections | 2 | **3** (plus `tabs[].saving`, projecting from `SaveEvidence` and now covered by the Evidence Projection Map drift gate). The `save` readiness blocker reads the same state through the facade's cheap `is_saving()` accessor instead, because building a whole surface per editor per readiness poll to read one bool is waste — the two are identical by construction. The exported names, types, and semantics are unchanged |
+| Facade line budget | held at 369, 1 line spare | **held comfortably: the save facade measures 223 of 370.** See the friction note below — a one-stage-order facade is not the case that tests this number |
+| Bounded coordination role names | `admission`, `execution`, `retirement`, `watch`, `journal` | unchanged. `journal` was checked against save and **rejected**; see the friction note |
+| Permitted role homes | flat, workflow-scoped names in a shared directory | **plus the per-workflow subdirectory** (`ui/editor_page/save/`), for directories hosting several workflows where the fixed `policy.rs` / `evidence.rs` names collide. Both migrated rows re-checked as confirmations, zero renames |
+
+### Convention friction slot 3a hit, recorded for slots 3b through 7
+
+**Four workflow halves are migrated after this change, so the
+retroactive-amendment rule now costs three per-row re-checks.** The window for
+correcting the convention cheaply is narrowing exactly as section 8 predicted.
+
+- **The bounded role set needed no addition, and `journal` was the near miss the
+  record predicted.** Slot 2b warned it would look applicable in slot 3, and it
+  does: a save writes durably and irreversibly. It was rejected on a test worth
+  reusing — **`journal` requires that a later stage of the *same* workflow reads
+  the record back**, with startup recovery. A save replaces the user's file
+  bytes and no later save stage restores from them; the record that protects an
+  unsaved buffer is the draft, which is `WFR-DRAFT-RECOVERY`'s (slot 4). Pulling
+  draft persistence in to justify the name would have been the overload the
+  bounded set exists to prevent. Slot 4 is where `journal` will genuinely fit.
+- **The per-workflow subdirectory read well, and it was mechanically forced
+  rather than stylistic.** `ui/editor_page/` hosts eight workflows; the fixed
+  role names cannot be shared; and a prefixed `save_policy.rs` would have left
+  the `ui/**/policy.rs` mutation scope, which is a blocking coverage regression
+  rather than a naming preference. The amendment adds a permitted *location*, not
+  an obligation: nothing about the two existing rows changed. **Slot 3b reuses
+  this exact boundary for the load half.**
+- **The 370-line budget was not tested by this facade, and that is the honest
+  reading.** The save facade measures **223**, 147 under budget — but it narrates
+  **one** stage order. Slot 2b's qualification stands and now has a second data
+  point: what stresses the budget is the *number of stage orders*, not risk tier
+  or inversion count. This workflow has five inversions, more than the palette's
+  first stage order, and still fits easily. **Slot 6 (minimap) remains the slot
+  most likely to prove the number wrong**, and slot 3a supplies no evidence
+  either way.
+- **Census inversion counts are floors — third confirmation.** The trace recorded
+  four inversions; the code has five. The missing one was the mirror-back through
+  the bounded buffer-replacement workflow, folded into a prose phrase as though it
+  were a straight-line step. It was the most important one to name: it is where a
+  clean tab and the bytes on disk are reconciled. **Write the narration from the
+  code, every time.**
+- **A durable path's "seam census" figures were pooled, not row-scoped.** The
+  row's `Seams` cell counted `services/editor_io.rs`, `durable_write.rs`, and
+  `filesystem/write.rs` seams that are shared with the load workflow and the
+  fault-injection lane. Slot 2a hit the same shape with the palette. **Re-derive
+  row-scoped counts before sizing evidence work**; slot 3b will find the same
+  pool from the other side.
+- **The reach-through census needs its own scoping pass, and one named site
+  turned out to belong to another row.** The planned scope named
+  `window.imp().session.save_failed` as a priority save site. It is not: that
+  field is *session-file* save failure, owned by `ui/window/session_persistence.rs`
+  (`WFR-SESSION-RESTORE`, slot 4). Only 5 ungated write sites are genuinely
+  save-owned. **A field whose name contains "save" is not thereby save-workflow
+  state.**
+- **An ungated `imp()` *write* is usually a real drive in disguise.** Four of the
+  five write sites became real workflow drives once an existing configuration
+  seam (the save write delay) was used to hold the save in flight. Only the
+  close-save session expiry genuinely needed a new named actuation seam, because
+  a close session ends only when its `AdwAlertDialog` pipeline completes or is
+  superseded. **Reach for an existing seam plus a real drive before adding one.**
+- **An evidence surface that reads a template child is not stage-independent,
+  and the widget lane is what catches it.** The convention says reading evidence
+  must not require the workflow to be in a particular stage. Slot 3a's first
+  surface satisfied that for timers, queues, and generations but still reached
+  the editor's `GtkSourceView` **template child** to classify the buffer's
+  capture mode — and GTK4 clears template children in `dispose()`, *before*
+  Rust's `Drop`. A teardown test that disposes the page and then asks whether
+  the save released its permit is a legitimate observation point, and it
+  panicked with "Failed to retrieve template child". The fix is
+  `TemplateChild::try_get()` plus an honest answer for a page with no buffer
+  left. **Later slots: a disposed widget is a stage, and any evidence field
+  derived from a template child needs the non-panicking accessor.** Note that
+  the retired `*_for_test` getters did not have this problem, because each read
+  exactly one narrow thing — consolidating into one surface is what made a
+  widget read reachable from every observation point.
+- **The `data-safety` pass over this durable path produced no new confirmed
+  finding**, unlike slot 2b's two. That is a data point rather than a
+  reassurance: this change deliberately moved the save path without re-sequencing
+  it, and the ordering contract it preserves — target guard before bytes,
+  `BeforeRename` versus `AfterRename` honesty, buffer-and-disk agreement before
+  the tab goes clean — was already correct. **Later slots should still budget for
+  findings.**
+
 ## 3. Remaining scope
 
-Six changes remain (2b and 3 through 7). Order is by increasing risk; every
-`tier-3` slot follows at least two completed lower-risk migrations, which slot 2a
-is the second of. The matrix's
+Five changes remain (3b and 4 through 7). Order is by increasing risk; every
+`tier-3` slot follows at least two completed lower-risk migrations. Three are
+complete — slot 1's exemplar, slot 2a's palette, and slot 2b's replace/undo half
+— so a slot-3 tier-3 workflow starts with one more proof than the rule requires.
+The matrix's
 "Migration Order And Risk Tiers" section is the authoritative per-row mapping;
 this table is the change-level view.
 
@@ -178,7 +273,8 @@ this table is the change-level view.
 | 1 | **complete** — census, convention, enablers, exemplar | `WFR-SEARCH-REPLACE` search and preview half | proposal + design + tasks + 2 capability specs (`normalize-workflow-readability-boundaries`) |
 | 2a | **complete** — migrated the palette, set the facade budget at 370, first automation projections beyond search (`migrate-command-palette-workflow-readability`) | `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections beyond the search fields | proposal + tasks + 2 spec deltas |
 | 2b | **complete** — finished search/replace: the Replace All write path and its undo journal, added the `journal` role name, and proved no automation widening (`complete-search-replace-workflow-readability`) | `WFR-SEARCH-REPLACE` replace/undo half, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
-| 3 | Save and load | `WFR-DOCUMENT-SAVE`, `WFR-DOCUMENT-LOAD`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks |
+| 3a | **complete** — migrated the save workflow, added the per-workflow subdirectory role home, retired the programme's only workflow-code argument-count suppression (`migrate-document-save-workflow-readability`) | `WFR-DOCUMENT-SAVE`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
+| 3b | Load (`migrate-document-load-workflow-readability`) | `WFR-DOCUMENT-LOAD`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks |
 | 4 | User-content restore family | `WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-BUFFER-REPLACEMENT` | proposal + tasks |
 | 5 | Workspace tree and notes | `WFR-WORKSPACE-TREE`, `WFR-NOTES-BOOKMARKS` | proposal + tasks |
 | 6 | Minimap | `WFR-MINIMAP` | proposal + design + tasks |
@@ -203,6 +299,26 @@ Per the ledger grammar below, the split keeps the number and takes letter
 suffixes. Slots 3 through 7 are **not** renumbered: their numbers are cited from
 the matrix and from per-row `Slot` cells.
 
+**Slot 3 split into 3a and 3b for four reasons**, recorded beside slot 2's so a
+later session does not re-litigate it. First, slot 2 split because it *contained*
+a tier-3 half; slot 3 contains **two independently tier-3 workflows**, each with
+its own durable or user-visible failure mode — save replaces the user's file
+bytes, and load installs decoded bytes into a live buffer while owning the
+encoding-recovery and cancellation paths. Bundling them would put both proof
+matrices in one change. Second, **scale**: the matrix sizes the two rows at
+thousands of lines each with large seam populations, and slot 2b — one *half* of
+one workflow — already needed a 954-line task list and five evidence files.
+Third, the shared 1,795-line `ui/editor_page/load_save.rs` splits sequentially
+safely, though **item by item rather than by line range**: the two halves
+interleave, so 3a lifts the save items out and leaves a coherent load-only
+residual that 3b then dissolves. Doing it the other way round would leave the
+entangled half behind. Fourth, **the archetype defect is save-side** — the
+renamed value crossing the admission seam, `QueuedSaveTicket`, and the
+programme's one workflow-code argument-count suppression — so it should not wait
+behind the larger load half. **Ordering is fixed: 3a lands before 3b**, because
+they share `load_save.rs` and 3a's spec delta establishes the per-workflow role
+home 3b reuses.
+
 **Naming and finding a slot's change.** Slot 1 is the OpenSpec change
 `normalize-workflow-readability-boundaries`, slot 2a is
 `migrate-command-palette-workflow-readability`, and slot 2b is
@@ -218,7 +334,13 @@ change covering the slot.
 | 1 | `normalize-workflow-readability-boundaries` (archived) |
 | 2a | `migrate-command-palette-workflow-readability` |
 | 2b | `complete-search-replace-workflow-readability` |
-| 3–7 | not yet authored |
+| 3a | `migrate-document-save-workflow-readability` |
+| 3b | `migrate-document-load-workflow-readability` |
+| 4–7 | not yet authored |
+
+**3a lands before 3b.** They share `ui/editor_page/load_save.rs`, and 3a's
+`gtk-adapter-module-boundaries` delta establishes the per-workflow subdirectory
+role home (`ui/editor_page/save/`) that 3b reuses for the load half.
 
 **The gate slot 2b checks before it starts.** 2b is tier-3 and needs two
 completed lower-risk proofs. Both are observable mechanically rather than by
@@ -319,7 +441,8 @@ in both directions, which some rows need:
 - slot 1 (complete): WFR-SEARCH-REPLACE
 - slot 2a (complete): WFR-COMMAND-PALETTE, WFR-AUTOMATION-SPINE (partial)
 - slot 2b (complete): WFR-SEARCH-REPLACE, WFR-AUTOMATION-SPINE (partial)
-- slot 3 (outstanding): WFR-DOCUMENT-SAVE, WFR-DOCUMENT-LOAD, WFR-AUTOMATION-SPINE
+- slot 3a (complete): WFR-DOCUMENT-SAVE, WFR-AUTOMATION-SPINE (partial)
+- slot 3b (outstanding): WFR-DOCUMENT-LOAD, WFR-AUTOMATION-SPINE
 - slot 4 (outstanding): WFR-DRAFT-RECOVERY, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-BUFFER-REPLACEMENT
 - slot 5 (outstanding): WFR-WORKSPACE-TREE, WFR-NOTES-BOOKMARKS
 - slot 6 (outstanding): WFR-MINIMAP

@@ -116,11 +116,21 @@ Rules to enforce when reviewing a decomposition:
   `docs/workflow-readability-matrix.md`; changing that number follows the
   retroactive amendment rule.
 - Coordination file names come from the bounded set above and state the job. A
-  workflow may own more than one. A directory hosting several workflows keeps
-  flat role names scoped per workflow rather than being restructured into one
-  subdirectory per workflow. A job no listed name describes requires amending
+  workflow may own more than one. A job no listed name describes requires amending
   `openspec/specs/gtk-adapter-module-boundaries/spec.md`.
 - `policy.rs` and `evidence.rs` are fixed names, one of each per workflow.
+- **Two role homes are permitted, chosen per workflow.** A workflow whose role
+  file names do not collide with a sibling's keeps flat, workflow-scoped role
+  names in the shared directory. Where a directory hosts several workflows and
+  more than one of them owns pure policy or an evidence surface, the fixed names
+  cannot be shared, so one moves its roles into a **per-workflow subdirectory**
+  whose `mod.rs` is that workflow's facade and whose role files keep the
+  unqualified `policy.rs`, `evidence.rs`, and bounded coordination names
+  (`ui/editor_page/save/`). A workflow-prefixed `save_policy.rs` is not a
+  substitute: it leaves the `ui/**/policy.rs` mutation scope, which is a blocking
+  coverage regression. Migration still never requires restructuring a whole
+  directory into one subdirectory per workflow. The row records which home it
+  chose.
 - Do not introduce a trait, manager type, or crate to express a role split. Plain
   modules and narrow owner references only.
 

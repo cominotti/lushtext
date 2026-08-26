@@ -477,6 +477,18 @@ are its coordination jobs, and `evidence.rs` backs both its widget tests and the
 `window.command_palette` automation snapshot. It is also where the facade line
 budget became normative, at 370 physical lines.
 
+`crates/lushtext-core/src/ui/editor_page/save/` is the third, and the first
+migrated on a path that replaces the user's file bytes: `mod.rs` narrates Ctrl+S,
+Save As, and close-with-changes with all five of their control-flow inversions
+named, `admission.rs` owns the compact queue and its shared byte budget,
+`execution.rs` owns buffer capture and the durable write, and `policy.rs` holds
+the admission accounting plus the `QueuedSaveTicket` seam whose predicate decides
+whether a queued save still describes its editor. It is also the first workflow
+to keep its roles in a **per-workflow subdirectory**, because `ui/editor_page/`
+hosts eight workflows and the `policy.rs` and `evidence.rs` names are fixed at
+one each per workflow; a workflow-prefixed policy file would leave the
+`ui/**/policy.rs` mutation scope.
+
 Migration to this shape is a staged programme. Per-workflow status, owned pure
 policy, seam value objects, risk tiers, and migration slots live in
 [`docs/workflow-readability-matrix.md`](docs/workflow-readability-matrix.md), and

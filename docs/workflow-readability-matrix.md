@@ -85,8 +85,8 @@ convention has been proven on at least two completed lower-risk migrations.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs`: slot 1 moved the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census); slot 2b added the Replace All durable half's decisions (preview reservation and shrink-to weights, the saturating retained-byte cast, the undo-capacity admission plan, the journal generation predicate, `ReplaceApplyCounts`). Mutation parity proved for both, and slot 2b's move was out-of-scope-to-in-scope, so it *gained* 11 mutants with zero survivors. Domain `model/workspace_search.rs` stays | both halves migrated: slot 1 retired 8 inspection fns into `evidence.rs` and collapsed 5 configuration setters plus 6 override statics into `SearchPanelTestPolicy`; slot 2b added 10 evidence fields and needed no new inspection fn, no new override, and no new actuation seam. 5 actuation seams remain on the replace/undo transaction (`clear_undo_backup_for_test`, `reserve_undo_backup_generation_for_test`, `set_persisted_undo_backup_for_generation_for_test`, `begin_replace_transaction_for_test`, `finish_replace_transaction_for_test`) plus 2 accessibility probes, all deferred at programme level. Write-side seams in `services/content_search/replace.rs` are classified under [Migrated Workflow Roles](#wfr-search-replace) | **3 seams reified** (the programme's primary unit; long signatures shortened remains 0 for this row, and no function in it has 6 or more non-receiver parameters, so neither the receiver-counted 88 nor the strict 43 signature figure applies here). exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side). new: `UndoRestoreClaim` (the window's undo-restore claim seam, naming the transaction-busy and capacity-deferred refusals the panel must restore the affordance for) | exists: `SearchPanelEvidence` via `evidence()`, extended by slot 2b with the apply transaction's own pending flag, all three generations, the preview capacity-retry state, the installed journal's entry count and retained weight, in-flight and cumulative journal disk-job counters, and the last apply's counts; automation `window.content_search` projects from it and slot 2b widened nothing | tier-2 (search/preview half), tier-3 (Replace All write half) — **both now covered** | 1 (search/preview half) + 2b (replace/undo half) | migrated |
 | WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | 16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897); the `ui` subtotal is `ui/command_palette/**` (1,672) plus `ui/window/focus_indexing.rs` (856), which the census attributed to this row but which stays window code | `win.toggle-command-palette` (`Ctrl+Shift+P`), palette mode dropdown and Tab cycling, sidebar file create/delete/rename and watcher reconciliation, `win.notes-show-notes` (the census cell said `Ctrl+P` / `Ctrl+K`; the real palette accelerator is `Ctrl+Shift+P` and `Ctrl+K` belongs to the recent-Open popover) | relocated to `crates/lushtext-core/src/ui/command_palette/policy.rs` (queue admission byte/cap math, batch-kind selection and flush guard, mutation-generation arbitration and replay, retirement-cap classification, header-skipping navigation, presentation decisions); mutation coverage gained, not relocated — see [Migrated Workflow Roles](#wfr-command-palette). Domain `model/palette.rs` (17 consumers) stays | palette half migrated: 5 inspection fns retired into `evidence.rs`, 2 configuration setters plus 2 override statics collapsed into `CommandPaletteTestPolicy`; 3 process-global retirement counters retained as lifecycle probes (per-widget folding would change their meaning from "this process observed a last-owned at-cap retirement" to a count no test asks for); 3 actuation seams deferred. The pre-migration cell read `15/10/2/0 = 27 fns, 40 sites, 4 override statics`, which was row-scoped: `ui/command_palette/**` held 12 of those functions and 22 of the gate-attribute sites, and the other 15 live in `services/palette/**` and `ui/window/notes/**` shared with `WFR-NOTES-BOOKMARKS` (slot 5) | exists: `PaletteSearchCoordinator` generation identity + `is_current` (query seam; the convention accepts a coordinator that owns the generation as the seam value object). new: `FileIndexMutationTicket` + `FileIndexMutationFacts` + `arbitrate` (file-index mutation seam) | exists: `CommandPaletteEvidence` via `evidence()`; automation `window.command_palette` and both palette readiness blockers project from it | tier-2 | 2a | migrated |
-| WFR-DOCUMENT-SAVE | Save, Save As, save formatting, durability | 7 files, 6,672 lines (ui 2,132 / model 991 / services 3,549) | `win.save`, `win.save-as`, `Ctrl+S`, close-with-changes dialog, autosave-on-close | `model/save_admission.rs` (2 consumer files, 1 workflow → single-consumer, relocates) | 10/11/9/4 = 34 fns, 44 sites, 5 override statics | exists: `SaveCompletionTicket` (completion seam). required: `QueuedSaveTicket` + `QueuedSaveFacts` (admission seam; carries the renamed field) | partial: `SaveAdmissionSnapshot` | tier-3 | 3 | pending |
-| WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | 10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375) | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore | `model/file_load.rs` (4 consumers → domain-shaped, stays pending review in slot 3) | 23/7/3/1 = 34 fns, 55 sites, 3 override statics | required: `LoadRequestTicket` (carries `{load_generation, cancel_token}`, exploded at 2 call sites today) | partial: `FileLoadAdmissionSnapshot`, `OpenPopoverRowLayoutSnapshot` | tier-3 | 3 | pending |
+| WFR-DOCUMENT-SAVE | Save, Save As, save formatting, durability | **5 files, 1,855 production lines** in `ui/editor_page/save/**`, counting non-`#[cfg(test)]` lines only: facade 223, admission 459, execution 555, policy 444 (915 total, of which 471 are the module's co-located unit tests), evidence 174. The workflow additionally **calls** the window-side invocations in `ui/window/dialogs.rs` and `ui/window/documents.rs` and the shared `services/editor_io.rs` and `services/durable_write.rs` durable-write path, which it does not own; counting those three neighbours as files is how the pre-migration cell reached its total. That cell read `7 files, 6,672 lines (ui 2,132 / model 991 / services 3,549)` and was wrong in both directions: it counted the whole of `editor_io.rs` (3,035) and `durable_write.rs` (1,228), both shared with `WFR-DOCUMENT-LOAD` and every other write path, and it counted `load_save.rs` (1,795) whole although the save half was roughly a third of it | `win.save`, `win.save-as`, `Ctrl+S`, close-with-changes dialog, autosave-on-close | relocated to `crates/lushtext-core/src/ui/editor_page/save/policy.rs`: the former model/save_admission.rs (405 lines) moved with mutation parity proved, and the save half's remaining pure decisions were extracted from the GTK adapter into the same module — the queued-save staleness predicate and its `QueuedSaveTicket`/`QueuedSaveFacts` seam, the pending-load pre-emption derivation, the saved-text disposition (formatting acceptance plus the buffer mirror-back), the capture-mode naming, and the durable write classification. Those extractions are a coverage **gain from zero**, reported separately from the relocation's parity numbers. The chunked-capture *threshold* is **not** owned here: it belongs to cross-cutting `ui/buffer_snapshot.rs` (`WFR-BUFFER-SNAPSHOT`, slot 7) and duplicating it would fork a shared limit | migrated: 3 inspection fns retired into `evidence.rs` (`save_runtime::snapshot_for_test`, `transient_save_admission_snapshot_for_test`, `save_uses_chunked_snapshot_for_test`, `save_snapshot_inflight_for_test` — four call surfaces over three mechanisms), and **no** `*_for_test` inspection function remains on the save path. 3 actuation seams preserved on the editor side (`reset_transient_save_admission_for_test`, `pause_next_save_snapshot_for_test`, `resume_save_snapshot_for_test`) plus the 3 chooser-bound Save As seams in `ui/window/dialogs.rs`, all deferred at programme level. **1 new actuation seam, counted and justified**: `expire_close_save_session_for_test`, replacing an ungated `session.active_close_save_identity` write. 4 of the 5 ungated `imp()` write sites became real drives of the workflow. The pre-migration cell read `10/11/9/4 = 34 fns, 44 sites, 5 override statics`, which was **not** row-scoped: it pooled `services/editor_io.rs` (6 load-side, 3 save-side, 1 shared), `services/durable_write.rs`, and `services/filesystem/write.rs` seams shared with `WFR-DOCUMENT-LOAD` (3b) and the fault-injection lane. Row-scoped, `load_save.rs` held 18 `*_for_test` functions of which 6 were save-side, and the retired save_runtime.rs held 2. The 5 save/load `test-utils` override statics live in `services/editor_io.rs` and stay there, because the service owns the behavior they override | **done**: `QueuedSaveTicket` + `QueuedSaveFacts` + `queued_save_is_current`, constructed once at the workflow entry point and validated as a unit. exists: `SaveCompletionTicket` (completion seam), unchanged and distinct | exists: `SaveEvidence` via `save_evidence()`; the exported snapshot field `tabs[].saving` projects from it and is covered by the Evidence Projection Map drift gate. The `save` readiness blocker and the readiness aggregate read the same workflow-owned state through the facade's cheap `is_saving()` accessor rather than building a whole surface per editor per poll — identical by construction, since both read the one `save.inflight` cell. The exported D-Bus contract is unchanged | tier-3 — **now covered**. The durable write path, its `BeforeRename`/`AfterRename` classification, and the buffer-versus-disk agreement before the tab goes clean are all narrated by the facade and asserted from evidence | 3a | migrated |
+| WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | 10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375) | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore | `model/file_load.rs` (4 consumers → domain-shaped, stays pending review in slot 3) | 23/7/3/1 = 34 fns, 55 sites, 3 override statics | required: `LoadRequestTicket` (carries `{load_generation, cancel_token}`, exploded at 2 call sites today) | partial: `FileLoadAdmissionSnapshot`, `OpenPopoverRowLayoutSnapshot` | tier-3 | 3b | pending |
 | WFR-DRAFT-RECOVERY | Draft autosave, crash recovery, orphan cleanup | 6 files, 8,930 lines (ui 2,578 / model 442 / services 5,910) | first-dirty autosave timer, startup recovery scan, restored-draft inline alert, `Discard...` / `Save...` | `model/draft.rs` (9 consumers → domain, stays) | 7/18/3/0 = 28 fns, 53 sites, 14 override statics | exists: `DraftRestoreTicket` + `DraftRestoreFacts`; `DraftMutationIntent`; `DraftCleanupContinuation` | partial: `OrphanCleanupRuntimeSnapshot` | tier-3 | 4 | partially-conforming |
 | WFR-SESSION-RESTORE | Session persistence and bounded restore | 5 files, 2,599 lines (ui 1,962 / model 300 / services 337) | app startup, window close, tab mutation persistence | `model/session.rs` (8 consumers → domain, stays) | 2/0/2/0 = 4 fns, 5 sites | exists: `SessionRestorePlanPermit` + `SessionRestoreAdmission` | exists: `SessionRestoreEvidence` via `evidence()` — the only canonical accessor in the tree | tier-3 | 4 | partially-conforming |
 | WFR-LOCAL-HISTORY | Local history capture, preview, restore | 4 files, 5,536 lines (ui 2,586 / model 173 / services 2,777) | `win.show-local-history`, baseline capture on first edit, periodic capture timer, restore action | `model/local_history.rs` (6 consumers → domain, stays) | 9/11/4/0 = 24 fns, 33 sites, 4 override statics | exists: `BaselineCaptureTicket` + `BaselineCaptureFacts`; `PeriodicCaptureTicket` + `PeriodicCaptureFacts`; `LocalHistoryReplacementTicket` | partial: `LocalHistoryPreviewCoordinatorSnapshot`, `LocalHistoryPreviewInstallSnapshot` | tier-3 | 4 | partially-conforming |
@@ -200,21 +200,47 @@ caller's flag, and the panel's `if !cancelled` tick arms silently discarded the
 
 ### WFR-DOCUMENT-SAVE
 
-`win.save` → editor save entry → `SaveSubmission` → `save_runtime::submit` →
-`SaveAdmissionPolicy::queue` → `schedule_drain()` ⇢ `glib::idle_add_once` drain,
-resuming in `begin_admitted_save` → `queued_save_is_current` freshness gate →
-`SaveCompletionTicket::capture` → buffer capture, either
-`snapshot_buffer_text_direct` or ⇢ chunked async capture resuming per chunk →
-`spawn_blocking_then` ⇢ worker write through `editor_io` and
-`filesystem::write::atomic_replace`, resuming in the completion closure →
-`SaveCompletionTicket::is_current(editor)` → save-formatting acceptance and
-buffer mirror-back → `SavePayloadPermit` drop ⇢ `idle_add_once` release,
-resuming in the permit release path → notifications, draft cleanup,
-accessibility refresh.
+**Migrated by slot 3a.** The trace below names the current operations and
+modules; the facade at `ui/editor_page/save/mod.rs` narrates the same order in
+prose, and this entry is the index into it.
 
-Four inversions across six files. This is the workflow the programme cites as
-requiring 13 hops to answer "what happens on Ctrl+S", and the census confirms
-the hop count and the file spread.
+`win.save` / `win.save-as` / close-with-changes →
+`save_file_async` | `save_file_async_to_path` | `save_file_async_for_close`
+(facade) → `admission::queue_save_request` → refusal gates, save generation
+advanced and ownership published → one `QueuedSaveTicket` built →
+`admission::submit` → `SaveAdmissionPolicy::queue` → `schedule_drain()`
+⇢ **(1) `glib::idle_add_local_once`, resuming in `admission::drain`** →
+`policy::queued_save_is_current(&ticket, &facts)` retirement pass →
+`SaveAdmissionPolicy::admit_next` → `execution::begin_admitted_save` →
+ticket revalidated → `SaveViewInteractivity::suspend` →
+`SaveCompletionTicket::capture` → buffer capture, either
+`snapshot_buffer_text_direct` or ⇢ **(2) chunked async capture, resuming in the
+snapshot callback** → `execution::write_snapshot_async` →
+`spawn_blocking_then` ⇢ **(3) worker write through `editor_io` and
+`filesystem::write::atomic_replace`, resuming in the completion closure** →
+`SaveCompletionTicket::is_current(editor)` →
+`policy::classify_saved_text` → when formatting rewrote the text, ⇢ **(4) bounded
+buffer replacement, resuming in its terminal callback** (the only place the tab
+is marked clean on that path) → `finish_accepted_save` →
+`SavePayloadPermit` drop ⇢ **(5) `idle_add_once`, resuming in
+`admission::release_on_main`** → window-side notifications, draft cleanup,
+`adopt_saved_destination` for Save As, accessibility refresh.
+
+**Five inversions, not four.** The census recorded four; slot 2a's finding that
+census inversion counts are floors holds again here. The fifth is the mirror-back
+inversion through the bounded buffer-replacement workflow, which the pre-migration
+trace folded into "save-formatting acceptance and buffer mirror-back" as if it
+were a straight-line step. It is the inversion that most needed naming: it is
+where a clean tab and the bytes on disk are reconciled, and skipping it would
+show a clean tab whose visible text differs from the file.
+
+**Shared-field owners a reader needs at this seam** (full table in the facade's
+module doc): `cancel_load` and all `imp().load*` state belong to
+`WFR-DOCUMENT-LOAD` (slot 3b); the restore-position group is cross-cutting with
+five owning workflows and save never touches it; `size_check`, `file_path`, and
+`canonical_file_path` are shared editor-page document identity; the chunked
+threshold belongs to `WFR-BUFFER-SNAPSHOT` (slot 7); local history and drafts
+belong to slot 4.
 
 ### WFR-DOCUMENT-LOAD
 
@@ -414,7 +440,7 @@ progress against a stable number.
 | Configuration override statics | test-gated `static` whose name carries a delay, limit, max, slice, override, or injected-failure role | 45 |
 | Long signatures, strict | production `fn` with 6 or more non-receiver parameters, `crates/lushtext-core/src` | 43 |
 | Long signatures, receiver-counted | production `fn` with 6 or more parameters counting `&self`, i.e. 5 or more non-receiver | 88 |
-| Argument-count suppressions | `#[expect(clippy::too_many_arguments)]` in the workspace | 2 |
+| Argument-count suppressions | `#[expect(clippy::too_many_arguments)]` in the workspace | 1 (was 2; slot 3a removed the workflow-code one) |
 | `exclude_re` entries | entries in `.cargo/mutants.toml` | 71 (50 services-scoped, 20 ui-scoped, 1 unscoped) |
 | Minimap mutation exclusions | ui-scoped `exclude_re` entries naming minimap methods | 14 entries, 66 method names, 17 physical TOML lines |
 | Internal snapshot types | `pub struct *Snapshot` excluding `Automation*Snapshot` | 33 |
@@ -436,13 +462,13 @@ module, excluding the module itself.
 
 | Module | Lines | Consumer files | Owning workflows | Classification |
 | --- | --- | --- | --- | --- |
-| `save_admission.rs` | 405 | `ui/editor_page/save_runtime.rs`, `ui/editor_page/load_save.rs` | 1 (`WFR-DOCUMENT-SAVE`) | single-consumer → relocates to `ui/editor_page/policy.rs` |
+| `save_admission.rs` | 405 | the retired ui/editor_page/save_runtime.rs, `ui/editor_page/load_save.rs` | 1 (`WFR-DOCUMENT-SAVE`) | **relocated by slot 3a** to `ui/editor_page/save/policy.rs`. The census target read ui/editor_page/policy.rs, which could not be right — that is one file for the eight workflows the directory hosts — so slot 3a corrected it to the per-workflow subdirectory. The consumer list was also short: `model/mod.rs`, `crates/lushtext-core/benches/benchmarks.rs`, and the widget tests referenced it too, and both external consumers are why a precisely scoped `pub` subset survives the move |
 | `search_flight.rs` | 191 | `ui/search_panel/imp.rs`, `runtime.rs` (both in `ui/search_panel/`) | 1 (`WFR-SEARCH-REPLACE`) | single-consumer → relocates to `ui/search_panel/policy.rs` |
 | `search_retirement.rs` | 80 | `runtime.rs` (in `ui/search_panel/`) | 1 (`WFR-SEARCH-REPLACE`) | single-consumer → relocates to `ui/search_panel/policy.rs` |
 | `minimap_analysis.rs` | 186 | `ui/editor_page/minimap.rs` | 1 (`WFR-MINIMAP`) | single-consumer → relocates to `ui/editor_page/minimap/policy.rs` |
 | `plain_disposal.rs` | 692 | `ui/plain_disposal.rs` | its own adapter, serving 10 workflows | cross-cutting → stays |
 | `buffer_replacement.rs` | 186 | `ui/window/local_history.rs`, `ui/editor_page/buffer_replacement.rs` | 2 (`WFR-LOCAL-HISTORY`, Replace All undo) | cross-cutting → stays |
-| `editor_memory.rs` | 469 | `ui/window/focus_indexing.rs`, `ui/window/imp.rs`, `ui/editor_page/mod.rs`, `ui/editor_page/save_runtime.rs`, `ui/editor_page/load_runtime.rs` | 3 | cross-cutting → stays, exempt |
+| `editor_memory.rs` | 469 | `ui/window/focus_indexing.rs`, `ui/window/imp.rs`, `ui/editor_page/mod.rs`, `ui/editor_page/save/admission.rs`, `ui/editor_page/load_runtime.rs` | 3 | cross-cutting → stays, exempt |
 | `migration_ledger.rs` | 225 | `ui/window/notes/mod.rs`, `ui/window/local_history.rs`, `services/migration_ledger.rs` | 2 plus a service | cross-cutting → stays |
 
 **Post-migration note.** This table is the census snapshot, kept as the record
@@ -451,7 +477,7 @@ names are as-censused and are deliberately not rewritten. Two rows have since
 been acted on. `search_flight.rs` and `search_retirement.rs` are gone from
 `model/`: both relocated into `ui/search_panel/policy.rs`, with mutation-coverage
 parity recorded in
-`openspec/changes/normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md`.
+`openspec/changes/archive/2026-08-25-normalize-workflow-readability-boundaries/evidence/mutation-parity-search-policy.md`.
 Their consuming `runtime.rs` is also gone, split by the same migration into
 `ui/search_panel/execution.rs` (streaming search) and
 `ui/search_panel/retirement.rs` (bounded disposal). See
@@ -546,24 +572,8 @@ exposes `is_current(generation)`: `SingleFlightCoordinator`,
 `FileIndexBuildCoordinator`, `NoteSourceRefreshCoordinator`,
 `WorkspaceScanTicket::is_current`.
 
-Four seams remain unreified. Each is named here so its migration change does
+Three seams remain unreified. Each is named here so its migration change does
 not have to rediscover it.
-
-### required: `QueuedSaveTicket` + `QueuedSaveFacts` (`WFR-DOCUMENT-SAVE`)
-
-Carries `{save_generation, path, explicit_destination, required_modified,
-close_session_identity}`. Today those five fields live as loose parameters
-threaded through `SaveSubmission` → `QueuedSave` → `begin_admitted_save` →
-`queued_save_is_current`, and `begin_admitted_save` carries the programme's only
-non-catalog `#[expect(clippy::too_many_arguments)]`.
-
-This is the seam holding the archetype defect: `begin_admitted_save` passes its
-`cancel_pending_load` argument positionally into `queued_save_is_current`'s
-`explicit_destination` parameter
-(`ui/editor_page/load_save.rs:1390` into `:1344`). The two names denote the same
-value today, so no test can see the drift. **The value object MUST use
-`explicit_destination`**, which names the user's intent, and MUST NOT use
-`cancel_pending_load`, which names only the consequence.
 
 ### required: `LoadRequestTicket` (`WFR-DOCUMENT-LOAD`)
 
@@ -573,6 +583,44 @@ inside `load_runtime`'s request type but is exploded back into loose parameters
 at both call sites (`ui/editor_page/load_runtime.rs:209`,
 `ui/editor_page/load_save.rs:553`) against
 `ui/editor_page/load_save.rs:1012`.
+
+### done: `QueuedSaveTicket` + `QueuedSaveFacts` (`WFR-DOCUMENT-SAVE`)
+
+Reified by slot 3a in `ui/editor_page/save/policy.rs`, carrying
+`{save_generation, path, explicit_destination, required_modified,
+close_session_identity}` and validated by one
+`queued_save_is_current(&ticket, &facts)` predicate. The ticket is built once, in
+the queue stage, and carried through the drain and admission unchanged.
+
+What it removed: five loose parameters threaded through the retired
+`SaveSubmission` → `QueuedSave` → `begin_admitted_save` →
+`queued_save_is_current` chain; the clause-by-clause freshness comparison
+rebuilt at each call site; and the programme's only non-catalog
+`#[expect(clippy::too_many_arguments)]`.
+
+**The `explicit_destination` versus `cancel_pending_load` resolution.** This is
+the seam that held the archetype defect: one boolean stored as
+`cancel_pending_load` and handed positionally into a parameter named
+`explicit_destination`, across three forwarding hops of which two crossed the
+rename. Slot 3a decided **from the code** that one value can honestly carry both
+meanings — all three callers (plain save, Save As, close-with-changes save) want
+them together — so there is **one** field, named for the user's intent, and the
+cancellation consequence is derived through the named pure predicate
+`save_may_preempt_pending_load`.
+
+Two distinct mechanisms keep the defect from returning, and conflating them
+overstates what the derivation does. **`QueuedSaveTicket` supplies the type
+safety**: the freshness predicate takes the ticket and `QueuedSaveFacts` instead
+of five positional scalars, so a value can no longer land in a parameter that
+names it something else — the miswired call is a type error. **The derivation
+supplies the readability**: `save_may_preempt_pending_load` is `bool -> bool` and
+proves nothing to the compiler, but it puts the inference in the code under a
+name rather than leaving one boolean silently serving two meanings.
+
+Both failure modes are pinned by a pure test rather than left to review: a plain
+save that wrongly claimed an explicit destination would skip the path comparison
+protecting it from writing a stale target, and a Save As that stopped pre-empting
+the pending load would race a load into a just-saved buffer.
 
 ### done: `ReplacePreviewTicket` + `ReplacePreviewFacts` (`WFR-SEARCH-REPLACE`)
 
@@ -735,7 +783,8 @@ through 7 keep their numbers.
 | 1 | Census, convention, enablers, exemplar (`normalize-workflow-readability-boundaries`, complete) | `WFR-SEARCH-REPLACE` search and preview half only | tier-2 |
 | 2a | Palette migration, facade budget, first automation projections beyond search (`migrate-command-palette-workflow-readability`) | `WFR-COMMAND-PALETTE`, first `WFR-AUTOMATION-SPINE` projections beyond the search fields | tier-2 |
 | 2b | Search/replace completion (`complete-search-replace-workflow-readability`) | `WFR-SEARCH-REPLACE` replace and undo half, continuing `WFR-AUTOMATION-SPINE` projections | tier-3 |
-| 3 | Save and load | `WFR-DOCUMENT-SAVE`, `WFR-DOCUMENT-LOAD` | tier-3 |
+| 3a | Save (`migrate-document-save-workflow-readability`) | `WFR-DOCUMENT-SAVE` | tier-3 |
+| 3b | Load (`migrate-document-load-workflow-readability`) | `WFR-DOCUMENT-LOAD` | tier-3 |
 | 4 | User-content restore family | `WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-BUFFER-REPLACEMENT` | tier-3 |
 | 5 | Workspace tree and notes | `WFR-WORKSPACE-TREE`, `WFR-NOTES-BOOKMARKS` | tier-3 |
 | 6 | Minimap | `WFR-MINIMAP` | tier-2 logic, highest proof cost |
@@ -894,6 +943,25 @@ name would force a subdirectory-per-workflow restructuring of roughly 20 workflo
 Role names are scoped within a shared directory instead. A coordination job that no
 listed role name describes requires a spec amendment to add the name.
 
+**Two permitted role homes, chosen per workflow.** The `policy.rs` and
+`evidence.rs` names above are fixed at one each per workflow, so two workflows in
+one directory cannot both use them, and a workflow-prefixed `save_policy.rs` is
+not an available substitute: the default mutation scope reaches pure policy
+through the literal `crates/lushtext-core/src/ui/**/policy.rs` glob, so a
+prefixed file leaves the scope, which
+[`mutation-testing`](../openspec/specs/mutation-testing/spec.md) classifies as a
+blocking coverage regression. Slot 3a closed that adjacency: where a directory
+hosts more than one workflow, a migrated workflow's roles MAY live in a
+**per-workflow subdirectory** of it whose `mod.rs` is the facade and whose role
+files keep the unqualified names `policy.rs`, `evidence.rs`, and the unqualified
+bounded coordination names. The subdirectory is named for the workflow in its own
+domain vocabulary (`ui/editor_page/save/`). This is a permitted home, not a
+required one — a workflow whose role file names do not collide with a sibling's
+keeps flat, workflow-scoped names in the shared directory, and migration still
+never requires restructuring a whole directory into one subdirectory per
+workflow. Each migrated row records which home it chose under
+[Migrated Workflow Roles](#migrated-workflow-roles).
+
 **Stage-order qualification.** Where **one** workflow owns more than one ordered
 stage order in a single directory and more than one of those stage orders needs a
 coordination module of the same shape, the module name MAY qualify a bounded role
@@ -993,10 +1061,16 @@ NOT re-derive the number as if it were still unset.
 ### Argument-count suppressions
 
 The residual sweep asserts **zero** `#[expect(clippy::too_many_arguments)]` in
-workflow adapter and coordination code, with no allowlist. Reachable because
-Clippy's threshold is 7, only two functions in the crate have 8 or more parameters,
-and the only one in workflow code is the save seam that `QueuedSaveTicket` removes.
-Domain catalog construction in `model/` is outside the workflow-seam rule.
+workflow adapter and coordination code, with no allowlist. **That assertion is
+already true: slot 3a removed the only workflow-code suppression**, on
+`begin_admitted_save`, by reifying its parameter list as `QueuedSaveTicket`. The
+workspace count is now **1**, and the survivor is the domain catalog constructor
+in `model/action_catalog.rs`, which the workflow-seam rule exempts because each
+of its parameters names a documented external contract field. The residual sweep
+inherits a discharged obligation here rather than a pending one.
+
+Treat any new suppression on a cross-module workflow boundary as an unreified
+seam, not an accepted exception.
 
 ### Cross-cutting eligibility
 
@@ -1116,13 +1190,103 @@ migrated end to end.
   decision; see
   [Modules confirmed as domain and staying in `model/`](#modules-confirmed-as-domain-and-staying-in-model).
 
+### WFR-DOCUMENT-SAVE
+
+- facade: `crates/lushtext-core/src/ui/editor_page/save/mod.rs`
+- coordination: `crates/lushtext-core/src/ui/editor_page/save/admission.rs`, `crates/lushtext-core/src/ui/editor_page/save/execution.rs`
+- policy: `crates/lushtext-core/src/ui/editor_page/save/policy.rs`
+- evidence: `crates/lushtext-core/src/ui/editor_page/save/evidence.rs`
+- mutation parity: `openspec/changes/migrate-document-save-workflow-readability/evidence/mutation-parity-save-policy.md`
+
+Notes on this row, which is the third migration, the first tier-3 workflow to be
+migrated on its own, and the first to use a per-workflow subdirectory role home:
+
+- **This row's role home is a per-workflow subdirectory, and that is why the
+  convention now permits one.** `ui/editor_page/` hosts eight workflows, and the
+  role file names `policy.rs` and `evidence.rs` are fixed at one each per
+  workflow. A workflow-prefixed `save_policy.rs` was mechanically unavailable,
+  not merely unattractive: the default mutation scope reaches pure policy through
+  the literal `crates/lushtext-core/src/ui/**/policy.rs` glob, so a prefixed file
+  leaves the scope, which `mutation-testing` classifies as a blocking coverage
+  regression. The next `ui/editor_page/` workflow to migrate should copy this
+  boundary rather than re-derive it: subdirectory named for the workflow in its
+  own domain vocabulary, `mod.rs` as the facade, role files unqualified inside.
+- `save_runtime.rs` is gone. `runtime` is the name the convention rejects, and
+  the census found it naming three different jobs across four files. Its
+  process-wide coordinator, queue, drain, and exactly-once charge release are the
+  workflow's **admission** job and now say so.
+- **The workflow owns one stage order, so neither coordination name needs a
+  stage-order qualifier.** `admission.rs` is everything before document text is
+  copied; `execution.rs` is everything after. `journal` was checked and rejected
+  — see the note below.
+- **`journal` does not fit, and the reason generalizes.** The programme record
+  predicted `journal` would look applicable in slot 3, and it does at first
+  glance: a save writes durably. But `journal` names a durable,
+  generation-guarded record that *a later stage of the same workflow reads back*,
+  with startup recovery. A save replaces the user's file bytes and no later stage
+  of the save workflow reads them back; the record that protects an unsaved
+  buffer is the draft, which belongs to `WFR-DRAFT-RECOVERY` (slot 4). Pulling
+  draft persistence in to justify the name would have been the overload the
+  bounded set exists to prevent. **The test is "does a later stage of *this*
+  workflow restore from it", not "does it touch the disk durably".**
+- **The archetype defect is closed by construction.** One boolean was stored as
+  `cancel_pending_load` and handed positionally into a parameter named
+  `explicit_destination`, across three forwarding hops of which two crossed the
+  rename. It is now one ticket field named for the user's intent
+  (`explicit_destination`), and the cancellation consequence is derived through
+  the named pure predicate `save_may_preempt_pending_load`. All three callers
+  wanted both meanings, so one field is honest. **`QueuedSaveTicket` is what makes
+  the mismatch a type error** — the predicate takes the ticket rather than five
+  positional scalars — while the `bool -> bool` derivation is what makes the
+  inference readable rather than implied. Both failure modes are pinned by a pure test:
+  a plain save that wrongly claims an explicit destination would skip the
+  stale-target path comparison, and a Save As that stopped pre-empting the
+  pending load would race a load into a just-saved buffer.
+- **`begin_admitted_save`'s `#[expect(clippy::too_many_arguments)]` is gone**,
+  because the ticket replaced the parameter list. See
+  [Argument-count suppressions](#argument-count-suppressions).
+- **Two freshness seams, deliberately kept distinct.** `QueuedSaveTicket` +
+  `QueuedSaveFacts` + `queued_save_is_current` guard *admission*;
+  `SaveCompletionTicket::is_current` guards *completion*. One behavioral detail
+  is disclosed rather than hidden: `QueuedSaveFacts` is captured as a unit, so
+  when a ticket names a close session the window lookup now also runs on paths
+  where an earlier clause has already failed. It is a pure scalar read on a path
+  that is about to cancel the request anyway, and validating the seam as a unit
+  is what the convention requires.
+- **The chunked-capture threshold was deliberately *not* extracted here.** Task
+  planning expected it to become save policy, but the pure comparison already
+  exists as `char_count_requires_chunked_snapshot` in cross-cutting
+  `ui/buffer_snapshot.rs` (`WFR-BUFFER-SNAPSHOT`, slot 7). Duplicating it would
+  fork a shared limit. What this row owns is naming the two modes
+  (`SaveCaptureMode`) so the choice is observable, and the evidence field is a
+  live classification of the current buffer — which is what the retired
+  `save_uses_chunked_snapshot_for_test` seam meant.
+- **`services/editor_io.rs` and `services/durable_write.rs` keep their pure
+  rules as private functions with direct unit tests; no `services/*/policy.rs`
+  was created.** They are already inside the mutation scope through
+  `services/**`, so a policy module would buy no coverage, and they cannot move
+  under `ui/` without inverting dependency direction. `editor_io.rs` is shared
+  with the load workflow, so **slot 3b must follow this decision rather than
+  re-litigate it**; if 3b finds the load side genuinely changes the answer, that
+  is a new decision to state, not a correction of this one.
+- **The five `test-utils` override statics stay in `services/editor_io.rs`**, so
+  this workflow has no `test_policy.rs`. The service owns the behavior being
+  overridden — write delay, path-scoped save failure injection, transient weight
+  — and a second policy value in `ui/` would shadow it. The fault-injection
+  seams are the mechanism this change's failure-path verification depends on and
+  are classified, not retired.
+- Mutation coverage has two separate claims that must not be mixed: the
+  relocation of the admission policy is a **parity** claim, and the newly
+  extracted decisions are a **gain from zero**. The evidence file reports them
+  separately.
+
 ### WFR-COMMAND-PALETTE
 
 - facade: `ui/command_palette/mod.rs`
 - coordination: `ui/command_palette/query_execution.rs`, `ui/command_palette/index_admission.rs`, `ui/command_palette/index_execution.rs`, `ui/command_palette/retirement.rs`
 - policy: `ui/command_palette/policy.rs`
 - evidence: `ui/command_palette/evidence.rs`
-- mutation parity: `openspec/changes/migrate-command-palette-workflow-readability/evidence/mutation-parity-palette-policy.md`
+- mutation parity: `openspec/changes/archive/2026-08-25-migrate-command-palette-workflow-readability/evidence/mutation-parity-palette-policy.md`
 
 Notes on this row, which is the second migration and the first to exercise the
 stage-order qualification rule:
@@ -1235,6 +1399,62 @@ evidence-surface visibility rule is unchanged.
   narration churn of a sixth stage. The next `journal` adopter should copy that
   boundary rather than re-derive it — a `journal` module is expected to own the
   admission of the thing it journals.
+
+### Evidence pointer form
+
+`make check-workflow-boundaries` resolves a **live-form** pointer under the live changes directory
+against the matching archived change directory,
+but it does **not** resolve an archive-prefixed claim before the change is
+actually archived. The tolerance runs one way only, which has a practical
+consequence worth recording once:
+
+- **A live change records its own evidence pointers in live form.** An
+  archive-prefixed pointer fails the gate immediately, because the archive
+  directory does not exist yet.
+- **An archived change's pointers are rewritten to archive form**, so a human
+  following the path finds the file. The gate accepts both at that point, but
+  only the archive form is a real path on disk.
+
+Slot 3a fixed the two already-archived pointers that were still in live form
+(slot 1's search-policy parity reference and the palette row's parity pointer)
+and left its own in live form, which is the only form that can pass while the
+change is live. Rewriting it is part of archiving.
+
+### Slot 3a amendment re-check
+
+**Slot 3a's amendment, and the per-row re-check it owed.** Slot 3a amended
+`gtk-adapter-module-boundaries` to add the **per-workflow subdirectory** as a
+second permitted role home, because `ui/editor_page/` hosts eight workflows and
+the fixed `policy.rs` / `evidence.rs` names cannot be shared. Adding a permitted
+*location* cannot invalidate a correct existing location, so the obligation was
+again a confirmation rather than a rename, and each already-migrated row was
+checked explicitly:
+
+| Row | Declared role home | Verdict under the amended text |
+| --- | --- | --- |
+| `WFR-SEARCH-REPLACE` | dedicated directory `ui/search_panel/` with `mod.rs` as the facade | correct and unchanged. The directory hosts exactly one workflow, so its flat `policy.rs` / `evidence.rs` / bounded coordination names collide with nothing and the amendment leaves them untouched. No rename |
+| `WFR-COMMAND-PALETTE` | dedicated directory `ui/command_palette/` with `mod.rs` as the facade | correct and unchanged, for the same reason. Its two stage-order-qualified execution modules are a separate rule (slot 2a's) that this amendment does not touch. No rename |
+
+Zero renames, and no second generation of the convention exists in the tree. The
+other settled conventions were re-checked and are unchanged by this amendment:
+**the facade budget stays 370** with both migrated facades measured against it
+(search 369, palette 335) and the new save facade measured against the same
+number; the bounded coordination role set is unchanged at `admission`,
+`execution`, `retirement`, `watch`, `journal`; the seam value-object shape
+(Ticket + Facts + one predicate, or a coordinator that owns the generation) is
+unchanged; and the evidence-surface visibility rule is unchanged.
+
+**One word of preserved scenario text moved, disclosed so it is not read as a
+silent rewrite.** The existing scenario "One directory hosting several workflows
+keeps flat role names" ended "migration does not require restructuring the
+directory into one subdirectory per workflow"; it now reads "restructuring the
+**whole** directory into one subdirectory per workflow". Without that word the
+sentence can be read as forbidding the per-workflow subdirectory the amendment
+permits, when what it actually rules out is a wholesale directory restructuring.
+The scenario's force is unchanged.
+
+**Cost note for the next amendment.** Three migrated rows now exist, so the next
+convention amendment owes three per-row re-checks rather than two.
 
 ### Retroactive amendment
 

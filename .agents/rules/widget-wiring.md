@@ -287,7 +287,13 @@ evidence surface replaced.
 
 - Reading an evidence surface must not mutate workflow state, timers, queues, or
   generation counters, and must not require the workflow to be in a particular
-  stage.
+  stage. **A disposed widget is a stage.** GTK4 clears template children in
+  `dispose()`, before Rust's `Drop`, so any evidence field derived from a
+  `TemplateChild` must be read through `try_get()` and give an honest answer
+  when the child is gone; the panicking accessor turns a teardown observation
+  into a crash. This is a hazard consolidation creates: scattered per-field
+  getters each read one narrow thing, while one surface makes every field
+  reachable from every observation point.
 - An evidence surface is an internal type of the owning crate at the narrowest
   visibility its readers need. It is never added to the public D-Bus automation
   schema; once a workflow migrates, its automation snapshot fields *project*

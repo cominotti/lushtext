@@ -178,6 +178,19 @@ A migrated workflow assigns each of its modules exactly one role:
   readers require. See the evidence-surface rules in
   `.agents/rules/widget-wiring.md`.
 
+A workflow's roles live in one of **two permitted homes**. A workflow whose role
+file names do not collide with a sibling's keeps flat, workflow-scoped role names
+in the shared directory. Where a directory hosts several workflows and more than
+one owns pure policy or an evidence surface, the fixed `policy.rs` /
+`evidence.rs` names cannot be shared, so a workflow's roles MAY live in a
+**per-workflow subdirectory** of that directory, whose `mod.rs` is the facade and
+whose role files keep the unqualified `policy.rs`, `evidence.rs`, and bounded
+coordination names — `ui/editor_page/save/` is the first. A workflow-prefixed
+`save_policy.rs` is not a substitute: it leaves the `ui/**/policy.rs` mutation
+scope, which is a blocking coverage regression. Migration never requires
+restructuring a whole directory into one subdirectory per workflow, and the
+choice is recorded in the workflow's matrix row.
+
 Splitting a large file into siblings without assigning roles does not satisfy the
 convention. Roles are expressed with plain modules and narrow owner references;
 do not add a trait, manager type, or crate solely to move code.
