@@ -20,6 +20,16 @@
 //! `borrow_mut()` on any of those cells, or the borrow would panic. Every
 //! current caller observes from outside a mutation — widget tests and the
 //! read-only automation snapshot — so no live path can reach that state.
+//!
+//! Reading evidence must not require the workflow to be in a particular stage,
+//! and **a disposed widget is a stage**: a teardown test that disposes the
+//! widget and then asks what the workflow recorded is a legitimate observation
+//! point. GTK4 clears template children in `dispose()`, before Rust's `Drop`,
+//! so every field derived from a `TemplateChild` here is read through
+//! `try_get()` and gives an honest empty/false answer when the child is gone,
+//! rather than panicking. This hazard is created by consolidation: scattered
+//! per-field getters each read one narrow thing, while one surface makes every
+//! field reachable from every observation point.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
@@ -133,9 +143,16 @@ impl LushtextCommandPalette {
     }
 
     /// Current query text in the palette entry.
+    ///
+    /// Empty when the template child is gone, which is the disposed-widget case
+    /// described in this module's reentrancy and observation notes.
     #[must_use]
     pub fn query(&self) -> String {
-        self.imp().search_entry.text().to_string()
+        self.imp()
+            .search_entry
+            .try_get()
+            .map(|entry| entry.text().to_string())
+            .unwrap_or_default()
     }
 
     /// The current search mode.

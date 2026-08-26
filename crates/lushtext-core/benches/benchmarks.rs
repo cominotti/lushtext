@@ -49,10 +49,6 @@ use lushtext_core::model::palette::{
     PaletteOpenEditorNoteSnapshot, PaletteSearchRow, SearchMode, SearchResultItem,
 };
 use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentRow};
-use lushtext_core::model::save_admission::{
-    ExternalTransientPressure, SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveAdmissionPolicy,
-    SaveAdmissionPriority, SaveAdmissionRequest,
-};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, stable_bytes_hash};
 use lushtext_core::model::workspace::{
@@ -86,6 +82,10 @@ use lushtext_core::services::{
     bookmark_service, draft_service,
     local_history_service::{self, LocalHistoryCapturePolicy},
     migration_ledger, session_service,
+};
+use lushtext_core::ui::editor_page::save::policy::{
+    ExternalTransientPressure, SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveAdmissionPolicy,
+    SaveAdmissionPriority, SaveAdmissionRequest,
 };
 use lushtext_core::ui::search_panel::policy::{
     SearchRetirementSliceBudget, WorkspaceSearchFlight, WorkspaceSearchRequest,
@@ -3749,7 +3749,7 @@ fn bench_search_interactive_policies(c: &mut Criterion) {
 
 /// Benchmark compact save queue admission without constructing document payloads.
 fn bench_save_admission_policy(c: &mut Criterion) {
-    fn ordinary_burst() -> lushtext_core::model::save_admission::SaveAdmissionSnapshot {
+    fn ordinary_burst() -> lushtext_core::ui::editor_page::save::policy::SaveAdmissionSnapshot {
         let mut policy = SaveAdmissionPolicy::default();
         let weight = SAVE_PAYLOAD_SHARED_BUDGET_BYTES / 8;
         for request_id in 0..8u64 {

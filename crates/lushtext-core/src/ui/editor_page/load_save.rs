@@ -1,10 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! File load/save and restore-position flows for one editor tab.
+//! File load and restore-position flows for one editor tab.
+//!
+//! **This file is mid-migration and its name is stale.** The document-save
+//! workflow that used to share it has migrated to its own role home at
+//! [`super::save`], which is where Ctrl+S, Save As, and close-with-changes now
+//! live. What remains here is the document-load half, plus one group of
+//! cross-cutting state, and it has **not** been migrated to the workflow
+//! readability convention yet — that is slot 3b
+//! (`migrate-document-load-workflow-readability`), which dissolves this file.
+//! The name is deliberately unchanged until then: renaming a file two
+//! consecutive changes touch is churn next to a durable write path.
+//!
+//! Two things here are **not** load state, and slot 3b must not absorb them:
+//!
+//! - The **restore-position group** (`set_restore_position`, `cursor_position`,
+//!   `visible_top_line`, `apply_restore_position`) is cross-cutting editor-page
+//!   state with five owning workflows — session restore, editor find, notes and
+//!   bookmarks, load, and the window's tab handling. Cross-cutting eligibility
+//!   counts owning workflows, so it stays in a shared `ui/editor_page/` location.
+//! - Document identity and metadata (`set_file_path`,
+//!   `set_file_path_with_canonical`, `size_check`) are shared with the rename,
+//!   minimap, encoding, accessibility, and local-history paths.
 //!
 //! This stays in the driving-adapter layer because it mutates `GtkSourceView`
-//! widgets directly, but the extraction keeps `mod.rs` focused on the public
-//! facade while this file owns the async file-I/O choreography.
+//! widgets directly.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -19,83 +39,21 @@ use gtk4::glib;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use sourceview5::prelude::*;
 
-use crate::model::encoding::{
-    DocumentEncoding, FileHealthFinding, FileHealthFindingKind, FileHealthSeverity,
-};
+use crate::model::encoding::{DocumentEncoding, FileHealthFindingKind};
 use crate::model::file_load::{SYNCHRONOUS_INSTALL_THRESHOLD_BYTES, next_install_boundary};
-use crate::model::save_admission::SaveAdmissionPriority;
+use crate::services::editor_io;
 use crate::services::file_limits::FileSizeCheck;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
-use crate::services::{editor_io, filesystem::metadata as fs_metadata};
-use crate::ui::buffer_snapshot;
 
 use super::load_runtime::{self, GuardedLoadResult, TransientLoadPermit};
-use super::save_runtime::{self, SavePayloadPermit, SaveSubmission};
-use super::{
-    BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
-    BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
-};
+use super::{EditorLoadState, LushtextEditorPage};
 use editor_io::EditorLoadError;
-
-pub(super) type SaveCallback = Box<dyn FnOnce(Result<(), EditorSaveError>)>;
 
 /// Temporary view flags captured while chunked snapshotting makes the editor read-only.
 #[derive(Clone, Copy)]
 struct ViewInteractivityState {
     editable: bool,
     cursor_visible: bool,
-}
-
-#[derive(Clone, Copy)]
-struct SaveCompletionTicket {
-    save_generation: u64,
-    path_generation: u64,
-    load_generation: u64,
-    edit_generation: u64,
-    close_session_identity: Option<u64>,
-}
-
-impl SaveCompletionTicket {
-    fn capture(editor: &LushtextEditorPage, close_session_identity: Option<u64>) -> Self {
-        Self {
-            save_generation: editor.imp().save.generation.get(),
-            path_generation: editor.imp().local_history.path_generation.get(),
-            load_generation: editor.imp().load_tracking.generation.get(),
-            edit_generation: editor.imp().local_history.edit_generation.get(),
-            close_session_identity,
-        }
-    }
-
-    fn is_current(self, editor: &LushtextEditorPage) -> bool {
-        editor.is_saving()
-            && editor.imp().save.generation.get() == self.save_generation
-            && editor.imp().local_history.path_generation.get() == self.path_generation
-            && editor.imp().load_tracking.generation.get() == self.load_generation
-            && editor.imp().local_history.edit_generation.get() == self.edit_generation
-            && self.close_session_identity.is_none_or(|identity| {
-                editor
-                    .root()
-                    .and_then(|root| root.downcast::<crate::ui::window::LushtextWindow>().ok())
-                    .is_some_and(|window| window.close_save_session_is_current(identity))
-            })
-    }
-}
-
-/// Request-bound state that must survive snapshotting until the write consumes it.
-struct AdmittedSaveContext {
-    ticket: SaveCompletionTicket,
-    allow_lossy: bool,
-    permit: SavePayloadPermit,
-}
-
-struct SaveWriteOutcome {
-    size: u64,
-    mtime: Option<u64>,
-    canonical_path: Option<PathBuf>,
-    clean_text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
-    formatted_text: Option<crate::ui::plain_disposal::DisposalOwned<String>>,
-    retain_formatted_as_clean: bool,
-    permit: Option<SavePayloadPermit>,
 }
 
 /// Projection and view flags restored after one complete or cancelled install.
@@ -1054,21 +1012,6 @@ impl LushtextEditorPage {
         load_runtime::reset_for_test();
     }
 
-    /// Process-wide scalar transient-save accounting for widget proofs.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn transient_save_admission_snapshot_for_test(
-        &self,
-    ) -> crate::model::save_admission::SaveAdmissionSnapshot {
-        save_runtime::snapshot_for_test()
-    }
-
-    /// Reset process-wide save admission state between isolated widget cases.
-    #[cfg(feature = "test-utils")]
-    pub fn reset_transient_save_admission_for_test(&self) {
-        save_runtime::reset_for_test();
-    }
-
     /// Number of GTK slices completed by the newest chunked installation.
     #[cfg(feature = "test-utils")]
     #[must_use]
@@ -1105,39 +1048,6 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn size_check(&self) -> FileSizeCheck {
         self.imp().size_check.get()
-    }
-
-    /// Test-only seam for the live-buffer snapshot policy.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn save_uses_chunked_snapshot_for_test(&self) -> bool {
-        self.live_buffer_requires_chunked_snapshot()
-    }
-
-    /// Whether save currently owns a chunked snapshot lifecycle.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn save_snapshot_inflight_for_test(&self) -> bool {
-        self.imp().save.snapshot.borrow().is_some()
-    }
-
-    /// Pause the next chunked save snapshot after its first captured slice.
-    #[cfg(feature = "test-utils")]
-    pub fn pause_next_save_snapshot_for_test(&self) {
-        self.imp().save.snapshot_test_mutation.set(Some(
-            buffer_snapshot::BufferSnapshotTestMutation {
-                trigger: buffer_snapshot::BufferSnapshotTestTrigger::AfterSlice(1),
-                edit: buffer_snapshot::BufferSnapshotTestEdit::Pause,
-            },
-        ));
-    }
-
-    /// Resume a save snapshot paused by [`Self::pause_next_save_snapshot_for_test`].
-    #[cfg(feature = "test-utils")]
-    pub fn resume_save_snapshot_for_test(&self) {
-        if let Some(snapshot) = self.imp().save.snapshot.borrow().as_ref() {
-            snapshot.resume_for_test();
-        }
     }
 
     /// Return the active load generation for stale-callback regression tests.
@@ -1238,233 +1148,6 @@ impl LushtextEditorPage {
         }
     }
 
-    /// Save the file asynchronously on a background thread.
-    pub fn save_file_async<F: FnOnce(Result<(), EditorSaveError>) + 'static>(&self, callback: F) {
-        let Some(path) = self.imp().file_path.borrow().clone() else {
-            callback(Err(EditorSaveError::NoPath));
-            return;
-        };
-        self.queue_save_request(path, false, SaveAdmissionPriority::Ordinary, None, callback);
-    }
-
-    /// Save the current buffer to an explicit path without mutating the tracked path first.
-    ///
-    /// Save As may race the original file load after the user has already edited
-    /// the visible buffer. A queued or pre-install load is cancelled before the
-    /// snapshot so its stale result cannot replace the newly saved destination.
-    pub(crate) fn save_file_async_to_path<F: FnOnce(Result<(), EditorSaveError>) + 'static>(
-        &self,
-        path: PathBuf,
-        callback: F,
-    ) {
-        self.queue_save_request(path, true, SaveAdmissionPriority::Ordinary, None, callback);
-    }
-
-    /// Queue a file-backed save that gates the current close session.
-    pub(crate) fn save_file_async_for_close<F: FnOnce(Result<(), EditorSaveError>) + 'static>(
-        &self,
-        close_session_identity: u64,
-        callback: F,
-    ) {
-        let Some(path) = self.imp().file_path.borrow().clone() else {
-            callback(Err(EditorSaveError::NoPath));
-            return;
-        };
-        self.queue_save_request(
-            path,
-            false,
-            SaveAdmissionPriority::Close,
-            Some(close_session_identity),
-            callback,
-        );
-    }
-
-    fn queue_save_request<F: FnOnce(Result<(), EditorSaveError>) + 'static>(
-        &self,
-        path: PathBuf,
-        cancel_pending_load: bool,
-        priority: SaveAdmissionPriority,
-        close_session_identity: Option<u64>,
-        callback: F,
-    ) {
-        let callback: SaveCallback = Box::new(callback);
-        if self.imp().load_state.get() == EditorLoadState::Loading {
-            if cancel_pending_load {
-                self.cancel_load();
-            } else {
-                callback(Err(EditorSaveError::LoadInProgress));
-                return;
-            }
-        }
-        if self.imp().load.installation_incomplete.get() {
-            callback(Err(EditorSaveError::IncompleteLoadInstallation));
-            return;
-        }
-        if self.buffer_replacement_in_progress() {
-            callback(Err(EditorSaveError::LoadInProgress));
-            return;
-        }
-        if self.imp().save.inflight.get() {
-            callback(Err(EditorSaveError::SaveInProgress));
-            return;
-        }
-
-        if cancel_pending_load {
-            self.cancel_load();
-        }
-        // Publish queued ownership before yielding so duplicate saves and an
-        // already-planned eviction pass revalidate this page as protected.
-        let generation = self.imp().save.generation.get().wrapping_add(1);
-        self.imp().save.generation.set(generation);
-        self.imp().save.inflight.set(true);
-        self.notify_memory_policy_changed();
-
-        // Consent belongs to this generation: cancellation must discard it
-        // instead of allowing unrelated later content to save lossily.
-        let allow_lossy = self.take_lossy_save_once();
-
-        save_runtime::submit(
-            self,
-            generation,
-            SaveSubmission {
-                path,
-                cancel_pending_load,
-                priority,
-                close_session_identity,
-                allow_lossy,
-                callback,
-            },
-        );
-    }
-
-    pub(super) fn queued_save_is_current(
-        &self,
-        generation: u64,
-        path: &Path,
-        explicit_destination: bool,
-        required_modified: bool,
-        close_session_identity: Option<u64>,
-    ) -> bool {
-        if !self.is_saving()
-            || self.imp().save.generation.get() != generation
-            || (required_modified && !self.is_modified())
-            || (!explicit_destination && self.file_path().as_deref() != Some(path))
-        {
-            return false;
-        }
-
-        close_session_identity.is_none_or(|identity| {
-            self.root()
-                .and_then(|root| root.downcast::<crate::ui::window::LushtextWindow>().ok())
-                .is_some_and(|window| window.close_save_session_is_current(identity))
-        })
-    }
-
-    pub(super) fn finish_queued_save_without_admission(&self, generation: u64) {
-        if self.imp().save.generation.get() != generation {
-            return;
-        }
-        self.imp().save.inflight.set(false);
-        self.notify_memory_policy_changed();
-        self.refresh_accessibility_metadata();
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The admitted boundary keeps every compact freshness field explicit before any document payload is captured"
-    )]
-    pub(super) fn begin_admitted_save(
-        &self,
-        generation: u64,
-        path: PathBuf,
-        cancel_pending_load: bool,
-        required_modified: bool,
-        close_session_identity: Option<u64>,
-        allow_lossy: bool,
-        permit: SavePayloadPermit,
-        callback: SaveCallback,
-    ) {
-        if !self.queued_save_is_current(
-            generation,
-            &path,
-            cancel_pending_load,
-            required_modified,
-            close_session_identity,
-        ) {
-            self.finish_queued_save_without_admission(generation);
-            callback(Err(EditorSaveError::SnapshotCancelled));
-            return;
-        }
-
-        self.cancel_load();
-        let ticket = SaveCompletionTicket::capture(self, close_session_identity);
-        let admitted = AdmittedSaveContext {
-            ticket,
-            allow_lossy,
-            permit,
-        };
-        let view = self.source_view().clone();
-        let restore_state = ViewInteractivityState {
-            editable: view.is_editable(),
-            cursor_visible: view.is_cursor_visible(),
-        };
-        view.set_editable(false);
-        view.set_cursor_visible(false);
-        self.refresh_accessibility_metadata();
-
-        if self.live_buffer_requires_chunked_snapshot() {
-            let editor_weak = self.downgrade();
-            let snapshot_callback = move |outcome| {
-                let Some(editor) = editor_weak.upgrade() else {
-                    return;
-                };
-                editor.imp().save.snapshot.take();
-                match outcome {
-                    buffer_snapshot::BufferSnapshotOutcome::Captured(text) => {
-                        editor.write_snapshot_async(path, text, restore_state, admitted, callback);
-                    }
-                    buffer_snapshot::BufferSnapshotOutcome::Cancelled(_)
-                    | buffer_snapshot::BufferSnapshotOutcome::ExceededLimit { .. } => {
-                        editor.finish_save_snapshot_without_write(restore_state, callback);
-                    }
-                }
-            };
-            #[cfg(feature = "test-utils")]
-            let snapshot = buffer_snapshot::snapshot_buffer_text_async_for_test(
-                self.buffer().upcast::<gtk4::TextBuffer>(),
-                None,
-                self.imp().save.snapshot_test_mutation.take(),
-                snapshot_callback,
-            );
-            #[cfg(not(feature = "test-utils"))]
-            let snapshot =
-                buffer_snapshot::snapshot_buffer_text_async(self.buffer(), snapshot_callback);
-            self.imp().save.snapshot.replace(Some(snapshot));
-            return;
-        }
-
-        let buffer = self.buffer();
-        let text = buffer_snapshot::BufferSnapshotPayload::direct(
-            buffer_snapshot::snapshot_buffer_text_direct(&buffer),
-        );
-        self.write_snapshot_async(path, text, restore_state, admitted, callback);
-    }
-
-    /// Restore the view after a chunked snapshot ends without coherent text.
-    fn finish_save_snapshot_without_write(
-        &self,
-        restore_state: ViewInteractivityState,
-        callback: SaveCallback,
-    ) {
-        self.source_view().set_editable(restore_state.editable);
-        self.source_view()
-            .set_cursor_visible(restore_state.cursor_visible);
-        self.imp().save.inflight.set(false);
-        self.notify_memory_policy_changed();
-        self.refresh_accessibility_metadata();
-        callback(Err(EditorSaveError::SnapshotCancelled));
-    }
-
     /// Store a cursor and scroll position to apply after the next async load.
     pub fn set_restore_position(&self, cursor_line: u32, cursor_col: u32, scroll_line: u32) {
         self.imp().restore.cursor_line.set(Some(cursor_line));
@@ -1525,271 +1208,5 @@ impl LushtextEditorPage {
                 .scroll_to_mark(&mark, 0.0, true, 0.0, 0.0);
             buffer.delete_mark(&mark);
         }
-    }
-
-    /// Spawn the background write and restore any temporary view state afterwards.
-    fn write_snapshot_async(
-        &self,
-        path: PathBuf,
-        text: buffer_snapshot::BufferSnapshotPayload,
-        restore_view_state: ViewInteractivityState,
-        admitted: AdmittedSaveContext,
-        callback: SaveCallback,
-    ) {
-        let AdmittedSaveContext {
-            ticket,
-            allow_lossy,
-            permit,
-        } = admitted;
-        self.prepare_local_history_for_save();
-        let was_modified_before_save = self.buffer().is_modified();
-        let metadata = self.document_encoding_state();
-        let formatting_overrides = self.formatting_overrides();
-        let history_availability = self.live_local_history_availability();
-
-        spawn_blocking_then(
-            self.clone(),
-            move || {
-                let text = text.into_guarded_string_on_worker();
-                let formatted_text = editor_io::apply_save_formatting_overrides_borrowed(
-                    text.as_str(),
-                    formatting_overrides,
-                );
-                let should_update_buffer = formatted_text.as_ref() != text.as_str();
-                let write_result = editor_io::write_document_to_path(
-                    &path,
-                    formatted_text.as_ref(),
-                    metadata.save_encoding,
-                    metadata.save_line_ending,
-                    allow_lossy,
-                )?;
-                let size = write_result.bytes_written;
-                let mtime = write_result.modified_at_secs;
-                let canonical_path = fs_metadata::canonical_path(&path).ok();
-
-                if history_availability.allows_browsing() {
-                    let data_dir = crate::services::json_store::data_dir();
-                    if let Err(error) = crate::services::local_history_service::capture_snapshot_for_path(
-                        &data_dir,
-                        &path,
-                        formatted_text.as_ref(),
-                        crate::model::local_history::LocalHistorySnapshotOrigin::Save,
-                        crate::services::local_history_service::LocalHistoryCapturePolicy::DeduplicateLatest,
-                    ) {
-                        tracing::warn!(
-                            "Saved {}, but local-history snapshot capture failed: {error}",
-                            path.display()
-                        );
-                    }
-                }
-
-                let retain_formatted_as_clean =
-                    should_update_buffer && history_availability.allows_automatic_capture();
-                let (clean_text, formatted_text) = if should_update_buffer {
-                    let formatted_text = formatted_text.into_owned();
-                    (
-                        None,
-                        Some(text.map_preserving_reservation(|_| formatted_text)),
-                    )
-                } else {
-                    drop(formatted_text);
-                    if history_availability.allows_automatic_capture() {
-                        (Some(text), None)
-                    } else {
-                        drop(text.into_inner_on_worker());
-                        (None, None)
-                    }
-                };
-                Ok::<_, EditorSaveError>(SaveWriteOutcome {
-                    size,
-                    mtime,
-                    canonical_path,
-                    clean_text,
-                    formatted_text,
-                    retain_formatted_as_clean,
-                    permit: Some(permit),
-                })
-            },
-            move |editor, result| match result {
-                Ok(mut outcome) => {
-                    if !ticket.is_current(&editor) {
-                        editor.finish_save_formatting_without_acceptance(
-                            restore_view_state,
-                            callback,
-                        );
-                        return;
-                    }
-                    let Some(formatted_text) = outcome.formatted_text.take() else {
-                        editor.finish_accepted_save(outcome, restore_view_state, None, callback);
-                        return;
-                    };
-                    let cursor_offset = editor
-                        .buffer()
-                        .iter_at_mark(&editor.buffer().get_insert())
-                        .offset();
-                    let freshness_editor = editor.downgrade();
-                    let terminal_editor = editor.downgrade();
-                    let completed_body = Rc::new(RefCell::new(None));
-                    let completed_body_for_request = Rc::clone(&completed_body);
-                    let completed_body_for_terminal = Rc::clone(&completed_body);
-                    editor.replace_buffer_bounded(
-                        BufferReplacementRequest::new_guarded_returning_body_on_complete(
-                            BufferReplacementTicket {
-                                workflow: BufferReplacementWorkflow::SaveFormatting,
-                                generation: ticket.save_generation,
-                            },
-                            formatted_text,
-                            move |_| {
-                                freshness_editor
-                                    .upgrade()
-                                    .is_some_and(|editor| ticket.is_current(&editor))
-                            },
-                            move |replacement| {
-                                let Some(editor) = terminal_editor.upgrade() else {
-                                    return;
-                                };
-                                match replacement {
-                                    BufferReplacementOutcome::Complete {
-                                        ticket:
-                                            BufferReplacementTicket {
-                                                workflow: BufferReplacementWorkflow::SaveFormatting,
-                                                generation,
-                                            },
-                                        ..
-                                    } if generation == ticket.save_generation
-                                        && ticket.is_current(&editor) =>
-                                    {
-                                        if outcome.retain_formatted_as_clean {
-                                            outcome.clean_text =
-                                                completed_body_for_terminal.borrow_mut().take();
-                                        }
-                                        editor.finish_accepted_save(
-                                            outcome,
-                                            restore_view_state,
-                                            Some(cursor_offset),
-                                            callback,
-                                        );
-                                    }
-                                    _ => editor.finish_save_formatting_without_acceptance(
-                                        restore_view_state,
-                                        callback,
-                                    ),
-                                }
-                            },
-                            move |body| {
-                                completed_body_for_request.replace(Some(body));
-                            },
-                        ),
-                    );
-                }
-                Err(error) => {
-                    if !ticket.is_current(&editor) {
-                        editor.finish_save_formatting_without_acceptance(
-                            restore_view_state,
-                            callback,
-                        );
-                        return;
-                    }
-                    editor.restore_view_after_save(restore_view_state);
-                    editor.buffer().set_modified(was_modified_before_save);
-                    editor.complete_local_history_after_save_failure();
-                    editor.refresh_accessibility_metadata();
-                    callback(Err(error));
-                }
-            },
-        );
-    }
-
-    fn restore_view_after_save(&self, restore: ViewInteractivityState) {
-        self.source_view().set_editable(restore.editable);
-        self.source_view()
-            .set_cursor_visible(restore.cursor_visible);
-        self.imp().save.inflight.set(false);
-        self.notify_memory_policy_changed();
-    }
-
-    fn finish_save_formatting_without_acceptance(
-        &self,
-        restore: ViewInteractivityState,
-        callback: SaveCallback,
-    ) {
-        self.restore_view_after_save(restore);
-        self.buffer().set_modified(true);
-        self.complete_local_history_after_save_failure();
-        self.refresh_accessibility_metadata();
-        callback(Err(EditorSaveError::SnapshotCancelled));
-    }
-
-    fn finish_accepted_save(
-        &self,
-        mut outcome: SaveWriteOutcome,
-        restore: ViewInteractivityState,
-        cursor_offset: Option<i32>,
-        callback: SaveCallback,
-    ) {
-        self.restore_view_after_save(restore);
-        let buffer = self.buffer();
-        if let Some(cursor_offset) = cursor_offset {
-            let mut iter = buffer.start_iter();
-            iter.forward_chars(cursor_offset.min(buffer.end_iter().offset()));
-            buffer.place_cursor(&iter);
-        }
-        buffer.set_modified(false);
-        self.imp().file_size.set(Some(outcome.size));
-        self.imp()
-            .size_check
-            .set(FileSizeCheck::classify(outcome.size));
-        self.imp().load_state.set(EditorLoadState::Loaded);
-        self.imp().latest_load_failed.set(false);
-        let mut state = self.document_encoding_state();
-        state.opened_encoding = state.save_encoding;
-        state.detected_line_ending = state.save_line_ending;
-        state.decode_confidence = crate::model::encoding::DecodeConfidence::Exact;
-        self.set_document_encoding_state(state);
-        let has_bom = state.save_encoding.writes_bom();
-        self.set_has_bom(has_bom);
-        self.imp()
-            .canonical_file_path
-            .replace(outcome.canonical_path);
-        let mut findings: Vec<FileHealthFinding> = self
-            .file_health()
-            .into_iter()
-            .filter(|finding| {
-                !matches!(
-                    finding.kind,
-                    FileHealthFindingKind::LowConfidenceDecode
-                        | FileHealthFindingKind::MixedLineEndings
-                        | FileHealthFindingKind::Utf8Bom
-                )
-            })
-            .collect();
-        if has_bom && state.save_encoding == DocumentEncoding::Utf8Bom {
-            findings.insert(
-                0,
-                FileHealthFinding {
-                    kind: FileHealthFindingKind::Utf8Bom,
-                    severity: FileHealthSeverity::Info,
-                    title: "UTF-8 BOM detected".to_string(),
-                    body: "This document will be saved with a UTF-8 byte-order mark.".to_string(),
-                },
-            );
-        }
-        self.set_file_health(findings);
-        self.notify_memory_policy_changed();
-        self.imp().monitor.last_known_mtime.set(outcome.mtime);
-        self.clear_modified_line_marks();
-        self.refresh_minimap();
-        self.complete_local_history_after_save_success(outcome.clean_text.take());
-        self.refresh_accessibility_metadata();
-        // Close-save progression may synchronously queue the next editor. The
-        // consumed payload must leave shared accounting before that callback
-        // can trigger another admission pass.
-        drop(outcome.permit.take());
-        callback(Ok(()));
-    }
-
-    /// Decide whether save snapshotting should yield through the main loop.
-    fn live_buffer_requires_chunked_snapshot(&self) -> bool {
-        buffer_snapshot::buffer_requires_chunked_snapshot(&self.buffer())
     }
 }

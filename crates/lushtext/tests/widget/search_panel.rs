@@ -3590,3 +3590,38 @@ fn test_search_panel_superseding_a_capped_search_discards_it_immediately() {
     assert!(!imp.count_label.has_css_class("warning"));
     assert!(!panel.evidence().result_capped);
 }
+
+#[test]
+fn test_evidence_reads_survive_widget_disposal() {
+    // A disposed widget is a legitimate observation point: a teardown test asks
+    // what the workflow recorded after the panel goes away. GTK4 clears template
+    // children in `dispose()` before Rust's `Drop`, so every evidence field
+    // derived from one must answer honestly instead of panicking.
+    ensure_gtk_init();
+    let _data = isolated_data_dir();
+    let panel = glib::Object::builder::<LushtextSearchPanel>().build();
+    panel.set_query("needle");
+    panel.imp().regex_toggle.set_active(true);
+
+    let before = panel.evidence();
+    assert_eq!(before.query, "needle");
+    assert!(before.regex_enabled);
+
+    // SAFETY: this standalone test panel is disposed exactly once, and the
+    // assertions afterwards only read the evidence surface.
+    unsafe { panel.run_dispose() };
+
+    let after = panel.evidence();
+    assert_eq!(after.query, "");
+    assert!(!after.case_sensitive);
+    assert!(!after.regex_enabled);
+    assert!(!after.whole_word_enabled);
+    assert!(!after.gitignore_enabled);
+    assert_eq!(after.glob_filter, None);
+    assert_eq!(after.replace_query, "");
+
+    // Repeated reads after disposal stay identical and still do not panic.
+    let second = panel.evidence();
+    assert_eq!(after.query, second.query);
+    assert_eq!(after.glob_filter, second.glob_filter);
+}

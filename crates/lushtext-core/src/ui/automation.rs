@@ -774,6 +774,10 @@ fn window_readiness_blocker(
             return Some(blocker);
         }
         if let Some(blocker) =
+            // Boolean-only site: read the save workflow's cheap facade
+            // accessor rather than building a whole `SaveEvidence` per editor
+            // per poll. It reads the same `save.inflight` cell the surface's
+            // `inflight` field reads, so the two are identical by construction.
             included_blocker(predicate, editor.is_saving(), READINESS_BLOCKER_SAVE)
         {
             return Some(blocker);
@@ -852,6 +856,9 @@ fn window_snapshot(window: &LushtextWindow) -> AutomationWindowSnapshot {
 /// are intentionally omitted.
 fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> AutomationTabSnapshot {
     let editor = page.child().downcast::<LushtextEditorPage>().ok();
+    // The save workflow's exported field projects from its evidence surface
+    // rather than re-deriving in-flight save state from the widget.
+    let save = editor.as_ref().map(LushtextEditorPage::save_evidence);
     let path = editor.as_ref().and_then(LushtextEditorPage::file_path);
     AutomationTabSnapshot {
         index,
@@ -863,7 +870,7 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
         document_kind: if path.is_some() { "file" } else { "untitled" }.to_string(),
         path: path.map(|path| bounded_snapshot_text(path.display().to_string())),
         modified: editor.as_ref().is_some_and(LushtextEditorPage::is_modified),
-        saving: editor.as_ref().is_some_and(LushtextEditorPage::is_saving),
+        saving: save.as_ref().is_some_and(|evidence| evidence.inflight),
         load_state: editor.as_ref().map_or_else(
             || "unknown".to_string(),
             |editor| load_state_name(editor.load_state()).to_string(),

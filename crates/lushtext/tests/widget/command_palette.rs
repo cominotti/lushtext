@@ -2645,3 +2645,26 @@ fn test_all_commands_contains_zoom_reset() {
     assert_eq!(cmd.shortcut, Some("Ctrl+0"));
     assert_eq!(cmd.category, CommandCategory::View);
 }
+
+#[test]
+fn test_evidence_reads_survive_widget_disposal() {
+    // The palette's `query` field reaches the production D-Bus snapshot path, so
+    // a panicking read here would be reachable from automation, not just tests.
+    // GTK4 clears template children in `dispose()` before Rust's `Drop`.
+    ensure_gtk_init();
+    let palette = glib::Object::builder::<LushtextCommandPalette>().build();
+    palette.set_query("needle");
+
+    let before = palette.evidence();
+    assert_eq!(before.query, "needle");
+
+    // SAFETY: this standalone test palette is disposed exactly once, and the
+    // assertions afterwards only read the evidence surface.
+    unsafe { palette.run_dispose() };
+
+    let after = palette.evidence();
+    assert_eq!(after.query, "");
+
+    // Repeated reads after disposal stay identical and still do not panic.
+    assert_eq!(after.query, palette.evidence().query);
+}

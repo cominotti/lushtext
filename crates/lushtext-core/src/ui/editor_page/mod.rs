@@ -21,7 +21,7 @@ mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
-mod save_runtime;
+pub mod save;
 mod search;
 mod style_scheme;
 
@@ -323,12 +323,6 @@ impl LushtextEditorPage {
     #[must_use]
     pub fn is_modified(&self) -> bool {
         self.buffer().is_modified()
-    }
-
-    /// Return whether this tab has a background save in progress.
-    #[must_use]
-    pub fn is_saving(&self) -> bool {
-        self.imp().save.inflight.get()
     }
 
     /// Evict buffer content to free memory. The tab reloads from disk when re-focused.

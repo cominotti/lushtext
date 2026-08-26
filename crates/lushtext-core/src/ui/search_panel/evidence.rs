@@ -19,6 +19,16 @@
 //! `borrow_mut()` on any of those cells, or the borrow would panic. Every
 //! current caller observes from outside a mutation — widget tests and the
 //! read-only automation snapshot — so no live path can reach that state.
+//!
+//! Reading evidence must not require the workflow to be in a particular stage,
+//! and **a disposed widget is a stage**: a teardown test that disposes the
+//! widget and then asks what the workflow recorded is a legitimate observation
+//! point. GTK4 clears template children in `dispose()`, before Rust's `Drop`,
+//! so every field derived from a `TemplateChild` here is read through
+//! `try_get()` and gives an honest empty/false answer when the child is gone,
+//! rather than panicking. This hazard is created by consolidation: scattered
+//! per-field getters each read one narrow thing, while one surface makes every
+//! field reachable from every observation point.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
@@ -283,9 +293,16 @@ impl LushtextSearchPanel {
     }
 
     /// Get the current query text.
+    ///
+    /// Empty when the template child is gone, which is the disposed-widget case
+    /// described in this module's reentrancy and observation notes.
     #[must_use]
     pub fn query(&self) -> String {
-        self.imp().search_entry.text().to_string()
+        self.imp()
+            .search_entry
+            .try_get()
+            .map(|entry| entry.text().to_string())
+            .unwrap_or_default()
     }
 
     /// Return whether worker cancellation/search or result retirement is pending.
@@ -315,38 +332,54 @@ impl LushtextSearchPanel {
     /// Return whether the case-sensitive option is active.
     #[must_use]
     pub fn case_sensitive(&self) -> bool {
-        self.imp().case_toggle.is_active()
+        self.imp()
+            .case_toggle
+            .try_get()
+            .is_some_and(|toggle| toggle.is_active())
     }
 
     /// Return whether regular-expression search is active.
     #[must_use]
     pub fn regex_enabled(&self) -> bool {
-        self.imp().regex_toggle.is_active()
+        self.imp()
+            .regex_toggle
+            .try_get()
+            .is_some_and(|toggle| toggle.is_active())
     }
 
     /// Return whether whole-word matching is active.
     #[must_use]
     pub fn whole_word_enabled(&self) -> bool {
-        self.imp().word_toggle.is_active()
+        self.imp()
+            .word_toggle
+            .try_get()
+            .is_some_and(|toggle| toggle.is_active())
     }
 
     /// Return whether .gitignore filtering is active.
     #[must_use]
     pub fn gitignore_enabled(&self) -> bool {
-        self.imp().gitignore_toggle.is_active()
+        self.imp()
+            .gitignore_toggle
+            .try_get()
+            .is_some_and(|toggle| toggle.is_active())
     }
 
     /// Return the current glob filter text, if any.
     #[must_use]
     pub fn glob_filter(&self) -> Option<String> {
-        let text = self.imp().glob_entry.text();
+        let text = self.imp().glob_entry.try_get()?.text();
         (!text.is_empty()).then(|| text.to_string())
     }
 
     /// Return the current replacement text without applying it.
     #[must_use]
     pub fn replace_query(&self) -> String {
-        self.imp().replace_entry.text().to_string()
+        self.imp()
+            .replace_entry
+            .try_get()
+            .map(|entry| entry.text().to_string())
+            .unwrap_or_default()
     }
 
     /// Return whether the result list is showing Replace All preview rows.

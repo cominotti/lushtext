@@ -128,6 +128,18 @@ pub struct SaveState {
     pub generation: Cell<u64>,
     /// Lifecycle handle for a save snapshot that is yielding between chunks.
     pub snapshot: RefCell<Option<BufferSnapshotHandle>>,
+    /// The request the save workflow admitted, while one is in flight.
+    ///
+    /// Built once at the workflow entry point and cleared at every terminal, so
+    /// it is also what the save evidence surface reports as the in-flight
+    /// request's identity.
+    pub(crate) admitted: RefCell<Option<super::save::policy::QueuedSaveTicket>>,
+    /// How the last durable write for this editor ended.
+    pub write_classification: Cell<super::save::policy::SaveWriteClassification>,
+    /// Whether save formatting rewrote the text the worker wrote.
+    pub formatting_rewrote_buffer: Cell<bool>,
+    /// Whether that formatted text finished installing back into the buffer.
+    pub mirror_back_completed: Cell<bool>,
     /// One-shot deterministic slice action consumed by the widget-test save path.
     #[cfg(feature = "test-utils")]
     pub snapshot_test_mutation:
@@ -600,7 +612,7 @@ impl ObjectImpl for LushtextEditorPage {
     // children — accessing `self.source_view` in Drop panics because the
     // TemplateChild's OnceCell is already empty.
     fn dispose(&self) {
-        super::save_runtime::cancel_for_editor(&self.obj());
+        super::save::admission::cancel_for_editor(&self.obj());
         self.obj().cancel_buffer_replacement_for_dispose();
         self.obj().dispose_load_resources();
         if let Some(snapshot) = self.save.snapshot.take() {

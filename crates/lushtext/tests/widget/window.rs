@@ -38,9 +38,6 @@ use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::note::RichNoteBody;
 use lushtext_core::model::palette::{IndexedFile, PaletteFileIdentity};
 use lushtext_core::model::recent_document::RecentDocumentEntry;
-use lushtext_core::model::save_admission::{
-    SAVE_PAYLOAD_SHARED_BUDGET_BYTES, conservative_save_payload_weight,
-};
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
@@ -65,6 +62,9 @@ use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleA
 use lushtext_core::ui::automation::{
     INTERFACE_VERSION, app_snapshot, current_idle_blocker, wait_for_idle_for_test,
     wait_for_ready_for_test,
+};
+use lushtext_core::ui::editor_page::save::policy::{
+    SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveCaptureMode, conservative_save_payload_weight,
 };
 use lushtext_core::ui::editor_page::{
     BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
@@ -6079,21 +6079,28 @@ fn test_memory_budget_revalidates_save_start_before_eviction() {
         active_editor(&window).load_state() == EditorLoadState::Loaded
     });
 
+    // Drive the real save workflow rather than writing its state: the queue
+    // stage publishes save ownership synchronously, which is exactly what the
+    // eviction pass must revalidate against. A write delay keeps the save in
+    // flight across the pass.
+    editor_io::set_save_write_delay_for_test(400);
     let first_for_hook = first_editor.clone();
     window.set_before_editor_memory_eviction_hook_for_test(move || {
-        // The production save path sets this before yielding to snapshot or I/O.
-        first_for_hook.imp().save.inflight.set(true);
+        first_for_hook.save_file_async(|_| {});
     });
     first_editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
     flush_events();
 
-    assert!(first_editor.is_saving());
+    assert!(first_editor.save_evidence().inflight);
     assert!(!first_editor.is_evicted());
     assert_eq!(
         window.editor_memory_outcome_for_test(),
         EditorMemoryBudgetOutcome::NoProgress
     );
-    first_editor.imp().save.inflight.set(false);
+    editor_io::set_save_write_delay_for_test(0);
+    wait_until(Duration::from_secs(10), || {
+        !first_editor.save_evidence().inflight
+    });
 }
 
 #[test]
@@ -7803,8 +7810,9 @@ fn test_first_dirty_autosave_large_buffer_snapshots_across_main_loop_chunks() {
     editor.buffer().set_text(&large_text);
     editor.buffer().set_modified(true);
 
-    assert!(
-        editor.save_uses_chunked_snapshot_for_test(),
+    assert_eq!(
+        editor.save_evidence().capture_mode,
+        SaveCaptureMode::Chunked,
         "large draft buffers should use the main-loop chunked snapshot path"
     );
     wait_until(Duration::from_secs(15), || {
@@ -13480,14 +13488,14 @@ fn test_multi_tab_close_admits_one_save_payload_at_a_time() {
 
     let maximum_active = Cell::new(0usize);
     wait_until(Duration::from_secs(10), || {
-        let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+        let snapshot = editors[0].save_evidence();
         maximum_active.set(maximum_active.get().max(snapshot.active_count));
         completed.get().is_some()
     });
 
     assert_eq!(completed.get(), Some(true));
     assert_eq!(maximum_active.get(), 1);
-    let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+    let snapshot = editors[0].save_evidence();
     assert_eq!(snapshot.active_count, 0);
     assert_eq!(snapshot.queued_count, 0);
     assert_eq!(
@@ -13544,16 +13552,14 @@ fn test_ordinary_save_admission_allows_bounded_concurrency() {
     }
     let maximum_active = Cell::new(0usize);
     wait_until(Duration::from_secs(10), || {
-        let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+        let snapshot = editors[0].save_evidence();
         maximum_active.set(maximum_active.get().max(snapshot.active_count));
         completed.get() == 2
     });
 
     assert_eq!(maximum_active.get(), 2);
     assert_eq!(
-        editors[0]
-            .transient_save_admission_snapshot_for_test()
-            .high_water_weight,
+        editors[0].save_evidence().high_water_weight,
         conservative_save_payload_weight(residency).saturating_mul(2)
     );
 }
@@ -13606,7 +13612,7 @@ fn test_overweight_save_admission_is_process_exclusive() {
     let maximum_active = Cell::new(0usize);
     let saw_exclusive = Cell::new(false);
     wait_until(Duration::from_secs(10), || {
-        let snapshot = editors[0].transient_save_admission_snapshot_for_test();
+        let snapshot = editors[0].save_evidence();
         maximum_active.set(maximum_active.get().max(snapshot.active_count));
         saw_exclusive.set(saw_exclusive.get() || snapshot.exclusive_active);
         completed.get() == 2
@@ -13615,9 +13621,7 @@ fn test_overweight_save_admission_is_process_exclusive() {
     assert_eq!(maximum_active.get(), 1);
     assert!(saw_exclusive.get());
     assert_eq!(
-        editors[0]
-            .transient_save_admission_snapshot_for_test()
-            .high_water_weight,
+        editors[0].save_evidence().high_water_weight,
         weight
     );
 }
@@ -13638,10 +13642,7 @@ fn test_admitted_save_rejects_stale_destination_completion() {
         result_for_callback.replace(Some(save_result));
     });
     wait_until(Duration::from_secs(5), || {
-        editor
-            .transient_save_admission_snapshot_for_test()
-            .active_count
-            == 1
+        editor.save_evidence().active_count == 1
     });
     editor.set_file_path(&replacement_path);
 
@@ -13705,9 +13706,7 @@ fn test_queued_save_cancellation_discards_lossy_consent() {
         blocking_done_for_callback.set(true);
     });
     wait_until(Duration::from_secs(5), || {
-        blocking
-            .transient_save_admission_snapshot_for_test()
-            .exclusive_active
+        blocking.save_evidence().exclusive_active
     });
 
     let queued_result = Rc::new(RefCell::new(None));
@@ -13717,10 +13716,7 @@ fn test_queued_save_cancellation_discards_lossy_consent() {
         queued_result_for_callback.replace(Some(result));
     });
     wait_until(Duration::from_secs(5), || {
-        blocking
-            .transient_save_admission_snapshot_for_test()
-            .queued_count
-            == 1
+        blocking.save_evidence().queued_count == 1
     });
     let replacement_path = files[1].with_file_name("queued-renamed.txt");
     queued.set_file_path(&replacement_path);
@@ -13757,7 +13753,7 @@ fn test_queued_save_cancellation_discards_lossy_consent() {
         "content for queued.txt\n",
         "stale queued consent must not authorize a later lossy save",
     );
-    let snapshot = blocking.transient_save_admission_snapshot_for_test();
+    let snapshot = blocking.save_evidence();
     assert_eq!(snapshot.active_count, 0);
     assert_eq!(snapshot.queued_count, 0);
 }
@@ -13819,15 +13815,12 @@ fn test_stale_close_save_cancellation_wakes_queued_loads() {
         close_result_for_callback.set(Some(confirmed));
     });
     wait_until(Duration::from_secs(5), || {
-        close_editor
-            .transient_save_admission_snapshot_for_test()
-            .queued_close_count
-            == 1
+        close_editor.save_evidence().queued_close_count == 1
     });
 
     // Make the close request stale while it is still blocked by the active
     // exclusive load. Releasing that load schedules the load lane first.
-    window.imp().session.active_close_save_identity.set(None);
+    window.expire_close_save_session_for_test();
 
     wait_until(Duration::from_secs(10), || {
         close_result.get() == Some(false)
@@ -13837,7 +13830,7 @@ fn test_stale_close_save_cancellation_wakes_queued_loads() {
     let load_snapshot = close_editor.transient_load_admission_snapshot_for_test();
     assert_eq!(load_snapshot.active_count, 0);
     assert_eq!(load_snapshot.queued_count, 0);
-    let save_snapshot = close_editor.transient_save_admission_snapshot_for_test();
+    let save_snapshot = close_editor.save_evidence();
     assert_eq!(save_snapshot.active_count, 0);
     assert_eq!(save_snapshot.queued_count, 0);
 }
@@ -13983,7 +13976,11 @@ fn test_keyboard_multi_tab_save_changes_selection_control() {
 #[test]
 fn test_close_paths_are_blocked_while_save_is_in_progress() {
     let (window, _dir, _path, editor) = modified_file_backed_tab("disk\n", "saving\n");
-    editor.imp().save.inflight.set(true);
+    // A real delayed save, not a written flag: the close paths must observe the
+    // workflow's own in-flight state.
+    editor_io::set_save_write_delay_for_test(400);
+    editor.save_file_async(|_| {});
+    assert!(editor.save_evidence().inflight);
 
     close_selected_tab(&window);
 
@@ -14002,7 +13999,8 @@ fn test_close_paths_are_blocked_while_save_is_in_progress() {
     assert!(window.is_visible());
     assert_tab_count(&window, 1);
 
-    editor.imp().save.inflight.set(false);
+    editor_io::set_save_write_delay_for_test(0);
+    wait_until(Duration::from_secs(10), || !editor.save_evidence().inflight);
 }
 
 #[test]

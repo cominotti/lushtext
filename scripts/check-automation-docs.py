@@ -84,6 +84,12 @@ EVIDENCE_PROJECTIONS = (
         REPO_ROOT / "crates/lushtext-core/src/ui/command_palette/evidence.rs",
         "command_palette_snapshot",
     ),
+    EvidenceProjection(
+        "window.tabs",
+        "SaveEvidence",
+        REPO_ROOT / "crates/lushtext-core/src/ui/editor_page/save/evidence.rs",
+        "tab_snapshot",
+    ),
 )
 
 

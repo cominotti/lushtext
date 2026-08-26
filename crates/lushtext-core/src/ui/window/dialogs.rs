@@ -177,11 +177,11 @@ impl super::LushtextWindow {
                         open_paths.remove(old_canonical);
                     }
                     open_paths.insert(super::documents::open_path_key(path));
-                    if let Some(canonical_path) = canonical_path.clone() {
+                    if let Some(canonical_path) = canonical_path {
                         open_paths.insert(canonical_path);
                     }
                 }
-                editor.set_file_path_with_canonical(path, canonical_path);
+                editor.adopt_saved_destination(path);
                 self.reconcile_open_paths_from_tabs();
                 self.refresh_canonical_path_after_rename(editor, path);
                 self.refresh_sidebar_file_row_states();
@@ -549,6 +549,26 @@ impl super::LushtextWindow {
     fn finish_close_save_session(&self, identity: u64) {
         if self.close_save_session_is_current(identity) {
             self.imp().session.active_close_save_identity.set(None);
+        }
+    }
+
+    /// Expire the active close-save session, as a superseding close would.
+    ///
+    /// **New actuation seam, counted and justified.** The document-save
+    /// migration replaced five ungated `imp()` write sites in the widget tests;
+    /// four became real drives of the workflow, and this one could not. A close
+    /// session ends only when its `AdwAlertDialog`-driven pipeline completes,
+    /// aborts, or is superseded by another close request, and a headless test
+    /// cannot reach that instant while a save is still queued behind an
+    /// exclusive load — which is precisely the race the stale-close-session
+    /// guard exists to protect. Driving the production expiry through this seam
+    /// is strictly better than the direct `session.active_close_save_identity`
+    /// write it replaces, which shaped production field layout from the test
+    /// side.
+    #[cfg(feature = "test-utils")]
+    pub fn expire_close_save_session_for_test(&self) {
+        if let Some(identity) = self.imp().session.active_close_save_identity.get() {
+            self.finish_close_save_session(identity);
         }
     }
 

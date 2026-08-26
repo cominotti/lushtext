@@ -19,6 +19,7 @@ use lushtext_core::services::file_limits::FileSizeCheck;
 use lushtext_core::services::local_history_service;
 use lushtext_core::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
+use lushtext_core::ui::editor_page::save::policy::{SaveCaptureMode, SaveWriteClassification};
 use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
     BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
@@ -82,7 +83,7 @@ fn wait_for_save_snapshot(page: &LushtextEditorPage) {
     let deadline = Instant::now() + timeout;
     let context = glib::MainContext::default();
     while Instant::now() < deadline {
-        if page.save_snapshot_inflight_for_test() {
+        if page.save_evidence().capture_in_flight {
             return;
         }
         if !context.iteration(false) {
@@ -92,7 +93,7 @@ fn wait_for_save_snapshot(page: &LushtextEditorPage) {
     panic!(
         "save snapshot was not installed within {timeout:?}: saving={} admission={:?} disposal={:?}",
         page.is_saving(),
-        page.transient_save_admission_snapshot_for_test(),
+        page.save_evidence(),
         lane_snapshot_for_test()
     );
 }
@@ -122,7 +123,7 @@ fn wait_for_save_result(
     panic!(
         "save did not finish within {timeout:?}: saving={} snapshot={snapshot:?} admission={:?} disposal={:?}",
         page.is_saving(),
-        page.transient_save_admission_snapshot_for_test(),
+        page.save_evidence(),
         lane_snapshot_for_test()
     );
 }
@@ -893,8 +894,9 @@ fn test_large_untitled_buffer_uses_chunked_save_snapshot_policy() {
     let page = LushtextEditorPage::new();
     page.buffer().set_text(&"x".repeat(2_500_000));
 
-    assert!(
-        page.save_uses_chunked_snapshot_for_test(),
+    assert_eq!(
+        page.save_evidence().capture_mode,
+        SaveCaptureMode::Chunked,
         "large untitled buffers should not be copied in one synchronous snapshot"
     );
 }
@@ -906,8 +908,9 @@ fn test_file_that_grew_in_memory_uses_chunked_save_snapshot_policy() {
     page.imp().file_size.set(Some(1_024));
     page.buffer().set_text(&"x".repeat(2_500_000));
 
-    assert!(
-        page.save_uses_chunked_snapshot_for_test(),
+    assert_eq!(
+        page.save_evidence().capture_mode,
+        SaveCaptureMode::Chunked,
         "snapshot policy should follow live buffer size, not only loaded file size"
     );
 }
@@ -932,7 +935,7 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
         result_for_callback.borrow_mut().replace(save_result);
     });
     wait_for_save_snapshot(&page);
-    assert!(page.save_snapshot_inflight_for_test());
+    assert!(page.save_evidence().capture_in_flight);
     assert!(!page.source_view().is_editable());
     assert!(!page.source_view().is_cursor_visible());
     let mut end = page.buffer().end_iter();
@@ -948,7 +951,7 @@ fn test_chunked_save_snapshot_mutation_restores_interactivity_without_writing() 
         ))
     ));
     assert!(!page.is_saving());
-    assert!(!page.save_snapshot_inflight_for_test());
+    assert!(!page.save_evidence().capture_in_flight);
     assert!(page.source_view().is_editable());
     assert!(page.source_view().is_cursor_visible());
     assert!(page.is_modified());
@@ -1929,7 +1932,7 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
         fs_read::text(&path).expect("expected operation to succeed"),
         content
     );
-    let admission = page.transient_save_admission_snapshot_for_test();
+    let admission = page.save_evidence();
     assert_eq!(admission.active_count, 0);
     assert_eq!(admission.queued_count, 0);
     assert!(admission.high_water_weight > 0);
@@ -2031,7 +2034,7 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
     wait_until(Duration::from_secs(10), || {
         lane_snapshot_for_test().completed_jobs > disposal_before.completed_jobs
     });
-    let admission = page.transient_save_admission_snapshot_for_test();
+    let admission = page.save_evidence();
     assert_eq!(admission.active_count, 0);
     assert_eq!(admission.queued_count, 0);
 }
@@ -2044,7 +2047,7 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
     page.set_file_path(tmp.path());
     page.buffer().set_text(&"x".repeat(2_500_001));
     page.buffer().set_modified(true);
-    assert!(page.save_uses_chunked_snapshot_for_test());
+    assert_eq!(page.save_evidence().capture_mode, SaveCaptureMode::Chunked);
     page.reset_transient_load_admission_for_test();
     page.reset_transient_save_admission_for_test();
     page.pause_next_save_snapshot_for_test();
@@ -2058,9 +2061,7 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
     // save snapshot starts; subsequent assertions inspect only test counters.
     unsafe { page.run_dispose() };
     wait_until(Duration::from_secs(10), || {
-        page.transient_save_admission_snapshot_for_test()
-            .active_count
-            == 0
+        page.save_evidence().active_count == 0
             && buffer_snapshot_counters_for_test().worker_drops > counters_before.worker_drops
     });
 
@@ -2069,7 +2070,7 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
         fs_read::bytes(tmp.path()).expect("teardown target bytes"),
         b""
     );
-    let admission = page.transient_save_admission_snapshot_for_test();
+    let admission = page.save_evidence();
     assert_eq!(admission.active_count, 0);
     assert_eq!(admission.queued_count, 0);
     let counters_after = buffer_snapshot_counters_for_test();
@@ -4251,4 +4252,202 @@ fn test_bounded_buffer_replacement_disposal_terminal_releases_source_and_body() 
     );
     assert!(outcomes.borrow()[0].body.is_none());
     assert!(!page.buffer_replacement_in_progress_for_test());
+}
+
+#[test]
+fn test_save_evidence_reads_stay_side_effect_free_across_save_mutation() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("save-evidence tempdir");
+    let path = dir.path().join("evidence.txt");
+    fixture::write_text(&path, "disk\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_save_admission_for_test();
+    page.set_file_path(&path);
+    page.buffer().set_text("evidence\n");
+    page.buffer().set_modified(true);
+
+    // Read at every point the workflow mutates the state the accessor borrows,
+    // including immediately after operations that take `borrow_mut()` on the
+    // admitted ticket and the chunked-capture handle. A live path holding one of
+    // those borrows across an evidence read would panic here.
+    let idle = page.save_evidence();
+    assert!(!idle.inflight);
+    assert!(idle.admitted_path.is_none());
+    assert_eq!(idle.write_classification, SaveWriteClassification::None);
+
+    let result = Rc::new(RefCell::new(None));
+    let result_for_callback = Rc::clone(&result);
+    editor_io::set_save_write_delay_for_test(250);
+    page.save_file_async(move |save_result| {
+        result_for_callback.borrow_mut().replace(save_result);
+    });
+
+    // Queue stage: ownership is published, no ticket admitted yet.
+    let queued = page.save_evidence();
+    assert!(queued.inflight);
+    let _ = page.save_evidence();
+
+    // Admission stage: the ticket is installed under a `borrow_mut()`.
+    wait_until(Duration::from_secs(10), || {
+        page.save_evidence().admitted_path.is_some()
+    });
+    let admitted = page.save_evidence();
+    assert_eq!(admitted.admitted_path.as_deref(), Some(path.as_path()));
+    assert_eq!(admitted.admitted_explicit_destination, Some(false));
+    assert_eq!(admitted.admitted_required_modified, Some(true));
+    assert!(admitted.admitted_close_session_identity.is_none());
+    let _ = page.save_evidence();
+
+    editor_io::set_save_write_delay_for_test(0);
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+
+    // Terminal stage: the ticket is cleared under a `borrow_mut()`.
+    let accepted = page.save_evidence();
+    assert!(!accepted.inflight);
+    assert!(accepted.admitted_path.is_none());
+    assert_eq!(
+        accepted.write_classification,
+        SaveWriteClassification::Accepted
+    );
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not advance a generation, drain a queue, or charge an admission.
+    let first_read = page.save_evidence();
+    let second_read = page.save_evidence();
+    assert_eq!(first_read, second_read);
+    assert_eq!(first_read.generation, second_read.generation);
+    assert_eq!(first_read.queued_count, second_read.queued_count);
+    assert_eq!(first_read.active_count, second_read.active_count);
+}
+
+#[test]
+fn test_save_of_a_clean_unmodified_buffer_still_writes_the_buffer() {
+    // A clean buffer is queued with `required_modified = false`, so the save is
+    // not silently dropped by the staleness predicate. Asserted because the
+    // predicate's `required_modified` clause is the one that would swallow it.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("clean-save tempdir");
+    let path = dir.path().join("clean.txt");
+    fixture::write_text(&path, "on disk\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_save_admission_for_test();
+    page.set_file_path(&path);
+    page.buffer().set_text("in buffer\n");
+    page.buffer().set_modified(false);
+    assert!(!page.is_modified());
+
+    let result = Rc::new(RefCell::new(None));
+    let result_clone = Rc::clone(&result);
+    page.save_file_async(move |save_result| {
+        result_clone.replace(Some(save_result));
+    });
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+
+    assert_matches!(result.borrow_mut().take().expect("clean save result"), Ok(()));
+    assert_eq!(
+        fs_read::text(&path).expect("clean save should reach disk"),
+        "in buffer\n"
+    );
+    let evidence = page.save_evidence();
+    assert!(!evidence.inflight);
+    assert_eq!(
+        evidence.write_classification,
+        SaveWriteClassification::Accepted
+    );
+    assert!(!evidence.formatting_rewrote_buffer);
+    assert!(!page.is_modified());
+}
+
+#[test]
+fn test_save_failing_before_rename_keeps_previous_bytes_and_leaves_the_tab_modified() {
+    // `DurableWriteError::BeforeRename` means the previous bytes are intact, so
+    // this must report as an unwritten save and the document must stay modified.
+    // Conflating it with the after-rename case is a data-safety failure.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("before-rename tempdir");
+    let path = dir.path().join("before-rename.txt");
+    fixture::write_text(&path, "previous bytes\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_save_admission_for_test();
+    page.set_file_path(&path);
+    page.buffer().set_text("new bytes\n");
+    page.buffer().set_modified(true);
+    editor_io::fail_next_save_for_path_for_test(&path, editor_io::SaveFailureForTest::BeforeRename);
+
+    let result = Rc::new(RefCell::new(None));
+    let result_clone = Rc::clone(&result);
+    page.save_file_async(move |save_result| {
+        result_clone.replace(Some(save_result));
+    });
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+
+    let error = result
+        .borrow_mut()
+        .take()
+        .expect("before-rename save result")
+        .expect_err("before-rename save must fail");
+    assert!(
+        !matches!(
+            error,
+            lushtext_core::ui::editor_page::EditorSaveError::DurabilityUnconfirmed { .. }
+        ),
+        "a failure before the rename must not be reported as durability unconfirmed: {error}"
+    );
+    assert_eq!(
+        fs_read::text(&path).expect("previous bytes must survive"),
+        "previous bytes\n"
+    );
+    assert!(page.is_modified(), "an unwritten save must leave the tab modified");
+    assert!(!page.is_saving());
+    assert!(page.source_view().is_editable());
+    assert_eq!(
+        page.save_evidence().write_classification,
+        SaveWriteClassification::FailedBeforeRename
+    );
+    editor_io::clear_save_failure_for_test();
+}
+
+#[test]
+fn test_save_failing_after_rename_reports_durability_unconfirmed_not_a_lost_save() {
+    // `DurableWriteError::AfterRename` means the new bytes reached the
+    // destination but the directory sync did not complete. It must surface as a
+    // distinct durability warning, never as a generic lost save.
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("after-rename tempdir");
+    let path = dir.path().join("after-rename.txt");
+    fixture::write_text(&path, "previous bytes\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_save_admission_for_test();
+    page.set_file_path(&path);
+    page.buffer().set_text("new bytes\n");
+    page.buffer().set_modified(true);
+    editor_io::fail_next_save_for_path_for_test(&path, editor_io::SaveFailureForTest::AfterRename);
+
+    let result = Rc::new(RefCell::new(None));
+    let result_clone = Rc::clone(&result);
+    page.save_file_async(move |save_result| {
+        result_clone.replace(Some(save_result));
+    });
+    wait_until(Duration::from_secs(10), || result.borrow().is_some());
+
+    assert_matches!(
+        result
+            .borrow_mut()
+            .take()
+            .expect("after-rename save result")
+            .expect_err("after-rename save must report a failure"),
+        lushtext_core::ui::editor_page::EditorSaveError::DurabilityUnconfirmed { .. }
+    );
+    assert_eq!(
+        fs_read::text(&path).expect("renamed bytes must be on disk"),
+        "new bytes\n",
+        "the bytes reached the destination; only the directory sync is unconfirmed"
+    );
+    assert!(!page.is_saving());
+    assert!(page.source_view().is_editable());
+    assert_eq!(
+        page.save_evidence().write_classification,
+        SaveWriteClassification::DurabilityUnconfirmed
+    );
+    editor_io::clear_save_failure_for_test();
 }

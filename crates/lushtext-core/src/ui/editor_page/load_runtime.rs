@@ -29,7 +29,7 @@ use crate::model::file_load::{
 use crate::services::editor_io::{self, EditorLoadError, FileLoadPlan, LoadMetadata};
 use crate::ui::window::LushtextWindow;
 
-use super::save_runtime;
+use super::save;
 use super::{EditorLoadState, LushtextEditorPage};
 
 thread_local! {
@@ -197,8 +197,8 @@ fn schedule_drain() {
 }
 
 fn drain() {
-    let (save_weight, save_exclusive) = save_runtime::active_pressure();
-    let close_save_pending = save_runtime::close_work_pending_or_active();
+    let (save_weight, save_exclusive) = save::admission::active_pressure();
+    let close_save_pending = save::admission::close_work_pending_or_active();
     let (dispatches, disposal_blocked_epoch) = COORDINATOR.with_borrow_mut(|coordinator| {
         coordinator.drain_scheduled = false;
         let stale = coordinator
@@ -300,7 +300,7 @@ fn drain() {
             coordinator.disposal_wakeup.cancel();
         }
     });
-    save_runtime::schedule_drain_for_external_change();
+    save::admission::schedule_drain_for_external_change();
 }
 
 fn dispatch(
@@ -347,7 +347,7 @@ fn release_on_main(request_id: u64) {
         COORDINATOR.with_borrow_mut(|coordinator| coordinator.policy.release(request_id));
     if released {
         schedule_drain();
-        save_runtime::schedule_drain_for_external_change();
+        save::admission::schedule_drain_for_external_change();
     }
 }
 

@@ -623,6 +623,7 @@ read is internal and must not appear here.
 | `window.command_palette` | `CommandPaletteEvidence` | `file_index_len` | `command_palette.file_index_count` |
 | `window.command_palette` | `CommandPaletteEvidence` | `open_tab_source_count` | `command_palette.open_tab_source_count` |
 | `window.command_palette` | `CommandPaletteEvidence` | `pending_index_update_count` | `command_palette.pending_index_update_count` |
+| `window.tabs` | `SaveEvidence` | `inflight` | `tabs.saving` |
 
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |
