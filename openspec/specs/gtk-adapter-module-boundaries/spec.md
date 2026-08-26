@@ -188,6 +188,23 @@ The pure policy role is named `policy.rs` and the evidence role is named
 `evidence.rs`, one of each per workflow. The facade role is the workflow's public
 module surface.
 
+Those two file names are fixed, so they cannot be shared by two workflows that
+live in the same directory, and a workflow-prefixed variant is not an available
+substitute for pure policy: the default mutation scope reaches pure policy through
+the literal `ui/**/policy.rs` convention, so a prefixed policy file would leave the
+scope, which the mutation-testing capability classifies as a coverage regression
+that blocks the relocation. Therefore, where a directory hosts more than one
+workflow, a migrated workflow's roles MAY live in a **per-workflow subdirectory**
+of that directory, whose `mod.rs` is the workflow's facade and whose role files
+keep the unqualified names `policy.rs`, `evidence.rs`, and the unqualified bounded
+coordination names. The subdirectory is named for the workflow in its own domain
+vocabulary. This is a permitted role home, not a required one: a workflow whose
+role file names do not collide with a sibling workflow's MAY keep flat,
+workflow-scoped role names in the shared directory, and migration still MUST NOT
+require restructuring an entire directory into one subdirectory per workflow.
+Choosing between the two homes is a per-workflow decision recorded in the
+workflow's matrix row, and it does not change any other part of this contract.
+
 #### Scenario: Coordination file is named for its job
 
 - **WHEN** a workflow's coordination module is created or renamed during migration
@@ -199,8 +216,26 @@ module surface.
 - **WHEN** a directory hosts more than one workflow
 - **THEN** each workflow's coordination modules use role names scoped to that
   workflow within the shared directory
-- **AND** migration does not require restructuring the directory into one
+- **AND** migration does not require restructuring the whole directory into one
   subdirectory per workflow
+
+#### Scenario: Two workflows in one directory cannot share the fixed role names
+
+- **WHEN** a directory hosts more than one workflow and more than one of those
+  workflows owns pure policy or an evidence surface
+- **THEN** one of them moves its roles into a per-workflow subdirectory of that
+  directory whose `mod.rs` is that workflow's facade
+- **AND** its pure policy is still a file named `policy.rs`, so it stays inside the
+  default mutation scope rather than being renamed to a prefixed variant that
+  leaves it
+
+#### Scenario: Role files inside a per-workflow subdirectory stay unqualified
+
+- **WHEN** a workflow's roles live in a per-workflow subdirectory
+- **THEN** the role files keep the unqualified names `policy.rs`, `evidence.rs`,
+  and the unqualified bounded coordination names
+- **AND** the subdirectory name, not a file-name prefix, is what scopes them to the
+  workflow
 
 #### Scenario: One workflow with two stage orders qualifies a repeated role
 
