@@ -68,7 +68,33 @@ make install-git-hooks
 The blocking Clippy command is `cargo clippy --workspace --all-targets
 --all-features -- -D warnings`, and it must stay identical in Makefile,
 pre-commit, CI, and contributor docs unless a narrower command is explicitly
-documented as a non-blocking smoke shortcut. `make check` runs rustfmt,
+documented as a non-blocking smoke shortcut.
+
+**The rustdoc lint gate is not in `make check`, `make pre-commit`, or
+`make check-policy` — run it by hand.** CI's `Lint` job enforces it, so a
+change that only ever ran the local gates can still red the pipeline:
+
+```
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::bare_urls" \
+  cargo doc --workspace --no-deps
+```
+
+Run it whenever a change adds or edits doc comments on a public module, and
+always for a new workflow facade or role home, because the facade convention
+produces exactly the failure this gate catches: **public module documentation
+must not intra-doc-link private items.** A narrative facade lives in a `pub`
+module and naturally wants to name its own coordination modules, its
+`pub(crate)` seam value objects, and its non-`pub` entry points — every one of
+those is a `private_intra_doc_links` error. `rustdoc::private_intra_doc_links`
+does not fire for `#[doc(hidden)]` or for private modules' own docs, so the
+errors cluster in precisely the files the convention asks to be most
+descriptive.
+
+The fix is **always** to drop the link and keep the name in backticks; never
+widen an item's visibility to satisfy documentation. Link only items that are
+genuinely public from the documenting module. This class has shipped three
+times (`session_service`, `WalkStop`, and slot 3a's `save` facade), each time
+because the local gates were green. `make check` runs rustfmt,
 all-feature Clippy, and fast policy audits, including Blueprint template drift
 and generated UI contract validation. Filesystem-sensitive changes should
 also pass `make check-agent-docs`; that target verifies the

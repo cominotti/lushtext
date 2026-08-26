@@ -13,10 +13,10 @@
 //!   accounting ([`SaveAdmissionPolicy`]). GTK adapters retain weak editor
 //!   ownership and compact request metadata until this policy admits the
 //!   document-sized snapshot/transform/write lifecycle.
-//! - **The admission seam.** [`QueuedSaveTicket`] captures what the workflow
-//!   expected when the save was queued, [`QueuedSaveFacts`] captures the live
+//! - **The admission seam.** `QueuedSaveTicket` captures what the workflow
+//!   expected when the save was queued, `QueuedSaveFacts` captures the live
 //!   editor state observed when admission is decided, and
-//!   [`queued_save_is_current`] validates the pair as a unit.
+//!   `queued_save_is_current` validates the pair as a unit.
 //! - **Save-stage decisions.** Whether a save may pre-empt an in-flight load,
 //!   whether the worker's formatted text must be mirrored back into the buffer,
 //!   and how the write outcome is retained.
@@ -285,7 +285,7 @@ impl SaveAdmissionPolicy {
 /// under a different name (`cancel_pending_load` was passed positionally into a
 /// parameter called `explicit_destination`).
 ///
-/// What makes that mismatch impossible now is [`QueuedSaveTicket`]: the
+/// What makes that mismatch impossible now is `QueuedSaveTicket`: the
 /// freshness predicate takes the ticket instead of five positional scalars, so
 /// the miswired call is a type error. This function is `bool -> bool` and proves
 /// nothing to the compiler; what it adds is that the inference lives in the code
@@ -318,7 +318,7 @@ pub(crate) struct QueuedSaveTicket {
     /// Never spell this `cancel_pending_load`: that names one consequence of the
     /// property rather than the property, and carrying both names for one value
     /// is what made the original defect invisible. Derive the consequence with
-    /// [`save_may_preempt_pending_load`].
+    /// `save_may_preempt_pending_load`.
     pub explicit_destination: bool,
     /// Whether the request required the buffer to be modified when queued.
     pub required_modified: bool,

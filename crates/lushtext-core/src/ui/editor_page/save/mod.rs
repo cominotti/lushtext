@@ -18,30 +18,30 @@
 //! | Module | Role | Owns |
 //! | --- | --- | --- |
 //! | this file | narrative facade | the three entry points, the destination-adoption step, and this narration |
-//! | [`admission`] | coordination | the process-wide coordinator, the queue stage, the idle drain, exactly-once charge release |
-//! | [`execution`] | coordination | view suspension, buffer capture, the worker write, completion acceptance |
-//! | [`policy`] | pure policy | byte-weighted admission accounting, the [`QueuedSaveTicket`] seam and its predicate, the saved-text disposition, the write classification |
+//! | `admission` | coordination | the process-wide coordinator, the queue stage, the idle drain, exactly-once charge release |
+//! | `execution` | coordination | view suspension, buffer capture, the worker write, completion acceptance |
+//! | [`policy`] | pure policy | byte-weighted admission accounting, the `QueuedSaveTicket` seam and its predicate, the saved-text disposition, the write classification |
 //! | [`evidence`] | evidence | [`SaveEvidence`], the one typed value observers read |
 //!
 //! ## Stages
 //!
 //! 1. **Accept the request.** [`LushtextEditorPage::save_file_async`],
-//!    [`save_file_async_to_path`](LushtextEditorPage::save_file_async_to_path),
+//!    `save_file_async_to_path`,
 //!    and
-//!    [`save_file_async_for_close`](LushtextEditorPage::save_file_async_for_close)
+//!    `save_file_async_for_close`
 //!    are the only ways in. Each names the user's intent and differs only in
 //!    where the destination comes from and what gates the save. Delegates to
-//!    [`admission::queue_save_request`].
+//!    `admission::queue_save_request`.
 //! 2. **Queue under compact ownership.** The request is refused outright if the
 //!    editor cannot honour it — a load in progress with no explicit destination,
 //!    an incomplete load installation, a buffer replacement, or an existing
 //!    save. Otherwise the save generation advances, the editor is marked saving,
-//!    and one [`QueuedSaveTicket`] is built **once** and carried from here on.
+//!    and one `QueuedSaveTicket` is built **once** and carried from here on.
 //!    No document text has been copied yet: only compact scalars are queued.
-//! 3. **Admit under a shared byte budget.** [`admission::drain`] retires queued
+//! 3. **Admit under a shared byte budget.** `admission::drain` retires queued
 //!    requests whose ticket no longer describes their editor, then admits as
 //!    many as the shared payload budget allows.
-//! 4. **Capture the buffer.** [`execution::begin_admitted_save`] revalidates the
+//! 4. **Capture the buffer.** `execution::begin_admitted_save` revalidates the
 //!    ticket, suspends the view, and copies the text — in one turn, or in
 //!    main-loop slices for a buffer over the shared chunked threshold.
 //! 5. **Write durably on a worker.** Save formatting is applied, the bytes are
@@ -83,7 +83,7 @@
 //!
 //! ## Two freshness seams, deliberately distinct
 //!
-//! [`QueuedSaveTicket`] + `QueuedSaveFacts` + `queued_save_is_current` decide
+//! `QueuedSaveTicket` + `QueuedSaveFacts` + `queued_save_is_current` decide
 //! whether a *queued* request may still be admitted. `SaveCompletionTicket`
 //! decides whether a *completed* worker result may still mutate the editor.
 //! They guard different windows and both stay.
@@ -93,11 +93,11 @@
 //!
 //! Two separate things make the old defect hard to reintroduce, and they are
 //! worth keeping distinct. **The ticket is what gives type safety**: the
-//! freshness predicate now takes [`QueuedSaveTicket`] and `QueuedSaveFacts`
+//! freshness predicate now takes `QueuedSaveTicket` and `QueuedSaveFacts`
 //! rather than five positional scalars, so a value can no longer arrive in a
 //! parameter that names it something else — the mismatched call that used to be
 //! invisible is now a type error. **The derivation is what gives readability**:
-//! [`policy::save_may_preempt_pending_load`] is `bool -> bool` and proves
+//! `policy::save_may_preempt_pending_load` is `bool -> bool` and proves
 //! nothing to the compiler, but it puts the inference in the code where a reader
 //! can see it instead of leaving it implied by a shared boolean.
 //!
