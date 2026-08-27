@@ -83,14 +83,14 @@ convention has been proven on at least two completed lower-risk migrations.
 
 | Row id | Workflow | Current size | Entry points | Owned pure policy | Seams (i/c/a/p) | Seam value object | Evidence surface | Risk | Slot | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WFR-SEARCH-REPLACE | Workspace search and Replace All | 19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762 | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs`: slot 1 moved the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census); slot 2b added the Replace All durable half's decisions (preview reservation and shrink-to weights, the saturating retained-byte cast, the undo-capacity admission plan, the journal generation predicate, `ReplaceApplyCounts`). Mutation parity proved for both, and slot 2b's move was out-of-scope-to-in-scope, so it *gained* 11 mutants with zero survivors. Domain `model/workspace_search.rs` stays | both halves migrated: slot 1 retired 8 inspection fns into `evidence.rs` and collapsed 5 configuration setters plus 6 override statics into `SearchPanelTestPolicy`; slot 2b added 10 evidence fields and needed no new inspection fn, no new override, and no new actuation seam. 5 actuation seams remain on the replace/undo transaction (`clear_undo_backup_for_test`, `reserve_undo_backup_generation_for_test`, `set_persisted_undo_backup_for_generation_for_test`, `begin_replace_transaction_for_test`, `finish_replace_transaction_for_test`) plus 2 accessibility probes, all deferred at programme level. Write-side seams in `services/content_search/replace.rs` are classified under [Migrated Workflow Roles](#wfr-search-replace) | **3 seams reified** (the programme's primary unit; long signatures shortened remains 0 for this row, and no function in it has 6 or more non-receiver parameters, so neither the receiver-counted 88 nor the strict 43 signature figure applies here). exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side). new: `UndoRestoreClaim` (the window's undo-restore claim seam, naming the transaction-busy and capacity-deferred refusals the panel must restore the affordance for) | exists: `SearchPanelEvidence` via `evidence()`, extended by slot 2b with the apply transaction's own pending flag, all three generations, the preview capacity-retry state, the installed journal's entry count and retained weight, in-flight and cumulative journal disk-job counters, and the last apply's counts; automation `window.content_search` projects from it and slot 2b widened nothing | tier-2 (search/preview half), tier-3 (Replace All write half) — **both now covered** | 1 (search/preview half) + 2b (replace/undo half) | migrated |
-| WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | 16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897); the `ui` subtotal is `ui/command_palette/**` (1,672) plus `ui/window/focus_indexing.rs` (856), which the census attributed to this row but which stays window code | `win.toggle-command-palette` (`Ctrl+Shift+P`), palette mode dropdown and Tab cycling, sidebar file create/delete/rename and watcher reconciliation, `win.notes-show-notes` (the census cell said `Ctrl+P` / `Ctrl+K`; the real palette accelerator is `Ctrl+Shift+P` and `Ctrl+K` belongs to the recent-Open popover) | relocated to `crates/lushtext-core/src/ui/command_palette/policy.rs` (queue admission byte/cap math, batch-kind selection and flush guard, mutation-generation arbitration and replay, retirement-cap classification, header-skipping navigation, presentation decisions); mutation coverage gained, not relocated — see [Migrated Workflow Roles](#wfr-command-palette). Domain `model/palette.rs` (17 consumers) stays | palette half migrated: 5 inspection fns retired into `evidence.rs`, 2 configuration setters plus 2 override statics collapsed into `CommandPaletteTestPolicy`; 3 process-global retirement counters retained as lifecycle probes (per-widget folding would change their meaning from "this process observed a last-owned at-cap retirement" to a count no test asks for); 3 actuation seams deferred. The pre-migration cell read `15/10/2/0 = 27 fns, 40 sites, 4 override statics`, which was row-scoped: `ui/command_palette/**` held 12 of those functions and 22 of the gate-attribute sites, and the other 15 live in `services/palette/**` and `ui/window/notes/**` shared with `WFR-NOTES-BOOKMARKS` (slot 5) | exists: `PaletteSearchCoordinator` generation identity + `is_current` (query seam; the convention accepts a coordinator that owns the generation as the seam value object). new: `FileIndexMutationTicket` + `FileIndexMutationFacts` + `arbitrate` (file-index mutation seam) | exists: `CommandPaletteEvidence` via `evidence()`; automation `window.command_palette` and both palette readiness blockers project from it | tier-2 | 2a | migrated |
+| WFR-SEARCH-REPLACE | Workspace search and Replace All | **14 files, 5,527 production lines** in `ui/search_panel/**`, counting non-`#[cfg(test)]` lines only. The workflow additionally **calls** `services/content_search/**` (1,978 production lines, shared with `WFR-EDITOR-FIND` and the fault-injection lane), `services/search_backup.rs` (1,073, which slot 2b decided stays in services), and `services/saved_searches.rs` (68, shared with the palette's saved-search source), none of which it owns. The pre-migration cell read `19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895); exemplar scope 4,762` and pooled all three of those service populations, counting whole files including their co-located tests; slot 4's amendment re-check corrected it | `win.begin-search`, `Ctrl+Shift+F`, search entry changed, Replace All button, Undo button | relocated to `crates/lushtext-core/src/ui/search_panel/policy.rs`: slot 1 moved the two `model/` search policy modules named in the [Policy Module Census](#policy-module-census); slot 2b added the Replace All durable half's decisions (preview reservation and shrink-to weights, the saturating retained-byte cast, the undo-capacity admission plan, the journal generation predicate, `ReplaceApplyCounts`). Mutation parity proved for both, and slot 2b's move was out-of-scope-to-in-scope, so it *gained* 11 mutants with zero survivors. Domain `model/workspace_search.rs` stays | both halves migrated: slot 1 retired 8 inspection fns into `evidence.rs` and collapsed 5 configuration setters plus 6 override statics into `SearchPanelTestPolicy`; slot 2b added 10 evidence fields and needed no new inspection fn, no new override, and no new actuation seam. 5 actuation seams remain on the replace/undo transaction (`clear_undo_backup_for_test`, `reserve_undo_backup_generation_for_test`, `set_persisted_undo_backup_for_generation_for_test`, `begin_replace_transaction_for_test`, `finish_replace_transaction_for_test`) plus 2 accessibility probes, all deferred at programme level. Write-side seams in `services/content_search/replace.rs` are classified under [Migrated Workflow Roles](#wfr-search-replace) | **3 seams reified** (the programme's primary unit; long signatures shortened remains 0 for this row, and no function in it has 6 or more non-receiver parameters, so neither the receiver-counted 88 nor the strict 43 signature figure applies here). exists: `WorkspaceSearchRequest` + `WorkspaceSearchStart` (search side), `ReplacePreviewTicket` + `ReplacePreviewFacts` (preview-freshness side). new: `UndoRestoreClaim` (the window's undo-restore claim seam, naming the transaction-busy and capacity-deferred refusals the panel must restore the affordance for) | exists: `SearchPanelEvidence` via `evidence()`, extended by slot 2b with the apply transaction's own pending flag, all three generations, the preview capacity-retry state, the installed journal's entry count and retained weight, in-flight and cumulative journal disk-job counters, and the last apply's counts; automation `window.content_search` projects from it and slot 2b widened nothing | tier-2 (search/preview half), tier-3 (Replace All write half) — **both now covered** | 1 (search/preview half) + 2b (replace/undo half) | migrated |
+| WFR-COMMAND-PALETTE | Command palette, file index, notes browse modes | **10 files, 2,534 production lines** in `ui/command_palette/**`, counting non-`#[cfg(test)]` lines only. The workflow additionally **calls** `services/palette/**` (4,829 production lines once the `#[cfg(test)] mod tests;` file `services/palette/tests.rs` (1,223) is excluded), of which `notes.rs` (2,163) is shared with `WFR-NOTES-BOOKMARKS` (slot 5). The pre-migration cell read `16 files, 11,179 lines (ui 2,528 / model 754 / services 7,897)`; its `ui` subtotal pooled `ui/window/focus_indexing.rs` (856), which the census attributed to this row but which stays window code, and its `services` subtotal pooled the whole palette service half with the notes row's share. Slot 4's amendment re-check completed the correction | `win.toggle-command-palette` (`Ctrl+Shift+P`), palette mode dropdown and Tab cycling, sidebar file create/delete/rename and watcher reconciliation, `win.notes-show-notes` (the census cell said `Ctrl+P` / `Ctrl+K`; the real palette accelerator is `Ctrl+Shift+P` and `Ctrl+K` belongs to the recent-Open popover) | relocated to `crates/lushtext-core/src/ui/command_palette/policy.rs` (queue admission byte/cap math, batch-kind selection and flush guard, mutation-generation arbitration and replay, retirement-cap classification, header-skipping navigation, presentation decisions); mutation coverage gained, not relocated — see [Migrated Workflow Roles](#wfr-command-palette). Domain `model/palette.rs` (17 consumers) stays | palette half migrated: 5 inspection fns retired into `evidence.rs`, 2 configuration setters plus 2 override statics collapsed into `CommandPaletteTestPolicy`; 3 process-global retirement counters retained as lifecycle probes (per-widget folding would change their meaning from "this process observed a last-owned at-cap retirement" to a count no test asks for); 3 actuation seams deferred. The pre-migration cell read `15/10/2/0 = 27 fns, 40 sites, 4 override statics`, which was row-scoped: `ui/command_palette/**` held 12 of those functions and 22 of the gate-attribute sites, and the other 15 live in `services/palette/**` and `ui/window/notes/**` shared with `WFR-NOTES-BOOKMARKS` (slot 5) | exists: `PaletteSearchCoordinator` generation identity + `is_current` (query seam; the convention accepts a coordinator that owns the generation as the seam value object). new: `FileIndexMutationTicket` + `FileIndexMutationFacts` + `arbitrate` (file-index mutation seam) | exists: `CommandPaletteEvidence` via `evidence()`; automation `window.command_palette` and both palette readiness blockers project from it | tier-2 | 2a | migrated |
 | WFR-DOCUMENT-SAVE | Save, Save As, save formatting, durability | **5 files, 1,855 production lines** in `ui/editor_page/save/**`, counting non-`#[cfg(test)]` lines only: facade 223, admission 459, execution 555, policy 444 (915 total, of which 471 are the module's co-located unit tests), evidence 174. The workflow additionally **calls** the window-side invocations in `ui/window/dialogs.rs` and `ui/window/documents.rs` and the shared `services/editor_io.rs` and `services/durable_write.rs` durable-write path, which it does not own; counting those three neighbours as files is how the pre-migration cell reached its total. That cell read `7 files, 6,672 lines (ui 2,132 / model 991 / services 3,549)` and was wrong in both directions: it counted the whole of `editor_io.rs` (3,035) and `durable_write.rs` (1,228), both shared with `WFR-DOCUMENT-LOAD` and every other write path, and it counted `load_save.rs` (1,795) whole although the save half was roughly a third of it | `win.save`, `win.save-as`, `Ctrl+S`, close-with-changes dialog, autosave-on-close | relocated to `crates/lushtext-core/src/ui/editor_page/save/policy.rs`: the former model/save_admission.rs (405 lines) moved with mutation parity proved, and the save half's remaining pure decisions were extracted from the GTK adapter into the same module — the queued-save staleness predicate and its `QueuedSaveTicket`/`QueuedSaveFacts` seam, the pending-load pre-emption derivation, the saved-text disposition (formatting acceptance plus the buffer mirror-back), the capture-mode naming, and the durable write classification. Those extractions are a coverage **gain from zero**, reported separately from the relocation's parity numbers. The chunked-capture *threshold* is **not** owned here: it belongs to cross-cutting `ui/buffer_snapshot.rs` (`WFR-BUFFER-SNAPSHOT`, slot 7) and duplicating it would fork a shared limit | migrated: 3 inspection fns retired into `evidence.rs` (`save_runtime::snapshot_for_test`, `transient_save_admission_snapshot_for_test`, `save_uses_chunked_snapshot_for_test`, `save_snapshot_inflight_for_test` — four call surfaces over three mechanisms), and **no** `*_for_test` inspection function remains on the save path. 3 actuation seams preserved on the editor side (`reset_transient_save_admission_for_test`, `pause_next_save_snapshot_for_test`, `resume_save_snapshot_for_test`) plus the 3 chooser-bound Save As seams in `ui/window/dialogs.rs`, all deferred at programme level. **1 new actuation seam, counted and justified**: `expire_close_save_session_for_test`, replacing an ungated `session.active_close_save_identity` write. 4 of the 5 ungated `imp()` write sites became real drives of the workflow. The pre-migration cell read `10/11/9/4 = 34 fns, 44 sites, 5 override statics`, which was **not** row-scoped: it pooled `services/editor_io.rs` (6 load-side, 3 save-side, 1 shared), `services/durable_write.rs`, and `services/filesystem/write.rs` seams shared with `WFR-DOCUMENT-LOAD` (3b) and the fault-injection lane. Row-scoped, `load_save.rs` held 18 `*_for_test` functions of which 6 were save-side, and the retired save_runtime.rs held 2. The 5 save/load `test-utils` override statics live in `services/editor_io.rs` and stay there, because the service owns the behavior they override | **done**: `QueuedSaveTicket` + `QueuedSaveFacts` + `queued_save_is_current`, constructed once at the workflow entry point and validated as a unit. exists: `SaveCompletionTicket` (completion seam), unchanged and distinct | exists: `SaveEvidence` via `save_evidence()`; the exported snapshot field `tabs[].saving` projects from it and is covered by the Evidence Projection Map drift gate. The `save` readiness blocker and the readiness aggregate read the same workflow-owned state through the facade's cheap `is_saving()` accessor rather than building a whole surface per editor per poll — identical by construction, since both read the one `save.inflight` cell. The exported D-Bus contract is unchanged | tier-3 — **now covered**. The durable write path, its `BeforeRename`/`AfterRename` classification, and the buffer-versus-disk agreement before the tab goes clean are all narrated by the facade and asserted from evidence | 3a | migrated |
-| WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | **7 files, 2,375 production lines** in `ui/editor_page/load/**`, counting non-`#[cfg(test)]` lines only: facade 253, admission 634, execution 720, retirement 219, policy 278 (474 total, of which 196 are the module's co-located unit tests), evidence 206, test policy 65. The workflow additionally **calls** the window-side invocations in `ui/window/documents.rs`, `ui/window/encoding.rs`, `ui/window/recent_open.rs`, `ui/window/session_restore.rs`, and `ui/window/search.rs`, the shared `services/editor_io.rs` read/decode path, and the two cross-cutting editor-page groups it left behind (`ui/editor_page/document_identity.rs` 102, `ui/editor_page/restore_position.rs` 93), none of which it owns. The pre-migration cell read `10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375)` and was wrong in both directions: the `ui` subtotal pooled window files this row only calls, and the `services` subtotal counted the whole of `editor_io.rs`, shared with `WFR-DOCUMENT-SAVE` and every other read/write path. Row-scoped, the workflow's own pre-migration `ui` code was the retired load_save.rs residual (1,212) plus the retired load_runtime.rs (423) = 1,635 | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore, reopen-with-encoding | extracted into `crates/lushtext-core/src/ui/editor_page/load/policy.rs`: the chunked-versus-direct install threshold, the clear-slice budget and the **paragraph-boundary** rule that keeps bounded installation linear, the install-phase and abort-disposition classification, the two freshness predicates and the `LoadRequestTicket` seam, the failure-state rule, and the user-cancellation publication rule. That is a coverage **gain from zero** (44 generated, 41 killed, 3 unviable, 0 missed), reported without any relocation parity because **`model/file_load.rs` stays in `model/`** — `services/editor_io.rs` depends on it, so moving it under `ui/` would invert dependency direction. The install *boundary* arithmetic (`next_install_boundary`) is **not** owned here either: it is shared with `model/buffer_replacement.rs` (`WFR-BUFFER-REPLACEMENT`, slot 4) and duplicating it would fork a shared limit | migrated: **10 inspection surfaces retired** into `evidence.rs` (`load_runtime::snapshot_for_test`, `load_runtime::disposal_wakeup_armed_for_test`, `load_projection_suspended_for_test`, `transient_load_admission_snapshot_for_test`, `transient_load_disposal_wakeup_armed_for_test`, `load_installation_slice_count_for_test`, `load_installation_active_for_test`, `load_installation_weight_for_test`, `load_generation_for_test`, `load_cancel_token_for_test`), and **no** `*_for_test` inspection function remains on the load path. **2 configuration seams collapsed into 1** test-policy value in `load/test_policy.rs`, entirely behind `#[cfg(feature = "test-utils")]`, keeping both public setter names. **7 actuation seams preserved and 0 added**: `apply_load_result_for_test`, `apply_reload_error_for_test`, `apply_loaded_content_for_test`, `reset_transient_load_admission_for_test`, and the 3 chooser-bound seams in `ui/window/dialogs.rs`; the retired `load_runtime::reset_for_test` was folded into the editor-page seam rather than kept as a second surface, so the count fell from 8 to 7. The 6 load-side `test-utils` overrides in `services/editor_io.rs` stay there, because the service owns the behavior they change. The pre-migration cell read `23/7/3/1 = 34 fns, 55 sites, 3 override statics`, which was **not** row-scoped: it pooled service seams shared with `WFR-DOCUMENT-SAVE` (3a) and `WFR-DRAFT-RECOVERY` (slot 4) | **done**: `LoadRequestTicket` + `load_request_is_current`, constructed once at the workflow entry point and validated as a unit. The deliberately weaker `installation_is_current` stays separate, because an installation must re-read the live token rather than assert its dispatch-time identity | **`LoadEvidence` via `load_evidence()`**, folding in the pre-convention typed `FileLoadAdmissionSnapshot` rather than leaving a second path. The exported snapshot field `tabs[].load_state` projects from it and is covered by the Evidence Projection Map drift gate; the `file-load` readiness blocker and its six predicates read the same `load_state` cell through the cheap lifecycle accessor rather than building a whole surface per tab per poll — identical by construction. Every other field is internal. `OpenPopoverRowLayoutSnapshot` is **removed from this cell**: it describes recent-document popover row layout, not load state, and its hosting files were an outright census gap — see [The recent-documents surface census gap](#the-recent-documents-surface-census-gap) | tier-3 — **now covered**. The bounded install state machine, its paragraph-boundary contract, the publish-refused-as-stale verdict, and the cancelled-clear path are all narrated by the facade and asserted from evidence | 3b | migrated |
-| WFR-DRAFT-RECOVERY | Draft autosave, crash recovery, orphan cleanup | 6 files, 8,930 lines (ui 2,578 / model 442 / services 5,910) | first-dirty autosave timer, startup recovery scan, restored-draft inline alert, `Discard...` / `Save...` | `model/draft.rs` (9 consumers → domain, stays) | 7/18/3/0 = 28 fns, 53 sites, 14 override statics | exists: `DraftRestoreTicket` + `DraftRestoreFacts`; `DraftMutationIntent`; `DraftCleanupContinuation` | partial: `OrphanCleanupRuntimeSnapshot` | tier-3 | 4 | partially-conforming |
-| WFR-SESSION-RESTORE | Session persistence and bounded restore | 5 files, 2,599 lines (ui 1,962 / model 300 / services 337) | app startup, window close, tab mutation persistence | `model/session.rs` (8 consumers → domain, stays) | 2/0/2/0 = 4 fns, 5 sites | exists: `SessionRestorePlanPermit` + `SessionRestoreAdmission` | exists: `SessionRestoreEvidence` via `evidence()` — the only canonical accessor in the tree | tier-3 | 4 | partially-conforming |
-| WFR-LOCAL-HISTORY | Local history capture, preview, restore | 4 files, 5,536 lines (ui 2,586 / model 173 / services 2,777) | `win.show-local-history`, baseline capture on first edit, periodic capture timer, restore action | `model/local_history.rs` (6 consumers → domain, stays) | 9/11/4/0 = 24 fns, 33 sites, 4 override statics | exists: `BaselineCaptureTicket` + `BaselineCaptureFacts`; `PeriodicCaptureTicket` + `PeriodicCaptureFacts`; `LocalHistoryReplacementTicket` | partial: `LocalHistoryPreviewCoordinatorSnapshot`, `LocalHistoryPreviewInstallSnapshot` | tier-3 | 4 | partially-conforming |
-| WFR-BUFFER-REPLACEMENT | Bounded buffer install and clear slices | 2 files, 1,215 lines (ui 1,029 / model 186) | local-history restore, Replace All undo, draft restore install | `model/buffer_replacement.rs` (2 consumer files, 2 workflows → cross-cutting between local-history and Replace All undo; stays) | 4/0/4/0 = 8 fns, 26 sites | exists: `BufferReplacementTicket` + `BufferReplacementSession` | none | tier-3 | 4 | partially-conforming |
+| WFR-DOCUMENT-LOAD | Open document, reopen with encoding, recent documents | **7 files, 2,375 production lines** in `ui/editor_page/load/**`, counting non-`#[cfg(test)]` lines only: facade 253, admission 634, execution 720, retirement 219, policy 278 (474 total, of which 196 are the module's co-located unit tests), evidence 206, test policy 65. The workflow additionally **calls** the window-side invocations in `ui/window/documents.rs`, `ui/window/encoding.rs`, `ui/window/recent_open.rs`, `ui/window/session_restore/`, and `ui/window/search.rs`, the shared `services/editor_io.rs` read/decode path, and the two cross-cutting editor-page groups it left behind (`ui/editor_page/document_identity.rs` 102, `ui/editor_page/restore_position.rs` 93), none of which it owns. The pre-migration cell read `10 files, 5,301 lines (ui 3,265 / model 661 / services 1,375)` and was wrong in both directions: the `ui` subtotal pooled window files this row only calls, and the `services` subtotal counted the whole of `editor_io.rs`, shared with `WFR-DOCUMENT-SAVE` and every other read/write path. Row-scoped, the workflow's own pre-migration `ui` code was the retired load_save.rs residual (1,212) plus the retired load_runtime.rs (423) = 1,635 | `win.open-file`, `win.open-recent`, `Ctrl+O`, `Ctrl+K`, sidebar row activation, session restore, reopen-with-encoding | extracted into `crates/lushtext-core/src/ui/editor_page/load/policy.rs`: the chunked-versus-direct install threshold, the clear-slice budget and the **paragraph-boundary** rule that keeps bounded installation linear, the install-phase and abort-disposition classification, the two freshness predicates and the `LoadRequestTicket` seam, the failure-state rule, and the user-cancellation publication rule. That is a coverage **gain from zero** (44 generated, 41 killed, 3 unviable, 0 missed), reported without any relocation parity because **`model/file_load.rs` stays in `model/`** — `services/editor_io.rs` depends on it, so moving it under `ui/` would invert dependency direction. The install *boundary* arithmetic (`next_install_boundary`) is **not** owned here either: it is shared with `model/buffer_replacement.rs` (`WFR-BUFFER-REPLACEMENT`, slot 4) and duplicating it would fork a shared limit | migrated: **10 inspection surfaces retired** into `evidence.rs` (`load_runtime::snapshot_for_test`, `load_runtime::disposal_wakeup_armed_for_test`, `load_projection_suspended_for_test`, `transient_load_admission_snapshot_for_test`, `transient_load_disposal_wakeup_armed_for_test`, `load_installation_slice_count_for_test`, `load_installation_active_for_test`, `load_installation_weight_for_test`, `load_generation_for_test`, `load_cancel_token_for_test`), and **no** `*_for_test` inspection function remains on the load path. **2 configuration seams collapsed into 1** test-policy value in `load/test_policy.rs`, entirely behind `#[cfg(feature = "test-utils")]`, keeping both public setter names. **7 actuation seams preserved and 0 added**: `apply_load_result_for_test`, `apply_reload_error_for_test`, `apply_loaded_content_for_test`, `reset_transient_load_admission_for_test`, and the 3 chooser-bound seams in `ui/window/dialogs.rs`; the retired `load_runtime::reset_for_test` was folded into the editor-page seam rather than kept as a second surface, so the count fell from 8 to 7. The 6 load-side `test-utils` overrides in `services/editor_io.rs` stay there, because the service owns the behavior they change. The pre-migration cell read `23/7/3/1 = 34 fns, 55 sites, 3 override statics`, which was **not** row-scoped: it pooled service seams shared with `WFR-DOCUMENT-SAVE` (3a) and `WFR-DRAFT-RECOVERY` (slot 4) | **done**: `LoadRequestTicket` + `load_request_is_current`, constructed once at the workflow entry point and validated as a unit. The deliberately weaker `installation_is_current` stays separate, because an installation must re-read the live token rather than assert its dispatch-time identity | **`LoadEvidence` via `load_evidence()`**, folding in the pre-convention typed `FileLoadAdmissionSnapshot` rather than leaving a second path. The exported snapshot field `tabs[].load_state` projects from it and is covered by the Evidence Projection Map drift gate; the `file-load` readiness blocker and its six predicates read the same `load_state` cell through the cheap lifecycle accessor rather than building a whole surface per tab per poll — identical by construction. Every other field is internal. `OpenPopoverRowLayoutSnapshot` is **removed from this cell**: it describes recent-document popover row layout, not load state, and its hosting files were an outright census gap — see [The recent-documents surface census gap](#the-recent-documents-surface-census-gap) | tier-3 — **now covered**. The bounded install state machine, its paragraph-boundary contract, the publish-refused-as-stale verdict, and the cancelled-clear path are all narrated by the facade and asserted from evidence | 3b | migrated |
+| WFR-DRAFT-RECOVERY | Draft autosave, crash recovery, orphan cleanup | **10 files, 3,153 production lines** in `ui/window/drafts/**`, counting non-`#[cfg(test)]` lines only: autosave_execution 738, journal 588, policy 341 (of 734; 393 are the module's co-located unit tests), restore_execution 341, facade 289, seams 208, evidence 201, test_policy 181, admission 210, retirement 56. The workflow additionally **calls** `services/draft_service.rs` and its `draft_service/` submodule, `services/recovery_metadata.rs`, and `WFR-SESSION-RESTORE`'s `collect_session`, none of which it owns. The pre-migration cell read `6 files, 8,930 lines (ui 2,578 / model 442 / services 5,910)` and was wrong by a wide margin in one direction: its `services` subtotal was almost entirely `services/draft_service.rs`, most of which is co-located tests, and it counted `model/draft.rs` whole | first-dirty autosave timer, the always-running 5 s tick, startup recovery scan, restored-draft inline alert with `Discard...` / `Save...`, close-time flush (sync and async), draft delete, and deferred orphan cleanup | **extracted into `crates/lushtext-core/src/ui/window/drafts/policy.rs`**: candidate eligibility including the `installation_incomplete` **data-safety guard**, autosave admission (mark-pending rather than queue), the post-snapshot freshness predicate, pipeline failure accounting and its user-facing message, orphan-cleanup continuation with its exponential backoff and cap, the grouped cleanup failure message, and the `DraftMutationOrder` epoch allocator relocated whole from the retired draft-ordering module with its co-located tests. That is a **gain from zero** for the extracted decisions plus a **relocation** for the ordering allocator, reported separately. `model/draft.rs` **stays in `model/`** as domain: re-derived as owning workflows its consumer count is **2** (`WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`), and `services/draft_service.rs` depends on it | migrated: **7 inspection fns retired** into `evidence.rs` (`draft_autosave_inflight_for_test`, `draft_pipeline_max_retained_bodies_for_test`, `orphan_cleanup_runtime_snapshot_for_test`, `lazy_draft_restore_inflight_for_test`, `draft_restore_inflight_for_test`, `draft_mutation_inflight_for_test`, `draft_delete_tombstoned_for_test`), and no `*_for_test` inspection function remains. The keyed tombstone question became `draft_delete_is_tombstoned(&str)`, a named workflow question rather than a per-field getter, because a field cannot take an argument. **10 configuration seams plus 9 delay/fail hooks collapsed into 1** test-policy value in `drafts/test_policy.rs`, entirely behind `#[cfg(feature = "test-utils")]`, keeping every public setter name — the slot's largest configuration population. **4 actuation seams preserved and 0 added** (`autosave_tick_for_test`, `schedule_orphan_cleanup_for_test`, `dispose_orphan_cleanup_for_test`, plus `set_next_draft_body_disposal_probe_for_test` as a probe). The 6 load-side `test-utils` overrides in `services/editor_io.rs` are **shared** with save and load and stay in the service. The pre-migration cell read `7/18/3/0 = 28 fns, 53 sites, 14 override statics`, which counted 10 always-compiled private worker helpers as caller-visible seams; row-scoped and caller-visible it was 18 | **re-audited**: `DraftRestoreTicket` + `DraftRestoreFacts` + `draft_restore_is_current` (the Ticket/Facts/predicate shape, validated when the worker returns **and again** inside the replacement terminal), `DraftMutationIntent` (main-thread intent assigned before any document-sized work, with **epoch equality** rather than ordering so wraparound stays correct), and the pipeline's `DirtyDraftCandidate` / `DirtyDraftCompletion` / `AcceptedDraft` triple, gathered in `drafts/seams.rs`. `DraftCleanupContinuation` is **reclassified**: it is the journal's manifest offset, not a separate seam value object. No `#[expect(clippy::too_many_arguments)]` introduced; the workspace count holds at 1 | **`DraftEvidence` via `draft_evidence()`**, folding in `OrphanCleanupRuntimeSnapshot` so no second typed path remains. It makes the durable path observable: manifest entry count and authority, the mutation lane's ownership, tombstone and pending-delete counts, autosave in-flight and pending state, retained body weight **and its high-water mark**, cleanup worker counts and continuation offset, and the readiness verdict. The manifest is read as a **count, never cloned**. The `draft-autosave` readiness blocker reads the same six cells through the facade's cheap accessor, identical by construction because both call `policy::draft_workflow_blocks_readiness`. `tabs[].draft_present` is **not** re-sourced: it is a per-tab document-identity fact read through the editor page's existing `draft_id()` operation, while this surface is window-level — recorded rather than fabricated as a projection, which is why the drift gate did **not** need a third `tabs` surface | tier-3 — **now covered**. The autosave admission guard that protects a good draft from a partially installed buffer, the one-body-at-a-time pipeline, the delete ordering that keeps the manifest a durable retry marker until the body is gone, and the orphan-cleanup inode/guard/recheck contract are all narrated by the facade and asserted from evidence | 4 | migrated |
+| WFR-SESSION-RESTORE | Session persistence and bounded restore | **6 files, 1,758 production lines** in `ui/window/session_restore/**`, counting non-`#[cfg(test)]` lines only: policy 553 (of 1,172; 619 are the module's co-located unit tests), journal 406, admission 279, evidence 200, facade 165, execution 155. The workflow additionally **calls** `services/session_service.rs`, `services/draft_service.rs`, and `services/recovery_metadata.rs`, and reads `ui/window/startup_data.rs`'s completion flag, none of which it owns. The pre-migration cell read `5 files, 2,599 lines (ui 1,962 / model 300 / services 337)` and pooled `model/session.rs` plus a partial services subtotal | app startup (through `ui/window/startup_data.rs`'s gate, which this row does **not** own), window close, tab mutation persistence | **extracted into `crates/lushtext-core/src/ui/window/session_restore/policy.rs`**, in two parts reported separately. **Relocated**: the bounded-turn admission policy (`SessionRestorePolicy`, its permits, its turn planner, its terminal accounting), which was already explicit policy and merely mislocated in a GTK adapter file. **Gained from zero**: the journal's pure half, previously inline in the adapter — session-tab identity, the close-time merge that preserves not-yet-admitted descriptors, the startup preload-graph fit to its disposal reservation, and the recovery-diagnostic summary. `model/session.rs` **stays in `model/`**: its census cell said 8 consumers, but re-derived as owning workflows it is **1**, and `services/session_service.rs` depends on it, so relocating under `ui/` would invert dependency direction — the 3b `model/file_load.rs` precedent | migrated: **2 inspection fns retired** into `evidence.rs` (`session_restore_runtime_snapshot_for_test`, `startup_session_descriptors_pending_for_test`), and no `*_for_test` inspection function remains. **0 configuration seams** — this workflow has none. **2 actuation seams preserved and 0 added** (`restore_session_for_test`, `cancel_session_restore_for_test`), both driving startup and cancellation paths no headless test can otherwise reach. The pre-migration cell read `2/0/2/0 = 4 fns, 5 sites`, which was **correct and row-scoped** | **re-audited**: `SessionRestorePlanPermit` (generation-bound planning ownership, crossing plan -> mount -> load terminal -> release) and `SessionRestoreAdmission` (one admitted descriptor with its permit, built by the planner and consumed by the mounter). Both qualify; neither is renamed across a seam | **`SessionRestoreEvidence` via `session_restore_evidence()`** — a **new window-level surface**. The pre-migration type of the same name was the *policy's internal counters*, not a workflow surface; it is renamed `SessionRestoreTurnMetrics` and the new surface projects it, folding in `SessionRestoreRuntimeSnapshot` so no second typed path remains. `session.save_failed` and the shared `close_safety_*` flags are now surface fields, so the widget tests' 15 `imp().session` reads are gone. The `session-restore` readiness blocker reads the same `restoring` cell through the facade's cheap `session_restore_in_progress()` accessor — identical by construction. The exported D-Bus contract is unchanged | tier-3 — **now covered**. The bounded-turn admission, the exactly-once planning-terminal accounting, the close-time merge that protects unreached descriptors, and the user-first selection settle are all narrated by the facade and asserted from evidence | 4 | migrated |
+| WFR-LOCAL-HISTORY | Local history capture, preview, restore | **8 files, 3,009 production lines**: 2,302 in the canonical role home `ui/window/local_history/**` (preview_execution 959, restore_execution 340, policy 319 of 650 with 331 co-located unit tests, journal 238, facade 215, evidence 171, test_policy 60) plus **707** in the called capture surface `ui/editor_page/local_history.rs`. The workflow additionally **calls** `services/local_history_service.rs` (shared with migrated `WFR-DOCUMENT-SAVE`) and `services/recovery_metadata.rs`, neither of which it owns; counting the first whole is how the pre-migration cell reached `4 files, 5,536 lines (ui 2,586 / model 173 / services 2,777)` | `win.show-local-history`, the editor context menu, **the sidebar context menu** (an entry point the census cell omitted entirely), the command palette, baseline capture on first edit, the periodic capture timer, the restore and undo-restore actions, post-rename lineage migration, and **a Save-origin capture driven by migrated `WFR-DOCUMENT-SAVE`** | **extracted into `crates/lushtext-core/src/ui/window/local_history/policy.rs`** — the workflow's one policy module, even though its capture half lives in another directory. Viewer geometry and its clamps, which snapshots the user is shown (the legacy-empty-baseline rule and its deliberately conservative two-and-two threshold), the preview install plan and its completion predicate, both capture freshness tickets with their predicates, the periodic reschedule rule, and row presentation. That is a coverage **gain from zero**. `model/local_history.rs` **stays in `model/`** as domain: re-derived as owning workflows its consumer count is **2** (`WFR-LOCAL-HISTORY`, `WFR-DOCUMENT-SAVE`), and `services/local_history_service.rs` depends on it | migrated: **8 inspection fns retired** into `evidence.rs` across **both** directories (`local_history_preview_install_snapshot_for_test`, `local_history_baseline_candidate_present_for_test`, `local_history_baseline_retry_pending_for_test`, `local_history_automatic_capture_inflight_for_test`, `local_history_periodic_snapshot_inflight_for_test`, `local_history_periodic_timer_pending_for_test`, `has_local_history_restore_undo_for_test`, and the `local_history_preview_install_delay_for_test` reader), and no `*_for_test` inspection function remains. **4 configuration seams collapsed into 1** test-policy value in `local_history/test_policy.rs`, entirely behind `#[cfg(feature = "test-utils")]`, keeping every public setter name; the re-exported `set_local_history_preview_read_delay_for_test` **stays in `services/local_history_service.rs`**, which owns the behavior it changes — the `editor_io` precedent. **4 actuation seams preserved and 0 added**. The pre-migration cell read `9/11/4/0 = 24 fns, 33 sites, 4 override statics`, which pooled the service's own seams | **re-audited**: `BaselineCaptureTicket` + `BaselineCaptureFacts` and `PeriodicCaptureTicket` + `PeriodicCaptureFacts` (both Ticket/Facts/predicate, now in the canonical `policy.rs` so the capture surface **calls** them rather than defining its own), and `LocalHistoryReplacementTicket` (the `is_current(&editor)` variant, whose handoff to `BufferReplacementTicket` is a named operation on the migrated replacement facade, not a reach into its state) | **`LocalHistoryEvidence` via `local_history_evidence()`**, folding in **both** pre-convention typed observations (`LocalHistoryPreviewCoordinatorSnapshot`, `LocalHistoryPreviewInstallSnapshot`) so no second typed path remains. **One surface for a workflow spanning two directories.** The exported `local_history` snapshot object projects from it and is covered by the Evidence Projection Map drift gate, which slot 4 extended to register this third projecting surface and then **proved rejects a real rename**. The exported D-Bus contract is unchanged | tier-3 — **now covered**. The safety-snapshot ordering that makes a restore non-destructive, the bounded preview install, and both capture freshness contracts are narrated by the facade and asserted from evidence | 4 | migrated |
+| WFR-BUFFER-REPLACEMENT | Bounded buffer install and clear slices | **4 files, 1,472 production lines** in `ui/editor_page/buffer_replacement/**`, counting non-`#[cfg(test)]` lines only: facade 168, execution 921 (of 972; 51 are the carried-over `pairing_tests`), policy 212 (of 339; 127 are the module's co-located unit tests), evidence 171. The workflow additionally **calls** cross-cutting `model/buffer_replacement.rs` (93 production of 186), which it does not own. The pre-migration cell read `2 files, 1,215 lines (ui 1,029 / model 186)` and counted whole files including tests plus the cross-cutting module it calls | **five call sites across four owning workflows**, from `BufferReplacementWorkflow`'s own variants: draft restore install (`ui/window/drafts/restore_execution.rs`), local-history restore **and** local-history restore undo (`ui/window/local_history/restore_execution.rs`, twice), memory eviction (`ui/editor_page/mod.rs`), and save formatting mirror-back (`ui/editor_page/save/execution.rs`). The pre-migration cell said "Replace All undo", which is **not** a caller — `LocalHistoryUndo` is local history's own undo — and omitted memory eviction and save formatting entirely | **extracted into `crates/lushtext-core/src/ui/editor_page/buffer_replacement/policy.rs`**: the seam value types, the start disposition, the cancellation disposition (whether a partially mutated buffer owes the user a bounded clear pass), the clear-turn progress and insertion-completion rules, the turn-admission rule that lets a cancelled clear run even after the caller goes stale, terminal classification, guard-restoration on disposal, and the bounded-turn metrics accounting. That is a coverage **gain from zero**; see [Migrated Workflow Roles](#wfr-buffer-replacement). `model/buffer_replacement.rs` stays as cross-cutting: it owns the direct/sliced threshold, the clear slice budget, and the **paragraph-boundary** `next_replacement_boundary`, called by three owning workflows and duplicated by none | migrated: **4 inspection fns retired** into `evidence.rs` (`buffer_replacement_in_progress_for_test`, `buffer_replacement_projection_suspended_for_test`, `buffer_replacement_slice_count_for_test`, `buffer_replacement_terminal_diagnostic_for_test`), and no `*_for_test` inspection function remains on this path. **0 configuration seams** — this workflow has none. **4 actuation seams preserved and 0 added** (`replace_buffer_for_test`, `replace_buffer_returning_cancelled_body_for_test`, `dispose_buffer_replacement_for_test`, `make_buffer_replacement_stale_after_slices_for_test`), each driving a step reachable only through a caller workflow or a resumed slice turn, which is the programme-level deferred category. The pre-migration cell read `4/0/4/0 = 8 fns, 26 sites`, which was **correct and row-scoped** — the only one of slot 4's four seam cells that needed no correction | **re-audited**: `BufferReplacementTicket` (caller-owned freshness identity, crossing entry -> park -> session -> every turn -> terminal -> caller callback, reconstructed at 5 call sites) and `BufferReplacementRequest` (the intent bundle: ticket + body + freshness check + terminal callback, built once at the entry point and validated as a unit by its four kind-paired constructors). `BufferReplacementSession` is **reclassified**: it is coordination-owned GTK runtime, not a seam value object, and the pre-migration cell naming it as one was wrong | **`BufferReplacementEvidence` via `buffer_replacement_evidence()`**, a new surface. No exported D-Bus field projects from it; every field is internal | tier-3 — **now covered**. The cancellation contract that a half-installed document is never left visible, the paragraph-boundary call, and the exactly-once terminal are all narrated by the facade and asserted from evidence | 4 | migrated |
 | WFR-WORKSPACE-TREE | Workspace folders, file tree, watch, reconcile | 28 files, 16,947 lines (ui 11,682 / model 1,368 / services 3,897) | New Workspace, Add Folder, refresh button, row activation, context menus, `Space` peek, watcher events | `model/workspace_scan.rs` (3 consumers → single-workflow, relocates); `model/workspace.rs` (28 consumers → domain, stays); `model/workspace_persistence.rs` (2 consumers → single-workflow, relocates) | 24/7/29/5 = 65 fns, 116 sites | exists: `WorkspaceScanTicket` (scan side). required: `WorkspaceWatchTicket` (watch-install side; `{targets_generation, lifetime_generation}` compared loosely at 2 sites) | partial: `WorkspaceScanPressureEvidence`, `WorkspaceWatchMailboxSnapshot` | tier-3 | 5 | pending |
 | WFR-NOTES-BOOKMARKS | Notes, bookmarks, sidecar migration, format upgrade | 22 files, 12,521 lines (ui 4,977 / model 770 / services 6,774) | `win.notes-*`, `win.toggle-bookmark`, `win.edit-bookmark-label`, rename-driven sidecar migration, startup reconcile | `model/note.rs`, `model/bookmark.rs`, `model/sidecar_identity.rs` (6/9/11 consumers → domain, stay) | 2/4/4/0 = 10 fns, 16 sites, 2 override statics; slot 2a additionally left this row the 15 palette-row seam functions that live in `services/palette/**` and `ui/window/notes/**` | required: `NotesBrowserTicket` (carries `{generation, mode}`; the `is_current(generation) && mode == mode && !disposed` triple is duplicated at 2 sites). **Named slot-5 task from slot 2a:** retire `NoteSourceRefreshCoordinator` into the shared `SingleFlightCoordinator`. Slot 2a deferred it, and the reason is **not** that the state is shared — there are two independent instances, `command_palette_note_refreshes` on the window imp serving the palette and `source_refreshes` in `ui/window/notes/mod.rs` serving the Notes browser. The reason is that deduping the *type* changes `NotesBrowserRuntimeSnapshot`'s shape, which is this row's surface area | partial: `NotesBrowserRuntimeSnapshot` | tier-3 | 5 | pending |
 | WFR-MARKDOWN-PREVIEW | Markdown preview render, images, footnotes, tables | 11 files, 11,274 lines (ui 8,334 / services 2,940); re-measured after `continue-markdown-preview-past-oversized-blocks` added `ui/markdown_preview/continuation.rs` (1,170) and `text_flow.rs` (265) while `mod.rs` fell 2,541 → 1,985, and grew `services/markdown_render.rs` 556 → 2,940, of which ~1,700 are co-located `#[cfg(test)]` planner tests. The `ui` subtotal spans `ui/markdown_preview/**` (7,762) plus `ui/window/preview.rs` (572) | `Alt+P`, `win.toggle-preview-mode`, side-by-side action, buffer changed | none in `model/` | 12/4/3/2 = 21 fns, 56 sites, 3 override statics (unchanged by the continuation change) | exists: `MarkdownRenderSession::is_current(generation)`; plus the planner/projector batch seam `MarkdownCarrySignature` + `MarkdownOpenContainer` (expected/open containers per batch, chained across turns), `MarkdownBlockOmission` (omission reason, scope, and unretained charge crossing the same seam), and the projector-side `MarkdownProjectionContinuation` + `ContinuationBreach` that holds and validates it | partial: `MarkdownImageAdmissionSnapshot` | tier-2 | 7 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
@@ -282,54 +282,178 @@ and owns neither.
 
 ### WFR-DRAFT-RECOVERY
 
-Autosave: first dirty edit → `SupersedingTimer` ⇢ timer fires in `autosave_tick`
-→ in-flight gate that sets `autosave_pending` instead of queueing →
-`collect_dirty_draft_candidates` → `drive_dirty_draft_pipeline` ⇢ a staged
-worker pipeline, resuming once per stage, ending in a durable manifest write.
+**Current, after slot 4.** Three stage orders over one durable record.
 
-Restore: startup scan → candidate queue → pop candidate →
-`spawn_blocking_then(resolve_draft_restore)` ⇢ worker resolves the body under a
-disposal reservation, resuming in the completion closure →
-`draft_restore_is_current(ticket, facts)` → `apply_draft` ⇢ bounded buffer
-install → orphan-body cleanup, which re-reads the trusted manifest, reacquires
-the same `TargetWriteGuard`, and rechecks inode before deleting.
+**Autosave.** First dirty edit ⇢ **(1) 750 ms `SupersedingTimer`**, or ⇢ **(2) the
+5 s repeating tick**, both resuming in `autosave_execution::autosave_tick` →
+`policy::autosave_admission` marks pending rather than queueing when the lane is
+owned → `collect_dirty_draft_candidates` with
+`policy::draft_candidate_is_eligible` (whose `installation_incomplete` term is
+slot 4's confirmed data-safety fix) → one `DraftMutationIntent` per candidate,
+assigned **before** any document-sized work → `drive_dirty_draft_pipeline` ⇢
+**(3) chunked snapshot**, resuming in `finish_snapshot` which re-validates with
+`policy::captured_snapshot_is_current` ⇢ **(4) body worker**, resuming in a
+completion that admits the **next** candidate → `commit_dirty_draft_pipeline` ⇢
+**(5) manifest worker** → accept per completion under matching generation and
+`DraftMutationOrder::is_current`.
 
-The file contains seven distinct worker handoffs, the highest inversion count of
-any workflow.
+**Close flush.** `flush_dirty_drafts_async` ⇢ **(6) lane-drain poll** ⇢ **(7)
+chunked snapshot** ⇢ **(8) body worker** ⇢ **(9) manifest worker** ⇢ **(10)
+`wait_for_draft_mutations_then` poll**, then the caller's `on_done`. The
+synchronous `flush_dirty_drafts` remains as the deliberate blocking variant for
+process exit, but **no production path reaches it**: `ui/window/dialogs.rs` closes
+through `flush_dirty_drafts_async`, and the synchronous entry point is currently
+exercised only by widget tests. Whether to retire it or give it a caller is an
+open question this row records rather than answers.
+
+**Restore.** Startup hands over the records through
+`adopt_startup_draft_records` → `take_preloaded_draft` moves one eager body under
+a **replacement** reservation, or demotes every eager body to a compact marker →
+`queue_lazy_draft_restore` → `drive_lazy_draft_restore_queue` ⇢ **(11) capacity
+wakeup** ⇢ **(12) body-resolve worker**, resuming in `finish_draft_restore` →
+`draft_restore_is_current(ticket, facts)` → `apply_draft` ⇢ **(13) bounded
+buffer-replacement terminal**, resuming in the closure that calls
+`finish_applied_draft`.
+
+**Deletes and cleanup.** `delete_draft_by_id` → intent, tombstone, queue →
+`drive_pending_draft_mutations` ⇢ **(14) delete worker**, body first and manifest
+only if that succeeded. `schedule_orphan_cleanup` ⇢ **(15) start timer** →
+`run_orphan_cleanup_pass` ⇢ **(17) cleanup worker** (manifest lock → trusted
+reload → target guard → **inode recheck** → delete) → `finish_orphan_cleanup_pass`
+→ `policy::orphan_cleanup_follow_up` ⇢ **(16) backoff timer**.
+
+**Seventeen deferred inversions, where the census recorded seven worker
+handoffs.** The ten it missed are two autosave timers, three main-loop polls, one
+capacity wakeup, two chunked snapshots, the replacement terminal, and one of the
+two cleanup timers — the census counted only `spawn_blocking_then` sites. **A slot
+that counts only worker handoffs will undercount by roughly two thirds.** Two
+ownership hand-outs: `flush_dirty_drafts_async`'s `on_done` and the guarded
+body's `on_complete`.
+
+**Roles.** Facade `mod.rs`; coordination `journal`, `admission`,
+`autosave_execution`, `restore_execution`, **`retirement`**; seam value objects
+`seams.rs`; pure policy `policy.rs`; evidence `evidence.rs`; test-only
+`test_policy.rs`. Two notes for later slots:
+
+- **`retirement` is the fifth coordination module and was added by review.** The
+  facade originally held `release_eager_preloads` and `detach_eager_preload_bodies`
+  inline. That is deferred off-GTK destruction of a document-sized payload through
+  the disposal lane, which is exactly the `retirement` bounded role name, so
+  keeping it in the facade made the facade own mechanism. Moving it out took the
+  facade from 310 to **279** lines. If a facade is holding something that a
+  bounded role name already describes, that is the signal.
+- **`seams.rs` is the programme's first dedicated seam value-object module**, and
+  the name is now precedent. Earlier migrated rows kept their seam values beside
+  the coordination module that constructed them; this workflow has enough of them
+  (a Ticket/Facts pair with its predicate, a main-thread intent, a
+  candidate/completion/accepted triple, and two worker-boundary payloads) that a
+  single home reads better. Use `seams.rs`, not a new invented filename.
 
 ### WFR-SESSION-RESTORE
 
-App startup → `startup_data` → restore plan → `plan_turn()` →
-`SessionRestoreAdmission` per descriptor → `open_document_from_session_restore`
-per tab ⇢ one bounded turn per GTK turn, re-armed while `needs_next_turn()` is
-true → `release_permit` → `evidence()`.
+**Current, after slot 4.** Two stage orders over one durable record.
 
-One inversion, already expressed as an explicit bounded-turn policy. This is the
-closest workflow in the tree to the target shape.
+**Persist.** `collect_session` ⇢ **(1) 500 ms debounce**, resuming in a closure
+that re-checks both restore state and descriptor readiness ⇢ **(2) worker write**,
+resuming in a completion that records or clears failure against the debounce
+generation. `save_session_for_close_async` inverts the same way ⇢ **(3)**, and
+switches to `collect_session_for_close`, which layers not-yet-admitted descriptors
+over the mounted pages — unless startup descriptors are still pending, in which
+case the persisted file is loaded and **merged** rather than overwritten, and the
+close is *refused* if recovery evidence cannot be preserved.
+
+**Restore.** `load_session_and_drafts` → publish a cancel token → reserve
+progress-disposal capacity for the preload graph, or ⇢ **(4) capacity wakeup**,
+resuming in `journal::start_startup_journal_read` against the same token ⇢ **(5)
+worker read** (`load_restore_state_cancellable` +
+`policy::fit_startup_preloads_to_reservation`), resuming in the completion that
+hands the draft records to `WFR-DRAFT-RECOVERY` and calls `begin_session_restore`
+→ `SessionRestorePolicy::new` ⇢ **(6) per-turn `idle_add_local_once`**, resuming
+in `admission::run_scheduled_session_restore_turn` → `plan_turn` bounded at 4
+pages and 2 planning permits → `execution::mount_restored_page` per admission →
+`load_file_async_with_planning_terminal` ⇢ **(7) the load workflow's planning
+terminal**, resuming in `release_session_restore_plan_permit` → re-arm while
+`needs_next_turn()`, else `finish_session_restore` →
+`execution::settle_restore_selection` (user-first) → one terminal projection
+publication → `evidence::record_restore_outcome`.
+
+**Seven deferred inversions, where the census recorded one.** Inversion 7 is the
+one the whole sequencer is built around: `release_permit` counts exactly those
+releases, so every load terminal must either carry a parked request's planning
+owner into a restart or release it — the contract slot 3b fixed and handed here.
+One ownership hand-out: `save_session_for_close_async`'s `on_done`.
 
 ### WFR-LOCAL-HISTORY
 
-Capture: first edit → `BaselineCaptureTicket` ⇢ worker capture, resuming against
-`baseline_capture_is_current(ticket, facts)` → sidecar write. Periodic timer →
-`PeriodicCaptureTicket` ⇢ same shape against `periodic_capture_is_current`.
+**Current, after slot 4.** Two stage orders in two directories, over one sidecar
+record.
 
-Browse and restore: `win.show-local-history` → browser →
-`LocalHistoryPreviewCoordinator` generation ⇢ worker preview read →
-`LocalHistoryPreviewInstallSession` ⇢ bounded install slices → restore →
-`LocalHistoryReplacementTicket::is_current(editor)` → `BufferReplacementTicket`
-⇢ bounded buffer install.
+**Capture** (`ui/editor_page/local_history.rs`, the called surface). A clean
+document becomes modified → availability, path, and suppression checks →
+`capture_local_history_baseline` acquires the process-wide permit or enqueues a
+**weak** waiter → `BaselineCaptureTicket` ⇢ **(1) worker capture**, resuming in a
+**failure-only** completion validated by `policy::baseline_capture_is_current`.
+Permit `Drop` ⇢ **(2) `MainContext::invoke`**, resuming in the waiter drain.
+`schedule_local_history_periodic_capture` ⇢ **(3) `SupersedingTimer`** →
+`run_local_history_periodic_capture` ⇢ **(4) chunked snapshot** →
+`persist_periodic_snapshot_if_current` (`policy::periodic_capture_is_current`) ⇢
+**(5) worker capture**, resuming in a reschedule governed by
+`policy::should_reschedule_periodic_capture`.
 
-Six inversions, all already ticket-guarded.
+**Browse and restore** (`ui/window/local_history/`, the canonical home).
+`show_local_history_dialog` or `show_local_history_for_path` ⇢ **(6)/(7) listing
+workers** → `policy::filter_visible_snapshots` →
+`preview_execution::present_local_history_browser`. Selection →
+`LocalHistoryPreviewCoordinator::submit` → `start_preview_load` ⇢ **(8) capacity
+wakeup** ⇢ **(9) body-read worker**, resuming in `finish_preview_load` which
+accepts only the current generation and starts any queued latest →
+`policy::preview_install_plan` ⇢ **(10) install slice**, resuming in
+`run_preview_install_slice` against the cross-cutting paragraph boundary.
+Restore ⇢ **(11) restore capacity wakeup** ⇢ **(12) chunked undo capture** ⇢
+**(13) restore-safety worker** — the **current** buffer is persisted as a
+`RestoreSafety` snapshot *before* the replacement starts — → `replace_buffer_bounded`
+⇢ **(14) replacement terminal**. Undo ⇢ **(15) its own replacement terminal**.
+Rename ⇢ **(16) lineage migration worker**.
+
+**Sixteen deferred inversions, where the census recorded six.** Its `Entry
+points` cell also omitted the **sidebar context-menu path** and the
+**Save-origin capture driven by migrated `WFR-DOCUMENT-SAVE`**; both are corrected
+in the row.
 
 ### WFR-BUFFER-REPLACEMENT
 
-Caller supplies replacement text → `BufferReplacementTicket` →
-`BufferReplacementSession` ⇢ install or clear slices resuming per turn, each
-ending on a paragraph boundary → projection-suspension release → caller
-completion.
+**Current, after slot 4.** Caller builds one `BufferReplacementRequest` →
+`replace_buffer_bounded` (facade) → `execution::accept_request` → any live
+session is cancelled as `Superseded`, then `policy::start_disposition` decides
+begin-now versus park-as-pending (and a displaced pending request's terminal
+fires immediately) → `execution::begin` → `BufferReplacementPlan::for_sizes`
+(cross-cutting) → the projection/editability guard → `begin_irreversible_action`
+→ either `run_direct` in one turn, or ⇢ **(1) `glib::timeout_add_local_once(1ms)`,
+resuming in `run_turn`, which dispatches by phase** → clear turns using
+`next_clear_char_count` and a line-start-extended deletion, then
+`policy::after_clear_slice` → install turns using the cross-cutting
+**paragraph-boundary** `next_replacement_boundary`, then
+`policy::insertion_is_complete` → on cancellation, `policy::cancel_disposition`
+decides finish-now versus a bounded cancelled-clear pass, which
+`policy::turn_may_run` deliberately allows to run even after the caller's own
+freshness check goes stale → `finish_session` →
+`policy::terminal_is_complete`, `policy::guard_restores_on_terminal`,
+`evidence::record_terminal` → the caller's terminal callback →
+`release_owner_and_start_pending`.
 
-One inversion, already reified. Called by local-history restore, Replace All
-undo, and draft restore, which is why it is cross-cutting.
+**One deferred inversion, three phase resume points, and four ownership
+hand-outs.** The census said "one inversion, already reified" and slot 4 confirms
+it — **the only one of slot 4's four rows whose census inversion count needed no
+correction.** What the census understated is the resume points (`run_clear_turn`,
+`run_install_turn`, `run_cancelled_clear_turn`, all reached through `run_turn`)
+and the ownership hand-outs: the caller's terminal callback, the guarded body's
+cancel return, the guarded body's completion return, and the synchronous eviction
+of a displaced pending request.
+
+**Its caller set was wrong in the census, and the correction matters**: "Replace
+All undo" is **not** a caller. `BufferReplacementWorkflow::LocalHistoryUndo` is
+local history's own undo affordance. See the row's `Entry points` cell for the
+verified five call sites across four owning workflows.
 
 ### WFR-WORKSPACE-TREE
 
@@ -492,9 +616,9 @@ module, excluding the module itself.
 | `search_retirement.rs` | 80 | `runtime.rs` (in `ui/search_panel/`) | 1 (`WFR-SEARCH-REPLACE`) | single-consumer → relocates to `ui/search_panel/policy.rs` |
 | `minimap_analysis.rs` | 186 | `ui/editor_page/minimap.rs` | 1 (`WFR-MINIMAP`) | single-consumer → relocates to `ui/editor_page/minimap/policy.rs` |
 | `plain_disposal.rs` | 692 | `ui/plain_disposal.rs` | its own adapter, serving 10 workflows | cross-cutting → stays |
-| `buffer_replacement.rs` | 186 | `ui/window/local_history.rs`, `ui/editor_page/buffer_replacement.rs` | 2 (`WFR-LOCAL-HISTORY`, Replace All undo) | cross-cutting → stays |
+| `buffer_replacement.rs` | 186 total, **93 production** | `ui/editor_page/buffer_replacement/execution.rs`, `ui/editor_page/load/policy.rs`, `ui/window/local_history/policy.rs` and `ui/window/local_history/preview_execution.rs`, and `model/file_load.rs` (a one-line delegating synonym `next_install_boundary`, which `ui/editor_page/load/execution.rs`, `benches/benchmarks.rs`, and `tests/properties/file_load.rs` call) | **3** owning workflows consume the pure module (`WFR-BUFFER-REPLACEMENT`, `WFR-DOCUMENT-LOAD`, `WFR-LOCAL-HISTORY`), and **4** own the five `replace_buffer_bounded` call sites: `WFR-DRAFT-RECOVERY`, `WFR-LOCAL-HISTORY` (restore and undo), `WFR-EDITOR-MEMORY` (exempt, no slot), `WFR-DOCUMENT-SAVE` (migrated) | cross-cutting → stays. **Slot 4 corrected this row, which read `2 (WFR-LOCAL-HISTORY, Replace All undo)` and was wrong in both halves: the count was a consuming-file count rather than an owning-workflow count, and **Replace All undo is not a consumer at all** — `BufferReplacementWorkflow::LocalHistoryUndo` is local history's own undo affordance, not the search/replace journal's.** The paragraph-boundary arithmetic has exactly one implementation and must not be duplicated; see task 2.1's alias decision |
 | `editor_memory.rs` | 469 | `ui/window/focus_indexing.rs`, `ui/window/imp.rs`, `ui/editor_page/mod.rs`, `ui/editor_page/save/admission.rs`, the retired ui/editor_page/load_runtime.rs | 3 | cross-cutting → stays, exempt |
-| `migration_ledger.rs` | 225 | `ui/window/notes/mod.rs`, `ui/window/local_history.rs`, `services/migration_ledger.rs` | 2 plus a service | cross-cutting → stays |
+| `migration_ledger.rs` | 225 | `ui/window/notes/mod.rs`, `ui/window/local_history/journal.rs`, `services/migration_ledger.rs` | 2 plus a service | cross-cutting → stays |
 
 **Post-migration note.** This table is the census snapshot, kept as the record
 of what each classification was decided from; its line counts and consumer
@@ -616,7 +740,7 @@ name collisions with unrelated symbols rather than references to this module:
 `file_load_active` in `ui/automation.rs`; `connect_file_loaded` in
 `ui/window/notes/mod.rs` and `ui/window/focus_indexing.rs`;
 `file_loaded_callbacks` in `ui/editor_page/imp.rs` and `ui/editor_page/mod.rs`;
-and a test function name in `ui/window/drafts.rs`. Match on the import or path,
+and a test function name in `ui/window/drafts/`. Match on the import or path,
 never on the substring `file_load`.
 
 After the relocations above, `model/` retains 22 of its current 29 files. The
@@ -666,6 +790,121 @@ exposes `is_current(generation)`: `SingleFlightCoordinator`,
 
 Three seams remain unreified. Each is named here so its migration change does
 not have to rediscover it.
+
+### done: `SessionRestorePlanPermit` + `SessionRestoreAdmission` (`WFR-SESSION-RESTORE`)
+
+**Re-audited, not newly reified.** Both existed and both pass the two-boundary
+rule. They live in `ui/window/session_restore/policy.rs`, so the identity types
+are GTK-free.
+
+`SessionRestorePlanPermit` carries `{generation, id}` and is the sequencer's whole
+basis: it is reserved by `plan_turn`, travels through page mounting into the load
+workflow's planning terminal, and comes back to `release_permit` — three module
+boundaries. Its `generation()` accessor is what makes a **stale** generation's
+terminal un-countable rather than merely late, and slot 4 added the test that
+pins it: every prior assertion compared a permit's generation against the
+policy's, so both could have reported the same wrong value.
+
+`SessionRestoreAdmission` bundles `{ordinal, tab, permit}` — one descriptor
+admitted for this turn together with the permit it reserved. It is constructed
+once by the planner and consumed once by the mounter, and keeping the permit
+*inside* it is what makes a file-backed admission without a permit
+unconstructible.
+
+No value is renamed while crossing these seams.
+
+### done: `BaselineCaptureTicket` / `PeriodicCaptureTicket` + Facts, and `LocalHistoryReplacementTicket` (`WFR-LOCAL-HISTORY`)
+
+**Re-audited, and relocated to the workflow's one `policy.rs`.** All three
+existed; what slot 4 changed is *where they live*. The two capture Ticket/Facts
+pairs were defined in `ui/editor_page/local_history.rs`, the called surface, and
+now live in the canonical `ui/window/local_history/policy.rs` — so the capture
+surface **calls** its own workflow's policy rather than defining a private copy.
+That is what makes the one-`policy.rs`-per-workflow rule honest for a
+two-directory row rather than nominal.
+
+`BaselineCaptureTicket` + `BaselineCaptureFacts` +
+`baseline_capture_is_current`: the subtle field is `baseline_slot_empty`. A newer
+clean baseline may already have filled the slot, and returning the failed older
+text would hand a later capture the wrong "last clean" content.
+
+`PeriodicCaptureTicket` + `PeriodicCaptureFacts` + `periodic_capture_is_current`:
+four generations plus path, modified, and live availability. `edit_generation` is
+the one that makes a snapshot captured across an edit refuse itself.
+
+`LocalHistoryReplacementTicket` uses the `is_current(&editor)` variant rather than
+a separate `Facts`, because its three generations are read from live state at
+validation time and there is nothing to capture separately. Its handoff to
+`BufferReplacementTicket` is a **named operation** on the migrated replacement
+facade, not a reach into its state.
+
+### done: `DraftRestoreTicket` + `DraftRestoreFacts`, `DraftMutationIntent`, and the pipeline triple (`WFR-DRAFT-RECOVERY`)
+
+**Re-audited, with one reclassification.** All gathered in
+`ui/window/drafts/seams.rs`.
+
+`DraftRestoreTicket` + `DraftRestoreFacts` + `draft_restore_is_current` is the
+reference Ticket/Facts/predicate shape on the highest-consequence path in the
+tree, and it is validated **twice**: when the worker returns, and again inside the
+bounded replacement's terminal, because the install spans main-loop turns and a
+tab reopened, renamed, or edited in between must not receive a stale recovery
+body.
+
+`DraftMutationIntent` carries `{draft_id, sequence, epoch}` and is assigned
+**synchronously on GTK before any document-sized or filesystem work**, which is
+the only reason a later delete can invalidate an older autosave. Freshness uses
+**epoch equality, not numeric ordering**, so wraparound stays correct — a test
+pins that at `u64::MAX`.
+
+The pipeline's `DirtyDraftCandidate` / `DirtyDraftCompletion` / `AcceptedDraft`
+triple qualifies too: each crosses the snapshot, worker, and commit boundaries,
+and splitting them is what keeps a *completion* from carrying the buffer handle a
+*candidate* needs.
+
+**`DraftCleanupContinuation` is reclassified.** The census named it a seam value
+object; it is the journal's **manifest offset**, a `usize` cursor into the record
+the journal owns. Recorded here so a later slot does not look for a seam that was
+never one.
+
+Task 6.5 asked for particular attention to the archetype defect on the cleanup
+path — a value meaning "the inode recorded at inspection" received by a parameter
+naming it something else, which would authorize deleting the wrong body. That
+value is `DraftOrphanCleanupCandidate::inode` in `services/draft_service.rs`,
+travels as a named struct field from inspection to execution, and is compared
+against a freshly-read `fs_metadata::inode` under the same `TargetWriteGuard`
+atomic replacement uses. It is never passed positionally, so the defect is
+unrepresentable there. Unchanged by this migration.
+
+### done: `BufferReplacementTicket` + `BufferReplacementRequest` (`WFR-BUFFER-REPLACEMENT`)
+
+**Re-audited, not newly reified, and one census claim corrected.** Slot 4 audited
+the row's existing values against the two-boundary rule rather than inventing a
+parallel shape.
+
+`BufferReplacementTicket` carries `{workflow, generation}` and is the **caller-owned
+freshness identity**: it crosses request construction → the parked pending slot →
+the session → every scheduled turn → the terminal outcome → the caller's terminal
+callback, and it is reconstructed at **five** call sites across four owning
+workflows. It qualifies on both halves of the rule. It lives in
+`ui/editor_page/buffer_replacement/policy.rs`, so the identity type is GTK-free.
+
+`BufferReplacementRequest` is the workflow's **intent bundle**: ticket + body +
+freshness check + terminal callback, constructed **once** at the entry point and
+validated as a unit. Its four kind-paired constructors are what make the
+archetype defect unrepresentable here — every constructor accepting a guarded
+callback also demands a guarded body, so a guarded callback cannot reach a plain
+body or the reverse, and terminal teardown matches every legal pairing
+exhaustively with no runtime panic arm.
+
+**`BufferReplacementSession` is reclassified.** The pre-migration cell named it a
+seam value object; it is not. It holds a `glib::WeakRef`, a `sourceview5::Buffer`,
+a `glib::SourceId`, and the boxed callbacks — coordination-owned GTK runtime that
+never crosses a workflow boundary. Recorded here so a later slot does not look for
+a seam that was never one.
+
+No value is renamed while crossing a seam on this path, and the migration
+introduced no `#[expect(clippy::too_many_arguments)]`; the workspace count holds
+at 1, the exempt domain catalog constructor.
 
 ### done: `LoadRequestTicket` (`WFR-DOCUMENT-LOAD`)
 
@@ -1519,6 +1758,202 @@ Notes on this row, the fourth migration, the second tier-3 workflow, and the
 - **The recent-documents surface was an outright census gap**, now assigned. See
   [The recent-documents surface census gap](#the-recent-documents-surface-census-gap).
 
+### WFR-SESSION-RESTORE
+
+**Migrated by slot 4, second of the slot's four rows** — the row the matrix called
+"the closest workflow in the tree to the target shape", which proved half right:
+its bounded-turn policy really was already policy and merely mislocated, but its
+journal half was entirely inline in the GTK adapter.
+
+- facade: `crates/lushtext-core/src/ui/window/session_restore/mod.rs` — **165** physical lines of the 370 budget
+- coordination: `crates/lushtext-core/src/ui/window/session_restore/journal.rs`, `crates/lushtext-core/src/ui/window/session_restore/admission.rs`, `crates/lushtext-core/src/ui/window/session_restore/execution.rs`
+- policy: `crates/lushtext-core/src/ui/window/session_restore/policy.rs`
+- evidence: `crates/lushtext-core/src/ui/window/session_restore/evidence.rs`
+- mutation parity: `openspec/changes/migrate-user-content-restore-workflow-readability/evidence/mutation-session-restore-policy.md` — **reports a relocation and a gain from zero separately**, because the admission half moved and the journal half did not exist as policy
+
+**Three coordination modules, and `journal` is the one that needed justifying.**
+The session file passes slot 3a's test twice over: the next launch reads it back,
+**and within one run a close reads it back** so a restore that never finished
+cannot delete the descriptors it had not reached. Per slot 2b's definition the
+record's mutual-exclusion gate lives inside the journal — here that gate is the
+`save_debounce` generation, which decides both which write wins and whether a
+late success may clear a newer failure.
+
+**The stored-evidence oddity, resolved.** `ui/window/imp.rs` held
+`Cell<Option<SessionRestoreEvidence>>`. The verdict is that it is a **last-restore
+outcome record**, not a cached surface: the runtime owning those counters is
+*taken* at the terminal, so without retaining them an observer could never learn
+how the restore that just finished behaved. It is renamed
+`last_restore_outcome: Cell<Option<SessionRestoreTurnMetrics>>` so it cannot read
+as a cache of the surface, and the surface **projects** it.
+
+**`session.save_failed` ownership, carried forward from slot 3a verbatim because
+it is the reusable lesson:** a field whose name contains "save" is not thereby
+save-workflow state. It is session-*file* save failure, written and cleared only
+by this workflow's journal, and its three widget-test read sites are now evidence
+reads.
+
+**Shared-field owners a reader needs at this seam** (full table in the facade's
+module doc): `close_safety_inflight` and `close_safety_bypass` are **genuinely
+shared** with `WFR-DRAFT-RECOVERY` — one close-safety pass runs both halves and
+the bypass releases the final close only after both — so both workflows project
+them and neither owns them; the close-save identity pair belongs to migrated
+`WFR-DOCUMENT-SAVE`; `tab_projection_publications` and the projection batch belong
+to the tab workflow; the draft records are handed to `WFR-DRAFT-RECOVERY` through
+its own `adopt_startup_draft_records`; and `ui/window/startup_data.rs` is owned by
+**neither** this row nor drafts.
+
+### WFR-LOCAL-HISTORY
+
+**Migrated by slot 4, third of the slot's four rows** — the two-directory row, and
+the one the slot existed to force a decision about.
+
+- facade: `crates/lushtext-core/src/ui/window/local_history/mod.rs` — **216** physical lines of the 370 budget
+- coordination: `crates/lushtext-core/src/ui/window/local_history/journal.rs`, `crates/lushtext-core/src/ui/window/local_history/preview_execution.rs`, `crates/lushtext-core/src/ui/window/local_history/restore_execution.rs`
+- policy: `crates/lushtext-core/src/ui/window/local_history/policy.rs`
+- evidence: `crates/lushtext-core/src/ui/window/local_history/evidence.rs`
+- mutation parity: `openspec/changes/migrate-user-content-restore-workflow-readability/evidence/mutation-local-history-policy.md` — **records a gain from zero**, because `model/local_history.rs` stays in `model/` and was not edited
+
+**The two-directory decision, resolved on the coordination/presentation line** —
+the split slot 3b used for the recent-documents surface.
+`ui/window/local_history/` is the **canonical role home** and holds the facade,
+all coordination, the single `policy.rs`, and the single `evidence.rs`.
+`ui/editor_page/local_history.rs` is a **called surface** whose ownership is
+recorded in its own module doc: it is per-tab presentation-adjacent capture,
+watching one buffer's clean/modified transitions. It owns no policy and no
+evidence — it **calls** the canonical `policy.rs` for both its freshness tickets,
+which is what makes the one-policy-per-workflow rule honest here rather than
+nominal. Two `policy.rs` files for one row was the alternative, and it is exactly
+what the convention forbids.
+
+**Its consumer surface was wider than the row recorded, and two corrections
+matter.** The `Entry points` cell omitted the **sidebar context-menu path**
+entirely, and it omitted that **migrated `WFR-DOCUMENT-SAVE` drives a capture on
+every successful save**. An entry point missing from a census is how slot 3b
+discovered an outright census gap; this is the second instance.
+
+**One surface for a workflow spanning two directories.** `LocalHistoryEvidence`
+lives in the canonical home and reads the editor page's capture state, folding in
+**both** pre-convention typed observations. The disposed-widget rule was a **live
+hazard here, not a formality**: the first cut of the surface called
+`live_local_history_availability()`, which derefs the source-view template child,
+and the required disposal proof test caught the panic. The fix split out
+`live_local_history_availability_for_chars`, so an observer that already read the
+buffer through `try_get()` does not read it again through the panicking accessor.
+
+### WFR-DRAFT-RECOVERY
+
+**Migrated by slot 4, last of the slot's four rows** — deliberately last: the
+largest, the most inversions in the programme, and the only workflow whose cleanup
+path deletes user content by design.
+
+- facade: `crates/lushtext-core/src/ui/window/drafts/mod.rs` — **310** physical lines of the 370 budget, the programme's largest facade and its closest approach to the ceiling
+- coordination: `crates/lushtext-core/src/ui/window/drafts/journal.rs`, `crates/lushtext-core/src/ui/window/drafts/admission.rs`, `crates/lushtext-core/src/ui/window/drafts/autosave_execution.rs`, `crates/lushtext-core/src/ui/window/drafts/restore_execution.rs`
+- policy: `crates/lushtext-core/src/ui/window/drafts/policy.rs`
+- evidence: `crates/lushtext-core/src/ui/window/drafts/evidence.rs`
+- mutation parity: `openspec/changes/migrate-user-content-restore-workflow-readability/evidence/mutation-draft-recovery-policy.md` — **reports a gain from zero and one relocation separately**: the extracted decisions gained coverage, and the `DraftMutationOrder` epoch allocator relocated whole from the retired draft-ordering module with parity proved
+
+**Four coordination modules, and `journal` absorbed the one the task list
+expected to be `retirement`.** Orphan cleanup destroys payloads the workflow is
+finished with, so `retirement` was checked against it and **rejected**:
+`retirement` in this codebase means the disposal lane's off-GTK destruction of an
+*in-memory* payload, while orphan cleanup reloads *this* manifest under *this*
+record's write lock, is gated by *this* record's authority, and merges back into
+*this* record. Applying the cohesion test — would a reader look for it under its
+own name — the answer is that "what keeps the manifest consistent with the bodies
+on disk" is a journal question. `DraftCleanupContinuation`'s manifest offset
+therefore lives with the journal it protects, and is **reclassified** from a seam
+value object to exactly that: an offset into the record.
+
+**Two execution stage orders, both stage-order-qualified.** `autosave_execution`
+and `restore_execution` are both new, so neither is a stable sibling renamed for
+symmetry. The autosave and close-flush pipelines share one module because they
+share their shape exactly and differ only in admission rule and terminal.
+
+**This row also carries the slot's confirmed data-safety fix.** The autosave lane
+never consulted `installation_incomplete`, so a cancelled load installation — which
+empties the buffer and clears `modified` without clearing `draft_dirty` — let one
+keystroke make a near-empty buffer look like an ordinary dirty candidate, and the
+next pass wrote it over a draft holding real unsaved work. The guard is now
+`policy::draft_candidate_is_eligible`'s own term, mutation-tested, and the
+regression test is proven to fail without it.
+
+**Shared-field owners a reader needs at this seam** (full table in the facade's
+module doc): `close_safety_*` shared with `WFR-SESSION-RESTORE`;
+`imp().load.installation_incomplete` read through migrated
+`WFR-DOCUMENT-LOAD`'s `has_incomplete_load_installation()`; `collect_session`
+called from `WFR-SESSION-RESTORE`; the local-history baseline seeded through
+`WFR-LOCAL-HISTORY`'s named operation; and `ui/window/startup_data.rs`, which
+calls `start_autosave_timer` and is owned by neither restore row.
+
+### WFR-BUFFER-REPLACEMENT
+
+**Migrated by slot 4, first of the slot's four rows** — deliberately first,
+because the other two in-slot restore paths and two out-of-slot workflows all
+drive their bytes through it, so its boundary had to be settled before anything
+was built on it.
+
+- facade: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/mod.rs` — **167** physical lines of the 370 budget, the programme's smallest facade so far
+- coordination: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/execution.rs`
+- policy: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/policy.rs`
+- evidence: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/evidence.rs`
+- mutation parity: `openspec/changes/migrate-user-content-restore-workflow-readability/evidence/mutation-buffer-replacement.md` — **records a gain from zero, not a relocation parity**, because `model/buffer_replacement.rs` stays cross-cutting and was not edited
+
+**One coordination module, and the cohesion test says one is right.** The
+workflow has a single stage order and a single deferred mechanism. `journal` does
+not apply — nothing durable is written. A separate `admission` was rejected:
+supersession is the facade's entry decision plus `execution`'s session ownership,
+and splitting them would put two halves of one question in two files.
+
+**The `policy: none` probe found policy, so this row declares one.** The proposal
+expected this to be the programme's first `policy: none` row; the probe required
+by the spec delta found five separable pure decisions in the GTK adapter, four of
+them determining whether a partially mutated buffer can be seen or whether a
+caller learns the truth about its terminal. Gain from zero: **19 mutants
+generated, 15 killed, 0 missed, 4 unviable** (the four are
+`-> Enum with Default::default()` on return types that deliberately implement no
+`Default`). Amendment (a) therefore ships **stated but not exercised**; see the
+slot-4 friction section.
+
+**The cross-cutting module stays and is called, never copied.**
+`model/buffer_replacement.rs` owns the direct/sliced threshold, the clear slice
+budget, and `next_replacement_boundary` — the **paragraph-boundary contract** that
+keeps recovering a 33 MB single-line draft linear instead of quadratic. Three
+owning workflows consume it directly (`WFR-BUFFER-REPLACEMENT`,
+`WFR-DOCUMENT-LOAD` via `load/policy.rs` and the `next_install_boundary` synonym,
+and `WFR-LOCAL-HISTORY`'s preview installer), and none duplicates it. Slot 4 kept
+the one-line `model::file_load::next_install_boundary` synonym and strengthened
+its doc comment to name the owner and the contract; see the change's task 2.1.
+
+**Evidence surface, with all three obligations discharged.**
+`BufferReplacementEvidence` via `buffer_replacement_evidence()` folds in all four
+retired inspection seams. Tight-borrow: every derived scalar is computed and every
+`Ref` dropped before the struct literal. **Disposed-widget: this workflow's whole
+subject is the source view's buffer**, so `buffer_char_count` reads through
+`TemplateChild::try_get()` and answers `None` — not zero — for a disposed page,
+proved by `editor_page::test_buffer_replacement_evidence_reads_survive_widget_disposal`.
+Reentrancy: `editor_page::test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replacement_mutation`
+drives the workflow through session install, per-turn mutation, pending-request
+parking, the terminal, and disposal, reading **after** each and asserting repeated
+reads of unchanged state are identical.
+
+**One deliberate production change, called out because it is not purely
+structural.** `BufferReplacementTerminalDiagnostic` and the editor's
+`last_terminal` slot were `#[cfg(feature = "test-utils")]` and are now always
+compiled, because an evidence surface must be readable in a production build. The
+cost is one `Copy` struct of scalars per editor page — ticket, optional cancel
+reason, four metrics, two release flags — and it carries **no document content**,
+which the row's redaction contract requires. Nothing else about the workflow's
+behavior changed; two behavior-preservation slips made during the migration were
+caught and are recorded in the mutation evidence.
+
+**Shared-field owners a reader needs at this seam** (full table in the facade's
+module doc): the guard suspends and exactly restores `imp().minimap.tracking_suspended`,
+`imp().local_history.automatic_capture_suppressed`, `imp().monitor.file_monitor`,
+and the search bar's context, all owned elsewhere; `imp().load.projection_suspended`
+is never written here, and `load_projection_suspended` reads both flags because a
+projection must stand down for either workflow's suspension.
+
 ### WFR-COMMAND-PALETTE
 
 - facade: `ui/command_palette/mod.rs`
@@ -1736,6 +2171,116 @@ convention amendment owes four per-row re-checks. Slot 4 migrates four more rows
 which would take it to eight. The record's warning that the cheapest moment to
 correct a convention is early is now measurably true: this amendment cost one
 test to write; the same amendment after slot 4 would have cost up to five.
+
+### Slot 4 amendment re-check
+
+**Slot 4's two amendments.** Slot 4 amended `workflow-readability-boundaries`
+twice, both closing adjacencies the convention already sanctioned:
+
+- **(a) A migrated workflow whose only pure policy is cross-cutting is a complete
+  row.** `scripts/check-workflow-boundaries.py` already lists `policy` in
+  `OPTIONAL_ROLE_VALUES`, so `policy: none` was gate-tolerated, but **no spec
+  scenario said such a row is complete** — the permission read as gate tolerance
+  rather than convention. Confirmed from the code and the main spec before
+  amending.
+- **(b) A migration re-derives its row's measured cells rather than inheriting
+  them.** Confirmed from three friction-section instructions: "**Re-derive, and
+  expect the answer to move in either direction**" (slot 3b), "**Re-derive
+  row-scoped counts before sizing evidence work**" (slot 3a), and "**Write the
+  narration from the code, every time**" (slot 3a, on the adjacent stage-trace
+  case).
+
+**(a) is a confirmation for all four rows.** None of `WFR-SEARCH-REPLACE`,
+`WFR-COMMAND-PALETTE`, `WFR-DOCUMENT-SAVE`, or `WFR-DOCUMENT-LOAD` declares
+`policy: none`; each declares a relocated or extracted `policy.rs`. Nothing to
+fill.
+
+**(b) is not a confirmation. Two of the four rows had gaps, and slot 4 filled
+them.** This is the second consecutive amendment where "it must already hold" was
+not a discharge.
+
+| Row | Verdict against (b) | Action |
+| --- | --- | --- |
+| `WFR-DOCUMENT-SAVE` | **compliant.** Slot 3a re-derived `5 files, 1,855 production lines`, counted non-`#[cfg(test)]` lines only, stated the old cell was "wrong in both directions", and named the pooled population (`editor_io.rs` 3,035 and `durable_write.rs` 1,228) with the rows that share it | none |
+| `WFR-DOCUMENT-LOAD` | **compliant.** Slot 3b re-derived `7 files, 2,375 production lines`, named the pooled `editor_io.rs` and the window files the row only calls, and named the rows sharing them | none |
+| `WFR-SEARCH-REPLACE` | **gap.** The size cell still carried the census figure `19 files, 13,686 lines (ui 5,422 / model 2,369 / services 5,895)` with `exemplar scope 4,762` appended. The `services 5,895` subtotal was never row-scoped and the pooled population was never named. The `Seams` cell *was* re-derived | size cell re-derived below |
+| `WFR-COMMAND-PALETTE` | **partial gap.** The size cell re-derived the `ui` subtotal and named one census misattribution (`ui/window/focus_indexing.rs`, 856, which "stays window code"), but kept `services 7,897` pooled with no sharing rows named | size cell completed below |
+
+#### Filled: `WFR-SEARCH-REPLACE` row-scoped size
+
+**14 files, 5,527 production lines** in `ui/search_panel/**`, non-`#[cfg(test)]`
+only: `mod.rs` 369, `imp.rs` 828, `journal.rs` 692, `execution.rs` 537,
+`replace_execution.rs` 530, `evidence.rs` 515, `list_factory.rs` 503,
+`retirement.rs` 375, `policy.rs` 349 (of 728; 379 are the module's co-located
+unit tests), `history.rs` 212, `results.rs` 194, `item.rs` 164,
+`test_policy.rs` 155, `accessibility.rs` 104.
+
+Pooled population the old `services 5,895` had shared, now named:
+`services/content_search/**` (1,978 production lines: `replace.rs` 1,533 of
+3,104, `search.rs` 414 of 1,336, `mod.rs` 31) shared with `WFR-EDITOR-FIND` and
+the fault-injection lane; `services/search_backup.rs` (1,073 of 1,825), which
+slot 2b decided stays in services; and `services/saved_searches.rs` (68 of 175),
+shared with the palette's saved-search source. The census figure counted whole
+files including their co-located tests.
+
+#### Filled: `WFR-COMMAND-PALETTE` row-scoped size
+
+**10 files, 2,534 production lines** in `ui/command_palette/**`,
+non-`#[cfg(test)]` only: `imp.rs` 705, `policy.rs` 419 (of 860; 441 are
+co-located unit tests), `mod.rs` 335, `evidence.rs` 210, `item.rs` 185,
+`query_execution.rs` 186, `index_execution.rs` 176, `index_admission.rs` 119,
+`test_policy.rs` 100, `retirement.rs` 99.
+
+Pooled population the old `services 7,897` had shared, now named:
+`services/palette/**` is 4,829 production lines once
+`services/palette/tests.rs` (1,223) is excluded — it is a separate file declared
+`#[cfg(test)] mod tests;`, so a naive per-file scan counts it as production. Of
+that, `notes.rs` (2,163 of 3,428) is shared with **`WFR-NOTES-BOOKMARKS`**
+(slot 5) and must not be re-derived from that side; `index.rs` (1,288 of 1,523),
+`commands.rs` (507 of 570), `fuzzy.rs` (358 of 467), `grouped.rs` (290),
+`runtime.rs` (86 of 130), `charge_scope.rs` (77), and `mod.rs` (60 of 62) are the
+palette's own service half and stay in services.
+
+**The other settled conventions were re-checked and are unchanged by these
+amendments**: the facade budget stays **370**; the bounded coordination role set
+is unchanged at `admission`, `execution`, `retirement`, `watch`, `journal` —
+slot 4's `journal` verdict used the existing name for all three of its durable
+rows and needed no addition; the seam value-object shape is unchanged; the
+evidence-surface visibility rule and slot 3b's reentrancy constraint are
+unchanged; cross-cutting eligibility is unchanged and amendment (a) only states
+its already-implied consequence; the evidence pointer form is unchanged; and slot
+3a's per-workflow subdirectory role home is unchanged, with slot 4 as its third
+through sixth adopters.
+
+**Cost note.** This re-check cost two size-cell re-derivations across two rows.
+After slot 4 the count of migrated rows is eight, so the next amendment owes
+**eight** per-row re-checks.
+
+#### Re-derive at the end, not when the role file is written
+
+Slot 4's own four size cells were re-measured once every edit was final, and
+**three of the four had drifted during the change itself**:
+
+| Row | Cell when written | Cell at final measurement |
+| --- | --- | --- |
+| `WFR-BUFFER-REPLACEMENT` | 1,455 (execution 897 of 948, policy 220 of 359) | **1,462** (execution 912 of 964, policy 212 of 339) |
+| `WFR-SESSION-RESTORE` | 1,744 (policy 541 of 766) | **1,756** (policy 553 of 1,172) |
+| `WFR-LOCAL-HISTORY` | 2,995 (policy 313 of 558) | **3,001** (policy 319 of 650) |
+| `WFR-DRAFT-RECOVERY` | 3,106 | **3,106** — unchanged |
+
+The cause is mundane and will recur in every slot: the size cell gets written when
+the role file is finished, and then **mutation-survivor triage adds tests and
+occasionally moves a line of production code**. Session restore's policy file grew
+from 766 raw lines to 1,172 that way — its co-located test module more than
+doubled while its production half moved by only 12 lines.
+
+So amendment (b) needs a *timing* rider, and this is it: **re-derive the measured
+cells as the last documentation step, after the final test and mutation runs**, not
+when the module is written. A cell measured mid-change is stale by construction if
+any survivor is closed afterwards, and closing survivors is a required step of
+every migration. Note also which direction the drift ran — production sizes moved
+by 6 to 12 lines while raw totals moved by up to 406, so a reviewer eyeballing raw
+`wc -l` would badly misjudge whether production code had grown.
 
 ### Retroactive amendment
 

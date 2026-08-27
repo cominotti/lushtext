@@ -228,6 +228,22 @@ pub(crate) fn begin_load_request(
         editor.downgrade(),
         move || editor_io::plan_text_file(&file_path, &cancel_for_plan),
         move |editor_weak, result| {
+            // This early return cannot drop a stored planning terminal, for two
+            // independent reasons, and both must stay true. First,
+            // `finish_load_planning` below is outside the `if`/`else`, so even a
+            // stale ticket releases the terminal — moving it inside either arm
+            // would be a regression. Second, `upgrade()` fails only after
+            // finalization, and GObject runs `dispose()` strictly before
+            // `finalize()`; `LushtextEditorPage::dispose` calls
+            // `dispose_load_resources`, which takes and calls the stored
+            // callback and finishes any parked request's planning owner. So by
+            // the time this arm can be reached, the slot is already empty.
+            //
+            // The stake is the session-restore sequencer: it counts exactly
+            // these releases to decide when to open the next document, so a
+            // dropped terminal would stall restore. It could never
+            // over-admit — that is the property `release_permit` protects, and a
+            // missing release can only under-admit.
             let Some(editor) = editor_weak.upgrade() else {
                 return;
             };

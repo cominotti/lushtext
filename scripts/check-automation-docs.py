@@ -105,6 +105,12 @@ EVIDENCE_PROJECTIONS = (
         "tab_snapshot",
         binding="load",
     ),
+    EvidenceProjection(
+        "window.local_history",
+        "LocalHistoryEvidence",
+        REPO_ROOT / "crates/lushtext-core/src/ui/window/local_history/evidence.rs",
+        "local_history_snapshot",
+    ),
 )
 
 

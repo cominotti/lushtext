@@ -602,6 +602,9 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
         minimap_refresh_active |= editor.minimap_refresh_blocks_readiness();
     }
 
+    // Read through the workflow's own cheap accessor, identical by construction
+    // to the `restoring` field its evidence surface projects.
+    let session_restore_active = window.session_restore_in_progress();
     let workspace_refresh_blocker = window_readiness_blocker(
         window,
         AutomationReadinessPredicate::WorkspaceRefreshComplete,
@@ -643,11 +646,8 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
         ),
         AutomationWorkflowObservation::new(
             AUTOMATION_WORKFLOW_SESSION_RESTORE,
-            imp.session.restoring.get(),
-            imp.session
-                .restoring
-                .get()
-                .then_some(READINESS_BLOCKER_SESSION_RESTORE),
+            session_restore_active,
+            session_restore_active.then_some(READINESS_BLOCKER_SESSION_RESTORE),
         ),
         AutomationWorkflowObservation::new(
             AUTOMATION_WORKFLOW_MINIMAP_REFRESH,
@@ -677,14 +677,14 @@ fn window_readiness_blocker(
     let imp = window.imp();
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.session.restoring.get(),
+        window.session_restore_in_progress(),
         READINESS_BLOCKER_SESSION_RESTORE,
     ) {
         return Some(blocker);
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.session.close_safety_inflight.get(),
+        window.close_safety_in_progress(),
         READINESS_BLOCKER_CLOSE_SAFETY,
     ) {
         return Some(blocker);
@@ -985,15 +985,32 @@ fn local_history_snapshot(window: &LushtextWindow) -> AutomationLocalHistorySnap
         .as_ref()
         .and_then(LushtextEditorPage::file_path)
         .is_some();
-    let availability = editor.as_ref().map_or(
-        LocalHistoryAvailability::Unavailable,
-        LushtextEditorPage::local_history_availability,
-    );
+    // Projected from the workflow's own evidence surface rather than re-derived
+    // from widgets, with the exported semantics unchanged. The two availability
+    // fields reach the surface differently, which is worth stating because the
+    // names suggest otherwise: `browse_available` reads the surface's
+    // same-named field, while `automatic_capture_available` is derived from
+    // `availability.allows_automatic_capture()` — the surface has no field of
+    // that name. Both are then additionally gated on a file-backed document,
+    // which is what the exported contract has always said.
+    let evidence = editor
+        .as_ref()
+        .map(LushtextEditorPage::local_history_evidence);
+    let availability = evidence
+        .as_ref()
+        .map_or(LocalHistoryAvailability::Unavailable, |evidence| {
+            evidence.availability
+        });
 
     AutomationLocalHistorySnapshot {
-        browse_available: active_document_file_backed && availability.allows_browsing(),
+        browse_available: active_document_file_backed
+            && evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.browse_available),
         automatic_capture_available: active_document_file_backed
-            && availability.allows_automatic_capture(),
+            && evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.availability.allows_automatic_capture()),
         availability: local_history_availability_name(availability).to_string(),
         active_document_file_backed,
     }

@@ -260,3 +260,140 @@ pub fn merge_committed_orphan_removals(
 pub(super) const fn saturating_confirmed_cleanup_count(deleted: usize, removed: usize) -> usize {
     deleted.saturating_add(removed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a manifest entry whose generation fields all derive from
+    /// `saved_at_secs`, so two entries sharing an ID differ in every field a
+    /// fingerprint compares.
+    fn entry(id: &str, saved_at_secs: u64) -> DraftEntry {
+        DraftEntry {
+            draft_id: id.to_string(),
+            original_path: Some(PathBuf::from(format!("/{id}.rs"))),
+            original_mtime_secs: Some(saved_at_secs),
+            saved_at_secs,
+        }
+    }
+
+    fn fingerprints(entries: &[DraftEntry]) -> HashMap<String, DraftEntryFingerprint> {
+        entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.draft_id.clone(),
+                    DraftEntryFingerprint::from_entry(entry),
+                )
+            })
+            .collect()
+    }
+
+    /// A same-ID autosave that landed *after* inspection must survive the merge.
+    ///
+    /// This is the destructive-cleanup safety property: the worker inspected
+    /// generation 1 and committed its deletion, but the live manifest now holds
+    /// generation 2 for that same draft ID. Removing by ID alone would discard
+    /// the newer entry and orphan the user's most recent recovery body.
+    #[test]
+    fn cleanup_merge_removes_only_exact_committed_generation() {
+        let old = entry("same", 1);
+        let newer = entry("same", 2);
+        let unrelated = entry("other", 1);
+        let mut manifest = DraftManifest {
+            drafts: vec![newer.clone(), unrelated.clone()],
+            cleanup_continuation: None,
+        };
+
+        merge_committed_orphan_removals(&mut manifest, &fingerprints(&[old]));
+
+        assert_eq!(
+            manifest.drafts,
+            vec![newer, unrelated],
+            "an exact-generation mismatch must preserve the entry"
+        );
+    }
+
+    /// An exact generation match is removed, and unrelated concurrent additions
+    /// are left untouched.
+    #[test]
+    fn cleanup_merge_removes_matching_generation_and_preserves_additions() {
+        let removed = entry("removed", 1);
+        let concurrent = entry("concurrent", 2);
+        let mut manifest = DraftManifest {
+            drafts: vec![removed.clone(), concurrent.clone()],
+            cleanup_continuation: None,
+        };
+
+        merge_committed_orphan_removals(&mut manifest, &fingerprints(&[removed]));
+
+        assert_eq!(manifest.drafts, vec![concurrent]);
+    }
+
+    /// Every fingerprint field participates in the match, one dimension at a
+    /// time. Without this, a mutant that drops a single comparison from
+    /// `DraftEntryFingerprint::matches` still passes the two merge tests above,
+    /// because those differ in all three generation fields at once.
+    #[test]
+    fn cleanup_merge_requires_every_fingerprint_dimension_to_match() {
+        let committed = entry("draft", 1);
+
+        for (label, live) in [
+            ("mtime", {
+                let mut e = committed.clone();
+                e.original_mtime_secs = Some(99);
+                e
+            }),
+            ("path", {
+                let mut e = committed.clone();
+                e.original_path = Some(PathBuf::from("/renamed.rs"));
+                e
+            }),
+            ("saved_at", {
+                let mut e = committed.clone();
+                e.saved_at_secs = 99;
+                e
+            }),
+        ] {
+            let mut manifest = DraftManifest {
+                drafts: vec![live.clone()],
+                cleanup_continuation: None,
+            };
+
+            merge_committed_orphan_removals(
+                &mut manifest,
+                &fingerprints(std::slice::from_ref(&committed)),
+            );
+
+            assert_eq!(
+                manifest.drafts,
+                vec![live],
+                "a differing {label} must keep the live entry"
+            );
+        }
+    }
+
+    /// An empty commit set is a no-op rather than a manifest clear.
+    #[test]
+    fn cleanup_merge_with_no_commits_removes_nothing() {
+        let kept = vec![entry("a", 1), entry("b", 2)];
+        let mut manifest = DraftManifest {
+            drafts: kept.clone(),
+            cleanup_continuation: None,
+        };
+
+        merge_committed_orphan_removals(&mut manifest, &HashMap::new());
+
+        assert_eq!(manifest.drafts, kept);
+    }
+
+    /// The diagnostic count saturates rather than overflowing.
+    #[test]
+    fn confirmed_cleanup_count_saturates_instead_of_overflowing() {
+        assert_eq!(saturating_confirmed_cleanup_count(2, 3), 5);
+        assert_eq!(
+            saturating_confirmed_cleanup_count(usize::MAX, 1),
+            usize::MAX
+        );
+    }
+}

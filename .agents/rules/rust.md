@@ -242,6 +242,38 @@ that adapter serves several workflows, and stays in its shared location with the
 matrix recording it as cross-cutting. Do not place a module in `model/` solely to
 obtain test or mutation tooling reach.
 
+A workflow whose pure decision logic is **entirely** cross-cutting therefore owns
+no `policy.rs`, and it is still a **complete** migrated row: its matrix entry
+declares no pure policy role and names the cross-cutting module plus the other
+owning workflows that keep it shared. The absence is a recorded conclusion with
+its evidence, exactly like a workflow with no qualifying seam bundle — not an
+unmet obligation. Reaching that conclusion requires **probing** the workflow's own
+GTK adapter for separable pure decisions first and recording the negative finding;
+"the domain module stays" has never by itself implied "the workflow owns no
+policy". Never manufacture a local `policy.rs` by copying, forking, or
+re-implementing part of the cross-cutting module, and never duplicate a shared
+limit or shared arithmetic to obtain one: two workflows needing the same pure
+threshold both **call** the cross-cutting owner, because a forked shared limit can
+drift while both copies still read as correct. A one-line delegating alias under a
+second domain name is not a duplicate and may stay when it makes the calling
+workflow's narration read in its own vocabulary — say so in the alias's own doc
+comment, naming the owner and the contract.
+
+### Re-deriving a row's measured cells
+
+A migrating workflow **re-derives** its matrix row's measured cells — current
+size, per-kind test seam counts, and pure-policy consumer count — from the code
+and corrects them in the same change, rather than inheriting the census figures or
+reporting against them. Re-derivation is **row-scoped**: count only what the
+workflow owns, never pooling shared service files, cross-cutting modules, or
+neighbouring files the workflow merely calls. Size figures count production lines,
+excluding `#[cfg(test)]` modules — including a co-located test module that lives
+in its own file behind `#[cfg(test)] mod tests;`, which a naive per-file scan
+counts as production. Name any shared population the old cell had pooled together
+with the rows that share it, so a later slot reading from the other side does not
+re-derive it as its own. A correction may move a figure in **either direction**,
+and an unchanged cell is not the expected outcome.
+
 ### Intent-first naming
 
 Public, `pub(crate)`, `pub(super)`, and cross-module workflow operations are named

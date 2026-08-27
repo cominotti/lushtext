@@ -250,4 +250,22 @@ impl LushtextEditorPage {
     pub(crate) fn load_projection_suspended(&self) -> bool {
         self.imp().load.projection_suspended.get() || self.buffer_replacement_projection_suspended()
     }
+
+    /// Whether this buffer holds a partially installed or cleared load.
+    ///
+    /// A cancelled or aborted installation leaves the buffer holding neither the
+    /// old document nor the new one, and leaves this true until a retry installs
+    /// one exact content. Any workflow that would **publish** the buffer must
+    /// refuse while it holds: the document-save workflow does so with
+    /// `EditorSaveError::IncompleteLoadInstallation`, and the draft-recovery
+    /// workflow skips the tab rather than writing a partial buffer over a draft
+    /// that still holds real unsaved work.
+    ///
+    /// This is a cheap accessor over the one cell rather than a whole
+    /// [`evidence::LoadEvidence`] read, because its callers consult it once per
+    /// tab per pass — identical by construction, since both read the same cell.
+    #[must_use]
+    pub(crate) fn has_incomplete_load_installation(&self) -> bool {
+        self.imp().load.installation_incomplete.get()
+    }
 }

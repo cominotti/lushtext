@@ -11,7 +11,6 @@ mod actions;
 mod adaptive_shell;
 mod dialogs;
 mod documents;
-mod draft_ordering;
 mod drafts;
 mod encoding;
 mod focus_indexing;
@@ -19,14 +18,13 @@ mod focus_mode;
 // gtk-rs keeps the private GObject subclass implementation in `imp.rs`; this
 // public module exposes the safe wrapper and workflow methods callers use.
 mod imp;
-mod local_history;
+pub(crate) mod local_history;
 mod notes;
 mod notifications;
 mod preview;
 mod print;
 mod recent_open;
 mod search;
-mod session_persistence;
 mod session_restore;
 mod startup_data;
 mod tabs;
@@ -48,17 +46,29 @@ pub use dialogs::set_close_safety_completion_delay_for_test;
 pub use documents::set_canonical_refresh_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use drafts::{
-    OrphanCleanupRuntimeSnapshot, fail_next_draft_mutations_for_test,
-    set_automatic_draft_limit_for_test, set_draft_manifest_completion_delay_for_test,
-    set_draft_mutation_delays_for_test, set_draft_restore_delay_for_test,
-    set_first_dirty_autosave_delay_for_test, set_lazy_draft_read_delay_for_test,
-    set_next_draft_body_disposal_probe_for_test, set_orphan_cleanup_delays_for_test,
+    fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
+    set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
+    set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
+    set_lazy_draft_read_delay_for_test, set_next_draft_body_disposal_probe_for_test,
+    set_orphan_cleanup_delays_for_test,
 };
 #[cfg(feature = "test-utils")]
 pub use encoding::set_lossy_encoding_analysis_delay_for_test;
+pub use local_history::{
+    LocalHistoryPreviewInstallEvidence, local_history_preview_install_evidence,
+};
+// The four evidence surfaces are re-exported together, behind one gate, so the
+// role has one visibility rule instead of three. Widget tests are their only
+// out-of-crate readers and they build with `test-utils`; field access through the
+// accessor needs no import, so nothing on the production path depends on these
+// names being reachable from outside the crate.
+#[cfg(feature = "test-utils")]
+pub use drafts::evidence::DraftEvidence;
+#[cfg(feature = "test-utils")]
+pub use local_history::LocalHistoryEvidence;
 #[cfg(feature = "test-utils")]
 pub use local_history::{
-    LocalHistoryPreviewInstallSnapshot, local_history_preview_install_snapshot_for_test,
+    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
     set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test,
 };
@@ -73,7 +83,7 @@ pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test}
 #[cfg(feature = "test-utils")]
 pub use search::set_replace_reload_facts_delay_for_test;
 #[cfg(feature = "test-utils")]
-pub use session_persistence::SessionRestoreRuntimeSnapshot;
+pub use session_restore::evidence::SessionRestoreEvidence;
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).

@@ -496,7 +496,7 @@ fn begin_load_installation(
             cursor_visible: view.is_cursor_visible(),
         },
         minimap_tracking_suspended: imp.minimap.tracking_suspended.replace(true),
-        history_capture_suppressed: imp.local_history.automatic_capture_suppressed.replace(true),
+        history_capture_suppressed: editor.suspend_local_history_capture(),
         projection_suspended: imp.load.projection_suspended.replace(true),
     };
     if suspend_minimap_projection {
@@ -613,11 +613,7 @@ pub(super) fn restore_load_installation_state(
         .load
         .projection_suspended
         .set(restore.projection_suspended);
-    editor
-        .imp()
-        .local_history
-        .automatic_capture_suppressed
-        .set(restore.history_capture_suppressed);
+    editor.set_local_history_capture_suppressed(restore.history_capture_suppressed);
     editor.set_minimap_tracking_suspended(restore.minimap_tracking_suspended);
     editor.source_view().set_editable(restore.view.editable);
     editor

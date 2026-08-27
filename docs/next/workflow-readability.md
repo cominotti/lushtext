@@ -1,19 +1,27 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slot 3 complete in both halves, four migration
-changes outstanding (4 through 7).** The convention is normative, the census is complete, the
-mechanical gate is wired into `make check-policy`, the normative facade line
-budget is declared and enforced, and four workflows are migrated:
-`WFR-SEARCH-REPLACE` (**both halves** — search and preview in slot 1, the
-Replace All write path and its undo journal in slot 2b),
-`WFR-COMMAND-PALETTE` (slot 2a), `WFR-DOCUMENT-SAVE` (slot 3a, the first
-tier-3 workflow migrated on its own), and `WFR-DOCUMENT-LOAD` (slot 3b, the
-second). **`ui/editor_page/load_save.rs` no longer exists**: slot 3a lifted the
-save half out and slot 3b dissolved the rest, so the programme's third measured
-symptom is now history rather than a live file. Everything else in `ui/` and
-`model/` is unchanged and behaviorally untouched. Slot 4 is next and slots 4
-through 7 are authorable now; two items are deliberately deferred and may never
-be taken on.
+Status: **Phase 0 complete, slots 1 through 4 complete, slots 5 through 7
+outstanding.** The convention is
+normative, the census is complete, the mechanical gate is wired into
+`make check-policy`, the normative facade line budget is declared and enforced,
+and **eight** workflows are migrated: `WFR-SEARCH-REPLACE` (**both halves** —
+search and preview in slot 1, the Replace All write path and its undo journal in
+slot 2b), `WFR-COMMAND-PALETTE` (slot 2a), `WFR-DOCUMENT-SAVE` (slot 3a, the
+first tier-3 workflow migrated on its own), `WFR-DOCUMENT-LOAD` (slot 3b, the
+second), and slot 4's four: `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`,
+`WFR-LOCAL-HISTORY`, and `WFR-DRAFT-RECOVERY`. **`ui/editor_page/load_save.rs` no longer exists**: slot 3a lifted
+the save half out and slot 3b dissolved the rest, so the programme's third
+measured symptom is now history rather than a live file. Everything else in `ui/`
+and `model/` is unchanged and behaviorally untouched.
+
+**Slot 4 is the programme's largest change so far**, migrating four rows in one
+pass in increasing-risk order: buffer replacement first because the other restore
+paths drive their bytes through it, then session restore, then local history, then
+draft recovery. It also carried one **confirmed and fixed data-safety defect** —
+the draft-autosave lane had never consulted `installation_incomplete`, so a
+cancelled load installation plus one keystroke could write a near-empty buffer over
+a draft holding real unsaved work. Slots 5 through 7 remain authorable; two items
+are deliberately deferred and may never be taken on.
 
 This document answers, in one read: what problem the programme solves, how much
 is done, what is next, what is deferred and why, and what would justify taking
@@ -199,6 +207,225 @@ Two further Phase 0 facts a later session should not have to rediscover:
 | Permitted role homes | plus the per-workflow subdirectory | unchanged. `ui/editor_page/load/` is its **second adopter**, and the nested `ui/**/policy.rs` glob was re-verified reachable after the move — one adopter proves the glob resolves, two prove it is not a special case |
 | Evidence-surface conventions | visibility rule settled | **plus the reentrancy constraint**, promoted from a per-workflow module note into stated convention with a required proof test. This is the first amendment whose obligation was real work rather than a confirmation: `WFR-COMMAND-PALETTE` lacked the proof and slot 3b wrote it |
 
+### Baseline after slot 4
+
+| Quantity | After slot 3b | After slot 4 |
+| --- | --- | --- |
+| Workflows migrated | 4 | **8** (plus `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-DRAFT-RECOVERY`) — the programme doubled its migrated set in one change. Counted as workflow *halves*, nine |
+| Share of `ui/` + `model/` migrated | 11,811 of 79,017 censused lines ≈ 15% | 11,811 + 1,029 + 1,962 + 2,586 + 2,578 = 19,966 ≈ **25%**, using each row's censused `ui` footprint so the fraction stays comparable across slots. **Row-scoped and production-only the four rows are 9,300 lines across 27 files** (buffer replacement 1,455/4, session restore 1,744/6, local history 2,995/8, draft recovery 3,106/9). Three of the four census `Current size` cells were far too **high** — they pooled whole shared service files, and draft recovery's `services 5,910` was almost entirely `draft_service.rs`, most of which is co-located tests — while buffer replacement's was too **low** once tests are excluded. Corrections in both directions, again |
+| Policy modules relocated | 3 of 6 relocation candidates | **4 of 6.** `model/draft.rs`, `model/session.rs`, `model/local_history.rs`, and `model/buffer_replacement.rs` are all confirmed **staying**: the first three because a service depends on each of them, the fourth because it is cross-cutting. What *did* relocate is `ui/window/draft_ordering.rs`'s `DraftMutationOrder` epoch allocator, whole and with its tests, into `drafts/policy.rs`. Everything else slot 4 added to the mutation scope is **gain from zero** out of GTK adapters: 248 mutants across four new `policy.rs` modules |
+| Test seams addressed | load retired 10 inspection surfaces | slot 4 retired **21 inspection functions** across its four rows (4 + 2 + 8 + 7) and **no** `*_for_test` inspection function remains on any of them. **14 configuration seams plus 9 delay/fail hooks collapsed into 2** test-policy values (`drafts/test_policy.rs`, `local_history/test_policy.rs`), each entirely behind `#[cfg(feature = "test-utils")]`. **14 actuation seams preserved and 0 added** — the programme's second slot in a row to add none. One keyed question became a named workflow operation rather than a surface field, because a field cannot take an argument: `draft_delete_is_tombstoned(&str)`. **35 ungated `imp()` reach-through sites went to 0** |
+| Seams reified | 5 | **5, unchanged — and two census cells were wrong about *kind*.** Slot 4's rows already carried their seam value objects, so its seam work was auditing them against the two-boundary rule, which they all pass. Two were **reclassified**: `BufferReplacementSession` is coordination-owned GTK runtime, and `DraftCleanupContinuation` is the journal's manifest offset — neither is a seam value object. `WorkspaceWatchTicket` and `NotesBrowserTicket` remain unreified, both slot 5. **Long signatures shortened: 1, unchanged**; the workspace `#[expect(clippy::too_many_arguments)]` count holds at 1 |
+| Automation projections | 4 | **5** (plus the `local_history` snapshot object). The `session-restore`, `close-safety`, and `draft-autosave` readiness blockers additionally moved onto **cheap facade accessors identical by construction** rather than field reaches. **The drift gate grew once, and was proved:** `local_history` is a third projecting surface and had to be registered, and the extension was verified by confirming it **rejects a real rename** rather than by assertion. `tabs[].draft_present` was **not** re-sourced — it is a per-tab document-identity fact and the draft surface is window-level — so the "three surfaces into one `tabs` object" contingency did **not** fire. Exported names, types, and semantics unchanged |
+| Facade line budget | held; load at 253 of 370 | **held four more times, and the number is now well evidenced.** Buffer replacement 167, session restore 165, local history 216, draft recovery **310** — the programme's largest facade and its closest approach, from a workflow with three stage orders and 17 inversions. No escalation, and the budget line was not edited. `ui/search_panel/mod.rs` stayed untouched at 369, save at 223, and **load grew 253 → 271** because the data-safety fix crossed a workflow boundary and therefore crossed through a facade |
+| Bounded coordination role names | unchanged | unchanged, and **`journal` was checked for all three durable rows at once and passes all three.** `gtk-adapter-module-boundaries` needed no amendment. Slot 4 is also the first to use **four** coordination modules in one workflow (draft recovery: `journal`, `admission`, and two stage-order-qualified execution modules), and the first to reject `retirement` for something that *destroys* payloads — orphan cleanup is journal maintenance, on the cohesion test |
+| Permitted role homes | second adopter | **sixth adopter**, and the first three under `ui/window/`. The nested `ui/**/policy.rs` glob was re-verified after every move; `make check-workflow-boundaries` now reports **8** pure mutation-scoped policy modules, up from 4 |
+| Evidence-surface conventions | plus the reentrancy constraint | unchanged, with **four new surfaces and eight new proof tests** (a reentrancy proof and a disposal proof each). The **disposed-widget rule earned its place**: it was a live hazard twice, not a formality. Buffer replacement's whole subject is the source view's buffer, and local history's first surface actually **panicked** in its disposal proof because `live_local_history_availability()` derefs a template child — the fix split out a chars-taking helper so an observer that already read through `try_get()` does not read again through the panicking accessor |
+
+### Convention friction slot 4 hit, recorded for slots 5 through 7
+
+**The retroactive-amendment cost is now five per-row re-checks, and slot 4's own
+re-check was not a confirmation.** Amendment (b) — that a migration re-derives its
+row's measured cells — found **two of four** migrated rows non-compliant:
+`WFR-SEARCH-REPLACE`'s size cell still carried the census figure with a pooled
+`services 5,895` subtotal, and `WFR-COMMAND-PALETTE`'s kept `services 7,897`
+pooled with no sharing rows named. Both were re-derived and filled in this change
+(5,527 and 2,534 production lines respectively). That is **two consecutive
+amendments** where "it must already hold" was not a discharge. Assume the next one
+is also real work.
+
+**The `policy: none` allowance exists but has no first user, and the probe is
+why.** The proposal expected `WFR-BUFFER-REPLACEMENT` to be the programme's first
+row complete without a `policy.rs`. The spec delta's own requirement — that the
+workflow's pure logic be *entirely* cross-cutting — forced a probe of the GTK
+adapter's candidate decisions, and the probe found **five** separable pure
+decisions, four of them deciding whether a partially mutated buffer can be seen or
+whether a caller learns the truth about its terminal. So the allowance ships
+stated and unexercised. **The lesson generalises: "the domain module stays" does
+not imply "the workflow owns no policy".** Slot 3b's `file_load.rs` showed the
+same thing from the other side.
+
+**Census inversion counts were floors again, by a wider margin than ever.** Slot 4
+derived all four rows' traces from the code before touching anything: session
+restore has **7** deferred inversions against a recorded 1, local history **16**
+against 6, draft recovery **17** against 7. Buffer replacement's recorded 1 was
+**correct** — the only cell of the four that needed no correction. The 26 the
+census missed are all the same shape: it counted `spawn_blocking_then` sites and
+missed timers, main-loop polls, disposal capacity wakeups, chunked buffer
+snapshots, and buffer-replacement terminals. **A slot that counts only worker
+handoffs will undercount by roughly two thirds.**
+
+**A census cell was wrong about *ownership*, not just about counts.** The
+`Policy Module Census` entry for `buffer_replacement.rs` read
+`2 (WFR-LOCAL-HISTORY, Replace All undo)` and was wrong in both halves: the count
+was a consuming-file count, and **Replace All undo is not a consumer at all** —
+`BufferReplacementWorkflow::LocalHistoryUndo` is local history's own undo
+affordance. A wrong *name* in a census cell is more dangerous than a wrong number,
+because a number invites re-derivation and a name invites trust.
+
+**A readability slot over a durable path found another real defect — third slot
+running.** 2b found two, 3b found one, and slot 4 found one **confirmed
+recovery-data-loss defect** in the draft-autosave lane, which had never consulted
+`installation_incomplete`. The pattern is now four for four: reading a durable
+path end to end for the first time is when its defects surface. **Budget for
+findings, and do not treat the "no behavior change" non-goal as permission to
+defer one.**
+
+**One shared imp state group split three ways, not two, and one task's hypothesis
+was wrong.** `SessionState` holds genuine session fields, the tab workflow's
+aggregate projection counter, migrated save's close-save identity pair, **and**
+`close_safety_inflight`/`close_safety_bypass` — which the task list hypothesised
+belonged to the session row and which the code shows are genuinely **shared**
+between the draft and session rows, exactly as their own doc comments said. The
+generalisable move: when a field's doc comment names two workflows, believe the
+comment until the code contradicts it.
+
+**A file the task list assumed was shared between two rows turned out to belong to
+neither.** `ui/window/startup_data.rs` is the startup format-upgrade gate, whose
+census home is `WFR-NOTES-BOOKMARKS`; it *calls* both slot-4 startup entry points
+from one function and shares no state group with either. "Shared or owned?" is
+sometimes the wrong question.
+
+**An assertion that compares a value against the constant it came from cannot
+detect the constant changing — and this is now the programme's single most common
+mutation survivor.** Slot 4's four rows left 33 survivors on the first
+diff-scoped run, and the largest share were of exactly this shape:
+`assert_eq!(delay, MAX_BACKOFF)` still holds when `15 * 60` becomes `15 + 60`,
+because both sides move together. `PREVIEW_RESERVATION_BYTES`'s `64 * 1024 *
+1024` had the same gap, four mutants wide. **Pin policy constants to concrete
+literals, in the units a reader would sanity-check** (fifteen minutes, 64 MiB),
+with the user-facing reason recorded beside them. Slots 5 through 7 should expect
+to write these assertions for every constant a new `policy.rs` owns.
+
+**A relocated module's "parity" figure may legitimately be zero-before, and
+saying so is more honest than inventing one.** Both of slot 4's relocations —
+the session admission policy and the draft mutation-intent allocator — moved from
+files that were **outside** `examine_globs`, because they were not named
+`policy.rs`. There was no before-count to be at parity with. The relocation's
+behaviour parity is carried by its co-located tests passing unchanged; its
+*coverage* figure is a gain. **Check whether the source location was in scope
+before promising parity numbers.**
+
+**Extracting a decision does not automatically test it, and the gap is
+predictable.** Slot 4's relocated `SessionRestorePolicy` arrived with five tests
+that drove it end to end and asserted its outputs — and left **19 survivors** on
+its accessors, guards, and no-return-value helpers, all of which those tests
+exercised only indirectly. The rule that falls out: **after extracting, run
+mutation on the new module before writing the row's evidence file**, and expect
+to add direct tests for every `-> bool` predicate, every generation accessor, and
+every method whose only observable effect is a side effect.
+
+**Moving an `if` condition into a `match` scrutinee silently extends a borrow's
+lifetime, and this convention's mechanical work does exactly that.** Extracting a
+decision into a policy function turns `if cell.borrow().is_some() { ... }` into
+`match policy_fn(cell.borrow().is_some()) { ... }` — and a `match` scrutinee's
+temporaries live for the **whole match**, while a plain `if` condition's drop
+before the block. Slot 4 introduced one such latent `BorrowMutError` and caught it
+by re-reading the diff, on the path where a superseded buffer replacement
+terminated inside its own turn. The pre-existing widget test would have caught it,
+but only because that path happened to be covered. **Read every `borrow()` the
+extraction moved, and bind the value to a local before the `match`.**
+
+**A "tautological" extraction is a smell, not a win.** Slot 4's first cut
+extracted `terminal_is_complete(cancellation) -> bool`, which is
+`cancellation.is_none()`. It proved nothing to the compiler and forced a *dead
+default* at the call site. Removing it and using an exact `match` improved the
+code and cost 2 mutants. **Count the decisions a reader could get wrong, not the
+functions you can name.**
+
+**Four facades in one change against one budget: held, with the ceiling now
+genuinely tested.** 167, 165, 216, and **310** of 370. The 310 is draft recovery —
+three stage orders and 17 inversions — and reaching it needed exactly the sequence
+slot 2b recorded: delegate every stage body, compress each inversion to one line,
+and fold module-ownership detail into the role table and the shared-state table.
+**No escalation, and the budget line was not edited.** Slot 4's evidence is that
+the number survives the programme's hardest row, so slots 5 through 7 should plan
+against it rather than expect it to move.
+
+**A workflow spanning two directories is resolvable, and the resolution has a
+shape worth reusing.** `WFR-LOCAL-HISTORY` cannot own `policy.rs` and
+`evidence.rs` in both `ui/window/` and `ui/editor_page/`. The split that worked is
+the **coordination/presentation line** slot 3b used for recent documents: the
+window half is the canonical role home, the editor-page half is a **called
+surface** with its ownership recorded in its own module doc, and — the part that
+makes it honest rather than nominal — **the called surface imports its freshness
+tickets from the canonical `policy.rs` instead of defining private copies.** If a
+future row cannot do that last step, it does not have a clean split.
+
+**One workflow needed four coordination modules, and the bounded set absorbed
+it.** Draft recovery uses `journal`, `admission`, and two stage-order-qualified
+execution modules. The qualifier rule worked as written: both execution modules
+were new, so neither was a stable sibling renamed for symmetry. Slot 4 also found
+the first case of **rejecting `retirement` for something that destroys
+payloads** — orphan cleanup deletes files, but it reloads the journal's own record
+under the journal's own lock and merges back into it, so on the cohesion test it
+is journal maintenance. `retirement` in this codebase means the disposal lane.
+
+**The disposed-widget rule earned its place twice, and once it actually
+panicked.** Local history's first evidence surface called
+`live_local_history_availability()`, which derefs the source-view template child,
+and the **required disposal proof test caught the panic** rather than a user
+finding it. The fix split out a chars-taking helper so an observer that already
+read the buffer through `try_get()` does not read it again through the panicking
+accessor. **Write the disposal proof before believing the surface is safe.**
+
+**Mutter's Wayland socket path is length-limited, and a scratch worktree can
+exceed it.** Slot 4's automation no-widening proof needs a **baseline tree** to
+diff against, and the first attempt put that worktree under the session scratch
+directory. `make automation-smoke` failed there with
+`libmutter-ERROR: Failed to create socket` — a message that says nothing about
+path length. Re-created at `/tmp/lt-base`, it worked. The build rules already warn
+that smoke runtime directories must stay short; **a comparison worktree is one of
+them.**
+
+**`cargo-mutants` 27's `--re` filter does not apply to its struct-field-deletion
+mutants.** A "focused" run of 21 policy mutants actually ran 53, the extra 32
+being every field-deletion mutant in scope regardless of the regex. 16 of those
+survived, all pre-existing, in `services/draft_service.rs` and
+`services/file_tree.rs` — the latter being slot 5's. Expect focused runs to carry
+that floor, and do not attribute its survivors to your change.
+
+**Untracked files are invisible to the diff-aware policy gates, so a migration
+that adds whole new directories can pass them while they are blind to the bulk of
+the change.** Every slot in this programme adds a new per-workflow role directory,
+and until that directory is tracked, `git diff origin/main` does not mention a
+single file inside it. Slot 4 hit this twice with different symptoms. `make
+mutants-diff` needed the documented `git add -N` workaround to see the new policy
+modules at all — that one is already recorded. The second is quieter and worse:
+`make check-visual-proof-policy` **passed** while its "changed files" list omitted
+all 24 new files, and it only started failing once `git add -N` made them visible,
+reporting `summary changed-files digest does not match current visual-sensitive
+diff`. The fix is to keep the files visible and re-run the lane, **not** to reset
+the index and take the green.
+
+So: run `git add -N` on new directories **early**, before the first diff-aware
+gate, and treat a green diff-aware gate on a slot with untracked new files as
+unproven. The gates are correct; the input was incomplete.
+
+**Isolating an app's state does not isolate its window, and the live-run gate is
+therefore not an agent-runnable lane.** Slot 4's live run was launched under fully
+isolated `XDG_*` and `LUSHTEXT_DATA_DIR` directories, after confirming through
+`flatpak ps` and `busctl --user list` that no LushText instance was running — and
+it still interrupted the user's active fullscreen desktop session, because a real
+Wayland launch maps a real surface and takes focus regardless of where its state
+lives. The user stopped it. **Treat the `make run` paned-warning proof as
+requiring scheduled user availability**, plan the slot without it on the critical
+path, and mark it `[~]` deferred rather than ticking it or quietly dropping it.
+Everything else display-dependent has a headless path already: the smoke lanes
+run isolated `mutter --headless`, and `scripts/run-widget-tests.sh --headless`
+self-supervises into one.
+
+Two smaller lessons from the same episode. **Synthetic global input is the wrong
+tool for driving the app**: `ydotool` types into whatever the compositor focuses,
+so it is both hazardous in a live session and unverifiable — slot 4's first
+attempt landed nowhere and that only surfaced because the fixture file and the
+`modified` flag were checked afterwards. Use targeted AT-SPI
+(`Atspi.EditableText.insert_text`), which is what `crash-recovery-smoke` and
+`accessibility-smoke` already do. And **an instance launched with `nohup` from a
+tool call may be reaped when that call ends**, exiting cleanly with no diagnostic;
+that is a shell-lifecycle artifact and not an application failure, so do not chase
+it as a crash.
+
 ### Convention friction slot 3b hit, recorded for slots 4 through 7
 
 **Four rows are migrated after this change, so the retroactive-amendment rule now
@@ -357,7 +584,7 @@ this table is the change-level view.
 | 2b | **complete** — finished search/replace: the Replace All write path and its undo journal, added the `journal` role name, and proved no automation widening (`complete-search-replace-workflow-readability`) | `WFR-SEARCH-REPLACE` replace/undo half, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
 | 3a | **complete** — migrated the save workflow, added the per-workflow subdirectory role home, retired the programme's only workflow-code argument-count suppression (`migrate-document-save-workflow-readability`) | `WFR-DOCUMENT-SAVE`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
 | 3b | **complete** — migrated the load workflow, dissolved `load_save.rs`, promoted the evidence-surface reentrancy constraint into stated convention, and closed the `model/file_load.rs` census decision (`migrate-document-load-workflow-readability`) | `WFR-DOCUMENT-LOAD`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
-| 4 | User-content restore family | `WFR-DRAFT-RECOVERY`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-BUFFER-REPLACEMENT`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks |
+| 4 | User-content restore family (`migrate-user-content-restore-workflow-readability`, **complete**) | All four rows **migrated**: `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-DRAFT-RECOVERY`, plus a further `WFR-AUTOMATION-SPINE` projection (`LocalHistoryEvidence`). Nothing from this family is outstanding. One acceptance item is deferred rather than unmet: the live-session `make run` paned-warning proof, which needs user availability — see task 10.10 and `evidence/live-run.md` | proposal + tasks + 1 spec delta |
 | 5 | Workspace tree and notes | `WFR-WORKSPACE-TREE`, `WFR-NOTES-BOOKMARKS` | proposal + tasks |
 | 6 | Minimap | `WFR-MINIMAP` | proposal + design + tasks |
 | 7 | Residual sweep | `WFR-MARKDOWN-PREVIEW`, `WFR-EDITOR-FIND`, `WFR-ENCODING`, `WFR-PRINT`, `WFR-SHELL-LAYOUT`, `WFR-STATUS-NOTIFICATIONS`, `WFR-BUFFER-SNAPSHOT`, `WFR-PLAIN-DISPOSAL`, remaining `exclude_re` entries and argument-count suppressions, matrix completion | proposal + tasks |
@@ -418,7 +645,8 @@ change covering the slot.
 | 2b | `complete-search-replace-workflow-readability` |
 | 3a | `migrate-document-save-workflow-readability` |
 | 3b | `migrate-document-load-workflow-readability` |
-| 4–7 | not yet authored |
+| 4 | `migrate-user-content-restore-workflow-readability` — **complete**: all four tier-3 rows landed (`WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-DRAFT-RECOVERY`) |
+| 5–7 | not yet authored |
 
 **3a lands before 3b.** They share `ui/editor_page/load_save.rs`, and 3a's
 `gtk-adapter-module-boundaries` delta establishes the per-workflow subdirectory
@@ -525,8 +753,8 @@ in both directions, which some rows need:
 - slot 2b (complete): WFR-SEARCH-REPLACE, WFR-AUTOMATION-SPINE (partial)
 - slot 3a (complete): WFR-DOCUMENT-SAVE, WFR-AUTOMATION-SPINE (partial)
 - slot 3b (complete): WFR-DOCUMENT-LOAD, WFR-AUTOMATION-SPINE (partial)
-- slot 4 (outstanding): WFR-DRAFT-RECOVERY, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-BUFFER-REPLACEMENT, WFR-AUTOMATION-SPINE
-- slot 5 (outstanding): WFR-WORKSPACE-TREE, WFR-NOTES-BOOKMARKS
+- slot 4 (complete): WFR-BUFFER-REPLACEMENT, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-DRAFT-RECOVERY, WFR-AUTOMATION-SPINE (partial)
+- slot 5 (outstanding): WFR-WORKSPACE-TREE, WFR-NOTES-BOOKMARKS, WFR-AUTOMATION-SPINE
 - slot 6 (outstanding): WFR-MINIMAP
 - slot 7 (outstanding): WFR-MARKDOWN-PREVIEW, WFR-EDITOR-FIND, WFR-ENCODING, WFR-PRINT, WFR-SHELL-LAYOUT, WFR-STATUS-NOTIFICATIONS, WFR-BUFFER-SNAPSHOT, WFR-PLAIN-DISPOSAL
 

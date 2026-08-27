@@ -9,9 +9,6 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::path::PathBuf;
-#[cfg(feature = "test-utils")]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -23,6 +20,10 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use crate::model::local_history::LocalHistorySnapshotOrigin;
 use crate::services::{json_store, local_history_service};
 use crate::ui::buffer_snapshot;
+use crate::ui::window::local_history::policy::{
+    BaselineCaptureFacts, BaselineCaptureTicket, PeriodicCaptureFacts, PeriodicCaptureTicket,
+    baseline_capture_is_current, periodic_capture_is_current, should_reschedule_periodic_capture,
+};
 
 use super::LushtextEditorPage;
 
@@ -34,23 +35,6 @@ const DEFAULT_PERIODIC_CAPTURE_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// document-sized string per modified tab.
 static AUTOMATIC_HISTORY_CAPTURE_INFLIGHT: AtomicBool = AtomicBool::new(false);
 
-#[cfg(feature = "test-utils")]
-static BASELINE_CAPTURE_FAILURES: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "test-utils")]
-static BASELINE_CAPTURE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
-
-/// Fail the next `count` baseline attempts before production persistence runs.
-#[cfg(feature = "test-utils")]
-pub fn set_local_history_baseline_failures_for_test(count: u64) {
-    BASELINE_CAPTURE_FAILURES.store(count, Ordering::Release);
-}
-
-/// Delay baseline persistence for deterministic ownership-generation tests.
-#[cfg(feature = "test-utils")]
-pub fn set_local_history_baseline_delay_for_test(delay_ms: u64) {
-    BASELINE_CAPTURE_DELAY_MS.store(delay_ms, Ordering::Release);
-}
-
 thread_local! {
     /// Contended baselines wait as weak/scalar state and are admitted one at a
     /// time when the current automatic capture releases its payload permit.
@@ -60,42 +44,22 @@ thread_local! {
 
 struct AutomaticHistoryCapturePermit;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BaselineCaptureTicket {
-    editor_generation: u64,
-    path_generation: u64,
-    clean_baseline_generation: u64,
-    path: PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BaselineCaptureFacts {
-    editor_generation: u64,
-    path_generation: u64,
-    clean_baseline_generation: u64,
-    path: Option<PathBuf>,
-    modified: bool,
-    baseline_slot_empty: bool,
-}
-
-fn baseline_capture_is_current(
-    ticket: &BaselineCaptureTicket,
-    facts: &BaselineCaptureFacts,
-) -> bool {
-    facts.editor_generation == ticket.editor_generation
-        && facts.path_generation == ticket.path_generation
-        && facts.clean_baseline_generation == ticket.clean_baseline_generation
-        && facts.path.as_ref() == Some(&ticket.path)
-        && facts.modified
-        && facts.baseline_slot_empty
-}
-
 enum BaselineCaptureOutcome {
     Captured,
     Failed {
         detail: String,
         text: crate::ui::plain_disposal::DisposalOwned<String>,
     },
+}
+
+/// Whether one automatic baseline or periodic payload currently owns admission.
+///
+/// Process-wide by design: exactly one document-sized automatic capture payload
+/// may cross the worker boundary at a time, so this is a property of the process
+/// rather than of one editor. The local-history evidence surface projects it.
+#[must_use]
+pub(crate) fn automatic_capture_inflight() -> bool {
+    AUTOMATIC_HISTORY_CAPTURE_INFLIGHT.load(Ordering::Acquire)
 }
 
 impl AutomaticHistoryCapturePermit {
@@ -146,47 +110,6 @@ fn drain_next_baseline_capture_waiter() {
             return;
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PeriodicCaptureTicket {
-    editor_generation: u64,
-    path_generation: u64,
-    periodic_generation: u32,
-    edit_generation: u64,
-    path: PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PeriodicCaptureFacts {
-    editor_generation: u64,
-    path_generation: u64,
-    periodic_generation: u32,
-    edit_generation: u64,
-    path: Option<PathBuf>,
-    modified: bool,
-    availability: local_history_service::LocalHistoryAvailability,
-}
-
-fn periodic_capture_is_current(
-    ticket: &PeriodicCaptureTicket,
-    facts: &PeriodicCaptureFacts,
-) -> bool {
-    facts.editor_generation == ticket.editor_generation
-        && facts.path_generation == ticket.path_generation
-        && facts.periodic_generation == ticket.periodic_generation
-        && facts.edit_generation == ticket.edit_generation
-        && facts.path.as_ref() == Some(&ticket.path)
-        && facts.modified
-        && facts.availability.allows_automatic_capture()
-}
-
-fn should_reschedule_periodic_capture(
-    modified: bool,
-    has_path: bool,
-    automatic_capture_suppressed: bool,
-) -> bool {
-    modified && has_path && !automatic_capture_suppressed
 }
 
 impl LushtextEditorPage {
@@ -279,15 +202,28 @@ impl LushtextEditorPage {
         local_history_service::availability_for_size_check(self.size_check())
     }
 
-    pub(super) fn live_local_history_availability(
+    pub(crate) fn live_local_history_availability(
         &self,
+    ) -> local_history_service::LocalHistoryAvailability {
+        self.live_local_history_availability_for_chars(self.buffer().char_count())
+    }
+
+    /// Classify live local-history admission from an already-read character count.
+    ///
+    /// Split out so an observer that has *already* read the buffer through
+    /// `TemplateChild::try_get()` does not have to read it again through the
+    /// panicking accessor. The evidence surface must answer for a disposed page,
+    /// and this is the seam that lets it.
+    pub(crate) fn live_local_history_availability_for_chars(
+        &self,
+        char_count: i32,
     ) -> local_history_service::LocalHistoryAvailability {
         #[cfg(feature = "test-utils")]
         if let Some(availability) = self.imp().local_history.availability_override.get() {
             return availability;
         }
 
-        local_history_service::availability_for_live_buffer_chars(self.buffer().char_count())
+        local_history_service::availability_for_live_buffer_chars(char_count)
     }
 
     /// Override live local-history admission without allocating a policy-sized test buffer.
@@ -467,16 +403,6 @@ impl LushtextEditorPage {
             .take()
     }
 
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn has_local_history_restore_undo_for_test(&self) -> bool {
-        self.imp()
-            .local_history
-            .restore_undo_text
-            .borrow()
-            .is_some()
-    }
-
     fn capture_local_history_baseline(&self) {
         let Some(path) = self.file_path() else {
             return;
@@ -560,27 +486,6 @@ impl LushtextEditorPage {
     #[cfg(feature = "test-utils")]
     pub fn capture_local_history_baseline_for_test(&self) {
         self.capture_local_history_baseline();
-    }
-
-    /// Whether failed baseline text is retained without exposing its contents.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn local_history_baseline_candidate_present_for_test(&self) -> bool {
-        self.imp().local_history.last_clean_text.borrow().is_some()
-    }
-
-    /// Whether this editor owns one weak retry waiter in the global admission FIFO.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn local_history_baseline_retry_pending_for_test(&self) -> bool {
-        self.imp().local_history.baseline_retry_pending.get()
-    }
-
-    /// Whether one automatic baseline or periodic payload currently owns admission.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn local_history_automatic_capture_inflight_for_test(&self) -> bool {
-        AUTOMATIC_HISTORY_CAPTURE_INFLIGHT.load(Ordering::Acquire)
     }
 
     fn schedule_local_history_periodic_capture(&self) {
@@ -711,28 +616,6 @@ impl LushtextEditorPage {
         self.run_local_history_periodic_capture(generation);
     }
 
-    /// Whether a chunked periodic snapshot still owns its cancellation handle.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn local_history_periodic_snapshot_inflight_for_test(&self) -> bool {
-        self.imp()
-            .local_history
-            .periodic_snapshot
-            .borrow()
-            .is_some()
-    }
-
-    /// Whether the tab currently owns one scheduled periodic timer source.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn local_history_periodic_timer_pending_for_test(&self) -> bool {
-        self.imp()
-            .local_history
-            .periodic_timer_token
-            .get()
-            .is_some()
-    }
-
     fn persist_periodic_snapshot_if_current(
         &self,
         ticket: PeriodicCaptureTicket,
@@ -808,18 +691,14 @@ fn local_history_capture_interval() -> Duration {
 fn delay_baseline_capture_for_test() {
     #[cfg(feature = "test-utils")]
     std::thread::sleep(Duration::from_millis(
-        BASELINE_CAPTURE_DELAY_MS.load(Ordering::Acquire),
+        crate::ui::window::local_history::test_policy::baseline_delay_ms(),
     ));
 }
 
 fn fail_baseline_capture_for_test() -> bool {
     #[cfg(feature = "test-utils")]
     {
-        BASELINE_CAPTURE_FAILURES
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
+        crate::ui::window::local_history::test_policy::take_baseline_failure()
     }
 
     #[cfg(not(feature = "test-utils"))]
@@ -830,124 +709,39 @@ fn fail_baseline_capture_for_test() -> bool {
 mod tests {
     use super::*;
 
-    fn ticket() -> PeriodicCaptureTicket {
-        PeriodicCaptureTicket {
-            editor_generation: 3,
-            path_generation: 5,
-            periodic_generation: 7,
-            edit_generation: 11,
-            path: PathBuf::from("/workspace/current.md"),
-        }
-    }
-
-    fn facts() -> PeriodicCaptureFacts {
-        let ticket = ticket();
-        PeriodicCaptureFacts {
-            editor_generation: ticket.editor_generation,
-            path_generation: ticket.path_generation,
-            periodic_generation: ticket.periodic_generation,
-            edit_generation: ticket.edit_generation,
-            path: Some(ticket.path),
-            modified: true,
-            availability: local_history_service::LocalHistoryAvailability::Full,
-        }
-    }
-
-    #[test]
-    fn periodic_capture_accepts_only_the_unchanged_live_editor() {
-        assert!(periodic_capture_is_current(&ticket(), &facts()));
-    }
-
-    #[test]
-    fn periodic_capture_rejects_close_edit_timer_and_identity_changes() {
-        let ticket = ticket();
-        for mutate in [
-            |facts: &mut PeriodicCaptureFacts| facts.editor_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.path_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.periodic_generation += 1,
-            |facts: &mut PeriodicCaptureFacts| facts.edit_generation += 1,
-        ] {
-            let mut changed = facts();
-            mutate(&mut changed);
-            assert!(!periodic_capture_is_current(&ticket, &changed));
-        }
-
-        let mut renamed = facts();
-        renamed.path = Some(PathBuf::from("/workspace/renamed.md"));
-        assert!(!periodic_capture_is_current(&ticket, &renamed));
-
-        let mut save_as = facts();
-        save_as.path = Some(PathBuf::from("/elsewhere/saved-as.md"));
-        assert!(!periodic_capture_is_current(&ticket, &save_as));
-    }
-
-    #[test]
-    fn periodic_capture_rejects_clean_or_no_longer_full_history_state() {
-        let ticket = ticket();
-        let mut clean = facts();
-        clean.modified = false;
-        assert!(!periodic_capture_is_current(&ticket, &clean));
-
-        for availability in [
-            local_history_service::LocalHistoryAvailability::SaveOnly,
-            local_history_service::LocalHistoryAvailability::Unavailable,
-        ] {
-            let mut limited = facts();
-            limited.availability = availability;
-            assert!(!periodic_capture_is_current(&ticket, &limited));
-        }
-    }
-
-    #[test]
-    fn modified_file_backed_editors_reschedule_without_tight_retry() {
-        assert!(should_reschedule_periodic_capture(true, true, false));
-        assert!(!should_reschedule_periodic_capture(false, true, false));
-        assert!(!should_reschedule_periodic_capture(true, false, false));
-        assert!(!should_reschedule_periodic_capture(true, true, true));
-    }
-
+    /// Exactly one automatic capture payload may cross the worker boundary at a
+    /// time, and the permit is released on drop.
+    ///
+    /// The admission flag is process-wide by design, because the thing being
+    /// bounded is document-sized text in flight rather than per-editor state.
+    /// That makes the acquire/release pair the whole contract: a permit that
+    /// failed to release would silently disable automatic local-history capture
+    /// for the rest of the session, and a permit that admitted twice would let
+    /// two full document copies cross the boundary at once.
+    ///
+    /// `cargo-nextest` runs each test in its own process, so this test owning a
+    /// process-global flag does not race its siblings.
     #[test]
     fn periodic_capture_admission_allows_only_one_text_payload() {
         let first = AutomaticHistoryCapturePermit::try_acquire().expect("first capture admitted");
-        assert!(AutomaticHistoryCapturePermit::try_acquire().is_none());
+        assert!(
+            automatic_capture_inflight(),
+            "the projected in-flight fact must agree with the held permit"
+        );
+        assert!(
+            AutomaticHistoryCapturePermit::try_acquire().is_none(),
+            "a second concurrent capture must be refused"
+        );
+
         drop(first);
-        assert!(AutomaticHistoryCapturePermit::try_acquire().is_some());
-    }
 
-    #[test]
-    fn failed_baseline_returns_only_to_its_original_cycle() {
-        let ticket = BaselineCaptureTicket {
-            editor_generation: 3,
-            path_generation: 5,
-            clean_baseline_generation: 7,
-            path: PathBuf::from("/workspace/current.md"),
-        };
-        let facts = BaselineCaptureFacts {
-            editor_generation: 3,
-            path_generation: 5,
-            clean_baseline_generation: 7,
-            path: Some(ticket.path.clone()),
-            modified: true,
-            baseline_slot_empty: true,
-        };
-        assert!(baseline_capture_is_current(&ticket, &facts));
-
-        for mutate in [
-            |facts: &mut BaselineCaptureFacts| facts.editor_generation += 1,
-            |facts: &mut BaselineCaptureFacts| facts.path_generation += 1,
-            |facts: &mut BaselineCaptureFacts| facts.clean_baseline_generation += 1,
-        ] {
-            let mut stale = facts.clone();
-            mutate(&mut stale);
-            assert!(!baseline_capture_is_current(&ticket, &stale));
-        }
-
-        let mut renamed = facts.clone();
-        renamed.path = Some(PathBuf::from("/workspace/renamed.md"));
-        assert!(!baseline_capture_is_current(&ticket, &renamed));
-
-        let mut newer_baseline = facts;
-        newer_baseline.baseline_slot_empty = false;
-        assert!(!baseline_capture_is_current(&ticket, &newer_baseline));
+        assert!(
+            !automatic_capture_inflight(),
+            "dropping the permit must clear the projected in-flight fact"
+        );
+        assert!(
+            AutomaticHistoryCapturePermit::try_acquire().is_some(),
+            "admission must be re-acquirable after release"
+        );
     }
 }

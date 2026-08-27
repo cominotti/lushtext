@@ -272,6 +272,17 @@ impl FileLoadAdmissionPolicy {
 }
 
 /// Return the next UTF-8-safe byte boundary for one install slice.
+///
+/// A **named domain synonym**, not a second implementation: the load workflow
+/// narrates in load vocabulary ("install slice"), while the arithmetic belongs to
+/// the cross-cutting bounded buffer-replacement policy
+/// ([`next_replacement_boundary`](super::buffer_replacement::next_replacement_boundary),
+/// owned by `WFR-BUFFER-REPLACEMENT`). Calling through here rather than copying
+/// it is what keeps the **paragraph-boundary contract** single-sourced: every
+/// slice ends just after a newline so GTK never re-lays-out an already-installed
+/// paragraph, and a paragraph larger than the slice budget installs in one turn.
+/// Read that function's documentation for the contract itself; this wrapper adds
+/// nothing but the name.
 #[must_use]
 pub fn next_install_boundary(text: &str, start: usize) -> usize {
     super::buffer_replacement::next_replacement_boundary(text, start)

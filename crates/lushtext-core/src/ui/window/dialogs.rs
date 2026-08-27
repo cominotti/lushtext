@@ -693,7 +693,7 @@ impl super::LushtextWindow {
     pub(super) fn begin_async_close_safety(&self) {
         // Keep the close transaction single-flight: duplicate close requests report
         // progress while the background draft flush and ordered session save finish.
-        if self.imp().session.close_safety_inflight.get() {
+        if self.close_safety_in_progress() {
             self.publish_status_message("Finishing close safety checks…", MessageKind::Info);
             return;
         }

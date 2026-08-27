@@ -69,7 +69,6 @@ use lushtext_core::ui::editor_page::save::policy::{
 use lushtext_core::ui::editor_page::{
     BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
     MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
-    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
 };
 use lushtext_core::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
 use lushtext_core::ui::plain_disposal::{
@@ -81,12 +80,13 @@ use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::search_panel::SearchPanelTestPolicy;
 use lushtext_core::ui::window::{
     DraftFlushError, LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
-    fail_next_draft_mutations_for_test, local_history_preview_install_snapshot_for_test,
+    fail_next_draft_mutations_for_test, local_history_preview_install_evidence,
     set_automatic_draft_limit_for_test, set_bookmark_excerpt_preview_delay_for_test,
     set_canonical_refresh_delay_for_test, set_close_safety_completion_delay_for_test,
     set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
     set_draft_restore_delay_for_test, set_first_dirty_autosave_delay_for_test,
-    set_lazy_draft_read_delay_for_test, set_local_history_preview_install_delay_for_test,
+    set_lazy_draft_read_delay_for_test, set_local_history_baseline_delay_for_test,
+    set_local_history_baseline_failures_for_test, set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
     set_next_draft_body_disposal_probe_for_test,
     set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
@@ -6404,6 +6404,129 @@ fn bounded_restore_tab(path: Option<PathBuf>, ordinal: usize) -> SessionTab {
 }
 
 #[test]
+fn test_session_restore_evidence_reads_stay_side_effect_free_across_restore_mutation() {
+    // The reentrancy constraint's required proof for this workflow: drive it
+    // through each operation that takes a mutable borrow of the state the
+    // accessor reads, read *after* each one, and assert repeated reads of
+    // unchanged state are identical. It deliberately never reads the surface
+    // while a borrow is held — that is the panic the constraint prevents.
+    //
+    // The accessor borrows three `RefCell`s: the restore runtime, the startup
+    // cancel token, and the failure detail.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let dir = tempfile::tempdir().expect("session-evidence tempdir");
+    let window = test_window();
+    present_window(&window);
+
+    let idle = window.session_restore_evidence();
+    assert!(!idle.active);
+    assert!(!idle.scheduled_source);
+    assert!(idle.mounted_pages.is_some());
+    let _ = window.session_restore_evidence();
+
+    // Stage B6: the runtime is installed under `restore_runtime`'s `borrow_mut()`
+    // and the first turn is armed.
+    let mut tabs = Vec::new();
+    for ordinal in 0..6 {
+        let path = (ordinal % 2 == 0).then(|| {
+            let path = dir.path().join(format!("evidence-{ordinal}.txt"));
+            fixture::write_text(&path, &format!("restored {ordinal}\n"));
+            path
+        });
+        tabs.push(bounded_restore_tab(path, ordinal));
+    }
+    window.restore_session_for_test(SessionData {
+        tabs,
+        active_tab_index: Some(3),
+    });
+    let started = window.session_restore_evidence();
+    assert!(started.active);
+    assert!(started.restoring);
+    assert_eq!(started.total_descriptors, 6);
+    let _ = window.session_restore_evidence();
+
+    // Each turn re-borrows the runtime mutably to plan and to release permits.
+    wait_until(Duration::from_secs(15), || {
+        window.session_restore_evidence().gtk_turns > 0
+    });
+    let _ = window.session_restore_evidence();
+
+    // Stage B9: the terminal takes the runtime and records the outcome under
+    // `last_restore_outcome`.
+    wait_until(Duration::from_secs(20), || {
+        let evidence = window.session_restore_evidence();
+        !evidence.active && evidence.pages_created == 6
+    });
+    let settled = window.session_restore_evidence();
+    assert_eq!(settled.terminal_projection_publications, 1);
+    assert!(settled.max_pages_in_one_turn <= 4);
+    let _ = window.session_restore_evidence();
+
+    // Stage A: the journal's debounce and its generation.
+    window.save_session_debounced();
+    let _ = window.session_restore_evidence();
+
+    // Cancellation takes the runtime under `borrow_mut()` and records again.
+    window.restore_session_for_test(SessionData {
+        tabs: vec![bounded_restore_tab(None, 99)],
+        active_tab_index: None,
+    });
+    window.cancel_session_restore_for_test();
+    let cancelled = window.session_restore_evidence();
+    assert!(cancelled.cancelled);
+    assert!(!cancelled.active);
+    let _ = window.session_restore_evidence();
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not arm the debounce, advance a generation, plan a turn, or release a
+    // permit.
+    let first_read = window.session_restore_evidence();
+    let second_read = window.session_restore_evidence();
+    assert_eq!(first_read, second_read);
+    assert_eq!(first_read.generation, second_read.generation);
+    assert_eq!(first_read.gtk_turns, second_read.gtk_turns);
+    assert_eq!(
+        first_read.planning_terminals,
+        second_read.planning_terminals
+    );
+    assert_eq!(
+        first_read.aggregate_projection_publications,
+        second_read.aggregate_projection_publications
+    );
+}
+
+#[test]
+fn test_session_restore_evidence_reads_survive_widget_disposal() {
+    // A disposed window is a stage. GTK4 clears template children in `dispose()`
+    // before Rust's `Drop`, and this surface derives `mounted_pages` from the tab
+    // view — so it reads through `try_get()` and answers `None` rather than a
+    // misleading zero.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    window.new_tab();
+
+    let before = window.session_restore_evidence();
+    assert_eq!(before.mounted_pages, Some(1));
+
+    // SAFETY: this test window is disposed exactly once, and the assertions
+    // afterwards only read the evidence surface.
+    unsafe { window.run_dispose() };
+
+    let after = window.session_restore_evidence();
+    assert_eq!(
+        after.mounted_pages, None,
+        "a disposed window must answer honestly rather than reporting zero pages"
+    );
+    assert!(!after.active);
+
+    // Repeated reads after disposal stay identical and still do not panic.
+    assert_eq!(after, window.session_restore_evidence());
+}
+
+#[test]
 fn test_startup_restore_progresses_while_ordinary_disposal_capacity_is_full() {
     ensure_gtk_init();
     let _data_dir = isolated_data_dir();
@@ -6452,7 +6575,7 @@ fn test_close_before_startup_descriptors_preserves_persisted_session() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.startup_session_descriptors_pending_for_test()
+            && window.session_restore_evidence().startup_descriptors_pending
     });
     let completed = Rc::new(Cell::new(false));
     let completed_clone = Rc::clone(&completed);
@@ -6504,7 +6627,7 @@ fn test_close_before_startup_descriptors_merges_new_untitled_recovery() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.startup_session_descriptors_pending_for_test()
+            && window.session_restore_evidence().startup_descriptors_pending
     });
     window.new_tab();
     let editor = active_editor(&window);
@@ -6594,7 +6717,7 @@ fn test_pre_restore_untitled_creation_cannot_overwrite_existing_draft_identity()
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.startup_session_descriptors_pending_for_test()
+            && window.session_restore_evidence().startup_descriptors_pending
     });
     window.new_tab();
     let editor = active_editor(&window);
@@ -6669,16 +6792,17 @@ fn test_close_aborts_when_pending_session_evidence_cannot_be_preserved() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.startup_session_descriptors_pending_for_test()
+            && window.session_restore_evidence().startup_descriptors_pending
     });
     window.close();
     wait_until(Duration::from_secs(10), || {
-        window.imp().session.save_failed.get() && !window.imp().session.close_safety_inflight.get()
+        let evidence = window.session_restore_evidence();
+        evidence.save_failed && !evidence.close_safety_inflight
     });
 
     assert!(window.is_visible());
     assert!(window.is_sensitive());
-    assert!(!window.imp().session.close_safety_bypass.get());
+    assert!(!window.session_restore_evidence().close_safety_bypass);
     assert_eq!(fixture::read_text(&session_path), malformed_session);
     assert!(
         window
@@ -6703,7 +6827,7 @@ fn test_bounded_session_restore_preserves_order_selection_and_one_terminal_proje
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.imp().session.restore_cancel.borrow().is_none()
+            && !window.session_restore_evidence().startup_load_cancellable
     });
 
     let mut tabs = Vec::new();
@@ -6721,23 +6845,23 @@ fn test_bounded_session_restore_preserves_order_selection_and_one_terminal_proje
         .clone()
         .expect("selected untitled identity");
     let baseline = window
-        .session_restore_runtime_snapshot_for_test()
+        .session_restore_evidence()
         .aggregate_projection_publications;
 
     window.restore_session_for_test(SessionData {
         tabs,
         active_tab_index: Some(8),
     });
-    let admitted = window.session_restore_runtime_snapshot_for_test();
+    let admitted = window.session_restore_evidence();
     assert!(admitted.active);
     assert!(admitted.scheduled_source);
     assert!(admitted.projection_deferred);
 
     wait_until(Duration::from_secs(15), || {
-        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        let snapshot = window.session_restore_evidence();
         !snapshot.active && snapshot.pages_created == 12
     });
-    let snapshot = window.session_restore_runtime_snapshot_for_test();
+    let snapshot = window.session_restore_evidence();
     assert_eq!(snapshot.total_descriptors, 12);
     assert!(snapshot.gtk_turns > 1);
     assert!(snapshot.max_pages_in_one_turn <= 4);
@@ -6792,7 +6916,7 @@ fn test_close_session_snapshot_preserves_not_yet_mounted_restore_descriptors() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.imp().session.restore_cancel.borrow().is_none()
+            && !window.session_restore_evidence().startup_load_cancellable
     });
 
     let tabs = (0..10)
@@ -6810,7 +6934,7 @@ fn test_close_session_snapshot_preserves_not_yet_mounted_restore_descriptors() {
         active_tab_index: Some(8),
     });
     wait_until(Duration::from_secs(5), || {
-        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        let snapshot = window.session_restore_evidence();
         snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 8
     });
 
@@ -6843,7 +6967,7 @@ fn test_newer_tab_selection_survives_later_session_restore_turns() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.imp().session.restore_cancel.borrow().is_none()
+            && !window.session_restore_evidence().startup_load_cancellable
     });
 
     let tabs = (0..6)
@@ -6858,7 +6982,7 @@ fn test_newer_tab_selection_survives_later_session_restore_turns() {
         active_tab_index: Some(5),
     });
     wait_until(Duration::from_secs(5), || {
-        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        let snapshot = window.session_restore_evidence();
         snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 4
     });
     let explicitly_selected = window.imp().tab_view.nth_page(0);
@@ -6868,7 +6992,7 @@ fn test_newer_tab_selection_survives_later_session_restore_turns() {
         .set_selected_page(&explicitly_selected);
 
     wait_until(Duration::from_secs(10), || {
-        !window.session_restore_runtime_snapshot_for_test().active
+        !window.session_restore_evidence().active
     });
 
     assert_eq!(
@@ -6892,7 +7016,7 @@ fn test_restore_terminal_queues_session_save_for_mutations_suppressed_mid_restor
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.imp().session.restore_cancel.borrow().is_none()
+            && !window.session_restore_evidence().startup_load_cancellable
     });
 
     let tabs = (0..6)
@@ -6907,14 +7031,14 @@ fn test_restore_terminal_queues_session_save_for_mutations_suppressed_mid_restor
         active_tab_index: Some(5),
     });
     wait_until(Duration::from_secs(5), || {
-        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        let snapshot = window.session_restore_evidence();
         snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 4
     });
     let first_page = window.imp().tab_view.nth_page(0);
     window.imp().tab_view.set_page_pinned(&first_page, true);
 
     wait_until(Duration::from_secs(10), || {
-        !window.session_restore_runtime_snapshot_for_test().active
+        !window.session_restore_evidence().active
     });
     wait_until(Duration::from_secs(5), || {
         session_service::load(&json_store::data_dir())
@@ -6936,7 +7060,7 @@ fn test_session_restore_cancellation_clears_pending_permits_source_and_projectio
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.imp().session.restore_cancel.borrow().is_none()
+            && !window.session_restore_evidence().startup_load_cancellable
     });
 
     let tabs = (0..8)
@@ -6947,20 +7071,20 @@ fn test_session_restore_cancellation_clears_pending_permits_source_and_projectio
         })
         .collect();
     let baseline = window
-        .session_restore_runtime_snapshot_for_test()
+        .session_restore_evidence()
         .aggregate_projection_publications;
     window.restore_session_for_test(SessionData {
         tabs,
         active_tab_index: Some(7),
     });
     wait_until(Duration::from_secs(5), || {
-        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        let snapshot = window.session_restore_evidence();
         snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 6
     });
 
     window.cancel_session_restore_for_test();
 
-    let snapshot = window.session_restore_runtime_snapshot_for_test();
+    let snapshot = window.session_restore_evidence();
     assert!(!snapshot.active);
     assert!(!snapshot.scheduled_source);
     assert!(!snapshot.projection_deferred);
@@ -6992,7 +7116,7 @@ fn test_session_restore_editor_and_window_teardown_release_all_planning_ownershi
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.imp().session.restore_cancel.borrow().is_none()
+            && !window.session_restore_evidence().startup_load_cancellable
     });
 
     let tabs = (0..4)
@@ -7007,7 +7131,7 @@ fn test_session_restore_editor_and_window_teardown_release_all_planning_ownershi
         active_tab_index: Some(3),
     });
     wait_until(Duration::from_secs(5), || {
-        let snapshot = window.session_restore_runtime_snapshot_for_test();
+        let snapshot = window.session_restore_evidence();
         snapshot.active_file_plans == 2 && snapshot.pending_descriptors == 2
     });
 
@@ -7016,7 +7140,7 @@ fn test_session_restore_editor_and_window_teardown_release_all_planning_ownershi
     drop(first_page);
     wait_until(Duration::from_secs(5), || {
         window
-            .session_restore_runtime_snapshot_for_test()
+            .session_restore_evidence()
             .pages_created
             >= 3
     });
@@ -7028,7 +7152,7 @@ fn test_session_restore_editor_and_window_teardown_release_all_planning_ownershi
         window.run_dispose();
     }
 
-    let snapshot = window.session_restore_runtime_snapshot_for_test();
+    let snapshot = window.session_restore_evidence();
     assert!(!snapshot.active);
     assert!(!snapshot.scheduled_source);
     assert!(!snapshot.projection_deferred);
@@ -7646,8 +7770,8 @@ fn test_orphan_cleanup_coalesces_timers_and_serializes_workers() {
 
     wait_until(Duration::from_secs(10), || {
         window
-            .orphan_cleanup_runtime_snapshot_for_test()
-            .timer_pending
+            .draft_evidence()
+            .cleanup_timer_pending
     });
     set_orphan_cleanup_delays_for_test(0, 1, 200);
     window.schedule_orphan_cleanup_for_test(true);
@@ -7655,31 +7779,244 @@ fn test_orphan_cleanup_coalesces_timers_and_serializes_workers() {
 
     wait_until(Duration::from_secs(10), || {
         window
-            .orphan_cleanup_runtime_snapshot_for_test()
-            .worker_active
+            .draft_evidence()
+            .cleanup_worker_active
     });
     window.schedule_orphan_cleanup_for_test(true);
     wait_until(Duration::from_secs(10), || {
-        let snapshot = window.orphan_cleanup_runtime_snapshot_for_test();
-        snapshot.workers_started == 2 && !snapshot.worker_active && !snapshot.timer_pending
+        let snapshot = window.draft_evidence();
+        snapshot.cleanup_workers_started == 2 && !snapshot.cleanup_worker_active && !snapshot.cleanup_timer_pending
     });
 
-    let snapshot = window.orphan_cleanup_runtime_snapshot_for_test();
-    assert_eq!(snapshot.workers_started, 2);
-    assert_eq!(snapshot.workers_high_water, 1);
+    let snapshot = window.draft_evidence();
+    assert_eq!(snapshot.cleanup_workers_started, 2);
+    assert_eq!(snapshot.cleanup_workers_high_water, 1);
 
     set_orphan_cleanup_delays_for_test(100, 1, 0);
     window.schedule_orphan_cleanup_for_test(false);
     assert!(
         window
-            .orphan_cleanup_runtime_snapshot_for_test()
-            .timer_pending
+            .draft_evidence()
+            .cleanup_timer_pending
     );
     window.dispose_orphan_cleanup_for_test();
     flush_after_delay(Duration::from_millis(150));
-    let disposed = window.orphan_cleanup_runtime_snapshot_for_test();
-    assert!(!disposed.timer_pending);
-    assert_eq!(disposed.workers_started, 2);
+    let disposed = window.draft_evidence();
+    assert!(!disposed.cleanup_timer_pending);
+    assert_eq!(disposed.cleanup_workers_started, 2);
+}
+
+#[test]
+fn test_draft_evidence_reads_stay_side_effect_free_across_draft_mutation() {
+    // The reentrancy constraint's required proof for the workflow with the most
+    // borrowed state in the tree. The accessor takes shared borrows of the
+    // manifest, the pending-delete queue, the tombstone map, the discard set, the
+    // preload graph, and the lazy-restore queue; every stage below mutates at
+    // least one of them under `borrow_mut()`.
+    //
+    // The manifest is read as a **count**, never cloned — it can hold thousands
+    // of entries, and an evidence read must not become a document-sized copy.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let _reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(25);
+    let window = test_window();
+    present_window(&window);
+    window.new_tab();
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+
+    let idle = window.draft_evidence();
+    assert!(!idle.autosave_inflight);
+    assert!(!idle.mutation_inflight);
+    assert_eq!(idle.pending_delete_count, 0);
+    assert!(idle.mounted_pages.is_some());
+    let _ = window.draft_evidence();
+
+    // Stage A1: the first dirty edit arms the first-dirty timer.
+    editor.buffer().set_text("draft evidence body\n");
+    editor.buffer().set_modified(true);
+    let _ = window.draft_evidence();
+
+    // Stages A3-A5: the pipeline takes the mutation order, the manifest, and the
+    // retained-body counters, all under `borrow_mut()`.
+    window.autosave_tick_for_test();
+    let _ = window.draft_evidence();
+    wait_until(Duration::from_secs(15), || {
+        let evidence = window.draft_evidence();
+        !evidence.autosave_inflight && !evidence.mutation_inflight
+    });
+    let after_autosave = window.draft_evidence();
+    assert!(after_autosave.manifest_entries >= 1);
+    // The pipeline's boundedness invariant: never more than one complete body.
+    assert!(after_autosave.max_retained_complete_bodies <= 1);
+    let _ = window.draft_evidence();
+
+    // Journal: a delete advances an intent epoch, installs a tombstone, and
+    // appends to the pending queue — three `borrow_mut()`s in one operation.
+    window.delete_draft_by_id(&draft_id);
+    let deleting = window.draft_evidence();
+    assert!(deleting.delete_tombstone_count >= 1 || deleting.mutation_inflight);
+    let _ = window.draft_evidence();
+
+    wait_until(Duration::from_secs(15), || {
+        let evidence = window.draft_evidence();
+        !evidence.mutation_inflight && evidence.pending_delete_count == 0
+    });
+    let _ = window.draft_evidence();
+
+    // Stage C11: scheduling cleanup writes the timer flag, the offset, and the
+    // failure streak.
+    window.schedule_orphan_cleanup_for_test(false);
+    let scheduled = window.draft_evidence();
+    assert!(scheduled.cleanup_timer_pending);
+    let _ = window.draft_evidence();
+    window.dispose_orphan_cleanup_for_test();
+    let _ = window.draft_evidence();
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not arm a timer, advance an intent epoch, or admit a restore.
+    let first_read = window.draft_evidence();
+    let second_read = window.draft_evidence();
+    assert_eq!(first_read, second_read);
+    assert_eq!(first_read.manifest_entries, second_read.manifest_entries);
+    assert_eq!(
+        first_read.max_retained_complete_bodies,
+        second_read.max_retained_complete_bodies
+    );
+    assert_eq!(
+        first_read.cleanup_workers_started,
+        second_read.cleanup_workers_started
+    );
+    assert_eq!(first_read.blocks_readiness, second_read.blocks_readiness);
+}
+
+#[test]
+fn test_draft_evidence_reads_survive_widget_disposal() {
+    // A disposed window is a stage, and this workflow is the one a teardown test
+    // most needs to ask about: "what did recovery record before the window went
+    // away". `mounted_pages` comes from the tab view, a `TemplateChild`, so it
+    // reads through `try_get()` and answers `None` rather than a misleading zero.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    window.new_tab();
+
+    let before = window.draft_evidence();
+    assert_eq!(before.mounted_pages, Some(1));
+
+    // SAFETY: this test window is disposed exactly once, and the assertions
+    // afterwards only read the evidence surface.
+    unsafe { window.run_dispose() };
+
+    let after = window.draft_evidence();
+    assert_eq!(
+        after.mounted_pages, None,
+        "a disposed window must answer honestly rather than reporting zero pages"
+    );
+    assert!(!after.cleanup_timer_pending, "dispose cancels cleanup");
+
+    // Repeated reads after disposal stay identical and still do not panic.
+    assert_eq!(after, window.draft_evidence());
+}
+
+#[test]
+fn test_incomplete_load_installation_blocks_draft_autosave_over_a_good_draft() {
+    // Data-safety regression. A cancelled bounded installation empties the
+    // buffer on purpose and clears `modified` without clearing `draft_dirty`, so
+    // one keystroke afterwards used to make a near-empty buffer look like an
+    // ordinary dirty candidate — and the next autosave batch wrote it over a
+    // draft that still held real unsaved work. The document file is untouched on
+    // that path, so the loss is the recovery record itself.
+    //
+    // The save workflow already refuses on the same flag with
+    // `IncompleteLoadInstallation`; this pins the autosave lane's matching guard.
+    ensure_gtk_init();
+    let _reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(25);
+    let dir = tempfile::tempdir().expect("incomplete install autosave tempdir");
+    let document = dir.path().join("document.txt");
+    fixture::write_text(&document, "on disk\n");
+    // Large enough to force a chunked installation, so the load can be cancelled
+    // while the buffer holds neither the old document nor the new one.
+    let replacement = dir.path().join("replacement.txt");
+    fixture::write_text(&replacement, &"paragraph line\n".repeat(200_000));
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&document);
+    let editor = active_editor(&window);
+    wait_until(Duration::from_secs(10), || {
+        editor.load_state() == EditorLoadState::Loaded
+    });
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+
+    // A draft holding real unsaved work.
+    const PRESERVED: &str = "important unsaved work\n";
+    editor.buffer().set_text(PRESERVED);
+    editor.buffer().set_modified(true);
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_evidence().autosave_inflight
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read seeded draft")
+                .as_deref()
+                == Some(PRESERVED)
+    });
+
+    // Cancel a live installation on the same tab.
+    editor.reset_transient_load_admission_for_test();
+    editor.load_file_async(&replacement);
+    wait_until(Duration::from_secs(10), || {
+        editor.load_evidence().installation_active
+    });
+    editor.cancel_load();
+    assert!(
+        editor.load_evidence().installation_incomplete,
+        "cancelling a live installation must mark the load incomplete immediately"
+    );
+
+    // Cancellation clears the partial buffer in bounded slices and only then
+    // restores projection and editability, so the keystroke below has to wait
+    // for that terminal — until it lands, buffer signals are suppressed and no
+    // edit can mark the tab draft-dirty at all.
+    wait_until(Duration::from_secs(10), || {
+        let evidence = editor.load_evidence();
+        !evidence.installation_active && !evidence.projection_suspended
+    });
+    assert!(
+        editor.load_evidence().installation_incomplete,
+        "the cancelled-clear terminal must leave the load incomplete"
+    );
+    assert!(!editor.is_modified(), "the cancelled clear clears modified");
+
+    // One keystroke. This is the step that used to re-arm the lane.
+    let mut end = editor.buffer().end_iter();
+    editor.buffer().insert(&mut end, "x");
+
+    // The precondition the guard depends on: the tab now looks like an ordinary
+    // dirty autosave candidate in every respect except the new flag.
+    assert!(editor.is_modified());
+    assert!(editor.draft_dirty());
+    assert!(!editor.is_evicted());
+    assert!(editor.load_evidence().installation_incomplete);
+
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_evidence().autosave_inflight && !window.draft_evidence().mutation_inflight
+    });
+
+    // The safety property: the preserved draft is byte-identical.
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id)
+            .expect("read draft after autosave tick")
+            .as_deref(),
+        Some(PRESERVED),
+        "autosave must not write a partially installed buffer over a good draft"
+    );
+
+    let _ = draft_service::delete_draft_file(&data_dir, &draft_id);
 }
 
 #[test]
@@ -7717,7 +8054,7 @@ fn test_first_dirty_autosave_writes_small_buffer_before_periodic_tick() {
     editor.buffer().set_modified(true);
 
     wait_until(Duration::from_secs(3), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && !editor.draft_dirty()
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read first-dirty draft")
@@ -7760,7 +8097,7 @@ fn test_first_dirty_autosave_failure_keeps_editor_retry_eligible() {
     editor.buffer().set_modified(true);
 
     wait_until(Duration::from_secs(3), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read retryable draft")
                 .is_some()
@@ -7778,7 +8115,7 @@ fn test_first_dirty_autosave_failure_keeps_editor_retry_eligible() {
     fixture::remove_dir_all(&manifest_path);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(3), || {
-        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
 
     draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete draft file");
@@ -7807,7 +8144,7 @@ fn test_first_dirty_autosave_large_buffer_snapshots_across_main_loop_chunks() {
         "large draft buffers should use the main-loop chunked snapshot path"
     );
     wait_until(Duration::from_secs(15), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read draft")
                 .is_some_and(|content| content.len() == large_text.len())
@@ -7838,11 +8175,11 @@ fn test_draft_pipeline_retains_at_most_one_complete_body_across_many_tabs() {
 
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(15), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && editors.iter().all(|editor| !editor.draft_dirty())
     });
 
-    assert_eq!(window.draft_pipeline_max_retained_bodies_for_test(), 1);
+    assert_eq!(window.draft_evidence().max_retained_complete_bodies, 1);
 }
 
 #[test]
@@ -7863,7 +8200,7 @@ fn test_draft_pipeline_limit_stays_retryable_then_clears_after_acceptance() {
     editor.buffer().set_modified(true);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(3), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
     });
 
     assert!(editor.draft_dirty());
@@ -7885,7 +8222,7 @@ fn test_draft_pipeline_limit_stays_retryable_then_clears_after_acceptance() {
     editor.buffer().set_modified(true);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(3), || {
-        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
 
     assert!(
@@ -7942,11 +8279,11 @@ fn test_draft_pipeline_lazy_restore_rejects_stale_editor_and_advances_queue() {
 
     window.check_draft_by_id(&first, &first_id);
     window.check_draft_by_id(&second, &second_id);
-    assert!(window.lazy_draft_restore_inflight_for_test());
+    assert!(window.draft_evidence().lazy_restore_inflight);
     first.buffer().set_text("user edit wins");
     first.buffer().set_modified(true);
     wait_until(Duration::from_secs(3), || {
-        !window.lazy_draft_restore_inflight_for_test()
+        !window.draft_evidence().lazy_restore_inflight
             && editor_buffer_text(&second) == "current lazy body"
     });
 
@@ -7983,11 +8320,11 @@ fn test_ordinary_untitled_restore_rejects_edit_and_preserves_recovery() {
         .expect("persist recovery manifest");
 
     window.check_draft_by_id(&editor, &draft_id);
-    assert!(window.draft_restore_inflight_for_test());
+    assert!(window.draft_evidence().restores_inflight > 0);
     editor.buffer().set_text("live edit wins");
     editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(5), || {
-        !window.draft_restore_inflight_for_test()
+        !window.draft_evidence().restores_inflight > 0
     });
 
     assert_eq!(editor_buffer_text(&editor), "live edit wins");
@@ -8036,7 +8373,7 @@ fn test_ordinary_restore_blocks_readiness_and_empty_candidate_close() {
         .expect("LushText application");
 
     window.check_draft_by_id(&editor, &draft_id);
-    assert!(window.draft_restore_inflight_for_test());
+    assert!(window.draft_evidence().restores_inflight > 0);
     let readiness = glib::MainContext::default().block_on(wait_for_ready_for_test(
         app,
         AutomationReadinessPredicate::Idle,
@@ -8095,14 +8432,14 @@ fn test_file_restore_rejects_reload_and_path_change() {
             .expect("persist recovery manifest");
 
         window.check_draft_on_open(&editor, &path);
-        assert!(window.draft_restore_inflight_for_test());
+        assert!(window.draft_evidence().restores_inflight > 0);
         if invalidate_with_reload {
             editor.cancel_load();
         } else {
             editor.set_file_path(&dir.path().join("renamed.txt"));
         }
         wait_until(Duration::from_secs(5), || {
-            !window.draft_restore_inflight_for_test()
+            !window.draft_evidence().restores_inflight > 0
         });
 
         assert_eq!(editor_buffer_text(&editor), "");
@@ -8154,7 +8491,7 @@ fn test_file_restore_rejects_manifest_replacement_and_closed_editor() {
             .expect("persist recovery manifest");
 
         window.check_draft_on_open(&editor, &path);
-        assert!(window.draft_restore_inflight_for_test());
+        assert!(window.draft_evidence().restores_inflight > 0);
         if close_editor {
             close_selected_tab(&window);
             drop(editor);
@@ -8171,7 +8508,7 @@ fn test_file_restore_rejects_manifest_replacement_and_closed_editor() {
                 .expect("persist replacement manifest");
         }
         wait_until(Duration::from_secs(5), || {
-            !window.draft_restore_inflight_for_test()
+            !window.draft_evidence().restores_inflight > 0
         });
 
         assert_eq!(
@@ -8223,7 +8560,7 @@ fn test_draft_pipeline_lazy_read_failure_preserves_body_and_reports_diagnostic()
 
     window.check_draft_by_id(&editor, &draft_id);
     wait_until(Duration::from_secs(3), || {
-        !window.lazy_draft_restore_inflight_for_test()
+        !window.draft_evidence().lazy_restore_inflight
             && window
                 .imp()
                 .notification_bus
@@ -8270,11 +8607,11 @@ fn test_draft_pipeline_mutated_snapshot_retries_once_with_complete_latest_body()
     editor.buffer().set_modified(true);
 
     window.autosave_tick_for_test();
-    assert!(window.draft_autosave_inflight_for_test());
+    assert!(window.draft_evidence().autosave_inflight);
     editor.buffer().set_text(&latest);
     editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(10), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read retried draft")
                 .as_deref()
@@ -8391,7 +8728,7 @@ fn test_draft_pipeline_partial_body_failure_does_not_publish_an_authoritative_su
 
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
     });
 
     assert!(good.draft_dirty());
@@ -8408,7 +8745,7 @@ fn test_draft_pipeline_partial_body_failure_does_not_publish_an_authoritative_su
     fixture::remove_dir_all(&failed_path);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
     });
 
     assert!(!good.draft_dirty());
@@ -8439,12 +8776,12 @@ fn test_save_tombstone_wins_over_delayed_autosave_body_and_manifest() {
     editor.buffer().set_modified(true);
 
     window.autosave_tick_for_test();
-    assert!(window.draft_autosave_inflight_for_test());
+    assert!(window.draft_evidence().autosave_inflight);
     activate_action(&window, "save");
 
     wait_until(Duration::from_secs(10), || {
         !editor.is_saving()
-            && !window.draft_autosave_inflight_for_test()
+            && !window.draft_evidence().autosave_inflight
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read final draft state")
                 .is_none()
@@ -8479,7 +8816,7 @@ fn test_delete_after_body_before_manifest_acceptance_is_final() {
 
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        window.draft_autosave_inflight_for_test()
+        window.draft_evidence().autosave_inflight
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read body stage")
                 .is_some()
@@ -8487,7 +8824,7 @@ fn test_delete_after_body_before_manifest_acceptance_is_final() {
     window.delete_draft_by_id(&draft_id);
 
     wait_until(Duration::from_secs(10), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read final body")
                 .is_none()
@@ -8516,7 +8853,7 @@ fn test_delete_after_upsert_dispatch_wins_before_completion() {
 
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        window.draft_autosave_inflight_for_test()
+        window.draft_evidence().autosave_inflight
             && draft_service::load_manifest(&data_dir)
                 .expect("load dispatched upsert")
                 .find_by_id(&draft_id)
@@ -8525,7 +8862,7 @@ fn test_delete_after_upsert_dispatch_wins_before_completion() {
     window.delete_draft_by_id(&draft_id);
 
     wait_until(Duration::from_secs(10), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read final body")
                 .is_none()
@@ -8552,7 +8889,7 @@ fn test_edit_after_delayed_delete_creates_newer_recovery() {
     editor.buffer().set_modified(true);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
 
     set_draft_mutation_delays_for_test(0, 0, 180);
@@ -8561,7 +8898,7 @@ fn test_edit_after_delayed_delete_creates_newer_recovery() {
     editor.buffer().set_modified(true);
 
     wait_until(Duration::from_secs(10), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
             && !editor.draft_dirty()
             && draft_service::read_draft(&data_dir, &draft_id)
                 .expect("read newer recovery")
@@ -8592,7 +8929,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     fail_next_draft_mutations_for_test(true, false, false);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
     });
     assert!(editor.draft_dirty());
     assert_eq!(
@@ -8603,7 +8940,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     fail_next_draft_mutations_for_test(false, true, false);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        !window.draft_autosave_inflight_for_test()
+        !window.draft_evidence().autosave_inflight
     });
     assert!(editor.draft_dirty());
     assert_eq!(
@@ -8613,12 +8950,12 @@ fn test_injected_draft_stage_failures_remain_retryable() {
 
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
     fail_next_draft_mutations_for_test(false, false, true);
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(5), || {
-        !window.draft_mutation_inflight_for_test()
+        !window.draft_evidence().mutation_inflight
             && draft_service::load_manifest(&data_dir)
                 .expect("load manifest after failed body delete")
                 .find_by_id(&draft_id)
@@ -8628,7 +8965,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
         draft_service::read_draft(&data_dir, &draft_id).expect("read retained failed delete"),
         Some("retry every stage".to_string())
     );
-    assert!(window.draft_delete_tombstoned_for_test(&draft_id));
+    assert!(window.draft_delete_is_tombstoned(&draft_id));
 
     window.new_tab();
     let unrelated_editor = active_editor(&window);
@@ -8637,7 +8974,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
     unrelated_editor.buffer().set_modified(true);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(5), || {
-        !window.draft_autosave_inflight_for_test() && !unrelated_editor.draft_dirty()
+        !window.draft_evidence().autosave_inflight && !unrelated_editor.draft_dirty()
     });
     let manifest_after_unrelated =
         draft_service::load_manifest(&data_dir).expect("load manifest after unrelated autosave");
@@ -8649,7 +8986,7 @@ fn test_injected_draft_stage_failures_remain_retryable() {
         draft_service::read_draft(&data_dir, &draft_id)
             .expect("read retried delete")
             .is_none()
-            && !window.draft_delete_tombstoned_for_test(&draft_id)
+            && !window.draft_delete_is_tombstoned(&draft_id)
     });
 }
 
@@ -8675,13 +9012,13 @@ fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone(
     editor.buffer().set_modified(true);
     window.autosave_tick_for_test();
     wait_until(Duration::from_secs(10), || {
-        !window.draft_autosave_inflight_for_test() && !editor.draft_dirty()
+        !window.draft_evidence().autosave_inflight && !editor.draft_dirty()
     });
 
     fail_next_draft_mutations_for_test(false, false, true);
     window.delete_draft_by_id(&draft_id);
     wait_until(Duration::from_secs(10), || {
-        !window.draft_mutation_inflight_for_test()
+        !window.draft_evidence().mutation_inflight
             && draft_service::load_manifest(&data_dir)
                 .expect("load failed file-backed delete manifest")
                 .find_by_id(&draft_id)
@@ -8690,7 +9027,7 @@ fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone(
                 .expect("read retained file-backed body")
                 .is_some()
     });
-    assert!(window.draft_delete_tombstoned_for_test(&draft_id));
+    assert!(window.draft_delete_is_tombstoned(&draft_id));
 
     session_service::save(
         &data_dir,
@@ -8720,7 +9057,7 @@ fn test_file_backed_draft_body_delete_failure_keeps_an_explicit_retry_tombstone(
         draft_service::read_draft(&data_dir, &draft_id)
             .expect("read retried file-backed delete")
             .is_none()
-            && !window.draft_delete_tombstoned_for_test(&draft_id)
+            && !window.draft_delete_is_tombstoned(&draft_id)
     });
 }
 
@@ -10262,7 +10599,7 @@ fn test_workspace_close_flush_failure_aborts_and_later_close_recovers() {
     wait_until(Duration::from_secs(10), || {
         window.is_visible()
             && window.is_sensitive()
-            && !window.imp().session.close_safety_inflight.get()
+            && !window.session_restore_evidence().close_safety_inflight
             && window
                 .imp()
                 .notification_bus
@@ -11826,7 +12163,7 @@ fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
     let _reset = LocalHistoryPreviewPolicyReset;
     set_local_history_preview_read_delay_for_test(2);
     set_local_history_preview_install_delay_for_test(200);
-    let before = local_history_preview_install_snapshot_for_test();
+    let before = local_history_preview_install_evidence();
     let window = test_window_with_restored_size(1400, 900);
     present_window(&window);
     let dir = tempfile::tempdir().expect("preview supersession tempdir");
@@ -11875,7 +12212,7 @@ fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
     assert!(!copy_button.is_sensitive());
     assert!(!restore_button.is_sensitive());
     wait_until(Duration::from_secs(15), || {
-        local_history_preview_install_snapshot_for_test().slices > before.slices
+        local_history_preview_install_evidence().slices > before.slices
     });
     assert!(main_loop_progressed.get());
     sidebar.set_selected(1);
@@ -11887,7 +12224,7 @@ fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
             && copy_button.is_sensitive()
             && restore_button.is_sensitive()
     });
-    let installed = local_history_preview_install_snapshot_for_test();
+    let installed = local_history_preview_install_evidence();
     assert!(installed.slices.saturating_sub(before.slices) > 1);
     assert!(installed.cancellations > before.cancellations);
     eprintln!(
@@ -11899,13 +12236,13 @@ fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
 
     sidebar.set_selected(0);
     wait_until(Duration::from_secs(15), || {
-        local_history_preview_install_snapshot_for_test().slices > installed.slices
+        local_history_preview_install_evidence().slices > installed.slices
     });
     dialog.close();
     flush_after_delay(Duration::from_millis(250));
     assert!(visible_sheet_dialog(&window).is_none());
     assert!(
-        local_history_preview_install_snapshot_for_test().cancellations > installed.cancellations
+        local_history_preview_install_evidence().cancellations > installed.cancellations
     );
 }
 
@@ -11962,7 +12299,7 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
 
     let restore_target_chars = i32::try_from(restore_target.chars().count()).unwrap_or(i32::MAX);
     wait_until(Duration::from_secs(60), || {
-        !editor.buffer_replacement_in_progress_for_test()
+        !editor.buffer_replacement_evidence().in_progress
             && editor.buffer().char_count() == restore_target_chars
     });
     assert_eq!(editor_text(&editor), restore_target);
@@ -11989,9 +12326,9 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
             .expect("restore safety snapshot body");
     assert_eq!(safety.text, working_copy);
     assert!(editor.is_modified());
-    assert!(editor.buffer_replacement_slice_count_for_test() > 1);
+    assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let restore_diagnostic = editor
-        .buffer_replacement_terminal_diagnostic_for_test()
+        .buffer_replacement_evidence().last_terminal
         .expect("history restore terminal diagnostic");
     assert_eq!(
         restore_diagnostic.ticket.workflow,
@@ -12005,27 +12342,27 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
         "Undo Restore",
     )
     .expect("undo restore button");
-    assert!(editor.has_local_history_restore_undo_for_test());
+    assert!(editor.local_history_evidence().restore_undo_available);
     editor.make_buffer_replacement_stale_after_slices_for_test(1);
     undo_button.emit_clicked();
     wait_until(Duration::from_secs(10), || {
-        !editor.buffer_replacement_in_progress_for_test()
-            && editor.has_local_history_restore_undo_for_test()
+        !editor.buffer_replacement_evidence().in_progress
+            && editor.local_history_evidence().restore_undo_available
     });
     assert_eq!(editor_text(&editor), "");
 
     undo_button.emit_clicked();
     let working_copy_chars = i32::try_from(working_copy.chars().count()).unwrap_or(i32::MAX);
     wait_until(Duration::from_secs(60), || {
-        !editor.buffer_replacement_in_progress_for_test()
+        !editor.buffer_replacement_evidence().in_progress
             && editor.buffer().char_count() == working_copy_chars
     });
     assert_eq!(editor_text(&editor), working_copy);
     assert!(editor.is_modified());
     assert!(editor.source_view().is_editable());
-    assert!(editor.buffer_replacement_slice_count_for_test() > 1);
+    assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let undo_diagnostic = editor
-        .buffer_replacement_terminal_diagnostic_for_test()
+        .buffer_replacement_evidence().last_terminal
         .expect("history undo terminal diagnostic");
     assert_eq!(
         undo_diagnostic.ticket.workflow,
@@ -12085,7 +12422,7 @@ fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() 
     flush_after_delay(Duration::from_millis(150));
 
     assert_eq!(editor_text(&editor), working_copy);
-    assert!(!editor.buffer_replacement_in_progress_for_test());
+    assert!(!editor.buffer_replacement_evidence().in_progress);
     assert!(
         local_history_service::list_snapshots_for_path(&data_dir, &path)
             .expect("list snapshots while restore is deferred")
@@ -12101,14 +12438,14 @@ fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() 
 
     drop(progress_hold);
     wait_until(Duration::from_secs(30), || {
-        !editor.buffer_replacement_in_progress_for_test()
+        !editor.buffer_replacement_evidence().in_progress
             && editor.buffer().char_count()
                 == i32::try_from(restore_target.chars().count()).unwrap_or(i32::MAX)
     });
     assert_eq!(editor_text(&editor), restore_target);
     let lane_after = progress_lane_snapshot_for_test();
     assert_eq!(lane_after.admitted_jobs, lane_before.admitted_jobs + 1);
-    assert!(editor.has_local_history_restore_undo_for_test());
+    assert!(editor.local_history_evidence().restore_undo_available);
 }
 
 #[test]
@@ -12378,8 +12715,8 @@ fn test_failed_local_history_baseline_cannot_replace_newer_saved_cycle() {
     editor.buffer().set_text("second editing cycle\n");
     editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(10), || {
-        !editor.local_history_automatic_capture_inflight_for_test()
-            && !editor.local_history_baseline_candidate_present_for_test()
+        !editor.local_history_evidence().automatic_capture_inflight
+            && !editor.local_history_evidence().baseline_candidate_present
     });
     let snapshots =
         local_history_service::list_snapshots_for_path(&data_dir, &path).expect("list snapshots");
@@ -12415,8 +12752,8 @@ fn test_local_history_baseline_retry_is_bounded_and_releases_permit() {
     editor.buffer().set_text("modified\n");
     editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(5), || {
-        editor.local_history_baseline_candidate_present_for_test()
-            && !editor.local_history_baseline_retry_pending_for_test()
+        editor.local_history_evidence().baseline_candidate_present
+            && !editor.local_history_evidence().baseline_retry_pending
     });
     assert!(
         local_history_service::list_snapshots_for_path(&data_dir, &path)
@@ -13136,7 +13473,7 @@ fn test_confirmed_close_rejects_input_and_aborts_on_new_content_generation() {
 
     window.close();
     wait_until(Duration::from_secs(2), || {
-        window.imp().session.close_safety_inflight.get()
+        window.session_restore_evidence().close_safety_inflight
     });
     assert!(
         !window.is_sensitive(),
@@ -13146,7 +13483,7 @@ fn test_confirmed_close_rejects_input_and_aborts_on_new_content_generation() {
     editor.buffer().set_text("late content generation\n");
     editor.buffer().set_modified(true);
     wait_until(Duration::from_secs(3), || {
-        !window.imp().session.close_safety_inflight.get()
+        !window.session_restore_evidence().close_safety_inflight
     });
 
     assert!(window.is_visible());
@@ -13208,7 +13545,7 @@ fn test_sync_session_save_failure_keeps_retry_state_and_warns_user() {
             .status_bar_view()
             .is_some_and(|status| status.text.contains("Session layout may not restore"))
     });
-    assert!(window.imp().session.save_failed.get());
+    assert!(window.session_restore_evidence().save_failed);
     assert!(
         window
             .imp()
@@ -13223,8 +13560,8 @@ fn test_sync_session_save_failure_keeps_retry_state_and_warns_user() {
     window.save_session_sync();
 
     wait_until(Duration::from_secs(2), || {
-        !window.imp().session.save_failed.get()
-            && window.imp().session.failure_detail.borrow().is_none()
+        !window.session_restore_evidence().save_failed
+            && !window.session_restore_evidence().failure_detail_present
     });
     let session = session_service::load(&data_dir).expect("retry should write clean session");
     assert_eq!(session.tabs.len(), 1);
@@ -18598,7 +18935,7 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
 
     window.check_draft_by_id(&editor, &draft_id);
 
-    assert!(editor.buffer_replacement_in_progress_for_test());
+    assert!(editor.buffer_replacement_evidence().in_progress);
     assert!(!editor.is_draft_restored());
     assert!(!editor.source_view().is_editable());
     assert_ne!(editor_text(&editor), content);
@@ -18608,10 +18945,10 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
     assert_eq!(editor_text(&editor), content);
     assert!(editor.is_modified());
     assert!(editor.source_view().is_editable());
-    assert!(!editor.buffer_replacement_in_progress_for_test());
-    assert!(editor.buffer_replacement_slice_count_for_test() > 1);
+    assert!(!editor.buffer_replacement_evidence().in_progress);
+    assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let diagnostic = editor
-        .buffer_replacement_terminal_diagnostic_for_test()
+        .buffer_replacement_evidence().last_terminal
         .expect("draft recovery terminal diagnostic");
     assert_eq!(
         diagnostic.ticket.workflow,

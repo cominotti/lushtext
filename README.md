@@ -489,6 +489,17 @@ hosts eight workflows and the `policy.rs` and `evidence.rs` names are fixed at
 one each per workflow; a workflow-prefixed policy file would leave the
 `ui/**/policy.rs` mutation scope.
 
+`crates/lushtext-core/src/ui/editor_page/load/` and
+`crates/lushtext-core/src/ui/editor_page/buffer_replacement/` follow the same
+shape as the second and third adopters of that per-workflow subdirectory. The
+buffer-replacement one is worth reading for the smallest complete example: a
+167-line facade narrating one stage order, one `execution.rs`, and a `policy.rs`
+holding the decisions that keep a half-replaced document from ever being visible.
+The direct-versus-sliced threshold and the paragraph-boundary arithmetic it
+depends on stay cross-cutting in `model/buffer_replacement.rs`, called by three
+owning workflows and copied by none — a forked shared limit can drift while both
+copies still read as correct.
+
 Migration to this shape is a staged programme. Per-workflow status, owned pure
 policy, seam value objects, risk tiers, and migration slots live in
 [`docs/workflow-readability-matrix.md`](docs/workflow-readability-matrix.md), and

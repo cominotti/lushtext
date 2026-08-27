@@ -625,6 +625,9 @@ read is internal and must not appear here.
 | `window.command_palette` | `CommandPaletteEvidence` | `pending_index_update_count` | `command_palette.pending_index_update_count` |
 | `window.tabs` | `SaveEvidence` | `inflight` | `tabs.saving` |
 | `window.tabs` | `LoadEvidence` | `load_state` | `tabs.load_state` |
+| `window.local_history` | `LocalHistoryEvidence` | `browse_available` | `local_history.browse_available` |
+| `window.local_history` | `LocalHistoryEvidence` | `availability` | `local_history.availability` |
+| `window.local_history` | `LocalHistoryEvidence` | `availability` | `local_history.automatic_capture_available` |
 
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |

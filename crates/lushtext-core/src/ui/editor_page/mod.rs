@@ -17,7 +17,7 @@ mod focus_mode;
 mod imp;
 mod invisibles;
 pub mod load;
-mod local_history;
+pub(crate) mod local_history;
 mod minimap;
 mod monitor;
 mod overscroll;
@@ -49,24 +49,19 @@ pub use crate::ui::buffer_snapshot::{
 pub use bookmarks::{
     BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,
 };
-#[cfg(feature = "test-utils")]
 pub use buffer_replacement::{
     BufferReplacementCancelReason, BufferReplacementMetrics, BufferReplacementTerminalDiagnostic,
-    BufferReplacementTestOutcome, BufferReplacementTicket, BufferReplacementWorkflow,
+    BufferReplacementTicket, BufferReplacementWorkflow, ReplacementPhase,
 };
+#[cfg(feature = "test-utils")]
+pub use buffer_replacement::{BufferReplacementEvidence, BufferReplacementTestOutcome};
 pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementRequest};
-#[cfg(not(feature = "test-utils"))]
-pub(crate) use buffer_replacement::{BufferReplacementTicket, BufferReplacementWorkflow};
 pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
 pub use imp::{EditorLoadState, PendingWarningAction};
 pub use load::{LoadEvidence, LoadInstallPhase, LoadOutcome};
 #[cfg(feature = "test-utils")]
 pub use load::{
     set_next_load_body_disposal_probe_for_test, set_next_load_disposal_reservation_weight_for_test,
-};
-#[cfg(feature = "test-utils")]
-pub use local_history::{
-    set_local_history_baseline_delay_for_test, set_local_history_baseline_failures_for_test,
 };
 #[cfg(feature = "test-utils")]
 pub use minimap::MinimapAnalysisSnapshot;

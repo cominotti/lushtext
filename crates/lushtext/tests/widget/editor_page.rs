@@ -1815,7 +1815,7 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
     page.evict();
 
     assert!(!page.is_evicted());
-    assert!(page.buffer_replacement_in_progress_for_test());
+    assert!(page.buffer_replacement_evidence().in_progress);
     assert!(!page.source_view().is_editable());
     assert_ne!(
         page.estimated_live_buffer_bytes(),
@@ -1829,10 +1829,10 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
         page.estimated_live_buffer_bytes(),
         EVICTED_EDITOR_BOOKKEEPING_BYTES
     );
-    assert!(page.buffer_replacement_slice_count_for_test() > 1);
+    assert!(page.buffer_replacement_evidence().slice_count > 1);
     assert!(page.source_view().is_editable());
     let diagnostic = page
-        .buffer_replacement_terminal_diagnostic_for_test()
+        .buffer_replacement_evidence().last_terminal
         .expect("eviction terminal diagnostic");
     assert_eq!(
         diagnostic.ticket.workflow,
@@ -1971,7 +1971,7 @@ fn test_document_sized_save_formatting_stays_inflight_until_bounded_install_fini
     });
 
     wait_until(Duration::from_secs(5), || {
-        page.buffer_replacement_in_progress_for_test()
+        page.buffer_replacement_evidence().in_progress
     });
     assert!(page.is_saving());
     assert!(!done.get());
@@ -1986,9 +1986,9 @@ fn test_document_sized_save_formatting_stays_inflight_until_bounded_install_fini
         fs_read::text(tmp.path()).expect("formatted save should reach disk"),
         expected
     );
-    assert!(page.buffer_replacement_slice_count_for_test() > 1);
+    assert!(page.buffer_replacement_evidence().slice_count > 1);
     let diagnostic = page
-        .buffer_replacement_terminal_diagnostic_for_test()
+        .buffer_replacement_evidence().last_terminal
         .expect("save-formatting terminal diagnostic");
     assert_eq!(
         diagnostic.ticket.workflow,
@@ -2030,7 +2030,7 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
     );
     assert!(!page.is_saving());
     assert!(page.is_modified());
-    assert!(!page.buffer_replacement_in_progress_for_test());
+    assert!(!page.buffer_replacement_evidence().in_progress);
     assert_eq!(editor_buffer_text(&page), "");
     assert_eq!(
         fs_read::text(tmp.path()).expect("durable write should remain exact"),
@@ -2323,13 +2323,13 @@ fn test_periodic_local_history_edit_cancels_chunked_snapshot_without_persistence
     buffer.set_modified(true);
 
     page.run_local_history_periodic_capture_for_test();
-    assert!(page.local_history_periodic_snapshot_inflight_for_test());
+    assert!(page.local_history_evidence().periodic_snapshot_inflight);
 
     let mut end = buffer.end_iter();
     buffer.insert(&mut end, "edited while chunking");
     flush_after_delay(Duration::from_millis(100));
 
-    assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+    assert!(!page.local_history_evidence().periodic_snapshot_inflight);
     let snapshots = local_history_service::list_snapshots_for_path(data_dir.path(), &document)
         .expect("list local-history snapshots");
     assert!(
@@ -2352,18 +2352,18 @@ fn test_periodic_local_history_clean_dirty_cycles_own_one_latest_timer() {
 
     for _ in 0..3 {
         page.buffer().set_modified(true);
-        assert!(page.local_history_periodic_timer_pending_for_test());
-        assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+        assert!(page.local_history_evidence().periodic_timer_pending);
+        assert!(!page.local_history_evidence().periodic_snapshot_inflight);
         page.buffer().set_modified(false);
-        assert!(!page.local_history_periodic_timer_pending_for_test());
-        assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+        assert!(!page.local_history_evidence().periodic_timer_pending);
+        assert!(!page.local_history_evidence().periodic_snapshot_inflight);
     }
 
     page.buffer().set_modified(true);
-    assert!(page.local_history_periodic_timer_pending_for_test());
+    assert!(page.local_history_evidence().periodic_timer_pending);
     page.set_file_path(&second_path);
-    assert!(!page.local_history_periodic_timer_pending_for_test());
-    assert!(!page.local_history_periodic_snapshot_inflight_for_test());
+    assert!(!page.local_history_evidence().periodic_timer_pending);
+    assert!(!page.local_history_evidence().periodic_snapshot_inflight);
 }
 
 #[test]
@@ -4027,6 +4027,235 @@ fn test_escape_restores_cursor_position() {
 }
 
 #[test]
+fn test_buffer_replacement_evidence_reads_stay_side_effect_free_across_replacement_mutation() {
+    // The reentrancy constraint is stated normatively in
+    // `openspec/specs/workflow-evidence-surfaces/spec.md`, and its proof pattern
+    // is required of every migrated workflow. This is bounded buffer
+    // replacement's: drive the workflow through each operation that takes a
+    // mutable borrow of the state the accessor reads, read *after* each one, and
+    // assert that repeated reads of unchanged state are identical. It
+    // deliberately does not read the surface while a borrow is held — that is
+    // the panic the constraint prevents, not a demonstration of it.
+    //
+    // The accessor borrows three `RefCell`s: the active session, the parked
+    // pending request, and the last terminal diagnostic. Every stage below
+    // mutates at least one of them under `borrow_mut()`.
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text(&"old".repeat(200_000));
+
+    let idle = page.buffer_replacement_evidence();
+    assert!(!idle.in_progress);
+    assert!(!idle.pending_request);
+    assert!(!idle.projection_suspended);
+    assert!(idle.active_workflow.is_none());
+    assert!(idle.phase.is_none());
+    assert!(idle.last_terminal.is_none());
+    assert!(idle.buffer_char_count.is_some());
+    let _ = page.buffer_replacement_evidence();
+
+    // Stage 1/2: the session is installed under `active`'s `borrow_mut()` and
+    // the guard suspends projection.
+    let first_current = Rc::new(Cell::new(true));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    page.replace_buffer_for_test(
+        "paragraph\n".repeat(200_000),
+        7,
+        Rc::clone(&first_current),
+        Rc::clone(&outcomes),
+    );
+    let started = page.buffer_replacement_evidence();
+    assert!(started.in_progress);
+    assert!(started.projection_suspended);
+    assert_eq!(started.active_generation, Some(7));
+    assert_eq!(
+        started.active_workflow,
+        Some(BufferReplacementWorkflow::Test)
+    );
+    assert!(started.phase.is_some());
+    let _ = page.buffer_replacement_evidence();
+
+    // Stages 4/5: each scheduled turn mutates the session's phase, offset, and
+    // metrics under the same borrow.
+    wait_until(Duration::from_secs(10), || {
+        page.buffer_replacement_evidence().mutation_started
+    });
+    let mutating = page.buffer_replacement_evidence();
+    assert!(mutating.mutation_started);
+    let _ = page.buffer_replacement_evidence();
+
+    // Stage 1 again: a newer request parks itself under `pending`'s
+    // `borrow_mut()` while the superseded session clears its partial buffer.
+    let second_current = Rc::new(Cell::new(true));
+    page.replace_buffer_for_test(
+        "second body\n".to_string(),
+        8,
+        Rc::clone(&second_current),
+        Rc::clone(&outcomes),
+    );
+    let _ = page.buffer_replacement_evidence();
+
+    // Stage 7: the terminal takes the session, records the diagnostic under
+    // `last_terminal`'s `borrow_mut()`, and hands ownership to the parked
+    // request — which then reaches its own terminal.
+    wait_until(Duration::from_secs(20), || {
+        let evidence = page.buffer_replacement_evidence();
+        !evidence.in_progress && !evidence.pending_request && outcomes.borrow().len() == 2
+    });
+    let settled = page.buffer_replacement_evidence();
+    assert!(settled.last_terminal.is_some());
+    assert!(!settled.projection_suspended);
+    let _ = page.buffer_replacement_evidence();
+
+    // Stage 6 as disposal reaches it: takes both the pending request and the
+    // active session.
+    page.dispose_buffer_replacement_for_test();
+    let _ = page.buffer_replacement_evidence();
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not schedule a turn, advance a generation, cancel a session, or record a
+    // terminal.
+    let first_read = page.buffer_replacement_evidence();
+    let second_read = page.buffer_replacement_evidence();
+    assert_eq!(first_read, second_read);
+    assert_eq!(first_read.slice_count, second_read.slice_count);
+    assert_eq!(first_read.last_terminal, second_read.last_terminal);
+    assert_eq!(first_read.buffer_char_count, second_read.buffer_char_count);
+}
+
+#[test]
+fn test_buffer_replacement_evidence_reads_survive_widget_disposal() {
+    // A disposed page is a stage. GTK4 clears template children in `dispose()`
+    // before Rust's `Drop`, and this workflow's whole subject is the source
+    // view's buffer — so `buffer_char_count` is derived from a template child
+    // and must read through `try_get()`. The panicking accessor would turn a
+    // teardown observation into a crash.
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("content\n");
+
+    let before = page.buffer_replacement_evidence();
+    assert_eq!(before.buffer_char_count, Some(8));
+
+    // SAFETY: this standalone test page is disposed exactly once, and the
+    // assertions afterwards only read the evidence surface.
+    unsafe { page.run_dispose() };
+
+    let after = page.buffer_replacement_evidence();
+    assert_eq!(
+        after.buffer_char_count, None,
+        "a disposed page must answer honestly rather than reporting zero characters"
+    );
+    assert!(!after.in_progress);
+    assert!(!after.pending_request);
+
+    // Repeated reads after disposal stay identical and still do not panic.
+    assert_eq!(after, page.buffer_replacement_evidence());
+}
+
+#[test]
+fn test_local_history_evidence_reads_stay_side_effect_free_across_capture_mutation() {
+    // The reentrancy constraint's required proof for this workflow. The accessor
+    // borrows three `RefCell`s — the clean-baseline slot, the periodic snapshot
+    // handle, and the undo body — and every stage below mutates at least one of
+    // them under `borrow_mut()`.
+    //
+    // Notable for this row: the surface spans **two directories**. The capture
+    // state it reads lives on the editor page, while the workflow's role home is
+    // `ui/window/local_history/`. One surface, one accessor, either way.
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(false);
+    let dir = tempfile::tempdir().expect("local-history evidence tempdir");
+    let path = dir.path().join("history.md");
+    fixture::write_text(&path, "clean baseline\n");
+    let page = LushtextEditorPage::new();
+    page.reset_transient_load_admission_for_test();
+    page.load_file_async(&path);
+    wait_until(Duration::from_secs(10), || {
+        page.load_state() == EditorLoadState::Loaded
+    });
+
+    let idle = page.local_history_evidence();
+    assert!(idle.browse_available);
+    assert!(idle.buffer_char_count.is_some());
+    assert!(!idle.restore_undo_available);
+    let _ = page.local_history_evidence();
+
+    // Stage A1/A2: becoming modified replaces the clean baseline under
+    // `last_clean_text`'s `borrow_mut()` and admits a capture.
+    page.buffer().set_text("edited once\n");
+    page.buffer().set_modified(true);
+    let modified = page.local_history_evidence();
+    assert!(modified.edit_generation > idle.edit_generation);
+    let _ = page.local_history_evidence();
+
+    // Stage A3: the periodic timer is armed, advancing the periodic generation.
+    page.run_local_history_periodic_capture_for_test();
+    let periodic = page.local_history_evidence();
+    assert!(periodic.periodic_generation > modified.periodic_generation);
+    let _ = page.local_history_evidence();
+
+    // Stage A2 again, explicitly through the production admission path.
+    page.capture_local_history_baseline_for_test();
+    let _ = page.local_history_evidence();
+
+    wait_until(Duration::from_secs(15), || {
+        !page.local_history_evidence().automatic_capture_inflight
+    });
+    let settled = page.local_history_evidence();
+    let _ = page.local_history_evidence();
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not arm the periodic timer, advance a capture generation, or submit a read.
+    let first_read = page.local_history_evidence();
+    let second_read = page.local_history_evidence();
+    assert_eq!(first_read, second_read);
+    assert_eq!(
+        first_read.periodic_generation,
+        second_read.periodic_generation
+    );
+    assert_eq!(first_read.edit_generation, second_read.edit_generation);
+    assert_eq!(
+        first_read.clean_baseline_generation,
+        second_read.clean_baseline_generation
+    );
+    assert_eq!(settled.editor_generation, second_read.editor_generation);
+}
+
+#[test]
+fn test_local_history_evidence_reads_survive_widget_disposal() {
+    // A disposed page is a stage. The capture half's subject is the editor's
+    // buffer, so `buffer_char_count` reads through `try_get()` and answers
+    // `None` rather than a misleading zero. `editor_generation` is additionally
+    // *advanced* by dispose, which is what migrated save's completion ticket
+    // relies on to reject a completion for a torn-down tab.
+    ensure_gtk_init();
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("history content\n");
+
+    let before = page.local_history_evidence();
+    assert_eq!(before.buffer_char_count, Some(16));
+
+    // SAFETY: this standalone test page is disposed exactly once, and the
+    // assertions afterwards only read the evidence surface.
+    unsafe { page.run_dispose() };
+
+    let after = page.local_history_evidence();
+    assert_eq!(
+        after.buffer_char_count, None,
+        "a disposed page must answer honestly rather than reporting zero characters"
+    );
+    assert!(
+        after.editor_generation > before.editor_generation,
+        "dispose advances the generation migrated save's completion ticket checks"
+    );
+    assert!(!after.periodic_timer_pending);
+
+    // Repeated reads after disposal stay identical and still do not panic.
+    assert_eq!(after, page.local_history_evidence());
+}
+
+#[test]
 fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup() {
     ensure_gtk_init();
     let page = LushtextEditorPage::new();
@@ -4040,7 +4269,7 @@ fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup(
         Rc::clone(&current),
         Rc::clone(&outcomes),
     );
-    assert!(page.buffer_replacement_in_progress_for_test());
+    assert!(page.buffer_replacement_evidence().in_progress);
     assert!(!page.source_view().is_editable());
 
     let main_loop_progressed = Rc::new(Cell::new(false));
@@ -4055,7 +4284,7 @@ fn test_bounded_buffer_replacement_preserves_unicode_and_terminal_guard_cleanup(
 
     assert_eq!(editor_buffer_text(&page), expected);
     assert!(page.source_view().is_editable());
-    assert!(!page.buffer_replacement_in_progress_for_test());
+    assert!(!page.buffer_replacement_evidence().in_progress);
     let outcomes = outcomes.borrow();
     assert_eq!(outcomes[0].body.as_deref(), Some(expected.as_str()));
     assert!(outcomes[0].cancel_reason.is_none());
@@ -4162,8 +4391,8 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
     assert_eq!(editor_buffer_text(&page), latest);
     assert!(page.source_view().is_editable());
     assert!(page.is_modified());
-    assert!(!page.buffer_replacement_in_progress_for_test());
-    assert!(!page.buffer_replacement_projection_suspended_for_test());
+    assert!(!page.buffer_replacement_evidence().in_progress);
+    assert!(!page.buffer_replacement_evidence().projection_suspended);
     let outcomes = outcomes.borrow();
     assert_eq!(outcomes.len(), 2);
     assert_eq!(outcomes[0].ticket.generation, 30);
@@ -4181,7 +4410,7 @@ fn assert_changed_reentrant_replacement(initial: &str, expected_first_signal: &'
         outcomes[1].ticket.generation,
         page.source_view().is_editable(),
         page.is_modified(),
-        page.buffer_replacement_projection_suspended_for_test(),
+        page.buffer_replacement_evidence().projection_suspended,
     );
 }
 
@@ -4259,7 +4488,7 @@ fn test_bounded_buffer_replacement_disposal_terminal_releases_source_and_body() 
         Some(BufferReplacementCancelReason::Disposed)
     );
     assert!(outcomes.borrow()[0].body.is_none());
-    assert!(!page.buffer_replacement_in_progress_for_test());
+    assert!(!page.buffer_replacement_evidence().in_progress);
 }
 
 #[test]

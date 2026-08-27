@@ -158,6 +158,20 @@ Visual geometry runners must start from a clean artifact root; stale case
 directories from a previous run can make the root summary report failures or
 evidence that the current binary did not produce.
 
+**Untracked files are invisible to every diff-aware gate, so `git add -N` new
+files before running one.** Gates that compare the worktree against a base ref —
+`make check-visual-proof-policy`, `make check-accessibility-policy`'s diff-aware
+half, and `make mutants-diff` — build their changed-file set from
+`git diff <base>`, which does not list untracked paths at all. A change that adds
+whole new directories therefore gets a **green** diff-aware gate computed over a
+file set that omits all of its new code, and a diff-scoped mutation run that
+generates no mutants for it. Run
+`git add -N <new-paths>` as soon as new files exist, before the first gate. A
+green diff-aware gate on a worktree with untracked new source files is not
+evidence; re-run the lane after the files are visible. When adding the files
+changes a gate's digest and it starts failing, the fix is to re-run the lane, not
+to unstage the files and take the earlier green.
+
 Workflow-readability changes should pass `make check-workflow-boundaries`; it is
 also part of `make check-policy`. It fails when a `policy.rs` module imports
 `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`; when a `policy.rs` sits at

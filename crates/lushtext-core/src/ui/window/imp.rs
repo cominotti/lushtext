@@ -13,10 +13,11 @@ use super::adaptive_shell::{
     PROPERTIES_SIDEBAR_MIN_WIDTH_SP, WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout,
     desired_properties_fraction, properties_breakpoint_condition, workspace_breakpoint_condition,
 };
-use super::draft_ordering::{DraftMutationIntent, DraftMutationOrder};
 use super::drafts::DraftRestoreTicket;
+use super::drafts::{DraftMutationIntent, DraftMutationOrder};
 use super::notes::ActiveNotesBrowser;
-use super::session_restore::{SessionRestoreEvidence, SessionRestoreRuntime};
+use super::session_restore::SessionRestoreRuntime;
+use super::session_restore::policy::SessionRestoreTurnMetrics;
 use crate::config::{self, keys};
 use crate::model::draft::{DraftManifest, DraftManifestAuthority, PreloadedDraftRestore};
 use crate::model::recent_document::RecentDocumentEntry;
@@ -144,8 +145,12 @@ pub struct SessionState {
     pub(super) restore_runtime: RefCell<Option<SessionRestoreRuntime>>,
     /// Monotonic identity allocated before each bounded restore generation.
     pub(super) next_restore_generation: Cell<u64>,
-    /// Terminal or cancellation evidence retained after runtime ownership ends.
-    pub(super) last_restore_evidence: Cell<Option<SessionRestoreEvidence>>,
+    /// Last generation's terminal or cancellation counters, retained after the
+    /// runtime that owned them is taken.
+    ///
+    /// A **last-restore outcome record**, not a cached evidence surface: the
+    /// surface projects this field rather than reading a cache of itself.
+    pub(super) last_restore_outcome: Cell<Option<SessionRestoreTurnMetrics>>,
     /// Aggregate tab-derived projection rebuilds, retained for boundedness proof.
     pub(super) tab_projection_publications: Cell<u64>,
     /// User/CLI tab-selection intent accepted since window construction.
@@ -190,6 +195,12 @@ pub struct DraftState {
     pub autosave_source_id: RefCell<Option<glib::SourceId>>,
     /// Superseding one-shot for the first dirty draft after a clean cycle.
     pub first_dirty_autosave_timer: SupersedingTimer,
+    /// Whether the first-dirty timer currently has a callback armed.
+    ///
+    /// `SupersedingTimer` exposes no armed query, and the draft evidence surface
+    /// owes an honest answer, so the workflow tracks it beside the timer it
+    /// describes — the same shape `orphan_cleanup_timer_pending` already uses.
+    pub(super) first_dirty_autosave_pending: Cell<bool>,
     /// Superseding startup/follow-up timer for bounded orphan cleanup.
     pub orphan_cleanup_timer: SupersedingTimer,
     /// Whether one orphan-cleanup inspect/execute worker is active.
@@ -201,11 +212,14 @@ pub struct DraftState {
     /// Whether the owned orphan-cleanup timer currently has a callback armed.
     pub orphan_cleanup_timer_pending: Cell<bool>,
     /// Number of orphan-cleanup workers started by this window.
-    #[cfg(feature = "test-utils")]
-    pub orphan_cleanup_workers_started: Cell<usize>,
+    ///
+    /// Always compiled for the same reason as the retained-body counters: the
+    /// draft evidence surface reports them, and the invariant the high-water mark
+    /// proves — never two concurrent cleanup passes, either of which could delete
+    /// a body the other had just re-validated — is a production invariant.
+    pub(super) orphan_cleanup_workers_started: Cell<usize>,
     /// Peak simultaneous orphan-cleanup workers observed by this window.
-    #[cfg(feature = "test-utils")]
-    pub orphan_cleanup_workers_high_water: Cell<usize>,
+    pub(super) orphan_cleanup_workers_high_water: Cell<usize>,
     /// In-memory draft manifest kept in sync with disk.
     pub manifest: RefCell<DraftManifest>,
     /// Completeness and durable replacement authority for the in-memory manifest.
@@ -246,11 +260,14 @@ pub struct DraftState {
     /// Number of asynchronous draft resolutions not yet delivered to GTK.
     pub(super) restore_inflight_count: Cell<usize>,
     /// Number of complete autosave bodies currently held across a worker handoff.
-    #[cfg(feature = "test-utils")]
-    pub retained_complete_bodies: Cell<usize>,
-    /// Peak complete-body count observed by the current test process.
-    #[cfg(feature = "test-utils")]
-    pub max_retained_complete_bodies: Cell<usize>,
+    ///
+    /// Always compiled, not test-gated: the draft evidence surface reports it, and
+    /// an evidence surface must be readable in a production build. Two `usize`
+    /// cells per window, and the invariant they prove — the pipeline never holds
+    /// more than one complete document-sized body — is a production invariant.
+    pub(super) retained_complete_bodies: Cell<usize>,
+    /// Peak complete-body count observed by this window.
+    pub(super) max_retained_complete_bodies: Cell<usize>,
 }
 
 impl DraftState {
@@ -1019,6 +1036,14 @@ impl ObjectImpl for LushtextWindow {
         if let Some(source_id) = self.drafts.autosave_source_id.take() {
             source_id.remove();
         }
+        // The first-dirty timer needs the same explicit teardown its
+        // orphan-cleanup sibling gets below: `dispose()` runs before `Drop`, so
+        // relying on the timer's own drop would leave a window in which it can
+        // still fire against torn-down workflow state. Clearing the flag in the
+        // same place keeps the evidence surface honest for a disposed window,
+        // which would otherwise keep reporting `first_dirty_timer_pending: true`.
+        self.drafts.first_dirty_autosave_pending.set(false);
+        let _ = self.drafts.first_dirty_autosave_timer.invalidate();
         self.drafts.dispose_orphan_cleanup();
         // Chunked snapshots have later GTK slices queued. Cancel before the
         // window's workflow state is torn down so none can resume after dispose.
