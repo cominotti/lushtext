@@ -20,6 +20,20 @@ The project SHALL keep dependency direction `ui -> services -> model` while deco
 ### Requirement: Window notes are organized by existing workflows
 The `ui/window/notes` module SHALL separate bookmark lifecycle/navigation, document and folder note editors, and notes-browser/command-palette coordination into focused sibling modules under one private notes facade. Existing window actions, callback routes, sidecar safety, migration behavior, menu availability, note previews, and target activation MUST remain unchanged.
 
+This topical decomposition and its behavior obligations SHALL survive the
+workflow's migration to the readability convention unchanged. Because that
+convention requires every **role module** of a migrated workflow to carry exactly
+one named role, a migrating workflow SHALL classify each focused sibling rather
+than choose between the two requirements: the notes facade becomes the workflow's
+narrative facade; a sibling that coordinates an ordered stage order takes a
+bounded coordination role name, optionally qualified with the stage order it
+serves; and a sibling that only projects the workflow onto widgets is a **called
+presentation surface**, which is not a role and is therefore outside the role
+taxonomy, owning no pure policy and no evidence surface, with its ownership
+recorded in its own module doc and named in the workflow's matrix row. The
+topical split is what the modules *do*; the role, where one applies, is what they
+*are* to the workflow, and neither replaces the other.
+
 #### Scenario: Bookmark workflow remains complete
 - **WHEN** a bookmark is toggled, edited, navigated, browsed, previewed, saved, renamed, or activated after decomposition
 - **THEN** the same bookmark service and editor/window paths are used
@@ -39,6 +53,17 @@ The `ui/window/notes` module SHALL separate bookmark lifecycle/navigation, docum
 - **WHEN** there are no notes, one note, representative category rows, many notes, awkward paths, no active editor, or constrained geometry
 - **THEN** the existing empty states, category structure, actions, focus, and item-region scrolling remain usable
 - **AND** no fake note row is introduced by the module split
+
+#### Scenario: Migration classifies focused siblings without renaming their topics
+- **WHEN** this module's workflow is migrated to the workflow readability
+  convention
+- **THEN** each focused sibling is classified as the narrative facade, as a
+  bounded optionally stage-order-qualified coordination role, or as a called
+  presentation surface that carries no role — while the topical separation and
+  every behavior obligation above stay unchanged
+- **AND** the migration does not treat the topical requirement and the role
+  requirement as being in conflict, nor rename a module to a role name that
+  describes its job less accurately than its topic did
 
 ### Requirement: Adaptive-shell policy is pure and behavior-equivalent
 The project SHALL place adaptive-shell width, breakpoint, presentation, and compact-surface decision math in a plain Rust `ui/window` module with explicit input and output value objects. GObject lifecycle, template state, settings reads, breakpoint objects, focus, signals, and widget mutation MUST remain in the window adapter, and applying the pure decision MUST preserve current shell behavior.
@@ -61,6 +86,14 @@ The project SHALL place adaptive-shell width, breakpoint, presentation, and comp
 ### Requirement: Workspace-section wiring has focused owners
 The workspace-section implementation SHALL keep subclass state, template children, construction, and disposal in `imp.rs` while row factory projection, context-menu/gesture lifecycle, and row accessibility projection live in focused sibling modules. Setup, bind, unbind, and disposal MUST preserve signal cleanup, binding cleanup, object-data ownership, DnD behavior, inline rename, selection, expansion, and popup lifecycle.
 
+As with the notes module above, this ownership split SHALL survive the owning
+workflow's migration unchanged, and the migration SHALL classify each of these
+modules: the subclass state, row factory, context-menu, and row accessibility
+modules are **called presentation surfaces** of the migrated workflow — not
+roles — owning no pure policy and no evidence surface, with their ownership
+recorded in their own module docs and named in the workflow's matrix row, while
+modules that coordinate ordered stages take bounded coordination role names.
+
 #### Scenario: Recycled row clears old wiring
 - **WHEN** a virtualized list item is unbound and rebound to another file-tree row
 - **THEN** prior signal bags, bindings, context targets, accessibility state, DnD state, and inline-rename triggers are cleared before new projection
@@ -80,6 +113,15 @@ The workspace-section implementation SHALL keep subclass state, template childre
 - **WHEN** a section has zero folders, one folder, many expanded rows, long names, reorder DnD, focused-folder mode, or constrained width
 - **THEN** header controls remain visible and only the item region scrolls
 - **AND** tree disclosure, no-horizontal-scrollbar, empty-state, and context-menu contracts remain unchanged
+
+#### Scenario: Wiring modules are called presentation surfaces after migration
+- **WHEN** the workflow owning this subtree is migrated
+- **THEN** the subclass-state, row-factory, context-menu, and row-accessibility
+  modules are recorded as called presentation surfaces owning no policy and no
+  evidence, with their ownership in their own module docs and in the matrix row,
+  and none of them is assigned a role name
+- **AND** the workflow still owns exactly one `policy.rs` and one `evidence.rs`,
+  and every behavior obligation above is preserved
 
 ### Requirement: Decomposition is verified as behavior-neutral
 The project SHALL inventory public and private workflow seams before moving code and SHALL preserve or strengthen existing tests. Verification MUST cover compile/source fidelity, unit/integration/property tests, widget lifecycle and recycling, accessibility, automation actions and snapshots, visual geometry, runtime warnings, persistence failure paths, and updated module/agent documentation.
@@ -147,6 +189,20 @@ evidence. A module MUST NOT combine the facade role with the coordination or pol
 role. Splitting a large file into sibling modules without assigning roles does not
 satisfy this requirement.
 
+That five-name taxonomy is **closed, and it applies to the workflow's role
+modules**. A module that only projects the migrated workflow onto widgets — GTK
+subclass state and template children, list-factory row projection, context-menu
+and gesture lifecycle, row accessibility projection, or a per-surface capture
+adapter a canonical role home calls — is a **called presentation surface**. A
+called presentation surface is **not a role**: it is outside the set of
+decomposed workflow modules this requirement governs, it MUST NOT be assigned one
+of the five role names, and it MUST NOT own a `policy.rs` or an `evidence.rs`.
+Its ownership SHALL be recorded in its own module doc and named in the workflow's
+matrix row, which is where the project already records such a surface, and it
+keeps every behavior obligation any other requirement places on it. This states
+the scope of the taxonomy rather than adding a sixth role: the five role names
+and the bounded coordination set are unchanged.
+
 The existing prohibitions still apply: role assignment MUST NOT introduce new
 crates, generic repository or controller traits, or manager objects solely to move
 code, and services and models MUST remain GTK-free.
@@ -205,6 +261,28 @@ require restructuring an entire directory into one subdirectory per workflow.
 Choosing between the two homes is a per-workflow decision recorded in the
 workflow's matrix row, and it does not change any other part of this contract.
 
+Those role homes MAY be **nested**. Where one workflow owns a directory and a
+widget subdirectory of that directory, the workflow SHALL name one of them its
+canonical role home, holding the facade, the single `policy.rs`, and the single
+`evidence.rs`, while modules in the other directory take bounded coordination role
+names or are recorded as called presentation surfaces carrying no role.
+This is the nested case of the resolution already used for a workflow spanning two
+sibling directories — one canonical role home plus recorded called surfaces — and
+it changes nothing else: the workflow still owns exactly one `policy.rs` and one
+`evidence.rs`, and the `ui/**/policy.rs` mutation scope reaches either location,
+which a migration MUST verify after the move rather than assume.
+
+#### Scenario: Widget-projection module is a called surface rather than a role
+
+- **WHEN** a migrated workflow owns a module that only projects it onto widgets,
+  such as subclass state, list-factory row projection, context-menu lifecycle,
+  row accessibility projection, or a per-surface capture adapter
+- **THEN** that module is recorded as a called presentation surface, is not
+  assigned one of the five role names, and owns no `policy.rs` and no
+  `evidence.rs`
+- **AND** its ownership is stated in its own module doc and named in the
+  workflow's matrix row, and the five-name role taxonomy is unchanged
+
 #### Scenario: Coordination file is named for its job
 
 - **WHEN** a workflow's coordination module is created or renamed during migration
@@ -236,6 +314,17 @@ workflow's matrix row, and it does not change any other part of this contract.
   and the unqualified bounded coordination names
 - **AND** the subdirectory name, not a file-name prefix, is what scopes them to the
   workflow
+
+#### Scenario: One workflow owning a directory and its widget subdirectory
+
+- **WHEN** one workflow owns a directory and a widget subdirectory of it, and both
+  contain modules that coordinate its ordered stages
+- **THEN** the workflow names one of them its canonical role home for the facade,
+  the single `policy.rs`, and the single `evidence.rs`, and every module in the
+  other directory declares a bounded coordination role name or is recorded as a
+  called presentation surface carrying no role
+- **AND** the migration verifies that the `ui/**/policy.rs` mutation scope still
+  reaches the policy module at its chosen location
 
 #### Scenario: One workflow with two stage orders qualifies a repeated role
 
