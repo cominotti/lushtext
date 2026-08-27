@@ -101,7 +101,7 @@
 //! | pure policy | `policy` |
 //! | coordination | `query_execution` (query flight), `index_admission` (bounded mutation queue), `index_execution` (mutation worker), `retirement` (index retirement accounting) |
 //! | evidence | `evidence` |
-//! | adapter detail | `imp`, `item` |
+//! | called presentation surface (no role) | `imp`, `item` |
 //!
 //! See `docs/workflow-readability-matrix.md`, row `WFR-COMMAND-PALETTE`.
 

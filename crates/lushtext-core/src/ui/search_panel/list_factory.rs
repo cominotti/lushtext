@@ -6,6 +6,14 @@
 //! result-item binding, and preview-mode checkbox wiring. It is split out of
 //! `imp.rs` so the private implementation file can focus on template wiring
 //! and high-level widget setup instead of row-by-row rendering details.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-SEARCH-REPLACE` — it projects the workflow onto widgets (list-factory row projection) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use std::path::PathBuf;
 

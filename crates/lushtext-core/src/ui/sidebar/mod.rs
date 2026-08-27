@@ -9,6 +9,10 @@
 mod callbacks;
 mod dialogs;
 pub mod file_tree_item;
+pub mod policy;
+mod seams;
+#[cfg(feature = "test-utils")]
+mod test_policy;
 // Private GObject implementation for the template-backed sidebar shell.
 mod imp;
 pub mod workspace_section;
@@ -24,6 +28,11 @@ use gtk4::prelude::*;
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
+
+#[cfg(feature = "test-utils")]
+pub use test_policy::{
+    set_workspace_placeholder_cleanup_delay_for_test, set_workspace_rename_worker_delay_for_test,
+};
 
 pub use file_tree_item::FileTreeItem;
 pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;

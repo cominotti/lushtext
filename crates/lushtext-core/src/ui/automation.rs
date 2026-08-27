@@ -954,37 +954,44 @@ fn command_palette_snapshot(window: &LushtextWindow) -> AutomationCommandPalette
 }
 
 /// Summarize live notes/bookmark availability without loading sidecar files.
+///
+/// Projected from `WFR-NOTES-BOOKMARKS`'s own evidence surface rather than
+/// re-derived from widgets, with the exported semantics unchanged. One field is
+/// deliberately **not** projected: `active_document_file_backed` is the active
+/// document's identity, not notes-workflow state, and the `local_history` object
+/// reports the same fact about the same document. Both objects therefore derive
+/// it from the editor page through `active_document_is_file_backed`, so the same
+/// user-visible fact is reached exactly one way — the rule task 8.4 asks for.
 fn notes_snapshot(window: &LushtextWindow) -> AutomationNotesSnapshot {
-    let imp = window.imp();
-    let editor = active_editor(window);
-    let active_document_file_backed = editor
-        .as_ref()
-        .and_then(LushtextEditorPage::file_path)
-        .is_some();
-    let active_document_bookmark_count = editor
-        .as_ref()
-        .map_or(0, |editor| bounded_len(editor.bookmark_records().len()));
-    let active_line_has_bookmark = editor
-        .as_ref()
-        .is_some_and(|editor| editor.current_bookmark().is_some());
+    let evidence = window.notes_evidence();
+    let active_document_file_backed = active_document_is_file_backed(window);
 
     AutomationNotesSnapshot {
-        notes_menu_open: imp.notes_menu_button.is_active(),
+        notes_menu_open: evidence.notes_menu_open,
         active_document_file_backed,
-        active_document_bookmark_count,
-        active_line_has_bookmark,
+        active_document_bookmark_count: bounded_len(evidence.active_document_bookmark_count),
+        active_line_has_bookmark: evidence.active_line_has_bookmark,
         document_note_available: active_document_file_backed,
-        folder_note_available: !imp.sidebar.current_scope_folder_paths().is_empty(),
+        folder_note_available: evidence.folder_note_available,
     }
+}
+
+/// Report whether the active document has a stable saved path.
+///
+/// One helper for the two snapshot objects that both report this fact, so the
+/// documented field id `snapshot-field-active-document-file-backed` maps to one
+/// derivation rather than to two.
+fn active_document_is_file_backed(window: &LushtextWindow) -> bool {
+    active_editor(window)
+        .as_ref()
+        .and_then(LushtextEditorPage::file_path)
+        .is_some()
 }
 
 /// Summarize local-history availability from the active editor policy only.
 fn local_history_snapshot(window: &LushtextWindow) -> AutomationLocalHistorySnapshot {
     let editor = active_editor(window);
-    let active_document_file_backed = editor
-        .as_ref()
-        .and_then(LushtextEditorPage::file_path)
-        .is_some();
+    let active_document_file_backed = active_document_is_file_backed(window);
     // Projected from the workflow's own evidence surface rather than re-derived
     // from widgets, with the exported semantics unchanged. The two availability
     // fields reach the surface differently, which is worth stating because the

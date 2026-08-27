@@ -1,6 +1,6 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slots 1 through 4 complete, slots 5 through 7
+Status: **Phase 0 complete, slots 1 through 4 and 5a complete, slots 5b through 7
 outstanding.** The convention is
 normative, the census is complete, the mechanical gate is wired into
 `make check-policy`, the normative facade line budget is declared and enforced,
@@ -221,6 +221,120 @@ Two further Phase 0 facts a later session should not have to rediscover:
 | Bounded coordination role names | unchanged | unchanged, and **`journal` was checked for all three durable rows at once and passes all three.** `gtk-adapter-module-boundaries` needed no amendment. Slot 4 is also the first to use **four** coordination modules in one workflow (draft recovery: `journal`, `admission`, and two stage-order-qualified execution modules), and the first to reject `retirement` for something that *destroys* payloads — orphan cleanup is journal maintenance, on the cohesion test |
 | Permitted role homes | second adopter | **sixth adopter**, and the first three under `ui/window/`. The nested `ui/**/policy.rs` glob was re-verified after every move; `make check-workflow-boundaries` now reports **8** pure mutation-scoped policy modules, up from 4 |
 | Evidence-surface conventions | plus the reentrancy constraint | unchanged, with **four new surfaces and eight new proof tests** (a reentrancy proof and a disposal proof each). The **disposed-widget rule earned its place**: it was a live hazard twice, not a formality. Buffer replacement's whole subject is the source view's buffer, and local history's first surface actually **panicked** in its disposal proof because `live_local_history_availability()` derefs a template child — the fix split out a chars-taking helper so an observer that already read through `try_get()` does not read again through the panicking accessor |
+
+### Baseline after slot 5a
+
+| Quantity | After slot 4 | After slot 5a |
+| --- | --- | --- |
+| Workflows migrated | 8 | **9** (plus `WFR-NOTES-BOOKMARKS`). Counted as workflow halves, ten. `WFR-WORKSPACE-TREE` moved to **slot 5b** — see "Why slot 5 split into 5a and 5b" |
+| Share of `ui/` + `model/` migrated | 19,966 of 79,017 censused lines ≈ 25% | 19,966 + 4,977 = 24,943 ≈ **32%**, using the row's censused `ui` footprint so the fraction stays comparable. **Row-scoped and production-only the row is 4,365 lines across 4 files**, and the census cell was too **high** in a way no previous slot had seen: it was not only pooling shared services, it was pooling a file the row **does not own at all** (`ui/window/startup_data.rs`, 435 lines, decided cross-cutting) — an ownership error inside a size cell |
+| Policy modules relocated | 4 of 6 relocation candidates | **4 of 6, unchanged — and the two remaining candidates are still open, because they are the tree row's.** `model/workspace_scan.rs` and `model/workspace_persistence.rs` move with slot 5b. What this slot added is **gain from zero**: 81 mutants in `ui/window/notes/policy.rs` with **78 caught, 0 missed, 3 unviable — zero survivors on the first run**, which is a programme first. All five notes domain modules are confirmed **staying**, each because a GTK-free service depends on it, and `model/sidecar_identity.rs` is recorded as a **cross-workflow kernel** with seven consuming workflows |
+| Test seams addressed | 21 inspection functions retired across four rows | **4 more retired**, and **no `*_for_test` inspection function remains on this row**. One retired getter had a **side effect** — `note_save_snapshot_count_for_test` pruned the capture vector as a consequence of being read — which is the observer-changes-the-observed hazard the new delta names; the surface counts without pruning. Two parameterized tuple-returning seams became **one named operation** returning a named value. **2 configuration seams collapsed into 1** test-policy value. **0 actuation seams and 0 added on the notes row.** **2 counted, justified configuration seams added on the tree row** — the first seams this programme has added since slot 3a, and both exist because a data-safety regression test for a confirmed data-destruction defect **passed against the broken code as well as the fixed code** without them |
+| Seams reified | 5 | **6** (plus `NotesBrowserTicket` + `NotesBrowserFacts`). `WorkspaceWatchTicket` remains unreified and moves to 5b, but the tree row gained an **unplanned seventh** — `FileOperationTicket` + `FileOperationFacts` — because reifying it *was* the fix for a confirmed wrong-row defect. The notes seam went further than the matrix cell asked: it is **phantom-typed by flight**, so validating one coordinator's generation against another's facts is a compile error. **`NoteSourceRefreshCoordinator` retired** onto the shared `SingleFlightCoordinator`, closing a deferral slot 2a opened and slot 4 restated. **Long signatures shortened: 1, unchanged** |
+| Automation projections | 5 | **6** (plus the `notes` snapshot object, four fields). **The drift gate needed no extension**, and the reason is a decision rather than luck: the dual-bound `snapshot-field-active-document-file-backed` was resolved by making **neither** object project it, because it is the active document's identity rather than either workflow's state. The rule is recorded above the map for slots 6 and 7. `window.workspace` remains unprojected — slot 5b's |
+| Facade line budget | held four more times; drafts at 310 | **held again at 178 of 370**, the programme's densest narration (five stage orders) and nowhere near the ceiling. **No escalation and no split**; the budget line was not edited. `ui/search_panel/mod.rs` is still exactly 369. **Three of eight recorded facade sizes were stale** and were re-measured and corrected: buffer replacement 167 → 168, local history 216 → 215, drafts **310 → 289** |
+| Bounded coordination role names | unchanged | unchanged and **not widened**. `journal` was checked per stage order for four durable records and fits **one**: the migration ledger, the strongest fit in the programme (a record read back **in a later process run**). Note and bookmark sidecars, the format-upgrade backup, and `workspaces.json` were each rejected explicitly with the reading stage named. This row uses **two stage-order-qualified `execution` modules** (`source_execution`, `query_execution`) for one workflow's two browser stage orders |
+| Permitted role homes | sixth adopter | **seventh adopter, and the first *flat* home under `ui/window/`.** The three migrated siblings there all took per-workflow subdirectories, which left `policy.rs` and `evidence.rs` free in `ui/window/notes/`. The nested home (c) has **no adopter yet**; 5b will be its first. `make check-workflow-boundaries` reports **10** pure mutation-scoped policy modules, up from 8 |
+| Evidence-surface conventions | plus the reentrancy constraint | plus **no-materialization** and **bounded-honest child collections**, both now stated convention. One new surface with **three** proof tests. The **disposed-widget rule earned its place for the third time, and in a new way**: the panic came from a *transitively* reached template child (`active_editor()` → `imp.tab_view`), which reads as an ordinary window operation at the call site rather than as a template-child deref |
+| Called presentation surfaces | undefined category, used by six rows as "adapter detail" | **defined, and the label retired.** Statement (b) scopes the five-name taxonomy so a widget-projection module is outside it, carries no role, and owns no `policy.rs` or `evidence.rs`. The eight-row re-check found **three of eight** rows recording nine such modules under the undefined "adapter detail" label; all are now classified in both their module doc and their matrix row |
+| Confirmed pre-existing data-safety defects fixed | 1 (draft autosave's `installation_incomplete`) | **7**, out of **11** found by one explicit pass — the most any slot has found, including a **normal-usage data-destruction bug**: inline rename silently replaced an existing file. Each of the 7 has a regression test **proved to fail without its fix**. The other 4 are recorded with severity, site, and owning row rather than dropped |
+
+### Convention friction slot 5a hit, recorded for slots 5b, 6 and 7
+
+**The data-safety pass is not a formality, and it can consume a slot.** Slot 5's
+proposal budgeted for findings on the evidence that four consecutive slots each
+found one. The pass found **eleven**, and the most severe was a normal-usage
+data-destruction bug in the exact code the migration was about to restructure.
+`.agents/rules/preexisting-blockers.md` has no exceptions, so seven fixes landed
+first — and the tree row's structural migration did not. **Slots 5b, 6, and 7
+should plan the data-safety pass as a first-class work item with its own budget,
+not as a gate to pass.** The pass is aimed at the code the migration is about to
+touch; finding a lot is the expected outcome, not the surprising one.
+
+**Two data-safety regression tests passed against the broken code.** Both raced a
+worker the fixed and unfixed versions both won. Discovering that required
+*deliberately reverting each fix and re-running* — which task 7.5's phrase "proven
+to fail without the fix" demands and which is easy to skip. The remedy cost **two
+counted configuration seams**, the programme's first added seams since slot 3a,
+each documented with why it was necessary. **A test that cannot fail is worse than
+no test**, because it reads as coverage. Budget the revert-and-rerun step.
+
+**The retroactive-amendment cost is now nine per-row re-checks, and the
+not-a-confirmation streak is three.** Slot 3b's amendment found one of three rows
+lacking its proof; slot 4's found two of four non-compliant; slot 5a's found **three
+of eight** rows recording nine widget-projection modules under **"adapter
+detail"** — a
+label used in two facade role tables and this matrix and **defined nowhere**. It
+was doing precisely the job the new statement names, under a name no gate and no
+reader could check. **Look for the undefined label, not only the missing one**: the
+gap was not that rows had unclassified modules, it was that they had
+*confidently* classified them into a category that did not exist.
+
+**Census cells can be wrong about *ownership* inside a *size* cell.** Previous
+slots found size cells pooling shared service files. This one found a size cell
+pooling a file the row **does not own at all** — `ui/window/startup_data.rs`, 435
+lines, which orders **five** workflows and is owned by none. Slot 4 flagged
+ownership corrections as more dangerous than count corrections because a name
+invites trust; this is that hazard hiding inside a number.
+
+**Inversion floors were wrong again, by 7x on both rows.** The notes row's census
+cell said four inversions; the code has 28 resumption points across five stage
+orders. The tree row's said five; the code has 38 across eleven stage orders. Two
+whole *stage orders* were unnamed on the tree row (the workspace scope filter and
+focused-folder drilldown) while their primitives were already inside the counted
+total — so the arithmetic looked consistent while the narration was missing.
+**Reconcile subtotals against the total**; a trace whose parts do not sum is
+hiding a stage order.
+
+**A `--file`-focused mutation run does not carry the field-deletion floor.** Slot
+4's note that `cargo-mutants` 27's `--re` filter misses struct-field-deletion
+mutants is correct and is easy to over-apply: it is a property of `--re`, not of
+focused runs generally. `MUTANTS_SMOKE_FILE` uses `--file`, and all 81 mutants
+were verifiably in the target file.
+
+**Local mutation runs can fail before testing anything, with a message that says
+nothing useful.** `Disk quota exceeded` while copying
+`.flatpak-builder/build/*/target/debug/incremental/...`: `flatpak-builder` leaves
+**nested git repositories** in an otherwise-gitignored tree, cargo-mutants' ignore
+walker treats each as its own repo, and 97 GB gets copied into a 47 GB tmpfs.
+`TMPDIR` on a large filesystem is the working fix. Full diagnosis in
+`evidence/mutation-notes-policy.md`.
+
+**`--all-features` hides a default-feature break, and an evidence surface is
+exactly where it hides.** The notes surface carries a `#[cfg(feature =
+"test-utils")]`-gated snapshot type in a field that is **not** gated, which
+compiles under `--all-features` and fails under default features. The break did
+not surface in `cargo check --workspace --all-targets` either, because the type
+was reachable through a gated re-export at the time. **The mutation run's
+unmutated-baseline build is what caught it**, three hours in. Check both feature
+configurations after every re-export or surface change, as slot 4 recorded — and
+know that an evidence surface's fields are the shape most likely to break it.
+
+**Three of eight recorded facade sizes were stale**, all in the safe direction
+(drafts by twenty-one lines). Task 9.3 says *re-measure*, not *confirm*, and this
+is why: a budget claim checked against a stale number is not a check.
+
+**A confirming full-suite run is where an undersized wait budget surfaces, and
+one site is never the whole problem.** The final widget lane reported one
+`FLAKY:` — a Save As / rename / delete row-state test whose three
+`spawn_blocking_then` completions were budgeted at **3s** where
+`.agents/rules/widget-wiring.md` requires **5-10s** for async waits. Fixing only
+the site that fired would have left six more Save-As-completion waits in the same
+module at 2-3s; all seven were raised together, with the reason recorded once at
+the first site. The second half of the cause was this change's own: the note
+resolution completion re-armed the bookmark debounce even when the live set and
+the loaded sidecar were both empty, adding a timer and a worker to **every** file
+load and Save As to write nothing. **Look for the shared budget population, and
+check whether the change added avoidable work to the path the wait covers.**
+
+**A `journal` verdict is per record, and three of four records were rejected.**
+Note and bookmark sidecars are the workflow's *authoritative user content*, not a
+generation-guarded recovery record; the format-upgrade backup is read back only by
+manual recovery; and `workspaces.json` is *loaded* at next launch the way any
+settings file is. Only the migration ledger has a generation, an attempt cap,
+stale-record cleanup, and a later stage that restores **from a failure**. The test
+that separates them: *does a later stage read the record back **as recovery***,
+not *is it read back at all*.
 
 ### Convention friction slot 4 hit, recorded for slots 5 through 7
 
@@ -585,9 +699,64 @@ this table is the change-level view.
 | 3a | **complete** — migrated the save workflow, added the per-workflow subdirectory role home, retired the programme's only workflow-code argument-count suppression (`migrate-document-save-workflow-readability`) | `WFR-DOCUMENT-SAVE`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
 | 3b | **complete** — migrated the load workflow, dissolved `load_save.rs`, promoted the evidence-surface reentrancy constraint into stated convention, and closed the `model/file_load.rs` census decision (`migrate-document-load-workflow-readability`) | `WFR-DOCUMENT-LOAD`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
 | 4 | User-content restore family (`migrate-user-content-restore-workflow-readability`, **complete**) | All four rows **migrated**: `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-DRAFT-RECOVERY`, plus a further `WFR-AUTOMATION-SPINE` projection (`LocalHistoryEvidence`). Nothing from this family is outstanding. One acceptance item is deferred rather than unmet: the live-session `make run` paned-warning proof, which needs user availability — see task 10.10 and `evidence/live-run.md` | proposal + tasks + 1 spec delta |
-| 5 | Workspace tree and notes | `WFR-WORKSPACE-TREE`, `WFR-NOTES-BOOKMARKS` | proposal + tasks |
+| 5a | **complete** — migrated the notes and bookmarks family, retired `NoteSourceRefreshCoordinator` onto the shared single-flight coordinator, added the no-materialization and child-collection evidence-surface statements and the called-presentation-surface taxonomy scope, and fixed **seven confirmed pre-existing data-safety defects** including a rename that silently destroyed an existing file (`migrate-workspace-tree-and-notes-workflow-readability`) | `WFR-NOTES-BOOKMARKS`, continuing `WFR-AUTOMATION-SPINE` projections (`NotesEvidence`) | proposal + tasks + 2 spec deltas |
+| 5b | **outstanding** — the workspace tree. Its `policy.rs`, `seams.rs`, and `test_policy.rs` already exist and are mutation-scoped (landed with 5a's data-safety fixes, which live in this row's file operations), but the row's facade, coordination role modules, evidence surface, and 60-function seam population are not migrated. See "Why slot 5 split into 5a and 5b" | `WFR-WORKSPACE-TREE`, continuing `WFR-AUTOMATION-SPINE` projections | tasks (the existing slot-5 change carries them) |
 | 6 | Minimap | `WFR-MINIMAP` | proposal + design + tasks |
 | 7 | Residual sweep | `WFR-MARKDOWN-PREVIEW`, `WFR-EDITOR-FIND`, `WFR-ENCODING`, `WFR-PRINT`, `WFR-SHELL-LAYOUT`, `WFR-STATUS-NOTIFICATIONS`, `WFR-BUFFER-SNAPSHOT`, `WFR-PLAIN-DISPOSAL`, remaining `exclude_re` entries and argument-count suppressions, matrix completion | proposal + tasks |
+
+### Why slot 5 split into 5a and 5b
+
+Slot 5's proposal argued explicitly against a split and recorded the reason so it
+would not be re-litigated: no convention deliverable of the change is a
+prerequisite of its own second half, and the two rows share the
+rename→sidecar-migration boundary and the `services/palette/notes.rs` population,
+both of which a split would force to be decided twice. **That reasoning held, and
+the split happened anyway, for a reason the proposal did not anticipate.**
+
+The proposal's own task 0.6 required a `data-safety` pass in explicit mode before
+implementing, and budgeted for findings on the evidence that four consecutive
+prior slots each found one. This slot's pass found **eleven**, of which the most
+severe is a normal-usage data-destruction bug: inline rename validated only
+empty-or-unchanged, and the platform rename silently replaces a regular
+destination, so renaming a file to the name of an existing sibling destroyed that
+file's contents with no prompt, no warning, and no undo.
+`.agents/rules/preexisting-blockers.md` is binding and has no exceptions, so those
+fixes came first — and seven of them landed, each with a regression test proven to
+fail without its fix.
+
+That consumed the change's capacity before `WFR-WORKSPACE-TREE`'s structural
+migration began. The choice was then between a **partially** migrated tier-3 row
+— facade rewritten, 60 seam functions half-retired, a matrix row claiming roles
+that do not all exist — and an honestly unmigrated one. The convention's own
+Completion Rule answers that: a row may be marked `migrated` only when every role,
+seam value object, evidence surface, and parity claim exists. A half-migration of
+the workflow that renames and deletes the user's documents is the worst available
+outcome, so the row stays `pending`.
+
+**What 5a nevertheless leaves in place for 5b**, so the split is not pure loss:
+
+- `ui/sidebar/policy.rs`, `ui/sidebar/seams.rs`, and `ui/sidebar/test_policy.rs`
+  exist, are pure, and are inside the `ui/**/policy.rs` mutation scope. They were
+  created *by* the data-safety fixes rather than ahead of them: the rename
+  refusal, the unique-name sequence, and the prefix-matching rule are pure
+  decisions, and the wrong-row defect was fixed by reifying exactly the
+  `FileOperationTicket` + `FileOperationFacts` seam the row owed.
+- The row's two counted, justified test-policy configuration seams
+  (`set_workspace_rename_worker_delay_for_test`,
+  `set_workspace_placeholder_cleanup_delay_for_test`) exist and are documented
+  with why each was necessary: without them, two of the data-safety regression
+  tests passed against the broken code as well as the fixed code.
+- The census re-verification, the reconciled stage trace (**11 stage orders, 27
+  primitives, 11 non-primitive callback resumptions** against a census floor of
+  5), the role-home collision analysis, the facade budget measurement, and the
+  `journal` verdict for workspace persistence are all recorded as evidence, so 5b
+  starts from decisions rather than from questions.
+
+**The lesson for slots 5b, 6, and 7**: a tier-3 migration slot must budget for
+the data-safety pass finding *more* than one defect, because the pass is aimed at
+exactly the code the migration is about to restructure. Slot 5's eleven findings
+in one pass is not an outlier to discount; it is what auditing a workflow's file
+operations and its sidecar family *together* produces.
 
 **Slot 2's ordering question is resolved: it was split into 2a and 2b.** The
 convention requires that a `tier-3` workflow not be migrated until the shape has
@@ -754,7 +923,8 @@ in both directions, which some rows need:
 - slot 3a (complete): WFR-DOCUMENT-SAVE, WFR-AUTOMATION-SPINE (partial)
 - slot 3b (complete): WFR-DOCUMENT-LOAD, WFR-AUTOMATION-SPINE (partial)
 - slot 4 (complete): WFR-BUFFER-REPLACEMENT, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-DRAFT-RECOVERY, WFR-AUTOMATION-SPINE (partial)
-- slot 5 (outstanding): WFR-WORKSPACE-TREE, WFR-NOTES-BOOKMARKS, WFR-AUTOMATION-SPINE
+- slot 5a (complete): WFR-NOTES-BOOKMARKS, WFR-AUTOMATION-SPINE (partial)
+- slot 5b (outstanding): WFR-WORKSPACE-TREE, WFR-AUTOMATION-SPINE
 - slot 6 (outstanding): WFR-MINIMAP
 - slot 7 (outstanding): WFR-MARKDOWN-PREVIEW, WFR-EDITOR-FIND, WFR-ENCODING, WFR-PRINT, WFR-SHELL-LAYOUT, WFR-STATUS-NOTIFICATIONS, WFR-BUFFER-SNAPSHOT, WFR-PLAIN-DISPOSAL
 

@@ -70,6 +70,11 @@ impl LushtextWindow {
     pub(super) fn handle_tab_detached(&self, page: &libadwaita::TabPage) {
         self.forget_tab_page(page);
         if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
+            // Bookmarks live in a sidecar the debounce holds only weakly, so a
+            // bookmark added inside the quiet window before this tab detaches
+            // would be dropped. Flush before the rest of the teardown, while the
+            // editor's live projection is still readable.
+            self.flush_bookmarks_for_editor(editor);
             if let Some(ref path) = editor.file_path() {
                 let mut paths = self.imp().open_paths.borrow_mut();
                 paths.remove(path.as_path());

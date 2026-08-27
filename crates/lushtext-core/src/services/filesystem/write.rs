@@ -81,6 +81,20 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
     durable_write::rename_durable(from, to)
 }
 
+/// Rename durably, refusing atomically when the destination already exists.
+///
+/// Use this instead of [`rename_durable`] wherever replacing the destination
+/// would destroy user data. See `durable_write::rename_durable_no_replace` for
+/// why an existence check plus a rename is not equivalent.
+///
+/// # Errors
+///
+/// [`std::io::ErrorKind::AlreadyExists`] when the destination exists;
+/// [`std::io::ErrorKind::Unsupported`] when the platform lacks the flag.
+pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    durable_write::rename_durable_no_replace(from, to)
+}
+
 /// Copy a file with durable destination replacement and source cleanup support.
 ///
 /// # Errors

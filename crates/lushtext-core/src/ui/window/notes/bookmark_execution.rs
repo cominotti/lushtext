@@ -1,6 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Bookmark actions, persistence, browsing, editing, and preview rendering.
+//! Coordination role `execution`: the bookmark lifecycle and editor note resolution.
+//!
+//! Two of `WFR-NOTES-BOOKMARKS`'s ordered stage orders live here because they
+//! share the editor's live `GtkSourceMark` projection and its sidecar identity:
+//!
+//! - **Editor note resolution** — a file finishes loading, `resolve_notes_for_editor`
+//!   reads the bookmark sidecar on a worker, and the result installs only if the
+//!   editor still owns the same path and the same bookmark generation.
+//! - **Bookmark lifecycle** — toggle and label edit, debounced sidecar
+//!   persistence with bounded failure retry and a synchronous close-time flush,
+//!   and the closed-file excerpt preview.
+//!
+//! # Inversions
+//!
+//! 1. **Sidecar load resumes on a worker completion**, which re-checks path and
+//!    bookmark generation, then sets `sidecar_resolved` and re-drives any write
+//!    the unread-sidecar guard deferred.
+//! 2. **Persistence resumes after the debounce quiet window**, and again in the
+//!    write completion — which on failure re-arms the dirty flag and reschedules,
+//!    bounded by `policy::MAX_BOOKMARK_SAVE_ATTEMPTS`.
+//! 3. **The closed-file excerpt load resumes in a completion** validated against
+//!    a `seams::NotesBrowserTicket<PreviewFlight>`, then starts the one retained
+//!    latest request.
+//!
+//! Pure decisions — the target-line parse, the edit-error and
+//! preview-unavailable messages, and the raw-excerpt formatter — are in `policy`.
 
 use std::path::Path;
 use std::rc::Rc;
@@ -22,29 +47,201 @@ use crate::ui::editor_page::{
 };
 use crate::ui::status_bar::MessageKind;
 
+use super::LushtextWindow;
 use super::browser::NotesBrowserEntryExt;
-use super::{
-    LushtextWindow, NOTES_PREVIEW_RAW_CHILD, NotesBrowserEntry, NotesBrowserState,
-    build_dialog_close_button,
+use super::browser::{NOTES_PREVIEW_RAW_CHILD, NotesBrowserEntry, NotesBrowserState};
+use super::chrome::build_dialog_close_button;
+use super::policy::{
+    bookmark_edit_error_message, bookmark_unavailable_description, format_raw_bookmark_excerpt,
+    parse_bookmark_target_line,
 };
+use super::seams::{NotesBrowserFacts, NotesBrowserTicket, PreviewFlight};
 
-#[cfg(feature = "test-utils")]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Debounce interval for bookmark sidecar saves.
-const NOTES_SAVE_DEBOUNCE_MS: u64 = 200;
 /// Text tag applied to the bookmarked row inside the raw preview surface.
 const NOTES_RAW_BOOKMARK_TARGET_TAG: &str = "bookmark-target-line";
-#[cfg(feature = "test-utils")]
-static BOOKMARK_EXCERPT_PREVIEW_DELAY_MS: AtomicU64 = AtomicU64::new(0);
-
-/// Configure an artificial closed-file bookmark preview delay for widget tests.
-#[cfg(feature = "test-utils")]
-pub fn set_bookmark_excerpt_preview_delay_for_test(delay_ms: u64) {
-    BOOKMARK_EXCERPT_PREVIEW_DELAY_MS.store(delay_ms, Ordering::Release);
-}
 
 impl LushtextWindow {
+    /// Wire bookmark and note callbacks for a newly created editor page.
+    pub(in crate::ui::window) fn wire_note_callbacks(&self, editor: &LushtextEditorPage) {
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.connect_file_loaded(move || {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+                && let Some(path) = editor.file_path()
+            {
+                window.resolve_notes_for_editor(&editor, &path);
+            }
+        });
+
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.connect_bookmarks_changed(move || {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+            {
+                window.save_bookmarks_debounced(&editor);
+                window.refresh_command_palette_note_source_debounced();
+                if window.is_active_editor(&editor) {
+                    window.refresh_notes_menu_state();
+                }
+            }
+        });
+
+        // The editor owns the source-mark activation hook, but the window owns
+        // dialogs and active-tab checks. Weak refs keep closed tabs/windows from
+        // staying alive just because a signal connection still exists.
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.connect_bookmark_activated(move |bookmark| {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+                && window.is_active_editor(&editor)
+                && editor.file_path().is_some()
+            {
+                window.present_bookmark_edit_dialog(&editor, &bookmark);
+            }
+        });
+
+        let window_weak = self.downgrade();
+        let editor_weak = editor.downgrade();
+        editor.buffer().connect_mark_set(move |_, _, _| {
+            if let Some(window) = window_weak.upgrade()
+                && let Some(editor) = editor_weak.upgrade()
+                && window.is_active_editor(&editor)
+            {
+                window.refresh_notes_menu_state();
+            }
+        });
+    }
+
+    /// Reload sidecar notes for the editor after a successful file load or reload.
+    pub(in crate::ui::window) fn resolve_notes_for_editor(
+        &self,
+        editor: &LushtextEditorPage,
+        path: &Path,
+    ) {
+        let path = path.to_path_buf();
+        let path_for_load = path.clone();
+        let started_at_generation = editor.bookmark_change_generation();
+        let window_weak = self.downgrade();
+        spawn_blocking_then(
+            editor.clone(),
+            move || {
+                let data_dir = json_store::data_dir();
+                bookmark_service::load_for_path(&data_dir, &path_for_load)
+                    .map(|document| document.bookmarks)
+            },
+            move |editor, result| {
+                if editor.file_path().as_deref() != Some(path.as_path()) {
+                    return;
+                }
+                // Only a **successful** read opens the guard. A failed read tells
+                // us nothing about what the sidecar contains, so treating it as
+                // resolved would let the very next empty write delete a sidecar
+                // that may well be intact — the error arm clears the live
+                // projection, which is exactly an empty set. The failure path
+                // below reports and retries instead.
+                if result.is_ok() {
+                    editor
+                        .imp()
+                        .bookmarks
+                        .persistence
+                        .sidecar_resolved
+                        .set(true);
+                }
+                // A write deferred by that guard has no other way back: nothing
+                // else consults `save_dirty` outside a live flight's completion,
+                // so without this the deferral would wait for the user's next
+                // edit or, worse, for the close-time flush.
+                //
+                // But only re-drive a write that would *do* something. The common
+                // case by far is a document with no bookmarks at all: the live set
+                // is empty and the sidecar just loaded as empty, so there is
+                // nothing to persist and nothing to delete. Re-arming the debounce
+                // there would add a timer and a worker to **every** file load and
+                // every Save As, which is latency spent to write nothing.
+                let deferred_write_matters = editor.imp().bookmarks.persistence.save_dirty.get()
+                    && !(editor.bookmark_records().is_empty()
+                        && result.as_ref().is_ok_and(Vec::is_empty));
+                if deferred_write_matters {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.save_bookmarks_debounced(&editor);
+                    }
+                } else {
+                    editor.imp().bookmarks.persistence.save_dirty.set(false);
+                }
+                match result {
+                    Ok(bookmarks) => {
+                        if !editor
+                            .load_bookmarks_if_generation_matches(&bookmarks, started_at_generation)
+                        {
+                            return;
+                        }
+                        if let Some(window) = window_weak.upgrade() {
+                            window.refresh_command_palette_note_source_debounced();
+                            window.refresh_status_bar();
+                        }
+                    }
+                    Err(error) => {
+                        if editor.bookmark_change_generation() != started_at_generation {
+                            return;
+                        }
+                        tracing::error!("Failed to load notes for {}: {error}", path.display());
+                        editor.clear_bookmarks();
+                        if let Some(window) = window_weak.upgrade() {
+                            window.publish_status_message(
+                                "Bookmarks could not be loaded",
+                                MessageKind::Warning,
+                            );
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    /// Re-read every open saved editor's note sidecars.
+    ///
+    /// Used after a startup migration reconcile moves sidecars a restored tab has
+    /// already read.
+    pub(super) fn resolve_notes_for_open_editors(&self) {
+        let Some(tab_view) = self.imp().tab_view.try_get() else {
+            return;
+        };
+        for index in 0..tab_view.n_pages() {
+            if let Some(editor) = tab_view
+                .nth_page(index)
+                .child()
+                .downcast_ref::<LushtextEditorPage>()
+                && let Some(path) = editor.file_path()
+            {
+                self.resolve_notes_for_editor(editor, &path);
+            }
+        }
+    }
+
+    /// Reset live note state after Save As so the new path starts from its own identity.
+    pub(in crate::ui::window) fn reset_notes_after_save_as(
+        &self,
+        editor: &LushtextEditorPage,
+        path: &Path,
+    ) {
+        editor.clear_bookmarks();
+        // The new path has its own sidecar, which has not been read back yet.
+        // Leaving the flag set from the old identity would disarm the
+        // unread-sidecar guard for the whole resolve window, so a Save As onto a
+        // path that already has bookmarks could delete them.
+        editor
+            .imp()
+            .bookmarks
+            .persistence
+            .sidecar_resolved
+            .set(false);
+        self.resolve_notes_for_editor(editor, path);
+        self.refresh_command_palette_note_source_debounced();
+    }
+
     /// Toggle the bookmark on the current cursor line.
     pub(in crate::ui::window) fn toggle_bookmark(&self) {
         let Some(editor) = self.require_saved_editor("Bookmarks require a saved file") else {
@@ -183,27 +380,23 @@ impl LushtextWindow {
         button_box.append(&save_button);
         content.append(&button_box);
 
-        let error_weak = error_label.downgrade();
-        let line_row_weak = line_row.downgrade();
-        line_row.connect_changed(move |_| {
-            if let Some(error_label) = error_weak.upgrade() {
-                clear_bookmark_edit_error(&error_label);
+        // Editing either field clears the same validation feedback, so both rows
+        // connect one handler rather than two copies of it.
+        let clear_feedback = {
+            let error_weak = error_label.downgrade();
+            let line_row_weak = line_row.downgrade();
+            move || {
+                if let Some(error_label) = error_weak.upgrade() {
+                    clear_bookmark_edit_error(&error_label);
+                }
+                if let Some(line_row) = line_row_weak.upgrade() {
+                    accessibility::set_invalid(&line_row, false);
+                }
             }
-            if let Some(line_row) = line_row_weak.upgrade() {
-                accessibility::set_invalid(&line_row, false);
-            }
-        });
-
-        let error_weak = error_label.downgrade();
-        let line_row_weak = line_row.downgrade();
-        label_row.connect_changed(move |_| {
-            if let Some(error_label) = error_weak.upgrade() {
-                clear_bookmark_edit_error(&error_label);
-            }
-            if let Some(line_row) = line_row_weak.upgrade() {
-                accessibility::set_invalid(&line_row, false);
-            }
-        });
+        };
+        let clear_feedback_for_label = clear_feedback.clone();
+        line_row.connect_changed(move |_| clear_feedback());
+        label_row.connect_changed(move |_| clear_feedback_for_label());
 
         let bookmark_id = bookmark.id.clone();
         let editor_weak = editor.downgrade();
@@ -290,10 +483,16 @@ impl LushtextWindow {
     }
     /// Debounce bookmark persistence so one burst of edits produces one sidecar write.
     pub(super) fn save_bookmarks_debounced(&self, editor: &LushtextEditorPage) {
+        // `save_dirty` now means "the live bookmark set is not on disk", set the
+        // moment a write is requested rather than only when one is already in
+        // flight. That is what lets `flush_bookmarks_for_editor` tell an
+        // unpersisted editor from a clean one at close time, and it is why a
+        // failed write can re-arm rather than silently dropping the change.
+        editor.imp().bookmarks.persistence.save_dirty.set(true);
         let window_weak = self.downgrade();
         editor.imp().bookmarks.persistence.save_debounce.schedule(
             editor,
-            Duration::from_millis(NOTES_SAVE_DEBOUNCE_MS),
+            Duration::from_millis(super::policy::NOTES_SAVE_DEBOUNCE_MS),
             move |editor, _| {
                 if editor.imp().bookmarks.persistence.save_inflight.get() {
                     editor.imp().bookmarks.persistence.save_dirty.set(true);
@@ -308,34 +507,194 @@ impl LushtextWindow {
     }
 
     /// Write the current bookmark snapshot to disk.
+    ///
+    /// A failed write **re-arms the dirty flag and reschedules**. Before that,
+    /// the dirty flag was cleared before the write and the error arm restored
+    /// nothing, so one transient failure left the bookmarks in memory
+    /// indefinitely: nothing else consults `save_dirty` outside a live flight's
+    /// completion, so the next toggle was the only thing that could ever retry.
+    /// Workspace persistence has always had a retry path; this is the same
+    /// contract for the sidecar the same window owns.
     fn persist_bookmarks_now(&self, editor: &LushtextEditorPage) {
         let Some(path) = editor.file_path() else {
             return;
         };
         let bookmarks = editor.bookmark_records();
+        // Never let an unread sidecar be overwritten by an empty live set:
+        // `save_for_path` deletes the sidecar when the set is empty, so this
+        // would silently destroy every bookmark for a file whose sidecar has not
+        // been read back yet. Keep the write outstanding instead.
+        if bookmarks.is_empty() && !editor.imp().bookmarks.persistence.sidecar_resolved.get() {
+            tracing::debug!("Deferring bookmark write until the sidecar has been read back");
+            editor.imp().bookmarks.persistence.save_dirty.set(true);
+            return;
+        }
         let data_dir = json_store::data_dir();
         editor.imp().bookmarks.persistence.save_inflight.set(true);
         editor.imp().bookmarks.persistence.save_dirty.set(false);
 
+        // Captured at dispatch and re-checked on the worker: if the close-time
+        // flush supersedes this write, its older snapshot must not land after the
+        // flush's newer one.
+        let save_generation =
+            std::sync::Arc::clone(&editor.imp().bookmarks.persistence.save_generation);
+        let issued = save_generation.load(std::sync::atomic::Ordering::Acquire);
         let window_weak = self.downgrade();
         spawn_blocking_then(
             editor.clone(),
-            move || bookmark_service::save_for_path(&data_dir, &path, &bookmarks).map(|_| ()),
+            move || {
+                if save_generation.load(std::sync::atomic::Ordering::Acquire) != issued {
+                    tracing::debug!("Skipping superseded bookmark write");
+                    return Ok(());
+                }
+                bookmark_service::save_for_path(&data_dir, &path, &bookmarks).map(|_| ())
+            },
             move |editor, result| {
                 editor.imp().bookmarks.persistence.save_inflight.set(false);
-                if let Err(error) = result {
-                    tracing::error!("Failed to save bookmarks: {error}");
-                    if let Some(window) = window_weak.upgrade() {
+                let write_succeeded = result.is_ok();
+                if write_succeeded {
+                    // A successful write makes this editor the sidecar's author,
+                    // so a later empty set is a real removal rather than an
+                    // unloaded projection and may delete the sidecar.
+                    editor
+                        .imp()
+                        .bookmarks
+                        .persistence
+                        .sidecar_resolved
+                        .set(true);
+                }
+                let persistence = &editor.imp().bookmarks.persistence;
+                // Read **before** the failure arm sets it: this distinguishes "a
+                // newer edit arrived while this write was in flight" from "this
+                // write failed and is still outstanding". Conflating the two is
+                // what made an earlier version of this retry unbounded — the
+                // failure arm set the flag, the immediate re-persist path then saw
+                // it, and the two fed each other forever.
+                let newer_edit_arrived = persistence.save_dirty.get();
+                let retry_after_failure = if let Err(error) = result {
+                    let streak = persistence.save_failure_streak.get().saturating_add(1);
+                    persistence.save_failure_streak.set(streak);
+                    tracing::error!("Failed to save bookmarks (attempt {streak}): {error}");
+                    // Report once per streak, not once per retry: a persistently
+                    // unwritable sidecar must not pulse the status bar.
+                    if streak == 1
+                        && let Some(window) = window_weak.upgrade()
+                    {
                         window.publish_status_message("Bookmark save failed", MessageKind::Warning);
                     }
-                }
-                if editor.imp().bookmarks.persistence.save_dirty.replace(false)
-                    && let Some(window) = window_weak.upgrade()
-                {
-                    window.persist_bookmarks_now(&editor);
+                    // The live set is still not on disk, so say so. This is what
+                    // makes the close-time flush try once more after a failure
+                    // streak instead of treating the editor as clean.
+                    persistence.save_dirty.set(true);
+                    // Bounded retry: past the cap nothing reschedules on its own,
+                    // and the outstanding write waits for the user's next bookmark
+                    // edit or for the close flush. Unbounded retry would churn the
+                    // worker pool for as long as the sidecar stays unwritable.
+                    streak < super::policy::MAX_BOOKMARK_SAVE_ATTEMPTS
+                } else {
+                    persistence.save_failure_streak.set(0);
+                    false
+                };
+                if let Some(window) = window_weak.upgrade() {
+                    if retry_after_failure {
+                        // Failures go through the debounce, which is what bounds
+                        // the worker churn.
+                        window.save_bookmarks_debounced(&editor);
+                    } else if newer_edit_arrived && write_succeeded {
+                        // A newer edit that arrived mid-flight is re-persisted
+                        // **immediately**, as it always was. Routing the success
+                        // path through the debounce too would widen the very
+                        // window the close-time flush exists to close.
+                        window.persist_bookmarks_now(&editor);
+                    }
                 }
             },
         );
+    }
+
+    /// Flush every open editor's pending bookmark write before the window closes.
+    pub(in crate::ui::window) fn flush_all_pending_bookmarks(&self) {
+        let Some(tab_view) = self.imp().tab_view.try_get() else {
+            return;
+        };
+        for index in 0..tab_view.n_pages() {
+            if let Some(editor) = tab_view
+                .nth_page(index)
+                .child()
+                .downcast_ref::<LushtextEditorPage>()
+            {
+                self.flush_bookmarks_for_editor(editor);
+            }
+        }
+    }
+
+    /// Flush any pending bookmark write for one editor before it goes away.
+    ///
+    /// `Debounce::schedule` holds its target **weakly**, so a scheduled bookmark
+    /// write is simply dropped when the tab or window is torn down. Nothing in
+    /// the close chain or in tab detachment touched the bookmark persistence
+    /// state, so a bookmark added within the quiet window before closing was
+    /// silently lost. Workspace persistence already participates in the close
+    /// chain; this gives the sidecar the same treatment, synchronously, because
+    /// there is no later turn in which to finish.
+    ///
+    /// **Why a blocking write on the GTK thread is acceptable here, stated so it
+    /// is not copied somewhere it is not.** A bookmark sidecar is a small JSON
+    /// document of line numbers and short labels — never document text — so the
+    /// write is bounded by a few kilobytes rather than by buffer size. If an
+    /// in-flight worker write holds the same target's write guard, this call waits
+    /// for it, which cannot deadlock: the worker needs no GTK turn to finish.
+    /// This is a teardown path with no later turn, which is the only reason it is
+    /// synchronous at all.
+    pub(in crate::ui::window) fn flush_bookmarks_for_editor(&self, editor: &LushtextEditorPage) {
+        // A disposed widget is a stage. `bookmark_records()` reads the live
+        // `GtkSourceMark` projection through the editor's `source_view` template
+        // child, whose panicking accessor is exactly what a teardown-path read
+        // must not use. Answering "nothing to flush" is the honest response.
+        if editor.imp().source_view.try_get().is_none() {
+            return;
+        }
+        let persistence = &editor.imp().bookmarks.persistence;
+        let _ = persistence.save_debounce.invalidate();
+        if !persistence.save_dirty.get() {
+            return;
+        }
+        // Supersede any in-flight worker write **before** writing. Both writes
+        // replace the whole sidecar, so without this the worker's older snapshot
+        // could land after this newer one and revert it — the flush would lose
+        // exactly the bookmark it exists to save. The worker re-checks this token
+        // inside the target write guard and skips when it is stale.
+        persistence
+            .save_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let Some(path) = editor.file_path() else {
+            return;
+        };
+        let bookmarks = editor.bookmark_records();
+        // The same unread-sidecar guard `persist_bookmarks_now` applies. Without
+        // it this flush is the one place that would write an empty set over a
+        // sidecar the editor never read — and because `save_document` deletes on
+        // empty, that is a deletion, not a stale write. The dirty flag is left
+        // set so the state stays honest.
+        if bookmarks.is_empty() && !persistence.sidecar_resolved.get() {
+            tracing::debug!("Skipping bookmark flush until the sidecar has been read back");
+            return;
+        }
+        persistence.save_dirty.set(false);
+        // Synchronous on purpose: the editor page is about to be detached, so a
+        // worker completion would arrive after its target is gone.
+        if let Err(error) =
+            bookmark_service::save_for_path(&json_store::data_dir(), &path, &bookmarks)
+        {
+            tracing::error!(
+                "Failed to flush bookmarks for {} before close: {error}",
+                path.display()
+            );
+            self.publish_status_message(
+                "Bookmarks could not be saved before closing",
+                MessageKind::Warning,
+            );
+        }
     }
 }
 
@@ -394,7 +753,8 @@ impl NotesBrowserState {
         spawn_blocking_then(
             (),
             move || {
-                delay_bookmark_excerpt_preview_for_test();
+                #[cfg(feature = "test-utils")]
+                super::test_policy::delay_bookmark_excerpt_preview();
                 bookmark_excerpt::load_from_path_cancellable(
                     &request.path,
                     request.line,
@@ -430,10 +790,15 @@ impl NotesBrowserState {
             bookmark_excerpt::BookmarkExcerptState,
         )>,
     ) {
+        let ticket = NotesBrowserTicket::<PreviewFlight>::new(generation, state.mode.get());
         let (accepted, next) = {
             let mut loads = state.preview_loads.borrow_mut();
-            let accepted = loads.is_current(generation) && !state.disposed.get();
-            let next = loads.finish(generation);
+            let accepted = ticket.may_publish(&NotesBrowserFacts::new(
+                loads.is_current(ticket.generation()),
+                state.mode.get(),
+                state.disposed.get(),
+            ));
+            let next = loads.finish(ticket.generation());
             (accepted, next)
         };
         if accepted && let Some((path, line, result)) = completion {
@@ -611,135 +976,6 @@ pub(super) fn ensure_raw_preview_target_tag(buffer: &gtk4::TextBuffer) -> gtk4::
     tag
 }
 
-/// Formatted raw bookmark body plus text-buffer offsets for target emphasis.
-struct RawBookmarkExcerptText {
-    /// Text inserted into the raw preview buffer.
-    text: String,
-    /// Character offset where the target line starts.
-    target_start: i32,
-    /// Character offset immediately after the target line.
-    target_end: i32,
-}
-
-/// Render raw source context with line numbers and a target-line marker.
-fn format_raw_bookmark_excerpt(
-    excerpt: &bookmark_excerpt::BookmarkExcerpt,
-) -> RawBookmarkExcerptText {
-    let line_number_width = excerpt
-        .lines
-        .last()
-        .map_or(1, |line| line.number.saturating_add(1).to_string().len())
-        .max(2);
-    let mut text = String::new();
-    let mut target_start = 0;
-    let mut target_end = 0;
-
-    if excerpt.window.truncation.before {
-        push_raw_preview_line(&mut text, "... earlier bookmark context omitted ...");
-    }
-
-    for (index, line) in excerpt.lines.iter().enumerate() {
-        if index == excerpt.window.target_line_index {
-            target_start = raw_preview_offset(&text);
-        }
-
-        let marker = if index == excerpt.window.target_line_index {
-            ">"
-        } else {
-            " "
-        };
-        let line_number = line.number.saturating_add(1);
-        push_raw_preview_line(
-            &mut text,
-            &format!("{marker} {line_number:>line_number_width$} | {}", line.text),
-        );
-
-        if index == excerpt.window.target_line_index {
-            target_end = raw_preview_offset(&text).saturating_sub(1);
-        }
-    }
-
-    if excerpt.window.truncation.after {
-        push_raw_preview_line(&mut text, "... later bookmark context omitted ...");
-    }
-
-    RawBookmarkExcerptText {
-        text,
-        target_start,
-        target_end,
-    }
-}
-
-fn push_raw_preview_line(text: &mut String, line: &str) {
-    text.push_str(line);
-    text.push('\n');
-}
-
-fn raw_preview_offset(text: &str) -> i32 {
-    i32::try_from(text.chars().count()).unwrap_or(i32::MAX)
-}
-
-fn bookmark_unavailable_description(
-    reason: bookmark_excerpt::BookmarkExcerptUnavailableReason,
-) -> &'static str {
-    match reason {
-        bookmark_excerpt::BookmarkExcerptUnavailableReason::MissingOrUnreadable => {
-            "Bookmark preview unavailable: the file is missing or cannot be read."
-        }
-        bookmark_excerpt::BookmarkExcerptUnavailableReason::BinaryOrUnsupported => {
-            "Bookmark preview unavailable: this file is not UTF-8 text."
-        }
-        bookmark_excerpt::BookmarkExcerptUnavailableReason::TooLargeToPreview => {
-            "Bookmark preview unavailable: this file is too large to preview."
-        }
-        bookmark_excerpt::BookmarkExcerptUnavailableReason::LineBeyondPreviewBudget => {
-            "Bookmark preview unavailable: the bookmarked line is beyond the preview budget."
-        }
-        bookmark_excerpt::BookmarkExcerptUnavailableReason::LineOutOfRange => {
-            "Bookmark preview unavailable: the bookmarked line is no longer in this file."
-        }
-    }
-}
-
-/// Sleep only under `test-utils` so widget tests can exercise stale completions.
-fn delay_bookmark_excerpt_preview_for_test() {
-    #[cfg(feature = "test-utils")]
-    {
-        let delay_ms = BOOKMARK_EXCERPT_PREVIEW_DELAY_MS.load(Ordering::Acquire);
-        if delay_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        }
-    }
-}
-/// Parse only the syntax of a user-facing 1-based bookmark line.
-///
-/// Range and collision checks stay in the editor layer so failed edits leave the
-/// live bookmark projection unchanged.
-fn parse_bookmark_target_line(text: &str) -> Result<u32, String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Err("Enter a line number.".to_string());
-    }
-
-    trimmed
-        .parse::<u32>()
-        .map_err(|_| "Line must be a whole number.".to_string())
-}
-
-/// Convert editor validation failures into dialog feedback.
-fn bookmark_edit_error_message(error: &BookmarkEditError) -> String {
-    match error {
-        BookmarkEditError::NotFound => "That bookmark is no longer available.".to_string(),
-        BookmarkEditError::LineOutOfRange {
-            requested_line,
-            max_line,
-        } => format!("Line {requested_line} is outside this document. Use 1 through {max_line}."),
-        BookmarkEditError::LineOccupied { line } => {
-            format!("Line {line} already has another bookmark.")
-        }
-    }
-}
-
 /// Show bookmark-edit validation feedback and expose the failed field to assistive tech.
 fn show_bookmark_edit_error(
     error_label: &gtk4::Label,
@@ -774,10 +1010,16 @@ pub(super) fn open_editor_at_line(window: &LushtextWindow, path: &Path, line: u3
     };
 
     let line_zero_based = line.saturating_sub(1);
-    if editor.is_evicted() {
+    // `is_evicted()` is read first so an evicted editor's buffer is not touched.
+    let evicted = editor.is_evicted();
+    if evicted || editor.buffer().char_count() == 0 {
+        // There is no installed text to place a cursor in yet, so the target
+        // line goes to the restore path instead of the buffer.
         editor.set_restore_position(line_zero_based, 0, line_zero_based.saturating_sub(3));
-        window.reload_if_evicted();
-    } else if editor.buffer().char_count() > 0 {
+        if evicted {
+            window.reload_if_evicted();
+        }
+    } else {
         let buffer = editor.buffer();
         let iter = buffer
             .iter_at_line(i32::try_from(line_zero_based).unwrap_or(i32::MAX))
@@ -788,8 +1030,6 @@ pub(super) fn open_editor_at_line(window: &LushtextWindow, path: &Path, line: u3
             .source_view()
             .scroll_to_mark(&mark, 0.2, true, 0.0, 0.0);
         buffer.delete_mark(&mark);
-    } else {
-        editor.set_restore_position(line_zero_based, 0, line_zero_based.saturating_sub(3));
     }
     editor.source_view().grab_focus();
 }

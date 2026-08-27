@@ -294,6 +294,25 @@ evidence surface replaced.
   into a crash. This is a hazard consolidation creates: scattered per-field
   getters each read one narrow thing, while one surface makes every field
   reachable from every observation point.
+- **Reading must not make the toolkit do work.** A GTK collection may create its
+  children on demand — `GtkTreeListModel` is the one in this tree — so an
+  accessor that walks such a collection to answer a question *performs* work: it
+  can materialize descendants, register stores, start background scans, and
+  restart dependent lifecycles such as filesystem watches, while every field it
+  produced still reads as a pure observation. An evidence surface therefore MUST
+  NOT call an accessor that lazily creates toolkit state, and MUST NOT call a
+  derivation that mutates a cache or advances a counter **the surface itself
+  reports** — an observer that changes the metric it observes is not an
+  observation. Where the workflow's own code reaches such an accessor safely only
+  because of a guard, derive the field from the workflow's authoritative state
+  instead of repeating the guarded walk. **Prove it, do not assert it**: read the
+  surface with the collection unmaterialized and with it materialized, and show
+  the admission counters, registries, generations, and derivation metrics
+  identical before and after each read.
+- **A field aggregated over a variable-sized set of child widgets** must be
+  bounded, must answer honestly when the set is empty, and must **skip a disposed
+  child rather than panicking on it** — the disposed-widget rule applied to a set
+  rather than to one child.
 - **No evidence field may be read from inside a mutable borrow of the state the
   accessor reads.** This follows from "one accessor reads the whole surface"
   plus interior mutability, and it is a runtime panic rather than a compile

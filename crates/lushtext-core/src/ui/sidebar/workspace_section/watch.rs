@@ -199,6 +199,16 @@ impl LushtextWorkspaceSection {
         }
     }
 
+    /// Request a watcher restart after an out-of-band path change.
+    ///
+    /// Used when a completed file operation's row is gone or has been recycled,
+    /// so the incremental row-level mirror cannot be repaired through
+    /// `refresh_workspace_watch_row`. Without this the mirror silently keeps the
+    /// old path and external-change detection for the renamed file stops.
+    pub(super) fn request_workspace_watch_restart(&self) {
+        self.queue_workspace_watch_restart();
+    }
+
     fn queue_workspace_watch_restart(&self) {
         #[cfg(feature = "test-utils")]
         if self.imp().watch_runtime.test_disabled.get() {

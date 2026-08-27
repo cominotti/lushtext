@@ -125,3 +125,84 @@ That gives LushText a clear promise: public users can update the app without
 their local state becoming invisible, silently discarded, or trapped in a
 format the next release cannot explain. Pre-public app data may be reset, but it
 should not be silently overwritten without diagnostic evidence.
+
+## Confirmed open data-safety findings, from slot 5a's audit
+
+These were found by the `data-safety` pass in
+`migrate-workspace-tree-and-notes-workflow-readability` and are **recorded here
+rather than in that change's directory**, because a change directory is archived
+and these outlive it. Each is a concrete path by which app data becomes invisible
+or is destroyed; none is fixed. Sites are as of that audit.
+
+### M-5 — the startup format gate fails open on a scan failure (MEDIUM)
+
+`format_upgrade::FormatPlan` carries only `groups` (`services/format_upgrade/plan.rs:16-19`),
+so `build_plan` **structurally discards** `inventory.diagnostics`, and
+`requires_startup_decision()` walks only `groups`. If `bookmarks/` is a file
+instead of a directory, or is unreadable, `scan_json_directory` records a
+diagnostic and contributes zero items — the plan is empty, startup continues
+silently, and **every record in that directory is invisible with no warning**.
+The gate's own contract is that consumers wait "until app-owned metadata is known
+to be current"; an unreadable directory is not current, and the gate says nothing.
+Close: carry diagnostics onto `FormatPlan` and surface an advisory row.
+
+### M-6 — a partial Convert loses the pointer to its own backup (MEDIUM)
+
+A mid-loop `?` at `services/format_upgrade/apply.rs:246-262` discards `failures`,
+`converted_count`, **and the backup-manifest handle**. Durability is fine and
+retry is idempotent, but backup items use hashed leaf names and the manifest path
+exists only in a `tracing::info!`, so after a partial Convert the user sees a bare
+I/O error with no indication that a recoverable backup exists or where it is.
+Close: return the partial outcome with its manifest path and name it in the
+re-presented dialog.
+
+### M-7 — Start Fresh can delete bytes it never copied (MEDIUM)
+
+`services/format_upgrade/backup.rs:262-272` calls
+`ensure_regular_file_unchanged` before the copy, the read, and the removal, but
+**no `TargetWriteGuard` spans check → write**, and `modified_at_secs` is
+whole-second granularity. For Convert this is benign — the old bytes are in the
+backup. For **Start Fresh** it deletes a file whose content changed inside the
+same second as the check, and that content was never copied anywhere.
+Close: hold the target write guard across the check-copy-remove sequence.
+
+### M-8 — a transient read failure quarantines the live workspace file (MEDIUM)
+
+`RecoveryProblem::Unreadable` is classified identically to structural corruption
+(`services/recovery_metadata.rs:579-587`, `:825-845`) and triggers
+`preserve_original`, which renames the live file away and returns default state
+with `replacement_allowed = true` — after which the sidebar persists an **empty**
+configuration over it. An `EMFILE`, `ENOMEM`, or `EIO` blip at startup therefore
+empties the user's workspace list on disk. Close: separate "unreadable right now"
+from "structurally corrupt" and refuse replacement for the former.
+
+### M-9 — no retry route for a `record_pending` failure (MEDIUM, needs-decision)
+
+If the migration ledger cannot record pending work, the rename proceeds and
+nothing retries; and after `MAX_MIGRATION_ATTEMPTS = 3` a kind is skipped forever
+with only a warning. Close: decide whether exhaustion should surface a
+user-actionable state rather than a log line.
+
+### M-10 — `FormatPlanGroupKind::Guarded`'s doc over-promises (LOW)
+
+Group atomicity is enforced only in the backup phase, not in the write loop, so a
+mid-loop `?` can split a Guarded group across two format versions. Contained: the
+gate re-fires next launch and both halves have backups. Close: either enforce it
+in the write loop or narrow the doc.
+
+### M-3 — premature teardown survives a refused close (MEDIUM, tabs workflow)
+
+`ui/window/documents.rs:1107-1109` runs `cancel_load()`, `stop_file_monitor()`,
+and `untrack_editor_memory()` **before** `close_page`, which
+`handle_tab_close_request` can refuse. `start_file_monitor` is only re-armed by a
+load or buffer-replacement completion, so a tab that survives a cancelled close
+**permanently loses external-change detection**. `handle_tab_detached` already
+does this cleanup on real detach, so the close is to delete the three eager calls.
+Owner: `WFR-SHELL-LAYOUT` / the tabs workflow.
+
+### M-11 — note editor Escape discards typed prose (LOW, needs-decision)
+
+`ui/window/notes/editor_execution.rs` sets `RESPONSE_CANCEL` as the close response
+with no unsaved guard. Escape-as-Cancel is conventional, so this is a product
+decision. Note that slot 5a *did* fix the adjacent write-failure case: a failed
+save now re-presents the editor pre-filled with the recovered text.

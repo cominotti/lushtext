@@ -2,6 +2,14 @@
 
 //! Command palette GObject implementation: template binding, search scheduling,
 //! and grouped result presentation.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-COMMAND-PALETTE` — it projects the workflow onto widgets (subclass state, template children, the list factory, and accessible-state projection) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use crate::model::palette::{PaletteFileEntry, PaletteNoteEntry, PaletteSearchRow, SearchMode};
 use crate::services::palette::{self, FileIndex};

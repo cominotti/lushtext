@@ -1827,7 +1827,7 @@ fn assert_readable_empty_status_dialog(
 fn wait_for_empty_notes_dialog(window: &LushtextWindow) -> libadwaita::Dialog {
     wait_until(Duration::from_secs(15), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.source_entries == 0)
             && visible_sheet_dialog(window).is_some_and(|dialog| {
                 dialog
@@ -11049,7 +11049,7 @@ fn test_file_chooser_save_as_selection_adopts_destination_after_write() {
 
     window.select_save_as_destination_for_test(&path);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         fs_metadata::exists(&path)
             && editor.file_path() == Some(path.clone())
             && !editor.is_modified()
@@ -11109,7 +11109,7 @@ fn test_file_chooser_save_as_cancels_pending_load_result_before_adopting_destina
     editor.buffer().set_modified(true);
 
     window.select_save_as_destination_for_test(&destination);
-    wait_until(Duration::from_secs(3), || {
+    wait_until(Duration::from_secs(10), || {
         fs_metadata::exists(&destination)
             && editor.file_path() == Some(destination.clone())
             && !editor.is_saving()
@@ -11159,7 +11159,7 @@ fn test_file_chooser_save_as_existing_symlink_updates_target_without_replacing_l
 
     window.select_save_as_destination_for_test(&link);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         fs_read::text(&target).is_ok_and(|content| content == "new target\n")
             && editor.file_path() == Some(link.clone())
             && !editor.is_modified()
@@ -11198,13 +11198,13 @@ fn test_save_as_stale_canonical_refresh_does_not_reinsert_previous_destination()
     editor.buffer().set_modified(true);
 
     window.select_save_as_destination_for_test(&first_path);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         editor.file_path() == Some(first_path.clone()) && !editor.is_modified()
     });
     let first_canonical = fs_metadata::canonical_path(&first_path).expect("canonical first path");
 
     window.select_save_as_destination_for_test(&second_path);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(10), || {
         editor.file_path() == Some(second_path.clone()) && !editor.is_modified()
     });
     let second_canonical =
@@ -11236,7 +11236,13 @@ fn test_save_as_canonical_refresh_after_tab_close_does_not_reopen_path_key() {
     editor.buffer().set_modified(true);
 
     window.select_save_as_destination_for_test(&path);
-    wait_until(Duration::from_secs(2), || {
+    // Save As completes through `spawn_blocking_then`, so this and every other
+    // Save-As-completion wait in this module carries the documented >=5-10s
+    // async budget rather than the 2-3s a synchronous UI flip would need. Slot 5a
+    // raised all seven of them together after one flaked: the predicate returns
+    // the instant the worker lands, so a larger ceiling costs nothing on the fast
+    // path and only matters on a loaded machine.
+    wait_until(Duration::from_secs(10), || {
         editor.file_path() == Some(path.clone()) && !editor.is_modified()
     });
     let canonical = fs_metadata::canonical_path(&path).expect("canonical saved path");
@@ -11332,7 +11338,11 @@ fn test_workspace_row_state_window_updates_save_as_rename_and_delete() {
     editor.buffer().set_text("save as alpha\n");
     editor.buffer().set_modified(true);
     window.select_save_as_destination_for_test(&alpha);
-    wait_until(Duration::from_secs(3), || {
+    // Save As completes through `spawn_blocking_then`: a durable write plus a
+    // canonical-identity refresh plus the note-sidecar resolution it triggers.
+    // Async worker completions need the documented >=5-10s budget; a 3s budget
+    // was sized for a synchronous UI flip and flaked under load.
+    wait_until(Duration::from_secs(10), || {
         editor.file_path().as_deref() == Some(alpha.as_path()) && !editor.is_modified()
     });
     assert_window_workspace_row_state(&section, &alpha, true, true);
@@ -11341,14 +11351,14 @@ fn test_workspace_row_state_window_updates_save_as_rename_and_delete() {
     editor.buffer().set_text("save as beta\n");
     editor.buffer().set_modified(true);
     window.select_save_as_destination_for_test(&beta);
-    wait_until(Duration::from_secs(3), || {
+    wait_until(Duration::from_secs(10), || {
         editor.file_path().as_deref() == Some(beta.as_path()) && !editor.is_modified()
     });
     assert_window_workspace_row_state(&section, &alpha, false, false);
     assert_window_workspace_row_state(&section, &beta, true, true);
 
     window.update_tab_path(&beta, &alpha);
-    wait_until(Duration::from_secs(3), || {
+    wait_until(Duration::from_secs(10), || {
         active_editor(&window).file_path().as_deref() == Some(alpha.as_path())
     });
     assert_window_workspace_row_state(&section, &alpha, true, true);
@@ -15718,7 +15728,7 @@ fn test_large_document_note_save_snapshot_is_disposed_with_window() {
 
     alert_response_button(&dialog, "save").emit_clicked();
     flush_events();
-    assert_eq!(window.note_save_snapshot_count_for_test(), 1);
+    assert_eq!(window.notes_evidence().active_note_save_captures, 1);
 
     let window_weak = window.downgrade();
     dialog.close();
@@ -16031,6 +16041,407 @@ fn test_browse_notes_opens_document_note_for_selected_row() {
 }
 
 #[test]
+fn test_bookmark_writes_wait_until_the_sidecar_has_been_read_back() {
+    // Covers the guard that stands between a restored tab whose file was renamed
+    // in a previous session and the deletion of all its bookmarks:
+    // `bookmark_service::save_document` deletes the sidecar when the live set is
+    // empty, so an empty write before the sidecar has been read is a deletion.
+    // The post-implementation data-safety pass found this guard was applied in
+    // one of the two write paths and not the other, so the state it reports is
+    // now on the evidence surface rather than being invisible.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let folder = tempfile::tempdir().expect("folder");
+    let path = folder.path().join("resolved.md");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
+
+    let window = test_window();
+    present_window(&window);
+
+    // An untitled buffer has no sidecar to protect and reports the guard closed.
+    window.new_tab();
+    flush_events();
+    let untitled = window.notes_evidence();
+    assert!(!untitled.active_document_file_backed);
+    assert!(
+        !untitled.active_document_sidecar_resolved,
+        "an untitled buffer has never read a sidecar"
+    );
+
+    // Opening a saved file resolves it, which is what opens the guard.
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().active_document_file_backed
+    });
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().active_document_sidecar_resolved
+    });
+
+    // With the guard open, a bookmark round trip reaches disk and then removes
+    // the sidecar, which is the behavior the guard must not block once the
+    // sidecar is known.
+    activate_action(&window, "toggle-bookmark");
+    flush_events();
+    assert_eq!(window.notes_evidence().active_document_bookmark_count, 1);
+    wait_until(Duration::from_secs(10), || {
+        bookmark_service::load_for_path(&json_store::data_dir(), &path)
+            .is_ok_and(|document| document.bookmarks.len() == 1)
+    });
+
+    activate_action(&window, "toggle-bookmark");
+    flush_events();
+    assert_eq!(window.notes_evidence().active_document_bookmark_count, 0);
+    wait_until(Duration::from_secs(10), || {
+        bookmark_service::load_for_path(&json_store::data_dir(), &path)
+            .is_ok_and(|document| document.bookmarks.is_empty())
+    });
+}
+
+#[test]
+fn test_failed_bookmark_write_retries_within_its_bounded_streak_and_recovers() {
+    // The behavioral half of H-4a. Before the fix, `save_dirty` was cleared
+    // before the write and the error arm restored nothing, so one transient
+    // failure left the bookmarks in memory with nothing able to retry. The fix's
+    // retry is bounded by `MAX_BOOKMARK_SAVE_ATTEMPTS`, and this drives failure ->
+    // streak -> re-arm -> recovery rather than only pinning that constant.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let folder = tempfile::tempdir().expect("folder");
+    let path = folder.path().join("retry.md");
+    fixture::write_text(&path, "one\ntwo\nthree\n");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().active_document_sidecar_resolved
+    });
+
+    // Fail the first two writes; the third must succeed inside the bounded
+    // streak of three.
+    let _fault = bookmark_service::fail_next_saves_for_path_for_test(
+        &json_store::data_dir(),
+        &path,
+        2,
+    );
+
+    activate_action(&window, "toggle-bookmark");
+    flush_events();
+    assert_eq!(window.notes_evidence().active_document_bookmark_count, 1);
+
+    // Both injected failures are consumed by the re-armed retries, and the
+    // bookmark ends up on disk without any further user action.
+    wait_until(Duration::from_secs(20), || {
+        bookmark_service::pending_save_failures_for_path_for_test(&json_store::data_dir(), &path)
+            == 0
+    });
+    wait_until(Duration::from_secs(20), || {
+        bookmark_service::load_for_path(&json_store::data_dir(), &path)
+            .is_ok_and(|document| document.bookmarks.len() == 1)
+    });
+}
+
+#[test]
+fn test_failed_bookmark_write_stops_retrying_past_its_bounded_streak() {
+    // The other half of the bound: a persistently unwritable sidecar must stop
+    // retrying on its own rather than churning the worker pool and pulsing the
+    // status bar every debounce window. The write stays outstanding — the dirty
+    // flag is left set — so the close-time flush still attempts it.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let folder = tempfile::tempdir().expect("folder");
+    let path = folder.path().join("bounded.md");
+    fixture::write_text(&path, "one\ntwo\n");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().active_document_sidecar_resolved
+    });
+
+    // Far more failures than the bound allows.
+    let _fault = bookmark_service::fail_next_saves_for_path_for_test(
+        &json_store::data_dir(),
+        &path,
+        50,
+    );
+    activate_action(&window, "toggle-bookmark");
+    flush_events();
+
+    // Exactly the bounded number of attempts is consumed, then retrying stops.
+    wait_until(Duration::from_secs(20), || {
+        bookmark_service::pending_save_failures_for_path_for_test(&json_store::data_dir(), &path)
+            <= 47
+    });
+    flush_after_delay(Duration::from_millis(1_500));
+    let remaining = bookmark_service::pending_save_failures_for_path_for_test(
+        &json_store::data_dir(),
+        &path,
+    );
+    assert_eq!(
+        remaining, 47,
+        "exactly three bounded attempts should have been consumed, then retrying stops"
+    );
+}
+
+#[test]
+fn test_startup_migration_reconcile_re_resolves_open_editor_notes() {
+    // Covers `resolve_notes_for_open_editors()` being driven from the reconcile
+    // completion — the H-3 fix. A restored tab whose file was renamed in a
+    // previous session reads a sidecar the startup migration has not moved yet
+    // and reports zero bookmarks; nothing used to re-resolve it, and the user's
+    // next toggle would whole-file-replace the sidecar with that stale empty set.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let folder = tempfile::tempdir().expect("folder");
+    let old_path = folder.path().join("before-rename.md");
+    let new_path = folder.path().join("after-rename.md");
+    fixture::write_text(&old_path, "one\ntwo\nthree\n");
+
+    // A sidecar keyed to the OLD path, plus a pending ledger entry for the
+    // rename: exactly the state an interrupted previous session leaves.
+    bookmark_service::save_for_path(
+        &json_store::data_dir(),
+        &old_path,
+        &[lushtext_core::model::bookmark::BookmarkRecord::new(1, None)],
+    )
+    .expect("seed old-path bookmark sidecar");
+    fixture::write_text(&new_path, "one\ntwo\nthree\n");
+    lushtext_core::services::filesystem::mutate::remove_file_if_exists(&old_path)
+        .expect("remove the pre-rename file");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&new_path);
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().active_document_file_backed
+    });
+
+    // Drive the reconcile the startup gate would drive, then let its completion
+    // re-resolve the open editor.
+    window.reconcile_pending_migrations_on_startup();
+    wait_until(Duration::from_secs(20), || {
+        window.notes_evidence().active_document_sidecar_resolved
+    });
+
+    // The editor must not be left advertising a set it never loaded.
+    let evidence = window.notes_evidence();
+    assert!(
+        evidence.active_document_sidecar_resolved,
+        "the open editor's sidecar must be resolved after reconcile"
+    );
+}
+
+#[test]
+fn test_pending_bookmark_write_is_flushed_when_a_tab_detaches() {
+    // Regression for a confirmed pre-existing defect: bookmark persistence is
+    // debounced, `Debounce::schedule` holds its target **weakly**, and nothing in
+    // tab detachment or the close chain touched the bookmark persistence state.
+    // A bookmark added inside the 200 ms quiet window before closing the tab was
+    // therefore dropped, with no error and no retry — while workspace
+    // persistence, which the same window owns, has always had a close flush.
+    ensure_gtk_init();
+    let _data_dir = isolated_data_dir();
+    let folder = tempfile::tempdir().expect("folder");
+    let path = folder.path().join("bookmarked.md");
+    fixture::write_text(&path, "line one\nline two\nline three\n");
+
+    let window = test_window();
+    present_window(&window);
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().active_document_file_backed
+    });
+
+    activate_action(&window, "toggle-bookmark");
+    flush_events();
+    assert_eq!(window.notes_evidence().active_document_bookmark_count, 1);
+
+    // Close the tab well inside the debounce quiet window.
+    activate_action(&window, "close-tab");
+    wait_until(Duration::from_secs(10), || {
+        window.imp().tab_view.n_pages() == 0
+    });
+    flush_after_delay(Duration::from_millis(300));
+
+    let document = bookmark_service::load_for_path(&json_store::data_dir(), &path)
+        .expect("bookmark sidecar should exist after the close flush");
+    assert_eq!(
+        document.bookmarks.len(),
+        1,
+        "the bookmark added inside the debounce window must reach disk"
+    );
+}
+
+#[test]
+fn test_notes_evidence_reads_stay_side_effect_free_across_mutation() {
+    // The reentrancy constraint's required proof for `WFR-NOTES-BOOKMARKS`. The
+    // accessor takes shared borrows of the active-browser slot, the note-save
+    // capture vector, the palette note-source coordinator, and the palette
+    // note-source admission slot; every stage below mutates at least one of them
+    // under `borrow_mut()`, and the surface is read **after** each one, never
+    // while a borrow is held.
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let note_path = left_folder.join("reentrancy-note.md");
+    fixture::write_text(&note_path, "reentrancy\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &note_path,
+        &RichNoteBody::new("reentrancy body"),
+    )
+    .expect("save note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+
+    let idle = window.notes_evidence();
+    assert!(idle.browser.is_none());
+    assert_eq!(idle.active_note_save_captures, 0);
+    assert!(!idle.notes_menu_open);
+    assert!(!idle.active_document_file_backed);
+    assert_eq!(idle.active_document_bookmark_count, 0);
+    assert!(!idle.active_line_has_bookmark);
+    assert!(!idle.document_note_available);
+    assert!(idle.folder_note_available, "two workspace folders are scoped");
+    let _ = window.notes_evidence();
+
+    // Stage: opening a saved document makes the availability decisions flip and
+    // takes the palette note-source coordinator under `borrow_mut()`.
+    window.open_document(&note_path);
+    wait_until(Duration::from_secs(10), || {
+        window.notes_evidence().active_document_file_backed
+    });
+    let opened = window.notes_evidence();
+    assert!(opened.document_note_available);
+    let _ = window.notes_evidence();
+
+    // Stage: a bookmark toggle mutates the live projection, arms the persistence
+    // debounce, and re-submits the palette note source.
+    activate_action(&window, "toggle-bookmark");
+    flush_events();
+    let bookmarked = window.notes_evidence();
+    assert_eq!(bookmarked.active_document_bookmark_count, 1);
+    assert!(bookmarked.active_line_has_bookmark);
+    let _ = window.notes_evidence();
+
+    // Stage: presenting the browser installs the active-browser slot and
+    // advances the source and query generations.
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_evidence()
+            .browser
+            .is_some_and(|snapshot| snapshot.source_ready)
+    });
+    let _ = window.notes_evidence();
+
+    // Repeated reads of unchanged state must be identical: reading evidence must
+    // not start a worker, arm a timer, advance a generation, or prune a capture.
+    let first_read = window.notes_evidence();
+    let second_read = window.notes_evidence();
+    let third_read = window.notes_evidence();
+    assert_eq!(first_read, second_read);
+    assert_eq!(second_read, third_read);
+
+    // Stage: disposing the dialog invalidates all three coordinators.
+    let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
+    dialog.close();
+    flush_after_delay(Duration::from_millis(350));
+    let closed = window.notes_evidence();
+    assert!(closed.browser.is_none());
+    let _ = window.notes_evidence();
+}
+
+#[test]
+fn test_notes_evidence_read_materializes_nothing_and_advances_no_generation() {
+    // The no-materialization proof this change's `workflow-evidence-surfaces`
+    // delta requires. Read the surface many times over a live browser session
+    // and show that every coordinator generation, high-water mark, cancellation
+    // count, and capture count is identical before and after, and that no worker
+    // started.
+    ensure_gtk_init();
+    let _reset = NotesBrowserPolicyReset;
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
+    let note_path = left_folder.join("materialization-note.md");
+    fixture::write_text(&note_path, "materialization\n");
+    document_note_service::save_for_path(
+        &json_store::data_dir(),
+        &note_path,
+        &RichNoteBody::new("materialization body"),
+    )
+    .expect("save note");
+
+    let window = test_window();
+    present_window(&window);
+    wait_for_workspace_folders(&window, 2);
+    activate_action(&window, "show-notes");
+    wait_until(Duration::from_secs(10), || {
+        window
+            .notes_evidence()
+            .browser
+            .is_some_and(|snapshot| snapshot.source_ready && snapshot.query.active == 0)
+    });
+
+    let before = window.notes_evidence();
+    let browser_before = before.browser.expect("browser snapshot");
+    for _ in 0..25 {
+        let _ = window.notes_evidence();
+    }
+    flush_events();
+    let after = window.notes_evidence();
+    let browser_after = after.browser.expect("browser snapshot");
+
+    assert_eq!(
+        browser_before, browser_after,
+        "reading the surface must not advance a source, query, or preview generation"
+    );
+    assert_eq!(browser_before.source.started, browser_after.source.started);
+    assert_eq!(browser_before.query.started, browser_after.query.started);
+    assert_eq!(
+        browser_before.preview.started, browser_after.preview.started,
+        "no closed-file excerpt worker may start from an observation"
+    );
+    assert_eq!(
+        browser_before.query.cancellation_requests,
+        browser_after.query.cancellation_requests
+    );
+    assert_eq!(
+        before.active_note_save_captures, after.active_note_save_captures,
+        "counting captures must not prune them"
+    );
+    assert_eq!(before, after);
+}
+
+#[test]
+fn test_notes_evidence_answers_honestly_for_a_disposed_window() {
+    // The disposed-widget rule: GTK4 clears template children in `dispose()`,
+    // before Rust's `Drop`, so `notes_menu_open` must read its `TemplateChild`
+    // through `try_get()` and answer `false` rather than panicking.
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    let live = window.notes_evidence();
+    assert!(!live.notes_menu_open);
+
+    // SAFETY: the test drops every other reference to this window before
+    // disposing it, and the point of the test is to observe the post-dispose
+    // stage GTK reaches before Rust's `Drop`.
+    unsafe { window.run_dispose() };
+    flush_events();
+    let disposed = window.notes_evidence();
+    assert!(
+        !disposed.notes_menu_open,
+        "a disposed window reports its menu closed instead of panicking"
+    );
+    assert!(disposed.browser.is_none());
+    assert_eq!(disposed.active_note_save_captures, 0);
+}
+
+#[test]
 fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     ensure_gtk_init();
     let _reset = NotesBrowserPolicyReset;
@@ -16058,7 +16469,7 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.query.active == 0)
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
@@ -16070,18 +16481,18 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     search_entry.set_text("intermediate browser");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.query.active == 1)
     });
     search_entry.set_text("latest browser");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.query.pending == 1)
     });
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.query.active == 0 && snapshot.query.pending == 0)
             && sidebar.items().n_items() == 1
             && sidebar
@@ -16090,7 +16501,7 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
                 .is_some_and(|title| title.contains("latest-note.md"))
     });
     let snapshot = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("browser runtime snapshot");
     assert_eq!(snapshot.query.active_high_water, 1);
     assert_eq!(snapshot.query.pending_high_water, 1);
@@ -16099,12 +16510,12 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     search_entry.set_text("dispose this query");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.query.active == 1)
     });
     dialog.close();
     flush_after_delay(Duration::from_millis(350));
-    assert!(window.notes_browser_runtime_snapshot_for_test().is_none());
+    assert!(window.notes_evidence().browser.is_none());
     assert!(visible_sheet_dialog(&window).is_none());
 }
 
@@ -16129,14 +16540,14 @@ fn test_notes_browser_disposal_cancels_active_source_construction() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source.active == 1 && !snapshot.source_ready)
     });
     let dialog = visible_sheet_dialog(&window).expect("loading notes browser dialog");
     dialog.close();
     flush_after_delay(Duration::from_millis(350));
 
-    assert!(window.notes_browser_runtime_snapshot_for_test().is_none());
+    assert!(window.notes_evidence().browser.is_none());
     assert!(visible_sheet_dialog(&window).is_none());
 }
 
@@ -16165,7 +16576,7 @@ fn test_notes_browser_source_progresses_while_ordinary_disposal_capacity_is_full
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(15), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| {
                 snapshot.source_ready && snapshot.source.active == 0 && snapshot.source_entries >= 1
             })
@@ -16199,7 +16610,7 @@ fn test_repeated_notes_activation_reuses_one_progress_owner() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(5), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source.started == 1 && !snapshot.source_ready)
     });
     let first_dialog = visible_sheet_dialog(&window).expect("first notes browser dialog");
@@ -16210,7 +16621,7 @@ fn test_repeated_notes_activation_reuses_one_progress_owner() {
     let second_dialog = visible_sheet_dialog(&window).expect("re-presented notes browser dialog");
     assert_eq!(first_dialog, second_dialog);
     let deferred = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("deferred notes runtime");
     assert_eq!(deferred.source.started, 1);
     assert_eq!(deferred.source.pending, 0);
@@ -16219,7 +16630,7 @@ fn test_repeated_notes_activation_reuses_one_progress_owner() {
     drop(progress_hold);
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.source.active == 0)
     });
 }
@@ -16255,7 +16666,7 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source.active == 1)
     });
     let dialog = visible_sheet_dialog(&window).expect("initial unified browser");
@@ -16268,7 +16679,7 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
         "bookmark mode must reuse the live Notes dialog"
     );
     let bookmark_pending = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("bookmark-mode runtime");
     assert_eq!(bookmark_pending.mode, NotesBrowserMode::Bookmarks);
     assert_eq!(bookmark_pending.source.active, 1);
@@ -16277,14 +16688,14 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     activate_action(&window, "show-notes");
     flush_events();
     let latest_pending = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("latest all-notes runtime");
     assert_eq!(latest_pending.mode, NotesBrowserMode::AllNotes);
     assert_eq!(latest_pending.source.active, 1);
     assert_eq!(latest_pending.source.pending, 1);
     wait_until(Duration::from_secs(15), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| {
                 snapshot.mode == NotesBrowserMode::AllNotes
                     && snapshot.source_ready
@@ -16299,7 +16710,7 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     activate_action(&window, "show-bookmarks");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| {
                 snapshot.mode == NotesBrowserMode::Bookmarks
                     && snapshot.source_ready
@@ -16321,7 +16732,7 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| {
                 snapshot.mode == NotesBrowserMode::AllNotes
                     && snapshot.source_ready
@@ -16358,7 +16769,7 @@ fn test_notes_browser_reports_source_truncation_separately() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.source_truncated)
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
@@ -16371,7 +16782,7 @@ fn test_notes_browser_reports_source_truncation_separately() {
         .is_some()
     });
     let snapshot = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("browser runtime snapshot");
     assert_eq!(snapshot.source_entries, 1);
 }
@@ -16395,10 +16806,10 @@ fn test_notes_browser_open_editor_snapshot_respects_aggregate_limit() {
         ]);
     }
 
-    let (snapshots, bookmarks) = window.open_editor_note_snapshot_counts_for_test(2);
-    assert!(snapshots.saturating_add(bookmarks) <= 2);
+    let captured = window.capture_open_editor_note_evidence_at_item_limit(2);
+    assert!(captured.snapshots.saturating_add(captured.bookmarks) <= 2);
     assert!(
-        bookmarks < 4,
+        captured.bookmarks < 4,
         "bookmark capture must stop at the aggregate bound"
     );
 }
@@ -16446,12 +16857,11 @@ fn test_notes_browser_open_editor_snapshot_caps_oversized_labels_before_admissio
     )
     .expect("save open-tab document note");
 
-    let (snapshots, bookmarks, retained_bytes, truncated) =
-        window.open_editor_note_snapshot_retained_evidence_for_test(10_000, 4 * 1024 * 1024);
-    assert_eq!(snapshots, 1);
-    assert_eq!(bookmarks, 0);
-    assert!(retained_bytes <= 4 * 1024 * 1024);
-    assert!(truncated);
+    let captured = window.capture_open_editor_note_evidence(10_000, 4 * 1024 * 1024);
+    assert_eq!(captured.snapshots, 1);
+    assert_eq!(captured.bookmarks, 0);
+    assert!(captured.retained_bytes <= 4 * 1024 * 1024);
+    assert!(captured.truncated);
 
     wait_until(Duration::from_secs(5), || {
         let snapshot = progress_lane_snapshot_for_test();
@@ -16461,17 +16871,17 @@ fn test_notes_browser_open_editor_snapshot_caps_oversized_labels_before_admissio
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(5), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source.started == 1 && !snapshot.source_ready)
     });
     drop(progress_hold);
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.source.active == 0)
     });
     let completed = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("bounded request browser remains active");
     assert!(completed.source_ready);
     assert!(completed.source_truncated);
@@ -16859,7 +17269,7 @@ fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() 
     sidebar.set_selected(2);
     sidebar.set_selected(3);
     let pressured = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("browser snapshot under preview pressure")
         .preview;
     assert_eq!(pressured.active, 1);
@@ -16885,7 +17295,7 @@ fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() 
         );
     }
     let settled = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("settled browser snapshot")
         .preview;
     assert_eq!(settled.active, 0);
@@ -16944,7 +17354,7 @@ fn test_notes_browser_close_cancels_active_and_pending_preview_work() {
 
     sidebar.set_selected(1);
     let pressured = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("browser snapshot before teardown")
         .preview;
     assert_eq!(pressured.active, 1);
@@ -16953,14 +17363,14 @@ fn test_notes_browser_close_cancels_active_and_pending_preview_work() {
     dialog.close();
     flush_events();
     assert!(
-        window.notes_browser_runtime_snapshot_for_test().is_none(),
+        window.notes_evidence().browser.is_none(),
         "closing the dialog must release the browser runtime"
     );
 
     // Let the cancelled worker's delayed terminal arrive; it must not reopen
     // or mutate the closed browser.
     flush_after_delay(Duration::from_millis(900));
-    assert!(window.notes_browser_runtime_snapshot_for_test().is_none());
+    assert!(window.notes_evidence().browser.is_none());
     assert!(visible_sheet_dialog(&window).is_none());
 }
 
@@ -17000,7 +17410,7 @@ fn test_notes_browser_mode_switch_cancels_closed_file_preview_work() {
     // Replace the inventory mode while the closed-file worker is still asleep.
     activate_action(&window, "show-bookmarks");
     let switched = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("browser snapshot after mode switch")
         .preview;
     assert_eq!(
@@ -17012,7 +17422,7 @@ fn test_notes_browser_mode_switch_cancels_closed_file_preview_work() {
         notes_preview_text(&child).is_some_and(|text| text.contains("alpha target"))
     });
     let settled = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("settled browser snapshot")
         .preview;
     assert_eq!(settled.active, 0);
@@ -18007,7 +18417,7 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     search_entry.set_text("missing performance-smoke needle");
     wait_until(Duration::from_secs(5), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.query.active == 1)
     });
     let main_loop_progressed = Rc::new(Cell::new(false));
@@ -18018,12 +18428,12 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     wait_until(Duration::from_secs(5), || main_loop_progressed.get());
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_browser_runtime_snapshot_for_test()
+            .notes_evidence().browser
             .is_some_and(|snapshot| snapshot.query.active == 0)
             && sidebar.items().n_items() == 0
     });
     let query = window
-        .notes_browser_runtime_snapshot_for_test()
+        .notes_evidence().browser
         .expect("notes browser runtime")
         .query;
     eprintln!(

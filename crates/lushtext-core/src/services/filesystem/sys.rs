@@ -143,6 +143,46 @@ pub(in crate::services) fn rename(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
+/// Rename only when the destination does not exist, atomically.
+///
+/// `rename(2)` silently replaces a regular destination, so a caller that must not
+/// destroy an existing file cannot get there with a `stat` first: the check and
+/// the rename are two syscalls, and another process can create the destination
+/// between them. `RENAME_NOREPLACE` makes the check and the rename one kernel
+/// operation, which is the only way to close that window.
+///
+/// Returns [`io::ErrorKind::AlreadyExists`] when the destination exists.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::Unsupported`] when the running kernel or filesystem
+/// does not implement the flag, so callers can fall back to a best-effort check
+/// rather than refusing every rename. Linux added `RENAME_NOREPLACE` in 3.15 and
+/// not every filesystem implements it; `EINVAL`, `ENOSYS`, and `EOPNOTSUPP` all
+/// mean "not available here".
+#[cfg(unix)]
+pub(in crate::services) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    match rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        from,
+        rustix::fs::CWD,
+        to,
+        rustix::fs::RenameFlags::NOREPLACE,
+    ) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP) => {
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+        Err(error) => Err(io::Error::from(error)),
+    }
+}
+
+#[cfg(not(unix))]
+pub(in crate::services) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
+    // No portable atomic equivalent; callers fall back to their own check.
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
 pub(in crate::services) fn create_sparse_file(path: &Path, len: u64) -> io::Result<()> {
     let file = fs::File::create(path)?;
     file.set_len(len)

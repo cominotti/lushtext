@@ -3465,6 +3465,295 @@ fn test_watch_targets_ignore_collapsed_descendants_until_expanded() {
 }
 
 #[test]
+fn test_inline_rename_refuses_to_replace_an_existing_sibling() {
+    // Regression for a CRITICAL pre-existing data-destruction bug found by the
+    // slot-5 data-safety pass. The only rename validation was
+    // empty-or-unchanged, and `rename_durable` is `rename(2)`, which silently
+    // replaces a regular destination. Renaming `draft.md` to the name of an
+    // existing `final.md` therefore destroyed `final.md`'s contents with no
+    // prompt, no warning, and no undo — reachable in ordinary use.
+    ensure_gtk_init();
+    let parent = tempfile::tempdir().expect("parent folder");
+    let source = parent.path().join("draft.md");
+    let victim = parent.path().join("final.md");
+    fixture::write_text(&source, "draft body\n");
+    fixture::write_text(&victim, "PRECIOUS USER CONTENT\n");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("rename-collision"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("parent"),
+        parent.path().to_path_buf(),
+    )]);
+    let messages = Rc::new(RefCell::new(Vec::<String>::new()));
+    let messages_sink = Rc::clone(&messages);
+    section.connect_message(move |text, _severity| {
+        messages_sink.borrow_mut().push(text.to_string());
+    });
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &source));
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &victim));
+
+    prepare_context_menu_for_path(&section, &source);
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(2), || {
+        inline_rename_entry_for_path(&section, &source).is_some()
+    });
+    let entry =
+        inline_rename_entry_for_path(&section, &source).expect("rename entry should be visible");
+    flush_after_delay(Duration::from_millis(100));
+    entry.set_text("final.md");
+    entry.emit_by_name::<()>("activate", &[]);
+
+    wait_until(Duration::from_secs(10), || {
+        !messages.borrow().is_empty()
+    });
+
+    // The whole point: the destination's bytes are untouched.
+    fixture::assert_text(&victim, "PRECIOUS USER CONTENT\n");
+    assert!(
+        fixture::exists(&source),
+        "a refused rename must leave the source in place"
+    );
+    fixture::assert_text(&source, "draft body\n");
+    assert!(
+        messages
+            .borrow()
+            .iter()
+            .any(|message| message.contains("already exists")),
+        "the user must be told why the rename was refused, got {:?}",
+        messages.borrow()
+    );
+}
+
+#[test]
+fn test_inline_rename_of_a_symlink_onto_its_target_refuses_without_hanging() {
+    // Regression for a deadlock this change's *own* first fix introduced, found
+    // by the post-implementation data-safety pass. `TargetWriteGuard` keys on the
+    // **resolved** identity — a symlink canonicalizes to its target — while the
+    // first version of the guarded rename sorted the **raw** paths. Renaming the
+    // symlink `link` onto the name `target` resolved both paths to one key, so
+    // the second acquire blocked on the first for the lifetime of the process,
+    // holding one of eight worker slots. A few of those exhaust the pool and all
+    // background I/O stalls, including draft autosave.
+    ensure_gtk_init();
+    let parent = tempfile::tempdir().expect("parent folder");
+    let target = parent.path().join("target.txt");
+    let link = parent.path().join("link.txt");
+    fixture::write_text(&target, "PRECIOUS TARGET CONTENT\n");
+    fixture::symlink(&target, &link);
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("rename-symlink"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("parent"),
+        parent.path().to_path_buf(),
+    )]);
+    let messages = Rc::new(RefCell::new(Vec::<String>::new()));
+    let messages_sink = Rc::clone(&messages);
+    section.connect_message(move |text, _severity| {
+        messages_sink.borrow_mut().push(text.to_string());
+    });
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &link));
+
+    prepare_context_menu_for_path(&section, &link);
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(2), || {
+        inline_rename_entry_for_path(&section, &link).is_some()
+    });
+    let entry =
+        inline_rename_entry_for_path(&section, &link).expect("rename entry should be visible");
+    flush_after_delay(Duration::from_millis(100));
+    entry.set_text("target.txt");
+    entry.emit_by_name::<()>("activate", &[]);
+
+    // The refusal must arrive. Pre-fix the worker blocked forever and nothing
+    // was ever published, so this wait is the deadlock detector.
+    wait_until(Duration::from_secs(10), || !messages.borrow().is_empty());
+    assert!(
+        messages
+            .borrow()
+            .iter()
+            .any(|message| message.contains("already exists")),
+        "renaming a symlink onto its own target must be refused, got {:?}",
+        messages.borrow()
+    );
+    fixture::assert_text(&target, "PRECIOUS TARGET CONTENT\n");
+    assert!(fixture::exists(&link), "the symlink must survive a refusal");
+
+    // The worker pool must still be usable: a second, ordinary rename has to
+    // complete, which it cannot if the first one is still holding a slot.
+    let renamed = parent.path().join("target-renamed.txt");
+    prepare_context_menu_for_path(&section, &target);
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(5), || {
+        inline_rename_entry_for_path(&section, &target).is_some()
+    });
+    let entry = inline_rename_entry_for_path(&section, &target)
+        .expect("second rename entry should be visible");
+    flush_after_delay(Duration::from_millis(100));
+    entry.set_text("target-renamed.txt");
+    entry.emit_by_name::<()>("activate", &[]);
+    wait_until(Duration::from_secs(10), || fixture::exists(&renamed));
+}
+
+#[test]
+fn test_inline_rename_completion_ignores_a_row_retargeted_mid_flight() {
+    // Regression for the stale-watch-target and wrong-row defects: the rename
+    // completion used to re-read the live `context_target` cell instead of the
+    // target the rename was issued for. Retargeting the cell at another row
+    // before the worker finished wrote the renamed path onto *that* row's item
+    // and inserted it into the directory-row index, so a later Delete on that
+    // row targeted the wrong file — and the renamed file's own watch mirror
+    // silently kept the old path, ending external-change detection for it.
+    ensure_gtk_init();
+    let parent = tempfile::tempdir().expect("parent folder");
+    let source = parent.path().join("subject.txt");
+    let bystander = parent.path().join("bystander.txt");
+    let renamed = parent.path().join("subject-renamed.txt");
+    fixture::write_text(&source, "subject\n");
+    fixture::write_text(&bystander, "bystander\n");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("rename-retarget"));
+    section.load_workspace_folders(&[WorkspaceFolder::with_id(
+        WorkspaceFolderId::new("parent"),
+        parent.path().to_path_buf(),
+    )]);
+    let _window = present_section_window(&section);
+    section.expand_folders();
+    wait_until(Duration::from_secs(5), || tree_contains_path(&section, &source));
+    wait_until(Duration::from_secs(5), || {
+        tree_contains_path(&section, &bystander)
+    });
+
+    prepare_context_menu_for_path(&section, &source);
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(2), || {
+        inline_rename_entry_for_path(&section, &source).is_some()
+    });
+    let entry =
+        inline_rename_entry_for_path(&section, &source).expect("rename entry should be visible");
+    flush_after_delay(Duration::from_millis(100));
+    // Hold the rename worker so the retarget below genuinely lands mid-flight.
+    lushtext_core::ui::sidebar::set_workspace_rename_worker_delay_for_test(400);
+    entry.set_text("subject-renamed.txt");
+    entry.emit_by_name::<()>("activate", &[]);
+
+    // Retarget the live context cell at an unrelated row while the rename
+    // worker is still running. The completion must use its captured ticket.
+    prepare_context_menu_for_path(&section, &bystander);
+    lushtext_core::ui::sidebar::set_workspace_rename_worker_delay_for_test(0);
+
+    wait_until(Duration::from_secs(10), || fixture::exists(&renamed));
+    wait_until(Duration::from_secs(10), || {
+        section.workspace_watcher_is_current_for_test()
+    });
+
+    // The bystander row must still describe the bystander file.
+    assert!(
+        tree_contains_path(&section, &bystander),
+        "the retargeted row must keep its own path"
+    );
+    assert!(
+        fixture::exists(&bystander),
+        "the bystander file must not be touched"
+    );
+    fixture::assert_text(&bystander, "bystander\n");
+    // The renamed file must be watched, and the old path must not be.
+    let targets = section.watch_targets_for_test();
+    assert!(
+        !targets.contains(&WorkspaceWatchTarget::directory(source.clone())),
+        "the stale path must not remain a watch target"
+    );
+    assert!(
+        section
+            .watch_targets_for_test()
+            .iter()
+            .all(|target| target.path != source),
+        "the renamed file's old path must not survive anywhere in the watch mirror"
+    );
+}
+
+#[test]
+fn test_cancelled_new_item_cleanup_never_deletes_a_replacement_file() {
+    // Regression for the detached path-only placeholder delete. Cancelling an
+    // inline new item used to spawn a plain detached thread that removed the
+    // placeholder **by path**, with no inode recheck and no write guard, so a
+    // real file created or renamed onto that same name between the cancel and
+    // the thread's unlink was destroyed. The repository already states the rule
+    // for the analogous draft orphan-body case: record the inode, take the write
+    // guard, recheck inode, then delete.
+    ensure_gtk_init();
+    let folder = tempfile::tempdir().expect("workspace folder");
+    let placeholder = folder.path().join("New File");
+    let precious = folder.path().join("precious.txt");
+    fixture::write_text(&placeholder, "placeholder\n");
+    fixture::write_text(&precious, "REPLACEMENT USER CONTENT\n");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("cancel-new-item"));
+    section.load_folders(&[FolderTreeEntry::File {
+        path: placeholder.clone(),
+    }]);
+    let _window = present_section_window(&section);
+    prepare_context_menu_for_path(&section, &placeholder);
+    section.imp().is_new_item.set(true);
+    section
+        .activate_action("section.rename", None)
+        .expect("rename action should exist");
+    wait_until(Duration::from_secs(5), || {
+        inline_rename_entry_for_path(&section, &placeholder).is_some()
+    });
+    let entry = inline_rename_entry_for_path(&section, &placeholder)
+        .expect("new-item entry should be visible");
+
+    let placeholder_inode =
+        lushtext_core::services::filesystem::metadata::inode(&placeholder).expect("inode");
+
+    // Hold the cleanup worker long enough to interpose the competing rename.
+    // Without this the cleanup always wins the race in a headless run and the
+    // test cannot distinguish the fixed code from the broken code.
+    lushtext_core::ui::sidebar::set_workspace_placeholder_cleanup_delay_for_test(400);
+
+    // Committing the unchanged name is the production cancel path for a new
+    // item, and it is what schedules the placeholder cleanup.
+    entry.emit_by_name::<()>("activate", &[]);
+    flush_events();
+
+    // Move a real, pre-existing file onto that same name. A rename carries the
+    // source's inode, and both files existed at once, so the identity is
+    // guaranteed to differ — this is the race the old path-only cleanup lost,
+    // and it is deterministic in a way that rewriting the same path is not
+    // (an atomic replace can reuse a just-freed inode number).
+    lushtext_core::services::filesystem::write::rename_durable(&precious, &placeholder)
+        .expect("move the real file onto the placeholder name");
+    let replacement_inode =
+        lushtext_core::services::filesystem::metadata::inode(&placeholder).expect("inode");
+    assert_ne!(
+        placeholder_inode, replacement_inode,
+        "a renamed-in file always has a different identity from the placeholder"
+    );
+
+    // Give the guarded, inode-checked cleanup every chance to run.
+    flush_after_delay(Duration::from_millis(1_200));
+    lushtext_core::ui::sidebar::set_workspace_placeholder_cleanup_delay_for_test(0);
+    assert!(
+        fixture::exists(&placeholder),
+        "placeholder cleanup must not delete a replacement file at the same path"
+    );
+    fixture::assert_text(&placeholder, "REPLACEMENT USER CONTENT\n");
+    section.imp().is_new_item.set(false);
+}
+
+#[test]
 fn test_inline_rename_refreshes_expanded_directory_watch_target() {
     ensure_gtk_init();
     let parent = tempfile::tempdir().expect("parent folder");

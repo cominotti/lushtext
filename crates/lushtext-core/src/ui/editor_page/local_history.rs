@@ -6,6 +6,17 @@
 //! right place to track "clean versus modified" transitions and save lifecycle
 //! details. Keeping that state here avoids re-deriving it from broader window
 //! orchestration and lets automatic capture stay tightly coupled to one buffer.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-LOCAL-HISTORY`, whose canonical role home is `ui/window/local_history/`:
+//! it is the per-tab capture adapter that home calls. Under
+//! `gtk-adapter-module-boundaries` it is therefore outside the five-name role
+//! taxonomy, takes none of those names, and owns no `policy.rs` and no
+//! `evidence.rs` — the freshness tickets and predicates it uses are defined in
+//! `ui/window/local_history/policy.rs` and **called** from here. Named in that
+//! workflow's matrix row.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

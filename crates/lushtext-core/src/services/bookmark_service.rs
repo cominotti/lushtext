@@ -14,7 +14,13 @@ use crate::model::bookmark::{BookmarkDocument, BookmarkId, BookmarkRecord};
 use crate::model::sidecar_identity::DocumentSidecarIdentity;
 use crate::services::filesystem::{
     DirectoryScanPolicy, metadata as fs_metadata, mutate as fs_mutate, tree as fs_tree,
+    write as fs_write,
 };
+#[cfg(feature = "test-utils")]
+use std::collections::HashMap;
+#[cfg(feature = "test-utils")]
+use std::sync::{Mutex, OnceLock};
+
 use crate::services::note_storage;
 use crate::services::recovery_metadata::{RecoveryDiagnostic, RecoveryMetadataClass};
 
@@ -123,21 +129,137 @@ pub fn save_for_path(
     Ok(identity)
 }
 
+/// One armed bookmark-save fault, keyed by the sidecar path it applies to.
+#[cfg(feature = "test-utils")]
+fn bookmark_save_faults_for_test() -> &'static Mutex<HashMap<PathBuf, u32>> {
+    static FAULTS: OnceLock<Mutex<HashMap<PathBuf, u32>>> = OnceLock::new();
+    FAULTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cleanup ownership for one armed bookmark-save fault registration.
+///
+/// Dropping the guard removes any unconsumed failures, so a test that arms the
+/// seam and fails early cannot leak them into a later save of the same sidecar in
+/// this process. Keyed by sidecar path and returning cleanup ownership, per the
+/// filesystem fault-seam rule: no process-global slot a parallel test can consume.
+#[cfg(feature = "test-utils")]
+#[must_use = "dropping the guard immediately would disarm the fault"]
+pub struct BookmarkSaveFaultGuard {
+    path: PathBuf,
+}
+
+#[cfg(feature = "test-utils")]
+impl Drop for BookmarkSaveFaultGuard {
+    fn drop(&mut self) {
+        bookmark_save_faults_for_test()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.path);
+    }
+}
+
+/// Fail the next `failures` bookmark sidecar writes for one document path.
+///
+/// **One counted actuation-adjacent seam, justified individually.** The bookmark
+/// write's bounded failure retry (`policy::MAX_BOOKMARK_SAVE_ATTEMPTS`) has no
+/// other reachable trigger: the write only fails when the filesystem refuses it,
+/// and a widget test cannot make an isolated tempdir refuse a small JSON write
+/// without either running as an unprivileged user (CI containers run as root, so
+/// mode bits do not fail) or corrupting the data directory. Without this the
+/// retry mechanism could only be tested by pinning its constant — which is what
+/// the reviewer correctly called insufficient.
+///
+/// # Panics
+///
+/// Panics when `path` has no resolvable document identity. Test-only: a fault
+/// armed against an unresolvable path would silently never fire, which is worse
+/// than failing loudly in the test that armed it.
+#[cfg(feature = "test-utils")]
+pub fn fail_next_saves_for_path_for_test(
+    data_dir: &Path,
+    path: &Path,
+    failures: u32,
+) -> BookmarkSaveFaultGuard {
+    let identity = note_storage::resolve_document_identity(path)
+        .expect("bookmark fault seam needs a resolvable document identity");
+    let sidecar =
+        bookmarks_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
+    bookmark_save_faults_for_test()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(sidecar.clone(), failures);
+    BookmarkSaveFaultGuard { path: sidecar }
+}
+
+/// Return how many injected bookmark-save failures remain for one sidecar path.
+#[cfg(feature = "test-utils")]
+#[must_use]
+pub fn pending_save_failures_for_path_for_test(data_dir: &Path, path: &Path) -> u32 {
+    let Ok(identity) = note_storage::resolve_document_identity(path) else {
+        return 0;
+    };
+    let sidecar =
+        bookmarks_dir(data_dir).join(note_storage::sidecar_filename(&identity.sidecar_id));
+    bookmark_save_faults_for_test()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&sidecar)
+        .copied()
+        .unwrap_or(0)
+}
+
 /// Save a fully shaped bookmark document.
+///
+/// Coordinates whole-sidecar writes against each other through the shared target
+/// write guard. This write replaces the **entire** document and deletes the file
+/// when the set is empty, so two writers for the same sidecar are not merely
+/// racing bytes: a later-issued write that lands first is silently reverted by an
+/// older one, and the bookmark the user just added disappears. The window is real
+/// — persistence is debounced on a worker while the close path flushes
+/// synchronously on the GTK thread.
 ///
 /// # Errors
 ///
-/// Returns an error if the sidecar cannot be written or deleted.
+/// Returns an error when the sidecar cannot be written or, for an empty bookmark
+/// set, cannot be deleted.
 pub fn save_document(data_dir: &Path, mut document: BookmarkDocument) -> Result<()> {
     document.sort_stable();
+
+    let path = bookmarks_dir(data_dir).join(note_storage::sidecar_filename(
+        &document.identity.sidecar_id,
+    ));
+    // The guard is short-lived and the payload is a small JSON document of line
+    // numbers and labels, never document text.
+    //
+    // The guard resolves a canonical identity, which requires the sidecar
+    // directory to exist. On the first write to a fresh profile that directory is
+    // created by the write itself, so resolution fails — and at that point there
+    // is no existing sidecar to lose, so the reversion this guard prevents cannot
+    // have happened yet. An unresolvable target is therefore proceeded past
+    // rather than turned into a save failure: refusing to save a bookmark because
+    // a coordination key could not be computed would be a worse outcome than the
+    // race it guards against.
+    let _guard = fs_write::TargetWriteGuard::acquire(&path).ok();
+
+    #[cfg(feature = "test-utils")]
+    {
+        let mut faults = bookmark_save_faults_for_test()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(remaining) = faults.get_mut(&path)
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            let left = *remaining;
+            drop(faults);
+            anyhow::bail!("injected bookmark persistence failure ({left} remaining)");
+        }
+    }
 
     if document.bookmarks.is_empty() {
         return delete_sidecar_file(data_dir, &document.identity);
     }
 
-    let path = bookmarks_dir(data_dir).join(note_storage::sidecar_filename(
-        &document.identity.sidecar_id,
-    ));
     note_storage::save_json_file_recovering(
         data_dir,
         &path,
@@ -183,7 +305,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         return Ok(0);
     }
 
-    let mut migrated = 0;
+    let mut tally = note_storage::SidecarMigrationTally::new("bookmark");
     for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
         .with_context(|| format!("failed to read {}", dir.display()))?
     {
@@ -209,15 +331,21 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
 
         let new_identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
         let new_sidecar_path = dir.join(note_storage::sidecar_filename(&new_identity.sidecar_id));
-        let document = merge_bookmark_target(data_dir, &new_sidecar_path, document, new_identity)?;
-        save_document(data_dir, document)?;
-        if sidecar_path != new_sidecar_path {
-            remove_obsolete_sidecar(&sidecar_path)?;
-        }
-        migrated += 1;
+        // Per-item isolation; `SidecarMigrationTally` documents the failure mode
+        // this prevents (one poisoned sidecar abandoning every later one).
+        let outcome = merge_bookmark_target(data_dir, &new_sidecar_path, document, new_identity)
+            .and_then(|document| save_document(data_dir, document))
+            .and_then(|()| {
+                if sidecar_path == new_sidecar_path {
+                    Ok(())
+                } else {
+                    remove_obsolete_sidecar(&sidecar_path)
+                }
+            });
+        tally.record(&sidecar_path, outcome);
     }
 
-    Ok(migrated)
+    tally.finish()
 }
 
 fn merge_bookmark_target(

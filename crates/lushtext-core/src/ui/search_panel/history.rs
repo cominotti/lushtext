@@ -5,6 +5,14 @@
 //! This keeps persistence and dropdown population separate from the runtime
 //! search loop so saved-search maintenance can evolve without touching the
 //! streaming search machinery.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-SEARCH-REPLACE` — it projects the workflow onto widgets (history and saved-search dropdown projection) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use crate::model::content_search::{SavedSearch, SearchHistoryEntry, SearchQuerySpec};
 use crate::services::{json_store, saved_searches};

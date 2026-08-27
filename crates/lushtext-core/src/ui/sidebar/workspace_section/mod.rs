@@ -465,7 +465,7 @@ impl LushtextWorkspaceSection {
         }
     }
 
-    fn emit_message(&self, text: &str, severity: NotificationSeverity) {
+    pub(super) fn emit_message(&self, text: &str, severity: NotificationSeverity) {
         if let Some(ref callback) = *self.imp().message_callback.borrow() {
             callback(text, severity);
         }

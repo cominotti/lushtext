@@ -93,7 +93,7 @@
 //! | pure policy | `policy` |
 //! | coordination | `execution` (streaming search), `retirement` (bounded result disposal), `replace_execution` (the Replace All preview attempt and checked apply), `journal` (the durable undo journal, its transaction gate, and its three generation-guarded fields) |
 //! | evidence | `evidence` |
-//! | adapter detail | `imp`, `list_factory`, `item`, `results`, `history`, `accessibility` |
+//! | called presentation surface (no role) | `imp`, `list_factory`, `item`, `results`, `history`, `accessibility` |
 //!
 //! See `docs/workflow-readability-matrix.md`, row `WFR-SEARCH-REPLACE`.
 

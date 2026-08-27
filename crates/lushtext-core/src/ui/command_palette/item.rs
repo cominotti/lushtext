@@ -4,6 +4,14 @@
 //!
 //! Wraps palette row data into a GObject suitable for `gio::ListStore`.
 //! Contains no domain logic — pure data carrier for the GTK adapter.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-COMMAND-PALETTE` — it projects the workflow onto widgets (the row model object the list factory binds) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use crate::model::palette::{CommandDef, IndexedFile, PaletteNoteTarget};
 use glib::subclass::prelude::*;

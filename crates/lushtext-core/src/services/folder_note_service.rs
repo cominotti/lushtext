@@ -249,7 +249,7 @@ fn delete_sidecar_file(data_dir: &Path, identity: &FolderNoteIdentity) -> Result
 /// Returns an error if the sidecar directory cannot be scanned or a migrated
 /// sidecar cannot be read, rewritten, or cleaned up.
 pub fn move_folder_tree(data_dir: &Path, old_folder: &Path, new_folder: &Path) -> Result<usize> {
-    let mut migrated = 0;
+    let mut tally = note_storage::SidecarMigrationTally::new("folder-note");
     for dir in [
         folder_notes_dir(data_dir),
         legacy_folder_notes_dir(data_dir),
@@ -283,17 +283,23 @@ pub fn move_folder_tree(data_dir: &Path, old_folder: &Path, new_folder: &Path) -
 
             let new_identity = FolderNoteIdentity::from_folders(display_folder, canonical_folder);
             let new_sidecar_path = folder_note_sidecar_path(data_dir, &new_identity);
-            let document =
-                merge_folder_note_target(data_dir, &new_sidecar_path, document, new_identity)?;
-            save_document(data_dir, &document)?;
-            if sidecar_path != new_sidecar_path {
-                remove_obsolete_sidecar(&sidecar_path)?;
-            }
-            migrated += 1;
+            // Per-item isolation; `SidecarMigrationTally` documents the failure
+            // mode this prevents.
+            let outcome =
+                merge_folder_note_target(data_dir, &new_sidecar_path, document, new_identity)
+                    .and_then(|document| save_document(data_dir, &document))
+                    .and_then(|()| {
+                        if sidecar_path == new_sidecar_path {
+                            Ok(())
+                        } else {
+                            remove_obsolete_sidecar(&sidecar_path)
+                        }
+                    });
+            tally.record(&sidecar_path, outcome);
         }
     }
 
-    Ok(migrated)
+    tally.finish()
 }
 
 fn merge_folder_note_target(
@@ -759,10 +765,12 @@ mod tests {
         let error = move_folder_tree(dir.path(), &old_folder, &new_folder)
             .expect_err("ambiguous equal-timestamp notes should not be guessed");
 
+        // The aggregate message reports the incomplete kind; the per-item cause
+        // stays in the warning log.
         assert!(
             error
                 .to_string()
-                .contains("ambiguous folder note sidecar conflict"),
+                .contains("folder-note sidecar(s) could not be migrated"),
             "unexpected error: {error}"
         );
         assert!(fs_metadata::exists(&old_sidecar_path));

@@ -111,6 +111,12 @@ EVIDENCE_PROJECTIONS = (
         REPO_ROOT / "crates/lushtext-core/src/ui/window/local_history/evidence.rs",
         "local_history_snapshot",
     ),
+    EvidenceProjection(
+        "window.notes",
+        "NotesEvidence",
+        REPO_ROOT / "crates/lushtext-core/src/ui/window/notes/evidence.rs",
+        "notes_snapshot",
+    ),
 )
 
 

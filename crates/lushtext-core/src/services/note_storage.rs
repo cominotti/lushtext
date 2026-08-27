@@ -127,6 +127,74 @@ pub fn rebase_display_and_canonical_paths(
     None
 }
 
+/// Per-item outcome tally for a bulk sidecar rename-migration loop.
+///
+/// Bookmark, document-note, and folder-note migration all walk their sidecar
+/// directory and rehome one sidecar per iteration. A `?` on any per-item step
+/// aborted the whole loop, and `scan_directory` sorts by filename, so every retry
+/// stopped at the same poisoned sidecar until `MAX_MIGRATION_ATTEMPTS` gave up —
+/// permanently abandoning every *unrelated* sidecar sorted after it. Recording
+/// each failure and continuing lets retries make monotonic progress, while
+/// [`SidecarMigrationTally::finish`] still reports the kind as incomplete so the
+/// migration ledger keeps it pending.
+///
+/// The three services share this type so the per-item isolation contract, the
+/// skip warning, and the aggregate message cannot drift apart.
+pub struct SidecarMigrationTally {
+    /// Sidecar kind named in the warning and aggregate messages, for example
+    /// `"document-note"`.
+    kind_label: &'static str,
+    /// Sidecars successfully rehomed so far.
+    migrated: usize,
+    /// Sidecars this pass refused, each already reported as a warning.
+    failures: usize,
+}
+
+impl SidecarMigrationTally {
+    /// Start an empty tally for one sidecar kind.
+    #[must_use]
+    pub const fn new(kind_label: &'static str) -> Self {
+        Self {
+            kind_label,
+            migrated: 0,
+            failures: 0,
+        }
+    }
+
+    /// Record one sidecar's outcome, logging a skip warning on failure.
+    pub fn record(&mut self, sidecar_path: &Path, outcome: Result<()>) {
+        match outcome {
+            Ok(()) => self.migrated += 1,
+            Err(error) => {
+                tracing::warn!(
+                    "Skipping {} sidecar {} during migration: {error:#}",
+                    self.kind_label,
+                    sidecar_path.display()
+                );
+                self.failures += 1;
+            }
+        }
+    }
+
+    /// Return the migrated count, or an aggregate error when any sidecar failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming how many sidecars were refused and how many
+    /// succeeded, so the caller's migration kind stays pending for a later retry.
+    pub fn finish(self) -> Result<usize> {
+        if self.failures > 0 {
+            anyhow::bail!(
+                "{} {} sidecar(s) could not be migrated; {} succeeded",
+                self.failures,
+                self.kind_label,
+                self.migrated
+            );
+        }
+        Ok(self.migrated)
+    }
+}
+
 /// Load one optional JSON sidecar payload for legacy strict-load tests.
 ///
 /// # Errors

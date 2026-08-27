@@ -33,6 +33,10 @@ use super::charge_scope::{ChargeOutcome, try_with_charge, with_charge};
 use super::fuzzy::search_items_cancellable;
 #[cfg(any(test, feature = "property-tests"))]
 use super::fuzzy::search_items_full_sort_reference;
+use crate::services::single_flight::{
+    SingleFlightCoordinator, SingleFlightSnapshot, SingleFlightStart,
+};
+
 use super::runtime::{
     PaletteSearchCancellation, PaletteSearchCoordinator, PaletteSearchMetrics, PaletteSearchOutcome,
 };
@@ -266,133 +270,19 @@ pub struct NoteSourceRefreshRequest {
 }
 
 /// One request admitted as the sole active note-source refresh.
-#[derive(Debug)]
-pub struct NoteSourceRefreshStart {
-    /// Monotonic acceptance generation.
-    pub generation: u64,
-    /// Compact request owned by the active worker.
-    pub request: NoteSourceRefreshRequest,
-    /// Cooperative supersession token.
-    pub cancellation: PaletteSearchCancellation,
-}
-
-#[derive(Debug)]
-struct ActiveNoteSourceRefresh {
-    generation: u64,
-    cancellation: PaletteSearchCancellation,
-}
-
-#[derive(Debug)]
-struct PendingNoteSourceRefresh {
-    generation: u64,
-    request: NoteSourceRefreshRequest,
-}
+///
+/// Retired onto the shared one-active/one-latest primitive rather than keeping a
+/// second copy of submit/finish/supersede generation semantics. The alias keeps
+/// the note-source vocabulary at every call site while
+/// `services::single_flight` owns the mechanism, as the sibling browser-query
+/// and bookmark-excerpt coordinators in this workflow already do.
+pub type NoteSourceRefreshStart = SingleFlightStart<NoteSourceRefreshRequest>;
 
 /// Scalar ownership evidence for note-source refresh tests and readiness.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NoteSourceRefreshCoordinatorSnapshot {
-    /// Active worker count, always zero or one.
-    pub active: usize,
-    /// Retained latest-request count, always zero or one.
-    pub pending: usize,
-    /// Total workers started over the coordinator lifetime.
-    pub started: usize,
-    /// Total successful cancellation transitions requested.
-    pub cancellation_requests: usize,
-}
+pub type NoteSourceRefreshCoordinatorSnapshot = SingleFlightSnapshot;
 
 /// Retain at most one active note refresh and one latest compact request.
-#[derive(Debug, Default)]
-pub struct NoteSourceRefreshCoordinator {
-    current_generation: u64,
-    active: Option<ActiveNoteSourceRefresh>,
-    pending: Option<PendingNoteSourceRefresh>,
-    snapshot: NoteSourceRefreshCoordinatorSnapshot,
-}
-
-impl NoteSourceRefreshCoordinator {
-    /// Submit a compact refresh, starting immediately or replacing the pending slot.
-    pub fn submit(&mut self, request: NoteSourceRefreshRequest) -> Option<NoteSourceRefreshStart> {
-        self.current_generation = self.current_generation.wrapping_add(1);
-        let generation = self.current_generation;
-        if let Some(active) = self.active.as_ref() {
-            if active.cancellation.cancel() {
-                self.snapshot.cancellation_requests =
-                    self.snapshot.cancellation_requests.saturating_add(1);
-            }
-            self.pending = Some(PendingNoteSourceRefresh {
-                generation,
-                request,
-            });
-            None
-        } else {
-            Some(self.start(generation, request))
-        }
-    }
-
-    /// Finish the matching active refresh and start the latest pending request, if any.
-    pub fn finish(&mut self, generation: u64) -> Option<NoteSourceRefreshStart> {
-        if self.active.as_ref().map(|active| active.generation) != Some(generation) {
-            return None;
-        }
-        self.active = None;
-        self.pending
-            .take()
-            .map(|pending| self.start(pending.generation, pending.request))
-    }
-
-    /// Reject current results, cancel active work, and discard the pending request.
-    pub fn invalidate(&mut self) {
-        self.current_generation = self.current_generation.wrapping_add(1);
-        if let Some(active) = self.active.as_ref()
-            && active.cancellation.cancel()
-        {
-            self.snapshot.cancellation_requests =
-                self.snapshot.cancellation_requests.saturating_add(1);
-        }
-        self.pending = None;
-    }
-
-    #[must_use]
-    /// Return whether this generation is still the only publishable result.
-    pub fn is_current(&self, generation: u64) -> bool {
-        self.current_generation == generation
-    }
-
-    #[must_use]
-    /// Return whether active or pending work remains.
-    pub fn has_work(&self) -> bool {
-        self.active.is_some() || self.pending.is_some()
-    }
-
-    #[must_use]
-    /// Return scalar ownership evidence without retaining request payloads.
-    pub fn snapshot(&self) -> NoteSourceRefreshCoordinatorSnapshot {
-        NoteSourceRefreshCoordinatorSnapshot {
-            active: usize::from(self.active.is_some()),
-            pending: usize::from(self.pending.is_some()),
-            ..self.snapshot
-        }
-    }
-
-    fn start(
-        &mut self,
-        generation: u64,
-        request: NoteSourceRefreshRequest,
-    ) -> NoteSourceRefreshStart {
-        let cancellation = PaletteSearchCancellation::default();
-        self.active = Some(ActiveNoteSourceRefresh {
-            generation,
-            cancellation: cancellation.clone(),
-        });
-        self.snapshot.started = self.snapshot.started.saturating_add(1);
-        NoteSourceRefreshStart {
-            generation,
-            request,
-            cancellation,
-        }
-    }
-}
+pub type NoteSourceRefreshCoordinator = SingleFlightCoordinator<NoteSourceRefreshRequest>;
 
 /// Load all note rows covered by the current workspace scope.
 ///
@@ -2890,6 +2780,8 @@ mod tests {
             NoteSourceRefreshCoordinatorSnapshot {
                 active: 1,
                 pending: 1,
+                active_high_water: 1,
+                pending_high_water: 1,
                 started: 1,
                 cancellation_requests: 1,
             }

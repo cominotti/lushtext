@@ -35,10 +35,17 @@ impl LushtextSidebar {
     /// Load workspaces from disk and build sections.
     pub fn load_workspaces(&self) {
         let data_dir = json_store::data_dir();
+        // Capture the newest requested mutation *before* dispatching the load.
+        // "New Workspace" is reachable from window present, so a user can create
+        // a workspace while this load is in flight — and `build_sections_from_file`
+        // unconditionally overwrites `workspaces_file`, which would discard that
+        // workspace from memory while `persist()` has already scheduled it for
+        // disk. The mismatch is what makes it data loss rather than a stale view.
+        let requested_at_dispatch = self.imp().persistence.borrow().requested_generation();
         spawn_blocking_then(
             self.clone(),
             move || workspace_manager::load_recovering(&data_dir),
-            |sidebar, load| {
+            move |sidebar, load| {
                 for diagnostic in &load.diagnostics {
                     tracing::warn!("{}", diagnostic.summary());
                 }
@@ -49,6 +56,20 @@ impl LushtextSidebar {
                         "Workspace state needed recovery; unsupported metadata was preserved",
                         NotificationSeverity::Warning,
                     );
+                }
+                // A mutation arrived while the load was running: the in-memory
+                // state is newer than what came off disk, and the pending write
+                // will make it durable. Adopting the loaded file here would
+                // silently revert it.
+                if sidebar.imp().persistence.borrow().requested_generation()
+                    != requested_at_dispatch
+                {
+                    tracing::info!(
+                        "Skipping workspace load adoption: a workspace mutation superseded it"
+                    );
+                    sidebar.notify_workspace_structure_changed();
+                    sidebar.notify_workspace_scope_changed();
+                    return;
                 }
                 let workspaces_file = load.value;
                 sidebar.build_sections_from_file(workspaces_file);

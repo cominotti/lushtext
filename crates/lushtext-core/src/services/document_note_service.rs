@@ -164,7 +164,7 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
         return Ok(0);
     }
 
-    let mut migrated = 0;
+    let mut tally = note_storage::SidecarMigrationTally::new("document-note");
     for entry in fs_tree::scan_directory(&dir, DirectoryScanPolicy::visible_workspace())
         .with_context(|| format!("failed to read {}", dir.display()))?
     {
@@ -190,16 +190,22 @@ pub fn move_path_tree(data_dir: &Path, old_path: &Path, new_path: &Path) -> Resu
 
         let new_identity = DocumentSidecarIdentity::from_paths(display_path, canonical_path);
         let new_sidecar_path = dir.join(note_storage::sidecar_filename(&new_identity.sidecar_id));
-        let document =
-            merge_document_note_target(data_dir, &new_sidecar_path, document, new_identity)?;
-        save_document(data_dir, &document)?;
-        if sidecar_path != new_sidecar_path {
-            remove_obsolete_sidecar(&sidecar_path)?;
-        }
-        migrated += 1;
+        // Per-item isolation; `SidecarMigrationTally` documents the failure mode
+        // a `?` on any of these three steps used to cause.
+        let outcome =
+            merge_document_note_target(data_dir, &new_sidecar_path, document, new_identity)
+                .and_then(|document| save_document(data_dir, &document))
+                .and_then(|()| {
+                    if sidecar_path == new_sidecar_path {
+                        Ok(())
+                    } else {
+                        remove_obsolete_sidecar(&sidecar_path)
+                    }
+                });
+        tally.record(&sidecar_path, outcome);
     }
 
-    Ok(migrated)
+    tally.finish()
 }
 
 fn merge_document_note_target(
@@ -525,14 +531,91 @@ mod tests {
         let error = move_path_tree(dir.path(), &old_file, &new_file)
             .expect_err("ambiguous equal-timestamp notes should not be guessed");
 
+        // The aggregate message reports the incomplete kind; the per-item
+        // cause stays in the warning log so one poisoned sidecar can no longer
+        // abandon every sidecar sorted after it.
         assert!(
             error
                 .to_string()
-                .contains("ambiguous document note sidecar conflict"),
+                .contains("document-note sidecar(s) could not be migrated"),
             "unexpected error: {error}"
         );
         assert!(fs_metadata::exists(&old_sidecar_path));
         assert!(fs_metadata::exists(&new_sidecar_path));
+    }
+
+    #[test]
+    fn move_path_tree_migrates_later_sidecars_past_one_ambiguous_conflict() {
+        // Regression for a confirmed pre-existing defect: a `?` inside the bulk
+        // loop aborted the whole migration at the first ambiguous conflict, and
+        // `scan_directory` sorts by filename, so every retry stopped at the same
+        // sidecar. After `MAX_MIGRATION_ATTEMPTS` the kind was skipped forever,
+        // permanently abandoning every *unrelated* note whose sidecar hash sorted
+        // after the poisoned one.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let old_dir = dir.path().join("workspace/old");
+        let new_dir = dir.path().join("workspace/new");
+
+        // One pair that will conflict (equal timestamps, differing text) and a
+        // second, independent note under the same renamed prefix.
+        let conflicted_old = old_dir.join("conflicted.rs");
+        let conflicted_new = new_dir.join("conflicted.rs");
+        let innocent_old = old_dir.join("innocent.rs");
+        let innocent_new = new_dir.join("innocent.rs");
+        for path in [
+            &conflicted_old,
+            &conflicted_new,
+            &innocent_old,
+            &innocent_new,
+        ] {
+            write_file(path, "fn demo() {}\n");
+        }
+
+        let ambiguous = |path: &std::path::Path, text: &str| DocumentNoteDocument {
+            identity: note_storage::resolve_document_identity(path).expect("identity"),
+            note: RichNoteBody {
+                text: text.to_string(),
+                created_at_secs: 1,
+                updated_at_secs: 10,
+            },
+        };
+        save_document(dir.path(), &ambiguous(&conflicted_old, "source text"))
+            .expect("save conflicting source");
+        save_document(dir.path(), &ambiguous(&conflicted_new, "target text"))
+            .expect("save conflicting target");
+        save_document(dir.path(), &ambiguous(&innocent_old, "innocent note"))
+            .expect("save innocent source");
+
+        let error = move_path_tree(dir.path(), &old_dir, &new_dir)
+            .expect_err("an ambiguous conflict must still report the kind incomplete");
+        // Deterministic regardless of the hash-derived scan order: exactly one
+        // sidecar is refused and exactly one succeeds. Pre-fix the loop aborted
+        // at the conflict, so whether the innocent note migrated at all depended
+        // on which sidecar filename happened to sort first.
+        assert_eq!(
+            error.to_string(),
+            "1 document-note sidecar(s) could not be migrated; 1 succeeded",
+            "unexpected error: {error}"
+        );
+
+        // The whole point: the unrelated note reached its new identity even
+        // though a sibling sidecar was ambiguous.
+        let innocent = load_for_path(dir.path(), &innocent_new)
+            .expect("load migrated innocent note")
+            .expect("the innocent note must have been migrated");
+        assert_eq!(innocent.note.text, "innocent note");
+
+        // And the ambiguous pair is still untouched on both sides.
+        assert!(
+            load_for_path(dir.path(), &conflicted_old)
+                .expect("load old conflicted")
+                .is_some()
+        );
+        assert!(
+            load_for_path(dir.path(), &conflicted_new)
+                .expect("load new conflicted")
+                .is_some()
+        );
     }
 
     #[test]

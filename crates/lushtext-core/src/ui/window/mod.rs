@@ -74,9 +74,9 @@ pub use local_history::{
 };
 #[cfg(feature = "test-utils")]
 pub use notes::{
-    NotesBrowserRuntimeSnapshot, set_bookmark_excerpt_preview_delay_for_test,
-    set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
-    set_notes_browser_source_entry_limit_for_test,
+    NotesBrowserRuntimeSnapshot, NotesEvidence, OpenEditorNoteCaptureEvidence,
+    set_bookmark_excerpt_preview_delay_for_test, set_note_source_delay_for_test,
+    set_notes_browser_query_delay_for_test, set_notes_browser_source_entry_limit_for_test,
 };
 #[cfg(feature = "test-utils")]
 pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};

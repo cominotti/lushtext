@@ -91,8 +91,8 @@ convention has been proven on at least two completed lower-risk migrations.
 | WFR-SESSION-RESTORE | Session persistence and bounded restore | **6 files, 1,758 production lines** in `ui/window/session_restore/**`, counting non-`#[cfg(test)]` lines only: policy 553 (of 1,172; 619 are the module's co-located unit tests), journal 406, admission 279, evidence 200, facade 165, execution 155. The workflow additionally **calls** `services/session_service.rs`, `services/draft_service.rs`, and `services/recovery_metadata.rs`, and reads `ui/window/startup_data.rs`'s completion flag, none of which it owns. The pre-migration cell read `5 files, 2,599 lines (ui 1,962 / model 300 / services 337)` and pooled `model/session.rs` plus a partial services subtotal | app startup (through `ui/window/startup_data.rs`'s gate, which this row does **not** own), window close, tab mutation persistence | **extracted into `crates/lushtext-core/src/ui/window/session_restore/policy.rs`**, in two parts reported separately. **Relocated**: the bounded-turn admission policy (`SessionRestorePolicy`, its permits, its turn planner, its terminal accounting), which was already explicit policy and merely mislocated in a GTK adapter file. **Gained from zero**: the journal's pure half, previously inline in the adapter — session-tab identity, the close-time merge that preserves not-yet-admitted descriptors, the startup preload-graph fit to its disposal reservation, and the recovery-diagnostic summary. `model/session.rs` **stays in `model/`**: its census cell said 8 consumers, but re-derived as owning workflows it is **1**, and `services/session_service.rs` depends on it, so relocating under `ui/` would invert dependency direction — the 3b `model/file_load.rs` precedent | migrated: **2 inspection fns retired** into `evidence.rs` (`session_restore_runtime_snapshot_for_test`, `startup_session_descriptors_pending_for_test`), and no `*_for_test` inspection function remains. **0 configuration seams** — this workflow has none. **2 actuation seams preserved and 0 added** (`restore_session_for_test`, `cancel_session_restore_for_test`), both driving startup and cancellation paths no headless test can otherwise reach. The pre-migration cell read `2/0/2/0 = 4 fns, 5 sites`, which was **correct and row-scoped** | **re-audited**: `SessionRestorePlanPermit` (generation-bound planning ownership, crossing plan -> mount -> load terminal -> release) and `SessionRestoreAdmission` (one admitted descriptor with its permit, built by the planner and consumed by the mounter). Both qualify; neither is renamed across a seam | **`SessionRestoreEvidence` via `session_restore_evidence()`** — a **new window-level surface**. The pre-migration type of the same name was the *policy's internal counters*, not a workflow surface; it is renamed `SessionRestoreTurnMetrics` and the new surface projects it, folding in `SessionRestoreRuntimeSnapshot` so no second typed path remains. `session.save_failed` and the shared `close_safety_*` flags are now surface fields, so the widget tests' 15 `imp().session` reads are gone. The `session-restore` readiness blocker reads the same `restoring` cell through the facade's cheap `session_restore_in_progress()` accessor — identical by construction. The exported D-Bus contract is unchanged | tier-3 — **now covered**. The bounded-turn admission, the exactly-once planning-terminal accounting, the close-time merge that protects unreached descriptors, and the user-first selection settle are all narrated by the facade and asserted from evidence | 4 | migrated |
 | WFR-LOCAL-HISTORY | Local history capture, preview, restore | **8 files, 3,009 production lines**: 2,302 in the canonical role home `ui/window/local_history/**` (preview_execution 959, restore_execution 340, policy 319 of 650 with 331 co-located unit tests, journal 238, facade 215, evidence 171, test_policy 60) plus **707** in the called capture surface `ui/editor_page/local_history.rs`. The workflow additionally **calls** `services/local_history_service.rs` (shared with migrated `WFR-DOCUMENT-SAVE`) and `services/recovery_metadata.rs`, neither of which it owns; counting the first whole is how the pre-migration cell reached `4 files, 5,536 lines (ui 2,586 / model 173 / services 2,777)` | `win.show-local-history`, the editor context menu, **the sidebar context menu** (an entry point the census cell omitted entirely), the command palette, baseline capture on first edit, the periodic capture timer, the restore and undo-restore actions, post-rename lineage migration, and **a Save-origin capture driven by migrated `WFR-DOCUMENT-SAVE`** | **extracted into `crates/lushtext-core/src/ui/window/local_history/policy.rs`** — the workflow's one policy module, even though its capture half lives in another directory. Viewer geometry and its clamps, which snapshots the user is shown (the legacy-empty-baseline rule and its deliberately conservative two-and-two threshold), the preview install plan and its completion predicate, both capture freshness tickets with their predicates, the periodic reschedule rule, and row presentation. That is a coverage **gain from zero**. `model/local_history.rs` **stays in `model/`** as domain: re-derived as owning workflows its consumer count is **2** (`WFR-LOCAL-HISTORY`, `WFR-DOCUMENT-SAVE`), and `services/local_history_service.rs` depends on it | migrated: **8 inspection fns retired** into `evidence.rs` across **both** directories (`local_history_preview_install_snapshot_for_test`, `local_history_baseline_candidate_present_for_test`, `local_history_baseline_retry_pending_for_test`, `local_history_automatic_capture_inflight_for_test`, `local_history_periodic_snapshot_inflight_for_test`, `local_history_periodic_timer_pending_for_test`, `has_local_history_restore_undo_for_test`, and the `local_history_preview_install_delay_for_test` reader), and no `*_for_test` inspection function remains. **4 configuration seams collapsed into 1** test-policy value in `local_history/test_policy.rs`, entirely behind `#[cfg(feature = "test-utils")]`, keeping every public setter name; the re-exported `set_local_history_preview_read_delay_for_test` **stays in `services/local_history_service.rs`**, which owns the behavior it changes — the `editor_io` precedent. **4 actuation seams preserved and 0 added**. The pre-migration cell read `9/11/4/0 = 24 fns, 33 sites, 4 override statics`, which pooled the service's own seams | **re-audited**: `BaselineCaptureTicket` + `BaselineCaptureFacts` and `PeriodicCaptureTicket` + `PeriodicCaptureFacts` (both Ticket/Facts/predicate, now in the canonical `policy.rs` so the capture surface **calls** them rather than defining its own), and `LocalHistoryReplacementTicket` (the `is_current(&editor)` variant, whose handoff to `BufferReplacementTicket` is a named operation on the migrated replacement facade, not a reach into its state) | **`LocalHistoryEvidence` via `local_history_evidence()`**, folding in **both** pre-convention typed observations (`LocalHistoryPreviewCoordinatorSnapshot`, `LocalHistoryPreviewInstallSnapshot`) so no second typed path remains. **One surface for a workflow spanning two directories.** The exported `local_history` snapshot object projects from it and is covered by the Evidence Projection Map drift gate, which slot 4 extended to register this third projecting surface and then **proved rejects a real rename**. The exported D-Bus contract is unchanged | tier-3 — **now covered**. The safety-snapshot ordering that makes a restore non-destructive, the bounded preview install, and both capture freshness contracts are narrated by the facade and asserted from evidence | 4 | migrated |
 | WFR-BUFFER-REPLACEMENT | Bounded buffer install and clear slices | **4 files, 1,472 production lines** in `ui/editor_page/buffer_replacement/**`, counting non-`#[cfg(test)]` lines only: facade 168, execution 921 (of 972; 51 are the carried-over `pairing_tests`), policy 212 (of 339; 127 are the module's co-located unit tests), evidence 171. The workflow additionally **calls** cross-cutting `model/buffer_replacement.rs` (93 production of 186), which it does not own. The pre-migration cell read `2 files, 1,215 lines (ui 1,029 / model 186)` and counted whole files including tests plus the cross-cutting module it calls | **five call sites across four owning workflows**, from `BufferReplacementWorkflow`'s own variants: draft restore install (`ui/window/drafts/restore_execution.rs`), local-history restore **and** local-history restore undo (`ui/window/local_history/restore_execution.rs`, twice), memory eviction (`ui/editor_page/mod.rs`), and save formatting mirror-back (`ui/editor_page/save/execution.rs`). The pre-migration cell said "Replace All undo", which is **not** a caller — `LocalHistoryUndo` is local history's own undo — and omitted memory eviction and save formatting entirely | **extracted into `crates/lushtext-core/src/ui/editor_page/buffer_replacement/policy.rs`**: the seam value types, the start disposition, the cancellation disposition (whether a partially mutated buffer owes the user a bounded clear pass), the clear-turn progress and insertion-completion rules, the turn-admission rule that lets a cancelled clear run even after the caller goes stale, terminal classification, guard-restoration on disposal, and the bounded-turn metrics accounting. That is a coverage **gain from zero**; see [Migrated Workflow Roles](#wfr-buffer-replacement). `model/buffer_replacement.rs` stays as cross-cutting: it owns the direct/sliced threshold, the clear slice budget, and the **paragraph-boundary** `next_replacement_boundary`, called by three owning workflows and duplicated by none | migrated: **4 inspection fns retired** into `evidence.rs` (`buffer_replacement_in_progress_for_test`, `buffer_replacement_projection_suspended_for_test`, `buffer_replacement_slice_count_for_test`, `buffer_replacement_terminal_diagnostic_for_test`), and no `*_for_test` inspection function remains on this path. **0 configuration seams** — this workflow has none. **4 actuation seams preserved and 0 added** (`replace_buffer_for_test`, `replace_buffer_returning_cancelled_body_for_test`, `dispose_buffer_replacement_for_test`, `make_buffer_replacement_stale_after_slices_for_test`), each driving a step reachable only through a caller workflow or a resumed slice turn, which is the programme-level deferred category. The pre-migration cell read `4/0/4/0 = 8 fns, 26 sites`, which was **correct and row-scoped** — the only one of slot 4's four seam cells that needed no correction | **re-audited**: `BufferReplacementTicket` (caller-owned freshness identity, crossing entry -> park -> session -> every turn -> terminal -> caller callback, reconstructed at 5 call sites) and `BufferReplacementRequest` (the intent bundle: ticket + body + freshness check + terminal callback, built once at the entry point and validated as a unit by its four kind-paired constructors). `BufferReplacementSession` is **reclassified**: it is coordination-owned GTK runtime, not a seam value object, and the pre-migration cell naming it as one was wrong | **`BufferReplacementEvidence` via `buffer_replacement_evidence()`**, a new surface. No exported D-Bus field projects from it; every field is internal | tier-3 — **now covered**. The cancellation contract that a half-installed document is never left visible, the paragraph-boundary call, and the exactly-once terminal are all narrated by the facade and asserted from evidence | 4 | migrated |
-| WFR-WORKSPACE-TREE | Workspace folders, file tree, watch, reconcile | 28 files, 16,947 lines (ui 11,682 / model 1,368 / services 3,897) | New Workspace, Add Folder, refresh button, row activation, context menus, `Space` peek, watcher events | `model/workspace_scan.rs` (3 consumers → single-workflow, relocates); `model/workspace.rs` (28 consumers → domain, stays); `model/workspace_persistence.rs` (2 consumers → single-workflow, relocates) | 24/7/29/5 = 65 fns, 116 sites | exists: `WorkspaceScanTicket` (scan side). required: `WorkspaceWatchTicket` (watch-install side; `{targets_generation, lifetime_generation}` compared loosely at 2 sites) | partial: `WorkspaceScanPressureEvidence`, `WorkspaceWatchMailboxSnapshot` | tier-3 | 5 | pending |
-| WFR-NOTES-BOOKMARKS | Notes, bookmarks, sidecar migration, format upgrade | 22 files, 12,521 lines (ui 4,977 / model 770 / services 6,774) | `win.notes-*`, `win.toggle-bookmark`, `win.edit-bookmark-label`, rename-driven sidecar migration, startup reconcile | `model/note.rs`, `model/bookmark.rs`, `model/sidecar_identity.rs` (6/9/11 consumers → domain, stay) | 2/4/4/0 = 10 fns, 16 sites, 2 override statics; slot 2a additionally left this row the 15 palette-row seam functions that live in `services/palette/**` and `ui/window/notes/**` | required: `NotesBrowserTicket` (carries `{generation, mode}`; the `is_current(generation) && mode == mode && !disposed` triple is duplicated at 2 sites). **Named slot-5 task from slot 2a:** retire `NoteSourceRefreshCoordinator` into the shared `SingleFlightCoordinator`. Slot 2a deferred it, and the reason is **not** that the state is shared — there are two independent instances, `command_palette_note_refreshes` on the window imp serving the palette and `source_refreshes` in `ui/window/notes/mod.rs` serving the Notes browser. The reason is that deduping the *type* changes `NotesBrowserRuntimeSnapshot`'s shape, which is this row's surface area | partial: `NotesBrowserRuntimeSnapshot` | tier-3 | 5 | pending |
+| WFR-WORKSPACE-TREE | Workspace folders, file tree, watch, reconcile | **Census cell, still to be corrected by the migration: `28 files, 16,947 lines (ui 11,682 / model 1,368 / services 3,897)`.** Slot 5a re-derived it row-scoped without migrating the row: **20 files, 11,214 production lines**, all in `ui/sidebar/**`, counting non-`#[cfg(test)]` lines only. `ui/sidebar/file_tree_item.rs` (150) is excluded because this matrix lists it under [Surfaces With No Coordination Tier](#surfaces-with-no-coordination-tier). The `services` subtotal pools `services/file_tree.rs` (603 production of 1,050), `workspace_manager.rs`, `workspace_watch.rs`, and `file_peek.rs` whole — all shared, none owned. Slot 5a additionally added `policy.rs` (190), `seams.rs` (133), and `test_policy.rs` (88) to this row; see the Owned pure policy cell | New Workspace, Add Folder, refresh button, row activation, context menus, `Space` peek, watcher events | **Slot 5a landed `crates/lushtext-core/src/ui/sidebar/policy.rs` without migrating the row**, because extracting the rename decision *was* the fix for a confirmed data-destruction defect. It owns the inline-rename intent (`RenameIntent`), the destination-collision refusal and its user-facing message, the unique-name candidate sequence and its attempt ceiling, and the prefix-matching rule for directory operations against open tabs. **The two relocations are still outstanding**: `model/workspace_scan.rs` (3 consumers → single-workflow) and `model/workspace_persistence.rs` (consumer set verified as exactly `ui/sidebar/imp.rs` and `ui/sidebar/workspaces.rs`, plus two bench references to the public `model::workspace_scan` path that a move must handle) both remain in `model/` and relocate with slot 5b, which owes **relocation parity**, not a gain. `model/workspace.rs` is confirmed **domain and staying** (many owning workflows) | **60 fns / 111 gate sites**, re-derived row-scoped by slot 5a. The census cell read `24/7/29/5 = 65 fns, 116 sites`, which was **not** row-scoped: it pooled the service-side seams in `services/workspace_manager.rs` (3/9) and `services/workspace_watch.rs` (4/4). Row-scoped before slot 5a it was **58 fns / 106 sites** across 10 files — the largest seam population in the programme. Slot 5a added **2**, both counted and justified individually in `ui/sidebar/test_policy.rs` (`set_workspace_rename_worker_delay_for_test`, `set_workspace_placeholder_cleanup_delay_for_test`): without them two regression tests for confirmed data-destruction defects passed against the broken code as well as the fixed code. **None retired yet** — retirement is slot 5b's. This row also still has **no module statics**: its configuration overrides are test-only *fields on production state structs* (`RefreshRuntimeState`, `WatchRuntimeState`), which no `static` grep finds | exists: `WorkspaceScanTicket` (scan side). **done, unplanned: `FileOperationTicket` + `FileOperationFacts` + `row_is_current`** in `ui/sidebar/seams.rs` — reifying it *was* the fix for the wrong-row/stale-watch defect, so it landed with slot 5a. **still required: `WorkspaceWatchTicket`** (watch-install side; `{targets_generation, lifetime_generation}`, today a loose tuple compared clause-by-clause at two sites in `workspace_section/watch.rs`), slot 5b | partial: `WorkspaceScanPressureEvidence`, `WorkspaceWatchMailboxSnapshot`, `WatchTargetSnapshot`, `SidebarFileRowStateSnapshot`. **No `evidence.rs` yet** — slot 5b owes one, and it is the row the `workflow-evidence-surfaces` **no-materialization** statement exists for: `tree_index.rs`'s `find_store_for_dir` and `visible_child_stores` call `row.children()` (the latter with no `is_expanded()` filter), which runs the `GtkTreeListModel` create function and starts a background scan, and `derive_expanded_paths_from_model` increments the very capture counters the surface must report. All five offending code facts are verified and recorded in `openspec/changes/migrate-workspace-tree-and-notes-workflow-readability/evidence/evidence-surface-materialization.md` | tier-3 | 5 | pending — **slot 5b**, not slot 5. Slot 5a landed this row's `policy.rs`, `seams.rs`, and `test_policy.rs` plus seven data-safety fixes in its file operations, but **not** its facade, coordination role modules, evidence surface, or seam retirement. Its reconciled stage trace is **11 stage orders, 27 deferral primitives and 11 non-primitive callback resumptions = 38 resumption points** against the [Workflow Stage Traces](#wfr-workspace-tree) entry's recorded **five inversions** — a floor off by roughly 7.6x, the widest in the programme. The role-home collision analysis, the facade-budget projection (=351 of 370, one row, delegated hard), the `journal` verdict for workspace persistence, and the disposition of the 11 pre-existing `services/file_tree.rs` field-deletion survivors are all already decided in that change's `evidence/shared-ownership-decisions.md`, so 5b inherits decisions rather than questions |
+| WFR-NOTES-BOOKMARKS | Notes, bookmarks, and the rename-driven sidecar migration | **4 files, 4,365 production lines** in `ui/window/notes/**` before migration, counting non-`#[cfg(test)]` lines only (`browser.rs` 1,749, `editors.rs` 929, `mod.rs` 892, `bookmarks.rs` 795; none carried a `#[cfg(test)]` module). The pre-migration cell read `22 files, 12,521 lines (ui 4,977 / model 770 / services 6,774)`. Its `services` subtotal pooled `services/palette/notes.rs` — **2,163 production lines of a 3,428-line file, shared with migrated `WFR-COMMAND-PALETTE`** (split re-derived by item span: ~180 browser-only, ~140 palette-only, ~1,840 genuinely shared) — plus `note_storage.rs` (337), `bookmark_service.rs` (694), `bookmark_excerpt.rs` (888), `folder_note_service.rs` (948), `document_note_service.rs` (676), `services/format_upgrade/**` (3,013), and cross-cutting `migration_ledger.rs` (476), none of which this row owns; `services/palette/tests.rs` (1,223) is a separate-file `#[cfg(test)] mod tests;` a naive per-file scan counts as production. Its `ui` subtotal additionally pooled `ui/window/startup_data.rs` (435), which slot 5 decided is **cross-cutting, owned by neither row** — an ownership correction, not a count correction | `win.notes-show-notes`, `win.notes-toggle-bookmark`, `win.notes-open-document-note`, `win.notes-open-folder-note`, `win.toggle-bookmark`, `win.edit-bookmark-label`, activating a source mark, editor `file_loaded`, Save As, the sidebar context menu's document-note route, the workspace header's folder-note route, the command palette's note source, and the **rename-driven sidecar migration** reached from `ui/window/documents.rs` | **extracted into `crates/lushtext-core/src/ui/window/notes/policy.rs`** — a coverage **gain from zero**, because all five notes domain modules stay in `model/`. It owns the folder-note zero/one/many target decision and its action availability, the bookmark menu label, the live-editor snapshot capacity and byte arithmetic, all nineteen inventory-mode strings (fourteen relocated plus five that were **duplicated inline at eight call sites**), the browser truncation-notice composition, the bookmark target-line parse, the bookmark edit-error and preview-unavailable messages, the raw-excerpt formatter with its target offsets, this workflow's eleven budgets, and the new rename-collision refusal. `model/note.rs`, `model/bookmark.rs`, `model/sidecar_identity.rs`, `model/folder_note.rs`, and `model/document_note.rs` **stay**: each is consumed by at least one GTK-free service, so relocating any of them would invert dependency direction, and `sidecar_identity.rs` is a **cross-workflow kernel** with seven consuming workflows | migrated: **4 inspection surfaces retired** into `evidence.rs` (`notes_browser_runtime_snapshot_for_test`, `note_save_snapshot_count_for_test` — whose read **pruned as a side effect**, `open_editor_note_snapshot_counts_for_test`, `open_editor_note_snapshot_retained_evidence_for_test`), and **no `*_for_test` inspection function remains on this row**. The two parameterized tuple-returning seams became **one named workflow operation** returning a named value (`capture_open_editor_note_evidence`), on slot 4's `draft_delete_is_tombstoned(&str)` precedent. **2 configuration seams collapsed into 1** test-policy value in `notes/test_policy.rs`, entirely behind `#[cfg(feature = "test-utils")]`, keeping both public setter names; the note-source and browser-query delays **stay in `services/palette/notes.rs`**, which owns the behavior they change and **shares it with the migrated palette row** — the `editor_io.rs` precedent. **0 actuation seams and 0 added.** The pre-migration cell read `2/4/4/0 = 10 fns, 16 sites, 2 override statics`, which was **not** row-scoped: row-scoped it was **7 fns across 15 gate sites**, and the rest live in `services/palette/notes.rs` (4/6) and `services/format_upgrade/**`, shared with the palette row | **done: `NotesBrowserTicket` + `NotesBrowserFacts` + one predicate**, in `notes/seams.rs`. Reified beyond the census cell: the ticket is **phantom-typed by flight** (`SourceFlight`, `QueryFlight`, `PreviewFlight`) because the three stages own **three different generation counters**, so validating a query generation against source facts is now a compile error rather than a silent stale publish. Mode gating is declared per flight, which preserves the preview path's documented weaker predicate exactly. **`NoteSourceRefreshCoordinator` is retired** into `services::single_flight::SingleFlightCoordinator` as three type aliases, closing the slot-2a deferral: ~100 duplicated lines removed, the palette's instance substituted at type level only with its readiness blocker and exported snapshot fields unchanged | **`NotesEvidence` via `notes_evidence()`**, folding in `NotesBrowserRuntimeSnapshot` and its three nested coordinator snapshots so no second typed path remains. The retired note-save count **pruned as a side effect of being read**; the surface counts without pruning. Every `TemplateChild` read goes through `try_get()` — the disposal proof caught a **real panic** on `tab_view` before this shipped. Automation `window.notes` projects five of its six fields from it; `active_document_file_backed` deliberately does **not** project, because it is the active document's identity rather than notes-workflow state and the `local_history` object reports the same fact, so both now derive it through one shared helper | tier-3 | 5 | migrated |
 | WFR-MARKDOWN-PREVIEW | Markdown preview render, images, footnotes, tables | 11 files, 11,274 lines (ui 8,334 / services 2,940); re-measured after `continue-markdown-preview-past-oversized-blocks` added `ui/markdown_preview/continuation.rs` (1,170) and `text_flow.rs` (265) while `mod.rs` fell 2,541 → 1,985, and grew `services/markdown_render.rs` 556 → 2,940, of which ~1,700 are co-located `#[cfg(test)]` planner tests. The `ui` subtotal spans `ui/markdown_preview/**` (7,762) plus `ui/window/preview.rs` (572) | `Alt+P`, `win.toggle-preview-mode`, side-by-side action, buffer changed | none in `model/` | 12/4/3/2 = 21 fns, 56 sites, 3 override statics (unchanged by the continuation change) | exists: `MarkdownRenderSession::is_current(generation)`; plus the planner/projector batch seam `MarkdownCarrySignature` + `MarkdownOpenContainer` (expected/open containers per batch, chained across turns), `MarkdownBlockOmission` (omission reason, scope, and unretained charge crossing the same seam), and the projector-side `MarkdownProjectionContinuation` + `ContinuationBreach` that holds and validates it | partial: `MarkdownImageAdmissionSnapshot` | tier-2 | 7 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
 | WFR-MINIMAP | Minimap strip, markers, native source map geometry | 2 files, 3,965 lines (ui 3,779 / model 186) | `win.toggle-minimap`, `Ctrl+Shift+M`, buffer/viewport/sidebar reflow | `model/minimap_analysis.rs` (1 consumer → single-consumer, relocates) | 9/1/1/0 = 11 fns, 16 sites | exists: `MinimapAnalysisSession` (`{generation, lifetime}`) | partial: `MinimapAnalysisSnapshot` | tier-2 logic, high proof cost | 6 | deferred — see [Outlier Resolutions](#outlier-resolutions) |
 | WFR-BUFFER-SNAPSHOT | Bounded GTK buffer text capture | 1 file, 1,149 lines (ui) | called by save, draft autosave, encoding analysis, preview, local history | `model/plain_disposal.rs` is consumed through `plain-disposal`, not owned here | 5/0/4/0 = 9 fns, 40 sites | exists: `BufferSnapshotHandle` + `BufferSnapshotPayload` | partial: `BufferSnapshotMetrics`, `BufferSnapshotStateForTest`, `BufferSnapshotCountersForTest` | tier-2 | 7 | cross-cutting |
@@ -476,6 +476,8 @@ snapshot there resurrects a user's collapse.
 
 `win.notes-show-notes` → browser dialog → mode selection →
 `NoteSourceRefreshCoordinator` bounded source build under `NoteSourceAdmission`
+(that coordinator is now a type alias over the shared `SingleFlightCoordinator`;
+see the seam entry below)
 ⇢ worker build, resuming against the generation-plus-mode-plus-disposed triple →
 query change → `PaletteSearchCoordinator` ⇢ worker query, resuming against the
 same triple → row publish → closed-file bookmark excerpts ⇢ worker preview.
@@ -485,8 +487,28 @@ Rename: `migrate_note_sidecars_after_rename` → migration ledger entry ⇢
 is the longest-lived inversion in the codebase: control resumes in a different
 process run.
 
-Four inversions. The duplicated generation-plus-mode triple is the unreified
-seam.
+**Re-derived by slot 5a from the code: five stage orders and 28 resumption
+points — 21 deferral primitives plus 7 non-primitive callback resumptions.** The
+census cell recorded **four inversions**, so the floor was off by **7x**. The
+five stage orders are editor note resolution (2 primitives), the bookmark
+lifecycle (4), the note editors (9), the notes browser's source build plus query
+(4 + the search debounce), and sidecar migration (2). Counted separately: 4
+folder-chooser and dialog-response resumptions, 2 `connect_closed` teardowns, and
+**the process boundary itself**.
+
+The reconciled trace is in
+`openspec/changes/migrate-workspace-tree-and-notes-workflow-readability/evidence/stage-traces.md`,
+which attributes every primitive to exactly one stage order so the subtotals sum.
+
+**The startup format-upgrade gate is no longer counted here.** Authoring's read
+attributed "the startup format gate 4 plus a user-driven retry loop" to this row;
+slot 5a decided `ui/window/startup_data.rs` is **cross-cutting, owned by neither
+row** (it orders five workflows), so those resumption points are an ownership
+correction removed from this trace rather than a count corrected within it.
+
+The generation-plus-mode triple is reified: `NotesBrowserTicket` +
+`NotesBrowserFacts` + one predicate, phantom-typed by flight because the three
+stages own three different generation counters.
 
 ### WFR-COMMAND-PALETTE
 
@@ -618,7 +640,7 @@ module, excluding the module itself.
 | `plain_disposal.rs` | 692 | `ui/plain_disposal.rs` | its own adapter, serving 10 workflows | cross-cutting → stays |
 | `buffer_replacement.rs` | 186 total, **93 production** | `ui/editor_page/buffer_replacement/execution.rs`, `ui/editor_page/load/policy.rs`, `ui/window/local_history/policy.rs` and `ui/window/local_history/preview_execution.rs`, and `model/file_load.rs` (a one-line delegating synonym `next_install_boundary`, which `ui/editor_page/load/execution.rs`, `benches/benchmarks.rs`, and `tests/properties/file_load.rs` call) | **3** owning workflows consume the pure module (`WFR-BUFFER-REPLACEMENT`, `WFR-DOCUMENT-LOAD`, `WFR-LOCAL-HISTORY`), and **4** own the five `replace_buffer_bounded` call sites: `WFR-DRAFT-RECOVERY`, `WFR-LOCAL-HISTORY` (restore and undo), `WFR-EDITOR-MEMORY` (exempt, no slot), `WFR-DOCUMENT-SAVE` (migrated) | cross-cutting → stays. **Slot 4 corrected this row, which read `2 (WFR-LOCAL-HISTORY, Replace All undo)` and was wrong in both halves: the count was a consuming-file count rather than an owning-workflow count, and **Replace All undo is not a consumer at all** — `BufferReplacementWorkflow::LocalHistoryUndo` is local history's own undo affordance, not the search/replace journal's.** The paragraph-boundary arithmetic has exactly one implementation and must not be duplicated; see task 2.1's alias decision |
 | `editor_memory.rs` | 469 | `ui/window/focus_indexing.rs`, `ui/window/imp.rs`, `ui/editor_page/mod.rs`, `ui/editor_page/save/admission.rs`, the retired ui/editor_page/load_runtime.rs | 3 | cross-cutting → stays, exempt |
-| `migration_ledger.rs` | 225 | `ui/window/notes/mod.rs`, `ui/window/local_history/journal.rs`, `services/migration_ledger.rs` | 2 plus a service | cross-cutting → stays |
+| `migration_ledger.rs` | 225 | `ui/window/notes/journal.rs` (was `notes/mod.rs` before slot 5a), `ui/window/local_history/journal.rs`, `services/migration_ledger.rs` | 2 plus a service | cross-cutting → stays |
 
 **Post-migration note.** This table is the census snapshot, kept as the record
 of what each classification was decided from; its line counts and consumer
@@ -686,6 +708,31 @@ in place, `window.imp().recent_documents.loading` in
 domain concept and has three or more consumers, or is a domain type with a
 single natural owner.
 
+**The five notes domain modules are confirmed staying — decided by slot 5a**, and
+the confirmation is by import rather than by substring. Each is consumed by at
+least one **GTK-free service**, so relocating any of them under `ui/` would invert
+dependency direction, which the convention forbids outright — the same ground on
+which 2b settled `workspace_search.rs` and 3b settled `model/file_load.rs`:
+
+| Module | GTK-free service consumer that forbids the move |
+| --- | --- |
+| `model/note.rs` | `services/note_storage.rs`, `services/palette/notes.rs` |
+| `model/bookmark.rs` | `services/bookmark_service.rs`, `services/bookmark_excerpt.rs`, `services/palette/notes.rs` |
+| `model/folder_note.rs` | `services/folder_note_service.rs` |
+| `model/document_note.rs` | `services/document_note_service.rs`, `services/palette/notes.rs` |
+| `model/sidecar_identity.rs` | **cross-workflow kernel** — consumed by note, bookmark, document-note, draft, local-history, search-backup, and format-upgrade code: **seven consuming workflows**, so it is not any one row's policy |
+
+`WFR-NOTES-BOOKMARKS` therefore owns **no relocated policy at all**; its
+`policy.rs` is a **gain from zero** extracted out of the GTK adapter. Substring
+false positives named and excluded while deriving these sets: `note` matches
+`connect_notify_local`, `notes_menu_button`, and `noted`; `bookmark` matches the
+editor page's `connect_bookmarks_changed` and `bookmark_change_generation`. The
+sets above were taken from `use` statements and `crate::model::` paths.
+
+**`model/workspace.rs` is likewise confirmed staying** — it is consumed by the
+workspace tree, notes, the palette, shell layout, search scope, and automation, so
+it is domain with many owning workflows, not single-workflow policy.
+
 **`workspace_search.rs` (503 lines) joins this list — decided by slot 2b.** The
 census listed it above as a single-workflow module awaiting a relocation
 decision on the strength of "2 consumers, both search". Slot 2b re-derived the
@@ -738,7 +785,8 @@ it.**
 re-derived.** An earlier authoring pass reported nine `ui/` consumers; six were
 name collisions with unrelated symbols rather than references to this module:
 `file_load_active` in `ui/automation.rs`; `connect_file_loaded` in
-`ui/window/notes/mod.rs` and `ui/window/focus_indexing.rs`;
+`ui/window/notes/bookmark_execution.rs` (was `notes/mod.rs` before slot 5a) and
+`ui/window/focus_indexing.rs`;
 `file_loaded_callbacks` in `ui/editor_page/imp.rs` and `ui/editor_page/mod.rs`;
 and a test function name in `ui/window/drafts/`. Match on the import or path,
 never on the substring `file_load`.
@@ -993,6 +1041,46 @@ generation-only re-dispatch variants are one documented `may_dispatch`
 predicate, which deliberately omits the query clause because a retained request
 has not produced a result yet. `ReplacePreviewRequest` now holds the ticket
 instead of separate generation and query-spec fields.
+
+### done: `NotesBrowserTicket` + `NotesBrowserFacts` (`WFR-NOTES-BOOKMARKS`)
+
+Reified by slot 5a in `ui/window/notes/seams.rs`, closing the row's `required`
+entry. The census cell described the bundle as `{generation, mode}` with the
+`is_current(generation) && mode == mode && !disposed` triple duplicated at **two**
+sites; the code has **three** completion sites, the third being the closed-file
+bookmark-excerpt preview with a documented two-clause variant.
+
+**The reification goes further than the cell asked, and the reason is the defect
+class the seam rule exists for.** The three stages own **three different
+generation counters** — the source refresh coordinator, the browser query
+coordinator, and the excerpt preview coordinator. A plain `{generation, mode}`
+struct would let a query generation be validated against source facts: both are
+`u64`, both are called `generation`, and the mistake is invisible to review and to
+tests because either value reads correctly on its own. The ticket is therefore
+**phantom-typed by flight** (`SourceFlight`, `QueryFlight`, `PreviewFlight`), so a
+cross-coordinator comparison is a **compile error** rather than a stale publish.
+
+Mode gating is declared per flight through one associated constant.
+`PreviewFlight` declares it `false`, which preserves the preview path's existing
+weaker predicate **exactly**: a closed-file excerpt belongs to a selected *row*,
+and its publication path revalidates that row's path and line through
+`selected_bookmark_matches`, which is strictly stronger than a mode comparison.
+Gating it on mode as well would have been a behavior change, so the weaker
+predicate is declared rather than applied by accident — the shape slot 3b used for
+`installation_is_current`.
+
+Also closed here: **`NoteSourceRefreshCoordinator` is retired** into
+`services::single_flight::SingleFlightCoordinator` as three type aliases, ending
+the deferral slot 2a opened and slot 4 restated. The stated blocker — that
+deduping the type changes `NotesBrowserRuntimeSnapshot`'s shape — dissolved
+because slot 5a folds that snapshot into the row's evidence surface anyway. One
+authoring claim was **stronger** than stated: the cancellation type did not merely
+differ by name, because `NoteSourceRefreshStart` already carried
+`PaletteSearchCancellation`, which `services/palette/runtime.rs:14` already
+aliases to `single_flight::FlightCancellation`. ~100 duplicated lines of
+submit/finish/supersede logic are gone, and the palette's instance changed at
+**type level only**, with its `command-palette-index` readiness blocker still
+calling `has_work()` and no palette snapshot field changing shape.
 
 ### required: `WorkspaceWatchTicket` (`WFR-WORKSPACE-TREE`)
 
@@ -1565,7 +1653,7 @@ migrated end to end.
   `_off_main` attributed to this function a guarantee that belongs to the guarded
   owner it releases.
 - `accessibility.rs` holds the accessible-state projection that used to sit in
-  `mod.rs`. It is adapter detail, not a coordination role: the facade may not own
+  `mod.rs`. It is a called presentation surface, not a coordination role: the facade may not own
   widget mutation.
 - `test_policy.rs` holds `SearchPanelTestPolicy`, the workflow's single
   test-only timing/limit value. The whole module is behind
@@ -1808,7 +1896,7 @@ its own `adopt_startup_draft_records`; and `ui/window/startup_data.rs` is owned 
 **Migrated by slot 4, third of the slot's four rows** — the two-directory row, and
 the one the slot existed to force a decision about.
 
-- facade: `crates/lushtext-core/src/ui/window/local_history/mod.rs` — **216** physical lines of the 370 budget
+- facade: `crates/lushtext-core/src/ui/window/local_history/mod.rs` — **215** physical lines of the 370 budget (re-measured by slot 5a; the slot-4 figure was stale by one line)
 - coordination: `crates/lushtext-core/src/ui/window/local_history/journal.rs`, `crates/lushtext-core/src/ui/window/local_history/preview_execution.rs`, `crates/lushtext-core/src/ui/window/local_history/restore_execution.rs`
 - policy: `crates/lushtext-core/src/ui/window/local_history/policy.rs`
 - evidence: `crates/lushtext-core/src/ui/window/local_history/evidence.rs`
@@ -1847,7 +1935,7 @@ buffer through `try_get()` does not read it again through the panicking accessor
 largest, the most inversions in the programme, and the only workflow whose cleanup
 path deletes user content by design.
 
-- facade: `crates/lushtext-core/src/ui/window/drafts/mod.rs` — **310** physical lines of the 370 budget, the programme's largest facade and its closest approach to the ceiling
+- facade: `crates/lushtext-core/src/ui/window/drafts/mod.rs` — **289** physical lines of the 370 budget (re-measured by slot 5a; the slot-4 figure of 310 was stale by twenty-one lines). It remains the programme's largest facade after the exemplar and the palette, but the exemplar's 369 is still the closest approach to the ceiling
 - coordination: `crates/lushtext-core/src/ui/window/drafts/journal.rs`, `crates/lushtext-core/src/ui/window/drafts/admission.rs`, `crates/lushtext-core/src/ui/window/drafts/autosave_execution.rs`, `crates/lushtext-core/src/ui/window/drafts/restore_execution.rs`
 - policy: `crates/lushtext-core/src/ui/window/drafts/policy.rs`
 - evidence: `crates/lushtext-core/src/ui/window/drafts/evidence.rs`
@@ -1893,7 +1981,7 @@ because the other two in-slot restore paths and two out-of-slot workflows all
 drive their bytes through it, so its boundary had to be settled before anything
 was built on it.
 
-- facade: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/mod.rs` — **167** physical lines of the 370 budget, the programme's smallest facade so far
+- facade: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/mod.rs` — **168** physical lines of the 370 budget, the programme's smallest facade so far (re-measured by slot 5a; the figure recorded at slot 4 was stale by one line)
 - coordination: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/execution.rs`
 - policy: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/policy.rs`
 - evidence: `crates/lushtext-core/src/ui/editor_page/buffer_replacement/evidence.rs`
@@ -1954,6 +2042,19 @@ and the search bar's context, all owned elsewhere; `imp().load.projection_suspen
 is never written here, and `load_projection_suspended` reads both flags because a
 projection must stand down for either workflow's suspension.
 
+
+### WFR-NOTES-BOOKMARKS
+
+- facade: `ui/window/notes/mod.rs` (**178** physical lines of the 370 budget)
+- seam value objects: `ui/window/notes/seams.rs`
+- coordination: `ui/window/notes/journal.rs` (the migration ledger), `ui/window/notes/source_execution.rs` (bounded note-source construction for both the browser and the command palette), `ui/window/notes/query_execution.rs` (the browser query), `ui/window/notes/bookmark_execution.rs` (bookmark lifecycle and editor note resolution), `ui/window/notes/editor_execution.rs` (document and folder note editors)
+- policy: `ui/window/notes/policy.rs`
+- evidence: `ui/window/notes/evidence.rs`
+- test policy: `ui/window/notes/test_policy.rs`
+- called presentation surfaces, carrying **no** role and owning no policy or evidence: `ui/window/notes/browser.rs` (dialog shell, session state, rows, preview projection), `ui/window/notes/menu.rs` (the header Notes menu), `ui/window/notes/chrome.rs` (dialog close/Escape/focus/empty-state helpers shared by three dialogs), `ui/window/notes/targets.rs` (window-side target resolution)
+- role home: **flat**, in `ui/window/notes/`. `ui/window/` hosts several workflows, but the migrated siblings all took per-workflow subdirectories, so the unqualified `policy.rs` and `evidence.rs` names were free here
+- mutation parity: `openspec/changes/migrate-workspace-tree-and-notes-workflow-readability/evidence/mutation-notes-policy.md`
+- data-safety fixes landed with this migration: `openspec/changes/migrate-workspace-tree-and-notes-workflow-readability/evidence/data-safety.md`
 ### WFR-COMMAND-PALETTE
 
 - facade: `ui/command_palette/mod.rs`
@@ -1980,7 +2081,7 @@ stage-order qualification rule:
   overload a bounded role name to avoid the collision, which is exactly what the
   qualification rule exists to prevent.
 - `imp.rs` keeps the template children, the list factory, the accessible-state
-  projection, and the source-installation helpers. It is adapter detail, not a
+  projection, and the source-installation helpers. It is a called presentation surface, not a
   coordination role.
 - `test_policy.rs` holds `CommandPaletteTestPolicy`, the workflow's single
   test-only timing value, behind `#[cfg(feature = "test-utils")]`. It replaced
@@ -2281,6 +2382,125 @@ any survivor is closed afterwards, and closing survivors is a required step of
 every migration. Note also which direction the drift ran — production sizes moved
 by 6 to 12 lines while raw totals moved by up to 406, so a reviewer eyeballing raw
 `wc -l` would badly misjudge whether production code had grown.
+
+### Production cross-widget reach-throughs still open, by owning row
+
+Recorded here rather than only in a change directory, because these outlive the
+change that catalogued them. `ui/automation.rs` holds exactly **eight**
+`.imp().` reads that cross a workflow boundary. Each is a projection decision for
+the row that owns it, and fixing one from another row's change is how a row
+acquires a change nobody planned.
+
+| Site | Reads | Owning row |
+| --- | --- | --- |
+| `:766` (readiness blocker), `:927` (workspace snapshot) | `imp.sidebar.imp().workspace_filter_animation_active` | `WFR-WORKSPACE-TREE` — slot 5b, which needs that row's evidence surface to project from |
+| `:518`, `:519` | `window.imp().tab_view` | `WFR-SHELL-LAYOUT` / the tabs workflow — slot 7 |
+| `:1137` | `editor.imp().scrolled_window` | `WFR-MINIMAP` — slot 6 |
+| `:1144` | `editor.imp().minimap_overlay` | `WFR-MINIMAP` — slot 6 |
+| `:1162` | `editor.imp().minimap.source_map` | `WFR-MINIMAP` — slot 6 |
+| `:1224` | `editor.imp().minimap.marker_strip` | `WFR-MINIMAP` — slot 6 |
+
+A sweep of `ui/` found no other cross-boundary reach: every other `.imp().` hit is
+a widget reaching into its own module family's `imp`, which is ordinary private
+access. Line numbers are as of slot 5a; match on the reading expression rather
+than the line.
+
+### Slot 5a amendment re-check
+
+Slot 5a amends two capabilities with **four** statements, so under section 8 every
+already-migrated row is re-checked against all four. Three were *expected* to be
+confirmations. **One was not, and it was not**: statement (b) found **three of eight
+rows** owning a module that is none of the five roles and recording it under an
+undefined label rather than as a called presentation surface — `WFR-SEARCH-REPLACE`
+(six such modules), `WFR-COMMAND-PALETTE` (two), and `WFR-LOCAL-HISTORY` (one,
+already named in this matrix but unclassified in its own module doc). Nine modules
+across three rows. Slot 3b's re-check
+found one of three rows non-compliant and slot 4's found two of four; this is the
+widest gap the obligation has surfaced, and it is filled here.
+
+The four statements:
+
+- **(a)** a migrating workflow *classifies* its pre-convention focused siblings
+  rather than choosing between the topical requirement and the role requirement;
+- **(b)** a called presentation surface is **not a role**, is outside the
+  five-name taxonomy, owns no `policy.rs` and no `evidence.rs`, and is recorded in
+  its own module doc **and** named in its matrix row;
+- **(c)** the two permitted role homes MAY be **nested**;
+- **evidence surfaces** MUST NOT materialize toolkit state or advance a metric
+  they report, and a field aggregated over a variable-sized child collection MUST
+  be bounded, honest at zero, and skip a disposed child.
+
+| Row | (a) topic name without a role | (b) module that is none of the five | (c) role home | evidence reads a lazy collection or its own counter |
+| --- | --- | --- | --- | --- |
+| `WFR-SEARCH-REPLACE` | none — not in a directory governed by (a) | **yes, six**: `imp.rs`, `list_factory.rs`, `item.rs`, `results.rs`, `history.rs`, `accessibility.rs`. Recorded in the facade's role table as "adapter detail", which is **not** a defined category. **Filled here**: named below and classified in each module doc | flat | no |
+| `WFR-COMMAND-PALETTE` | none | **yes, two**: `imp.rs`, `item.rs`, likewise recorded as "adapter detail". **Filled here** | flat | no — `evidence()` reads a `gio::ListStore` length, which is fully materialized |
+| `WFR-DOCUMENT-SAVE` | none | **no** — the row's five modules are all roles; `ui/editor_page/imp.rs` is the editor page's own shared state, not this row's | per-workflow subdirectory | no |
+| `WFR-DOCUMENT-LOAD` | none | **no** — seven modules, all roles | per-workflow subdirectory | no |
+| `WFR-BUFFER-REPLACEMENT` | none | **no** — four modules, all roles | per-workflow subdirectory | no |
+| `WFR-SESSION-RESTORE` | none | **no** — six modules, all roles | per-workflow subdirectory | no |
+| `WFR-LOCAL-HISTORY` | none | **yes, one**: `ui/editor_page/local_history.rs`. Slot 4 **did** name it in this matrix as a "called surface", so the matrix half held — but its **module doc** stated the ownership *rationale* without classifying the module, so the two-place requirement was half met. **Filled here** | nested-adjacent: canonical role home plus a called surface in a sibling directory | no |
+| `WFR-DRAFT-RECOVERY` | none | **no** — ten modules, all roles plus `seams.rs` and `test_policy.rs` | per-workflow subdirectory | no |
+
+**Statement (a) is a confirmation across all eight**, as expected: the two topical
+requirements govern `ui/window/notes` and `ui/sidebar/workspace_section`, and no
+migrated row lives in either. Slot 5a is the first row (a) applies to, and it
+classified all four of its focused siblings.
+
+**Statement (c) is a confirmation across all eight**: no migrated row has a nested
+role home. `WFR-LOCAL-HISTORY` spans two *sibling* directories, which slot 4
+resolved with canonical-home-plus-called-surface — the resolution (c) generalizes
+to the nested case, not an instance of it. `WFR-WORKSPACE-TREE` will be (c)'s first
+adopter when slot 5b migrates it; the analysis is already recorded in
+`evidence/shared-ownership-decisions.md` §2.5.
+
+**The evidence-surface statement is a confirmation across all eight**, and the
+reason is worth stating rather than asserting: the hazard needs a **lazily created**
+toolkit collection, and only `GtkTreeListModel` creates children on demand.
+`WFR-COMMAND-PALETTE` and `WFR-SEARCH-REPLACE` read `gio::ListStore` lengths,
+which are fully materialized; the four editor-page and window rows read scalars,
+`RefCell` counts, and one manifest **count that is never cloned**. `WFR-WORKSPACE-TREE`
+is the row the statement exists for, and slot 5a's own row proved the sibling
+disposal half of it by **panicking**: the notes surface's first draft called
+`active_editor()`, whose `TemplateChild<AdwTabView>` accessor panics after
+`dispose()`, and the mandatory disposal proof caught it before it shipped.
+
+#### The gap (b) found, and how it is filled
+
+Three rows recorded a total of nine widget-projection modules as **"adapter
+detail"**. That label
+appears in two facade role tables and in this matrix, and it is defined **nowhere**
+— not in `gtk-adapter-module-boundaries`, not in
+`workflow-readability-boundaries`, not in `.agents/rules/`. It was doing exactly
+the job statement (b) now names, under a name no gate and no reader could check.
+
+Filled in this change, in both required places:
+
+| Row | Called presentation surfaces, now named |
+| --- | --- |
+| `WFR-SEARCH-REPLACE` | `ui/search_panel/imp.rs` (subclass state and template children), `list_factory.rs` (result-row projection), `item.rs` (row model object), `results.rs` (result tree projection), `history.rs` (history popover projection), `accessibility.rs` (accessible-state projection) |
+| `WFR-COMMAND-PALETTE` | `ui/command_palette/imp.rs` (subclass state, template children, list factory, accessible-state projection), `item.rs` (row model object) |
+| `WFR-LOCAL-HISTORY` | `ui/editor_page/local_history.rs` (per-tab capture surface) — matrix half already held; the module doc now classifies it |
+| `WFR-NOTES-BOOKMARKS` | `ui/window/notes/browser.rs`, `menu.rs`, `chrome.rs`, `targets.rs` |
+
+Each of those modules' own doc now states that it is a called presentation
+surface of its workflow, carries no role, and owns no `policy.rs` or
+`evidence.rs`. **"Adapter detail" is retired as a label**: the two facade role
+tables that used it now say "called presentation surface (no role)".
+
+**None of the settled conventions is otherwise touched.** Re-confirmed
+individually: role file names (`policy.rs`, `evidence.rs`, one of each per
+workflow) unchanged; the bounded coordination role set
+(`admission`, `execution`, `retirement`, `watch`, `journal`) unchanged and **not**
+widened — statement (b) states the taxonomy's *scope* rather than adding a sixth
+name; the facade budget line unchanged at 370 and **not edited**, with slot 5a's
+facade measuring 178; the seam value-object Ticket/Facts/predicate shape unchanged;
+the evidence-surface visibility rule unchanged; the reentrancy constraint
+unchanged and proved again; cross-cutting eligibility counted in owning workflows
+unchanged; the row-cell re-derivation obligation unchanged and discharged in
+`openspec/changes/migrate-workspace-tree-and-notes-workflow-readability/evidence/census-reverification.md`;
+and the evidence pointer form unchanged, in live change-directory form rather than
+archive-prefixed form.
+
 
 ### Retroactive amendment
 

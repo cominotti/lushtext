@@ -6,6 +6,14 @@
 //! different modules. Projecting busy/invalid/hidden/value state in one place
 //! keeps every caller from carrying a parallel set of rules, and keeps that
 //! widget mutation out of the workflow facade.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-SEARCH-REPLACE` — it projects the workflow onto widgets (accessible-state projection) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;

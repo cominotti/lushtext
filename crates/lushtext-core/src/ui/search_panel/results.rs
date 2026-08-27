@@ -4,6 +4,14 @@
 //!
 //! These helpers stay in the UI layer because they manipulate `GtkListView`,
 //! `TreeListRow`, and the panel's revealers directly.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-SEARCH-REPLACE` — it projects the workflow onto widgets (result-tree and revealer projection) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;

@@ -1,6 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Document-note and folder-note editor workflows.
+//! Coordination role `execution`: the document-note and folder-note editors.
+//!
+//! One ordered stage order with two entry surfaces. Resolve the target, present
+//! the shared Edit/Render editor, then save, clear, or discard.
+//!
+//! # Inversions
+//!
+//! 1. **Target resolution runs on a worker**; the dialog is presented from its
+//!    completion, so the editor never blocks on sidecar I/O.
+//! 2. **The folder chooser and both dialogs resume in `AdwAlertDialog::choose`
+//!    after the dialog has already closed.** That is why a failed write must hand
+//!    the typed prose *back*: at that point the editor holding the only copy is
+//!    gone. See `NoteWriteOutcome`.
+//! 3. **Large bodies are captured in bounded chunks**, resuming in the buffer
+//!    snapshot's completion before the durable write is dispatched.
+//! 4. **The write resumes in its own completion**, which on failure re-presents
+//!    the editor pre-filled with the recovered text rather than reporting a
+//!    transient message over lost work.
+//!
+//! Geometry note preserved from `modal-geometry-stability`: the hidden Render
+//! page is pre-rendered for an existing non-empty note so the first mode switch
+//! reveals already-measured content.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -16,16 +37,39 @@ use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, AlertDialogExtManual};
 
 use crate::model::note::{NoteEditorPresentation, NoteViewMode, RichNoteBody};
-use crate::model::workspace::WorkspaceConfig;
 use crate::services::{document_note_service, folder_note_service, json_store};
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::status_bar::MessageKind;
 use crate::ui::{accessibility, buffer_snapshot};
 
-use super::{FolderNoteOpenTarget, LushtextWindow};
+use super::LushtextWindow;
+use super::policy::FolderNoteOpenTarget;
+use super::policy::folder_note_target_for_workspace;
 
-/// Coalesce note-editor dirty-state checks after rapid typing.
-const NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS: u64 = 80;
+/// Outcome of one note write, carrying the user's prose back on failure.
+///
+/// This is deliberately **not** a `Result<_, anyhow::Error>`. An
+/// `AdwAlertDialog::choose` callback fires after the dialog has already closed,
+/// so by the time a write fails the editor holding the only copy of the typed
+/// text is gone. A plain error arm therefore loses the prose to a transient
+/// status message — reachable without exotic timing, because
+/// `note_storage::resolve_document_identity` fails whenever another program
+/// renamed or deleted the file while the dialog was open. Handing the owned text
+/// back is what lets the completion re-present the editor with it.
+enum NoteWriteOutcome {
+    /// The note was written.
+    Saved,
+    /// The buffer was empty after trimming, so nothing was written.
+    EmptyText,
+    /// The write failed; the user's prose is handed back for recovery.
+    Failed {
+        /// The exact text the user typed, moved back off the worker.
+        text: String,
+        /// Why the write failed, for the log and the user-facing message.
+        error: anyhow::Error,
+    },
+}
+
 /// Alert-dialog response IDs reused by note editors.
 const RESPONSE_CANCEL: &str = "cancel";
 const RESPONSE_SAVE: &str = "save";
@@ -38,6 +82,60 @@ const NOTE_EDITOR_SURFACE_HEIGHT_SP: i32 = 300;
 const NOTE_EDITOR_TEXT_MARGIN_HORIZONTAL_SP: i32 = 12;
 /// Shared vertical text inset for edit and rendered note bodies.
 const NOTE_EDITOR_TEXT_MARGIN_VERTICAL_SP: i32 = 10;
+/// Render-mode placeholder shown while a note has no text to render yet.
+const NOTE_EDITOR_RENDER_PLACEHOLDER: &str = "Write some note text to preview rendered markdown.";
+
+/// How one note editor should open: sensitivity source, text, and starting mode.
+///
+/// Both note dialogs derive this identically, so it is derived once here.
+struct NoteEditorStart<'a> {
+    /// Save sensitivity and the pre-render decision, derived from the **stored**
+    /// note so a recovery re-open keeps the first open's dirty semantics.
+    presentation: NoteEditorPresentation,
+    /// The text the editor opens holding: recovered prose when a write failed,
+    /// otherwise the stored note.
+    initial_text: &'a str,
+    /// The mode the editor opens in.
+    initial_mode: NoteViewMode,
+}
+
+impl<'a> NoteEditorStart<'a> {
+    /// Derive how the editor opens for one stored note and optional recovery.
+    ///
+    /// Only the visible text and the starting mode change on a recovery re-open;
+    /// `presentation` still describes the stored note.
+    fn derive(existing_note: Option<&'a RichNoteBody>, recovered_text: Option<&'a str>) -> Self {
+        let loaded_text = existing_note.map(|note| note.text.as_str());
+        let presentation = NoteEditorPresentation::from_loaded_text(loaded_text);
+        let initial_mode = if recovered_text.is_some() {
+            // The user is fixing a failed save; show them their prose, not a
+            // rendered view of it.
+            NoteViewMode::Edit
+        } else {
+            presentation.initial_mode()
+        };
+        Self {
+            presentation,
+            initial_text: recovered_text.or(loaded_text).unwrap_or(""),
+            initial_mode,
+        }
+    }
+}
+
+/// Build the note body one save should persist.
+///
+/// Editing an existing note keeps its `created_at_secs` and lets `update_text`
+/// refresh `updated_at_secs`; a first note is created outright. Both note
+/// dialogs' workers need exactly this, so neither reconstructs it.
+fn note_body_for_save(existing_note: Option<RichNoteBody>, note_text: &str) -> RichNoteBody {
+    match existing_note {
+        Some(mut note) => {
+            let _ = note.update_text(note_text);
+            note
+        }
+        None => RichNoteBody::new(note_text),
+    }
+}
 
 impl LushtextWindow {
     /// Open the document note for the active saved file.
@@ -162,6 +260,7 @@ impl LushtextWindow {
                             &path_for_dialog,
                             workspace_folders,
                             note.as_ref().map(|document| &document.note),
+                            None,
                         );
                     }
                 }
@@ -260,6 +359,7 @@ impl LushtextWindow {
                             &workspace_name,
                             &folder_for_dialog,
                             load.document.as_ref().map(|document| &document.note),
+                            None,
                         );
                         if has_diagnostics {
                             window.publish_status_message(
@@ -285,12 +385,17 @@ impl LushtextWindow {
         );
     }
 
-    /// Present the document note editor for one saved file.
+    /// Present the document-note editor, optionally pre-filled with recovered prose.
+    ///
+    /// `recovered_text` is `Some` only when a previous write failed: the editor
+    /// re-opens holding exactly what the user typed, in Edit mode, so a failed
+    /// save is a retry rather than a loss.
     fn present_document_note_dialog(
         &self,
         path: &Path,
         workspace_folders: Vec<PathBuf>,
         existing_note: Option<&RichNoteBody>,
+        recovered_text: Option<&str>,
     ) {
         let dialog = libadwaita::AlertDialog::new(
             Some("Document Note"),
@@ -322,21 +427,25 @@ impl LushtextWindow {
         path_label.add_css_class("dim-label");
         content.append(&path_label);
 
-        let loaded_text = existing_note.as_ref().map(|note| note.text.as_str());
-        let presentation = NoteEditorPresentation::from_loaded_text(loaded_text);
-        let initial_text = loaded_text.unwrap_or("");
+        let start = NoteEditorStart::derive(existing_note, recovered_text);
         let (surface, note_view) = build_note_editor_surface(
-            initial_text,
-            &MarkdownPreviewRenderContext::new(Some(path.to_path_buf()), workspace_folders),
-            presentation.initial_mode(),
-            "Write some note text to preview rendered markdown.",
+            start.initial_text,
+            &MarkdownPreviewRenderContext::new(Some(path.to_path_buf()), workspace_folders.clone()),
+            start.initial_mode,
+            NOTE_EDITOR_RENDER_PLACEHOLDER,
         );
-        install_note_save_response_state(&dialog, &note_view.buffer(), presentation, initial_text);
+        install_note_save_response_state(
+            &dialog,
+            &note_view.buffer(),
+            start.presentation,
+            start.initial_text,
+        );
         content.append(&surface);
         dialog.set_extra_child(Some(&content));
 
         let path = path.to_path_buf();
         let existing_note = existing_note.cloned();
+        let folders_for_save = workspace_folders;
         let window = self.clone();
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response == RESPONSE_CLEAR {
@@ -380,42 +489,55 @@ impl LushtextWindow {
                         );
                         return;
                     };
+                    let path_for_recovery = path_for_save.clone();
+                    let folders_for_recovery = folders_for_save.clone();
+                    let existing_for_recovery = existing_note_for_save.clone();
                     spawn_blocking_then(
                         window_for_save,
                         move || {
                             let note_text = note_text.into_string_on_worker();
                             if note_text.trim().is_empty() {
-                                return Ok(false);
+                                return NoteWriteOutcome::EmptyText;
                             }
-                            let mut note = existing_note_for_save
-                                .clone()
-                                .unwrap_or_else(|| RichNoteBody::new(""));
-                            if existing_note_for_save.is_some() {
-                                let _ = note.update_text(&note_text);
-                            } else {
-                                note = RichNoteBody::new(&note_text);
-                            }
+                            let note = note_body_for_save(existing_note_for_save, &note_text);
                             let data_dir = json_store::data_dir();
-                            document_note_service::save_for_path(&data_dir, &path_for_save, &note)
-                                .map(|_| true)
+                            match document_note_service::save_for_path(
+                                &data_dir,
+                                &path_for_save,
+                                &note,
+                            ) {
+                                Ok(_) => NoteWriteOutcome::Saved,
+                                // The prose travels back rather than being
+                                // dropped with the error.
+                                Err(error) => NoteWriteOutcome::Failed {
+                                    text: note_text,
+                                    error,
+                                },
+                            }
                         },
-                        |window, result| match result {
-                            Ok(true) => {
+                        move |window, outcome| match outcome {
+                            NoteWriteOutcome::Saved => {
                                 window.refresh_command_palette_note_source_debounced();
                                 window.publish_status_message(
                                     "Document note saved",
                                     MessageKind::Info,
                                 );
                             }
-                            Ok(false) => window.publish_status_message(
+                            NoteWriteOutcome::EmptyText => window.publish_status_message(
                                 "Document notes need note text",
                                 MessageKind::Warning,
                             ),
-                            Err(error) => {
+                            NoteWriteOutcome::Failed { text, error } => {
                                 tracing::error!("Failed to save document note: {error}");
                                 window.publish_status_message(
-                                    "Document note could not be saved",
+                                    "Document note could not be saved — reopened with your text",
                                     MessageKind::Error,
+                                );
+                                window.present_document_note_dialog(
+                                    &path_for_recovery,
+                                    folders_for_recovery,
+                                    existing_for_recovery.as_ref(),
+                                    Some(text.as_str()),
                                 );
                             }
                         },
@@ -426,12 +548,16 @@ impl LushtextWindow {
         });
     }
 
-    /// Present the folder note editor for one concrete workspace folder.
+    /// Present the folder note editor, optionally pre-filled with recovered prose.
+    ///
+    /// `recovered_text` is `Some` only when a previous write failed; see
+    /// [`Self::present_document_note_dialog`] for why the text travels back.
     fn present_folder_note_dialog(
         &self,
         workspace_name: &str,
         folder: &Path,
         existing_note: Option<&RichNoteBody>,
+        recovered_text: Option<&str>,
     ) {
         let dialog = libadwaita::AlertDialog::new(
             Some("Folder Note"),
@@ -469,21 +595,25 @@ impl LushtextWindow {
         folder_label.add_css_class("dim-label");
         content.append(&folder_label);
 
-        let loaded_text = existing_note.as_ref().map(|note| note.text.as_str());
-        let presentation = NoteEditorPresentation::from_loaded_text(loaded_text);
-        let initial_text = loaded_text.unwrap_or("");
+        let start = NoteEditorStart::derive(existing_note, recovered_text);
         let (surface, note_view) = build_note_editor_surface(
-            initial_text,
+            start.initial_text,
             &MarkdownPreviewRenderContext::new(None, vec![folder.to_path_buf()]),
-            presentation.initial_mode(),
-            "Write some note text to preview rendered markdown.",
+            start.initial_mode,
+            NOTE_EDITOR_RENDER_PLACEHOLDER,
         );
-        install_note_save_response_state(&dialog, &note_view.buffer(), presentation, initial_text);
+        install_note_save_response_state(
+            &dialog,
+            &note_view.buffer(),
+            start.presentation,
+            start.initial_text,
+        );
         content.append(&surface);
         dialog.set_extra_child(Some(&content));
 
         let folder = folder.to_path_buf();
         let existing_note = existing_note.cloned();
+        let workspace_name_for_recovery = workspace_name.to_string();
         let window = self.clone();
         dialog.choose(Some(self), gio::Cancellable::NONE, move |response| {
             if response == RESPONSE_CLEAR {
@@ -526,40 +656,51 @@ impl LushtextWindow {
                         );
                         return;
                     };
+                    let folder_for_recovery = folder_for_save.clone();
+                    let name_for_recovery = workspace_name_for_recovery.clone();
+                    let existing_for_recovery = existing_note_for_save.clone();
                     spawn_blocking_then(
                         window_for_save,
                         move || {
                             let note_text = note_text.into_string_on_worker();
                             if note_text.trim().is_empty() {
-                                return Ok(false);
+                                return NoteWriteOutcome::EmptyText;
                             }
-                            let mut note = existing_note_for_save
-                                .clone()
-                                .unwrap_or_else(|| RichNoteBody::new(""));
-                            if existing_note_for_save.is_some() {
-                                let _ = note.update_text(&note_text);
-                            } else {
-                                note = RichNoteBody::new(&note_text);
-                            }
+                            let note = note_body_for_save(existing_note_for_save, &note_text);
                             let data_dir = json_store::data_dir();
-                            folder_note_service::save_for_folder(&data_dir, &folder_for_save, &note)
-                                .map(|_| true)
+                            match folder_note_service::save_for_folder(
+                                &data_dir,
+                                &folder_for_save,
+                                &note,
+                            ) {
+                                Ok(_) => NoteWriteOutcome::Saved,
+                                Err(error) => NoteWriteOutcome::Failed {
+                                    text: note_text,
+                                    error,
+                                },
+                            }
                         },
-                        |window, result| match result {
-                            Ok(true) => {
+                        move |window, outcome| match outcome {
+                            NoteWriteOutcome::Saved => {
                                 window.refresh_command_palette_note_source_debounced();
                                 window
                                     .publish_status_message("Folder note saved", MessageKind::Info);
                             }
-                            Ok(false) => window.publish_status_message(
+                            NoteWriteOutcome::EmptyText => window.publish_status_message(
                                 "Folder notes need note text",
                                 MessageKind::Warning,
                             ),
-                            Err(error) => {
+                            NoteWriteOutcome::Failed { text, error } => {
                                 tracing::error!("Failed to save folder note: {error}");
                                 window.publish_status_message(
-                                    "Folder note could not be saved",
+                                    "Folder note could not be saved — reopened with your text",
                                     MessageKind::Error,
+                                );
+                                window.present_folder_note_dialog(
+                                    &name_for_recovery,
+                                    &folder_for_recovery,
+                                    existing_for_recovery.as_ref(),
+                                    Some(text.as_str()),
                                 );
                             }
                         },
@@ -584,13 +725,6 @@ impl LushtextWindow {
             .note_save_snapshots
             .borrow_mut()
             .retain(buffer_snapshot::BufferSnapshotHandle::is_active);
-    }
-
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn note_save_snapshot_count_for_test(&self) -> usize {
-        self.prune_note_save_snapshots();
-        self.imp().note_save_snapshots.borrow().len()
     }
 }
 
@@ -796,7 +930,7 @@ impl NoteSaveResponseRefresh {
         let refresh = self.clone();
         self.debounce.schedule(
             buffer,
-            Duration::from_millis(NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS),
+            Duration::from_millis(super::policy::NOTE_SAVE_RESPONSE_REFRESH_DEBOUNCE_MS),
             move |buffer, _| refresh.queue(buffer),
         );
     }
@@ -904,26 +1038,5 @@ fn snapshot_note_buffer_text<F: FnOnce(buffer_snapshot::BufferSnapshotOutcome) +
             ),
         ));
         None
-    }
-}
-/// Convert one concrete workspace into the only valid folder-note action shape.
-pub(super) fn folder_note_target_for_workspace(workspace: WorkspaceConfig) -> FolderNoteOpenTarget {
-    let workspace_name = workspace.name;
-    let folders = workspace
-        .folders
-        .into_iter()
-        .map(|folder| folder.path().to_path_buf())
-        .collect::<Vec<_>>();
-
-    match folders.as_slice() {
-        [] => FolderNoteOpenTarget::EmptyWorkspace { workspace_name },
-        [folder] => FolderNoteOpenTarget::SingleFolder {
-            workspace_name,
-            folder: folder.clone(),
-        },
-        _ => FolderNoteOpenTarget::ChooseFolder {
-            workspace_name,
-            folders,
-        },
     }
 }

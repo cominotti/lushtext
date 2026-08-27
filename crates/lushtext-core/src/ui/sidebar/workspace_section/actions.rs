@@ -3,13 +3,19 @@
 //! File operation actions for workspace sections: create, rename, delete.
 
 use super::FileTreeItem;
-use crate::services::filesystem::{mutate as fs_mutate, write as fs_write};
+use crate::services::filesystem::{
+    metadata as fs_metadata, mutate as fs_mutate, write as fs_write,
+};
+use crate::services::notifications::NotificationSeverity;
 use crate::ui::accessibility;
+use crate::ui::sidebar::policy::{
+    self, MAX_UNIQUE_NAME_ATTEMPTS, RenameIntent, WorkspaceRenameRefusal,
+};
+use crate::ui::sidebar::seams::{FileOperationFacts, FileOperationTicket};
 use glib::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 impl super::LushtextWorkspaceSection {
@@ -234,53 +240,70 @@ impl super::LushtextWorkspaceSection {
             return;
         }
 
-        let new_name = entry.text();
-        let new_name = new_name.trim();
-        let old_name = old_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
-        if new_name.is_empty() || new_name == old_name {
+        let intent = policy::rename_intent(old_path, entry.text().as_str());
+        let RenameIntent::Rename {
+            new_path,
+            new_name: new_name_owned,
+        } = intent
+        else {
             if is_new {
                 self.cancel_new_item(old_path, entry, label, content_box);
             } else {
                 cancel_rename(entry, label, content_box);
             }
             return;
-        }
+        };
 
-        let new_path = old_path.with_file_name(new_name);
-        let new_name_owned = new_name.to_string();
-        let is_dir = self
+        // Captured once, at dispatch. The live `context_target` cell is replaced
+        // by any right-click, by a new-item bind, and cleared on row recycling,
+        // so re-reading it in the completion could apply this rename's row
+        // projection to a different file's row. See `sidebar::seams`.
+        let ticket = FileOperationTicket::new(
+            old_path.to_path_buf(),
+            self.imp()
+                .context_target
+                .borrow()
+                .as_ref()
+                .is_some_and(|target| target.is_dir),
+            is_new,
+        );
+        let row = self
             .imp()
             .context_target
             .borrow()
             .as_ref()
-            .is_some_and(|target| target.is_dir);
+            .and_then(|target| target.expander.list_row());
 
         // Restore the row immediately so focus-out cannot start a second rename
         // while the filesystem rename runs.
         let label = label.clone();
         cancel_rename(entry, &label, content_box);
 
-        let old_path = old_path.to_path_buf();
-        let new_path_c = new_path;
+        let worker_ticket = ticket.clone();
         gtk_lush_tasks::spawn_blocking_then(
             self.clone(),
             move || {
-                let result = fs_write::rename_durable(&old_path, &new_path_c);
-                (old_path, new_path_c, result)
+                #[cfg(feature = "test-utils")]
+                crate::ui::sidebar::test_policy::delay_rename_worker();
+                let outcome = rename_target_guarded(worker_ticket.path(), &new_path);
+                (new_path, outcome)
             },
-            move |section, (old_path, new_path, result)| {
+            move |section, (new_path, outcome)| {
                 let imp = section.imp();
-                match result {
+                let old_path = ticket.path().to_path_buf();
+                match outcome {
                     Ok(()) => {
-                        if let Some(ref target) = *imp.context_target.borrow()
-                            && let Some(tree_row) = target.expander.list_row()
+                        let facts = FileOperationFacts::new(
+                            row.as_ref()
+                                .and_then(gtk4::TreeListRow::item)
+                                .and_downcast::<FileTreeItem>()
+                                .and_then(|item| item.path()),
+                        );
+                        if let Some(tree_row) = row.as_ref()
+                            && ticket.row_is_current(&facts)
                             && let Some(file_item) = tree_row.item().and_downcast::<FileTreeItem>()
                         {
-                            if is_dir {
+                            if ticket.is_dir() {
                                 // Move expansion intent to the new prefix before
                                 // the old subtree state is retired; the renamed
                                 // rows stay expanded in place.
@@ -293,7 +316,7 @@ impl super::LushtextWorkspaceSection {
                             file_item.set_path(new_path.clone());
                             // `set_path` mutates the row model in place, so the
                             // flattened model emits no splice for the watcher mirror.
-                            section.refresh_workspace_watch_row(&tree_row);
+                            section.refresh_workspace_watch_row(tree_row);
                             section.rename_cached_item(&old_path, &new_path);
                             if file_item.is_empty() == Some(true) {
                                 label.set_markup(&format!(
@@ -303,19 +326,31 @@ impl super::LushtextWorkspaceSection {
                             } else {
                                 label.set_label(&new_name_owned);
                             }
+                        } else {
+                            // The row this rename was issued for is gone or now
+                            // describes another file. The rename itself
+                            // succeeded, so repair the watcher mirror and the
+                            // item cache through the section rather than through
+                            // a stale row, and let the next refresh re-project.
+                            if ticket.is_dir() {
+                                section.rename_expanded_subtree(&old_path, &new_path);
+                                super::tree_loading::clear_dir_state(&section, &old_path);
+                            }
+                            section.rename_cached_item(&old_path, &new_path);
+                            section.request_workspace_watch_restart();
                         }
                         imp.is_new_item.set(false);
 
                         // End the callback borrow before invoking so a callback
                         // that re-enters registration cannot panic; restore it
                         // unless invocation registered a replacement.
-                        if is_new && !is_dir {
+                        if ticket.is_new() && !ticket.is_dir() {
                             let cb = imp.create_callback.borrow_mut().take();
                             if let Some(cb) = cb {
                                 cb(&new_path);
                                 imp.create_callback.borrow_mut().get_or_insert(cb);
                             }
-                        } else if !is_new {
+                        } else if !ticket.is_new() {
                             let cb = imp.rename_callback.borrow_mut().take();
                             if let Some(cb) = cb {
                                 cb(&old_path, &new_path);
@@ -323,11 +358,25 @@ impl super::LushtextWorkspaceSection {
                             }
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to rename {}: {}", old_path.display(), e);
-                        if is_new {
+                    Err(RenameFailure::Refused(refusal)) => {
+                        // Refusing is the whole point: the platform rename
+                        // silently replaces a regular destination, and the
+                        // replaced file's contents are unrecoverable.
+                        section.emit_message(&refusal.message(), NotificationSeverity::Warning);
+                        if ticket.is_new() {
                             imp.is_new_item.set(false);
-                            spawn_temp_item_cleanup(old_path.clone(), is_dir);
+                            // A refused *first* name still leaves the created
+                            // placeholder on disk and in the tree, so it needs the
+                            // same cleanup an I/O failure gets.
+                            spawn_temp_item_cleanup(old_path.clone(), ticket.is_dir());
+                            let _ = section.remove_from_model(&old_path);
+                        }
+                    }
+                    Err(RenameFailure::Io(error)) => {
+                        tracing::error!("Failed to rename {}: {}", old_path.display(), error);
+                        if ticket.is_new() {
+                            imp.is_new_item.set(false);
+                            spawn_temp_item_cleanup(old_path.clone(), ticket.is_dir());
                             let _ = section.remove_from_model(&old_path);
                         }
                     }
@@ -397,10 +446,25 @@ impl super::LushtextWorkspaceSection {
             gtk_lush_tasks::spawn_blocking_then(
                 section,
                 move || {
-                    let result = if is_dir {
-                        fs_mutate::remove_dir_all_if_exists(&path_for_io)
-                    } else {
-                        fs_mutate::remove_file_if_exists(&path_for_io)
+                    // Ordered against in-app writers for the same target: an
+                    // editor save in flight must not have its temp-file rename
+                    // land after this unlink and resurrect the deleted name.
+                    //
+                    // The directory branch is `remove_dir_all_if_exists` and is
+                    // deliberately **recursive** — this is the user's explicit,
+                    // confirmed "Delete this directory". That is unlike the
+                    // placeholder cleanup below, whose directory branch is
+                    // empty-only precisely because nothing there was confirmed.
+                    let guard = fs_write::TargetWriteGuard::acquire(&path_for_io);
+                    let result = match guard {
+                        Ok(_guard) => {
+                            if is_dir {
+                                fs_mutate::remove_dir_all_if_exists(&path_for_io)
+                            } else {
+                                fs_mutate::remove_file_if_exists(&path_for_io)
+                            }
+                        }
+                        Err(error) => Err(error),
                     };
                     (path_for_io, result)
                 },
@@ -470,19 +534,96 @@ impl super::LushtextWorkspaceSection {
     }
 }
 
+/// Why a guarded workspace rename did not happen.
+enum RenameFailure {
+    /// The workflow refused the rename; the user is told why.
+    Refused(WorkspaceRenameRefusal),
+    /// The platform rename failed.
+    Io(std::io::Error),
+}
+
+/// Rename one workspace path under the shared write guard, refusing to replace.
+///
+/// Three data-safety properties live here and nowhere else:
+///
+/// 1. **The destination is never replaced.** `rename_durable` is `rename(2)`,
+///    which silently replaces a regular destination; the replaced file's
+///    contents are unrecoverable. The existence check therefore happens *inside*
+///    the worker while the guard is held, not on the GTK thread where it would
+///    already be stale.
+/// 2. **The rename is ordered against in-app writers.** An editor save resolves
+///    its target, writes a temp file, and renames it into place. Without the
+///    guard, a sidebar rename interleaved with that sequence lets the save's
+///    final `rename()` **re-create the old filename** with the buffer bytes,
+///    leaving the tab's new path stale on disk while the UI reports success.
+/// 3. **Two guards cannot deadlock, and one target cannot deadlock against
+///    itself.** This is subtler than it looks and the first version got it wrong:
+///    `TargetWriteGuard` keys on the **resolved** identity — symlinks
+///    canonicalize to their target, and a missing file resolves to its canonical
+///    parent plus its name — while the obvious implementation sorts the **raw**
+///    paths. Sorting raw paths orders nothing about the keys, so two concurrent
+///    renames could still take the same pair in opposite order. Worse, renaming
+///    the symlink `link` (→ `target`) to the name `target` resolves **both** paths
+///    to the same key, and the second acquire would block on the first forever,
+///    holding a worker slot until the process exits. Both are avoided by
+///    resolving first, deduplicating, and acquiring in **resolved** order.
+fn rename_target_guarded(old_path: &Path, new_path: &Path) -> Result<(), RenameFailure> {
+    let source = fs_write::resolve_target_identity(old_path).map_err(RenameFailure::Io)?;
+    let destination = fs_write::resolve_target_identity(new_path).map_err(RenameFailure::Io)?;
+
+    let refuse_existing_destination = || {
+        Err(RenameFailure::Refused(
+            WorkspaceRenameRefusal::DestinationExists {
+                name: new_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            },
+        ))
+    };
+
+    if source == destination {
+        // The two names already denote one target — a symlink renamed onto the
+        // file it points at, most plainly. Refusing here is both the correct
+        // answer and what keeps the two acquires below from deadlocking.
+        return refuse_existing_destination();
+    }
+
+    let (first, second) = if source.as_path() <= destination.as_path() {
+        (source, destination)
+    } else {
+        (destination, source)
+    };
+    let _first = fs_write::TargetWriteGuard::from_identity(first);
+    let _second = fs_write::TargetWriteGuard::from_identity(second);
+
+    // Atomic where the kernel supports it: `RENAME_NOREPLACE` makes "does the
+    // destination exist" and "rename" one operation, so no other process can
+    // create the destination between them. An `exists()` check plus a rename is
+    // two syscalls and is therefore only best-effort against external writers —
+    // adequate against LushText's own writers, which the guards above serialize,
+    // but not against a concurrent `mv`.
+    match fs_write::rename_durable_no_replace(old_path, new_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            refuse_existing_destination()
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+            // Older kernel or a filesystem without the flag: fall back to the
+            // best-effort check, which still closes the in-app window.
+            if fs_metadata::exists(new_path) {
+                return refuse_existing_destination();
+            }
+            fs_write::rename_durable(old_path, new_path).map_err(RenameFailure::Io)
+        }
+        Err(error) => Err(RenameFailure::Io(error)),
+    }
+}
+
 /// Atomically create a file or directory with a unique name.
 fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBuf> {
-    let mut name = base.to_string();
-
-    for attempt in 1..1000 {
-        if attempt > 1 {
-            name.clear();
-            name.push_str(base);
-            name.push(' ');
-            let _ = write!(&mut name, "{attempt}");
-        }
-
-        let path = dir.join(&name);
+    for attempt in 1..MAX_UNIQUE_NAME_ATTEMPTS {
+        let path = dir.join(policy::unique_name_candidate(base, attempt));
         let result = if is_dir {
             fs_write::create_dir_durable(&path)
         } else {
@@ -497,31 +638,63 @@ fn create_unique(dir: &Path, base: &str, is_dir: bool) -> std::io::Result<PathBu
     Err(std::io::Error::other("could not find unique name"))
 }
 
-/// Fire-and-forget removal of a temporary or failed inline item on a background
-/// thread.
+/// Discard a temporary or failed inline placeholder, by **identity**, not by path.
 ///
 /// Both the cancelled-new-item flow and the failed-rename recovery flow need to
-/// discard a placeholder path without blocking the GTK main thread on slow
-/// filesystems (NFS, FUSE), so this intentionally bypasses
-/// `gtk_lush_tasks::spawn_blocking_then` (which is for work whose completion
-/// touches GTK state). The cleanup is best-effort — the user-facing flow is
-/// already resolved — but a failure is logged at warning level so orphaned
-/// placeholder debugging has a trail instead of a silent drop.
+/// remove a placeholder the workflow itself created. This used to be a plain
+/// detached `std::thread::spawn` doing a path-only `remove_file_if_exists` with
+/// no ordering against any other writer — so cancelling a `New File` placeholder
+/// and then renaming a real file onto that same name could unlink **the user's
+/// real file**. The repository already states the rule for the analogous draft
+/// orphan-body case: record the candidate inode, acquire the stable write guard,
+/// and recheck inode before deleting. Never delete by path alone.
+///
+/// The removal runs on the guarded worker pool so it is ordered against every
+/// other in-app writer for the same target, and the `is_dir` branch stays
+/// conservative: an empty-only `remove_dir_if_exists`, never a recursive delete.
 fn spawn_temp_item_cleanup(path: PathBuf, is_dir: bool) {
-    std::thread::spawn(move || {
-        let result = if is_dir {
-            fs_mutate::remove_dir_if_exists(&path)
-        } else {
-            fs_mutate::remove_file_if_exists(&path)
-        };
-        if let Err(e) = result {
-            tracing::warn!(
-                "Failed to clean up temporary item {}: {}",
-                path.display(),
-                e
-            );
-        }
-    });
+    let expected_inode = fs_metadata::inode(&path).ok();
+    gtk_lush_tasks::spawn_blocking_then(
+        (),
+        move || {
+            #[cfg(feature = "test-utils")]
+            crate::ui::sidebar::test_policy::delay_placeholder_cleanup();
+            let guard = fs_write::TargetWriteGuard::acquire(&path);
+            let Ok(_guard) = guard else {
+                tracing::warn!(
+                    "Skipping temporary-item cleanup for {}: write target could not be resolved",
+                    path.display()
+                );
+                return None;
+            };
+            // Recheck identity under the guard: if the name now refers to a
+            // different inode, another flow created or renamed something into
+            // this path and it is not ours to delete.
+            let current_inode = fs_metadata::inode(&path).ok();
+            if expected_inode.is_none() || current_inode != expected_inode {
+                tracing::debug!(
+                    "Skipping temporary-item cleanup for {}: identity changed",
+                    path.display()
+                );
+                return None;
+            }
+            let result = if is_dir {
+                fs_mutate::remove_dir_if_exists(&path)
+            } else {
+                fs_mutate::remove_file_if_exists(&path)
+            };
+            Some((path, result.err()))
+        },
+        |(), reported| {
+            if let Some((path, Some(error))) = reported {
+                tracing::warn!(
+                    "Failed to clean up temporary item {}: {}",
+                    path.display(),
+                    error
+                );
+            }
+        },
+    );
 }
 
 /// Remove the rename entry and restore the label.

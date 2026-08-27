@@ -702,6 +702,11 @@ impl super::LushtextWindow {
         self.imp().session.close_safety_inflight.set(true);
         self.set_sensitive(false);
         self.imp().search_panel.close();
+        // Bookmark sidecars are debounced and held weakly, so a bookmark added
+        // inside the quiet window before the close request would never be
+        // written. Flush every open editor's pending bookmark write before the
+        // draft/workspace/session chain begins.
+        self.flush_all_pending_bookmarks();
         let window_for_draft = self.clone();
         self.flush_dirty_drafts_async(move |draft_result| match draft_result {
             Ok(()) => {

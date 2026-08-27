@@ -174,6 +174,16 @@ A migrated workflow assigns each of its modules exactly one role:
   stage order of the same workflow. The bounded set is a review contract:
   `make check-workflow-boundaries` validates only that declared role paths exist,
   so no gate rejects an off-set name.
+- **Called presentation surface** — **not a role.** A module that only projects
+  the workflow onto widgets — GTK subclass state and template children,
+  list-factory row projection, the row model object a factory binds,
+  context-menu and gesture lifecycle, row accessibility projection, shared
+  dialog chrome, window-side target resolution, or a per-surface capture adapter
+  a canonical role home calls — is outside the five-name taxonomy. It MUST NOT
+  take one of the role names and MUST NOT own a `policy.rs` or an `evidence.rs`.
+  Record it in **both** its own module doc and the workflow's matrix row. Do not
+  label such a module "adapter detail": that label was used by six migrated rows,
+  is defined nowhere, and was retired when this statement landed.
 - **Evidence** — `evidence.rs`, one per workflow, at the narrowest visibility its
   readers require. Because one accessor reads the whole surface through shared
   borrows, **no evidence field may be read from inside a mutable borrow of the
@@ -204,6 +214,19 @@ function boundaries or is reconstructed at two or more call sites. Construct it
 once at the workflow entry point and validate it as a unit. A bundle used by
 exactly one private helper and reconstructed nowhere else does not need one — the
 rule targets seams, not every long signature.
+
+A workflow's role home may also be **nested**: where one workflow owns a
+directory and a widget subdirectory of it, name one of them the canonical role
+home — holding the facade, the single `policy.rs`, and the single `evidence.rs` —
+while modules in the other take bounded coordination role names or are recorded
+as called presentation surfaces. The `ui/**/policy.rs` mutation glob reaches
+either location, which a migration must **verify after the move** rather than
+assume.
+
+A migrating workflow **classifies** its pre-convention focused siblings rather
+than choosing between a topical decomposition requirement and the role
+requirement. The topical split is what the modules *do*; the role, where one
+applies, is what they *are* to the workflow, and neither replaces the other.
 
 **A value must not be renamed while crossing a seam.** Passing a value that means
 one thing into a parameter that names it something else is the archetype defect

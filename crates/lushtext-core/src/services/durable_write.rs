@@ -391,6 +391,30 @@ fn write_target_locks() -> &'static TargetWriteLocks {
 /// cannot be synced.
 pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
     sys::rename(from, to)?;
+    sync_rename_parents(from, to)
+}
+
+/// Rename durably, refusing atomically when the destination already exists.
+///
+/// [`rename_durable`] is `rename(2)`, which silently replaces a regular
+/// destination and destroys its contents unrecoverably. A caller that must not do
+/// that cannot get there with an existence check plus a rename: those are two
+/// syscalls, and another process can create the destination in between. This
+/// pushes the check into the kernel via `RENAME_NOREPLACE`.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::AlreadyExists`] when the destination exists, and
+/// [`std::io::ErrorKind::Unsupported`] when the kernel or filesystem does not
+/// implement the flag — callers fall back to a best-effort check rather than
+/// refusing every rename.
+pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    sys::rename_no_replace(from, to)?;
+    sync_rename_parents(from, to)
+}
+
+/// Sync whichever parent directories a completed rename mutated.
+fn sync_rename_parents(from: &Path, to: &Path) -> std::io::Result<()> {
     sync_parent_dir(from)?;
     if from.parent() != to.parent() {
         sync_parent_dir(to)?;

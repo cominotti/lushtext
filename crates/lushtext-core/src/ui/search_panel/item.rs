@@ -6,6 +6,14 @@
 //! Two kinds: "file" items (expandable group headers) and "match" items
 //! (individual line matches shown as children). Contains no domain logic
 //! — pure data carrier.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-SEARCH-REPLACE` — it projects the workflow onto widgets (the row model object the list factory binds) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;

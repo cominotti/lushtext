@@ -493,12 +493,26 @@ one each per workflow; a workflow-prefixed policy file would leave the
 `crates/lushtext-core/src/ui/editor_page/buffer_replacement/` follow the same
 shape as the second and third adopters of that per-workflow subdirectory. The
 buffer-replacement one is worth reading for the smallest complete example: a
-167-line facade narrating one stage order, one `execution.rs`, and a `policy.rs`
+168-line facade narrating one stage order, one `execution.rs`, and a `policy.rs`
 holding the decisions that keep a half-replaced document from ever being visible.
 The direct-versus-sliced threshold and the paragraph-boundary arithmetic it
 depends on stay cross-cutting in `model/buffer_replacement.rs`, called by three
 owning workflows and copied by none — a forked shared limit can drift while both
 copies still read as correct.
+
+`crates/lushtext-core/src/ui/window/notes/` is worth reading for the two things
+it adds. It is the first migrated workflow whose roles sit **flat** in a
+directory under `ui/window/` — the migrated siblings there all took per-workflow
+subdirectories, which left the `policy.rs` and `evidence.rs` names free — and it
+is the clearest example of the fourth category: `browser.rs`, `menu.rs`,
+`chrome.rs`, and `targets.rs` are **called presentation surfaces**, which carry
+*no* role. A module that only projects the workflow onto widgets is outside the
+role taxonomy, takes none of its names, and owns no `policy.rs` or `evidence.rs`;
+it is recorded in its own module doc and in the workflow's matrix row. `mod.rs`
+narrates five stage orders in 178 lines, `journal.rs` owns the sidecar migration
+ledger whose control resumes **in a later app launch**, and `seams.rs` holds a
+freshness ticket that is phantom-typed by flight so one coordinator's generation
+cannot be validated against another's state.
 
 Migration to this shape is a staged programme. Per-workflow status, owned pure
 policy, seam value objects, risk tiers, and migration slots live in

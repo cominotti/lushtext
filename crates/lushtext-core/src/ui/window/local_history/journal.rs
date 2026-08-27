@@ -199,22 +199,23 @@ impl LushtextWindow {
             (),
             move || {
                 let data_dir = json_store::data_dir();
-                let generation = migration_ledger::record_pending(
+                // One kind, but the same one-critical-section contract: the
+                // ledger entry and the move share a lock, so a concurrent notes
+                // or local-history rename of the same tree cannot observe this
+                // one half-applied.
+                migration_ledger::run_tracked_rename(
                     &data_dir,
                     &old_for_move,
                     &new_for_move,
                     &[MigrationKind::LocalHistory],
-                )?;
-                migration_ledger::run_tracked_kind(
-                    &data_dir,
-                    generation,
-                    MigrationKind::LocalHistory,
-                    || {
-                        local_history_service::move_path_tree(
-                            &data_dir,
-                            &old_for_move,
-                            &new_for_move,
-                        )
+                    |rename| {
+                        rename.run_kind(&data_dir, MigrationKind::LocalHistory, || {
+                            local_history_service::move_path_tree(
+                                &data_dir,
+                                &old_for_move,
+                                &new_for_move,
+                            )
+                        })
                     },
                 )
             },

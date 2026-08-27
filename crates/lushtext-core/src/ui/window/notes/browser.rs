@@ -1,206 +1,252 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Unified notes-browser loading, search, projection, and activation workflows.
+//! Called presentation surface: the unified notes-browser dialog.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It projects `WFR-NOTES-BOOKMARKS` onto the
+//! browser dialog's widgets — the adaptive shell, the grouped Adwaita sidebar and
+//! its rows, the preview stack, and the per-session state those widgets need —
+//! so under `gtk-adapter-module-boundaries` it is a called presentation surface:
+//! outside the five-name role taxonomy, taking none of those names, and owning no
+//! `policy.rs` and no `evidence.rs`. Named in the `WFR-NOTES-BOOKMARKS` matrix
+//! row. Every decision it renders comes from `policy`.
+//!
+//! # Why coordination state lives here anyway
+//!
+//! `NotesBrowserState` holds the dialog's `search_debounce` and its three
+//! coordinators (source refresh, query, and closed-file excerpt preview). That is
+//! deliberate and is the same shape a `GtkWidget` subclass's `imp.rs` takes: this
+//! module is the dialog's subclass-equivalent state home, while the modules that
+//! *drive* those coordinators are the roles — `source_execution` advances the
+//! source generation and `begin_mode`, `query_execution` owns the query flight,
+//! and `bookmark_execution` owns the excerpt preview. A presentation surface may
+//! **hold** a workflow's GTK-side state; what it may not do is coordinate an
+//! ordered stage, and it does not.
 
-use super::bookmarks::{ensure_raw_preview_target_tag, open_editor_at_line};
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::time::Duration;
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_settle::Debounce;
-use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, NavigationPageExt, SidebarItemExt};
 
-use crate::model::palette::{PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget};
-use crate::services::palette::{
-    NoteSourceRefreshRequest, NoteSourceRefreshStart, PaletteNoteSourceOutcome,
+use crate::model::palette::{
+    PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget, PaletteOpenEditorNoteSnapshot,
 };
-use crate::services::{json_store, palette as palette_service};
+use crate::services::palette as palette_service;
 use crate::ui::accessibility;
 use crate::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownPreviewRenderContext};
 use crate::ui::status_bar::MessageKind;
 
-use super::{
-    ActiveNotesBrowser, LushtextWindow, NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT,
-    NOTES_BROWSER_RENDER_LIMIT, NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT,
-    NOTES_PREVIEW_MARKDOWN_CHILD, NOTES_PREVIEW_RAW_CHILD,
-    NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP, NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP,
-    NotesBrowserEntry, NotesBrowserState, build_dialog_close_button, empty_browser_label,
-    focus_after_present, install_dialog_escape_close, notes_browser_source_limits,
+use super::LushtextWindow;
+use super::bookmark_execution::{ensure_raw_preview_target_tag, open_editor_at_line};
+use super::chrome::{
+    build_dialog_close_button, empty_browser_label, focus_after_present,
+    install_dialog_escape_close,
 };
+use super::policy::NotesBrowserModeExt as _;
+use super::query_execution::schedule_notes_browser_search;
 
-/// Coalesce command-palette note-source reloads after live note/bookmark bursts.
-const COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS: u64 = 150;
+/// Stack child name for Markdown/status bookmark and note previews.
+pub(super) const NOTES_PREVIEW_MARKDOWN_CHILD: &str = "markdown";
+/// Stack child name for raw-text bookmark previews.
+pub(super) const NOTES_PREVIEW_RAW_CHILD: &str = "raw";
+/// Horizontal inset inside raw bookmark previews.
+pub(super) const NOTES_RAW_PREVIEW_TEXT_MARGIN_HORIZONTAL_SP: i32 = 12;
+/// Vertical inset inside raw bookmark previews.
+pub(super) const NOTES_RAW_PREVIEW_TEXT_MARGIN_VERTICAL_SP: i32 = 10;
+
+/// One entry shown in the unified notes browser.
+pub(super) type NotesBrowserEntry = PaletteNoteEntry;
+
+/// Bounded live-editor request material plus content-free omission evidence.
+pub(super) struct OpenEditorNoteSnapshots {
+    pub(super) entries: Vec<PaletteOpenEditorNoteSnapshot>,
+    pub(super) retained_bytes: u64,
+    pub(super) truncated: bool,
+}
+
+/// State for one open unified notes browser dialog.
+pub(super) struct NotesBrowserState {
+    /// Window that owns the browser and receives follow-up actions.
+    pub(super) window: LushtextWindow,
+    /// Dialog containing the browser widgets.
+    pub(super) dialog: libadwaita::Dialog,
+    /// Adaptive split view used for wide and narrow layouts.
+    pub(super) split_view: libadwaita::NavigationSplitView,
+    /// Navigation page whose title follows the active inventory mode.
+    pub(super) sidebar_page: libadwaita::NavigationPage,
+    /// Search field driving the current filtered row set.
+    pub(super) search_entry: gtk4::SearchEntry,
+    /// Adwaita browse rail for bookmarks, folder notes, and document notes.
+    pub(super) sidebar: libadwaita::Sidebar,
+    /// Visible notice when the current result set is capped for responsiveness.
+    pub(super) limit_label: gtk4::Label,
+    /// Header label for the selected note.
+    pub(super) preview_title: gtk4::Label,
+    /// Secondary metadata label for the selected note.
+    pub(super) preview_meta: gtk4::Label,
+    /// Stack switching between Markdown/status previews and raw bookmark excerpts.
+    pub(super) preview_stack: gtk4::Stack,
+    /// Shared markdown preview widget reused for notes and Markdown bookmark excerpts.
+    pub(super) markdown_preview: LushtextMarkdownPreview,
+    /// Backing buffer for raw bookmark excerpts.
+    pub(super) raw_preview_buffer: gtk4::TextBuffer,
+    /// Open action for the selected note.
+    pub(super) open_button: gtk4::Button,
+    /// Back button shown when the split view collapses.
+    pub(super) back_button: gtk4::Button,
+    /// Complete set of notes covered by this browser session.
+    pub(super) all_entries:
+        RefCell<Arc<crate::ui::plain_disposal::DisposalOwned<Box<[NotesBrowserEntry]>>>>,
+    /// Entry indexes currently shown in the sidebar's grouped visual order.
+    pub(super) filtered_indices: RefCell<Vec<usize>>,
+    /// Debounce used to rebuild browser search rows after typing settles.
+    pub(super) search_debounce: Debounce,
+    /// One-active/one-latest ownership for background full-source matching.
+    pub(super) query_runtime: RefCell<palette_service::NotesBrowserQueryCoordinator>,
+    /// Generation owner for the initial bounded source construction.
+    pub(super) source_refreshes: RefCell<palette_service::NoteSourceRefreshCoordinator>,
+    /// Active compact source request waiting for disposal admission before sidecar I/O.
+    pub(super) source_admission: RefCell<Option<palette_service::NoteSourceRefreshStart>>,
+    /// One paced capacity wakeup for the browser source.
+    pub(super) source_capacity_wakeup: crate::ui::plain_disposal::ProgressDisposalCapacityWakeup,
+    /// Typed source omissions reported separately from query render truncation.
+    pub(super) source_truncation: RefCell<Vec<palette_service::NoteSourceTruncationReason>>,
+    /// Whether bounded source construction has published this dialog's source.
+    pub(super) source_ready: Cell<bool>,
+    /// Whether dialog teardown has invalidated all source and query publication.
+    pub(super) disposed: Cell<bool>,
+    /// Inventory mode that owns the current source/query generations.
+    pub(super) mode: Cell<palette_service::NotesBrowserMode>,
+    /// One-active/one-latest ownership for closed-file bookmark excerpt loads.
+    pub(super) preview_loads:
+        RefCell<crate::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinator>,
+}
+
+/// Scalar bounded-source and query-ownership evidence.
+///
+/// Not feature-gated: `evidence::NotesEvidence` carries it in **both** feature
+/// configurations, so gating the type would compile only under `test-utils` —
+/// the exact default-feature break slot 4 recorded. Only the *re-export* for the
+/// external widget harness is gated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NotesBrowserRuntimeSnapshot {
+    /// Rows retained by the immutable admitted source.
+    pub source_entries: usize,
+    /// Whether source construction reported any omission reason.
+    pub source_truncated: bool,
+    /// Whether bounded source construction has completed.
+    pub source_ready: bool,
+    /// Inventory mode owning the current source and query generations.
+    pub mode: palette_service::NotesBrowserMode,
+    /// One-active/one-latest query ownership counters.
+    pub query: palette_service::PaletteSearchCoordinatorSnapshot,
+    /// Initial bounded-source ownership counters.
+    pub source: palette_service::NoteSourceRefreshCoordinatorSnapshot,
+    /// Closed-file bookmark excerpt ownership counters.
+    pub preview: crate::services::bookmark_excerpt::BookmarkExcerptPreviewCoordinatorSnapshot,
+}
+
+/// Weak handle to the currently visible unified notes browser.
+///
+/// Window actions use this to drive the same search, selection, and Open button
+/// behavior a user sees in the dialog without keeping a closed dialog alive.
+#[derive(Clone)]
+pub(in crate::ui::window) struct ActiveNotesBrowser {
+    state: Weak<NotesBrowserState>,
+}
+
+impl ActiveNotesBrowser {
+    /// Track one newly presented notes browser dialog.
+    pub(super) fn new(state: &Rc<NotesBrowserState>) -> Self {
+        Self {
+            state: Rc::downgrade(state),
+        }
+    }
+
+    /// Return whether this handle still points to the same browser state.
+    pub(super) fn same_target(&self, other: &Self) -> bool {
+        self.state.ptr_eq(&other.state)
+    }
+
+    /// Return whether the dialog state still exists.
+    pub(super) fn is_alive(&self) -> bool {
+        self.state.upgrade().is_some()
+    }
+
+    pub(super) fn state(&self) -> Option<Rc<NotesBrowserState>> {
+        self.state.upgrade()
+    }
+
+    /// Filter the visible notes browser through its normal search entry.
+    pub(super) fn set_query(&self, query: &str) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        state.search_entry.set_text(query);
+        true
+    }
+
+    /// Select one visible row by zero-based sidebar index.
+    pub(super) fn select_visible_row(&self, index: u32) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        let Ok(row) = usize::try_from(index) else {
+            return false;
+        };
+        if row >= state.filtered_indices.borrow().len() {
+            return false;
+        }
+        state.sidebar.set_selected(index);
+        true
+    }
+
+    /// Activate the same Open workflow as the visible notes browser button.
+    pub(super) fn open_selected(&self) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        if state.selected_entry_index().is_none() {
+            return false;
+        }
+        state.open_selected();
+        true
+    }
+
+    pub(super) fn runtime_snapshot(&self) -> Option<NotesBrowserRuntimeSnapshot> {
+        let state = self.state.upgrade()?;
+        // Every derived scalar is computed and every `Ref` dropped **before** the
+        // struct literal. Borrows taken inside a literal live for the whole
+        // literal, so a future field that needs a `borrow_mut()` of the same cell
+        // would panic — the evidence-surface reentrancy constraint, applied to the
+        // nested snapshot this surface folds in.
+        let source_entries = state.all_entries.borrow().len();
+        let source_truncated = !state.source_truncation.borrow().is_empty();
+        let query = state.query_runtime.borrow().snapshot();
+        let source = state.source_refreshes.borrow().snapshot();
+        let preview = state.preview_loads.borrow().snapshot();
+        Some(NotesBrowserRuntimeSnapshot {
+            source_entries,
+            source_truncated,
+            source_ready: state.source_ready.get(),
+            mode: state.mode.get(),
+            query,
+            source,
+            preview,
+        })
+    }
+}
+
 /// Fixed notes browser width.
 const NOTES_BROWSER_WIDTH_SP: i32 = 980;
 /// Fixed notes browser height.
 const NOTES_BROWSER_HEIGHT_SP: i32 = 700;
-
-trait NotesBrowserModeExt {
-    fn title(self) -> &'static str;
-    fn loading_label(self) -> &'static str;
-    fn deferred_label(self) -> &'static str;
-    fn search_placeholder(self) -> &'static str;
-    fn search_accessible_label(self) -> &'static str;
-    fn search_description(self) -> &'static str;
-    fn results_accessible_label(self) -> &'static str;
-    fn results_description(self) -> &'static str;
-    fn empty_source_label(self) -> &'static str;
-    fn no_matches_label(self) -> &'static str;
-    fn unselected_title(self) -> &'static str;
-    fn unselected_meta(self) -> &'static str;
-    fn unselected_placeholder(self) -> &'static str;
-    fn source_limit_message(self) -> &'static str;
-}
-
-impl NotesBrowserModeExt for palette_service::NotesBrowserMode {
-    fn title(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Notes",
-            Self::Bookmarks => "Bookmarks",
-        }
-    }
-
-    fn loading_label(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Loading notes…",
-            Self::Bookmarks => "Loading bookmarks…",
-        }
-    }
-
-    fn deferred_label(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Notes deferred by memory pressure",
-            Self::Bookmarks => "Bookmarks deferred by memory pressure",
-        }
-    }
-
-    fn search_placeholder(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Search Notes…",
-            Self::Bookmarks => "Search Bookmarks…",
-        }
-    }
-
-    fn search_accessible_label(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Search notes",
-            Self::Bookmarks => "Search bookmarks",
-        }
-    }
-
-    fn search_description(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Filter bookmarks, document notes, and folder notes",
-            Self::Bookmarks => "Filter bookmarks in the current workspace",
-        }
-    }
-
-    fn results_accessible_label(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Notes results",
-            Self::Bookmarks => "Bookmark results",
-        }
-    }
-
-    fn results_description(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Choose a bookmark, document note, or folder note",
-            Self::Bookmarks => "Choose a bookmark to preview or open",
-        }
-    }
-
-    fn empty_source_label(self) -> &'static str {
-        match self {
-            Self::AllNotes => "No notes yet",
-            Self::Bookmarks => "No bookmarks exist in the current workspace",
-        }
-    }
-
-    fn no_matches_label(self) -> &'static str {
-        match self {
-            Self::AllNotes => "No notes match that search",
-            Self::Bookmarks => "No bookmarks match that search",
-        }
-    }
-
-    fn unselected_title(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Select a note",
-            Self::Bookmarks => "Select a bookmark",
-        }
-    }
-
-    fn unselected_meta(self) -> &'static str {
-        match self {
-            Self::AllNotes => {
-                "Choose a bookmark, folder note, or document note to preview it here."
-            }
-            Self::Bookmarks => "Choose a bookmark to preview its source context here.",
-        }
-    }
-
-    fn unselected_placeholder(self) -> &'static str {
-        match self {
-            Self::AllNotes => "Select a note to preview its details.",
-            Self::Bookmarks => "Select a bookmark to preview its source context.",
-        }
-    }
-
-    fn source_limit_message(self) -> &'static str {
-        match self {
-            Self::AllNotes => {
-                "Some later notes were omitted because the source reached its safety limits."
-            }
-            Self::Bookmarks => {
-                "Some later bookmarks were omitted because the source reached its safety limits."
-            }
-        }
-    }
-}
-
-enum GuardedNoteSourceOutcome {
-    Complete {
-        load: palette_service::PaletteNoteSourceLoad,
-        entries: crate::ui::plain_disposal::DisposalOwned<Box<[PaletteNoteEntry]>>,
-        had_recovery_diagnostics: bool,
-    },
-    Cancelled,
-    Failed(anyhow::Error),
-}
-
-fn guard_note_source_on_worker(
-    result: anyhow::Result<PaletteNoteSourceOutcome>,
-    reservation: crate::ui::plain_disposal::DisposalReservation,
-) -> GuardedNoteSourceOutcome {
-    match result {
-        Ok(PaletteNoteSourceOutcome::Complete { mut load, metrics }) => {
-            let diagnostics = std::mem::take(&mut load.diagnostics);
-            let had_recovery_diagnostics = !diagnostics.is_empty();
-            LushtextWindow::trace_browse_recovery_diagnostics(&diagnostics);
-            drop(diagnostics);
-            let entries = std::mem::take(&mut load.entries).into_boxed_slice();
-            debug_assert_eq!(
-                metrics.retained_bytes,
-                crate::model::palette::palette_note_entries_retained_byte_weight(&entries)
-            );
-            debug_assert!(
-                metrics.retained_bytes <= palette_service::MAX_PALETTE_NOTE_RETAINED_BYTES
-            );
-            GuardedNoteSourceOutcome::Complete {
-                load,
-                entries: reservation.shrink_to_and_own(metrics.retained_bytes, entries),
-                had_recovery_diagnostics,
-            }
-        }
-        Ok(PaletteNoteSourceOutcome::Cancelled { .. }) => GuardedNoteSourceOutcome::Cancelled,
-        Err(error) => GuardedNoteSourceOutcome::Failed(error),
-    }
-}
 
 impl LushtextWindow {
     /// Browse notes across the current workspace scope.
@@ -225,278 +271,6 @@ impl LushtextWindow {
 
         let state = self.present_notes_browser(Vec::new(), mode);
         self.submit_notes_browser_source(&state, mode);
-    }
-
-    fn submit_notes_browser_source(
-        &self,
-        state: &Rc<NotesBrowserState>,
-        mode: palette_service::NotesBrowserMode,
-    ) {
-        let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope_snapshot = workspaces_file.current_scope_snapshot();
-        let all_workspaces = workspaces_file.workspaces;
-        let open_editor_snapshots = self.open_editor_note_snapshots_bounded(
-            scope_snapshot.folder_paths(),
-            &all_workspaces,
-            NOTES_BROWSER_OPEN_EDITOR_SNAPSHOT_LIMIT,
-            NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT,
-        );
-        debug_assert!(
-            open_editor_snapshots.retained_bytes <= NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT
-        );
-        state.limit_label.set_label(mode.loading_label());
-        state.limit_label.set_visible(true);
-        let request = NoteSourceRefreshRequest {
-            data_dir: json_store::data_dir(),
-            scope_snapshot,
-            open_editor_snapshots: Arc::from(open_editor_snapshots.entries),
-            open_editor_snapshots_truncated: open_editor_snapshots.truncated,
-            mode,
-            limits: notes_browser_source_limits(),
-        };
-        let start = state.source_refreshes.borrow_mut().submit(request);
-        if let Some(start) = start {
-            start_notes_browser_source_load(state, start);
-        }
-    }
-    /// Coalesce cached note-row refreshes after bursty note and bookmark edits.
-    pub(in crate::ui::window) fn refresh_command_palette_note_source_debounced(&self) {
-        if !self.imp().palette_revealer.reveals_child() {
-            self.invalidate_command_palette_note_source();
-            return;
-        }
-
-        self.imp().command_palette_notes_refresh_debounce.schedule(
-            self,
-            Duration::from_millis(COMMAND_PALETTE_NOTES_REFRESH_DEBOUNCE_MS),
-            |window, _| {
-                window.refresh_command_palette_note_source();
-            },
-        );
-    }
-
-    /// Refresh cached command-palette note rows from the current workspace scope.
-    ///
-    /// The GTK thread only snapshots open-editor bookmark metadata here. Sidecar
-    /// listing and document identity work stay in the background task, and the
-    /// generation guard prevents stale completions from replacing newer rows.
-    pub(in crate::ui::window) fn refresh_command_palette_note_source(&self) {
-        if !self.imp().palette_revealer.reveals_child() {
-            self.invalidate_command_palette_note_source();
-            return;
-        }
-
-        let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope_snapshot = workspaces_file.current_scope_snapshot();
-        let all_workspaces = workspaces_file.workspaces;
-        let open_editor_snapshots = self.open_editor_note_snapshots_bounded(
-            scope_snapshot.folder_paths(),
-            &all_workspaces,
-            palette_service::MAX_PALETTE_NOTE_ENTRIES,
-            NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT,
-        );
-        debug_assert!(
-            open_editor_snapshots.retained_bytes <= NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT
-        );
-        let request = NoteSourceRefreshRequest {
-            data_dir: json_store::data_dir(),
-            scope_snapshot,
-            open_editor_snapshots: Arc::from(open_editor_snapshots.entries),
-            open_editor_snapshots_truncated: open_editor_snapshots.truncated,
-            mode: palette_service::NotesBrowserMode::AllNotes,
-            limits: palette_service::PALETTE_NOTE_SOURCE_LIMITS,
-        };
-        let start = self
-            .imp()
-            .command_palette_note_refreshes
-            .borrow_mut()
-            .submit(request);
-        if let Some(start) = start {
-            self.start_command_palette_note_refresh(start);
-        } else {
-            self.finish_cancelled_command_palette_note_admission();
-        }
-    }
-
-    fn start_command_palette_note_refresh(&self, start: NoteSourceRefreshStart) {
-        if start.cancellation.is_cancelled() {
-            self.finish_command_palette_note_refresh(
-                start.generation,
-                GuardedNoteSourceOutcome::Cancelled,
-            );
-            return;
-        }
-        let observed_epoch = crate::ui::plain_disposal::disposal_capacity_epoch();
-        let weight = palette_service::MAX_PALETTE_NOTE_RETAINED_BYTES;
-        let reservation = self
-            .imp()
-            .command_palette
-            .note_source_reservation_weight()
-            .map_or_else(
-                || crate::ui::plain_disposal::try_reserve_for_gtk(weight),
-                |current_weight| {
-                    crate::ui::plain_disposal::try_reserve_replacement_for_gtk(
-                        weight,
-                        current_weight,
-                    )
-                },
-            );
-        let Some(reservation) = reservation else {
-            debug_assert!(self.imp().command_palette_note_admission.borrow().is_none());
-            self.imp()
-                .command_palette_note_admission
-                .replace(Some(start));
-            let window_weak = self.downgrade();
-            self.imp()
-                .command_palette_note_capacity_wakeup
-                .arm(observed_epoch, move || {
-                    if let Some(window) = window_weak.upgrade() {
-                        window.retry_command_palette_note_admission();
-                    }
-                });
-            if self.imp().palette_revealer.reveals_child() {
-                self.publish_status_message(
-                    "Command palette note update deferred by memory pressure",
-                    MessageKind::Warning,
-                );
-            }
-            return;
-        };
-
-        let NoteSourceRefreshStart {
-            generation,
-            request,
-            cancellation,
-        } = start;
-        let window_weak = self.downgrade();
-        spawn_blocking_then(
-            (),
-            move || {
-                guard_note_source_on_worker(
-                    palette_service::load_note_entries_bounded_for_scope(
-                        &request.data_dir,
-                        &request.scope_snapshot,
-                        &request.open_editor_snapshots,
-                        request.open_editor_snapshots_truncated,
-                        request.mode,
-                        request.limits,
-                        &cancellation,
-                    ),
-                    reservation,
-                )
-            },
-            move |(), result| {
-                let Some(window) = window_weak.upgrade() else {
-                    retire_note_source_result(result);
-                    return;
-                };
-                window.finish_command_palette_note_refresh(generation, result);
-            },
-        );
-    }
-
-    fn retry_command_palette_note_admission(&self) {
-        let Some(start) = self
-            .imp()
-            .command_palette_note_admission
-            .borrow_mut()
-            .take()
-        else {
-            return;
-        };
-        self.start_command_palette_note_refresh(start);
-    }
-
-    fn finish_cancelled_command_palette_note_admission(&self) {
-        let cancelled = self
-            .imp()
-            .command_palette_note_admission
-            .borrow()
-            .as_ref()
-            .is_some_and(|start| start.cancellation.is_cancelled());
-        if !cancelled {
-            return;
-        }
-        self.imp().command_palette_note_capacity_wakeup.cancel();
-        let start = self
-            .imp()
-            .command_palette_note_admission
-            .borrow_mut()
-            .take();
-        if let Some(start) = start {
-            self.finish_command_palette_note_refresh(
-                start.generation,
-                GuardedNoteSourceOutcome::Cancelled,
-            );
-        }
-    }
-
-    fn finish_command_palette_note_refresh(
-        &self,
-        generation: u64,
-        result: GuardedNoteSourceOutcome,
-    ) {
-        let (accepted, next) = {
-            let mut refreshes = self.imp().command_palette_note_refreshes.borrow_mut();
-            let accepted = refreshes.is_current(generation);
-            let next = refreshes.finish(generation);
-            (accepted, next)
-        };
-
-        if accepted {
-            match result {
-                GuardedNoteSourceOutcome::Complete {
-                    load,
-                    entries,
-                    had_recovery_diagnostics,
-                } => {
-                    let was_truncated = !load.truncation_reasons.is_empty();
-                    self.imp().command_palette.set_guarded_note_entries(entries);
-                    if was_truncated && self.imp().palette_revealer.reveals_child() {
-                        self.publish_status_message(
-                            "Command palette note source was limited to stay responsive",
-                            MessageKind::Warning,
-                        );
-                    } else if had_recovery_diagnostics
-                        && self.imp().palette_revealer.reveals_child()
-                    {
-                        self.publish_status_message(
-                            "Some note data could not be loaded for the palette",
-                            MessageKind::Warning,
-                        );
-                    }
-                }
-                GuardedNoteSourceOutcome::Cancelled => {}
-                GuardedNoteSourceOutcome::Failed(error) => {
-                    tracing::warn!("Failed to refresh command-palette notes: {error}");
-                    if self.imp().palette_revealer.reveals_child() {
-                        self.publish_status_message(
-                            "Notes could not be loaded for the palette",
-                            MessageKind::Warning,
-                        );
-                    }
-                }
-            }
-        } else {
-            retire_note_source_result(result);
-        }
-
-        if let Some(next) = next {
-            self.start_command_palette_note_refresh(next);
-        }
-    }
-
-    fn invalidate_command_palette_note_source(&self) {
-        self.imp()
-            .command_palette_note_refreshes
-            .borrow_mut()
-            .invalidate();
-        self.imp()
-            .command_palette_note_admission
-            .borrow_mut()
-            .take();
-        self.imp().command_palette_note_capacity_wakeup.cancel();
-        self.imp().command_palette.clear_note_entries();
     }
     /// Present the unified notes browser for the current workspace scope.
     fn present_notes_browser(
@@ -843,68 +617,6 @@ impl LushtextWindow {
         }
     }
 
-    /// Return scalar source/query evidence for the visible Notes browser.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn notes_browser_runtime_snapshot_for_test(
-        &self,
-    ) -> Option<super::NotesBrowserRuntimeSnapshot> {
-        self.imp()
-            .active_notes_browser
-            .borrow()
-            .as_ref()
-            .and_then(ActiveNotesBrowser::runtime_snapshot)
-    }
-
-    /// Snapshot open-editor admission counts with a focused test limit.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn open_editor_note_snapshot_counts_for_test(&self, limit: usize) -> (usize, usize) {
-        let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope_snapshot = workspaces_file.current_scope_snapshot();
-        let snapshots = self.open_editor_note_snapshots_bounded(
-            scope_snapshot.folder_paths(),
-            &workspaces_file.workspaces,
-            limit,
-            NOTES_OPEN_EDITOR_SNAPSHOT_RETAINED_BYTE_LIMIT,
-        );
-        let bookmarks = snapshots
-            .entries
-            .iter()
-            .map(|snapshot| snapshot.bookmarks.len())
-            .sum();
-        (snapshots.entries.len(), bookmarks)
-    }
-
-    /// Return retained-byte and truncation evidence for a focused snapshot budget.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn open_editor_note_snapshot_retained_evidence_for_test(
-        &self,
-        item_limit: usize,
-        retained_byte_limit: u64,
-    ) -> (usize, usize, u64, bool) {
-        let workspaces_file = self.imp().sidebar.workspaces_file();
-        let scope_snapshot = workspaces_file.current_scope_snapshot();
-        let snapshots = self.open_editor_note_snapshots_bounded(
-            scope_snapshot.folder_paths(),
-            &workspaces_file.workspaces,
-            item_limit,
-            retained_byte_limit,
-        );
-        let bookmarks = snapshots
-            .entries
-            .iter()
-            .map(|snapshot| snapshot.bookmarks.len())
-            .sum();
-        (
-            snapshots.entries.len(),
-            bookmarks,
-            snapshots.retained_bytes,
-            snapshots.truncated,
-        )
-    }
-
     /// Activate one note-search target through the existing note workflows.
     pub(in crate::ui::window) fn activate_palette_note_target(&self, target: &PaletteNoteTarget) {
         match target {
@@ -936,171 +648,6 @@ impl LushtextWindow {
         None
     }
 }
-
-fn retire_note_source_result(result: GuardedNoteSourceOutcome) {
-    drop(result);
-}
-
-fn start_notes_browser_source_load(state: &Rc<NotesBrowserState>, start: NoteSourceRefreshStart) {
-    if start.cancellation.is_cancelled() {
-        finish_notes_browser_source_load(
-            state,
-            start.generation,
-            start.request.mode,
-            GuardedNoteSourceOutcome::Cancelled,
-        );
-        return;
-    }
-    let observed_epoch = crate::ui::plain_disposal::progress_disposal_capacity_epoch();
-    let weight = palette_service::MAX_PALETTE_NOTE_RETAINED_BYTES;
-    let reservation = state.all_entries.borrow().reservation_weight().map_or_else(
-        || crate::ui::plain_disposal::try_reserve_progress_for_gtk(weight),
-        |current_weight| {
-            crate::ui::plain_disposal::try_reserve_progress_replacement_for_gtk(
-                weight,
-                current_weight,
-            )
-        },
-    );
-    let Some(reservation) = reservation else {
-        let mode = start.request.mode;
-        debug_assert!(state.source_admission.borrow().is_none());
-        state.source_admission.replace(Some(start));
-        let state_weak = Rc::downgrade(state);
-        state.source_capacity_wakeup.arm(observed_epoch, move || {
-            if let Some(state) = state_weak.upgrade() {
-                retry_notes_browser_source_admission(&state);
-            }
-        });
-        state.limit_label.set_label(mode.deferred_label());
-        state.limit_label.set_visible(true);
-        state
-            .window
-            .publish_status_message(mode.deferred_label(), MessageKind::Warning);
-        return;
-    };
-
-    let NoteSourceRefreshStart {
-        generation,
-        request,
-        cancellation,
-    } = start;
-    let mode = request.mode;
-    let state_weak = Rc::downgrade(state);
-    spawn_blocking_then(
-        (),
-        move || {
-            guard_note_source_on_worker(
-                palette_service::load_note_entries_bounded_for_scope(
-                    &request.data_dir,
-                    &request.scope_snapshot,
-                    &request.open_editor_snapshots,
-                    request.open_editor_snapshots_truncated,
-                    request.mode,
-                    request.limits,
-                    &cancellation,
-                ),
-                reservation,
-            )
-        },
-        move |(), result| {
-            let Some(state) = state_weak.upgrade() else {
-                retire_note_source_result(result);
-                return;
-            };
-            finish_notes_browser_source_load(&state, generation, mode, result);
-        },
-    );
-}
-
-fn retry_notes_browser_source_admission(state: &Rc<NotesBrowserState>) {
-    let Some(start) = state.source_admission.borrow_mut().take() else {
-        return;
-    };
-    start_notes_browser_source_load(state, start);
-}
-
-fn finish_notes_browser_source_load(
-    state: &Rc<NotesBrowserState>,
-    generation: u64,
-    mode: palette_service::NotesBrowserMode,
-    result: GuardedNoteSourceOutcome,
-) {
-    let (accepted, next) = {
-        let mut refreshes = state.source_refreshes.borrow_mut();
-        let accepted =
-            refreshes.is_current(generation) && state.mode.get() == mode && !state.disposed.get();
-        let next = refreshes.finish(generation);
-        (accepted, next)
-    };
-    if accepted {
-        match result {
-            GuardedNoteSourceOutcome::Complete {
-                load,
-                entries,
-                had_recovery_diagnostics,
-            } => {
-                let source_truncation = load.truncation_reasons;
-                let previous = state
-                    .all_entries
-                    .replace(Arc::new(entries.into_retained_current()));
-                drop(previous);
-                *state.source_truncation.borrow_mut() = source_truncation;
-                state.source_ready.set(true);
-                if !state.source_truncation.borrow().is_empty() {
-                    state.window.publish_status_message(
-                        match mode {
-                            palette_service::NotesBrowserMode::AllNotes => {
-                                "The Notes source was limited to stay responsive"
-                            }
-                            palette_service::NotesBrowserMode::Bookmarks => {
-                                "The bookmark source was limited to stay responsive"
-                            }
-                        },
-                        MessageKind::Warning,
-                    );
-                } else if had_recovery_diagnostics {
-                    state.window.publish_status_message(
-                        match mode {
-                            palette_service::NotesBrowserMode::AllNotes => {
-                                "Some note data could not be loaded"
-                            }
-                            palette_service::NotesBrowserMode::Bookmarks => {
-                                "Some bookmark data could not be loaded"
-                            }
-                        },
-                        MessageKind::Warning,
-                    );
-                }
-                submit_notes_browser_query(state, state.search_entry.text().to_string());
-            }
-            GuardedNoteSourceOutcome::Cancelled => {}
-            GuardedNoteSourceOutcome::Failed(error) => {
-                tracing::error!("Failed to list {}: {error}", mode.title().to_lowercase());
-                state.limit_label.set_label(match mode {
-                    palette_service::NotesBrowserMode::AllNotes => "Notes could not be listed",
-                    palette_service::NotesBrowserMode::Bookmarks => "Bookmarks could not be listed",
-                });
-                state.limit_label.set_visible(true);
-                state.window.publish_status_message(
-                    match mode {
-                        palette_service::NotesBrowserMode::AllNotes => "Notes could not be listed",
-                        palette_service::NotesBrowserMode::Bookmarks => {
-                            "Bookmarks could not be listed"
-                        }
-                    },
-                    MessageKind::Error,
-                );
-            }
-        }
-    } else {
-        retire_note_source_result(result);
-    }
-    if let Some(next) = next {
-        start_notes_browser_source_load(state, next);
-    }
-}
-
 /// Build the populated notes-browser chrome around the adaptive split view.
 fn build_notes_browser_shell(
     dialog: &libadwaita::Dialog,
@@ -1210,8 +757,6 @@ pub(super) trait NotesBrowserEntryExt {
     fn render_context(&self) -> MarkdownPreviewRenderContext;
     /// Symbolic icon used by the grouped Adwaita sidebar item.
     fn sidebar_icon_name(&self) -> &'static str;
-    /// Return whether this row belongs in the supplemental open-tab section.
-    fn is_open_tab(&self) -> bool;
 }
 
 impl NotesBrowserEntryExt for NotesBrowserEntry {
@@ -1259,13 +804,10 @@ impl NotesBrowserEntryExt for NotesBrowserEntry {
             PaletteNoteTarget::DocumentNote { .. } => "text-x-generic-symbolic",
         }
     }
-
-    fn is_open_tab(&self) -> bool {
-        self.category == PaletteNoteCategory::OpenTabs
-    }
 }
+
 impl NotesBrowserState {
-    fn configure_mode(&self, mode: palette_service::NotesBrowserMode) {
+    pub(super) fn configure_mode(&self, mode: palette_service::NotesBrowserMode) {
         self.mode.set(mode);
         self.dialog.set_title(mode.title());
         self.sidebar_page.set_title(mode.title());
@@ -1290,52 +832,15 @@ impl NotesBrowserState {
         );
         accessibility::set_labelled_description(
             &self.open_button,
-            match mode {
-                palette_service::NotesBrowserMode::AllNotes => "Open selected note",
-                palette_service::NotesBrowserMode::Bookmarks => "Open selected bookmark",
-            },
+            mode.open_action_label(),
             mode.results_description(),
         );
         self.back_button
             .set_tooltip_text(Some(&format!("Back to {}", mode.title())));
         self.show_unselected_preview();
     }
-
-    fn begin_mode(&self, mode: palette_service::NotesBrowserMode) {
-        let _ = self.search_debounce.invalidate();
-        self.query_runtime.borrow_mut().invalidate();
-        self.source_ready.set(false);
-        self.source_truncation.borrow_mut().clear();
-        self.sidebar.remove_all();
-        self.filtered_indices.borrow_mut().clear();
-        self.split_view.set_show_content(false);
-        self.preview_loads.borrow_mut().invalidate();
-        self.configure_mode(mode);
-    }
-
-    /// Cancel source/query publication and release retained browser payloads.
-    fn dispose_runtime(&self) {
-        if self.disposed.replace(true) {
-            return;
-        }
-        let _ = self.search_debounce.invalidate();
-        self.source_refreshes.borrow_mut().invalidate();
-        self.source_admission.borrow_mut().take();
-        self.source_capacity_wakeup.cancel();
-        self.query_runtime.borrow_mut().invalidate();
-        self.preview_loads.borrow_mut().invalidate();
-        self.source_ready.set(false);
-        self.filtered_indices.borrow_mut().clear();
-        let source = self.all_entries.replace(Arc::new(
-            crate::ui::plain_disposal::DisposalOwned::small_unreserved(
-                Vec::<NotesBrowserEntry>::new().into_boxed_slice(),
-            ),
-        ));
-        drop(source);
-    }
-
     /// Refresh the preview pane for one selected sidebar item.
-    fn refresh_preview(state: &Rc<Self>, index: Option<usize>, user_selected: bool) {
+    pub(super) fn refresh_preview(state: &Rc<Self>, index: Option<usize>, user_selected: bool) {
         // Any newly rendered selection supersedes older closed-file excerpt
         // work; a closed-file bookmark branch resubmits below.
         state.preview_loads.borrow_mut().invalidate();
@@ -1391,20 +896,8 @@ impl NotesBrowserState {
         self.show_markdown_placeholder(mode.unselected_placeholder());
         self.open_button.set_sensitive(false);
         accessibility::set_disabled(&self.open_button, true);
-        accessibility::set_value_text(
-            &self.open_button,
-            match mode {
-                palette_service::NotesBrowserMode::AllNotes => "No note selected",
-                palette_service::NotesBrowserMode::Bookmarks => "No bookmark selected",
-            },
-        );
-        accessibility::set_value_text(
-            &self.preview_stack,
-            match mode {
-                palette_service::NotesBrowserMode::AllNotes => "No note selected",
-                palette_service::NotesBrowserMode::Bookmarks => "No bookmark selected",
-            },
-        );
+        accessibility::set_value_text(&self.open_button, mode.unselected_value_text());
+        accessibility::set_value_text(&self.preview_stack, mode.unselected_value_text());
     }
 
     /// Switch to the Markdown/status preview child and clear hidden raw state.
@@ -1454,215 +947,33 @@ impl NotesBrowserState {
     }
 }
 
-/// Debounce browser search so large note sets do not rebuild on every keystroke.
-fn schedule_notes_browser_search(state: &Rc<NotesBrowserState>, query: String) {
-    if !state.source_ready.get() || state.disposed.get() {
-        return;
-    }
-    if query.is_empty() {
-        let _ = state.search_debounce.invalidate();
-        submit_notes_browser_query(state, query);
-        return;
-    }
-    let state_weak = Rc::downgrade(state);
-    state.search_debounce.schedule(
-        &state.search_entry,
-        Duration::from_millis(150),
-        move |_, _| {
-            let Some(state) = state_weak.upgrade() else {
-                return;
-            };
-            submit_notes_browser_query(&state, query);
-        },
-    );
-}
-
-fn submit_notes_browser_query(state: &Rc<NotesBrowserState>, query: String) {
-    let request = palette_service::NotesBrowserQueryRequest {
-        query,
-        mode: state.mode.get(),
-    };
-    let start = state.query_runtime.borrow_mut().submit(request);
-    if let Some(start) = start {
-        start_notes_browser_query(state, start);
-    }
-}
-
-fn start_notes_browser_query(
-    state: &Rc<NotesBrowserState>,
-    start: palette_service::PaletteSearchStart<palette_service::NotesBrowserQueryRequest>,
-) {
-    let palette_service::PaletteSearchStart {
-        generation,
-        request,
-        cancellation,
-    } = start;
-    let mode = request.mode;
-    let source = Arc::clone(&state.all_entries.borrow());
-    let state_weak = Rc::downgrade(state);
-    spawn_blocking_then(
-        (),
-        move || {
-            palette_service::query_notes_browser_source(
-                &source,
-                &request,
-                NOTES_BROWSER_RENDER_LIMIT,
-                &cancellation,
-            )
-        },
-        move |(), outcome| {
-            let Some(state) = state_weak.upgrade() else {
-                retire_notes_browser_query_result(outcome);
-                return;
-            };
-            finish_notes_browser_query(&state, generation, mode, outcome);
-        },
-    );
-}
-
-fn finish_notes_browser_query(
-    state: &Rc<NotesBrowserState>,
-    generation: u64,
-    mode: palette_service::NotesBrowserMode,
-    outcome: palette_service::PaletteSearchOutcome<palette_service::NotesBrowserQueryResult>,
-) {
-    let (accepted, next) = {
-        let mut runtime = state.query_runtime.borrow_mut();
-        let accepted =
-            runtime.is_current(generation) && state.mode.get() == mode && !state.disposed.get();
-        let next = runtime.finish(generation);
-        (accepted, next)
-    };
-    if accepted {
-        if let palette_service::PaletteSearchOutcome::Complete { value, .. } = outcome {
-            publish_notes_browser_query(state, &value);
-        }
-    } else {
-        retire_notes_browser_query_result(outcome);
-    }
-    if let Some(next) = next {
-        start_notes_browser_query(state, next);
-    }
-}
-
-fn retire_notes_browser_query_result(
-    outcome: palette_service::PaletteSearchOutcome<palette_service::NotesBrowserQueryResult>,
-) {
-    let palette_service::PaletteSearchOutcome::Complete { value, .. } = outcome else {
-        return;
-    };
-    // Query ownership is capped at 500 scalar indexes; the document-sized
-    // immutable source remains guarded separately.
-    drop(value);
-}
-
-/// Publish one current background match while preserving grouped selection.
-fn publish_notes_browser_query(
-    state: &Rc<NotesBrowserState>,
-    result: &palette_service::NotesBrowserQueryResult,
-) {
-    let previously_selected = state.selected_entry_index();
-    state.sidebar.remove_all();
-    let source = state.all_entries.borrow();
-    let empty_message = if source.is_empty() && state.search_entry.text().is_empty() {
-        state.mode.get().empty_source_label()
-    } else {
-        state.mode.get().no_matches_label()
-    };
-    state
-        .sidebar
-        .set_placeholder(Some(&empty_browser_label(empty_message)));
-    let grouped_indices = append_notes_sidebar_sections(state, &source, &result.matching_indices);
-    update_notes_browser_limit_label(state, result.truncated);
-
-    if grouped_indices.is_empty() {
-        *state.filtered_indices.borrow_mut() = Vec::new();
-        NotesBrowserState::refresh_preview(state, None, false);
-        return;
-    }
-    let selected = previously_selected
-        .and_then(|previous| grouped_indices.iter().position(|index| *index == previous))
-        .unwrap_or(0);
-    *state.filtered_indices.borrow_mut() = grouped_indices;
-    state
-        .sidebar
-        .set_selected(u32::try_from(selected).unwrap_or(0));
-    NotesBrowserState::refresh_preview(state, Some(selected), false);
-}
-
-fn update_notes_browser_limit_label(state: &NotesBrowserState, render_truncated: bool) {
-    let mut messages = Vec::new();
-    if !state.source_truncation.borrow().is_empty() {
-        messages.push(state.mode.get().source_limit_message().to_string());
-    }
-    if render_truncated {
-        messages.push(format!(
-            "Showing first {NOTES_BROWSER_RENDER_LIMIT} matches. Refine search to narrow results."
-        ));
-    }
-    let message = messages.join(" ");
-    state.limit_label.set_label(&message);
-    accessibility::set_label(&state.limit_label, &message);
-    state.limit_label.set_visible(!messages.is_empty());
-}
-
 /// Append note entries as semantic Adwaita sidebar sections and return the
 /// exact flat order used for selection lookup.
-fn append_notes_sidebar_sections(
+///
+/// One section per `PaletteNoteCategory`, in that type's own order and under its
+/// own label, so the browser cannot disagree with the palette about which
+/// categories exist or what they are called.
+pub(super) fn append_notes_sidebar_sections(
     state: &Rc<NotesBrowserState>,
     all_entries: &[NotesBrowserEntry],
     matching_indices: &[usize],
 ) -> Vec<usize> {
     let sidebar = &state.sidebar;
     let mut ordered_indices = Vec::with_capacity(matching_indices.len());
-    append_note_sidebar_section(
-        state,
-        sidebar,
-        "Bookmarks",
-        matching_indices.iter().copied().filter(|index| {
-            all_entries.get(*index).is_some_and(|entry| {
-                entry.category == PaletteNoteCategory::Bookmarks && !entry.is_open_tab()
-            })
-        }),
-        all_entries,
-        &mut ordered_indices,
-    );
-    append_note_sidebar_section(
-        state,
-        sidebar,
-        "Folder Notes",
-        matching_indices.iter().copied().filter(|index| {
-            all_entries
-                .get(*index)
-                .is_some_and(|entry| entry.category == PaletteNoteCategory::FolderNotes)
-        }),
-        all_entries,
-        &mut ordered_indices,
-    );
-    append_note_sidebar_section(
-        state,
-        sidebar,
-        "Document Notes",
-        matching_indices.iter().copied().filter(|index| {
-            all_entries.get(*index).is_some_and(|entry| {
-                entry.category == PaletteNoteCategory::DocumentNotes && !entry.is_open_tab()
-            })
-        }),
-        all_entries,
-        &mut ordered_indices,
-    );
-    append_note_sidebar_section(
-        state,
-        sidebar,
-        "Open Tabs",
-        matching_indices.iter().copied().filter(|index| {
-            all_entries
-                .get(*index)
-                .is_some_and(NotesBrowserEntry::is_open_tab)
-        }),
-        all_entries,
-        &mut ordered_indices,
-    );
+    for category in PaletteNoteCategory::ALL {
+        append_note_sidebar_section(
+            state,
+            sidebar,
+            category.label(),
+            matching_indices.iter().copied().filter(|index| {
+                all_entries
+                    .get(*index)
+                    .is_some_and(|entry| entry.category == category)
+            }),
+            all_entries,
+            &mut ordered_indices,
+        );
+    }
     ordered_indices
 }
 

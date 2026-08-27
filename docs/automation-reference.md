@@ -592,6 +592,20 @@ naming both the evidence field and the snapshot field. The authority for "is thi
 field projected" is the Rust snapshot function: a field the projection does not
 read is internal and must not appear here.
 
+**One documented field is bound to two snapshot objects, and neither projects
+it.** `snapshot-field-active-document-file-backed` is reported by both
+`notes.active_document_file_backed` and
+`local_history.active_document_file_backed`, and it is **the same fact about the
+same active document** — whether the selected tab has a stable saved path. It is
+therefore not either workflow's state, and sourcing it from two evidence surfaces
+would reach one user-visible fact two ways, which is exactly what this table
+exists to prevent. Both objects derive it through the single
+`active_document_is_file_backed` helper in `ui/automation.rs`, so it appears in
+the field table below but in **no** row here. `notes.document_note_available` is
+derived from the same helper for the same reason. The rule, stated so slots 6 and
+7 do not re-derive it: *a fact about the active document's identity is projected
+once, by the identity's owner, not by every workflow that consumes it.*
+
 | Projection | Evidence type | Evidence field | Snapshot field |
 | --- | --- | --- | --- |
 | `window.content_search` | `SearchPanelEvidence` | `query` | `content_search.query` |
@@ -628,6 +642,10 @@ read is internal and must not appear here.
 | `window.local_history` | `LocalHistoryEvidence` | `browse_available` | `local_history.browse_available` |
 | `window.local_history` | `LocalHistoryEvidence` | `availability` | `local_history.availability` |
 | `window.local_history` | `LocalHistoryEvidence` | `availability` | `local_history.automatic_capture_available` |
+| `window.notes` | `NotesEvidence` | `notes_menu_open` | `notes.notes_menu_open` |
+| `window.notes` | `NotesEvidence` | `active_document_bookmark_count` | `notes.active_document_bookmark_count` |
+| `window.notes` | `NotesEvidence` | `active_line_has_bookmark` | `notes.active_line_has_bookmark` |
+| `window.notes` | `NotesEvidence` | `folder_note_available` | `notes.folder_note_available` |
 
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |

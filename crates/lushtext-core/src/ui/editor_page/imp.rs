@@ -263,8 +263,34 @@ pub struct NotesPersistenceState {
     pub save_debounce: Debounce,
     /// Guard preventing overlapping saves for the same note projection.
     pub save_inflight: Cell<bool>,
-    /// Dirty flag set while a save is already in flight.
+    /// Dirty flag meaning the live projection is not on disk.
     pub save_dirty: Cell<bool>,
+    /// Supersession token for whole-sidecar bookmark writes.
+    ///
+    /// A bookmark write replaces the **entire** sidecar, so an older snapshot
+    /// landing after a newer one silently reverts the newer one. The close-time
+    /// flush is synchronous on the GTK thread while ordinary persistence runs on a
+    /// worker, so that inversion is reachable: the flush would lose exactly the
+    /// bookmark it exists to save. Every write captures this token at dispatch and
+    /// re-checks it **on the worker, inside the target write guard**, so a
+    /// superseded write skips instead of reverting. `Arc<AtomicU64>` rather than
+    /// `Cell` because the worker must read it off the GTK thread.
+    pub save_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Consecutive failed sidecar writes for this editor.
+    ///
+    /// Bounds the retry so a persistently unwritable sidecar cannot spin the
+    /// worker pool or repeat its warning every debounce window. Workspace
+    /// persistence has the same shape: bounded backoff, then await explicit
+    /// intent. Here "explicit intent" is the user's next bookmark edit.
+    pub save_failure_streak: Cell<u32>,
+    /// Whether this editor's sidecar has been read back at least once.
+    ///
+    /// Bookmark persistence writes the **whole** sidecar and deletes it when the
+    /// live set is empty, so writing before the sidecar has been read would
+    /// destroy it. That window is real: a restored tab whose file was renamed in
+    /// a previous session reads a sidecar the startup migration has not moved
+    /// yet, and reports zero bookmarks.
+    pub sidecar_resolved: Cell<bool>,
 }
 
 /// One live bookmark projected into a `GtkSourceMark`.

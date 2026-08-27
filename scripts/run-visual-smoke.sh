@@ -1206,6 +1206,18 @@ run_capture() {
     if [[ "$name" == workspace-* ]]; then
         capture_args+=(--wait-predicate workspace-refresh-complete)
     fi
+    # Every scenario in this lane asserts `workspace_sidebar_visible is True`, but
+    # the constrained widths run the workspace sidebar's adaptive collapse and
+    # restore. Gating only on `idle` lets the snapshot land mid-transition, with
+    # `workspace_sidebar_requested: true` and `workspace_sidebar_visible: false` —
+    # observed once in four runs. `visual-geometry-settled` includes the
+    # `workspace-sidebar-animation` blocker (plus the breakpoint-driven shell
+    # settle), which is exactly the transition being raced.
+    case "$name" in
+        constrained-*|compact-*|short-layout|large-text-constrained)
+            capture_args+=(--wait-predicate visual-geometry-settled)
+            ;;
+    esac
     if [[ "$minimap" == "1" ]]; then
         capture_args+=(--enable-minimap)
     fi

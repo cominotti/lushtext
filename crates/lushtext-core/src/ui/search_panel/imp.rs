@@ -6,6 +6,14 @@
 //! into a `GtkTreeListModel`, and debounced query processing. Uses
 //! `std::thread::spawn` + `crossbeam_channel::bounded` instead of
 //! `spawn_blocking_then` because search results stream incrementally.
+//!
+//! # Role
+//!
+//! This module carries **no role**. It is a **called presentation surface** of
+//! `WFR-SEARCH-REPLACE` — it projects the workflow onto widgets (subclass state, template children, construction, and disposal) — so under
+//! `gtk-adapter-module-boundaries` it is outside the five-name role taxonomy,
+//! takes none of those names, and owns no `policy.rs` and no `evidence.rs`. Its
+//! behavior obligations are unchanged. Named in that workflow's matrix row.
 
 use super::item::SearchResultItem;
 use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
