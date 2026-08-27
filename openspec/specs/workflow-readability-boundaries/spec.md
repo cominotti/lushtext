@@ -2,7 +2,6 @@
 
 ## Purpose
 Define LushText's workflow readability convention: the completion matrix that enumerates every workflow, the narrative facade a migrated workflow presents, the reified seam value objects that carry identity and freshness across workflow boundaries, the co-location and purity rules for pure workflow policy, intent-first boundary naming, risk-ordered vertical migration slices, retroactive amendment, and the standing guidance that must stay consistent with it.
-
 ## Requirements
 ### Requirement: Every workflow is enumerated before any workflow is migrated
 The project SHALL maintain `docs/workflow-readability-matrix.md` as the completion
@@ -16,6 +15,19 @@ are classified before the convention becomes normative.
 A row MUST NOT restate the target file set as a literal file list. The target file
 set is fully derivable from the role naming convention, so duplicating it per row
 creates a second source of truth that can drift from the convention.
+
+A row's **measured** cells — its current size, its per-kind test seam counts, and
+the consumer count for any pure policy it owns — are census estimates until the
+row's migration re-derives them. A migrating workflow SHALL re-derive those cells
+from the code and correct them in the same change, rather than inheriting the
+census figures or reporting against them. Re-derivation MUST be **row-scoped**: it
+counts only what the workflow owns, and it MUST NOT pool shared service files,
+cross-cutting modules, or neighbouring files the workflow merely calls. Size
+figures MUST count production lines, excluding `#[cfg(test)]` modules, and MUST
+name any shared population that the census cell had pooled so a later slot reading
+from the other side does not re-derive it as its own. A correction MAY move a
+figure in either direction, and a change MUST NOT treat an unchanged cell as the
+expected outcome.
 
 #### Scenario: Census precedes exemplar migration
 - **WHEN** the exemplar workflow migration begins
@@ -45,6 +57,25 @@ creates a second source of truth that can drift from the convention.
   row claims evidence that does not exist
 - **THEN** `make check-policy` fails
 - **AND** the failure names the workflow and the missing row or evidence
+
+#### Scenario: Migration re-derives its row's measured cells
+- **WHEN** a workflow is migrated
+- **THEN** the change re-derives the row's size, per-kind seam counts, and pure
+  policy consumer count from the code and corrects the cells in the same change
+- **AND** it does not report its migration against the census figures it replaced
+
+#### Scenario: Re-derivation is row-scoped and excludes co-located tests
+- **WHEN** a migration measures its row's size or seam population
+- **THEN** it counts only the files the workflow owns, excluding shared services,
+  cross-cutting modules, and neighbouring files the workflow only calls
+- **AND** size figures count production lines rather than `#[cfg(test)]` modules
+
+#### Scenario: A pooled census figure names the population it shared
+- **WHEN** a corrected cell replaces a figure that had pooled seams or lines
+  shared with another workflow
+- **THEN** the correction names the shared population and the rows that share it
+- **AND** a later migration of one of those rows can re-derive its own share
+  without rediscovering the pooling
 
 ### Requirement: A migrated workflow presents one narrative facade
 
@@ -199,6 +230,16 @@ and MUST NOT be relocated beneath any one of them. Shared coordination that enco
 LushText-specific budget, admission, or retirement policy MUST NOT be treated as
 generic toolkit machinery for extraction into a separate reusable crate.
 
+A workflow whose pure decision logic is **entirely** cross-cutting therefore owns
+no `policy.rs`, and such a workflow SHALL still count as a complete migrated row.
+Its matrix entry declares no pure policy role and names the cross-cutting module
+and the other owning workflows that keep it shared. This mirrors the treatment of
+a workflow with no qualifying seam bundle: the absence is a recorded conclusion
+with its evidence, not an unmet obligation. A migration MUST NOT manufacture a
+`policy.rs` for such a workflow by copying, forking, or re-implementing part of
+the cross-cutting module beneath it, and MUST NOT duplicate a shared limit or
+shared arithmetic to obtain a local policy module.
+
 #### Scenario: Single consuming file is not sufficient grounds to relocate
 - **WHEN** pure policy has exactly one consuming file, and that file is the
   coordination adapter that many workflows call
@@ -214,6 +255,21 @@ generic toolkit machinery for extraction into a separate reusable crate.
 - **WHEN** pure policy is consumed by several unrelated workflows
 - **THEN** it stays in its shared location
 - **AND** the matrix records it as cross-cutting with its consumer list
+
+#### Scenario: Workflow with only cross-cutting policy is still a complete row
+- **WHEN** a migrated workflow's pure decision logic is entirely cross-cutting, so
+  it owns no `policy.rs`
+- **THEN** the row is complete with no pure policy role declared, naming the
+  cross-cutting module and the other owning workflows that keep it shared
+- **AND** the migration does not fork or re-implement part of that module beneath
+  the workflow to manufacture a local policy file
+
+#### Scenario: Shared arithmetic is called rather than duplicated
+- **WHEN** two workflows need the same pure limit, threshold, or arithmetic that a
+  cross-cutting module owns
+- **THEN** both call the cross-cutting owner
+- **AND** neither copies it into its own `policy.rs`, because a forked shared limit
+  can drift while both copies still read as correct
 
 #### Scenario: Policy purity is mechanically enforced
 - **WHEN** a `policy.rs` module gains a GTK-family import
@@ -311,3 +367,4 @@ guidance.
 - **THEN** skills and rules referencing its former location are updated in the same
   change
 - **AND** no maintained guidance references a path that no longer exists
+
