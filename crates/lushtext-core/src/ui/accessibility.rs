@@ -322,6 +322,21 @@ pub fn set_selected<W: IsA<gtk4::Accessible>>(widget: &W, selected: Option<bool>
     }
 }
 
+/// Set the checked state for a row that represents one of several exclusive choices.
+///
+/// `Selected` is the wrong state for an `AdwActionRow`: it subclasses
+/// `GtkListBoxRow`, whose accessible context owns selection and drops an
+/// app-supplied `Selected`. A single-choice option is a radio in ARIA terms, so
+/// the caller sets `AccessibleRole::Radio` and this publishes `Checked`.
+pub fn set_checked<W: IsA<gtk4::Accessible>>(widget: &W, checked: bool) {
+    let state = if checked {
+        gtk4::AccessibleTristate::True
+    } else {
+        gtk4::AccessibleTristate::False
+    };
+    widget.update_state(&[gtk4::accessible::State::Checked(state)]);
+}
+
 /// Set the pressed state for toggles when the visible state is app-owned.
 pub fn set_pressed<W: IsA<gtk4::Accessible>>(widget: &W, pressed: bool) {
     let state = if pressed {

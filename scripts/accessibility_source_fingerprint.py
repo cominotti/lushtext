@@ -48,13 +48,19 @@ RELEVANT_PREFIXES = (
 def source_fingerprint(repo_root: Path) -> dict[str, object]:
     repo_root = repo_root.resolve()
     entries = list(source_entries(repo_root))
-    status = relevant_status(repo_root)
+    status, status_available = relevant_status(repo_root)
     head = git_output(repo_root, ["rev-parse", "HEAD"]) or None
     return {
         "schema_version": 2,
         "sha256": entries_digest(entries),
         "git_head": head,
-        "dirty": bool(status),
+        # Fail safe when git could not answer. `git_output` returns "" on a
+        # non-zero exit, which is indistinguishable from "clean" — so a broken or
+        # absent git made `dirty` false, which made smoke freshness *not required*,
+        # which let the accessibility gate pass with no proof at all. An
+        # unanswerable question is treated as dirty.
+        "dirty": bool(status) or not status_available,
+        "status_available": status_available,
         "path_count": len(entries),
         "relevant_status": status,
     }
@@ -110,16 +116,23 @@ def relevant_files(repo_root: Path) -> list[str]:
     return sorted(files)
 
 
-def relevant_status(repo_root: Path) -> list[str]:
+def relevant_status(repo_root: Path) -> tuple[list[str], bool]:
+    """Return relevant porcelain rows, and whether git actually answered.
+
+    The second element is what keeps a git failure from reading as a clean tree.
+    """
+    lines, available = git_lines_checked(
+        repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]
+    )
     rows = []
-    for line in git_lines(repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]):
+    for line in lines:
         path = line[3:]
         if " -> " in path:
             _old, path = path.split(" -> ", 1)
         normalized = path.replace("\\", "/")
         if is_relevant(normalized):
             rows.append(line)
-    return sorted(rows)
+    return sorted(rows), available
 
 
 def is_relevant(path: str) -> bool:
@@ -127,8 +140,22 @@ def is_relevant(path: str) -> bool:
 
 
 def git_lines(repo_root: Path, args: list[str]) -> list[str]:
-    text = git_output(repo_root, args)
-    return [line.rstrip() for line in text.splitlines() if line.strip()]
+    return git_lines_checked(repo_root, args)[0]
+
+
+def git_lines_checked(repo_root: Path, args: list[str]) -> tuple[list[str], bool]:
+    """Return git output lines and whether the command succeeded."""
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return [], False
+    lines = [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+    return lines, True
 
 
 def git_output(repo_root: Path, args: list[str]) -> str:

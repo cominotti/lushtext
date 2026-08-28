@@ -17,8 +17,8 @@ This crate owns the application's real behavior: domain types, services, and GTK
 ## Structure
 
 - Treat `ui/` as driving adapters. Split big widget folders by workflow before inventing new abstraction layers.
-- Keep responsive main-window calculations in `ui/window/adaptive_shell.rs` as
-  plain inputs and decisions; `ui/window/imp.rs` retains GTK objects, settings,
+- Keep responsive main-window calculations in `ui/window/policy.rs` as plain
+  inputs and decisions; `ui/window/imp.rs` retains GTK objects, settings,
   allocation application, focus, signals, and disposal.
 - Keep the private `ui/window/notes/` facade responsible for shared note
   coordination, with bookmark, editor, and browser workflows in their named

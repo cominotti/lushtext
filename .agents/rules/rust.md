@@ -258,6 +258,24 @@ A `policy.rs` module must contain no `gtk4`, `glib`, `gio`, `libadwaita`, or
 scope, which reaches `ui/**/policy.rs` by convention. `make
 check-workflow-boundaries` fails on a violation and names the file and import.
 
+**Because that scope is decided by *name*, the converse defect is the one to watch
+for: pure decision logic in `ui/` under any other file name is silently outside
+the scope while every command exits 0.** Purity and reachability checks can only
+inspect files the convention already selects, so the same gate also **discovers**
+GTK-free `ui/` modules that are not named `policy.rs` and fails naming any that
+holds decision logic and carries no declared role. Classification is by the
+module's **declared role**, not by permitted contents — a GTK-free narrative
+facade, `seams.rs`, bounded coordination role, `evidence.rs`, or `test_policy.rs`
+is already correctly named, and a module that is genuinely cross-cutting says so
+in its module doc and names its owning row. Declaring a role a module does not
+perform is a false role claim, reviewed as such. Two real instances were found by
+this check and renamed into the convention: `ui/window/adaptive_shell.rs`
+(248 production lines, **0 mutants** generated before the rename) and
+`ui/markdown_preview/inline_footnotes.rs` (214 production lines of decision
+logic, in scope only through a hand-listed entry). Report such a rename's result
+as a **gain from zero** where the module was never in scope, and as a **parity
+claim** only where an entry did select it.
+
 Pure policy moves beside its consumer only when it has a single **owning
 workflow**. Eligibility is counted in owning workflows, not consuming files: pure
 policy whose only consumer is its own coordination adapter is cross-cutting when

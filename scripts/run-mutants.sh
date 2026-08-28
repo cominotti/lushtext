@@ -185,11 +185,25 @@ run_smoke() {
 
 run_diff() {
     local diff_file="${1:-${MUTANTS_DIFF_FILE}}"
+
+    # An EXPLICIT diff path must exist. `ensure_diff_file` generates a
+    # `git diff ${MUTANTS_BASE}...` three-dot diff when the named file is absent,
+    # which is right for the default path but silently substitutes an unrelated
+    # scope when a caller passes one. That failure mode is not theoretical: it
+    # reported a plausible-looking "54 mutants: 1 missed" against a previous
+    # slot's committed diff and was caught only because a survivor named a file
+    # outside the intended set. Mirror run_smoke and fail instead.
+    if [[ $# -ge 1 && -n "${1}" ]]; then
+        [[ -f "${diff_file}" ]] || fail "diff file does not exist: ${diff_file}"
+        [[ -s "${diff_file}" ]] || fail "diff file is empty: ${diff_file}"
+    fi
+
     ensure_diff_file "${diff_file}"
 
+    # An empty hunk set means the run proved nothing. Exiting 0 here let a
+    # mis-scoped or stale diff read as a pass.
     if ! grep -q '^@@ ' "${diff_file}"; then
-        echo "No diff hunks found; skipping changed-code mutation run."
-        return 0
+        fail "no diff hunks found in ${diff_file}; nothing was mutation tested"
     fi
 
     mapfile -t args < <(mutants_args)

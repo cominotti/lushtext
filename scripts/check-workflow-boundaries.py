@@ -118,6 +118,10 @@ SLOT_ENTRY_RE = re.compile(r"(WFR-[A-Z0-9-]+)(\s*\(partial\))?", re.IGNORECASE)
 # Statuses that owe no outstanding-slot entry: the work is either done or the row
 # is deliberately never migrated.
 SETTLED_STATUSES = ("migrated", "exempt")
+# Terminal statuses a row can hold that are *not* `migrated`. A slot may declare
+# its work on such a row complete; it may not claim the row became `migrated`,
+# because these labels mean it never will.
+TERMINAL_NON_MIGRATING_STATUSES = ("cross-cutting", "exempt")
 # Both this pattern and `SLOT_LEDGER_RE` end their value group with
 # `\s*(\S.*)$` rather than `\s*(.+)$`: the sets `\s` and `.` overlap, so the
 # looser form is an ambiguous adjacent-quantifier pair a scanner reports as
@@ -292,6 +296,167 @@ def mutation_reach_findings(paths: list[str], globs: list[str]) -> list[str]:
                 f"{relative} is not matched by any .cargo/mutants.toml examine_globs "
                 "entry, so relocating pure policy here would drop mutation coverage"
             )
+    return findings
+
+
+# --- Check 3: inclusion-side discovery of pure `ui/` modules ----------------
+#
+# Check 2 asks "is every `policy.rs` reachable by a mutation glob?". It can only
+# ever inspect files the naming convention already selects, so it cannot see the
+# converse defect: pure decision logic sitting in `ui/` under some *other* file
+# name is silently outside the mutation scope while every command exits 0. This
+# check closes that half by discovering GTK-free `ui/` modules and requiring each
+# to carry a declared workflow role.
+#
+# The classification is role-based rather than a content escape. The tree
+# legitimately contains many GTK-free non-policy modules — narrative facades,
+# `seams.rs` value-object modules, bounded coordination roles, `test_policy.rs`,
+# `evidence.rs` — and a content-shaped escape list would go red on all of them.
+# Two channels satisfy the check:
+#
+#   1. the file name is one the convention already assigns a role to, or
+#   2. the module doc *declares* the role, which is the recorded-reason escape.
+#
+# The escape's limit is that the declaration must name a role or an ownership —
+# "Role: ...", "cross-cutting", or an owning `WFR-*` row. A comment merely
+# asserting the module is fine does not classify it.
+
+# File names the convention itself assigns a role to.
+FACADE_MODULE_NAME = "mod.rs"
+FIXED_ROLE_MODULE_NAMES = (
+    POLICY_MODULE_NAME,
+    "evidence.rs",
+    "seams.rs",
+    "test_policy.rs",
+)
+# The bounded coordination role set. A module may qualify one of these with the
+# stage order it serves (`query_execution.rs`), so both forms are accepted.
+BOUNDED_COORDINATION_ROLES = (
+    "admission",
+    "execution",
+    "retirement",
+    "watch",
+    "journal",
+)
+# Module-doc tokens that declare a role or an ownership. The lookbehind is a
+# non-word character rather than whitespace because these tokens are routinely
+# written inside Markdown emphasis or backticks (`**cross-cutting**`,
+# `` `WFR-SHELL-LAYOUT` ``), which a whitespace-anchored pattern misses — a real
+# false positive this check hit on `ui/sidebar/width_preset.rs`.
+ROLE_DECLARATION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[Rr]ole:|cross-cutting|WFR-[A-Z0-9-]+)",
+)
+UI_SUBTREE = "ui"
+
+
+def module_doc(text: str) -> str:
+    """Return the file's leading `//!` module documentation block."""
+    doc: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("//!"):
+            doc.append(line[3:].strip())
+            continue
+        if not line or line.startswith("//"):
+            # Blank lines and the SPDX header precede the module doc.
+            continue
+        break
+    return "\n".join(doc)
+
+
+def has_convention_role_name(name: str) -> bool:
+    """Return whether the file name is one the convention assigns a role to."""
+    if name == FACADE_MODULE_NAME or name in FIXED_ROLE_MODULE_NAMES:
+        return True
+    stem = name[:-3] if name.endswith(".rs") else name
+    return any(
+        stem == role or stem.endswith(f"_{role}") for role in BOUNDED_COORDINATION_ROLES
+    )
+
+
+def holds_decision_logic(lines: list[tuple[int, str]]) -> bool:
+    """Return whether the module declares any function.
+
+    A pure module with no functions is a type or re-export module and carries no
+    decision to mutate. Requiring a richer content test here would reintroduce
+    the content escape this check deliberately rejects.
+    """
+    return any(re.search(r"(?<![A-Za-z0-9_])fn\s+[A-Za-z_]", line) for _, line in lines)
+
+
+def gtk_free_ui_modules(root: Path) -> list[Path]:
+    """List GTK-free modules under the crate's `ui/` subtree.
+
+    Purity uses the same predicate as Check 1 — `code_lines()` stripping plus the
+    GTK-family reference scan — so a doc comment mentioning `gio::ListStore` does
+    not make a pure module look impure. Stating the predicate once and sharing it
+    is the point: a discovery check whose purity test lives in whoever runs a
+    grep is not mechanical.
+    """
+    ui_root = root / CORE_SRC / UI_SUBTREE
+    if not ui_root.is_dir():
+        return []
+    pure: list[Path] = []
+    for path in sorted(ui_root.rglob("*.rs")):
+        if not gtk_reference_findings(path, root):
+            pure.append(path)
+    return pure
+
+
+# Pure `ui/` modules that hold decision logic, are classified only by a **prose**
+# role declaration in their module doc, and are therefore outside `ui/**/policy.rs`
+# — so they generate zero mutants. Each is a deliberate, recorded disposition, not
+# an oversight, and listing them here makes the silence visible in the gate rather
+# than only in the module's own comment. A prose-classified module that is *not*
+# listed is a finding: the escape must be explicit somewhere a reviewer reads.
+PROSE_CLASSIFIED_UNMUTATED = {
+    "crates/lushtext-core/src/ui/sidebar/width_preset.rs": (
+        "cross-cutting value owned by WFR-SHELL-LAYOUT and consumed by Preferences "
+        "and the window shell; its mutation coverage follows that row's migration"
+    ),
+    "crates/lushtext-core/src/ui/sidebar/workspace_section/watch_targets.rs": (
+        "stateful data structure owned by WFR-WORKSPACE-TREE's `watch` role, "
+        "recorded in that row's Migrated Workflow Roles subsection as neither a "
+        "role nor a called presentation surface"
+    ),
+}
+
+
+def unclassified_pure_module_findings(root: Path) -> list[str]:
+    """Return findings for pure `ui/` modules that carry no declared role."""
+    findings: list[str] = []
+    for path in gtk_free_ui_modules(root):
+        if has_convention_role_name(path.name):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not holds_decision_logic(code_lines(text)):
+            continue
+        relative_path = (
+            display_path(path) if root == REPO_ROOT else str(path.relative_to(root))
+        )
+        if ROLE_DECLARATION_RE.search(module_doc(text)):
+            # Classified by prose. That is permitted, but a prose-classified
+            # module holding decision logic generates no mutants, so the
+            # disposition has to be recorded here too.
+            #
+            # Only the real tree carries that ledger: `PROSE_CLASSIFIED_UNMUTATED`
+            # holds repo-relative paths, so a fixture tree has nothing to consult
+            # and must not be asked to register its modules.
+            if root != REPO_ROOT:
+                continue
+            if relative_path not in PROSE_CLASSIFIED_UNMUTATED:
+                findings.append(
+                    f"{relative_path} is GTK-free, holds decision logic, and is "
+                    "classified only by a prose role declaration, so it generates no "
+                    "mutants. Record its disposition in PROSE_CLASSIFIED_UNMUTATED "
+                    "or rename it into the `policy.rs` convention"
+                )
+            continue
+        findings.append(
+            f"{relative_path} is GTK-free and holds decision logic but carries no declared "
+            "workflow role, so the `ui/**/policy.rs` mutation convention cannot see it. "
+            "Rename it into the convention or declare its role in the module doc"
+        )
     return findings
 
 
@@ -665,6 +830,7 @@ def record_findings(rows: list[MatrixRow], record_path: Path) -> list[str]:
     status_by_id = {row.row_id: row for row in rows}
     findings: list[str] = []
     claimed_outstanding: set[str] = set()
+    claimed_complete: set[str] = set()
 
     for claim in claims:
         for row_id, partial in claim.entries:
@@ -680,6 +846,18 @@ def record_findings(rows: list[MatrixRow], record_path: Path) -> list[str]:
                 # row is done while the row continues in a later slot, which is
                 # how an incremental row such as WFR-AUTOMATION-SPINE avoids
                 # having to be falsely marked `migrated` to satisfy the gate.
+                continue
+            if claim.complete:
+                claimed_complete.add(row_id)
+            if claim.complete and row.status in TERMINAL_NON_MIGRATING_STATUSES:
+                # A cross-cutting lane or an exempt row can never be `migrated`
+                # — that is what the label means — so a slot that finishes its
+                # work cannot express the fact by marking it migrated. Requiring
+                # that would demand the impossible, and the alternative the gate
+                # used to force was worse: listing a terminal row as
+                # *outstanding* so the reconciliation would pass, which is how
+                # `WFR-PLAIN-DISPOSAL` came to be recorded as unfinished work in
+                # a slot that had settled it.
                 continue
             if claim.complete and row.status != MIGRATED_STATUS:
                 findings.append(
@@ -705,7 +883,9 @@ def record_findings(rows: list[MatrixRow], record_path: Path) -> list[str]:
             continue
         if row.slot is None or row.slot.strip().lower() in {"none", ""}:
             continue
-        if row.row_id not in claimed_outstanding:
+        # Named on a complete line is also being accounted for. Only a row the
+        # ledger mentions nowhere is a disagreement.
+        if row.row_id not in claimed_outstanding and row.row_id not in claimed_complete:
             findings.append(
                 f"{display_path(MATRIX_PATH)}:{row.line_number} row {row.row_id} is "
                 f"`{row.status}` with migration slot `{row.slot}`, but {record} lists it "
@@ -738,6 +918,10 @@ def check_tree(
         )
     else:
         findings.append(f"missing mutation configuration: {display_path(mutants_config)}")
+
+    # Check 3 needs no matrix data, so it runs before the matrix early return:
+    # a missing matrix must not silently disarm the discovery half.
+    findings.extend(unclassified_pure_module_findings(root))
 
     if not matrix_path.is_file():
         findings.append(f"missing workflow readability matrix: {display_path(matrix_path)}")
@@ -842,6 +1026,72 @@ def run_self_test() -> None:
         findings = check_tree(root, matrix, config)
         if not any("references `gtk4`" in finding for finding in findings):
             raise AssertionError(f"expected a GTK purity finding, got {findings}")
+
+    # --- Check 3: inclusion-side discovery ---------------------------------
+    #
+    # The red arm and the green arm are both proved, because a discovery check
+    # that has only ever been seen passing is a check nobody has run, and one
+    # that goes red on a conforming tree is a check that must be suppressed to
+    # pass. The green arm therefore uses the module shapes the convention
+    # actually blesses: a GTK-free facade, a `seams.rs`, a bounded
+    # `retirement.rs`, a qualified coordination role, and a module that declares
+    # cross-cutting ownership in prose.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        matrix, config = build_fixture(root, matrix_body=clean_row)
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(
+            root / CORE_SRC / "ui/example/unclassified.rs",
+            "//! Some prose that names no role at all.\npub fn decide() -> bool { true }\n",
+        )
+        findings = check_tree(root, matrix, config)
+        if not any("carries no declared workflow role" in f for f in findings):
+            raise AssertionError(f"expected a discovery finding, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        matrix, config = build_fixture(root, matrix_body=clean_row)
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        # Every one of these is correctly named or correctly declared under the
+        # convention and MUST NOT be reported.
+        write(
+            root / CORE_SRC / "ui/example/mod.rs",
+            "//! The example workflow facade.\npub fn run() -> bool { true }\n",
+        )
+        write(
+            root / CORE_SRC / "ui/example/seams.rs",
+            "//! Seam value objects.\npub fn make() -> bool { true }\n",
+        )
+        write(
+            root / CORE_SRC / "ui/example/retirement.rs",
+            "//! Deferred destruction.\npub fn retire() -> bool { true }\n",
+        )
+        write(
+            root / CORE_SRC / "ui/example/query_execution.rs",
+            "//! A qualified bounded role.\npub fn execute() -> bool { true }\n",
+        )
+        write(
+            root / CORE_SRC / "ui/example/test_policy.rs",
+            "//! Test policy.\npub fn value() -> u64 { 1 }\n",
+        )
+        write(
+            root / CORE_SRC / "ui/example/evidence.rs",
+            "//! Evidence surface.\npub fn read() -> bool { true }\n",
+        )
+        write(
+            root / CORE_SRC / "ui/example/preset.rs",
+            "//! A value that is **cross-cutting**, owned by `WFR-EXAMPLE`.\n"
+            "pub fn clamp(v: u64) -> u64 { v }\n",
+        )
+        write(
+            root / CORE_SRC / "ui/example/types_only.rs",
+            "//! Types with no decision to mutate.\npub struct Thing;\n",
+        )
+        findings = check_tree(root, matrix, config)
+        if any("carries no declared workflow role" in f for f in findings):
+            raise AssertionError(
+                f"discovery check went red on a conforming tree: {findings}"
+            )
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1202,6 +1452,48 @@ def run_self_test() -> None:
         if not any("is declared complete but WFR-PENDING is `pending`" in f for f in findings):
             raise AssertionError(
                 f"expected a complete-but-pending finding, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A terminal non-migrating row may be named on a *complete* line. The
+        # gate used to demand `migrated` here, which such a row can never reach,
+        # so the only way to pass was to record settled work as outstanding.
+        cross_cutting_body = (
+            "| WFR-EXAMPLE | Example | `model/example_policy.rs` | migrated |\n"
+            "| WFR-LANE | Lane | 1 | cross-cutting |\n"
+        )
+        matrix, config, record = slotted_fixture(
+            root,
+            cross_cutting_body,
+            "- slot 1 (complete): WFR-EXAMPLE, WFR-LANE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if any("is declared complete but WFR-LANE" in f for f in findings):
+            raise AssertionError(
+                f"a cross-cutting lane must be nameable on a complete line, got {findings}"
+            )
+        if any("WFR-LANE" in f and "no outstanding slot" in f for f in findings):
+            raise AssertionError(
+                f"a row named on a complete line is accounted for, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # But a *pending* row on a complete line is still a false claim.
+        pending_on_complete = (
+            "| WFR-EXAMPLE | Example | `model/example_policy.rs` | migrated |\n"
+            "| WFR-PENDING | Pending | 1 | pending |\n"
+        )
+        matrix, config, record = slotted_fixture(
+            root,
+            pending_on_complete,
+            "- slot 1 (complete): WFR-EXAMPLE, WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("is declared complete but WFR-PENDING is `pending`" in f for f in findings):
+            raise AssertionError(
+                f"a pending row on a complete line must still fail, got {findings}"
             )
 
     with tempfile.TemporaryDirectory() as tmp:

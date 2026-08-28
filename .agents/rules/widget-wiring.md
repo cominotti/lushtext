@@ -329,6 +329,18 @@ evidence surface replaced.
   constraint prevents, not a demonstration of it. Reference implementations:
   `search_panel::test_evidence_reads_stay_side_effect_free_across_journal_mutation`,
   `editor_page::test_load_evidence_reads_stay_side_effect_free_across_load_mutation`.
+- **A surface that mixes per-session state with process-wide counters must not be
+  compared as one value in a reentrancy proof.** "One accessor reads the whole
+  surface" does not imply "every proof compares the whole surface": compare the
+  part the invariant is about. A process-wide counter advanced from a worker
+  thread — `SNAPSHOT_WORKER_DROPS` in `ui/buffer_snapshot.rs` is the one in this
+  tree — can advance between any two consecutive reads without either read having
+  caused it, so a whole-surface equality silently asserts "no background work
+  landed while I was looking". That is not the rule, is not stable, and fails at
+  random under load while *looking* exactly like the production accessor mutating
+  its own metric. For the counter invariant itself, quiesce the owning lane first
+  and assert it was still quiescent afterwards; only then is an advancement
+  attributable to the reads.
 - An evidence surface is an internal type of the owning crate at the narrowest
   visibility its readers need. It is never added to the public D-Bus automation
   schema; once a workflow migrates, its automation snapshot fields *project*

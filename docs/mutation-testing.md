@@ -21,10 +21,13 @@ lives in a `policy.rs` beside the workflow it serves, so that logic keeps
 mutation coverage wherever its owning workflow lives and no new entry is needed
 here when a workflow migrates. The precondition is purity — a `policy.rs` must
 contain no `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5` import.
-`make check-workflow-boundaries` enforces both halves: policy purity, and that
-every `policy.rs` in the crate is reachable from the glob list. The remaining
-hand-listed UI file entries are pre-convention; each retires as its own workflow
-migrates and its pure logic lands in a `policy.rs`.
+`make check-workflow-boundaries` enforces three things: policy purity, that
+every `policy.rs` in the crate is reachable from the glob list, and — because
+membership is decided by *name* — that no GTK-free `ui/` module sits outside the
+convention holding decision logic under some other name while every command
+exits 0. **No hand-listed UI file entries remain.** The last one,
+`ui/markdown_preview/inline_footnotes.rs`, retired when that module became the
+Markdown preview workflow's `ui/markdown_preview/policy.rs`.
 
 When pure policy relocates, the change must prove mutation parity: run
 `make mutants-diff` for the relocated logic and record the before/after
@@ -160,7 +163,9 @@ The largest missed clusters were:
 |------|----------------|-------------------|
 | `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` (then `ui/editor_page/minimap.rs`) | 215 | Geometry and marker-color helper assertions |
 | `crates/lushtext-core/src/services/editor_io.rs` | 74 | Lossy preview, line ending, file health, and encoding-analysis assertions |
-| `crates/lushtext-core/src/ui/markdown_preview/inline_footnotes.rs` | 49 | Scan-plan, delimiter, escape, and lowered-output tests |
+| `crates/lushtext-core/src/ui/markdown_preview/policy.rs` (then `ui/markdown_preview/inline_footnotes.rs`) | 49 | Scan-plan, delimiter, escape, and lowered-output tests |
+| `crates/lushtext-core/src/services/file_tree.rs` | 8 | Bounded-scan telemetry assertions: `examined_entries`, `peak_retained_entries`, `peak_retained_bytes`, and `error` on the published `DirectoryScan` |
+| `crates/lushtext-core/src/services/draft_service.rs` | 5 | Orphan-cleanup continuation assertions: `retained`, `failures`, `next_manifest_offset`, and `directory_wrapped` on the published plan and outcome |
 | `crates/lushtext-core/src/services/palette/index.rs` | 26 | Index construction, root interning, recursion cap, and path filtering tests |
 | `crates/lushtext-core/src/model/encoding.rs` | 24 | Table tests for IDs, labels, BOM policy, display, and mode parsing |
 | `crates/lushtext-core/src/services/local_history_service.rs` | 23 | Availability, snapshot lifecycle, and pruning tests |
@@ -173,6 +178,13 @@ methods. That file was removed from the default mutation scope rather than
 excluded by a broad pattern; tab behavior stays in the widget harness until
 smaller pure tab policy helpers are extracted. After that correction,
 `scripts/run-mutants.sh list` reported 1,431 configured mutants.
+
+The calibration **comment** recording that decision has since been retired from
+`.cargo/mutants.toml`. It named a file the current `examine_globs` never selects
+— `ui/window/tabs.rs` is neither a `policy.rs` nor a hand-listed entry — so it
+documented a decision the configuration was not implementing, and a reader could
+not tell it from a live exclusion. The ratchet record above is the durable home
+for the finding; the configuration no longer restates it.
 
 On June 2, 2026, the minimap cluster was ratcheted separately. The
 non-widget-only focused slice for the then-live
@@ -208,6 +220,128 @@ true before the migration read them:
   legitimately out of scope for not being a policy module — the first and second
   bullets above describe exactly the adapter and drawing mutants that
   retirement removes from the lane.
+- **Slot 7a brought six modules into the convention, and four of them were never
+  on the census's relocation candidate list.** `ui/window/print/policy.rs` (3
+  mutants), `ui/search_bar/policy.rs` (36), `ui/window/notifications/policy.rs`
+  (11), and `ui/window/encoding/policy.rs` (32) are all **gain from zero**: their
+  rows were recorded as owning `none` pure policy, the decisions were interleaved
+  with GTK calls, and none of it had mutation coverage. Configured total
+  **5,216 → 5,381**: **+82** from those four, **+81** from the `adaptive_shell`
+  rename, and **+2** net from the preview module — it gained 12 when the facade
+  migration moved this workflow's fuzz and property entry points into it, and 10
+  of those 12 are excluded (below). Pure mutation-scoped policy modules
+  **11 → 17**.
+- **"Unkillable by construction" is a distinct exclusion reason from
+  "equivalent", and slot 7a needed it for the first time.** Ten of the preview
+  module's twelve gained mutants sit in items behind
+  `#[cfg(any(feature = "property-tests", feature = "fuzzing"))]`. The default lane
+  deliberately runs with neither feature, so that code is **not compiled** and no
+  mutation of it can change any test result. Listing them without excluding them
+  reports permanent survivors no test could ever kill, which is worse than noise:
+  it makes the ratchet's survivor count meaningless for that file. Exclusions for
+  this reason must say so explicitly rather than borrowing the word "equivalent",
+  because the remedy is different — an equivalence is re-triaged when constants
+  move, whereas this one is re-triaged only if the lane's feature set changes.
+- **Aggregate mutant counts hide mixed findings; enumerate before concluding.**
+  That same "+12" contained two unrelated things. Ten were the accounting artifact
+  above. The other two belonged to `inline_footnote_limited_plan`, which is **real
+  production policy with three production callers** and had been filed under the
+  module's "Fuzzing and property-test entry points" banner — whose comment
+  asserted that fuzz and property tests were its only callers. Its survivor
+  (`delete field source_bytes`) was a genuine untested production contract: the
+  function exists to publish the refused source size next to the limit, and
+  nothing asserted it. Fixed by relocating the function above the banner,
+  correcting the banner comment, and adding
+  `the_inline_footnote_limited_plan_reports_the_source_size_it_refused`. The
+  finding is only visible from the per-mutant list; the file-level total looked
+  like one uniform gain.
+- **Retiring an exclusion beats narrowing one, and an extraction made for
+  exclusion granularity can make the exclusion unnecessary.** Slot 7a extracted
+  `properties_inner_split_width` purely so a non-binding-floor equivalence could be
+  excluded at function granularity instead of swallowing an observable neighbour.
+  A later run then surfaced a *different* operator on the same function — whole-body
+  replacement with `-1.0`, which the operator-specific exclusion did not name — and
+  it survived for the same reason: every mutation of that width is invisible
+  *through its caller*, because the floor it feeds is non-binding and a mutated
+  width only makes the floor less binding. Rather than widen the exclusion (which
+  would have swallowed `replace - with /`, a killable mutant), the extracted
+  function was given a **direct contract test**. A named pure function has a
+  contract of its own, and asserting it killed all five mutants at once. The
+  exclusion was deleted. Prefer this: a justified exclusion must be re-justified
+  every time either constant moves, whereas a contract test fails on its own.
+- **`scripts/run-mutants.sh diff <path>` used to silently substitute a different
+  scope when `<path>` did not exist.** `ensure_diff_file` treats a missing file as
+  a request to *create* one from `git diff origin/main...` — a **three-dot** range,
+  which the rules already warn working-tree edits are invisible to. So a typo, or
+  a diff whose generating command did not run, did not fail: the run proceeded
+  against an unrelated scope and reported a clean-looking summary. Slot 7a hit this
+  and nearly recorded the result as its verification; the only reason it was
+  caught is that the survivor named a file (`ui/sidebar/policy.rs`) that was not in
+  the intended set. **Closed in slot 7a:** an explicitly passed diff path must now
+  exist and be non-empty, and a hunkless diff fails instead of exiting 0. The
+  generating behavior remains for the *default* path, so the discipline still
+  applies there: **`test -s` the diff file before invoking the runner, and check
+  that the survivor paths belong to the files you scoped.** A mutation summary is
+  only evidence about the diff it actually consumed.
+- **`MUTANTS_RE` does not filter every mutant class, so a focused run's summary
+  line is not a statement about the functions you named.** Measured on the pinned
+  cargo-mutants 27.0.0: `--re zzz_no_such_symbol_zzz` — a regex matching nothing —
+  still selects **35** mutants, which is exactly the number of
+  `delete field <field> from struct <T> expression` mutants in the configured
+  scope. That operator class is included unconditionally. The arithmetic closes
+  exactly and is worth reproducing before trusting a focused figure:
+  `--re properties_inner_split_width` selected **40** (35 + its 5), and
+  `--re 'inline_footnote_limited_plan|properties_inner_split_width'` selected
+  **41** rather than 42, because one of `inline_footnote_limited_plan`'s two
+  mutants *is* a `delete field` mutant already inside the 35.
+  **Consequence:** a focused run that reports "13 missed" may have zero survivors
+  in the functions you scoped. Always filter `mutants.out/missed.txt` by the
+  **file paths you intended** rather than reading the summary line — the same
+  discipline the diff-path trap above already requires. This is the third
+  scope-silently-differs-from-intent trap in this lane; treat any mutation figure
+  as evidence only about the mutant list you verified, not about the command you
+  believed you ran.
+- **A `--in-diff` caveat worth knowing before scoping a run.** A **rename appears
+  in a diff as a whole-file delete plus a whole-file add**, so `--in-diff` over a
+  diff that contains a renamed file mutates that file's *pre-existing* logic too.
+  Slot 7a's first attempt measured 347 mutants where the newly-in-scope figure was
+  160; rescoping the diff to only the newly-written modules reproduced 160 exactly.
+  Scope the diff to the files whose *logic* changed, not the files whose *paths*
+  changed. Note the qualifier: with git's rename **detection on**, a pure rename
+  produces no content hunks at all, so this trap needs a rename *plus* content
+  changes in the same file — which is exactly what a role-assigning migration
+  produces. In slot 7a's case the preview module had both, and only **12** of its
+  187 mutants were genuinely new logic.
+- The hand-listed entry naming `ui/markdown_preview/inline_footnotes.rs`
+  retired on the same precedent when that module became
+  `ui/markdown_preview/policy.rs`. Unlike the minimap case this was a **rename
+  rather than an extraction**, so the entry *did* select the file beforehand and
+  the relocation is a **parity claim rather than a gain from zero** — but the
+  module's final count is **not** that parity figure, and conflating the two
+  produced a published error worth recording. Measured from
+  `scripts/run-mutants.sh list`: the module generated **175** mutants before the
+  rename and **175** immediately after, then **gained 12** when the facade
+  migration moved this workflow's fuzz and property entry points into it, ending
+  at **187**. Report them separately: **175 relocated, 12 gained**. A
+  "175 before, 175 after" claim was published from the pre-gain measurement and
+  was false by the time it shipped.
+
+  **Verify a re-key by direct measurement, not by an unchanged total.** The
+  unchanged-total argument is valid only while nothing else about the file
+  changes, which is precisely the assumption that failed here. The six calibrated
+  entries were instead confirmed by removing them and re-listing: **210** mutants
+  without them, **187** with, so all six match real generated mutants and suppress
+  **23** between them.
+
+  **An `exclude_re` entry with no function anchor can swallow a killed mutant.**
+  Slot 7a's documented equivalence for the properties-fraction floor was first
+  written against the enclosing `effective_properties_fraction`, where its `.*`
+  matched **two** `- with +` mutants: the intended non-binding-floor one *and* the
+  `remaining_fraction` subtraction one line above, which is observable and is
+  killed. Measured 78 without the entry, 76 with — two suppressed, not one. The
+  fix was to extract `properties_inner_split_width` so the entry anchors on a
+  function containing exactly the one mutant it is justified for: now **81**
+  without, **80** with.
 - The 14 minimap `exclude_re` entries naming **66 methods** were reduced to
   **4 entries naming 0 methods**, all of them re-verified against a mutant the
   tool actually generates. Of the retired ones, **seven named method names had

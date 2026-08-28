@@ -464,6 +464,123 @@ fn test_close_tab_for_path_directory_closes_children() {
     assert_eq!(remaining.file_path().expect("expected operation to succeed"), f3);
 }
 
+/// A close the user has not yet confirmed must leave the tab fully live.
+///
+/// `close_tab_for_path` used to tear the editor down *before* `close_page`, which
+/// for a modified tab routes to the save-changes dialog the user may cancel. That
+/// left a live tab whose load was cancelled and whose file monitor was stopped,
+/// and it retired the editor's `open_paths` keys. The teardown terminal is
+/// `handle_tab_detached`, which runs only once the page has actually detached.
+///
+/// **What this test proves, and what it does not.** The load-cancellation
+/// assertion is the one proved to fail without the fix by deliberate revert. The
+/// `installation_incomplete` flag — the mechanism by which a cancelled load makes
+/// autosave skip the draft — is **not** asserted here: this fixture's file is a
+/// few bytes, so its load installs in one turn and the flag is already back to
+/// `false` by the time the assertions run, which would make such an assertion
+/// vacuous rather than protective. What is asserted instead is the contract that
+/// flag exists to protect: the tab remains an **eligible draft candidate** under
+/// the production predicate. Driving a genuinely incomplete installation needs
+/// `services::editor_io::cancel_load_after_processing_chunks_for_test`, a
+/// process-global seam; that is recorded as the honest gap rather than papered
+/// over with an assertion that cannot fail.
+///
+/// **Side effect disclosed:** these assertions read
+/// `editor.imp().monitor.file_monitor` directly, because the monitor-armed fact
+/// has no public accessor. That is an ungated `.imp()` reach-through of the class
+/// task 4.2 names; it adds no production seam and is a candidate for the tab/close
+/// row's evidence surface when that row migrates.
+#[test]
+fn test_close_tab_for_path_defers_teardown_until_the_page_detaches() {
+    ensure_gtk_init();
+    let window = test_window();
+
+    let dir = tempfile::tempdir().expect("expected operation to succeed");
+    let file_path = dir.path().join("modified.rs");
+    fixture::write_text(&file_path, "original\n");
+    window.open_document(&file_path);
+    assert_tab_count(&window, 1);
+
+    let editor = window
+        .imp()
+        .tab_view
+        .nth_page(0)
+        .child()
+        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .expect("expected operation to succeed");
+    wait_until(Duration::from_secs(10), || {
+        editor.imp().monitor.file_monitor.borrow().is_some()
+    });
+    assert!(
+        editor.imp().monitor.file_monitor.borrow().is_some(),
+        "expected the file monitor to be armed before the close request"
+    );
+
+    editor.buffer().set_text("unsaved edit\n");
+    editor.buffer().set_modified(true);
+
+    // The modified tab routes to the save-changes dialog, which nothing answers
+    // here, so the close stays pending exactly as it does while the user reads
+    // the dialog.
+    window.close_tab_for_path(&file_path);
+    flush_events();
+
+    assert_tab_count(&window, 1);
+    assert!(
+        !editor.load_evidence().cancel_requested,
+        "expected the pending close to leave the load uncancelled"
+    );
+    assert!(
+        editor.imp().monitor.file_monitor.borrow().is_some(),
+        "expected the file monitor to stay armed while the close is unconfirmed"
+    );
+    assert!(
+        editor.is_modified(),
+        "expected the unconfirmed close to leave the unsaved edit in place"
+    );
+
+    // The data-loss contract itself: the tab must still be an eligible draft
+    // candidate, evaluated through the production predicate rather than a proxy.
+    assert!(editor.draft_id().is_some(), "expected a draft identity");
+    assert!(
+        lushtext_core::ui::window::draft_candidate_is_eligible(
+            editor.is_modified(),
+            editor.draft_dirty(),
+            editor.is_evicted(),
+            editor.has_incomplete_load_installation(),
+            false,
+        ),
+        "a tab surviving a cancelled close must still be autosaved; this is the \
+         contract the premature `cancel_load()` broke"
+    );
+
+    // Re-open must select the existing tab rather than building a second one.
+    //
+    // Measured caveat, stated because an earlier revision of this change claimed
+    // more: the eager block also retired this document's `open_paths` keys, and
+    // reverting **only** that removal does **not** fail this assertion. The
+    // load-completion path calls `reconcile_open_paths_from_tabs()`, which
+    // re-derives the set from the live tabs and heals the gap. So the eager
+    // `open_paths` removal was redundant and premature but **not** a demonstrable
+    // duplicate-tab defect, and this assertion is a non-regression guard on
+    // re-open behavior rather than the proof of a second bug.
+    window.open_document(&file_path);
+    flush_events();
+    assert_tab_count(&window, 1);
+    let reselected = window
+        .imp()
+        .tab_view
+        .nth_page(0)
+        .child()
+        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .expect("expected operation to succeed");
+    assert_eq!(
+        reselected.as_ptr(),
+        editor.as_ptr(),
+        "re-opening must select the existing tab, not build a second one"
+    );
+}
+
 #[test]
 fn test_close_tab_for_path_nonexistent_is_noop() {
     ensure_gtk_init();

@@ -213,7 +213,12 @@ later split inside the same directory cannot disarm the gate again.
 Workflow-readability changes should pass `make check-workflow-boundaries`; it is
 also part of `make check-policy`. It fails when a `policy.rs` module imports
 `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`; when a `policy.rs` sits at
-a path the mutation scope cannot reach; when a workflow marked migrated in
+a path the mutation scope cannot reach; **when a GTK-free module under `ui/` holds
+decision logic but carries no declared workflow role**, which is the
+inclusion-side blind spot of a scope decided by naming convention — the purity
+and reachability halves can only inspect files the convention already selects, so
+pure policy under any other file name was silently uncovered while every command
+exited 0; when a workflow marked migrated in
 `docs/workflow-readability-matrix.md` lacks its required roles; when a matrix
 row claims evidence that is absent; when the matrix declares roles for a row that
 is not marked migrated; when a normative facade line budget has been declared and

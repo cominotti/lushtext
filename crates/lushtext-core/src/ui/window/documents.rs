@@ -861,6 +861,28 @@ impl LushtextWindow {
             .and_then(|page| page.child().downcast::<LushtextEditorPage>().ok())
     }
 
+    /// Every editor page currently open in the window shell, in tab order.
+    ///
+    /// The window owns its `AdwTabView`, so callers outside `ui/window/` that need
+    /// to inspect all open documents ask for this rather than reaching into
+    /// `imp().tab_view` themselves. Pages whose child is not an editor are skipped,
+    /// which is the same tolerance every open-coded enumeration applied.
+    pub(crate) fn open_editors(&self) -> Vec<LushtextEditorPage> {
+        let tab_view = &self.imp().tab_view;
+        let count = tab_view.n_pages();
+        let mut editors = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+        for index in 0..count {
+            if let Ok(editor) = tab_view
+                .nth_page(index)
+                .child()
+                .downcast::<LushtextEditorPage>()
+            {
+                editors.push(editor);
+            }
+        }
+        editors
+    }
+
     /// Whether `editor` is the tab currently selected in the window shell.
     #[must_use]
     pub(crate) fn is_active_editor(&self, editor: &LushtextEditorPage) -> bool {
@@ -1117,16 +1139,17 @@ impl LushtextWindow {
                     continue;
                 };
                 if ep.as_path() == path || ep.starts_with(path) {
-                    let mut paths = self.imp().open_paths.borrow_mut();
-                    paths.remove(ep.as_path());
-                    paths.remove(&open_path_key(&ep));
-                    if let Some(canonical_path) = editor.canonical_file_path() {
-                        paths.remove(&canonical_path);
-                    }
-                    drop(paths);
-                    editor.cancel_load();
-                    editor.stop_file_monitor();
-                    self.untrack_editor_memory(editor);
+                    // Request the close and let the detach terminal do the
+                    // teardown. `close_page` on a modified tab routes to the
+                    // save-changes dialog, which the user may cancel; tearing
+                    // the editor down here would leave a live tab whose load is
+                    // cancelled and whose file monitor is stopped, and a
+                    // cancelled in-flight load sets
+                    // `has_incomplete_load_installation`, which makes autosave
+                    // skip that tab's draft. `handle_tab_detached` performs the
+                    // same `open_paths` retirement, `untrack_editor_memory`,
+                    // `cancel_load`, and `stop_file_monitor` once the page has
+                    // actually detached.
                     tab_view.close_page(&page);
                 }
             }

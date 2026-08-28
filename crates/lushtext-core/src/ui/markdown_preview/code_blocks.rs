@@ -17,10 +17,11 @@ use std::path::Path;
 
 use crate::ui::accessibility;
 
+use super::seams::EmbeddedBlockLayout;
+use super::widgets::build_preview_limit_fallback_widget;
 use super::{
     CODE_BLOCK_BACKGROUND_CSS_PRIORITY, CODE_BLOCK_HORIZONTAL_PADDING, CODE_BLOCK_VERTICAL_PADDING,
-    EmbeddedBlockLayout, LushtextMarkdownPreview, MAX_PREVIEW_CODE_BLOCK_BYTES,
-    build_preview_limit_fallback_widget,
+    LushtextMarkdownPreview, MAX_PREVIEW_CODE_BLOCK_BYTES,
 };
 
 /// Visual inputs shared by all code blocks in one render pass.
@@ -407,13 +408,6 @@ impl LushtextMarkdownPreview {
         self.imp()
             .last_code_block_layout
             .set(Some((column_width, embed_generation)));
-    }
-
-    /// Return the number of full embed traversals for performance assertions.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn code_block_width_traversal_count_for_test(&self) -> u64 {
-        self.imp().code_block_width_traversal_count.get()
     }
 
     /// Reset only the performance counter without changing layout cache state.

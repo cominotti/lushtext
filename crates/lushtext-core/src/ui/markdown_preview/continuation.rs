@@ -29,6 +29,7 @@ use crate::services::markdown_render::{
     MarkdownOmissionScope, MarkdownOpenContainer,
 };
 
+use super::LushtextMarkdownPreview;
 use super::code_blocks::{ActiveCodeBlock, CodeBlockTheme};
 use super::images::BufferedImage;
 use super::imp::{
@@ -38,6 +39,10 @@ use super::imp::{
     ensure_blockquote_depth_tag, ensure_list_item_depth_tag, heading_tag_name,
 };
 use super::links::resolve_link_target;
+use super::seams::{
+    ActiveTextLink, DefinitionRenderState, ListFrame, ListItemRenderState, ListMarker,
+    MarkdownPreviewRenderContext, RenderedTextLink,
+};
 use super::tables::BufferedTableBuilder;
 use super::text_flow::{
     clear_current_definition_paragraph_end, clear_current_list_item_paragraph_end,
@@ -48,11 +53,7 @@ use super::text_flow::{
     mark_current_list_item_content, mark_current_list_item_paragraph_end, pop_tag,
     should_flush_pending_list_prefix,
 };
-use super::{
-    ActiveTextLink, DefinitionRenderState, ListFrame, ListItemRenderState, ListMarker,
-    LushtextMarkdownPreview, MarkdownPreviewRenderContext, RenderedTextLink,
-    build_preview_limit_fallback_widget,
-};
+use super::widgets::build_preview_limit_fallback_widget;
 
 /// Accessible title of the widget that replaces one unprojectable block.
 const OMISSION_FALLBACK_TITLE: &str = "Block not rendered";

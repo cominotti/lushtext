@@ -6,16 +6,16 @@
 //! split-view persistence, and the callback glue that binds the sidebar,
 //! command palette, session restore, and notifications into one shell.
 
-use super::adaptive_shell::PropertiesPresentation;
-pub use super::adaptive_shell::SecondarySurface;
-use super::adaptive_shell::{
+use super::drafts::DraftRestoreTicket;
+use super::drafts::{DraftMutationIntent, DraftMutationOrder};
+use super::notes::ActiveNotesBrowser;
+use super::policy::PropertiesPresentation;
+pub use super::policy::SecondarySurface;
+use super::policy::{
     self, AdaptiveShellInputs, NORMAL_MODE_MIN_HEIGHT_SP, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
     PROPERTIES_SIDEBAR_MIN_WIDTH_SP, WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout,
     desired_properties_fraction, properties_breakpoint_condition, workspace_breakpoint_condition,
 };
-use super::drafts::DraftRestoreTicket;
-use super::drafts::{DraftMutationIntent, DraftMutationOrder};
-use super::notes::ActiveNotesBrowser;
 use super::session_restore::SessionRestoreRuntime;
 use super::session_restore::policy::SessionRestoreTurnMetrics;
 use crate::config::{self, keys};
@@ -1388,14 +1388,14 @@ fn adaptive_shell_inputs_for_width(
 }
 
 fn effective_workspace_sidebar_width_sp(window: &super::LushtextWindow, window_width: i32) -> f64 {
-    adaptive_shell::effective_workspace_sidebar_width_sp(adaptive_shell_inputs_for_width(
+    policy::effective_workspace_sidebar_width_sp(adaptive_shell_inputs_for_width(
         window,
         window_width,
     ))
 }
 
 fn effective_workspace_sidebar_fraction(window: &super::LushtextWindow, window_width: i32) -> f64 {
-    adaptive_shell::effective_workspace_sidebar_fraction(adaptive_shell_inputs_for_width(
+    policy::effective_workspace_sidebar_fraction(adaptive_shell_inputs_for_width(
         window,
         window_width,
     ))
@@ -1421,10 +1421,7 @@ fn sync_workspace_sidebar_width_constraints(window: &super::LushtextWindow, wind
 }
 
 fn effective_properties_fraction(window: &super::LushtextWindow, window_width: i32) -> f64 {
-    adaptive_shell::effective_properties_fraction(adaptive_shell_inputs_for_width(
-        window,
-        window_width,
-    ))
+    policy::effective_properties_fraction(adaptive_shell_inputs_for_width(window, window_width))
 }
 
 fn properties_presentation(window: &super::LushtextWindow) -> PropertiesPresentation {

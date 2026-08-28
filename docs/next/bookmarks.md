@@ -52,3 +52,17 @@ user promise is in place:
    recovery affordance so an unreachable sidecar can be re-homed by the user.
 2. Consider a command-palette note mode if bookmark counts grow enough that the
    dedicated browse dialogs feel too separated from file search.
+
+## Confirmed open data-safety finding
+
+**S5B-3 — unguarded sidecar read-merge-write (MEDIUM).**
+`services/bookmark_service.rs`'s `merge_bookmark_target` (`:351`) performs a
+read-merge-write on the bookmark sidecar **without acquiring a
+`TargetWriteGuard`** — only `save_document` acquires one. A concurrent merge can
+therefore read, merge, and write across another writer's atomic replacement and
+silently drop that writer's bookmarks. Found by slot 5b's `data-safety` pass,
+landed in slot 7a, and **not fixed**. The full entry, with its owner and close
+condition, is in
+[`persistent-format-hardening.md`](persistent-format-hardening.md#s5b-3--unguarded-sidecar-read-merge-write-medium),
+which is the durable home for this class; this pointer exists so the finding is
+reachable from its own subject.

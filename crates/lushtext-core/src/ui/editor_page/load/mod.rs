@@ -265,7 +265,13 @@ impl LushtextEditorPage {
     /// [`evidence::LoadEvidence`] read, because its callers consult it once per
     /// tab per pass — identical by construction, since both read the same cell.
     #[must_use]
-    pub(crate) fn has_incomplete_load_installation(&self) -> bool {
+    /// Whether a load installation was interrupted partway.
+    ///
+    /// Widened from `pub(crate)` so a widget test can assert the draft-candidate
+    /// contract through the production predicate rather than a proxy: this flag is
+    /// what makes autosave skip a tab, and the tab/close regression test needs to
+    /// feed it to `drafts::policy::draft_candidate_is_eligible`.
+    pub fn has_incomplete_load_installation(&self) -> bool {
         self.imp().load.installation_incomplete.get()
     }
 }

@@ -14,6 +14,16 @@ use crate::ui::accessibility::{self, AnnouncementLane};
 
 use super::LushtextWindow;
 
+/// How long the Focus Mode affordance stays revealed before it hides itself.
+///
+/// Named and exported because a widget test has to reason about it: entering
+/// Focus Mode arms this budget, and when it expires the affordance hides *unless*
+/// focus is inside it. A test that races this deadline must derive its own waits
+/// from this value rather than re-declaring the number, or the two drift apart
+/// and the test silently starts measuring the race instead of the behavior.
+pub const FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET: std::time::Duration =
+    std::time::Duration::from_millis(1800);
+
 /// Pointer distance from the top edge that reveals the Focus Mode affordance.
 ///
 /// Forty-eight pixels is large enough to hit deliberately while staying above
@@ -258,7 +268,7 @@ impl LushtextWindow {
 
         imp.focus_mode.affordance_timer.arm(
             self,
-            std::time::Duration::from_millis(1800),
+            FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET,
             move |window, _| {
                 if !window.focus_mode_affordance_contains_focus() {
                     window.set_focus_mode_affordance_revealed(false);

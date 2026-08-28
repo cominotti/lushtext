@@ -1,22 +1,72 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Search and replace bar widget.
+//! Find and replace inside the active tab.
 //!
-//! Wraps GtkSourceView's SearchContext/SearchSettings to provide find, replace,
-//! match highlighting, and navigation. Attaches to an EditorPage's buffer/view
-//! for each search session and detaches on close.
+//! One user-initiated operation with one ordered stage sequence, entered from
+//! `Ctrl+F`, `Ctrl+H`, `Ctrl+G`, `Ctrl+Shift+G`, or `Escape`. Every entry point
+//! drives the same session: a `sourceview5::SearchContext` is created against
+//! the active editor's buffer, lives for as long as the bar is revealed, and is
+//! torn down on close. This is the workspace-wide search row's in-tab
+//! counterpart and shares nothing with it but the `services/content_search`
+//! engine, which neither row owns.
+//!
+//! ## Stages
+//!
+//! 1. **Open.** The editor page reveals the bar and calls `attach`, which begins
+//!    a session: fresh settings and context, option actions applied, a query
+//!    retained from the previous session re-applied so highlights appear at
+//!    once, and the scan notification wired.
+//! 2. **Query.** Typing updates the search settings. GtkSourceView then scans
+//!    **asynchronously**.
+//! 3. *(resume)* **Report.** The scan completes and control resumes in
+//!    `execution::report_match_state`, driven by the scanner rather than by the
+//!    keystroke that started it. This is the workflow's **only inversion**, and
+//!    the census recorded the row as "fully synchronous ... no worker completion
+//!    seam" — that is wrong. The counter, the invalid-query styling, and the
+//!    throttled screen-reader announcement are all projected here.
+//! 4. **Navigate.** Next and previous select a match, scroll it on screen, and
+//!    latch that the user navigated, then re-report. The latch is what decides
+//!    whether closing restores the pre-search cursor.
+//! 5. **Replace.** Replace-one replaces the selection and advances; replace-all
+//!    hands the whole buffer to the context. Both re-report.
+//! 6. **Close.** `detach` ends the session and clears every session-scoped slot,
+//!    including the occurrences handler, whose closure holds this widget and
+//!    would otherwise leak as a reference cycle.
+//!
+//! ## Module roles
+//!
+//! | Module | Role |
+//! | --- | --- |
+//! | `mod.rs` (this file) | narrative facade |
+//! | `policy` | pure policy — counter text, announcement wording, the invalid-query predicate, and the option vocabulary |
+//! | `execution` | coordination — owns one search session and its single inversion |
+//! | `imp` | **called presentation surface**, not a role: template children, button and key wiring, revealer state, accessible labels |
+//!
+//! `ui/editor_page/search.rs` is this workflow's other **called presentation
+//! surface**: it owns the editor-side reveal, focus, and cursor-restore
+//! choreography and calls `attach` / `detach`. It is recorded in the matrix row
+//! rather than named as a role here, because it belongs to the editor page's
+//! widget tree, not to this directory.
+//!
+//! ## What a test reads
+//!
+//! Nothing test-only. This row has **zero** gated declarations and **zero** gate
+//! sites — measured, not inherited — so it owns **no evidence surface** and has
+//! nothing to consolidate. Its observable state is already production API:
+//! `search_context`, `has_navigated`, `is_replace_revealed`, and the template
+//! children the presentation surface exposes. Adding a surface here would widen
+//! the API for no reader, which is the manufacture-a-role move the convention
+//! exists to stop.
 
 // gtk-rs splits each custom widget into a private implementation module for
 // fields and trait impls, plus a public wrapper API in this file.
+mod execution;
 mod imp;
+pub mod policy;
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::gio;
 use gtk4::prelude::*;
-use sourceview5::prelude::*;
-
-use crate::ui::accessibility;
 
 glib::wrapper! {
     /// Public GTK widget wrapper for the editor find/replace bar.
@@ -33,6 +83,8 @@ impl LushtextSearchBar {
     pub fn new() -> Self {
         Object::builder().build()
     }
+
+    // ─── Presentation surface accessors ───────────────────────────────
 
     #[must_use]
     pub fn search_entry(&self) -> &gtk4::SearchEntry {
@@ -54,43 +106,12 @@ impl LushtextSearchBar {
         &self.imp().replace_mode_button
     }
 
-    /// Set the match count display. Blank when total is 0 or negative
-    /// (SearchContext returns -1 while scanning). "X of Y" otherwise.
+    /// Set the match count display.
+    ///
+    /// The text is `policy`'s decision and the widget write is `execution`'s; the
+    /// facade only names the stage.
     pub fn set_match_count(&self, current: i32, total: i32) {
-        let label = &self.imp().match_label;
-        if total <= 0 || current <= 0 {
-            label.set_label("");
-            accessibility::set_value_text(&**label, "No current search match");
-        } else {
-            let count = format!("{current} of {total}");
-            label.set_label(&count);
-            accessibility::set_value_text(&**label, &count);
-        }
-    }
-
-    /// Connect a handler for when the search bar should close
-    /// (close button clicked or Escape pressed in the search entry).
-    pub fn connect_close<F: Fn() + Clone + 'static>(&self, f: F) {
-        // Store for use by keyboard handlers (e.g., Escape in replace entry).
-        *self.imp().close_callback.borrow_mut() = Some(Box::new(f.clone()));
-        // Wire close button and stop-search signal directly so they work
-        // even before attach() is called (important for tests and the
-        // initial EditorPage construction).
-        let f2 = f.clone();
-        self.imp().close_button.connect_clicked(move |_| f2());
-        self.imp().search_entry.connect_stop_search(move |_| f());
-    }
-
-    /// Whether the user has navigated to a match (next/prev) during this
-    /// search session. Controls whether Escape restores the pre-search cursor.
-    #[must_use]
-    pub fn has_navigated(&self) -> bool {
-        self.imp().navigated.get()
-    }
-
-    /// Open in replace mode (show replace row and activate toggle).
-    pub fn set_replace_mode(&self, active: bool) {
-        self.imp().replace_mode_button.set_active(active);
+        execution::project_match_count(self, current, total);
     }
 
     /// Whether the replace row is revealed (target state, not animation state).
@@ -99,291 +120,104 @@ impl LushtextSearchBar {
         self.imp().replace_entry_revealer.reveals_child()
     }
 
+    /// Open in replace mode (show replace row and activate toggle).
+    pub fn set_replace_mode(&self, active: bool) {
+        self.imp().replace_mode_button.set_active(active);
+    }
+
+    // ─── Session state ────────────────────────────────────────────────
+
+    /// Return the active `SearchContext`, if a session is attached.
+    #[must_use]
+    pub fn search_context(&self) -> Option<sourceview5::SearchContext> {
+        self.imp().search_context.borrow().clone()
+    }
+
+    /// Whether the user navigated to a match during this session.
+    ///
+    /// Read by the editor page's close path to decide whether `Escape` restores
+    /// the pre-search cursor.
+    #[must_use]
+    pub fn has_navigated(&self) -> bool {
+        self.imp().navigated.get()
+    }
+
+    // ─── Stage 1 and stage 6 ──────────────────────────────────────────
+
+    /// Stage 1 — begin a session against `buffer` and `view`.
+    pub fn attach(&self, buffer: &sourceview5::Buffer, view: &sourceview5::View) {
+        execution::begin_session(self, buffer, view);
+    }
+
+    /// Stage 6 — end the session and clear every session-scoped slot.
+    pub fn detach(&self) {
+        execution::end_session(self);
+    }
+
+    // ─── Stages 4 and 5 ──────────────────────────────────────────────
+
+    /// Stage 4 — move to the next match in the buffer.
+    pub fn move_next(&self) {
+        execution::select_next_match(self);
+    }
+
+    /// Stage 4 — move to the previous match in the buffer.
+    pub fn move_prev(&self) {
+        execution::select_previous_match(self);
+    }
+
+    /// Stage 5 — replace the current match and advance to the next one.
+    pub fn replace_current(&self) {
+        execution::replace_selected_match(self);
+    }
+
+    /// Stage 5 — replace all matches in the buffer.
+    pub fn replace_all(&self) {
+        execution::replace_all_matches(self);
+    }
+
+    // ─── Called by the presentation surface ───────────────────────────
+
+    /// Stage 3 — re-project the live scan state.
+    ///
+    /// Called from `imp`'s search-changed handler and from the scan resumption.
+    pub(crate) fn update_match_info(&self) {
+        execution::report_match_state(self);
+    }
+
+    /// Apply one option toggle to the live session.
+    pub(crate) fn apply_option_state(&self, name: &str, enabled: bool) {
+        execution::apply_option(self, name, enabled);
+    }
+
+    // ─── Callback registration ───────────────────────────────────────
+
+    /// Connect a handler for when the search bar should close
+    /// (close button clicked or Escape pressed in the search entry).
+    pub fn connect_close<F: Fn() + Clone + 'static>(&self, f: F) {
+        // Stored for keyboard handlers such as Escape in the replace entry.
+        *self.imp().close_callback.borrow_mut() = Some(Box::new(f.clone()));
+        // Wired directly so both work before `attach` is ever called, which
+        // matters for tests and for the initial editor-page construction.
+        let f2 = f.clone();
+        self.imp().close_button.connect_clicked(move |_| f2());
+        self.imp().search_entry.connect_stop_search(move |_| f());
+    }
+
     /// Register a callback fired when the active search state changes.
     ///
-    /// This is used by the editor minimap so it can follow query text,
-    /// search-option toggles, and attach or detach transitions without
-    /// reaching through unrelated widget internals.
+    /// Used by the editor minimap so it can follow query text, option toggles,
+    /// and attach or detach transitions without reaching through unrelated
+    /// widget internals.
     pub fn connect_search_state_changed<F: Fn() + Clone + 'static>(&self, f: F) {
         *self.imp().search_state_changed_callback.borrow_mut() = Some(Box::new(f.clone()));
         let f2 = f;
         self.search_entry().connect_stop_search(move |_| f2());
     }
 
-    /// Return the active `SearchContext`, if the search bar is currently attached.
-    #[must_use]
-    pub fn search_context(&self) -> Option<sourceview5::SearchContext> {
-        self.imp().search_context.borrow().clone()
-    }
-
-    // ─── Attach / Detach ──────────────────────────────────────────────
-
-    /// Attach this search bar to a buffer and view, creating a fresh
-    /// SearchContext for match highlighting and navigation.
-    ///
-    /// Button signal handlers and keyboard controllers are wired once in
-    /// `constructed()` (imp.rs) and check for an active context, so only
-    /// SearchContext creation and the occurrences-count signal live here.
-    pub fn attach(&self, buffer: &sourceview5::Buffer, view: &sourceview5::View) {
-        // Clean up any previous session.
-        self.detach();
-
-        let settings = sourceview5::SearchSettings::builder()
-            .wrap_around(true)
-            .build();
-        let context = sourceview5::SearchContext::new(buffer, Some(&settings));
-        context.set_highlight(true);
-
-        // Sync option actions → SearchSettings.
-        self.sync_options_to_settings(&settings);
-
-        // If the search entry already has text (retained from a previous session),
-        // apply it to the new settings so highlights appear immediately.
-        let text = self.search_entry().text();
-        if !text.is_empty() {
-            settings.set_search_text(Some(text.as_str()));
-        }
-
-        // React to occurrence count changes (async scanning completes).
-        let bar_weak = self.downgrade();
-        let handler_id = context.connect_occurrences_count_notify(move |_ctx| {
-            if let Some(bar) = bar_weak.upgrade() {
-                bar.update_match_info();
-            }
-        });
-
-        // Store the view as a weak ref for scroll_mark_onscreen.
-        let weak_view = glib::WeakRef::new();
-        weak_view.set(Some(view));
-
-        let imp = self.imp();
-        imp.occurrences_signals.track(&context, handler_id);
-        imp.search_context.replace(Some(context));
-        imp.search_settings.replace(Some(settings));
-        imp.view_ref.replace(Some(weak_view));
-        imp.navigated.set(false);
-        self.emit_search_state_changed();
-    }
-
-    /// Detach from the current buffer, disabling highlighting and clearing state.
-    pub fn detach(&self) {
-        let imp = self.imp();
-
-        // Disconnect the occurrences-count handler to break the ref cycle.
-        imp.occurrences_signals.clear();
-        if let Some(context) = imp.search_context.borrow().as_ref().cloned() {
-            context.set_highlight(false);
-        }
-
-        imp.search_context.replace(None);
-        imp.search_settings.replace(None);
-        imp.view_ref.replace(None);
-        imp.navigated.set(false);
-
-        // Clear UI state.
-        self.set_match_count(0, 0);
-        self.search_entry().remove_css_class("error");
-        accessibility::set_invalid(self.search_entry(), false);
-        self.emit_search_state_changed();
-    }
-
-    // ─── Navigation ───────────────────────────────────────────────────
-
-    /// Move to the next match in the buffer.
-    pub fn move_next(&self) {
-        let imp = self.imp();
-        let Some(context) = imp.search_context.borrow().clone() else {
-            return;
-        };
-        let buffer = context.buffer();
-        // Start searching from one character after the current insert position
-        // so we advance past the current match rather than re-finding it.
-        let mut iter = buffer.iter_at_mark(&buffer.get_insert());
-        iter.forward_char();
-
-        if let Some((match_start, match_end, _wrapped)) = context.forward(&iter) {
-            buffer.select_range(&match_start, &match_end);
-            self.scroll_to_insert();
-            imp.navigated.set(true);
-        }
-        self.update_match_info();
-    }
-
-    /// Move to the previous match in the buffer.
-    pub fn move_prev(&self) {
-        let imp = self.imp();
-        let Some(context) = imp.search_context.borrow().clone() else {
-            return;
-        };
-        let buffer = context.buffer();
-        let iter = buffer.iter_at_mark(&buffer.get_insert());
-
-        if let Some((match_start, match_end, _wrapped)) = context.backward(&iter) {
-            buffer.select_range(&match_start, &match_end);
-            self.scroll_to_insert();
-            imp.navigated.set(true);
-        }
-        self.update_match_info();
-    }
-
-    // ─── Replace ──────────────────────────────────────────────────────
-
-    /// Replace the current match and advance to the next one.
-    pub fn replace_current(&self) {
-        let imp = self.imp();
-        let Some(context) = imp.search_context.borrow().clone() else {
-            return;
-        };
-        let buffer = context.buffer();
-        let replace_text = imp.replace_entry.text();
-
-        // Get the current selection — it must match a search result.
-        let (sel_start, sel_end) = buffer.selection_bounds().unwrap_or_else(|| {
-            let iter = buffer.iter_at_mark(&buffer.get_insert());
-            (iter, iter)
-        });
-        let mut match_start = sel_start;
-        let mut match_end = sel_end;
-
-        if context
-            .replace(&mut match_start, &mut match_end, replace_text.as_str())
-            .is_ok()
-        {
-            // Advance to the next match after replacement.
-            self.move_next();
-        }
-    }
-
-    /// Replace all matches in the buffer.
-    pub fn replace_all(&self) {
-        let imp = self.imp();
-        let Some(context) = imp.search_context.borrow().clone() else {
-            return;
-        };
-        let replace_text = imp.replace_entry.text();
-        if let Err(e) = context.replace_all(replace_text.as_str()) {
-            tracing::error!("Replace all failed: {e}");
-        }
-        self.update_match_info();
-    }
-
-    // ─── Internal helpers ─────────────────────────────────────────────
-
-    /// Update the match count label and error styling based on current state.
-    /// Called from imp.rs signal handlers (search-changed, occurrences-count)
-    /// and from navigation methods.
-    pub(crate) fn update_match_info(&self) {
-        let imp = self.imp();
-        let Some(context) = imp.search_context.borrow().clone() else {
-            return;
-        };
-        let total = context.occurrences_count();
-        let search_text = self.search_entry().text();
-
-        // Occurrence position for the current selection.
-        let current = if total > 0 {
-            let buffer = context.buffer();
-            let (sel_start, sel_end) = buffer.selection_bounds().unwrap_or_else(|| {
-                let iter = buffer.iter_at_mark(&buffer.get_insert());
-                (iter, iter)
-            });
-            let pos = context.occurrence_position(&sel_start, &sel_end);
-            pos.max(0)
-        } else {
-            0
-        };
-
-        self.set_match_count(current, total);
-
-        // Error styling: red tint when text is entered but no matches found.
-        // total == -1 means scanning is still in progress — don't show error yet.
-        let entry = self.search_entry();
-        let no_matches = !search_text.is_empty() && total == 0;
-        if no_matches {
-            entry.add_css_class("error");
-        } else {
-            entry.remove_css_class("error");
-        }
-        accessibility::set_invalid(entry, no_matches);
-        self.announce_match_count(search_text.as_str(), current, total);
-    }
-
-    fn announce_match_count(&self, search_text: &str, current: i32, total: i32) {
-        if search_text.is_empty() || total < 0 {
-            return;
-        }
-
-        let message = if total == 0 {
-            "No matches in active document".to_string()
-        } else if total == 1 {
-            "1 match in active document".to_string()
-        } else if current > 0 {
-            format!("{total} matches in active document; current match {current}")
-        } else {
-            format!("{total} matches in active document")
-        };
-
-        self.imp().match_announcement_throttler.announce_if_allowed(
-            &*self.imp().match_label,
-            accessibility::AnnouncementLane::DebouncedResults,
-            "editor-search-results",
-            &message,
-        );
-    }
-
     pub(crate) fn emit_search_state_changed(&self) {
         if let Some(callback) = self.imp().search_state_changed_callback.borrow().as_ref() {
             callback();
-        }
-    }
-
-    /// Scroll the view so the insert mark (current match) is visible.
-    fn scroll_to_insert(&self) {
-        let imp = self.imp();
-        if let Some(ref weak_view) = *imp.view_ref.borrow()
-            && let Some(view) = weak_view.upgrade()
-        {
-            let buffer = view.buffer();
-            view.scroll_mark_onscreen(&buffer.get_insert());
-        }
-    }
-
-    /// Wire the search-options action group state changes to SearchSettings.
-    /// Called during attach() so each session's settings stay in sync.
-    fn sync_options_to_settings(&self, settings: &sourceview5::SearchSettings) {
-        let Some(group) = self.imp().options_group.borrow().clone() else {
-            return;
-        };
-
-        // Apply current action states for the new SearchContext. Future toggles
-        // update settings from the action activation handler, avoiding one
-        // notify::state handler per attach/detach cycle.
-        for name in ["regex", "case-sensitive", "whole-word"] {
-            if let Some(action) = group.lookup_action(name) {
-                let simple = action
-                    .downcast::<gio::SimpleAction>()
-                    .expect("option action is SimpleAction");
-                let current: bool = simple.state().and_then(|v| v.get()).unwrap_or(false);
-                match name {
-                    "regex" => settings.set_regex_enabled(current),
-                    "case-sensitive" => settings.set_case_sensitive(current),
-                    "whole-word" => settings.set_at_word_boundaries(current),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    pub(crate) fn apply_option_state(&self, name: &str, enabled: bool) {
-        let Some(settings) = self.imp().search_settings.borrow().clone() else {
-            return;
-        };
-
-        match name {
-            "regex" => settings.set_regex_enabled(enabled),
-            "case-sensitive" => settings.set_case_sensitive(enabled),
-            "whole-word" => settings.set_at_word_boundaries(enabled),
-            _ => {}
         }
     }
 }

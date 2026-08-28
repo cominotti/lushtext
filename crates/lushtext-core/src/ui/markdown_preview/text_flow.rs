@@ -20,7 +20,7 @@ use super::imp::{
     TAG_ALERT_BODY, TAG_BLOCKQUOTE, TAG_FOOTNOTE_DEF, TAG_TASK_MARKER, blockquote_left_margin,
     blockquote_rail_prefix, list_item_text_margin,
 };
-use super::{DefinitionRenderState, EmbeddedBlockLayout, ListFrame, ListItemRenderState};
+use super::seams::{DefinitionRenderState, EmbeddedBlockLayout, ListFrame, ListItemRenderState};
 
 /// Derive the effective text column for an embedded block from active Markdown state.
 pub(super) fn embedded_block_layout(

@@ -22,17 +22,19 @@ use crate::services::filesystem::{PathStatus, metadata as fs_metadata, read as f
 use crate::ui::accessibility;
 use gtk_lush_tasks::spawn_blocking_then_weak;
 
-use super::{
-    EmbeddedBlockLayout, LushtextMarkdownPreview, MAX_PREVIEW_IMAGE_SOURCE_BYTES,
-    MAX_PREVIEW_IMAGE_SOURCE_PIXELS, MAX_PREVIEW_IMAGE_WIDTH, MAX_PREVIEW_IMAGE_WORK_BYTES,
-    MAX_PREVIEW_IMAGE_WORK_ITEMS, MIN_PREVIEW_IMAGE_SIZE, MarkdownPreviewRenderContext,
-    PREVIEW_IMAGE_WORK_CHARGE_BYTES,
-};
 #[cfg(feature = "test-utils")]
-use super::{
+use super::seams::lock_markdown_capacity;
+use super::seams::{EmbeddedBlockLayout, MarkdownPreviewRenderContext};
+#[cfg(feature = "test-utils")]
+use super::test_policy::{
     IMAGE_CANCELLED_WORK, IMAGE_CANDIDATE_INSPECTIONS, IMAGE_DECODED_RESULTS, IMAGE_PIXEL_DROPS,
     IMAGE_PIXEL_DROPS_ON_GTK, IMAGE_POST_DECODE_DELAY_MS, IMAGE_TEST_GTK_THREAD,
-    IMAGE_WORK_DELAY_MS, lock_markdown_capacity,
+    IMAGE_WORK_DELAY_MS,
+};
+use super::{
+    LushtextMarkdownPreview, MAX_PREVIEW_IMAGE_SOURCE_BYTES, MAX_PREVIEW_IMAGE_SOURCE_PIXELS,
+    MAX_PREVIEW_IMAGE_WIDTH, MAX_PREVIEW_IMAGE_WORK_BYTES, MAX_PREVIEW_IMAGE_WORK_ITEMS,
+    MIN_PREVIEW_IMAGE_SIZE, PREVIEW_IMAGE_WORK_CHARGE_BYTES,
 };
 
 /// Result of resolving one Markdown image destination.
@@ -578,36 +580,6 @@ fn bounded_image_size(width: i32, height: i32) -> (i32, i32) {
 }
 
 impl LushtextMarkdownPreview {
-    /// Direct image ownership counters for count/byte bound assertions.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn image_admission_counters_for_test(&self) -> (usize, u64, usize, u64) {
-        let snapshot = self.imp().image_admission.borrow().snapshot();
-        (
-            snapshot.owned_count,
-            snapshot.owned_bytes,
-            snapshot.high_water_count,
-            snapshot.high_water_bytes,
-        )
-    }
-
-    /// Configured image count and conservative-byte ceilings.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn image_admission_limits_for_test() -> (usize, u64) {
-        (MAX_PREVIEW_IMAGE_WORK_ITEMS, MAX_PREVIEW_IMAGE_WORK_BYTES)
-    }
-
-    /// Per-file source byte and decoded source-pixel ceilings.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn image_source_limits_for_test() -> (u64, i64) {
-        (
-            MAX_PREVIEW_IMAGE_SOURCE_BYTES,
-            MAX_PREVIEW_IMAGE_SOURCE_PIXELS,
-        )
-    }
-
     /// Delay image workers so stale-generation completion is deterministic.
     #[cfg(feature = "test-utils")]
     pub fn set_image_work_delay_for_test(delay_ms: u64) {
@@ -629,19 +601,6 @@ impl LushtextMarkdownPreview {
         IMAGE_PIXEL_DROPS.store(0, Ordering::Release);
         IMAGE_PIXEL_DROPS_ON_GTK.store(0, Ordering::Release);
         *lock_markdown_capacity(&IMAGE_TEST_GTK_THREAD) = Some(std::thread::current().id());
-    }
-
-    /// Return candidate, cancellation, decode, and disposal-thread evidence.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn image_work_observations_for_test() -> (usize, usize, usize, usize, usize) {
-        (
-            IMAGE_CANDIDATE_INSPECTIONS.load(Ordering::Acquire),
-            IMAGE_CANCELLED_WORK.load(Ordering::Acquire),
-            IMAGE_DECODED_RESULTS.load(Ordering::Acquire),
-            IMAGE_PIXEL_DROPS.load(Ordering::Acquire),
-            IMAGE_PIXEL_DROPS_ON_GTK.load(Ordering::Acquire),
-        )
     }
 
     /// Insert one buffered Markdown image into the preview flow.

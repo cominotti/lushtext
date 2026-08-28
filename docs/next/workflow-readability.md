@@ -1,6 +1,15 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slots 1 through 6 complete, slot 7 outstanding.** The convention is
+Status: **Phase 0 complete, slots 1 through 6 and 7a complete, slot 7b
+outstanding.** Slot 7 **split** under the trigger its own proposal declared: §D1
+resolved that `WFR-SHELL-LAYOUT` is not one workflow, and implementing that
+outcome plus the preview facade exceeded one change's capacity. **Slot 7a**
+migrated **five** rows — the four tier-1 rows plus `WFR-MARKDOWN-PREVIEW` — and
+discharged one cross-cutting lane's surface obligations; **slot 7b** carries the
+tier-3 disposal lane, the shell-layout hybrid, the automation spine's terminal
+status, capability deltas 1 and 2, and the programme closeout. See
+[§D1's resolution](#slot-7as-structural-finding-d1-resolved-the-shell-row-is-not-one-workflow),
+which is 7b's primary authoring input. The convention is
 normative, the census is complete, the mechanical gate is wired into
 `make check-policy`, the normative facade line budget is declared and enforced,
 and **eleven** workflows are migrated: `WFR-SEARCH-REPLACE` (**both halves** —
@@ -725,8 +734,56 @@ moves to eleven and the census's last deferred single row is resolved.
 | Pre-existing blockers fixed | 2 (slot 5b) | **2**: `scripts/run-performance-smoke.sh` filtered on `ui::search_panel::runtime::tests::…` after slot 2a renamed that module to `execution`, and libtest exits 0 on a filter matching nothing, so the `search_interactive_policies` lane had reported a green proof that did not run since 2026-08-25 — now re-keyed **and** given a match-count assertion so it fails loudly next time. `scripts/check-filesystem-boundary.sh` also carried `crates/lushtext/benches` as a scan root that **has never existed in repository history**; `rg` silently skips a missing path, so it protected nothing |
 | Facade budget | 370 unchanged; 78 lines of headroom on the tree row | **370 unchanged and not edited — but this is the first slot to need the escalation path at all.** The first honest minimap facade measured **389**. Escalation step one, *delegate harder*, sufficed: the four widget accessors became `widgets.rs`, a called presentation surface, landing the facade at **355**; the cold read's seven fixes took it to **366 of 370**. Step two (amend the number) and the two forbidden responses were not reached. The new datum the programme should carry forward: what stressed this facade was neither stage orders (five, fewer than 5b's twelve) nor inversions (six) but the **external entry surface** — 24 operations called from 16 files, against load's seven |
 | Permitted role homes | nested home fully exercised | **per-workflow subdirectory, fourth adopter in `ui/editor_page/`**, after `save/`, `load/`, and `buffer_replacement/`. `make check-workflow-boundaries` reports **11** pure mutation-scoped policy modules, up one, because this row created a `policy.rs` where none existed |
-| Mutation configuration | 72 `exclude_re` entries | **the minimap's 14 entries naming 66 methods retired to 4 entries naming 0 methods**, and the hand-listed `examine_globs` entry **retired rather than re-pointed**, leaving exactly one pre-convention hand-listed UI file (`markdown_preview/inline_footnotes.rs`, slot 7's). Reading the retired entries against the tool rather than the source found **seven method names with zero definitions anywhere** and **four entries anchored to a `line:column` that matched no generated mutant** — a stale exclusion is a recorded equivalence claim that has quietly stopped protecting the mutant it names |
+| Mutation configuration | 72 `exclude_re` entries | **the minimap's 14 entries naming 66 methods retired to 4 entries naming 0 methods**, and the hand-listed `examine_globs` entry **retired rather than re-pointed**, leaving exactly one pre-convention hand-listed UI file (`markdown_preview/inline_footnotes.rs`, slot 7's). **Slot 7a retired that last one too, and the configuration now has zero hand-listed UI entries**: the module became `ui/markdown_preview/policy.rs`, which the convention reaches by name. Unlike the minimap case this was a **rename rather than an extraction**, so the entry *did* select the file beforehand and the **relocation** is a parity claim rather than a gain from zero — **175 relocated** — but the module then **gained 12** when the facade migration moved this workflow's fuzz and property entry points into it, ending at **187**, then **177** after 10 of those 12 were excluded as unkillable by construction. Reported separately; an earlier revision of this row claimed "175 before, 175 after", which was measured before the gain and was false by the time it shipped. The six re-keyed `exclude_re` entries were therefore verified by **direct measurement** rather than by an unchanged total: **210** mutants without them, **187** with, so all six match real generated mutants and suppress **23**. Slot 7a also renamed `ui/window/adaptive_shell.rs` to `ui/window/policy.rs` (**0 mutants before, 81 after**), added four new `policy.rs` modules in rows recorded as owning `none` (+82), and retired the stale `ui/window/tabs.rs` calibration comment, which named a file the current `examine_globs` never selects. Configured total **5,216 → 5,381**; pure mutation-scoped policy modules **11 → 17**. Of the preview module's 12 gained mutants, **10 are excluded as unkillable by construction** (feature-gated fuzz/property entry points the default lane does not compile) and **2 are production policy**, one of which was a genuine untested contract now killed. **The newly-in-scope mutants were executed and triaged to zero**: 17 survivors on the first run, 3 after ten new tests, 1 on the verifying run (**162 tested / 148 caught / 13 unviable**), and 0 after that last one was killed. Every survivor was killed by a **test**; the change ends with **no new equivalence exclusion at all**. The final survivor is the instructive one: it was a second operator on `properties_inner_split_width`, the function extracted only to narrow an exclusion, and giving that named pure function a direct contract test killed all five of its mutants and let the exclusion be **deleted** rather than widened. Reading the retired entries against the tool rather than the source found **seven method names with zero definitions anywhere** and **four entries anchored to a `line:column` that matched no generated mutant** — a stale exclusion is a recorded equivalence claim that has quietly stopped protecting the mutant it names |
 | Convention changes | 2 statements across 2 capabilities | **2 statements across 2 capabilities**: path-keyed mechanical gates in `workflow-readability-boundaries` (re-key or retire in the same change, in *every* implementation of the predicate, proved by running the gate rather than reading the patch), and hand-listed scope-entry retirement plus line/symbol-anchored exclusion re-verification in `mutation-testing`. The retroactive re-check across all ten previously-migrated rows found **one** real disarm and two adjacent dead keys |
+
+### Baseline after slot 7a
+
+Slot 7a migrated **four tier-1 rows** and discharged **one cross-cutting lane's**
+surface obligations. It stopped one row short of its declared boundary; see the
+remaining-scope table.
+
+| Quantity | After slot 6 | After slot 7a |
+| --- | --- | --- |
+| Workflows migrated | 11 | **16** (plus `WFR-PRINT`, `WFR-EDITOR-FIND`, `WFR-STATUS-NOTIFICATIONS`, `WFR-ENCODING`, `WFR-MARKDOWN-PREVIEW`). Every Completion Rule axis satisfied on each: narrative facade, coordination role, pure policy where owned, evidence surface **or a recorded measured conclusion that the row owns none**, and mutation figures reported by kind |
+| Policy modules relocated | 6 of 6 candidates | **6 of 6 candidates, plus 6 modules brought into the mutation convention that were never on the candidate list at all.** Four are new `policy.rs` modules in rows the census recorded as owning `none`; two are renames of already-pure modules that generated **zero** mutants under any scope entry. `make check-workflow-boundaries` reports **11 → 17** pure mutation-scoped policy modules |
+| Mutants generated | 5,216 configured | **5,381 (+165)**, and the arithmetic closes exactly: **+82** from the four new row policies (3 print, 36 editor-find, 11 notifications, 32 encoding), **+80** from the `adaptive_shell` → `window/policy.rs` rename, and **+2** net from the preview module (12 gained, 10 excluded as unkillable by construction because they are feature-gated fuzz/property entry points the default lane does not compile). **Triaged to zero, entirely by tests**: 17 survivors, then 3, then 1, then 0 — and the change ends with **one fewer** `exclude_re` entry than it started with, because the extraction made for exclusion granularity turned out to make the exclusion unnecessary |
+| Seams reified | 9 | **10** (plus `EditorNotificationTarget`, the bus owner/surface pair the census recorded as needing none and which was in fact rebuilt at four call sites from one owner id). Two rows probed and **correctly found to need none**, with the negative finding recorded rather than assumed |
+| Seams retired | 2 / 15 (minimap row) | **`WFR-STATUS-NOTIFICATIONS` 1 → 0**, retired onto **production pure policy** rather than consolidated into a surface: its one seam was a `test-utils` wrapper around a pure function, so a surface would have been a surface over nothing. `WFR-BUFFER-SNAPSHOT`'s **three parallel typed observation types** became one surface with named components, eliminating a five-field duplication that had let one fact have two declarations. **Zero new actuation seams; slot 5b's budgeted one remains unspent** |
+| Automation projections | 7 | **7, unchanged.** No new evidence surface projects to D-Bus: print's and buffer snapshot's surfaces are `test-utils`-gated and report no automation field, and the exported contract is untouched. The spine's own **stale cell was corrected** — it claimed four projections where seven are registered |
+| Facades measured against 370 | 11 | **16.** Print **105**, notifications **153**, encoding **155** (from a 907-line file), editor-find **238** (from a 395-line `mod.rs`, written *down* to a pre-declared ≈230 target), preview **270** (from a 1,983-line `mod.rs`). **370 unchanged and not edited**; escalation step one was applied *before* a measurement forced it, by classifying encoding's six grouped-row dialogs as a called presentation surface. `ui/search_panel/mod.rs` still sits at exactly **369** |
+| Data-safety defects fixed | 7 (5b) + 2 (slot 6) | **1 confirmed defect fixed**, plus a **pre-existing accessibility gap** the migration surfaced. The teardown-before-close defect — confirmed independently by slot 5a (M-3) and slot 5b (finding 4) as **one** defect — is closed by *deleting* the eager block rather than moving it, because `handle_tab_detached` was already the terminal and "move" would have duplicated the teardown. Regression test **proved to fail without the fix** by deliberate revert, needing **no new actuation seam**. An earlier revision of this row also claimed a *second* consequence (a duplicate tab from the premature `open_paths` retirement); **that claim was withdrawn after measurement** — reverting only that removal does not reproduce it, because the load-completion path's `reconcile_open_paths_from_tabs()` heals the set. The removal was redundant and its deletion is still correct, but it was not demonstrably reachable. The accessibility gap is real and fixed: the encoding dialogs had **no** accessible metadata at all, so the current encoding, line ending, or invisible-character mode reached assistive technology only as subtitle prose; option rows now carry `Radio` role and `Checked` state |
+| Handed-on findings landed | 0 of 5 (5b's, un-homed for five slots) | **4 landed in `docs/next/persistent-format-hardening.md`** with severity, re-verified sites, owning rows, and close conditions, plus topical cross-references in `bookmarks.md` and `workspace-context-switching.md`; the fifth is the teardown defect, **recorded as closed**. One site had already moved under slot 5b's own dissolution, which is what a year of archived-only handoffs produces |
+| Pre-existing blockers fixed | 2 (5b) | **1 gate fail-open closed and 1 existing check refined, each proved by a deliberate red.** `check-accessibility-policy` **passed when a smoke summary was absent** — so wiping the artifact root, which the lane instructions ask for, turned a hard failure into a silent pass. And the slot ledger's reconciliation **could not represent a discharged cross-cutting lane** — a refinement rather than a fail-open, because it was failing *closed*: it demanded `migrated` for any row on a complete line, a status such a row can never reach, so settled work had to be recorded as *outstanding* — which is how `WFR-PLAIN-DISPOSAL` came to be listed as unfinished in a slot that had settled it. Neither fix reduces protection; both negative arms are self-test cases |
+| Convention changes | 2 statements / 2 capabilities | **1 statement in 1 capability**: `mutation-testing`'s inclusion-side discovery obligation, with role-based classification and the parity-versus-gain reporting rule. Landed **with** its mechanical check and both proof arms. Deltas 1 and 2 were **deliberately withheld** — both assert obligations only the closing change can discharge |
+
+### Convention friction slot 7a hit, recorded for slot 7b
+
+- **A census cell that reads as settled can be wrong in its *kind*, not just its
+  number.** Four rows recorded as owning `none` pure policy each own one; the
+  preview row's "evidence surface" cell names a **services-owned** type the row
+  does not declare; the spine's seam cell restated a gate-site count as a
+  declaration count. The lesson for 7b: re-derive the *shape* of a cell, not only
+  its magnitude.
+- **A terminal status label still means two things.** `cross-cutting` means both
+  "resolved, nothing to do" and "resolved, and its surface obligations are
+  discharged". This slot had to widen a gate to express the difference at all, and
+  the vocabulary that would fix it properly is capability delta 1's — 7b's.
+- **An inspection seam's disposition is not always consolidation.** The
+  notifications row's one seam wrapped a *pure function*; the right disposition was
+  retirement onto production policy, and consolidating it would have built a
+  surface over nothing. The requirement should be read as "retire it", with
+  consolidation as the usual means rather than the only one.
+- **A proof's premise needs measuring too.** Two of this slot's evidence proofs
+  failed on first run for premise reasons, not defect reasons: `window.close()` is
+  **not** `dispose()` and leaves template children intact, and a `Dispose` snapshot
+  test-edit does **not** release the session it names. Both are now recorded in the
+  tests themselves so the next author does not re-derive them.
+- **`git mv` plus a substring rewrite is not a rename.** Bulk-substituting an
+  accessor name across a test file produced two mangled identifiers
+  (`overflow_buffer_snapshot_evidence`) that only the compiler caught. Prefer
+  anchored replacements over substring ones when the old name is a prefix of a
+  variable.
 
 ### Convention friction slot 6 hit, recorded for slot 7
 
@@ -852,7 +909,7 @@ The cold read was not run, because there is no narration to read.
 
 ## 3. Remaining scope
 
-Five changes remain (3b and 4 through 7). Order is by increasing risk; every
+Five changes remained at Phase 0 (3b and 4 through 7); slot 7 later split into 7a and 7b. Order is by increasing risk; every
 `tier-3` slot follows at least two completed lower-risk migrations. Three are
 complete — slot 1's exemplar, slot 2a's palette, and slot 2b's replace/undo half
 — so a slot-3 tier-3 workflow starts with one more proof than the rule requires.
@@ -871,7 +928,82 @@ this table is the change-level view.
 | 5a | **complete** — migrated the notes and bookmarks family, retired `NoteSourceRefreshCoordinator` onto the shared single-flight coordinator, added the no-materialization and child-collection evidence-surface statements and the called-presentation-surface taxonomy scope, and fixed **seven confirmed pre-existing data-safety defects** including a rename that silently destroyed an existing file (`migrate-workspace-tree-and-notes-workflow-readability`) | `WFR-NOTES-BOOKMARKS`, continuing `WFR-AUTOMATION-SPINE` projections (`NotesEvidence`) | proposal + tasks + 2 spec deltas |
 | 5b | **complete — `WFR-WORKSPACE-TREE` migrated**, in `migrate-workspace-tree-workflow-readability`. Facade **291 of 370** by delegate-harder alone; **three dissolutions** (`tree_loading.rs`, `tree_index.rs`, `watch_targets.rs`) plus `workspaces.rs` dissolving into four `execution` roles; **twelve** stage orders and 44 resumption points re-derived against a floor of five (**8.8x**, the programme's widest); the first **nested** role home; `evidence.rs` discharging the **no-materialization** statement with a driven collapsed-and-expanded inertness proof; both `ui/automation.rs` reach-throughs retired and `window.workspace` projected from evidence; **both relocations at exact mutant-by-mutant parity** (the first relocation since 3a) with their 7 inherited survivors triaged to 0; two convention amendments with a nine-row re-check that found **eight gaps**; and **seven confirmed data-safety defects fixed** (two from pass 1, three from pass 2, two from the fix cycle), including two CRITICAL: M-4's superseded-load guard, and that guard's own fix being inert. **Seam retirement is complete**: 60 fns / 111 gate sites → 41 / 93. **Remaining follow-up, recorded rather than hidden**: `scan_execution.rs` is ~2,000 production lines, five confirmed non-tree data-safety findings are handed on with owners, task 7.6's two-tree automation capture is unrun, and the live `make run` walkthrough awaits user availability | `WFR-WORKSPACE-TREE`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 2 spec deltas |
 | 6 | **complete — `WFR-MINIMAP` migrated**, in `migrate-minimap-workflow-readability`. The one slot the record expected to need a `design.md`, and the expectation was confirmed rather than obeyed. Facade **366 of 370** after **one escalation step**: the first honest facade measured 389, and *delegate harder* sufficed — the four widget accessors became `widgets.rs`, a called presentation surface, which is where the taxonomy already put them. The budget number was not edited and the census row was not split. **Five stage orders and six resumption points** re-derived against a recorded floor of three. **Two path-keyed gates re-keyed or retired, and the disarm observed before it was fixed** — the `.cargo/mutants.toml` `examine_globs` entry **retired** (0 mutants generated after the move, still exiting 0), and the native-minimap invariant predicate re-keyed to a directory prefix in **both** implementations, each with its own parity assertion proved by a deliberate red. The Python half's self-tests were **unreachable** before this change and now run. The retroactive re-check across ten migrated rows found **one** real disarm, inherited from slot 2a: `scripts/run-performance-smoke.sh` still filtered on `ui::search_panel::runtime::tests::…` after that module was renamed to `execution`, and libtest exits 0 on a filter that matches nothing, so a green proof had not run since 2026-08-25. **Mutation configuration retired from 14 entries / 66 method names to 4 entries / 0 method names**, with seven named methods found to have zero definitions anywhere and four entries anchored to a `line:column` that matched no generated mutant. **All 12 first-run survivors triaged to zero** — nine killed by tests, three removed by extracting a block that was duplicated verbatim between two functions, which then exposed a dead cap and deleted a fourth. Final run **412 generated / 406 caught / 0 missed**. **Two confirmed data-safety defects fixed**, one of them in the already-migrated load row: a superseded chunked install returned without restoring the suspension it captured, so a following load adopted the suspended values as its own baseline and made a read-only tab with local-history capture disabled permanent for the session | `WFR-MINIMAP`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + design + tasks + 2 spec deltas |
-| 7 | Residual sweep | `WFR-MARKDOWN-PREVIEW`, `WFR-EDITOR-FIND`, `WFR-ENCODING`, `WFR-PRINT`, `WFR-SHELL-LAYOUT`, `WFR-STATUS-NOTIFICATIONS`, `WFR-BUFFER-SNAPSHOT`, `WFR-PLAIN-DISPOSAL`, `WFR-AUTOMATION-SPINE` (whose incremental projections complete with the last migrated row), remaining `exclude_re` entries and argument-count suppressions, matrix completion | proposal + tasks |
+| 7a | **complete — five rows migrated and one cross-cutting lane discharged.** `WFR-PRINT` (facade 105/370), `WFR-EDITOR-FIND` (238/370, from a 395-line `mod.rs`), `WFR-STATUS-NOTIFICATIONS` (153/370), `WFR-ENCODING` (155/370, from a 907-line file), and **`WFR-MARKDOWN-PREVIEW` (270/370, from a 1,983-line `mod.rs`)** — facade and evidence only, with the topical decomposition two earlier changes paid for left untouched apart from import paths. Its recorded inversion count was **low by ~3.2x** (5 recorded, 16 resumption points derived), and **11 of its 13 tuple-returning inspection seams** retired into one named surface. **Four rows the census recorded as owning `none` pure policy all own a `policy.rs`**: probing found 5 decisions in editor-find, 6 in notifications, and the whole user-facing dialog vocabulary in encoding — **+82 mutants, all gain from zero**, none previously covered. **`WFR-BUFFER-SNAPSHOT`'s three parallel typed observation types consolidated** into one `BufferSnapshotEvidence` with named components, all three surface proofs discharged. **§D1 resolved** (the shell row is not one workflow). **Capability delta 3 landed** with its inclusion-side discovery check and two policy renames (parity 175→175; gain 0→78). **The teardown-before-close data-safety defect fixed** with a revert-proved regression test, and **`check-accessibility-policy`'s fail-open closed**. Slot 5b's four remaining handed-on findings **landed in `docs/next/`**. Deltas 1 and 2 deliberately withheld as 7b's | `WFR-PRINT`, `WFR-EDITOR-FIND`, `WFR-STATUS-NOTIFICATIONS`, `WFR-ENCODING`, `WFR-BUFFER-SNAPSHOT`, `WFR-MARKDOWN-PREVIEW` | proposal + design + tasks + 3 spec deltas (1 landed) |
+| 7b | Residual close-out. `WFR-PLAIN-DISPOSAL` tier-3 surface narrowing; **the `WFR-SHELL-LAYOUT` hybrid §D1 selected**, with §D1's four contested-file findings as authoring inputs; `WFR-AUTOMATION-SPINE`'s terminal status (§D3); **capability deltas 1 and 2**, which assert obligations only the closing change can discharge; and the programme closeout with its single deferral inventory. Also outstanding: triage of the **160 newly-in-scope mutants** slot 7a generated | `WFR-PLAIN-DISPOSAL`, `WFR-SHELL-LAYOUT`, `WFR-AUTOMATION-SPINE`, matrix completion | proposal + tasks + 2 spec deltas |
+
+### Slot 7a's structural finding: §D1 resolved, the shell row is not one workflow
+
+Recorded here rather than only in the change directory, because a change
+directory is archived and this decision outlives it — the failure mode this
+programme has already suffered once.
+
+**`WFR-SHELL-LAYOUT` is NOT one workflow.** The row's own stage trace called it
+*"a residual grouping of 19 shell surfaces"* and licensed a split *"if the facade
+work shows it holds more than one story."* It does. The evidence is stage-order
+and shared-state evidence; **the line count supports nothing and is not offered
+as support**, because a split justified by line count is the forbidden budget
+response wearing the grouping clause as cover.
+
+- **Criterion 1 (one operation, or a family sharing one ordered stage sequence)
+  fails.** The row's files own **at least 12 distinct ordered stage orders** before
+  the contested files, and past 19 with them: adaptive geometry 1, tab strip 1
+  (+3 synchronous projections), Focus Mode 1, recent documents 2 (+1 lazy
+  projection gate), shell dialogs **5**, transient dismissal 1, startup preflight
+  1, `focus_indexing.rs` **3**, `window/search.rs` **4**, plus a **tenth story
+  nobody had enumerated** — `mod.rs`'s `setup_theme_selector` (~100 lines), which
+  appears neither in the row's story list nor in the no-coordination-tier list.
+- **Criterion 2 (shared coordination state, not merely a shared `imp` struct)
+  fails.** **15 of 18** `imp` state groups are touched only by one candidate's
+  files. Exactly **three** genuine cross-candidate couplings exist, and none is a
+  shared generation counter, admission budget, or settle gate: one read-only
+  `Cell<bool>`, one call, and one `HashSet<PathBuf>` of tab identities. Meanwhile
+  **six independent generation/identity mechanisms** live in the row's files, none
+  shared with another candidate.
+- **Criterion 3 was not reached**, 1 and 2 having already failed.
+
+**Outcome: (c), the hybrid** — one workflow row for the adaptive shell geometry
+story (which satisfies criterion 1 cleanly: seven entry points converging on one
+ordered sequence, and the smallest external entry surface of any candidate),
+replacement rows for the surfaces that are separate stories, and
+no-coordination-tier entries for the rest. **Implementing it is outstanding work.**
+
+Four findings the implementing change must not re-derive or inherit blindly:
+
+1. **`dialogs.rs` is not this row's, and not a called presentation surface.** It
+   owns five stage orders and three unrecorded freshness/identity values, and its
+   confirmed-close coordination is consumed by the **already-migrated**
+   `WFR-DOCUMENT-SAVE` (`close_save_session_is_current`) and
+   `WFR-DRAFT-RECOVERY` (`clear_close_discard_drafts`) rows. Do not make it a row
+   of its own without first deciding which migrated row owns those stages.
+2. **`focus_indexing.rs` is three stories, not two** — its own doc says so, and
+   the largest, ~590 lines of **editor-memory eviction orchestration** with its own
+   generation counter and 8 test seams, is owned by **no story anywhere**
+   (`WFR-EDITOR-MEMORY` is `exempt` and covers only `model/editor_memory.rs`). The
+   other two belong to the migrated command-palette row and to the geometry
+   candidate.
+3. **`ui/window/search.rs` (955 lines) was attributed to nothing**, and is
+   `WFR-SEARCH-REPLACE`'s window-side surface — but it is *more* than a called
+   presentation surface: it holds two of that workflow's ordered coordination
+   stages plus one coordination job of its own.
+4. **`transient_surfaces.rs` does not belong on the no-coordination-tier list.**
+   It has a strictly ordered dismissal ladder *and* a one-tick idle latch, so the
+   list's "no ordered stages" preamble is false for it. And **`actions.rs` is not
+   demotable**: it contains two of the geometry candidate's stages verbatim, and
+   demoting it would be a route to demoting its pixel-proof obligations.
+
+**The binding constraint on any implementation (§D6): a split MUST NOT reduce
+protection.** `ui/window/actions.rs` and `ui/window/imp.rs` are literal path keys
+in **three** predicates in **each** of `scripts/check-visual-proof-policy.py` and
+`crates/cargo-gtk-proof/src/policy.rs`, plus six further literal `imp.rs` keys in
+those implementations' own self-tests. The geometry candidate's stage 1 lives in
+`actions.rs` and its clamp/breakpoint path lives in `imp.rs`. Moving either into a
+new module no predicate names would disarm two named pixel invariants and the
+sidebar animation matrix **while every gate exited 0**. The
+`crates/lushtext-core/src/ui/window/` prefix re-key is **forbidden**: it would
+demand those proofs of four migrated per-workflow role homes that no predicate has
+ever protected. This is why the first attempt's one shell-side rename
+(`adaptive_shell.rs` → `ui/window/policy.rs`) was **same-directory**: no geometry
+code moved, so no predicate's file set changed and no re-key was required.
 
 ### Why slot 5 split into 5a and 5b
 
@@ -1095,7 +1227,8 @@ in both directions, which some rows need:
 - slot 5a (complete): WFR-NOTES-BOOKMARKS, WFR-AUTOMATION-SPINE (partial)
 - slot 5b (complete): WFR-WORKSPACE-TREE, WFR-AUTOMATION-SPINE (partial)
 - slot 6 (complete): WFR-MINIMAP, WFR-AUTOMATION-SPINE (partial)
-- slot 7 (outstanding): WFR-MARKDOWN-PREVIEW, WFR-EDITOR-FIND, WFR-ENCODING, WFR-PRINT, WFR-SHELL-LAYOUT, WFR-STATUS-NOTIFICATIONS, WFR-BUFFER-SNAPSHOT, WFR-PLAIN-DISPOSAL, WFR-AUTOMATION-SPINE
+- slot 7a (complete): WFR-PRINT, WFR-EDITOR-FIND, WFR-STATUS-NOTIFICATIONS, WFR-ENCODING, WFR-BUFFER-SNAPSHOT, WFR-MARKDOWN-PREVIEW
+- slot 7b (outstanding): WFR-PLAIN-DISPOSAL, WFR-SHELL-LAYOUT, WFR-AUTOMATION-SPINE
 
 ### Convention friction slot 2a hit, recorded for 2b and 3 through 7
 

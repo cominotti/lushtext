@@ -23,15 +23,17 @@ use lushtext_core::ui::editor_page::save::policy::{SaveCaptureMode, SaveWriteCla
 use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
     BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
-    BufferSnapshotHandle, BufferSnapshotOutcome, BufferSnapshotStateForTest, BufferSnapshotTestEdit,
+    BufferSnapshotOutcome, BufferSnapshotTestEdit,
     BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError,
     LoadOutcome, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind,
-    buffer_snapshot_counters_for_test,
+    buffer_snapshot_evidence,
     coalesce_snapshot_payload_for_test, snapshot_buffer_text_async_for_test,
-    snapshot_payload_metrics_for_test, set_next_load_body_disposal_probe_for_test,
+    set_next_load_body_disposal_probe_for_test,
     set_next_load_disposal_reservation_weight_for_test,
 };
-use lushtext_core::ui::info_bar::inline_alert_announcement_key_for_test;
+// The row's only test seam retired: the throttling key is production pure
+// policy now, so the test reads the same function production reads.
+use lushtext_core::ui::window::inline_alert_announcement_key;
 use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, lane_snapshot_for_test};
 use sourceview5::prelude::*;
 use std::assert_matches;
@@ -118,7 +120,7 @@ fn wait_for_save_result(
         .snapshot
         .borrow()
         .as_ref()
-        .map(BufferSnapshotHandle::state_for_test);
+        .and_then(|handle| buffer_snapshot_evidence(Some(handle)).session);
     panic!(
         "save did not finish within {timeout:?}: saving={} snapshot={snapshot:?} admission={:?} disposal={:?}",
         page.is_saving(),
@@ -2040,7 +2042,7 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
     buffer.set_text(&content);
     buffer.set_modified(true);
     page.reset_transient_save_admission_for_test();
-    let counters_before = buffer_snapshot_counters_for_test();
+    let counters_before = buffer_snapshot_evidence(None).handoff;
     let sentinel = Rc::new(Cell::new(false));
     glib::idle_add_local_once({
         let sentinel = Rc::clone(&sentinel);
@@ -2084,7 +2086,7 @@ fn test_large_save_keeps_snapshot_consistent_and_read_only_until_write_finishes(
     assert_eq!(admission.active_count, 0);
     assert_eq!(admission.queued_count, 0);
     assert!(admission.high_water_weight > 0);
-    let counters_after = buffer_snapshot_counters_for_test();
+    let counters_after = buffer_snapshot_evidence(None).handoff;
     assert_eq!(counters_after.gtk_coalesces, counters_before.gtk_coalesces);
     assert_eq!(counters_after.gtk_drops, counters_before.gtk_drops);
     assert!(counters_after.worker_coalesces > counters_before.worker_coalesces);
@@ -2199,7 +2201,7 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
     page.reset_transient_load_admission_for_test();
     page.reset_transient_save_admission_for_test();
     page.pause_next_save_snapshot_for_test();
-    let counters_before = buffer_snapshot_counters_for_test();
+    let counters_before = buffer_snapshot_evidence(None).handoff;
     let callback_count = Rc::new(Cell::new(0));
     let callback_count_for_save = Rc::clone(&callback_count);
     page.save_file_async(move |_| callback_count_for_save.set(callback_count_for_save.get() + 1));
@@ -2210,7 +2212,7 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
     unsafe { page.run_dispose() };
     wait_until(Duration::from_secs(10), || {
         page.save_evidence().active_count == 0
-            && buffer_snapshot_counters_for_test().worker_drops > counters_before.worker_drops
+            && buffer_snapshot_evidence(None).handoff.worker_drops > counters_before.worker_drops
     });
 
     assert_eq!(callback_count.get(), 0);
@@ -2221,7 +2223,7 @@ fn test_large_save_teardown_releases_snapshot_and_permit_without_writing() {
     let admission = page.save_evidence();
     assert_eq!(admission.active_count, 0);
     assert_eq!(admission.queued_count, 0);
-    let counters_after = buffer_snapshot_counters_for_test();
+    let counters_after = buffer_snapshot_evidence(None).handoff;
     assert_eq!(counters_after.gtk_coalesces, counters_before.gtk_coalesces);
     assert_eq!(counters_after.gtk_drops, counters_before.gtk_drops);
 }
@@ -2542,10 +2544,170 @@ fn test_chunked_buffer_snapshot_cancels_for_edits_before_and_after_progress_mark
             "{edit:?} must reject every partial chunk"
         );
         assert_eq!(
-            handle.state_for_test(),
-            BufferSnapshotStateForTest::default()
+            buffer_snapshot_evidence(Some(&handle)).session,
+            None
         );
     }
+}
+
+/// The three mandated proofs for the buffer-snapshot lane's evidence surface.
+///
+/// This lane is `cross-cutting`, not a workflow: it owes no facade, but it owes
+/// the surface rules, because those follow from "one accessor reads the whole
+/// surface" plus interior mutability and do not depend on being a workflow. The
+/// surface replaced **three parallel typed observation types**, so these proofs
+/// are what makes the consolidation trustworthy rather than merely tidier.
+#[test]
+fn test_buffer_snapshot_evidence_discharges_its_three_surface_proofs() {
+    ensure_gtk_init();
+
+    // ── Proof 1: reentrancy ───────────────────────────────────────────────
+    // Drive the lane through each operation that takes a mutable borrow of the
+    // session state the accessor reads, read the surface *after* each one, and
+    // assert repeated reads of unchanged state are identical. Reading the
+    // surface *while* a borrow is held is the panic the constraint prevents, not
+    // a demonstration of it, so this deliberately does not do that.
+    let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+    buffer.set_text(&"y".repeat(200_000));
+    let outcomes = Rc::new(RefCell::new(Vec::new()));
+    let outcomes_for_callback = Rc::clone(&outcomes);
+    let handle = snapshot_buffer_text_async_for_test(
+        buffer,
+        None,
+        Some(BufferSnapshotTestMutation {
+            trigger: BufferSnapshotTestTrigger::AfterSlice(1),
+            edit: BufferSnapshotTestEdit::Pause,
+        }),
+        move |outcome| outcomes_for_callback.borrow_mut().push(outcome),
+    );
+
+    // `handoff` is deliberately excluded from every equality below. It carries
+    // **process-wide** counters, and `SNAPSHOT_WORKER_DROPS` is an `AtomicU64`
+    // bumped from `Drop for SnapshotChunks` **on a worker thread** — so it can
+    // advance between any two consecutive reads without either read having caused
+    // it. Comparing whole surfaces here made this proof assert "no retirement
+    // landed while I was looking", which is not the constraint and is not even
+    // stable. The constraint is about *session* state under a mutable borrow, so
+    // that is what is compared; the counters get their own attributable proof in
+    // proof 3.
+    let paused = buffer_snapshot_evidence(Some(&handle));
+    assert_eq!(
+        buffer_snapshot_evidence(Some(&handle)).session,
+        paused.session,
+        "repeated reads of unchanged session state must be identical"
+    );
+    let paused_session = paused
+        .session
+        .expect("a paused capture must still report a live session");
+    assert!(paused_session.active);
+
+    // `resume_for_test` takes a mutable borrow of exactly the state the accessor
+    // reads; read after it, not during it.
+    handle.resume_for_test();
+    let resumed = buffer_snapshot_evidence(Some(&handle));
+    assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, resumed.session);
+
+    // `cancel` is the other mutable-borrow operation on that state.
+    handle.cancel_for_test();
+    let cancelled = buffer_snapshot_evidence(Some(&handle));
+    assert_eq!(
+        buffer_snapshot_evidence(Some(&handle)).session,
+        cancelled.session,
+        "repeated reads after cancellation must stay identical"
+    );
+
+    // ── Proof 2: disposal ─────────────────────────────────────────────────
+    // Load-bearing for this lane specifically: its whole subject is a live
+    // `GtkTextBuffer`, and the handle holds the session **weakly**, so once the
+    // session reaches its terminal and is released the surface must answer
+    // honestly instead of panicking or reporting a zeroed record that reads like
+    // a live idle capture. `None` is that honest answer.
+    //
+    // Sequencing matters here, and getting it wrong is how this proof first went
+    // green-then-red: a `Dispose` test edit at slice 1 does **not** release the
+    // session — it leaves it alive with a slice still scheduled. Only the
+    // terminal does. So the proof drives a real terminal.
+    let terminal_handle = {
+        let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
+        buffer.set_text(&"z".repeat(200_000));
+        let sink = Rc::new(RefCell::new(Vec::new()));
+        let sink_for_callback = Rc::clone(&sink);
+        let handle = snapshot_buffer_text_async_for_test(
+            buffer,
+            None,
+            Some(BufferSnapshotTestMutation {
+                trigger: BufferSnapshotTestTrigger::AfterSlice(1),
+                edit: BufferSnapshotTestEdit::InsertAfterMark,
+            }),
+            move |outcome| sink_for_callback.borrow_mut().push(outcome),
+        );
+        assert_eq!(
+            sink.borrow().as_slice(),
+            &[BufferSnapshotOutcome::Cancelled(
+                BufferSnapshotCancelReason::SourceMutated
+            )],
+            "the mutation must drive this capture to its terminal"
+        );
+        handle
+    };
+    flush_events();
+
+    let after_terminal = buffer_snapshot_evidence(Some(&terminal_handle));
+    assert_eq!(
+        after_terminal.session, None,
+        "a released session must report None rather than a zeroed live record"
+    );
+    assert_eq!(
+        buffer_snapshot_evidence(Some(&terminal_handle)).session,
+        after_terminal.session,
+        "repeated reads of a released session must stay identical"
+    );
+    // The counters remain readable with no session at all, which is the state
+    // before any capture starts and after every capture ends.
+    let _ = buffer_snapshot_evidence(None);
+
+    // ── Proof 3: non-materialization ──────────────────────────────────────
+    // The surface covers no lazily created toolkit collection — it reads scalars
+    // and vector lengths off one already-owned session, plus process-wide
+    // counters. The observable proxy is asserted rather than the claim: reading
+    // the surface repeatedly must not advance any counter the surface itself
+    // reports, which is the "an observer that changes the metric it observes is
+    // not an observation" rule.
+    // Quiesce the disposal lane before sampling. This test has just driven two
+    // captures to their terminals, and retiring their payloads bumps
+    // `worker_drops` from the lane's worker thread at a time the GTK thread does
+    // not control. Sampling across an in-flight retirement measures the
+    // retirement, not the reads — which is exactly how this proof failed, with
+    // `worker_drops` going 0 -> 1 across eight reads that touch no payload.
+    //
+    // Waiting for quiescence **strengthens** the proof rather than relaxing it:
+    // once the lane is idle and verified still idle afterwards, any advancement
+    // is attributable to the reads, which is the claim being made.
+    wait_until(Duration::from_secs(10), || {
+        let lane = lane_snapshot_for_test();
+        lane.running_jobs == 0 && lane.queued_jobs == 0
+    });
+
+    let before = buffer_snapshot_evidence(None).handoff;
+    for _ in 0..8 {
+        let _ = buffer_snapshot_evidence(None);
+        let _ = buffer_snapshot_evidence(Some(&terminal_handle));
+    }
+    let lane_after = lane_snapshot_for_test();
+    assert_eq!(
+        (lane_after.running_jobs, lane_after.queued_jobs),
+        (0, 0),
+        "the lane must stay idle across the reads, or the counter comparison \
+         below is not attributable to them"
+    );
+    assert_eq!(
+        buffer_snapshot_evidence(None).handoff,
+        before,
+        "reading the surface must not advance the handoff counters it reports"
+    );
+
+    // The lane's own outcome is unaffected by having been observed.
+    assert!(cancelled.session.is_none() || !outcomes.borrow().is_empty());
 }
 
 #[test]
@@ -2565,16 +2727,18 @@ fn test_chunked_buffer_snapshot_waits_for_disposal_capacity_before_copying() {
         outcomes_for_callback.borrow_mut().push(outcome);
     });
 
-    let pending = handle.state_for_test();
+    let pending = buffer_snapshot_evidence(Some(&handle))
+        .session
+        .expect("expected a live capture session");
     assert!(pending.active);
     assert!(pending.admission_retry_source_live);
     assert!(pending.callback_pending);
     assert!(!pending.progress_mark_live);
     assert!(!pending.changed_handler_live);
     assert!(!pending.scheduled_source_live);
-    assert_eq!(pending.slice_count, 0);
-    assert_eq!(pending.chunk_count, 0);
-    assert_eq!(pending.captured_bytes, 0);
+    assert_eq!(pending.capture.slice_count, 0);
+    assert_eq!(pending.capture.chunk_count, 0);
+    assert_eq!(pending.capture.captured_bytes, 0);
     assert!(outcomes.borrow().is_empty());
 
     drop(capacity_hold);
@@ -2583,11 +2747,11 @@ fn test_chunked_buffer_snapshot_waits_for_disposal_capacity_before_copying() {
     assert!(matches!(
         outcomes.borrow().as_slice(),
         [BufferSnapshotOutcome::Captured(payload)]
-            if snapshot_payload_metrics_for_test(payload).captured_bytes == 200_000
+            if payload.capture_metrics().captured_bytes == 200_000
     ));
     assert_eq!(
-        handle.state_for_test(),
-        BufferSnapshotStateForTest::default()
+        buffer_snapshot_evidence(Some(&handle)).session,
+        None
     );
 }
 
@@ -2618,8 +2782,8 @@ fn test_chunked_buffer_snapshot_capacity_wait_is_explicitly_cancellable() {
         )]
     );
     assert_eq!(
-        handle.state_for_test(),
-        BufferSnapshotStateForTest::default()
+        buffer_snapshot_evidence(Some(&handle)).session,
+        None
     );
     drop(capacity_hold);
 }
@@ -2652,8 +2816,8 @@ fn test_chunked_buffer_snapshot_rejects_final_slice_mutation_once() {
     flush_after_delay(Duration::from_millis(20));
     assert_eq!(outcomes.borrow().len(), 1);
     assert_eq!(
-        handle.state_for_test(),
-        BufferSnapshotStateForTest::default()
+        buffer_snapshot_evidence(Some(&handle)).session,
+        None
     );
 }
 
@@ -2670,7 +2834,7 @@ fn test_large_ascii_and_multibyte_snapshots_use_bounded_chunks_and_worker_coales
         buffer.set_text(&source);
         drop(source);
 
-        let before = buffer_snapshot_counters_for_test();
+        let before = buffer_snapshot_evidence(None).handoff;
         let sentinel_ran = Rc::new(Cell::new(false));
         glib::idle_add_local_once({
             let sentinel_ran = Rc::clone(&sentinel_ran);
@@ -2685,7 +2849,7 @@ fn test_large_ascii_and_multibyte_snapshots_use_bounded_chunks_and_worker_coales
             let BufferSnapshotOutcome::Captured(payload) = outcome else {
                 panic!("large snapshot should complete");
             };
-            metrics_for_callback.replace(Some(snapshot_payload_metrics_for_test(&payload)));
+            metrics_for_callback.replace(Some(payload.capture_metrics()));
             spawn_blocking_then(
                 (),
                 move || {
@@ -2724,11 +2888,11 @@ fn test_large_ascii_and_multibyte_snapshots_use_bounded_chunks_and_worker_coales
         assert!(metrics.max_chunk_bytes <= 256 * 1024);
         assert_eq!(metrics.captured_bytes, expected_bytes as u64);
         assert_eq!(
-            handle.state_for_test(),
-            BufferSnapshotStateForTest::default()
+            buffer_snapshot_evidence(Some(&handle)).session,
+            None
         );
 
-        let after = buffer_snapshot_counters_for_test();
+        let after = buffer_snapshot_evidence(None).handoff;
         assert_eq!(after.gtk_coalesces, before.gtk_coalesces);
         assert_eq!(after.gtk_drops, before.gtk_drops);
         assert!(after.worker_coalesces > before.worker_coalesces);
@@ -2751,7 +2915,9 @@ fn test_chunked_buffer_snapshot_explicit_cancel_cleans_resources_and_calls_back_
     let handle = snapshot_buffer_text_async_for_test(buffer, None, None, move |outcome| {
         outcomes_for_callback.borrow_mut().push(outcome);
     });
-    let active = handle.state_for_test();
+    let active = buffer_snapshot_evidence(Some(&handle))
+        .session
+        .expect("expected a live capture session");
     assert!(active.active);
     assert!(active.progress_mark_live);
     assert!(active.changed_handler_live);
@@ -2771,8 +2937,8 @@ fn test_chunked_buffer_snapshot_explicit_cancel_cleans_resources_and_calls_back_
     assert_eq!(outcomes.borrow().len(), 1);
     assert_eq!(deleted_marks.get(), 1);
     assert_eq!(
-        handle.state_for_test(),
-        BufferSnapshotStateForTest::default()
+        buffer_snapshot_evidence(Some(&handle)).session,
+        None
     );
 }
 
@@ -2794,8 +2960,8 @@ fn test_chunked_buffer_snapshot_overflow_and_disposal_are_terminal_and_leak_free
         }]
     ));
     assert_eq!(
-        overflow_handle.state_for_test(),
-        BufferSnapshotStateForTest::default()
+        buffer_snapshot_evidence(Some(&overflow_handle)).session,
+        None
     );
 
     let disposed_buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
@@ -2813,7 +2979,12 @@ fn test_chunked_buffer_snapshot_overflow_and_disposal_are_terminal_and_leak_free
         snapshot_buffer_text_async_for_test(disposed_buffer, None, None, move |_| {
             callback_count_for_snapshot.set(callback_count_for_snapshot.get() + 1);
         });
-    assert!(disposed_handle.state_for_test().scheduled_source_live);
+    assert!(
+        buffer_snapshot_evidence(Some(&disposed_handle))
+            .session
+            .expect("expected a live session before disposal")
+            .scheduled_source_live
+    );
 
     disposed_handle.dispose_for_test();
     flush_after_delay(Duration::from_millis(20));
@@ -2821,8 +2992,8 @@ fn test_chunked_buffer_snapshot_overflow_and_disposal_are_terminal_and_leak_free
     assert_eq!(callback_count.get(), 0);
     assert_eq!(deleted_marks.get(), 1);
     assert_eq!(
-        disposed_handle.state_for_test(),
-        BufferSnapshotStateForTest::default()
+        buffer_snapshot_evidence(Some(&disposed_handle)).session,
+        None
     );
 }
 
@@ -3773,7 +3944,7 @@ fn test_inline_alert_announcements_use_shared_throttling_policy() {
     };
     page.emit_inline_notification(warning.clone());
 
-    let warning_key = inline_alert_announcement_key_for_test(&warning);
+    let warning_key = inline_alert_announcement_key(&warning);
     assert!(
         !page
             .info_bar()
@@ -3792,7 +3963,7 @@ fn test_inline_alert_announcements_use_shared_throttling_policy() {
     };
     page.emit_inline_notification(error.clone());
 
-    let error_key = inline_alert_announcement_key_for_test(&error);
+    let error_key = inline_alert_announcement_key(&error);
     assert!(
         page.info_bar()
             .imp()

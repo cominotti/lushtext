@@ -68,7 +68,7 @@ use lushtext_core::ui::editor_page::save::policy::{
 };
 use lushtext_core::ui::editor_page::{
     BufferReplacementWorkflow, EditorLoadState, EditorSaveError, LushtextEditorPage,
-    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_counters_for_test,
+    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
 };
 use lushtext_core::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
 use lushtext_core::ui::plain_disposal::{
@@ -79,7 +79,7 @@ use lushtext_core::ui::plain_disposal::{
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::search_panel::SearchPanelTestPolicy;
 use lushtext_core::ui::window::{
-    DraftFlushError, LushtextWindow, PrintDocumentSnapshot, PrintOutcome,
+    DraftFlushError, LushtextWindow, PrintEvidence, PrintOutcome, print_evidence,
     fail_next_draft_mutations_for_test, local_history_preview_install_evidence,
     set_automatic_draft_limit_for_test, set_bookmark_excerpt_preview_delay_for_test,
     set_canonical_refresh_delay_for_test, set_close_safety_completion_delay_for_test,
@@ -1070,7 +1070,7 @@ fn wait_for_markdown_preview_shell(window: &LushtextWindow) {
         };
         let expected_width = expected_code_block_width(preview, &block);
 
-        !window.preview_transition_pending_for_test()
+        !window.preview_transition_pending()
             && preview.is_showing_content()
             && preview.text_view().width() > 0
             && !source_views(preview).is_empty()
@@ -4869,19 +4869,60 @@ fn test_focus_mode_affordance_stays_visible_while_leave_button_has_focus() {
     window.new_tab();
     present_window(&window);
 
+    // This test races a production deadline, so its budgets are **derived from the
+    // production constant** rather than re-declared. Entering Focus Mode arms the
+    // affordance reveal timer for `FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET`; when it
+    // fires it hides the affordance *unless* focus is inside it, and that decision
+    // is the contract under test.
+    //
+    // It previously produced a `FLAKY:` line. The cause was a wait budget longer
+    // than the deadline it competed with: a 5s focus wait let a starved main loop
+    // spend the whole reveal budget before focus landed, after which the timer hid
+    // the affordance *for the correct reason* and the final assertion reported that
+    // lost race as a behavior regression.
+    //
+    // The first fix over-corrected by clamping the focus wait to 400ms, which
+    // `wait_until` turns into a *panic* — creating a new hard-failure band where
+    // focus arriving in 400–1800ms is correct behavior but a failed test. The
+    // budget is generous again; what carries the diagnosis is the
+    // still-revealed-at-flip precondition below, which distinguishes "the timer
+    // won the race" from "the affordance wrongly hid itself".
+    let reveal_budget = lushtext_core::ui::window::FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET;
+    // Comfortably inside the reveal budget on any sane machine, but not asserted
+    // as a deadline — see above.
+    let focus_flip_budget = Duration::from_secs(5);
+    // Must exceed the reveal budget so the timer has actually fired before the
+    // contract is checked.
+    let past_reveal_budget = reveal_budget + Duration::from_millis(100);
+
+    let armed_at = std::time::Instant::now();
     activate_action(&window, "toggle-focus-mode");
     let leave_button = window.imp().leave_focus_mode_button.get();
     assert!(
         leave_button.grab_focus(),
         "leave-focus-mode button should be focusable while the affordance is revealed"
     );
-    wait_until(Duration::from_secs(5), || {
+    wait_until(focus_flip_budget, || {
         gtk4::prelude::GtkWindowExt::focus(&window).is_some_and(|focus| {
             focus.as_ptr() == leave_button.upcast_ref::<gtk4::Widget>().as_ptr()
         })
     });
-    flush_after_delay(Duration::from_millis(1900));
 
+    // The precondition that carries the diagnosis. If the reveal timer won the
+    // race, this fails naming that, instead of the visibility assertion below
+    // failing as though the behavior were wrong.
+    let focus_took = armed_at.elapsed();
+    assert!(
+        window.imp().focus_mode_revealer.reveals_child(),
+        "the affordance must still be revealed once focus lands, but focus took \
+         {focus_took:?} of the {reveal_budget:?} reveal budget, so the reveal timer \
+         won the race — this run measured harness timing, not the behavior under test"
+    );
+
+    flush_after_delay(past_reveal_budget);
+
+    // The contract: the reveal timer has now fired and declined to hide, because
+    // focus is inside the affordance.
     assert!(window.imp().focus_mode_revealer.reveals_child());
     assert!(!gtk4::test_accessible_has_state(
         &*window.imp().focus_mode_affordance,
@@ -12302,7 +12343,7 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
     wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
     let progress_lane_before = progress_lane_snapshot_for_test();
-    let snapshot_counters_before = buffer_snapshot_counters_for_test();
+    let snapshot_counters_before = buffer_snapshot_evidence(None).handoff;
     let main_loop_progressed = Rc::new(Cell::new(false));
     glib::idle_add_local_once({
         let main_loop_progressed = Rc::clone(&main_loop_progressed);
@@ -12317,7 +12358,7 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     });
     assert_eq!(editor_text(&editor), restore_target);
     assert!(main_loop_progressed.get());
-    let snapshot_counters_after = buffer_snapshot_counters_for_test();
+    let snapshot_counters_after = buffer_snapshot_evidence(None).handoff;
     assert_eq!(
         snapshot_counters_after.gtk_coalesces,
         snapshot_counters_before.gtk_coalesces
@@ -12916,6 +12957,73 @@ fn test_reopen_with_encoding_requires_discard_confirmation_for_modified_document
             .and_then(|dialog| dialog.heading())
             .is_some_and(|heading| heading.contains("Discard Changes"))
     });
+}
+
+/// The encoding dialogs' accessible metadata, asserted so `append_choice_row`
+/// cannot silently drop it.
+///
+/// The `object-select-symbolic` checkmark carries the current-option fact
+/// visually and carries nothing to assistive technology, so the same fact must be
+/// published as accessible **checked** state on a `Radio` role (the subtitle says
+/// it in prose too, but prose is weaker than reportable state); and an action row that opens a further dialog
+/// must expose **has-popup** rather than relying on a decorative chevron. Both
+/// were missing entirely before slot 7a — `ui/window/encoding.rs` had no
+/// accessibility metadata at all — so these assertions guard a freshly closed gap.
+/// See `A11Y-ENCODING-DIALOGS` in `docs/accessibility-matrix.md`.
+#[test]
+fn test_encoding_dialog_rows_expose_checked_and_has_popup_metadata() {
+    ensure_gtk_init();
+    let window = test_window();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("a11y-encoding.txt");
+    fixture::write_text(&path, "hello");
+
+    window.open_document(&path);
+    wait_until(Duration::from_secs(10), || {
+        active_editor(&window).file_size().is_some()
+    });
+
+    // The summary surface: its action rows open further dialogs, so they must
+    // advertise has-popup.
+    activate_action(&window, "show-encoding-controls");
+    let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
+    let extra = dialog.extra_child().expect("dialog content");
+    let save_row = find_action_row_by_title(&extra, "Save Using Encoding…")
+        .expect("save-encoding action row");
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::HasPopup])
+        .assert_on(&save_row);
+    // The dialog itself carries a stable accessible name from its heading.
+    AccessibleAudit::new()
+        .properties(&[gtk4::AccessibleProperty::Label])
+        .assert_on(&dialog);
+
+    click_alert_extra_button(&dialog, "Save Using Encoding…");
+    wait_until(Duration::from_secs(10), || {
+        visible_alert_dialog(&window)
+            .and_then(|dialog| dialog.heading())
+            .is_some_and(|heading| heading.contains("Save Using Encoding"))
+    });
+
+    // The choice surface: exactly one option is the current one, and that fact
+    // must be readable as accessible state rather than only as a glyph.
+    let dialog = visible_alert_dialog(&window).expect("save encoding dialog visible");
+    let extra = dialog.extra_child().expect("dialog content");
+    let current = find_action_row_by_title(&extra, "UTF-8").expect("UTF-8 option row");
+    let other = find_action_row_by_title(&extra, "Windows-1252").expect("other option row");
+
+    assert!(
+        gtk4::test_accessible_has_state(&current, gtk4::AccessibleState::Checked),
+        "the current encoding must expose accessible checked state, not just a checkmark"
+    );
+    assert!(
+        gtk4::test_accessible_has_state(&other, gtk4::AccessibleState::Checked),
+        "every choice row must publish its checked state, including the false case"
+    );
+    // `test_accessible_has_state` reports whether the state is *published*, which
+    // is exactly the drop-guard wanted here: `append_choice_row` must set it on
+    // every row, including the not-current ones, so a future edit that sets it
+    // only inside the `if state.selected` branch fails this test.
 }
 
 #[test]
@@ -14350,27 +14458,185 @@ fn test_print_action_prepares_active_document_snapshot() {
     editor.buffer().set_modified(true);
     flush_events();
     let before = editor_print_state(&editor);
-    let captured: Rc<RefCell<Vec<PrintDocumentSnapshot>>> = Rc::default();
+    let captured: Rc<RefCell<Vec<PrintEvidence>>> = Rc::default();
     let captured_for_runner = Rc::clone(&captured);
 
     assert!(action_enabled(&window, "print"));
     with_print_runner_for_test(
-        move |snapshot| {
-            captured_for_runner.borrow_mut().push(snapshot.clone());
+        move |evidence| {
+            captured_for_runner.borrow_mut().push(evidence.clone());
             PrintOutcome::Completed
         },
         || activate_action(&window, "print"),
     );
 
-    let snapshots = captured.borrow();
-    assert_eq!(snapshots.len(), 1);
-    let snapshot = &snapshots[0];
-    assert_eq!(snapshot.path.as_deref(), Some(path.as_path()));
-    assert_eq!(snapshot.content, "active print content\nwith metadata\n");
-    assert!(snapshot.modified);
-    assert_eq!(snapshot.draft_id, before.draft_id);
-    assert_eq!(snapshot.title, editor.title());
+    let observations = captured.borrow();
+    assert_eq!(observations.len(), 1);
+    let evidence = &observations[0];
+    assert!(
+        evidence.action_enabled,
+        "the print action must still read as enabled while its own request runs"
+    );
+    let document = evidence
+        .document
+        .as_ref()
+        .expect("expected an active document to print");
+    assert_eq!(document.path.as_deref(), Some(path.as_path()));
+    assert_eq!(
+        document.content.as_deref(),
+        Some("active print content\nwith metadata\n")
+    );
+    assert!(document.char_count > 0);
+    assert!(document.modified);
+    assert_eq!(document.draft_id, before.draft_id);
+    assert_eq!(document.title, editor.title());
     assert_eq!(editor_print_state(&editor), before);
+}
+
+/// Proof 1 of 3 for the print evidence surface — **reentrancy**.
+///
+/// The accessor reads the whole surface, so no field may be read from inside a
+/// mutable borrow of the state it reads. This drives the workflow through each
+/// operation that takes such a borrow (tab creation, buffer mutation, path
+/// mutation, tab close), reads the surface *after* each one, and asserts that
+/// repeated reads of unchanged state are identical. Reading the surface *while*
+/// a borrow is held is the panic the constraint prevents, not a demonstration of
+/// it, so this test deliberately does not do that.
+#[test]
+fn test_print_evidence_reads_stay_side_effect_free_across_window_mutation() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+
+    // No context: the action is disabled and there is no document to print.
+    let empty = print_evidence(&window);
+    assert!(!empty.action_enabled);
+    assert!(empty.document.is_none());
+    assert_eq!(print_evidence(&window), empty, "repeated reads must be equal");
+
+    // Tab creation takes a mutable borrow of `open_paths`.
+    window.new_tab();
+    flush_events();
+    let with_tab = print_evidence(&window);
+    assert!(with_tab.action_enabled);
+    assert!(with_tab.document.is_some());
+    assert_eq!(print_evidence(&window), with_tab);
+
+    // Buffer mutation.
+    let editor = active_editor(&window);
+    editor.buffer().set_text("reentrancy probe\n");
+    editor.buffer().set_modified(true);
+    flush_events();
+    let dirty = print_evidence(&window);
+    assert_eq!(
+        dirty.document.as_ref().and_then(|doc| doc.content.as_deref()),
+        Some("reentrancy probe\n")
+    );
+    assert!(dirty.document.as_ref().is_some_and(|doc| doc.modified));
+    assert_eq!(print_evidence(&window), dirty);
+
+    // A second tab, then closing back down, both mutate the same state.
+    window.new_tab();
+    flush_events();
+    let two_tabs = print_evidence(&window);
+    assert_eq!(print_evidence(&window), two_tabs);
+
+    window.imp().tab_view.close_page(&window.imp().tab_view.nth_page(1));
+    flush_events();
+    let after_close = print_evidence(&window);
+    assert!(after_close.document.is_some());
+    assert_eq!(print_evidence(&window), after_close);
+}
+
+/// Proof 2 of 3 for the print evidence surface — **disposal**.
+///
+/// A disposed widget is a stage. GTK4 clears template children in `dispose()`,
+/// before Rust's `Drop`, so a field derived from a `TemplateChild` must be read
+/// through `try_get()` and answer honestly. This is the trap slot 5a hit: the
+/// tab view is reached transitively by `LushtextWindow::active_editor`, which
+/// derefs the template child and panics, and which reads as an ordinary window
+/// operation at the call site. The surface must not use it.
+#[test]
+fn test_print_evidence_answers_honestly_after_the_window_is_disposed() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    window.new_tab();
+    flush_events();
+    assert!(print_evidence(&window).document.is_some());
+
+    // `close()` hides the window but does NOT clear template children — GTK
+    // defers disposal — so it cannot prove this contract. The repo's established
+    // mechanism for the disposed stage is an explicit `run_dispose()`, which is
+    // what makes the assertion deterministic instead of dependent on GTK's
+    // teardown timing. Verified: the surface still answered `Some` after
+    // `close()`, so a close-only test would have proved nothing.
+    assert!(
+        print_evidence(&window).document.is_some(),
+        "sanity: closing is not disposing, so the document is still visible here"
+    );
+
+    // SAFETY: this test window is disposed exactly once, and everything after
+    // this point only reads the evidence surface, which must answer honestly on
+    // a disposed widget rather than panicking.
+    unsafe { window.run_dispose() };
+
+    let disposed = print_evidence(&window);
+    assert!(
+        disposed.document.is_none(),
+        "a disposed window must report no printable document rather than panicking"
+    );
+    assert!(
+        !disposed.action_enabled,
+        "a disposed window must not report its print action as enabled"
+    );
+    assert_eq!(
+        print_evidence(&window),
+        disposed,
+        "repeated reads of a disposed window must stay identical"
+    );
+}
+
+/// Proof 3 of 3 for the print evidence surface — **non-materialization**.
+///
+/// Recorded as **not applicable, with the reason**, rather than skipped. The
+/// requirement fires for a surface covering a lazily created collection —
+/// `GtkTreeListModel` is the one in this tree, whose accessors *perform* work by
+/// materializing descendants. This surface reads `AdwTabView::selected_page()`
+/// and one editor's buffer text: `AdwTabView` holds its pages eagerly, creates
+/// nothing on demand, and registers no store, so there is no unmaterialized
+/// state for a read to bring into being. The observable proxy is asserted
+/// anyway: the read does not change the page count or the selection.
+#[test]
+fn test_print_evidence_reads_materialize_no_toolkit_state() {
+    ensure_gtk_init();
+    let window = test_window();
+    present_window(&window);
+    window.new_tab();
+    window.new_tab();
+    flush_events();
+
+    let pages_before = window.imp().tab_view.n_pages();
+    let selected_before = window.imp().tab_view.selected_page().map(|page| page.child());
+
+    for _ in 0..5 {
+        let _ = print_evidence(&window);
+    }
+
+    assert_eq!(
+        window.imp().tab_view.n_pages(),
+        pages_before,
+        "reading the surface must not create or destroy pages"
+    );
+    assert_eq!(
+        window
+            .imp()
+            .tab_view
+            .selected_page()
+            .map(|page| page.child()),
+        selected_before,
+        "reading the surface must not move the selection"
+    );
 }
 
 #[test]
@@ -14383,12 +14649,12 @@ fn test_print_cancel_preserves_document_state() {
     editor.buffer().set_modified(true);
     flush_events();
     let before = editor_print_state(&editor);
-    let captured: Rc<RefCell<Vec<PrintDocumentSnapshot>>> = Rc::default();
+    let captured: Rc<RefCell<Vec<PrintEvidence>>> = Rc::default();
     let captured_for_runner = Rc::clone(&captured);
 
     with_print_runner_for_test(
-        move |snapshot| {
-            captured_for_runner.borrow_mut().push(snapshot.clone());
+        move |evidence| {
+            captured_for_runner.borrow_mut().push(evidence.clone());
             PrintOutcome::Cancelled
         },
         || activate_action(&window, "print"),
@@ -14879,17 +15145,17 @@ fn test_primary_menu_markdown_preview_pauses_large_markdown_buffer() {
     assert!(
         !window.imp().markdown_preview.is_showing_content(),
         "oversized Markdown should use the limited placeholder, state={:?}, description={:?}",
-        window.imp().markdown_preview.render_state_for_test(),
+        window.imp().markdown_preview.evidence().render_state,
         window
             .imp()
             .markdown_preview
-            .placeholder_description_for_test(),
+            .placeholder_description(),
     );
     assert_eq!(
         window
             .imp()
             .markdown_preview
-            .placeholder_description_for_test(),
+            .placeholder_description(),
         Some("Markdown preview paused because the source exceeds 4 MiB".to_string())
     );
 }
@@ -14966,7 +15232,7 @@ fn markdown_preview_has_label_containing(window: &LushtextWindow, text: &str) ->
 fn wait_for_projected_preview_shell(window: &LushtextWindow) {
     wait_until(Duration::from_secs(20), || {
         let preview = &window.imp().markdown_preview;
-        !window.preview_transition_pending_for_test()
+        !window.preview_transition_pending()
             && !preview.render_pending()
             && preview.is_showing_content()
             && preview.text_view().width() > 0
@@ -14977,11 +15243,11 @@ fn wait_for_projected_preview_shell(window: &LushtextWindow) {
 fn assert_continuation_table_is_whole(window: &LushtextWindow) {
     let preview: &LushtextMarkdownPreview = &window.imp().markdown_preview;
     assert_eq!(
-        preview.render_state_for_test(),
+        preview.evidence().render_state,
         MarkdownRenderState::Complete
     );
     assert!(
-        preview.projection_counters_for_test().0 > 1,
+        preview.evidence().projection.dispatch_count > 1,
         "the fixture must be projected over several GTK turns"
     );
     assert_eq!(
@@ -19413,7 +19679,7 @@ fn test_preview_pane_toggle_uses_adwaita_side_by_side_shell() {
             && preview_layout_name(&window).as_deref() == Some("editor")
             && window.imp().markdown_preview.property::<bool>("visible")
             && window.imp().editor_box.property::<bool>("visible")
-            && !window.preview_transition_pending_for_test()
+            && !window.preview_transition_pending()
     });
     assert!(!window.imp().preview_mode.get());
     assert!(action_state_bool(&window, "toggle-preview-pane"));
@@ -19445,7 +19711,7 @@ fn test_preview_mode_toggle_uses_full_content_layout() {
             && window.imp().markdown_preview.property::<bool>("visible")
             && !window.imp().editor_box.property::<bool>("visible")
             && !window.imp().preview_split_view.shows_sidebar()
-            && !window.preview_transition_pending_for_test()
+            && !window.preview_transition_pending()
     });
     assert!(!window.imp().preview_visible.get());
     assert!(action_state_bool(&window, "toggle-preview-mode"));
@@ -19476,7 +19742,7 @@ fn test_side_by_side_preview_width_clamps_legacy_preference_without_rewriting_it
 
     wait_until(Duration::from_secs(2), || {
         window.imp().preview_split_view.shows_sidebar()
-            && !window.preview_transition_pending_for_test()
+            && !window.preview_transition_pending()
     });
     let split = &window.imp().preview_split_view;
     let preview_width = split.max_sidebar_width();

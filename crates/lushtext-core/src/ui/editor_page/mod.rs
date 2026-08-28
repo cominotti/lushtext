@@ -40,11 +40,11 @@ use gtk4::prelude::*;
 pub use crate::services::editor_io::EditorSaveError;
 #[cfg(feature = "test-utils")]
 pub use crate::ui::buffer_snapshot::{
-    BufferSnapshotCancelReason, BufferSnapshotCountersForTest, BufferSnapshotHandle,
-    BufferSnapshotMetrics, BufferSnapshotOutcome, BufferSnapshotStateForTest,
-    BufferSnapshotTestEdit, BufferSnapshotTestMutation, BufferSnapshotTestTrigger,
-    buffer_snapshot_counters_for_test, coalesce_snapshot_payload_for_test,
-    snapshot_buffer_text_async_for_test, snapshot_payload_metrics_for_test,
+    BufferSnapshotCancelReason, BufferSnapshotCaptureMetrics, BufferSnapshotEvidence,
+    BufferSnapshotHandle, BufferSnapshotHandoffCounters, BufferSnapshotOutcome,
+    BufferSnapshotSessionEvidence, BufferSnapshotTestEdit, BufferSnapshotTestMutation,
+    BufferSnapshotTestTrigger, buffer_snapshot_evidence, coalesce_snapshot_payload_for_test,
+    snapshot_buffer_text_async_for_test,
 };
 pub use bookmarks::{
     BookmarkEditError, BookmarkEditOutcome, BookmarkNavigationDirection, BookmarkToggleState,

@@ -61,7 +61,7 @@ pub(super) const DRAFT_MUTATION_WAIT_POLL_INTERVAL: Duration = Duration::from_mi
 /// writes only tabs whose draft is behind the buffer, while a close writes every
 /// modified tab because there is no later pass to catch it.
 #[must_use]
-pub(super) const fn draft_candidate_is_eligible(
+pub const fn draft_candidate_is_eligible(
     modified: bool,
     draft_dirty: bool,
     evicted: bool,

@@ -33,9 +33,13 @@ This folder owns the top-level application shell adapter.
 - When split-view geometry changes, preserve the total-window width contracts and the mirrored status-bar toggle behavior described in the root `AGENTS.md` and `.agents/rules/ui.md`.
 - Keep split-view allocation paths cheap and runtime-only. `size_allocate()` may clamp live sidebar fractions and update cached breakpoint thresholds when the actual allocated width changes, but it must not persist GSettings, rebuild/reparse `AdwBreakpoint` conditions, or rehost secondary surfaces on every animation frame.
 - Keep plain split-view width, fraction, breakpoint, and compact-surface
-  decisions in `adaptive_shell.rs`. `imp.rs` owns the live Libadwaita objects,
-  settings reads and writes, focus restoration, signal setup, and application
-  of those decisions.
+  decisions in `policy.rs` (named `adaptive_shell.rs` until it took the pure
+  policy role). `imp.rs` owns the live Libadwaita objects, settings reads and
+  writes, focus restoration, signal setup, and application of those decisions.
+  The role home is flat `ui/window/` because `imp.rs` and `actions.rs` are
+  literal path keys in three visual-proof predicates in each of two
+  implementations; moving that geometry into a new directory would disarm two
+  named pixel invariants and the sidebar animation matrix.
 
 ## Editing Rules
 

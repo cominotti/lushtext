@@ -12,11 +12,10 @@ use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 
 use crate::ui::accessibility;
 
+use super::LushtextMarkdownPreview;
 use super::links::resolve_link_target;
-use super::{
-    EmbeddedBlockLayout, LushtextMarkdownPreview, MarkdownPreviewRenderContext,
-    PreviewLaunchTarget, build_preview_limit_fallback_widget,
-};
+use super::seams::{EmbeddedBlockLayout, MarkdownPreviewRenderContext, PreviewLaunchTarget};
+use super::widgets::build_preview_limit_fallback_widget;
 
 /// Maximum table cells materialized as GTK labels in a single render turn.
 ///

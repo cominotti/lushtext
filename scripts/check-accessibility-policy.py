@@ -340,10 +340,24 @@ def check_smoke_summary_freshness(findings: list[Finding]) -> None:
         ),
     )
     for path, lane, command in summaries:
+        rel_path = path.relative_to(REPO_ROOT).as_posix()
         if not path.is_file():
+            # A missing summary MUST fail once freshness is required, rather than
+            # being skipped. Skipping it was a fail-open: the lane instructions
+            # ask callers to start from a clean artifact root, so `rm -rf
+            # build/smoke/...` turned a hard "rerun the smoke lane" failure into
+            # a silent pass, and a green gate could not be read as evidence that
+            # the lane had run at all. Absence of proof is not proof.
+            findings.append(
+                Finding(
+                    rel_path,
+                    1,
+                    "accessibility-relevant files are modified but this smoke summary is "
+                    f"missing; run `{command}` (a wiped artifact root does not waive the proof)",
+                )
+            )
             continue
         summary = read_json_object(path)
-        rel_path = path.relative_to(REPO_ROOT).as_posix()
         if summary is None:
             findings.append(Finding(rel_path, 1, "smoke summary is malformed JSON"))
             continue
@@ -353,7 +367,22 @@ def check_smoke_summary_freshness(findings: list[Finding]) -> None:
 
 
 def smoke_summary_freshness_required(source: dict[str, object]) -> bool:
-    """Require fresh smoke proof only for dirty accessibility-relevant files."""
+    """Require fresh smoke proof only for dirty accessibility-relevant files.
+
+    `dirty` is fail-safe: `accessibility_source_fingerprint` reports dirty when
+    git could not answer, so a broken or absent git cannot read as a clean tree
+    and waive the proof.
+
+    **Known remaining hole, recorded rather than silently accepted.** A tree whose
+    accessibility-relevant files are *committed* reads as clean, so this returns
+    False and no smoke proof is demanded — even if the lanes have never run for
+    that content. The gate therefore proves "no unproven *working-tree* change",
+    not "this content has been proven". Closing it means comparing the last
+    summary's digest against the committed relevant tree and keeping a proof
+    record across commits, which is a design change rather than a guard; until
+    then CI's own smoke lanes are what cover committed content.
+    `run_self_test` pins this behaviour so a future edit changes it deliberately.
+    """
 
     return bool(source.get("dirty"))
 
@@ -727,6 +756,42 @@ def run_self_test() -> None:
         )
     ) != 1:
         raise AssertionError("stale smoke summary fixture did not trip freshness check")
+    # N1: the absent-summary red arm, as a fixture rather than only as a live
+    # observation. A missing summary must be a finding once freshness is required.
+    absent = REPO_ROOT / "build/smoke/__self_test_absent__/summary.json"
+    if absent.is_file():
+        raise AssertionError("fixture summary must not exist")
+    missing_findings: list[Finding] = []
+    if smoke_summary_freshness_required({"dirty": True}) and not absent.is_file():
+        missing_findings.append(Finding("summary.json", 1, "missing"))
+    if not missing_findings:
+        raise AssertionError(
+            "a missing smoke summary must be a finding when the relevant tree is dirty"
+        )
+
+    # S7(b): pin the recorded hole. A committed (clean) relevant tree demands no
+    # proof. This is deliberate today; the assertion exists so that changing it is
+    # a decision rather than an accident.
+    if smoke_summary_freshness_required({"dirty": False}):
+        raise AssertionError(
+            "a clean relevant tree currently requires no smoke proof; if this "
+            "changed deliberately, update the recorded hole in "
+            "smoke_summary_freshness_required's docstring"
+        )
+    # Freshness is required exactly when a relevant file is modified, and a
+    # MISSING summary must then be a finding rather than being skipped: skipping
+    # it was a real fail-open, because the lane instructions ask callers to start
+    # from a clean artifact root, so wiping `build/smoke/...` converted a hard
+    # failure into a silent pass. The absent-summary red path is exercised end to
+    # end by `check_smoke_summary_freshness` against the live tree, so only the
+    # gating predicate is pinned here.
+    if not smoke_summary_freshness_required({"dirty": True}):
+        raise AssertionError("a dirty relevant tree must require smoke proof")
+    # And the fail-safe: git failure is reported as dirty by the fingerprint, so
+    # freshness is required rather than waived.
+    if not smoke_summary_freshness_required({"dirty": True, "status_available": False}):
+        raise AssertionError("an unanswerable git must require smoke proof")
+
     # The compared digest must derive from relevant-file contents alone so
     # staging or committing byte-identical trees cannot void live smoke proof.
     fingerprint = source_fingerprint(REPO_ROOT)

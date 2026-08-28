@@ -250,7 +250,15 @@ impl LushtextWindow {
         );
     }
 
-    /// Test seam for readiness coverage that needs a pending preview settle.
+    /// Force the preview settle into a pending or cleared state.
+    ///
+    /// **Kept actuation seam, with its justification here** rather than retired.
+    /// The production path that leaves a settle pending is a real shell layout
+    /// transition driven by an Adwaita animation, which the widget harness cannot
+    /// advance (see the timed-animation note in `.agents/rules/widget-wiring.md`).
+    /// Readiness coverage needs a deterministically pending settle, so this seam
+    /// drives the same `SettleBurst` the production path uses, with a 60s budget
+    /// that cannot complete on its own inside a test.
     #[cfg(feature = "test-utils")]
     pub fn set_preview_transition_pending_for_test(&self, pending: bool) {
         if pending {
@@ -264,10 +272,16 @@ impl LushtextWindow {
         }
     }
 
-    /// Test seam exposing the helper-backed preview settle state.
-    #[cfg(feature = "test-utils")]
+    /// Whether the preview layout-settle burst still owes work.
+    ///
+    /// **Production API, not a test seam.** This is the named window operation
+    /// behind the `preview-animation` readiness blocker: the automation spine
+    /// used to read `imp().preview_transition_settle` directly, which is the
+    /// `.imp()` reach-through class the convention retires. Tests read the same
+    /// operation, so the workflow has one source for this fact rather than an
+    /// inspection seam beside a production reach-through.
     #[must_use]
-    pub fn preview_transition_pending_for_test(&self) -> bool {
+    pub fn preview_transition_pending(&self) -> bool {
         self.imp().preview_transition_settle.pending()
     }
 

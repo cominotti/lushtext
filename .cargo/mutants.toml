@@ -24,9 +24,20 @@ gitignore = true
 # or `sourceview5` import. Including it by convention is what lets pure policy
 # be co-located with its consumer without losing mutation coverage, so no new
 # entry is needed here when a workflow migrates. `make check-workflow-boundaries`
-# enforces both halves: policy purity, and that every `policy.rs` in the crate
-# is reachable from this glob list. The remaining UI entry is the last
-# pre-convention hand-listed file; it retires as its workflow migrates.
+# enforces three things: policy purity, that every `policy.rs` in the crate is
+# reachable from this glob list, and -- because membership is decided by *name*
+# -- that no GTK-free `ui/` module holds decision logic outside the convention
+# under some other name. That third half is the inclusion-side blind spot: the
+# first two can only inspect files this list already selects, so pure policy
+# under any other file name was silently uncovered while every command exited 0.
+# No hand-listed UI file entries remain: the last one retired when its module
+# took a workflow role name.
+#
+# `ui/window/adaptive_shell.rs` became `ui/window/policy.rs` for exactly that
+# reason. It was already pure and already correct, and it was reached by no entry
+# at all, so it generated **0** mutants; after the rename the convention reaches
+# it and generates **80**. That is a gain from zero and must not be reported as
+# parity -- there was no before-count to claim parity against.
 #
 # `ui/editor_page/minimap.rs` retired here when the minimap workflow migrated to
 # `ui/editor_page/minimap/`. It was **not** re-pointed: the whole purpose of
@@ -35,11 +46,25 @@ gitignore = true
 # not being a policy module. A hand-listed entry left pointing at a moved path
 # removes its file from the scope while the mutation command still exits 0, so
 # the retirement was measured from the tool rather than read off the config.
+#
+# `ui/markdown_preview/inline_footnotes.rs` retired here on the same precedent
+# when it became `ui/markdown_preview/policy.rs`. Unlike the minimap case this
+# was a rename rather than an extraction, so the entry *did* select the file
+# before. The relocation itself moved **175** mutants; the module then **gained
+# 12** when the facade migration moved this workflow's fuzz and property-test
+# entry points into it, so it now generates **187**. Those are reported
+# separately: 175 relocated, 12 gained. An earlier revision of this comment
+# claimed "175 before, 175 after" parity, which was measured before the gain and
+# was therefore false.
+#
+# The six calibrated `exclude_re` entries below were re-keyed to the new path and
+# verified by **direct measurement**, not by an unchanged total: the module
+# generates 210 mutants with those entries removed and 187 with them applied, so
+# all six match real generated mutants and together suppress 23.
 examine_globs = [
     "crates/lushtext-core/src/model/**/*.rs",
     "crates/lushtext-core/src/services/**/*.rs",
     "crates/lushtext-core/src/ui/**/policy.rs",
-    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes.rs",
 ]
 
 exclude_globs = [
@@ -51,11 +76,6 @@ exclude_globs = [
     # filesystem boundary, but they are not production behavior themselves.
     "crates/lushtext-core/src/services/filesystem/fixture.rs",
 ]
-
-# `crates/lushtext-core/src/ui/window/tabs.rs` was calibrated out after the
-# first full-shard run because its survivors were mostly `LushtextWindow::...`
-# GTK adapter methods. Keep those in the widget harness until smaller pure tab
-# policy helpers are extracted.
 
 exclude_re = [
     # Derived/debug-only formatting changes are equivalent for user behavior and
@@ -179,20 +199,41 @@ exclude_re = [
     # Equivalent: references emitted by pulldown-cmark also have definitions,
     # so label reservation is already covered by `FootnoteDefinition`, while
     # protected references fall through to the protected-depth catch-all arm.
-    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*delete match arm Event::FootnoteReference\\(label\\) in build_scan_plan",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*delete match arm Event::FootnoteReference\\(label\\) in build_scan_plan",
     # Equivalent: the scan loop may do one extra final-byte check, but a lone
     # trailing byte cannot start a complete `^[...]` marker.
-    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace < with <= in collect_inline_footnote_replacements",
-    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace \\+ with \\* in collect_inline_footnote_replacements",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in collect_inline_footnote_replacements",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with \\* in collect_inline_footnote_replacements",
     # Equivalent: after a replacement is recorded, restarting at or just before
     # the closing bracket only rechecks bytes that cannot form a new marker.
-    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace \\+ with - in collect_inline_footnote_replacements",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace \\+ with - in collect_inline_footnote_replacements",
     # Equivalent: protected ranges ending at the current index have already been
     # advanced out of consideration by the preceding `end <= index` loop.
-    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace < with <= in find_inline_footnote_close",
+    # NOT an equivalence claim -- an unkillable-by-construction claim, which is a
+    # different thing and is stated as one. These four items are the Markdown
+    # preview workflow's fuzz and property-test entry points, and every one of them
+    # is behind `#[cfg(any(feature = "property-tests", feature = "fuzzing"))]`. The
+    # default mutation lane deliberately runs with neither feature (property cases
+    # belong to `make test-prop`, so that mutants are not multiplied by generated
+    # cases), so this code is not compiled and no mutation of it can change any
+    # test result. Listing them without excluding them would report 11 permanent
+    # survivors that no test could ever kill.
+    #
+    # They entered scope because a facade migration moved them into the workflow's
+    # `policy.rs`; before that they sat in a module the convention did not reach.
+    # The same move brought in one mutant that is NOT excluded here --
+    # `inline_footnote_limited_plan` is real production policy with three
+    # production callers, it was mis-filed under the fuzz banner, and its survivor
+    # was a genuine gap now killed by
+    # `the_inline_footnote_limited_plan_reports_the_source_size_it_refused`.
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_generated_test",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*lower_inline_footnotes_for_property_test",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*lowered_markdown_for_fuzzing",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*preprocess_markdown_for_fuzzing",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace < with <= in find_inline_footnote_close",
     # Equivalent: the byte scanner only branches on ASCII marker bytes and only
     # slices at ASCII delimiter offsets, so byte-by-byte UTF-8 walking is valid.
-    "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes\\.rs:.*replace next_char_len -> usize with 1",
+    "crates/lushtext-core/src/ui/markdown_preview/policy\\.rs:.*replace next_char_len -> usize with 1",
     # Test-only global injector: path-scoped cleanup-failure injection is covered
     # by local-history retry tests; the all-path hook is retained for manual tests.
     "crates/lushtext-core/src/services/local_history_service\\.rs:.*fail_next_obsolete_lineage_cleanup_for_test",

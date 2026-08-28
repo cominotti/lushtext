@@ -19,7 +19,8 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use std::path::{Path, PathBuf};
 
-use super::{LushtextMarkdownPreview, MarkdownPreviewRenderContext, PreviewLaunchTarget};
+use super::LushtextMarkdownPreview;
+use super::seams::{MarkdownPreviewRenderContext, PreviewLaunchTarget};
 
 /// Result of trying to resolve a local filesystem path from Markdown content.
 #[derive(Debug, Clone, PartialEq, Eq)]

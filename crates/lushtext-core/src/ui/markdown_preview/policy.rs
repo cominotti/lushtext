@@ -12,7 +12,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::services::markdown_render::{
-    MAX_MARKDOWN_EVENTS, MAX_MARKDOWN_RETAINED_BYTES, MAX_MARKDOWN_SOURCE_BYTES,
+    MAX_MARKDOWN_EVENTS, MAX_MARKDOWN_RETAINED_BYTES, MAX_MARKDOWN_SOURCE_BYTES, MarkdownPlanLimit,
+    MarkdownPlanMetrics, MarkdownRenderPlan,
 };
 
 /// Prefix for labels generated from markdown-it-style inline footnotes.
@@ -631,9 +632,130 @@ fn push_definition_body(output: &mut String, body: &str) {
     }
 }
 
+/// The plan published when inline-footnote lowering hits its own limit.
+///
+/// Production policy with three production callers (`admission.rs` twice and
+/// `planning_execution.rs` once). It reports the *source* byte count alongside
+/// the `InlineFootnotes` limit so a reader of the published plan can tell a
+/// limited render from an empty one.
+pub(super) fn inline_footnote_limited_plan(source_bytes: usize) -> MarkdownRenderPlan {
+    MarkdownRenderPlan {
+        batches: Vec::new(),
+        metrics: MarkdownPlanMetrics {
+            source_bytes,
+            ..MarkdownPlanMetrics::default()
+        },
+        limit: Some(MarkdownPlanLimit::InlineFootnotes),
+    }
+}
+
+#[cfg(any(feature = "property-tests", feature = "fuzzing"))]
+use crate::services::markdown_render::markdown_render_options;
+
+// ─── Fuzzing and property-test entry points ───────────────────────────
+//
+// Pure wrappers over this module's lowering. They live here rather than in
+// the facade because they are policy inputs with no widget, no stage, and no
+// GTK dependency; the fuzz targets and the property suite are their only
+// callers.
+//
+// Every item below is feature-gated, so the default mutation lane — which runs
+// without `fuzzing` and without `property-tests`, deliberately — does not compile
+// them and therefore cannot kill their mutants. See `docs/mutation-testing.md`.
+
+/// Result of fuzzing Markdown preprocessing without constructing GTK widgets.
+///
+/// The fuzz target only needs to know that the preprocessing and parser setup
+/// completed. Counts keep the helper useful for sanity checks without exposing
+/// renderer internals as a stable public API.
+#[cfg(feature = "fuzzing")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FuzzedMarkdownPreprocess {
+    /// Number of pulldown-cmark events produced after preprocessing.
+    pub parser_event_count: usize,
+    /// Byte length of the Markdown text passed to the parser.
+    pub parser_input_len: usize,
+    /// Whether markdown-it-style inline footnotes were lowered first.
+    pub lowered_inline_footnotes: bool,
+}
+
+/// Run the preview's real inline-footnote lowering for feature-gated generated tests.
+///
+/// Keeping this as a narrow feature-only hook lets generated tests and fuzzing
+/// exercise the production lowering path without making the private scanner
+/// part of the normal application API.
+#[cfg(any(feature = "property-tests", feature = "fuzzing"))]
+#[must_use]
+fn lower_inline_footnotes_for_generated_test(markdown: &str) -> Option<String> {
+    match lower_inline_footnotes(markdown, markdown_render_options()) {
+        InlineFootnoteLowering::Lowered(lowered) => Some(lowered),
+        InlineFootnoteLowering::Unchanged
+        | InlineFootnoteLowering::Limited
+        | InlineFootnoteLowering::Cancelled => None,
+    }
+}
+
+/// Run the preview's real inline-footnote lowering for feature-gated property tests.
+///
+/// This preserves the original property-test API while sharing the same
+/// generated-input hook used by fuzzing.
+#[cfg(feature = "property-tests")]
+#[must_use]
+pub fn lower_inline_footnotes_for_property_test(markdown: &str) -> Option<String> {
+    lower_inline_footnotes_for_generated_test(markdown)
+}
+
+/// Expose the preview's inline-footnote lowering result to fuzz harnesses.
+///
+/// The real preview plans the *lowered* text, not the raw source, so a fuzz
+/// harness that plans raw input would cover shapes the app never plans.
+#[cfg(feature = "fuzzing")]
+#[must_use]
+pub fn lowered_markdown_for_fuzzing(markdown: &str) -> Option<String> {
+    lower_inline_footnotes_for_generated_test(markdown)
+}
+
+/// Exercise Markdown preprocessing and parser setup for fuzz targets.
+///
+/// The helper stops before renderer code that touches `GtkTextBuffer`,
+/// `LushtextMarkdownPreview`, links, images, GSettings, or other GTK state.
+#[cfg(feature = "fuzzing")]
+#[must_use]
+pub fn preprocess_markdown_for_fuzzing(markdown: &str) -> FuzzedMarkdownPreprocess {
+    let lowered = lower_inline_footnotes_for_generated_test(markdown);
+    let lowered_inline_footnotes = lowered.is_some();
+    let parser_input = lowered.as_deref().unwrap_or(markdown);
+    let options = markdown_render_options();
+    let parser_event_count = Parser::new_ext(parser_input, options).count();
+
+    FuzzedMarkdownPreprocess {
+        parser_event_count,
+        parser_input_len: parser_input.len(),
+        lowered_inline_footnotes,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inline_footnote_limited_plan_reports_the_source_size_it_refused() {
+        // This function exists to publish the *source* byte count next to the
+        // limit, so a reader of the plan can distinguish "we refused 1.2 MB of
+        // footnotes" from "there was nothing to render". Nothing asserted that
+        // until mutation testing deleted the field and no test noticed.
+        let plan = inline_footnote_limited_plan(1_234_567);
+        assert_eq!(plan.metrics.source_bytes, 1_234_567);
+        assert_eq!(plan.limit, Some(MarkdownPlanLimit::InlineFootnotes));
+        assert!(plan.batches.is_empty(), "a limited plan renders no batches");
+
+        // Zero is a real input (an empty source can still trip the limit path),
+        // and it must stay distinguishable from the limit being absent.
+        let empty = inline_footnote_limited_plan(0);
+        assert_eq!(empty.metrics.source_bytes, 0);
+        assert_eq!(empty.limit, Some(MarkdownPlanLimit::InlineFootnotes));
+    }
 
     fn test_options() -> Options {
         let mut options = Options::empty();

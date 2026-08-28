@@ -8,19 +8,19 @@
 //! keep the adapter readable.
 
 mod actions;
-mod adaptive_shell;
 mod dialogs;
 mod documents;
 mod drafts;
 mod encoding;
 mod focus_indexing;
 mod focus_mode;
+mod policy;
 // gtk-rs keeps the private GObject subclass implementation in `imp.rs`; this
 // public module exposes the safe wrapper and workflow methods callers use.
 mod imp;
 pub(crate) mod local_history;
 mod notes;
-mod notifications;
+pub(crate) mod notifications;
 mod preview;
 mod print;
 mod recent_open;
@@ -54,6 +54,15 @@ pub use drafts::{
 };
 #[cfg(feature = "test-utils")]
 pub use encoding::set_lossy_encoding_analysis_delay_for_test;
+pub use focus_mode::FOCUS_MODE_AFFORDANCE_REVEAL_BUDGET;
+// The inline-alert throttling key is production pure policy that the info bar (a
+// called presentation surface) and a widget test both read. Re-exported here so
+// the module itself stays crate-internal, matching the `print` pattern rather
+// than publishing the whole workflow.
+pub use notifications::policy::inline_alert_announcement_key;
+// The draft-candidate predicate is pure policy the tab/close regression test
+// evaluates directly, rather than asserting a proxy for the autosave contract.
+pub use drafts::policy::draft_candidate_is_eligible;
 pub use local_history::{
     LocalHistoryPreviewInstallEvidence, local_history_preview_install_evidence,
 };
@@ -79,7 +88,10 @@ pub use notes::{
     set_notes_browser_query_delay_for_test, set_notes_browser_source_entry_limit_for_test,
 };
 #[cfg(feature = "test-utils")]
-pub use print::{PrintDocumentSnapshot, PrintOutcome, with_print_runner_for_test};
+pub use print::{
+    PrintDocumentFacts, PrintEvidence, policy::PrintOutcome, print_evidence,
+    with_print_runner_for_test,
+};
 #[cfg(feature = "test-utils")]
 pub use search::set_replace_reload_facts_delay_for_test;
 #[cfg(feature = "test-utils")]

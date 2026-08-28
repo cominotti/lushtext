@@ -418,7 +418,7 @@ Cargo workspace:
 - `crates/lushtext-build-support` - build-script helper crate.
 - `crates/lushtext-core` - application logic: domain models, services, and GTK
   widgets. Its main-window adapter keeps pure responsive policy in
-  `ui/window/adaptive_shell.rs`, keeps draft intent epochs in
+  `ui/window/policy.rs`, keeps draft intent epochs in
   `ui/window/draft_ordering.rs`, bounds progressive tab restoration in
   `ui/window/session_restore.rs`, and divides note workflows between the private
   `ui/window/notes/{bookmarks,editors,browser}.rs` modules. The Markdown preview
@@ -522,6 +522,27 @@ narrates five stage orders in 178 lines, `journal.rs` owns the sidecar migration
 ledger whose control resumes **in a later app launch**, and `seams.rs` holds a
 freshness ticket that is phantom-typed by flight so one coordinator's generation
 cannot be validated against another's state.
+
+Four smaller workflows are worth reading together, because they show what the
+convention looks like when a workflow is *simple*.
+`crates/lushtext-core/src/ui/window/print/` narrates one stage order with **no
+inversion at all** in 105 lines — `PrintOperation::run` blocks on the native
+dialog and returns to the same call, so nothing resumes elsewhere and no
+generation counter is needed. `crates/lushtext-core/src/ui/search_bar/` has
+exactly **one** inversion, GtkSourceView's asynchronous match scan, and a
+`policy.rs` that owns every word the match counter and the screen reader say.
+`crates/lushtext-core/src/ui/window/notifications/` is the workflow every *other*
+workflow finishes in, with `ui/status_bar/` and `ui/info_bar/` as called
+presentation surfaces. `crates/lushtext-core/src/ui/window/encoding/` is the
+opposite extreme for a "simple" row: three stage orders, one of which leaves the
+GTK thread twice and rechecks the same freshness triple at all three of its
+resumption points, including inside a confirmation dialog the user can leave open
+while they keep typing.
+
+All four were recorded by the census as owning **no** pure policy, and all four
+own a `policy.rs`. Probing an adapter for separable decisions before accepting
+that conclusion is a requirement of the convention precisely because "the census
+said none" keeps turning out to be wrong.
 
 Migration to this shape is a staged programme. Per-workflow status, owned pure
 policy, seam value objects, risk tiers, and migration slots live in

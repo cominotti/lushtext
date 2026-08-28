@@ -71,3 +71,20 @@ lightweight editors that support workspaces.
   significantly.
 - Session restore ordering becomes complex: global session loads first, then workspace
   sessions overlay. Race conditions with draft loading need careful sequencing.
+
+## Confirmed open data-safety finding
+
+**S5B-4 — HIGH — close proceeds while a pre-persist workspace mutation is in
+flight.** A window close can be confirmed while a workspace-membership mutation
+has been applied in memory but not yet persisted, so the mutation is lost with no
+warning: the user adds a folder, closes the window, and the folder is gone. Sites
+are `ui/sidebar/membership_execution.rs:41` (`handle_add_folder_to_workspace`) and
+`close_decision` (`ui/sidebar/policy.rs:512`). The close decision already accounts
+for pending drafts and sessions; it does not account for pending workspace
+persistence.
+
+Recorded at **HIGH** severity by slot 5b's `data-safety` pass, landed in slot 7a,
+and **not fixed**. Capability: `workspace-state-persistence`. The full entry is in
+[`persistent-format-hardening.md`](persistent-format-hardening.md#s5b-4----high--close-proceeds-while-a-pre-persist-workspace-mutation-is-in-flight).
+Any work in this record that changes workspace membership or the close path must
+either fix this or preserve it deliberately.

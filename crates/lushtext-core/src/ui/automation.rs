@@ -514,11 +514,7 @@ fn current_readiness_failure(
         return None;
     }
     let window = active_lushtext_window(app)?;
-    for index in 0..window.imp().tab_view.n_pages() {
-        let page = window.imp().tab_view.nth_page(index);
-        let Ok(editor) = page.child().downcast::<LushtextEditorPage>() else {
-            continue;
-        };
+    for editor in window.open_editors() {
         // Boolean-only site: read the load workflow's cheap lifecycle accessor
         // rather than building a whole `LoadEvidence` per tab per poll. It reads
         // the same `load_state` cell the surface's `load_state` field reads, so
@@ -695,9 +691,19 @@ fn window_readiness_blocker(
     ) {
         return Some(blocker);
     }
+    // Both operands are deliberately cheap facade accessors rather than reads of a
+    // whole evidence surface. Readiness is polled, and one boolean per poll must not
+    // build the whole surface.
+    //
+    // `render_pending()` is identical by construction to
+    // `MarkdownPreviewEvidence::render_pending`, because that surface is *built from
+    // this same accessor* — so this stays a projection of the surface rather than a
+    // second source of truth for it. `preview_transition_pending()` is the window's
+    // own production accessor; the window shell owns no evidence surface, and this
+    // read replaced a direct reach into `imp.preview_transition_settle`.
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.preview_transition_settle.pending() || imp.markdown_preview.render_pending(),
+        window.preview_transition_pending() || imp.markdown_preview.render_pending(),
         READINESS_BLOCKER_PREVIEW_ANIMATION,
     ) {
         return Some(blocker);

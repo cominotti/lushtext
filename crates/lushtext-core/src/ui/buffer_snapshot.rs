@@ -5,6 +5,45 @@
 //! GtkTextBuffer content can only be read on the GTK thread, so this module
 //! belongs in the UI layer. It gives save, draft, preview, and encoding flows a
 //! common way to keep large text copies from monopolizing one main-loop turn.
+//!
+//! # This is a cross-cutting lane, not a workflow
+//!
+//! Five workflows call it — save, draft autosave, encoding analysis, Markdown
+//! preview, and local history — and it has no user-initiated operation of its
+//! own. So it owes **no facade, no stage narration, and no role names**, and its
+//! matrix status stays `cross-cutting`. It does owe the **evidence surface**
+//! rules, because those follow from "one accessor reads the whole surface" plus
+//! interior mutability and do not depend on being a workflow.
+//!
+//! ## The one observation path
+//!
+//! [`BufferSnapshotEvidence`] is that surface. It replaced **three parallel
+//! typed observation types** — `BufferSnapshotMetrics`,
+//! `BufferSnapshotStateForTest`, and `BufferSnapshotCountersForTest` — which is
+//! the duplication the evidence-surface rules forbid, and which no migration
+//! event would ever have fired for, because this lane will never migrate. The
+//! three became **named components** of one surface rather than peers, and the
+//! five capture-metric fields that were declared in *two* of them are now
+//! declared once, in [`BufferSnapshotCaptureMetrics`].
+//!
+//! Reading is side-effect free and takes no mutable borrow: every field is
+//! copied out under a shared borrow, and the accessor answers honestly for a
+//! session that has already reached its terminal or been dropped.
+//!
+//! ## What is deliberately *not* part of the surface
+//!
+//! * [`BufferSnapshotTestMutation`] and its trigger/edit enums are a **test-only
+//!   mutation injector** — a configuration and actuation seam, not an
+//!   observation. They make a mid-capture edit, dispose, or pause happen at a
+//!   chosen slice boundary; they report nothing. Classifying them as a fourth
+//!   observation path would have been wrong, and leaving them unclassified would
+//!   have left them looking like one beside the new surface.
+//! * `coalesce_snapshot_payload_for_test` **consumes** a payload rather than
+//!   observing it, so it is an actuator and stays a separate function.
+//! * [`char_count_requires_chunked_snapshot`] is a **shared limit**: the save
+//!   workflow calls it and slot 3a deliberately did not fork it into save
+//!   policy. Consolidating the surface must not move or duplicate it, and does
+//!   not.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -94,7 +133,7 @@ impl BufferSnapshotAdmission {
         let byte_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
         let chunks = vec![text];
         #[cfg(feature = "test-utils")]
-        let metrics = BufferSnapshotMetrics {
+        let metrics = BufferSnapshotCaptureMetrics {
             slice_count: 1,
             chunk_count: 1,
             reserved_chunk_capacity: chunks.capacity(),
@@ -115,13 +154,23 @@ impl BufferSnapshotAdmission {
     }
 }
 
-/// Scalar capture evidence carried without exposing document text.
+/// Scalar capture metrics, carried without exposing document text.
+///
+/// A **component** of [`BufferSnapshotEvidence`], not an observation path of its
+/// own. These five fields were previously declared twice — here and inline in
+/// the session state type — which is exactly the duplication one surface
+/// removes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BufferSnapshotMetrics {
+pub struct BufferSnapshotCaptureMetrics {
+    /// Main-loop turns the capture has consumed.
     pub slice_count: usize,
+    /// Independently allocated UTF-8 chunks held so far.
     pub chunk_count: usize,
+    /// Capacity reserved for the chunk vector.
     pub reserved_chunk_capacity: usize,
+    /// Largest single chunk, in bytes.
     pub max_chunk_bytes: usize,
+    /// Total bytes observed by the capture.
     pub captured_bytes: u64,
 }
 
@@ -129,7 +178,7 @@ struct SnapshotChunks {
     chunks: Vec<String>,
     byte_len: u64,
     #[cfg(feature = "test-utils")]
-    metrics: BufferSnapshotMetrics,
+    metrics: BufferSnapshotCaptureMetrics,
 }
 
 impl SnapshotChunks {
@@ -216,11 +265,16 @@ impl BufferSnapshotPayload {
         }
     }
 
+    /// The capture metrics for this completed payload.
+    ///
+    /// Reads a component of the lane's surface rather than being a second
+    /// observation path: a payload is a finished capture, so it has metrics but
+    /// no live session or process counters.
     #[cfg(feature = "test-utils")]
     #[must_use]
-    pub fn metrics_for_test(&self) -> BufferSnapshotMetrics {
+    pub fn capture_metrics(&self) -> BufferSnapshotCaptureMetrics {
         match &self.storage {
-            BufferSnapshotStorage::Direct(text) => BufferSnapshotMetrics {
+            BufferSnapshotStorage::Direct(text) => BufferSnapshotCaptureMetrics {
                 slice_count: 1,
                 chunk_count: 1,
                 reserved_chunk_capacity: 1,
@@ -268,33 +322,63 @@ impl PartialEq for BufferSnapshotPayload {
 
 impl Eq for BufferSnapshotPayload {}
 
-/// Process-wide snapshot handoff evidence for headless worker-boundary tests.
+/// Process-wide handoff counters proving which thread coalesced and dropped.
+///
+/// A **component** of [`BufferSnapshotEvidence`]. Process-wide rather than
+/// per-session, which is why the surface carries it beside an optional session
+/// rather than inside one: the whole point is to prove that a document-sized
+/// body was coalesced and destroyed off the GTK thread even after the session
+/// that produced it is gone.
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BufferSnapshotCountersForTest {
+pub struct BufferSnapshotHandoffCounters {
+    /// Bodies coalesced on a worker thread.
     pub worker_coalesces: u64,
+    /// Bodies coalesced on the GTK thread.
     pub gtk_coalesces: u64,
+    /// Bodies destroyed on a worker thread.
     pub worker_drops: u64,
+    /// Bodies destroyed on the GTK thread.
     pub gtk_drops: u64,
 }
 
+/// The whole observable state of the snapshot lane.
+///
+/// One accessor reads all of it — see [`buffer_snapshot_evidence`]. Both
+/// components answer honestly in every stage: `session` is `None` when no
+/// capture is live or the session has been dropped, and `handoff` is always
+/// readable because its counters outlive any session.
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BufferSnapshotEvidence {
+    /// The live chunked capture, if one is still owned.
+    pub session: Option<BufferSnapshotSessionEvidence>,
+    /// Process-wide worker/GTK handoff counters.
+    pub handoff: BufferSnapshotHandoffCounters,
+}
+
+/// Read the lane's whole surface, optionally including one session's state.
+///
+/// Pass `None` to read the process-wide counters alone, which is the only thing
+/// observable before a capture starts or after every session has ended.
 #[cfg(feature = "test-utils")]
 #[must_use]
-pub fn buffer_snapshot_counters_for_test() -> BufferSnapshotCountersForTest {
-    BufferSnapshotCountersForTest {
-        worker_coalesces: SNAPSHOT_WORKER_COALESCES.load(Ordering::Acquire),
-        gtk_coalesces: SNAPSHOT_GTK_COALESCES.load(Ordering::Acquire),
-        worker_drops: SNAPSHOT_WORKER_DROPS.load(Ordering::Acquire),
-        gtk_drops: SNAPSHOT_GTK_DROPS.load(Ordering::Acquire),
+pub fn buffer_snapshot_evidence(session: Option<&BufferSnapshotHandle>) -> BufferSnapshotEvidence {
+    BufferSnapshotEvidence {
+        session: session.and_then(BufferSnapshotHandle::session_evidence),
+        handoff: BufferSnapshotHandoffCounters {
+            worker_coalesces: SNAPSHOT_WORKER_COALESCES.load(Ordering::Acquire),
+            gtk_coalesces: SNAPSHOT_GTK_COALESCES.load(Ordering::Acquire),
+            worker_drops: SNAPSHOT_WORKER_DROPS.load(Ordering::Acquire),
+            gtk_drops: SNAPSHOT_GTK_DROPS.load(Ordering::Acquire),
+        },
     }
 }
 
-#[cfg(feature = "test-utils")]
-#[must_use]
-pub fn snapshot_payload_metrics_for_test(payload: &BufferSnapshotPayload) -> BufferSnapshotMetrics {
-    payload.metrics_for_test()
-}
-
+/// Consume a payload the way a worker would, for handoff assertions.
+///
+/// An **actuator**, not an observation: it destroys the payload. Kept separate
+/// from the surface for that reason.
 #[cfg(feature = "test-utils")]
 #[must_use]
 pub fn coalesce_snapshot_payload_for_test(payload: BufferSnapshotPayload) -> String {
@@ -442,26 +526,33 @@ impl BufferSnapshotHandle {
         }
     }
 
+    /// This session's component of the lane's evidence surface.
+    ///
+    /// `None` once the session has been dropped, which is the honest answer
+    /// rather than a zeroed record that reads like a live idle capture. Every
+    /// field is copied out under one shared borrow that is released before the
+    /// value is returned, so no field can be read from inside a mutable borrow
+    /// of the same state.
     #[cfg(feature = "test-utils")]
     #[must_use]
-    pub fn state_for_test(&self) -> BufferSnapshotStateForTest {
-        let Some(session) = self.0.upgrade() else {
-            return BufferSnapshotStateForTest::default();
-        };
+    fn session_evidence(&self) -> Option<BufferSnapshotSessionEvidence> {
+        let session = self.0.upgrade()?;
         let session = session.borrow();
-        BufferSnapshotStateForTest {
+        Some(BufferSnapshotSessionEvidence {
             active: !session.terminal,
             progress_mark_live: session.progress_mark.is_some(),
             changed_handler_live: session.changed_handler.is_some(),
             scheduled_source_live: session.scheduled_source.is_some(),
             admission_retry_source_live: session.capacity_wakeup.is_armed(),
             callback_pending: session.callback.is_some(),
-            slice_count: session.slice_count,
-            chunk_count: session.chunks.len(),
-            reserved_chunk_capacity: session.chunks.capacity(),
-            max_chunk_bytes: session.chunks.iter().map(String::len).max().unwrap_or(0),
-            captured_bytes: session.observed_bytes,
-        }
+            capture: BufferSnapshotCaptureMetrics {
+                slice_count: session.slice_count,
+                chunk_count: session.chunks.len(),
+                reserved_chunk_capacity: session.chunks.capacity(),
+                max_chunk_bytes: session.chunks.iter().map(String::len).max().unwrap_or(0),
+                captured_bytes: session.observed_bytes,
+            },
+        })
     }
 }
 
@@ -493,21 +584,28 @@ pub enum BufferSnapshotTestEdit {
     Pause,
 }
 
-/// Observable ownership state for deterministic widget lifecycle assertions.
+/// One live chunked capture's ownership state and capture metrics.
+///
+/// A **component** of [`BufferSnapshotEvidence`]. The capture metrics are
+/// embedded rather than repeated: this type previously re-declared all five of
+/// them, so the same fact had two declarations and could disagree with itself.
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BufferSnapshotStateForTest {
+pub struct BufferSnapshotSessionEvidence {
+    /// Whether the session has not yet reached its terminal.
     pub active: bool,
+    /// Whether the progress mark is still installed in the buffer.
     pub progress_mark_live: bool,
+    /// Whether the buffer-changed guard handler is still connected.
     pub changed_handler_live: bool,
+    /// Whether a slice is scheduled on the main loop.
     pub scheduled_source_live: bool,
+    /// Whether the session is waiting on disposal admission capacity.
     pub admission_retry_source_live: bool,
+    /// Whether the terminal callback has yet to run.
     pub callback_pending: bool,
-    pub slice_count: usize,
-    pub chunk_count: usize,
-    pub reserved_chunk_capacity: usize,
-    pub max_chunk_bytes: usize,
-    pub captured_bytes: u64,
+    /// Scalar capture metrics for this session.
+    pub capture: BufferSnapshotCaptureMetrics,
 }
 
 /// Decide whether a character count is large enough to require chunked capture.
@@ -959,7 +1057,7 @@ fn finish_snapshot_inner(
             return;
         }
         state.terminal = true;
-        let metrics = BufferSnapshotMetrics {
+        let metrics = BufferSnapshotCaptureMetrics {
             slice_count: state.slice_count,
             chunk_count: state.chunks.len(),
             reserved_chunk_capacity: state.chunks.capacity(),

@@ -223,7 +223,7 @@ pub struct LushtextMarkdownPreview {
     /// level. We keep strong refs plus the layout context captured at insertion
     /// time so `render_markdown`, `clear`, and `show_placeholder` can remove
     /// stale embeds and resize code blocks after later allocations.
-    pub(super) rendered_embeds: RefCell<Vec<super::RenderedEmbed>>,
+    pub(super) rendered_embeds: RefCell<Vec<super::seams::RenderedEmbed>>,
     /// Generation advanced whenever the rendered embed membership changes.
     pub(super) rendered_embed_generation: Cell<u64>,
     /// Last valid text-column width and embed generation fully traversed.
@@ -239,7 +239,7 @@ pub struct LushtextMarkdownPreview {
     /// The preview rerenders whole documents, so this list is rebuilt from
     /// scratch on every render and then reused by the click and hover
     /// controllers for hit-testing.
-    pub(super) text_link_targets: RefCell<Vec<super::RenderedTextLink>>,
+    pub(super) text_link_targets: RefCell<Vec<super::seams::RenderedTextLink>>,
     /// Optional override used by tests to capture preview link activations
     /// without spawning an external desktop handler.
     pub(super) link_activation_callback: RefCell<Option<LinkActivationCallback>>,
@@ -280,9 +280,9 @@ pub struct LushtextMarkdownPreview {
     pub(super) planning_cancel_token:
         RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// Replaceable latest request retained while the active planner disconnects.
-    pub(super) queued_plan: RefCell<Option<super::GuardedPendingMarkdownPlan>>,
+    pub(super) queued_plan: RefCell<Option<super::seams::GuardedPendingMarkdownPlan>>,
     /// Latest render or projection work deferred by detached-generation pressure.
-    pub(super) deferred_work: RefCell<Option<super::PendingMarkdownWork>>,
+    pub(super) deferred_work: RefCell<Option<super::seams::PendingMarkdownWork>>,
     /// Atomic mirror used by workers to destroy stale plans before GTK delivery.
     pub(super) render_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Count of plan, source, or batch-tail payloads destroyed away from GTK.
@@ -306,7 +306,7 @@ pub struct LushtextMarkdownPreview {
     /// GTK-free count/byte ownership and high-water image admission state.
     pub(super) image_admission: RefCell<crate::services::markdown_render::MarkdownImageAdmission>,
     /// Detached buffers/widgets/links awaiting bounded main-loop retirement.
-    pub(super) retirement: RefCell<Option<super::MarkdownRetirementSession>>,
+    pub(super) retirement: RefCell<Option<super::seams::MarkdownRetirementSession>>,
     /// Whether the one retirement idle source is armed.
     pub(super) retirement_armed: Cell<bool>,
     /// Largest ordinary detached-generation backlog observed.
