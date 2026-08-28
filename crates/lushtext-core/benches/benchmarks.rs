@@ -41,9 +41,6 @@ use lushtext_core::model::file_load::{
 use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
 use lushtext_core::model::local_history::{LocalHistoryDocument, LocalHistorySnapshotMeta};
 use lushtext_core::model::migration_ledger::MigrationKind;
-use lushtext_core::model::minimap_analysis::{
-    MinimapAnalysisAccumulator, MinimapAnalysisPolicy, MinimapAnalysisResult,
-};
 use lushtext_core::model::palette::{
     IndexedFile, PaletteFileIdentity, PaletteNoteCategory, PaletteNoteEntry, PaletteNoteTarget,
     PaletteOpenEditorNoteSnapshot, PaletteSearchRow, SearchMode, SearchResultItem,
@@ -85,6 +82,9 @@ use lushtext_core::services::{
 use lushtext_core::ui::editor_page::save::policy::{
     ExternalTransientPressure, SAVE_PAYLOAD_SHARED_BUDGET_BYTES, SaveAdmissionPolicy,
     SaveAdmissionPriority, SaveAdmissionRequest,
+};
+use lushtext_core::ui::editor_page::{
+    MinimapAnalysisAccumulator, MinimapAnalysisPolicy, MinimapAnalysisResult,
 };
 use lushtext_core::ui::search_panel::policy::{
     SearchRetirementSliceBudget, WorkspaceSearchFlight, WorkspaceSearchRequest,

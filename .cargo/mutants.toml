@@ -25,14 +25,21 @@ gitignore = true
 # be co-located with its consumer without losing mutation coverage, so no new
 # entry is needed here when a workflow migrates. `make check-workflow-boundaries`
 # enforces both halves: policy purity, and that every `policy.rs` in the crate
-# is reachable from this glob list. The remaining two UI entries are the
-# pre-convention hand-listed files; they retire as their workflows migrate.
+# is reachable from this glob list. The remaining UI entry is the last
+# pre-convention hand-listed file; it retires as its workflow migrates.
+#
+# `ui/editor_page/minimap.rs` retired here when the minimap workflow migrated to
+# `ui/editor_page/minimap/`. It was **not** re-pointed: the whole purpose of
+# extracting `minimap/policy.rs` is that the convention now reaches the pure
+# logic by name, and the GTK adapter beside it is legitimately out of scope for
+# not being a policy module. A hand-listed entry left pointing at a moved path
+# removes its file from the scope while the mutation command still exits 0, so
+# the retirement was measured from the tool rather than read off the config.
 examine_globs = [
     "crates/lushtext-core/src/model/**/*.rs",
     "crates/lushtext-core/src/services/**/*.rs",
     "crates/lushtext-core/src/ui/**/policy.rs",
     "crates/lushtext-core/src/ui/markdown_preview/inline_footnotes.rs",
-    "crates/lushtext-core/src/ui/editor_page/minimap.rs",
 ]
 
 exclude_globs = [
@@ -195,33 +202,27 @@ exclude_re = [
     # Feature-only hooks: widget race tests and fuzz targets own these paths in
     # their dedicated lanes, outside the default deterministic mutation scope.
     "crates/lushtext-core/src/services/editor_io\\.rs:.*(set_load_delay_for_test|delay_load_for_test|classify_bytes_for_fuzzing)",
-    # Minimap GTK adapter methods are covered by the widget harness under
-    # `scripts/run-widget-tests.sh`; the deterministic policies they gather
-    # inputs for stay mutation-scoped through the pure helpers below them.
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*LushtextEditorPage::(minimap_availability|is_minimap_visible|minimap_marker_count|minimap_marker_bounds|setup_minimap|sync_minimap_wrap_mode|refresh_minimap|schedule_minimap_refresh|apply_minimap_width_from_settings|queue_minimap_draw|set_minimap_tracking_suspended|clear_modified_line_marks|record_modified_lines|mark_entire_buffer_modified|publish_minimap_unavailable_feedback_if_needed)",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*LushtextEditorPage::(minimap_refresh_blocks_readiness|minimap_work_pending|long_line_warning_count_for_test|minimap_viewport_bounds_relative_to|minimap_first_content_row_relative_to|minimap_native_slider_diagnostics_relative_to|minimap_viewport_bounds_for_test|minimap_first_content_row_bounds_for_test|mark_minimap_refresh_pending_for_test|minimap_reflow_settle_pending_for_test|minimap_work_pending_for_test|create_native_source_map|sync_minimap_view_geometry|schedule_minimap_reflow_settle|schedule_minimap_reflow_settle_with_freeze|schedule_minimap_reflow_settle_impl|finish_minimap_reflow_settle|minimap_reflow_freeze_visible|freeze_native_minimap_for_reflow|warm_live_minimap_under_reflow_freeze|reveal_minimap_reflow_freeze_for_user_scroll|note_minimap_height_reflow|drop_minimap_reflow_freeze|clamp_native_minimap_to_top_if_editor_at_top)",
-    # Minimap wrappers that require live GtkSourceView buffers, source-map
-    # layout, Cairo drawing, or search contexts stay outside the non-widget
-    # mutation lane. Their pure policy/math helpers remain tested and mutated.
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*(current_availability|wrapped_minimap_layout_exceeds_budget|buffer_has_line_exceeding_char_budget|document_line_count|collect_markers|collect_search_match_lines|collect_modified_lines|collect_long_line_warnings|draw_marker_strip|projected_minimap_marker_bounds|marker_projection_space|minimap_projection_space|project_marker_bounds|line_top_in_strip|line_bottom_in_strip|buffer_y_to_strip_y|minimap_viewport_bounds|visible_editor_line_iters|minimap_first_content_row_bounds)",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*(sync_source_map_geometry|sync_wide_editor_slider_offset|source_map_editor_height_ratio|force_source_map_top_layout|minimap_native_slider_diagnostics|source_map_border|source_map_bounds_relative_to|adjustment_diagnostics)",
     # Equivalent in `fit_native_slider_to_source_map_bounds`: equality at the
     # lower or upper edge only applies a zero-sized adjustment and preserves the
     # same final fitted bounds; strict outside-edge behavior remains covered.
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace < with <= in fit_native_slider_to_source_map_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace > with >= in fit_native_slider_to_source_map_bounds",
-    # Equivalent in `fit_projected_bounds`: the oversized span cap still settles
-    # to the same clamped content span, and exact-height or exact-edge
-    # expansion only applies zero-sized adjustments.
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2046:55: replace - with \\+ in fit_projected_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2047:21: replace < with <= in fit_projected_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2054:16: replace < with <= in fit_projected_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:2058:19: replace > with >= in fit_projected_bounds",
-    # Equivalent in `fit_marker_bounds`: these exact-boundary mutations either
-    # touch unreachable post-clamp states or produce the same final clamped
-    # bounds after the minimum-height expansion settles.
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace < with == in fit_marker_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace < with <= in fit_marker_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace - with \\+ in fit_marker_bounds",
-    "crates/lushtext-core/src/ui/editor_page/minimap\\.rs:.*replace > with >= in fit_marker_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in fit_native_slider_to_source_map_bounds",
+    # Equivalent in `expanded_to_min_height`, the shared min-height expansion:
+    # at `top == lower` the block adds a zero offset and re-assigns `lower`, and
+    # at `bottom == upper` it subtracts a zero offset and re-assigns `upper`, so
+    # both mutants produce byte-identical bounds. Each entry matches exactly one
+    # mutant, which is why the block was extracted: the same claim scoped to
+    # either caller would have swallowed caught mutants from their unrelated
+    # reject/accept guards, and that is a weakening rather than a re-key.
+    #
+    # The four `fit_marker_bounds` entries that used to sit here were **deleted**
+    # rather than moved. Their recorded reason was "the same final clamped bounds
+    # after the minimum-height expansion settles" — and that expansion has left
+    # the function, so the justification no longer described the mutants the
+    # entries matched. Re-verified against the tool: `- with +` matched nothing at
+    # all, and the remaining boundary mutants in that function are its
+    # reject-outside and non-empty guards, which the co-located edge-touching and
+    # zero-minimum tests kill.
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_to_min_height",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_to_min_height",
 ]

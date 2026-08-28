@@ -21,6 +21,29 @@ smoke_fail() {
     exit 1
 }
 
+# Assert a test or bench log actually ran something, not just that it exited 0.
+#
+# `cargo test`, `cargo bench`, and the widget harness all exit 0 when their
+# filter matches nothing, so every literal test name, module path, and bench
+# group name in a smoke lane is a string-keyed gate that **fails open**: a rename
+# turns an advertised proof into a no-op that still reports success. This is not
+# hypothetical — `run-performance-smoke.sh` kept reporting a green
+# "exact mixed search-event turn-budget proof" for three days after its module
+# was renamed from `runtime` to `execution`. Check the log's content.
+#
+# `pattern` defaults to libtest's own summary with a non-zero count. Pass an
+# explicit pattern for runners that do not print it, such as Criterion.
+smoke_assert_ran() {
+    local log_path="$1"
+    local label="$2"
+    local pattern="${3:-test result: ok\. [1-9]}"
+
+    if ! grep -qE "${pattern}" "${log_path}"; then
+        tail -n 120 "${log_path}" >&2 || true
+        smoke_fail "${label} matched nothing; its filter is stale."
+    fi
+}
+
 smoke_require_command() {
     local command_name="$1"
     if ! command -v "$command_name" >/dev/null 2>&1; then

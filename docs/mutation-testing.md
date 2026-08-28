@@ -158,7 +158,7 @@ The largest missed clusters were:
 
 | File | Missed mutants | Ratchet direction |
 |------|----------------|-------------------|
-| `crates/lushtext-core/src/ui/editor_page/minimap.rs` | 215 | Geometry and marker-color helper assertions |
+| `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs` (then `ui/editor_page/minimap.rs`) | 215 | Geometry and marker-color helper assertions |
 | `crates/lushtext-core/src/services/editor_io.rs` | 74 | Lossy preview, line ending, file health, and encoding-analysis assertions |
 | `crates/lushtext-core/src/ui/markdown_preview/inline_footnotes.rs` | 49 | Scan-plan, delimiter, escape, and lowered-output tests |
 | `crates/lushtext-core/src/services/palette/index.rs` | 26 | Index construction, root interning, recursion cap, and path filtering tests |
@@ -175,7 +175,7 @@ smaller pure tab policy helpers are extracted. After that correction,
 `scripts/run-mutants.sh list` reported 1,431 configured mutants.
 
 On June 2, 2026, the minimap cluster was ratcheted separately. The
-non-widget-only focused slice for
+non-widget-only focused slice for the then-live
 `crates/lushtext-core/src/ui/editor_page/minimap.rs` moved from 215 missed
 mutants to 86 after adding deterministic tests for minimap policy constants,
 availability priority, wrapped-layout size policy, line-budget scanning,
@@ -191,8 +191,57 @@ light/dark marker palette. The remaining 86 survivors were classified as:
 - Five equivalent `fit_marker_bounds` exact-boundary mutants that produce the
   same final clamped marker bounds or mutate unreachable post-clamp states.
 
-Those minimap leftovers are captured as narrow documented exclusions in
+Those minimap leftovers were captured as narrow documented exclusions in
 `.cargo/mutants.toml`.
+
+**Superseded on August 28, 2026 by the minimap workflow migration.** The history
+above is kept because it is the ratchet's own record, but the configuration it
+describes no longer exists, and two of its statements had already stopped being
+true before the migration read them:
+
+- The hand-listed `examine_globs` entry naming `ui/editor_page/minimap.rs`
+  **retired** rather than moving. It was a path-keyed scope entry that existed
+  only because pre-convention pure logic sat outside a naming convention; the
+  migration extracted that logic into
+  `crates/lushtext-core/src/ui/editor_page/minimap/policy.rs`, which the default
+  scope reaches through `ui/**/policy.rs`. The GTK adapter beside it is now
+  legitimately out of scope for not being a policy module — the first and second
+  bullets above describe exactly the adapter and drawing mutants that
+  retirement removes from the lane.
+- The 14 minimap `exclude_re` entries naming **66 methods** were reduced to
+  **4 entries naming 0 methods**, all of them re-verified against a mutant the
+  tool actually generates. Of the retired ones, **seven named method names had
+  zero definitions anywhere in the tree** — `apply_minimap_width_from_settings`,
+  `wrapped_minimap_layout_exceeds_budget`,
+  `buffer_has_line_exceeding_char_budget`, `collect_long_line_warnings`,
+  `line_top_in_strip`, `line_bottom_in_strip`, `buffer_y_to_strip_y` — and
+  **four entries were anchored to a literal `line:column`** (`minimap.rs:2046:55`,
+  `:2047:21`, `:2054:16`, `:2058:19`) that source edits had long since moved, so
+  they matched **no generated mutant**, while the four mutants they were written
+  for still existed and were therefore unprotected.
+- The third bullet above says "five equivalent `fit_marker_bounds` mutants", and
+  the four entries that encoded that claim are now **deleted rather than
+  re-keyed**. Their recorded reason — "the same final clamped bounds after the
+  minimum-height expansion settles" — stopped describing the mutants they matched
+  once that expansion was extracted into a shared `expanded_to_min_height` helper,
+  which is where the two surviving boundary claims now live, one mutant each. The
+  extraction was the response to a real constraint: scoping the equivalence claim
+  to either caller would have swallowed mutants the run had **caught**, in those
+  functions' unrelated reject-outside and non-empty guards, and broadening a
+  gate's reach is a weakening rather than a re-key.
+- **All 12 survivors from the migration's first full run were triaged to zero.**
+  Nine were killed by tests — three of them on a predicate that had come out of
+  the GTK adapter with no unit assertion at all — and the remaining shapes were
+  removed by the extraction above, which also exposed a `.min(upper - lower)` cap
+  as dead code and deleted a survivor outright rather than documenting it as
+  equivalent. Final scope for the file: **412 generated / 406 caught / 0 missed /
+  6 unviable**.
+
+The lesson generalized into `openspec/specs/mutation-testing/spec.md`: an
+`exclude_re` entry anchored to a `line:column` or to a symbol name is re-verified
+against a real generated mutant whenever its file is touched, and an entry
+matching nothing is deleted rather than carried. A stale exclusion is not inert —
+it is a recorded equivalence claim that no longer protects the mutant it names.
 
 After the remaining model, service, palette, search, persistence, and
 Markdown-footnote survivors were ratcheted with focused deterministic tests,

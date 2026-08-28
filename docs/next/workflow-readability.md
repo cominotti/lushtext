@@ -1,15 +1,19 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slots 1 through 5b complete, slots 6 and 7 outstanding.** The convention is
+Status: **Phase 0 complete, slots 1 through 6 complete, slot 7 outstanding.** The convention is
 normative, the census is complete, the mechanical gate is wired into
 `make check-policy`, the normative facade line budget is declared and enforced,
-and **ten** workflows are migrated: `WFR-SEARCH-REPLACE` (**both halves** —
+and **eleven** workflows are migrated: `WFR-SEARCH-REPLACE` (**both halves** —
 search and preview in slot 1, the Replace All write path and its undo journal in
 slot 2b), `WFR-COMMAND-PALETTE` (slot 2a), `WFR-DOCUMENT-SAVE` (slot 3a, the
 first tier-3 workflow migrated on its own), `WFR-DOCUMENT-LOAD` (slot 3b, the
 second), slot 4's four — `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`,
 `WFR-LOCAL-HISTORY`, and `WFR-DRAFT-RECOVERY` — `WFR-NOTES-BOOKMARKS` (slot 5a),
-and `WFR-WORKSPACE-TREE` (slot 5b, the largest row in the census). **`ui/editor_page/load_save.rs` no longer exists**: slot 3a lifted
+`WFR-WORKSPACE-TREE` (slot 5b, the largest row in the census), and
+`WFR-MINIMAP` (slot 6, the row the census deferred longest and the only one whose
+behavior contract is rendered pixels). **`model/minimap_analysis.rs` no longer
+exists**: slot 6 relocated it into the minimap workflow's own `policy.rs`, the
+fifth of the census's six relocation candidates to move. **`ui/editor_page/load_save.rs` no longer exists**: slot 3a lifted
 the save half out and slot 3b dissolved the rest, so the programme's third
 measured symptom is now history rather than a live file. Everything else in `ui/`
 and `model/` is unchanged and behaviorally untouched.
@@ -705,6 +709,74 @@ pending. The rows below describe what actually landed.
 | Permitted role homes | seventh adopter | **nested home (c) fully exercised, its first adopter** — the canonical role home at `ui/sidebar/` holds the facade, the single `policy.rs`, the single `evidence.rs`, `seams.rs`, and `test_policy.rs`, with `ui/**/policy.rs` confirmed to reach it **after** the move; the nested **coordination** modules live under `workspace_section/`. `make check-workflow-boundaries` reports **10** pure mutation-scoped policy modules, unchanged, because both relocations merged into the workflow's existing `policy.rs` rather than adding one |
 | Convention changes | — | **2 statements across 2 capabilities**: dissolution-before-escalation (with the already-correctly-named corollary) in `gtk-adapter-module-boundaries`, and the unfilterable mutation floor plus parity-versus-gain separation in `mutation-testing`. Both verified **pure additions** — zero removed non-blank lines across all three requirements |
 
+### Baseline after slot 6
+
+Slot 6 **landed in full**: `WFR-MINIMAP` is **migrated**, so the workflow count
+moves to eleven and the census's last deferred single row is resolved.
+
+| Quantity | After slot 5b | After slot 6 |
+| --- | --- | --- |
+| Workflows migrated | 10 | **11** (plus `WFR-MINIMAP`). Every Completion Rule axis is satisfied: the narrative facade, six bounded coordination roles, the single `policy.rs`, the single `evidence.rs`, two reified seams, relocation parity reported separately from extraction gain, and seam retirement |
+| Policy modules relocated | 6 of 6 relocation candidates | **6 of 6, unchanged as a fraction — and the fraction was already wrong.** `minimap_analysis.rs` was the census's own sixth candidate and it relocated here, so the "6 of 6" slot 5b recorded had counted the workspace pair as closing the list. `model/` went 26 → 25 files. Relocation parity is **exact**: 21 generated / 19 caught / 2 missed before, identical after |
+| Seams reified | 7 | **9** (plus `MinimapProjectionSpace` and `MarkerProjectionSpace`, promoted from private adapter structs to pure seams in `policy.rs`). A **third** candidate was carried into implementation and **dropped** rather than built: an adjustment-facts bundle that review could not show crossing two boundaries and that `MinimapAdjustmentDiagnostics` already reified. Recording a dropped candidate is the point — a seam rule that only ever adds types is not being applied. **Long signatures shortened: 1, unchanged** |
+| Seams retired | 41 fns / 93 sites (tree row) | **this row 11 fns / 21 gate sites → 2 / 15.** Seven inspection accessors and the eleven-field `MinimapAnalysisSnapshot` became one 20-field `MinimapEvidence`, with 37 widget-test call sites rewritten. **Zero new actuation seams; slot 5b's budgeted one remains unspent.** Of the row's two *existing* actuation seams, one **retired** onto a real production drive and one is **kept with its justification at its definition** — the three-way disposition the convention asks for, applied to seams a consolidation that only names inspection seams would have carried silently past |
+| Automation projections | 7 | **7, and this is a result rather than an omission.** The minimap's ≥18 `visual_geometry.native_minimap` fields, four `pixel_anchors`, `surfaces.minimap_requested`, and the `minimap-refresh` blocker are **unchanged and unwidened**; what changed is that `ui/automation.rs` no longer reaches through `.imp()` to build them. **Five** reach-throughs retired, one more than the four the matrix's table catalogued — the fifth, `editor.imp().minimap.render_hold`, was found during the retirement. `ui/automation.rs` now contains **zero** `editor.imp()` reads, leaving two `window.imp().tab_view` reads for slot 7 |
+| Data-safety defects fixed | 7 (slot 5a) + 7 (slot 5b) | **2 more.** One is this row's: `dispose()` cleared the minimap's template children and widget slots but left its `Debounce` and `SettleBurst` **armed**, over callbacks that reach panicking `TemplateChild` accessors. The other is in the **already-migrated load row**, and it is the more serious: three exits of `finish_chunked_install` returned without restoring the installation state they had captured, so a superseding load adopted the already-suspended values as its own baseline and faithfully restored them to *suspended* — leaving the tab read-only with local-history capture and minimap edit tracking disabled for the rest of the session. One of those exits also left `begin_irreversible_action()` unmatched, disabling undo. A migrated row is not a closed row |
+| Pre-existing blockers fixed | 2 (slot 5b) | **2**: `scripts/run-performance-smoke.sh` filtered on `ui::search_panel::runtime::tests::…` after slot 2a renamed that module to `execution`, and libtest exits 0 on a filter matching nothing, so the `search_interactive_policies` lane had reported a green proof that did not run since 2026-08-25 — now re-keyed **and** given a match-count assertion so it fails loudly next time. `scripts/check-filesystem-boundary.sh` also carried `crates/lushtext/benches` as a scan root that **has never existed in repository history**; `rg` silently skips a missing path, so it protected nothing |
+| Facade budget | 370 unchanged; 78 lines of headroom on the tree row | **370 unchanged and not edited — but this is the first slot to need the escalation path at all.** The first honest minimap facade measured **389**. Escalation step one, *delegate harder*, sufficed: the four widget accessors became `widgets.rs`, a called presentation surface, landing the facade at **355**; the cold read's seven fixes took it to **366 of 370**. Step two (amend the number) and the two forbidden responses were not reached. The new datum the programme should carry forward: what stressed this facade was neither stage orders (five, fewer than 5b's twelve) nor inversions (six) but the **external entry surface** — 24 operations called from 16 files, against load's seven |
+| Permitted role homes | nested home fully exercised | **per-workflow subdirectory, fourth adopter in `ui/editor_page/`**, after `save/`, `load/`, and `buffer_replacement/`. `make check-workflow-boundaries` reports **11** pure mutation-scoped policy modules, up one, because this row created a `policy.rs` where none existed |
+| Mutation configuration | 72 `exclude_re` entries | **the minimap's 14 entries naming 66 methods retired to 4 entries naming 0 methods**, and the hand-listed `examine_globs` entry **retired rather than re-pointed**, leaving exactly one pre-convention hand-listed UI file (`markdown_preview/inline_footnotes.rs`, slot 7's). Reading the retired entries against the tool rather than the source found **seven method names with zero definitions anywhere** and **four entries anchored to a `line:column` that matched no generated mutant** — a stale exclusion is a recorded equivalence claim that has quietly stopped protecting the mutant it names |
+| Convention changes | 2 statements across 2 capabilities | **2 statements across 2 capabilities**: path-keyed mechanical gates in `workflow-readability-boundaries` (re-key or retire in the same change, in *every* implementation of the predicate, proved by running the gate rather than reading the patch), and hand-listed scope-entry retirement plus line/symbol-anchored exclusion re-verification in `mutation-testing`. The retroactive re-check across all ten previously-migrated rows found **one** real disarm and two adjacent dead keys |
+
+### Convention friction slot 6 hit, recorded for slot 7
+
+**A gate keyed on a literal path is a gate a migration disarms, and the disarm is
+green.** This is the slot's central finding and it generalizes past this row.
+Every prior slot's structural risk was coverage that could be *lost and measured*;
+this one was protection that vanishes while every command still exits 0. Two
+properties make it worse than a stale document:
+
+- **Reviewing the edit cannot distinguish a correct re-key from a silent disarm.**
+  Both look like a path being updated. Only *running* the gate against the shipped
+  tree tells them apart, which is why the amended statement requires the run.
+- **One predicate implemented twice can be half-fixed.** The native-minimap
+  invariant lives in `scripts/check-visual-proof-policy.py` and in
+  `crates/cargo-gtk-proof/src/policy.rs`, with nothing linking them. Slot 6 added a
+  parity assertion to **each** and proved each by a deliberate red, because one
+  assertion on one side is the half that passes while the other side is wrong.
+
+**Slot 7 inherits this directly.** `ui/window/actions.rs` and `ui/window/imp.rs`
+both appear in that same native-minimap predicate and both belong to
+`WFR-SHELL-LAYOUT`, which slot 7 migrates. If either moves without re-keying both
+implementations, the row's own pixel proof stops being required and the lane keeps
+passing.
+
+**A fail-open filter is the same defect wearing a different key.** The one finding
+from the ten-row retroactive re-check was not a path at all: it was a *test name*
+in `scripts/run-performance-smoke.sh`. `cargo test` exits 0 when a filter matches
+nothing, and the lane checked only the exit status, so a renamed module turned an
+advertised proof into a no-op that reported success for three days. Slot 7 should
+treat every string-keyed lane filter — test names, bench group names, grepped
+evidence labels — as the same hazard class, and prefer asserting a non-zero match
+count over trusting an exit code. This row's own two perf-smoke widget test names
+and its two `minimap-(analysis|cancellation)-evidence` labels were deliberately
+preserved for exactly this reason, and the lane's summary was checked for the
+grepped lines rather than the command's status.
+
+**An evidence surface's own proofs are worth writing before you believe them.**
+The disposal proof for `MinimapEvidence` **failed on first run**, and the defect
+was real: `wrapped_layout_analysis_required` reached `source_view()`, a panicking
+`TemplateChild` accessor, so a teardown read crashed rather than answering. The
+constraint had been *stated* in the module doc a few minutes earlier and was
+false. Slot 7 should expect the same: write the three proofs first, run them, and
+treat a green first run as the unusual outcome.
+
+**A migrated row is not a closed row.** The mandatory `data-safety` pass found its
+more serious defect in `WFR-DOCUMENT-LOAD`, migrated by slot 3b, reached from this
+row only because the minimap's `set_minimap_tracking_suspended` is one of the four
+values that exit failed to restore. Nothing about the load row's own migration was
+wrong; the defect simply had not been looked for from this angle.
+
 ### Convention friction slot 5b hit, recorded for slots 6 and 7
 
 **A handed-on number is a hypothesis, not a measurement.** Slot 4 made re-derivation an
@@ -798,8 +870,8 @@ this table is the change-level view.
 | 4 | User-content restore family (`migrate-user-content-restore-workflow-readability`, **complete**) | All four rows **migrated**: `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-DRAFT-RECOVERY`, plus a further `WFR-AUTOMATION-SPINE` projection (`LocalHistoryEvidence`). Nothing from this family is outstanding. One acceptance item is deferred rather than unmet: the live-session `make run` paned-warning proof, which needs user availability — see task 10.10 and `evidence/live-run.md` | proposal + tasks + 1 spec delta |
 | 5a | **complete** — migrated the notes and bookmarks family, retired `NoteSourceRefreshCoordinator` onto the shared single-flight coordinator, added the no-materialization and child-collection evidence-surface statements and the called-presentation-surface taxonomy scope, and fixed **seven confirmed pre-existing data-safety defects** including a rename that silently destroyed an existing file (`migrate-workspace-tree-and-notes-workflow-readability`) | `WFR-NOTES-BOOKMARKS`, continuing `WFR-AUTOMATION-SPINE` projections (`NotesEvidence`) | proposal + tasks + 2 spec deltas |
 | 5b | **complete — `WFR-WORKSPACE-TREE` migrated**, in `migrate-workspace-tree-workflow-readability`. Facade **291 of 370** by delegate-harder alone; **three dissolutions** (`tree_loading.rs`, `tree_index.rs`, `watch_targets.rs`) plus `workspaces.rs` dissolving into four `execution` roles; **twelve** stage orders and 44 resumption points re-derived against a floor of five (**8.8x**, the programme's widest); the first **nested** role home; `evidence.rs` discharging the **no-materialization** statement with a driven collapsed-and-expanded inertness proof; both `ui/automation.rs` reach-throughs retired and `window.workspace` projected from evidence; **both relocations at exact mutant-by-mutant parity** (the first relocation since 3a) with their 7 inherited survivors triaged to 0; two convention amendments with a nine-row re-check that found **eight gaps**; and **seven confirmed data-safety defects fixed** (two from pass 1, three from pass 2, two from the fix cycle), including two CRITICAL: M-4's superseded-load guard, and that guard's own fix being inert. **Seam retirement is complete**: 60 fns / 111 gate sites → 41 / 93. **Remaining follow-up, recorded rather than hidden**: `scan_execution.rs` is ~2,000 production lines, five confirmed non-tree data-safety findings are handed on with owners, task 7.6's two-tree automation capture is unrun, and the live `make run` walkthrough awaits user availability | `WFR-WORKSPACE-TREE`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 2 spec deltas |
-| 6 | Minimap | `WFR-MINIMAP` | proposal + design + tasks |
-| 7 | Residual sweep | `WFR-MARKDOWN-PREVIEW`, `WFR-EDITOR-FIND`, `WFR-ENCODING`, `WFR-PRINT`, `WFR-SHELL-LAYOUT`, `WFR-STATUS-NOTIFICATIONS`, `WFR-BUFFER-SNAPSHOT`, `WFR-PLAIN-DISPOSAL`, remaining `exclude_re` entries and argument-count suppressions, matrix completion | proposal + tasks |
+| 6 | **complete — `WFR-MINIMAP` migrated**, in `migrate-minimap-workflow-readability`. The one slot the record expected to need a `design.md`, and the expectation was confirmed rather than obeyed. Facade **366 of 370** after **one escalation step**: the first honest facade measured 389, and *delegate harder* sufficed — the four widget accessors became `widgets.rs`, a called presentation surface, which is where the taxonomy already put them. The budget number was not edited and the census row was not split. **Five stage orders and six resumption points** re-derived against a recorded floor of three. **Two path-keyed gates re-keyed or retired, and the disarm observed before it was fixed** — the `.cargo/mutants.toml` `examine_globs` entry **retired** (0 mutants generated after the move, still exiting 0), and the native-minimap invariant predicate re-keyed to a directory prefix in **both** implementations, each with its own parity assertion proved by a deliberate red. The Python half's self-tests were **unreachable** before this change and now run. The retroactive re-check across ten migrated rows found **one** real disarm, inherited from slot 2a: `scripts/run-performance-smoke.sh` still filtered on `ui::search_panel::runtime::tests::…` after that module was renamed to `execution`, and libtest exits 0 on a filter that matches nothing, so a green proof had not run since 2026-08-25. **Mutation configuration retired from 14 entries / 66 method names to 4 entries / 0 method names**, with seven named methods found to have zero definitions anywhere and four entries anchored to a `line:column` that matched no generated mutant. **All 12 first-run survivors triaged to zero** — nine killed by tests, three removed by extracting a block that was duplicated verbatim between two functions, which then exposed a dead cap and deleted a fourth. Final run **412 generated / 406 caught / 0 missed**. **Two confirmed data-safety defects fixed**, one of them in the already-migrated load row: a superseded chunked install returned without restoring the suspension it captured, so a following load adopted the suspended values as its own baseline and made a read-only tab with local-history capture disabled permanent for the session | `WFR-MINIMAP`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + design + tasks + 2 spec deltas |
+| 7 | Residual sweep | `WFR-MARKDOWN-PREVIEW`, `WFR-EDITOR-FIND`, `WFR-ENCODING`, `WFR-PRINT`, `WFR-SHELL-LAYOUT`, `WFR-STATUS-NOTIFICATIONS`, `WFR-BUFFER-SNAPSHOT`, `WFR-PLAIN-DISPOSAL`, `WFR-AUTOMATION-SPINE` (whose incremental projections complete with the last migrated row), remaining `exclude_re` entries and argument-count suppressions, matrix completion | proposal + tasks |
 
 ### Why slot 5 split into 5a and 5b
 
@@ -1022,8 +1094,8 @@ in both directions, which some rows need:
 - slot 4 (complete): WFR-BUFFER-REPLACEMENT, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-DRAFT-RECOVERY, WFR-AUTOMATION-SPINE (partial)
 - slot 5a (complete): WFR-NOTES-BOOKMARKS, WFR-AUTOMATION-SPINE (partial)
 - slot 5b (complete): WFR-WORKSPACE-TREE, WFR-AUTOMATION-SPINE (partial)
-- slot 6 (outstanding): WFR-MINIMAP, WFR-AUTOMATION-SPINE
-- slot 7 (outstanding): WFR-MARKDOWN-PREVIEW, WFR-EDITOR-FIND, WFR-ENCODING, WFR-PRINT, WFR-SHELL-LAYOUT, WFR-STATUS-NOTIFICATIONS, WFR-BUFFER-SNAPSHOT, WFR-PLAIN-DISPOSAL
+- slot 6 (complete): WFR-MINIMAP, WFR-AUTOMATION-SPINE (partial)
+- slot 7 (outstanding): WFR-MARKDOWN-PREVIEW, WFR-EDITOR-FIND, WFR-ENCODING, WFR-PRINT, WFR-SHELL-LAYOUT, WFR-STATUS-NOTIFICATIONS, WFR-BUFFER-SNAPSHOT, WFR-PLAIN-DISPOSAL, WFR-AUTOMATION-SPINE
 
 ### Convention friction slot 2a hit, recorded for 2b and 3 through 7
 

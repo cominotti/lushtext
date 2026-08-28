@@ -20,7 +20,6 @@ pub mod folder_note;
 pub mod formatting_overrides;
 pub mod local_history;
 pub mod migration_ledger;
-pub mod minimap_analysis;
 pub mod note;
 pub mod palette;
 pub mod plain_disposal;

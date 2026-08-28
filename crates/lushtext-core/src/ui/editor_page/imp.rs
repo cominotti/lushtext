@@ -326,6 +326,16 @@ pub struct BookmarkState {
 }
 
 /// Minimap widgets, marker state, and signal lifetimes for one editor tab.
+///
+/// This is the minimap workflow's **called presentation surface, not a role** of
+/// it. `ui/editor_page/minimap/` is that workflow's role home, and this struct
+/// deliberately stays here: `dispose()` tears it down in an order interleaved
+/// with the editor page's other subsystems, and `minimap_overlay` is a
+/// `TemplateChild` bound by the Blueprint template that cannot leave `imp.rs` at
+/// all. Being a presentation surface, it owns no `policy.rs` and no
+/// `evidence.rs`. Recorded here as well as in the `WFR-MINIMAP` row of
+/// `docs/workflow-readability-matrix.md`, because the convention requires both
+/// places.
 #[derive(Default)]
 pub struct MinimapState {
     /// Programmatically created `GtkSourceMap` bound to the main source view.
@@ -658,6 +668,17 @@ impl ObjectImpl for LushtextEditorPage {
             snapshot.dispose();
         }
         self.obj().dispose_minimap_analysis();
+        // Cancel the minimap's two timers before their template children go
+        // away. Both capture the page weakly, so a live callback would normally
+        // no-op — but a `run_dispose`-style teardown leaves a strong reference
+        // alive, and both callbacks reach panicking `TemplateChild` accessors:
+        // `refresh_minimap` reads `minimap_overlay`, and the settle repair reads
+        // `source_view()`. A disposed widget is an observation stage, so the
+        // timers are retired here rather than left armed over cleared children.
+        let _ = self.minimap.refresh_debounce.invalidate();
+        let _ = self.minimap.reflow_settle.clear();
+        self.minimap.refresh_pending.set(false);
+        self.minimap.reflow_reveal_pending.set(false);
         let _ = self.local_history.periodic_timer.invalidate();
         self.local_history.periodic_timer_token.set(None);
         self.local_history

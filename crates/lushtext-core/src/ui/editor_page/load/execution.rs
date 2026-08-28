@@ -275,15 +275,36 @@ fn finish_chunked_install(session: &Rc<RefCell<ChunkedLoadInstall>>) {
         return;
     };
     editor.imp().load.installation_slice_count.set(slice_count);
-    if editor.imp().load.dispose_during_finalization.get()
-        || editor.imp().load_tracking.generation.get() != generation
-    {
+    let disposed_during_finalization = editor.imp().load.dispose_during_finalization.get();
+    if disposed_during_finalization || editor.imp().load_tracking.generation.get() != generation {
         buffer.end_irreversible_action();
+        // The suspension this installation captured must be given back when a
+        // **live** editor publishes nothing. Leaving it would strand the tab
+        // non-editable with local-history capture and minimap edit tracking
+        // still suppressed — and worse, a superseding load would then capture
+        // those already-suspended values as its own "previous" state and
+        // faithfully restore them to suspended when it finished, making the
+        // condition permanent for the session.
+        //
+        // A **disposed** editor is deliberately excluded, and the asymmetry is
+        // the point: restoration reaches `source_view()` and `refresh_minimap()`,
+        // both of which read panicking `TemplateChild` accessors that GTK4 has
+        // already cleared in `dispose()`. There is nothing left to strand on a
+        // widget that is going away, so giving state back to it can only turn a
+        // teardown into a crash.
+        if !disposed_during_finalization {
+            restore_load_installation_state(&editor, restore);
+        }
         conclude_installation(&editor, session, permit);
         drop(loaded);
         return;
     }
     let Some(loaded) = loaded else {
+        // Same contract on the payload-less exit, plus the irreversible-action
+        // block this arm previously left open, which would have kept undo
+        // disabled for the tab.
+        buffer.end_irreversible_action();
+        restore_load_installation_state(&editor, restore);
         conclude_installation(&editor, session, permit);
         return;
     };

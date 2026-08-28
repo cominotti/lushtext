@@ -166,6 +166,7 @@ for filter in $FILTERS; do
         tail -n 120 "$log_path" >&2 || true
         smoke_fail "performance smoke failed for filter '$filter'. Artifacts: $ARTIFACT_DIR"
     fi
+    smoke_assert_ran "$log_path" "benchmark filter '$filter'" "^Benchmarking "
     {
         echo "## $filter"
         grep -E "^(Benchmarking|Analyzing|[[:space:]]*time:)|[[:alnum:]-]+-evidence" "$log_path" || true
@@ -212,6 +213,7 @@ case " $FILTERS " in
                 tail -n 120 "$widget_log" >&2 || true
                 smoke_fail "headless transient file-load proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
             fi
+            smoke_assert_ran "$widget_log" "widget proof '$widget_filter'"
         done
         {
             echo "## transient_file_load_headless"
@@ -227,6 +229,7 @@ case " $FILTERS " in
             tail -n 120 "$slice_log" >&2 || true
             smoke_fail "editor-load slice cancellation proof failed. Artifacts: $ARTIFACT_DIR"
         fi
+        smoke_assert_ran "$slice_log" "editor-load slice cancellation proof"
         {
             echo "## editor_load_slices"
             grep -E "editor-load-slice-evidence|test result:" "$slice_log" || true
@@ -245,6 +248,7 @@ case " $FILTERS " in
             tail -n 120 "$hook_log" >&2 || true
             smoke_fail "parallel Undo hook-registry isolation proof failed. Artifacts: $ARTIFACT_DIR"
         fi
+        smoke_assert_ran "$hook_log" "parallel Undo hook-registry isolation proof"
         {
             echo "## replace_undo_hook_isolation"
             grep -E "replace-undo-hook-isolation-evidence|test result:" "$hook_log" || true
@@ -278,6 +282,7 @@ case " $FILTERS " in
                 tail -n 160 "$widget_log" >&2 || true
                 smoke_fail "headless quality-gap proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
             fi
+            smoke_assert_ran "$widget_log" "widget proof '$widget_filter'"
         done
         {
             echo "## quality_gap_scale_headless"
@@ -293,6 +298,7 @@ case " $FILTERS " in
             tail -n 160 "$draft_log" >&2 || true
             smoke_fail "draft-repair closeout proof failed. Artifacts: $ARTIFACT_DIR"
         fi
+        smoke_assert_ran "$draft_log" "draft-repair closeout proof"
         {
             echo "## draft_repair_closeout"
             grep -E "draft-repair-closeout-evidence|test result:" "$draft_log" || true
@@ -305,11 +311,15 @@ case " $FILTERS " in
     *" search_interactive_policies "*)
         unit_log="$ARTIFACT_DIR/unit-search-event-budget.log"
         echo "Running exact mixed search-event turn-budget proof..."
-        if ! cargo test -p lushtext-core ui::search_panel::runtime::tests::mixed_non_match_events_share_one_budget --lib -- --nocapture \
+        # `ui/search_panel/runtime.rs` became `execution.rs` in the search-replace
+        # migration and this key was not moved with it, so the proof below had
+        # not run since 2026-08-25. See `smoke_assert_ran`.
+        if ! cargo test -p lushtext-core ui::search_panel::execution::tests::mixed_non_match_events_share_one_budget --lib -- --nocapture \
             >"$unit_log" 2>&1; then
             tail -n 120 "$unit_log" >&2 || true
             smoke_fail "mixed search-event budget proof failed. Artifacts: $ARTIFACT_DIR"
         fi
+        smoke_assert_ran "$unit_log" "mixed search-event budget proof"
         {
             echo "## search_event_budget"
             grep -E "search-event-budget-evidence|test result:" "$unit_log" || true
@@ -328,6 +338,7 @@ case " $FILTERS " in
             tail -n 120 "$widget_log" >&2 || true
             smoke_fail "Markdown retirement-pressure proof failed. Artifacts: $ARTIFACT_DIR"
         fi
+        smoke_assert_ran "$widget_log" "Markdown retirement-pressure proof"
         {
             echo "## markdown_retirement_pressure"
             grep -E "markdown-retirement-bound-evidence|test result:" "$widget_log" || true
@@ -345,6 +356,7 @@ case " $FILTERS " in
             tail -n 120 "$widget_log" >&2 || true
             smoke_fail "reentrant buffer-replacement proof failed. Artifacts: $ARTIFACT_DIR"
         fi
+        smoke_assert_ran "$widget_log" "reentrant buffer-replacement proof"
         {
             echo "## buffer_replacement_reentrancy"
             grep -E "buffer-replacement-reentrant-evidence|test result:" "$widget_log" || true

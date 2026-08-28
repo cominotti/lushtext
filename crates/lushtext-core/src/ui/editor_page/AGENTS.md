@@ -21,8 +21,8 @@ This folder owns one open editor tab: buffer state, file I/O choreography, exter
   and the deferred cursor/scroll group in `restore_position.rs` (five owning
   workflows). Both are reached through named operations, not by reaching into
   another workflow's state.
-- Keep Focus Mode presentation in `focus_mode.rs`, minimap behavior in
-  `minimap.rs`, dynamic editor overscroll in `overscroll.rs`, bookmark projection
+- Keep Focus Mode presentation in `focus_mode.rs`, minimap behavior in the
+  `minimap/` role home, dynamic editor overscroll in `overscroll.rs`, bookmark projection
   in `bookmarks.rs`, external monitor behavior in `monitor.rs`, and in-tab
   search-bar behavior in `search.rs`.
 - Keep `imp.rs` focused on template/state wiring and helper routines shared by those workflows.
@@ -40,7 +40,7 @@ This folder owns one open editor tab: buffer state, file I/O choreography, exter
 - While chunked load installation clears old text, inserts new text, or cleans up cancellation, suppress in-editor search, draft, preview, local-history, minimap, title, memory-policy, and similar document-amplifying projections. Publish metadata and one final memory-policy update only after exact text has been installed; never expose partial text as `Loaded` or saveable state. Disposal may discard the buffer directly, but a live page must clear document-sized text in bounded main-loop turns.
 - Whole-buffer replacement must mark mutation ownership before every non-empty GTK delete or insert and release mutable session borrows across those signal-emitting calls. Synchronous `changed` handlers may supersede the generation; the continuation must revalidate phase/identity, clear the old partial body exactly once, and restore editability, saveability, and projection state only at the terminal boundary.
 - Keep `last_known_mtime`, eviction state, draft flags, bookmark projection state, and EditorConfig override state explicit and well-named; these are coupled safety/restore signals, not incidental fields.
-- Keep minimap state tab-local. Marker projection, availability gating, and gesture-driven navigation belong here with the editor, not in `window/` or `services/`. Wrapped-layout and long-line evidence must come from the current accepted `model::minimap_analysis` cache or generation/lifetime-bound GTK cursor slices; edits, wrap/marker changes, file replacement, eviction/reload suspension, and teardown invalidate the active cursor and source before stale work can continue or publish.
+- Keep minimap state tab-local. Marker projection, availability gating, and gesture-driven navigation belong here with the editor, not in `window/` or `services/`. Wrapped-layout and long-line evidence must come from the current accepted content-analysis cache owned by the `minimap/` role home or generation/lifetime-bound GTK cursor slices; edits, wrap/marker changes, file replacement, eviction/reload suspension, and teardown invalidate the active cursor and source before stale work can continue or publish.
 - Keep workspace-wide search behavior out of this folder; this subtree only owns the per-tab search bar and editor-local flows.
 - Keep note persistence out of this folder. `EditorPage` owns live marks, anchors, and highlights; the window layer owns sidecar loading, saving, workspace browse flows, and export commands.
 - Automatic local-history capture must classify the current live buffer, acquire shared admission before moving or copying document-sized text, and revalidate editor/path/timer/edit generations before worker persistence. Chunked capture stays byte-budgeted and cancellable; contended baselines wait as weak/scalar state rather than queued text payloads.

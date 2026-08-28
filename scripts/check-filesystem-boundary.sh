@@ -23,7 +23,6 @@ scan_roots=(
   crates/lushtext-core/benches
   crates/lushtext/src
   crates/lushtext/tests
-  crates/lushtext/benches
   .agents/rules
   .agents/skills
 )
@@ -74,7 +73,6 @@ status_probe_roots=(
   crates/lushtext-core/benches
   crates/lushtext/src
   crates/lushtext/tests
-  crates/lushtext/benches
 )
 
 status_probe_hits="$(

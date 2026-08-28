@@ -2575,25 +2575,27 @@ fn minimap_setting(window: &LushtextWindow) -> bool {
 }
 
 fn minimap_source_map(editor: &LushtextEditorPage) -> sourceview5::Map {
-    editor
-        .imp()
-        .minimap
-        .source_map
-        .borrow()
-        .as_ref()
-        .cloned()
+    editor.minimap_source_map_widget()
         .expect("source map should exist")
 }
 
 fn minimap_marker_strip(editor: &LushtextEditorPage) -> gtk4::DrawingArea {
-    editor
-        .imp()
-        .minimap
-        .marker_strip
-        .borrow()
-        .as_ref()
-        .cloned()
+    editor.minimap_marker_strip_widget()
         .expect("marker strip should exist")
+}
+
+/// Leave real minimap work pending through the production path.
+///
+/// The buffer's `insert-text` handler is what schedules the debounced marker
+/// refresh, so an edit is how a readiness test gets a genuinely pending refresh
+/// without a test-only actuation seam. Shared rather than copied: two readiness
+/// blockers assert the same precondition.
+fn drive_pending_minimap_refresh(editor: &LushtextEditorPage) {
+    editor.source_view().buffer().insert_at_cursor("x");
+    assert!(
+        editor.minimap_evidence().work_pending,
+        "an edit must leave the debounced minimap refresh pending"
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2639,8 +2641,9 @@ fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnap
     let source_map_vadjustment = source_map
         .vadjustment()
         .expect("source map should expose a vertical adjustment");
-    let map_bounds = source_map
-        .compute_bounds(&*editor.imp().minimap_overlay)
+    let map_bounds = editor
+        .minimap_evidence()
+        .source_map_bounds_in_shell
         .expect("source map should have overlay-relative bounds");
     let start_iter = source_map.buffer().start_iter();
     let (line_y, _) = source_map.line_yrange(&start_iter);
@@ -2655,7 +2658,7 @@ fn minimap_geometry_snapshot(editor: &LushtextEditorPage) -> MinimapGeometrySnap
         source_map_top_margin: source_map.top_margin(),
         source_map_wrap_mode: source_map.wrap_mode(),
         marker_strip_height: marker_strip.height(),
-        minimap_first_line_top: f64::from(map_bounds.y()) + f64::from(widget_y),
+        minimap_first_line_top: map_bounds.y + f64::from(widget_y),
         vertical_lower: vadjustment.lower(),
         vertical_value: vadjustment.value(),
         vertical_page_size: vadjustment.page_size(),
@@ -4357,7 +4360,7 @@ fn test_automation_snapshot_reports_bounded_live_window_state() {
     // legitimately blocks the idle predicate, so drain queued minimap work
     // before asserting that the snapshot reports an idle window.
     wait_until(Duration::from_secs(5), || {
-        !editor.minimap_work_pending_for_test()
+        !editor.minimap_evidence().work_pending
     });
 
     let app = window
@@ -4585,7 +4588,7 @@ fn test_hidden_minimap_refresh_does_not_block_visual_readiness() {
     let editor = active_editor(&window);
     wait_until(Duration::from_secs(2), || !editor.is_minimap_visible());
 
-    editor.mark_minimap_refresh_pending_for_test();
+    drive_pending_minimap_refresh(&editor);
 
     let app = window
         .application()
@@ -4641,7 +4644,7 @@ fn test_focus_suppressed_minimap_refresh_does_not_block_visual_readiness() {
     });
     assert!(settings.boolean(keys::SHOW_MINIMAP));
 
-    editor.mark_minimap_refresh_pending_for_test();
+    drive_pending_minimap_refresh(&editor);
 
     let app = window
         .application()
@@ -7454,7 +7457,7 @@ fn test_minimap_geometry_tracks_sidebar_width_reflow_with_word_wrap() {
     // Wait out the debounced width-reflow settle and reveal window instead of
     // guessing a fixed delay so the snapshot below reads settled minimap geometry.
     wait_until(Duration::from_secs(5), || {
-        !editor.minimap_work_pending_for_test()
+        !editor.minimap_evidence().work_pending
     });
     let after = minimap_geometry_snapshot(&editor);
 
@@ -7510,7 +7513,7 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
     };
     wait_until(Duration::from_secs(5), || {
         let geometry = minimap_geometry_snapshot(&editor);
-        !editor.minimap_work_pending_for_test()
+        !editor.minimap_evidence().work_pending
             && geometry.visible_start_line == 0
             && (geometry.vertical_value - geometry.vertical_lower).abs() <= 0.5
             && geometry.source_map_wrap_mode == gtk4::WrapMode::None
@@ -7526,7 +7529,7 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
     // does not produce, so rendered-freeze coverage lives in the visual
     // geometry smoke lane instead.
     wait_until(Duration::from_secs(2), || {
-        editor.minimap_reflow_settle_pending_for_test()
+        editor.minimap_evidence().reflow_settle_pending
     });
     let expected_sidebar_visible = !initially_visible;
     wait_until(Duration::from_secs(2), || {
@@ -7542,7 +7545,7 @@ fn run_minimap_top_anchor_sidebar_reflow_case(word_wrap: bool, initially_visible
     // reveal window, and the follow-up marker refresh to drain so the assertions
     // below see the settled post-repair state instead of mid-burst pinned geometry.
     wait_until(Duration::from_secs(5), || {
-        !editor.minimap_work_pending_for_test()
+        !editor.minimap_evidence().work_pending
     });
     wait_until(Duration::from_secs(2), || {
         let geometry = minimap_geometry_snapshot(&editor);

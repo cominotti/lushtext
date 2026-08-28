@@ -435,8 +435,8 @@ Cargo workspace:
   (`scan_admission.rs`, `scan_execution.rs`, `refresh_execution.rs`,
   `folder_execution.rs`, `file_execution.rs`, `peek_execution.rs`,
   `reorder_execution.rs`, `watch.rs`) live in `workspace_section/`. Plain policy
-  for weighted disposal, workspace search, and minimap analysis lives in
-  `model/{workspace_search,plain_disposal,minimap_analysis}.rs`, while the
+  for weighted disposal and workspace search lives in
+  `model/{workspace_search,plain_disposal}.rs`, while the
   workspace tree workflow's own pure policy — per-store scan ownership,
   workspace-save generations, inline-rename intent, and the confirmed-delete
   identity verdict — lives beside that workflow in `ui/sidebar/policy.rs`.

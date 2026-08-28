@@ -64,12 +64,19 @@ pub use load::{
     set_next_load_body_disposal_probe_for_test, set_next_load_disposal_reservation_weight_for_test,
 };
 #[cfg(feature = "test-utils")]
-pub use minimap::MinimapAnalysisSnapshot;
+pub use minimap::MinimapEvidence;
 pub(crate) use minimap::{
     MinimapAdjustmentDiagnostics, MinimapNativeSliderDiagnostics, MinimapTextViewRect,
 };
+// `mod minimap;` stays private, matching the `load/`, `save/`, and
+// `buffer_replacement/` role homes in this directory. The three content-analysis
+// types are re-exported here as a precisely scoped subset because
+// `crates/lushtext-core/benches/benchmarks.rs` measures the accumulator directly;
+// widening the module to `pub` to obtain reach for three types would invert the
+// posture of every other role home here.
 pub use minimap::{
-    MinimapAvailability, MinimapMarkerBounds, MinimapMarkerKind, MinimapProjectedBounds,
+    MinimapAnalysisAccumulator, MinimapAnalysisPolicy, MinimapAnalysisResult, MinimapAvailability,
+    MinimapMarkerBounds, MinimapMarkerKind, MinimapProjectedBounds,
 };
 
 glib::wrapper! {
@@ -87,6 +94,17 @@ glib::wrapper! {
 }
 
 impl LushtextEditorPage {
+    /// The editor's scrolling viewport widget, or `None` once it is gone.
+    ///
+    /// A named operation rather than a template-child reach-through, because the
+    /// Automation1 visual surface reads it from a different workflow. `try_get()`
+    /// for the same reason the minimap accessors use it: GTK4 clears template
+    /// children in `dispose()` before Rust's `Drop`, so the panicking accessor
+    /// would turn a teardown-time snapshot into a crash.
+    pub(crate) fn editor_viewport_widget(&self) -> Option<gtk4::ScrolledWindow> {
+        self.imp().scrolled_window.try_get()
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Object::builder().build()

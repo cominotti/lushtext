@@ -485,7 +485,10 @@ check-accessibility-policy:
 # Guard local UI-sensitive edits against missing same-session visual proof.
 check-visual-proof-policy:
 	@echo "Checking visual geometry proof policy..."
-	cargo run -q -p cargo-gtk-proof -- policy --self-test
+	# --self-test runs the Python predicate self-tests and then the Rust ones.
+	# Both implement the same path-keyed predicate and each asserts it separately;
+	# skipping either half leaves the two able to disagree while both exit 0.
+	./scripts/check-visual-proof-policy.py --self-test
 	cargo run -q -p cargo-gtk-proof -- policy
 
 # Validate the reusable agent/developer client without needing a live D-Bus app.

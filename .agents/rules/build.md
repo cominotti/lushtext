@@ -172,6 +172,44 @@ evidence; re-run the lane after the files are visible. When adding the files
 changes a gate's digest and it starts failing, the fix is to re-run the lane, not
 to unstage the files and take the earlier green.
 
+**A mechanical gate keyed on a literal file path is disarmed by the migration
+that moves that file, silently and greenly.** A gate is *path-keyed* when a
+checked-in configuration file, policy script, or policy implementation selects
+the files it protects by naming them literally — exact path equality, an explicit
+entry in a scope list, or a literal `line:column` anchor — rather than by a naming
+convention the migrated shape still satisfies. The path-keyed gates in this tree
+today are `.cargo/mutants.toml` (`examine_globs`, `exclude_globs`, and every
+path- or symbol-anchored `exclude_re` entry), the native-minimap invariant
+predicate implemented **twice** in `scripts/check-visual-proof-policy.py` and
+`crates/cargo-gtk-proof/src/policy.rs`, `scripts/check-accessibility-policy.py`,
+`scripts/accessibility_source_fingerprint.py`,
+`scripts/check-filesystem-boundary.sh`, and
+`scripts/run-performance-smoke.sh` — whose keys are literal **test names** and
+evidence labels rather than paths, but fail the same way.
+
+When a change relocates, renames, or splits a file such a gate names:
+
+- **Re-key or retire the entry in the same change.** Retiring is a permitted and
+  sometimes correct outcome — where an entry existed only to include code that
+  sat outside a naming convention, and the change moves that code inside the
+  convention, delete the entry rather than re-point it. Record which outcome was
+  chosen and why.
+- **Re-key every implementation of the predicate.** Leaving a script and a
+  compiled policy tool disagreeing about which files a gate protects is worse
+  than either answer alone. Add a parity assertion to each implementation's own
+  self-tests; one assertion on one side is half of parity, and it is the half
+  that passes while the other side is wrong.
+- **Prove the re-keying by running the gate against the final state, not by
+  reading the patch.** A path-keyed gate that matches nothing does not fail; it
+  passes while protecting nothing, and a diff cannot distinguish a correct re-key
+  from a silent disarm.
+- **Do not weaken the gate.** Broadening a predicate to files it did not protect,
+  or narrowing it so a protected file falls out, is a scope change to justify on
+  its own terms rather than a side effect of a rename.
+
+Prefer a prefix or naming-convention key over a literal path when re-keying, so a
+later split inside the same directory cannot disarm the gate again.
+
 Workflow-readability changes should pass `make check-workflow-boundaries`; it is
 also part of `make check-policy`. It fails when a `policy.rs` module imports
 `gtk4`, `glib`, `gio`, `libadwaita`, or `sourceview5`; when a `policy.rs` sits at

@@ -1146,27 +1146,18 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     push_open_popover_surfaces(window, &mut surfaces, root);
 
     if let Some(editor) = active_editor(window) {
-        push_widget_surface(
-            &mut surfaces,
-            "editor-viewport",
-            &*editor.imp().scrolled_window,
-            root,
-        );
+        if let Some(viewport) = editor.editor_viewport_widget() {
+            push_widget_surface(&mut surfaces, "editor-viewport", &viewport, root);
+        } else {
+            surfaces.push(absent_visual_surface("editor-viewport", "not-created"));
+        }
         push_widget_surface(&mut surfaces, "source-view", editor.source_view(), root);
-        push_widget_surface(
-            &mut surfaces,
-            "minimap-shell",
-            &*editor.imp().minimap_overlay,
-            root,
-        );
-        if let Some(freeze) = editor
-            .imp()
-            .minimap
-            .render_hold
-            .borrow()
-            .as_ref()
-            .map(|hold| hold.cover().clone())
-        {
+        if let Some(shell) = editor.minimap_shell_widget() {
+            push_widget_surface(&mut surfaces, "minimap-shell", &shell, root);
+        } else {
+            surfaces.push(absent_visual_surface("minimap-shell", "not-created"));
+        }
+        if let Some(freeze) = editor.minimap_reflow_freeze_cover() {
             push_widget_surface(&mut surfaces, "minimap-reflow-freeze", &freeze, root);
         } else {
             surfaces.push(absent_visual_surface(
@@ -1174,7 +1165,7 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
                 "not-created",
             ));
         }
-        if let Some(source_map) = editor.imp().minimap.source_map.borrow().as_ref().cloned() {
+        if let Some(source_map) = editor.minimap_source_map_widget() {
             push_widget_surface(&mut surfaces, "minimap-source-map", &source_map, root);
             // These anchors describe GTK's native `GtkSourceMap` slider pixels
             // for screenshot inspection. They must not imply or create an
@@ -1236,7 +1227,7 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
             ));
             native_minimap = absent_native_minimap_diagnostic("not-created");
         }
-        if let Some(marker_strip) = editor.imp().minimap.marker_strip.borrow().as_ref().cloned() {
+        if let Some(marker_strip) = editor.minimap_marker_strip_widget() {
             push_widget_surface(&mut surfaces, "minimap-marker-strip", &marker_strip, root);
         } else {
             surfaces.push(absent_visual_surface("minimap-marker-strip", "not-created"));

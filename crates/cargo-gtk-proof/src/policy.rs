@@ -37,6 +37,14 @@ const VISUAL_SENSITIVE_EXACT: &[&str] = &[
 /// File suffixes that change visual layout even when they appear outside known prefixes.
 const VISUAL_SENSITIVE_SUFFIXES: &[&str] = &[".blp", ".css", ".ui"];
 
+/// Minimap workflow role home, keyed as a prefix rather than one file path.
+///
+/// A gate keyed on a literal file name stops protecting anything the moment that
+/// file is renamed, and keeps reporting success while it does. The prefix keeps
+/// both minimap invariants required after a later split inside the directory.
+/// `scripts/check-visual-proof-policy.py` implements the same predicate and must
+/// stay keyed identically; both sides carry a self-test asserting it.
+const NATIVE_MINIMAP_ROLE_HOME_PREFIX: &str = "crates/lushtext-core/src/ui/editor_page/minimap/";
 /// Invariant id shared with the Python visual runner and generated summaries.
 const NATIVE_MINIMAP_HIGHLIGHT_INVARIANT: &str = "native-minimap-highlight-anchors";
 /// Animation invariant id shared with existing smoke evidence.
@@ -811,7 +819,7 @@ fn is_visual_sensitive(path: &str) -> bool {
 fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
     let mut required = Vec::new();
     for path in paths.iter().map(|item| item.replace('\\', "/")) {
-        if (path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
+        if (path.starts_with(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/window/actions.rs"
             || path == "crates/lushtext-core/src/ui/window/imp.rs"
             || path == "crates/lushtext-core/src/ui/automation.rs"
@@ -839,7 +847,7 @@ fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
     let mut required = Vec::new();
     for path in paths.iter().map(|item| item.replace('\\', "/")) {
         if (path == "crates/lushtext-core/src/ui/editor_page/imp.rs"
-            || path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
+            || path.starts_with(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/editor_page/overscroll.rs"
             || path == "crates/lushtext-core/src/ui/window/actions.rs"
             || path == "crates/lushtext-core/src/ui/window/imp.rs"
@@ -1011,5 +1019,32 @@ mod tests {
     #[test]
     fn self_tests_cover_policy_negative_cases() {
         run_self_tests().expect("policy self-tests");
+    }
+
+    /// Path-keyed-gate parity with `scripts/check-visual-proof-policy.py`.
+    ///
+    /// That script implements the same predicate and nothing links the two, so
+    /// each side asserts the minimap role home separately. A one-sided re-key
+    /// would otherwise leave the two implementations disagreeing about which
+    /// files demand the native-minimap invariants while both kept exiting 0.
+    #[test]
+    fn minimap_role_home_still_requires_both_native_minimap_invariants() {
+        for path in [
+            "crates/lushtext-core/src/ui/editor_page/minimap/mod.rs",
+            "crates/lushtext-core/src/ui/editor_page/minimap/policy.rs",
+            "crates/lushtext-core/src/ui/editor_page/minimap/reflow_execution.rs",
+        ] {
+            assert!(is_visual_sensitive(path), "{path} must be visual-sensitive");
+            assert_eq!(
+                required_invariants_for_changes(&[path.to_string()]),
+                vec![NATIVE_MINIMAP_HIGHLIGHT_INVARIANT.to_string()],
+                "{path} must require the native minimap highlight invariant"
+            );
+            assert_eq!(
+                required_animation_invariants_for_changes(&[path.to_string()]),
+                vec![NATIVE_MINIMAP_ANIMATION_INVARIANT.to_string()],
+                "{path} must require the native minimap animation invariant"
+            );
+        }
     }
 }

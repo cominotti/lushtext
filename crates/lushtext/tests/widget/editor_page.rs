@@ -223,22 +223,12 @@ fn enable_minimap_for_tests(long_line_markers: bool) -> gio::Settings {
 }
 
 fn minimap_source_map(page: &LushtextEditorPage) -> sourceview5::Map {
-    page.imp()
-        .minimap
-        .source_map
-        .borrow()
-        .as_ref()
-        .cloned()
+    page.minimap_source_map_widget()
         .expect("source map should be created during construction")
 }
 
 fn minimap_marker_strip(page: &LushtextEditorPage) -> gtk4::DrawingArea {
-    page.imp()
-        .minimap
-        .marker_strip
-        .borrow()
-        .as_ref()
-        .cloned()
+    page.minimap_marker_strip_widget()
         .expect("marker strip should be created during construction")
 }
 
@@ -987,9 +977,9 @@ fn test_minimap_long_line_warning_scan_preserves_small_document_markers() {
         .set_text(&format!("short\n{}", "x".repeat(121)));
 
     wait_until(Duration::from_secs(2), || {
-        page.minimap_analysis_snapshot_for_test().cache_owned
+        page.minimap_evidence().cache_owned
     });
-    assert_eq!(page.long_line_warning_count_for_test(), 1);
+    assert_eq!(page.minimap_evidence().long_line_warning_count, 1);
 }
 
 #[test]
@@ -1005,13 +995,13 @@ fn test_minimap_wrapped_classifier_uses_live_estimated_bytes_without_text_scan()
         usize::try_from(threshold / 4 + 1).expect("minimap threshold should fit usize");
 
     page.set_memory_estimate_for_test(Some(threshold));
-    assert!(!page.wrapped_layout_analysis_required_for_test());
+    assert!(!page.minimap_evidence().wrapped_layout_analysis_required);
     page.set_memory_estimate_for_test(Some(threshold + 1));
-    assert!(page.wrapped_layout_analysis_required_for_test());
+    assert!(page.minimap_evidence().wrapped_layout_analysis_required);
 
     page.source_view().set_wrap_mode(gtk4::WrapMode::None);
     page.set_memory_estimate_for_test(Some(u64::MAX));
-    assert!(!page.wrapped_layout_analysis_required_for_test());
+    assert!(!page.minimap_evidence().wrapped_layout_analysis_required);
     page.source_view().set_wrap_mode(gtk4::WrapMode::Word);
     page.set_memory_estimate_for_test(None);
 
@@ -1020,22 +1010,22 @@ fn test_minimap_wrapped_classifier_uses_live_estimated_bytes_without_text_scan()
     assert_eq!(page.file_size(), None);
     assert_eq!(page.estimated_live_buffer_bytes(), threshold + 4);
     assert!(
-        page.wrapped_layout_analysis_required_for_test(),
+        page.minimap_evidence().wrapped_layout_analysis_required,
         "untitled multibyte content must use the conservative live estimate"
     );
 
     page.apply_loaded_content_for_test("tiny", threshold);
     assert_eq!(page.estimated_live_buffer_bytes(), threshold);
-    assert!(!page.wrapped_layout_analysis_required_for_test());
+    assert!(!page.minimap_evidence().wrapped_layout_analysis_required);
     page.apply_loaded_content_for_test("tiny", threshold + 1);
     assert_eq!(page.estimated_live_buffer_bytes(), threshold + 1);
-    assert!(page.wrapped_layout_analysis_required_for_test());
+    assert!(page.minimap_evidence().wrapped_layout_analysis_required);
 
     page.buffer()
         .set_text(&"🙂".repeat(one_over_threshold_scalars));
     assert_eq!(page.estimated_live_buffer_bytes(), threshold + 4);
     assert!(
-        page.wrapped_layout_analysis_required_for_test(),
+        page.minimap_evidence().wrapped_layout_analysis_required,
         "modified multibyte content must overtake a smaller known-file floor"
     );
 }
@@ -1062,13 +1052,13 @@ fn test_minimap_long_line_warning_scan_slices_large_many_short_buffer() {
     let _window = present_editor_page_with_size(&page, 1000, 520);
 
     wait_until(Duration::from_secs(10), || {
-        let snapshot = page.minimap_analysis_snapshot_for_test();
+        let snapshot = page.minimap_evidence();
         snapshot.cache_owned && !snapshot.active && heartbeat.get()
     });
-    let snapshot = page.minimap_analysis_snapshot_for_test();
+    let snapshot = page.minimap_evidence();
 
     assert!(page.is_minimap_visible());
-    assert_eq!(page.long_line_warning_count_for_test(), 0);
+    assert_eq!(snapshot.long_line_warning_count, 0);
     assert!(snapshot.slices > 1);
     assert!(
         snapshot.chars_per_slice_high_water
@@ -1109,15 +1099,15 @@ fn test_minimap_mid_scan_edit_cancels_stale_generation_and_publishes_latest() {
     let _window = present_editor_page_with_size(&page, 1000, 520);
 
     wait_until(Duration::from_secs(10), || {
-        let snapshot = page.minimap_analysis_snapshot_for_test();
+        let snapshot = page.minimap_evidence();
         snapshot.cancellations >= 1
             && snapshot.terminals >= 1
             && snapshot.cache_generation == Some(snapshot.generation)
             && !snapshot.active
     });
-    let snapshot = page.minimap_analysis_snapshot_for_test();
+    let snapshot = page.minimap_evidence();
 
-    assert_eq!(page.long_line_warning_count_for_test(), 1);
+    assert_eq!(snapshot.long_line_warning_count, 1);
     assert_eq!(
         snapshot.cached_characters,
         u64::try_from(page.buffer().char_count()).expect("non-negative GTK character count")
@@ -1133,6 +1123,159 @@ fn test_minimap_mid_scan_edit_cancels_stale_generation_and_publishes_latest() {
     );
 }
 
+/// Evidence proof 1 of 3 — reentrancy.
+///
+/// One accessor reads the whole minimap surface through shared borrows, so no
+/// field may be read from inside a mutable borrow of the state it reads. This
+/// drives the workflow through each operation that takes such a borrow —
+/// analysis installation, a slice, cancellation, modified-line recording, the
+/// reflow settle — reads the surface **after** each one, and asserts that
+/// repeated reads of unchanged state are identical. Reading *while* a borrow is
+/// held is the panic the constraint prevents, not a demonstration of it.
+#[test]
+fn test_minimap_evidence_reads_stay_side_effect_free_across_analysis_mutation() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(true);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let page = LushtextEditorPage::new();
+
+    let idle = page.minimap_evidence();
+    assert_eq!(idle, page.minimap_evidence(), "idle reads must be identical");
+
+    // `record_modified_lines` holds `modified_lines_cache` and `modified_marks`
+    // mutably across `create_source_mark`, which emits `mark-set`.
+    page.buffer().set_text("alpha\nbeta\ngamma\n");
+    let after_edit = page.minimap_evidence();
+    assert_eq!(after_edit, page.minimap_evidence());
+
+    // `ensure_minimap_analysis` replaces the session under `borrow_mut()`, and
+    // each slice takes it back out and puts it back.
+    let text = format!("{}\nshort\n", "m".repeat(121));
+    page.buffer().set_text(&text);
+    let after_install = page.minimap_evidence();
+    assert_eq!(after_install, page.minimap_evidence());
+
+    wait_until(Duration::from_secs(10), || {
+        page.minimap_evidence().cache_owned
+    });
+    let after_publish = page.minimap_evidence();
+    assert_eq!(after_publish, page.minimap_evidence());
+    assert!(after_publish.cache_owned);
+
+    // Cancellation takes the session and the source id, and mutates the cache.
+    page.buffer().set_text("cancelled\n");
+    let after_cancel = page.minimap_evidence();
+    assert_eq!(after_cancel, page.minimap_evidence());
+
+    // The reflow settle burst is driven from the shell, not from a page-local
+    // seam, so it is covered by the window-level reflow tests rather than by a
+    // new actuation seam here. The surface still reports it, and reading it is
+    // asserted inert in the second proof below.
+    assert!(!after_cancel.reflow_settle_pending);
+}
+
+/// Evidence proof 2 of 3 — the observer must not change what it observes.
+///
+/// The surface reports four analysis metrics and two generations. Reading it
+/// must not advance any of them, and must not re-arm the debounce or the settle
+/// burst it reports as pending. Proved by reading repeatedly with analysis idle
+/// and again with an accepted cache present, and comparing every counter.
+#[test]
+fn test_minimap_evidence_reads_do_not_advance_the_metrics_they_report() {
+    ensure_gtk_init();
+    let settings = enable_minimap_for_tests(true);
+    settings
+        .set_boolean(keys::WORD_WRAP, true)
+        .expect("enable word wrap");
+    let page = LushtextEditorPage::new();
+
+    let before_any_work = page.minimap_evidence();
+    for _ in 0..5 {
+        let repeated = page.minimap_evidence();
+        assert_eq!(repeated.slices, before_any_work.slices);
+        assert_eq!(repeated.cancellations, before_any_work.cancellations);
+        assert_eq!(repeated.terminals, before_any_work.terminals);
+        assert_eq!(
+            repeated.chars_per_slice_high_water,
+            before_any_work.chars_per_slice_high_water
+        );
+        assert_eq!(repeated.generation, before_any_work.generation);
+        assert_eq!(repeated.cache_generation, before_any_work.cache_generation);
+    }
+
+    page.buffer()
+        .set_text(&format!("{}\nshort\n", "m".repeat(121)));
+    wait_until(Duration::from_secs(10), || {
+        page.minimap_evidence().cache_owned
+    });
+
+    let settled = page.minimap_evidence();
+    for _ in 0..5 {
+        let repeated = page.minimap_evidence();
+        assert_eq!(repeated.slices, settled.slices, "reads must not add a slice");
+        assert_eq!(
+            repeated.cancellations, settled.cancellations,
+            "reads must not cancel"
+        );
+        assert_eq!(
+            repeated.terminals, settled.terminals,
+            "reads must not publish"
+        );
+        assert_eq!(
+            repeated.chars_per_slice_high_water,
+            settled.chars_per_slice_high_water
+        );
+        assert_eq!(repeated.generation, settled.generation);
+        assert_eq!(repeated.cache_generation, settled.cache_generation);
+        assert_eq!(repeated.cached_characters, settled.cached_characters);
+        assert_eq!(repeated.work_pending, settled.work_pending);
+        assert_eq!(repeated.reflow_settle_pending, settled.reflow_settle_pending);
+    }
+}
+
+/// Evidence proof 3 of 3 — a disposed widget is a stage.
+///
+/// GTK4 clears template children in `dispose()` before Rust's `Drop`, so the
+/// overlay-derived fields read through `try_get()` and answer honestly instead
+/// of panicking. The widget-owned slots are taken by the same `dispose()`, so
+/// they answer `false`/`None` too, and the timers are retired there so nothing
+/// stays armed over cleared children.
+#[test]
+fn test_minimap_evidence_reads_stay_honest_after_dispose() {
+    ensure_gtk_init();
+    let _settings = enable_minimap_for_tests(true);
+    let page = LushtextEditorPage::new();
+    page.buffer().set_text("alpha\nbeta\n");
+
+    let live = page.minimap_evidence();
+    assert!(live.overlay_width_request.is_some());
+
+    // SAFETY: this standalone test page is disposed exactly once, and every
+    // assertion after it reads only the evidence surface, which is required to
+    // answer honestly on a disposed widget rather than panicking.
+    unsafe { page.run_dispose() };
+
+    let disposed = page.minimap_evidence();
+    assert_eq!(disposed.overlay_width_request, None);
+    assert_eq!(disposed.source_map_bounds_in_shell, None);
+    assert_eq!(disposed.viewport_bounds, None);
+    assert_eq!(disposed.first_content_row_bounds, None);
+    assert!(!disposed.projection_attached);
+    assert!(!disposed.active);
+    assert!(!disposed.source_armed);
+    assert!(!disposed.reflow_settle_pending);
+    assert!(!disposed.work_pending, "dispose retires the minimap timers");
+    assert_eq!(disposed.long_line_warning_count, 0);
+    assert_eq!(disposed, page.minimap_evidence(), "repeat reads are stable");
+
+    // A teardown observation must survive the debounce and settle windows that
+    // were armed before dispose, which is what retiring them in `dispose()` buys.
+    flush_after_delay(Duration::from_millis(250));
+    assert_eq!(disposed, page.minimap_evidence());
+}
+
 #[test]
 fn test_minimap_marker_toggle_releases_marker_cache_and_reuses_layout_evidence() {
     ensure_gtk_init();
@@ -1142,29 +1285,29 @@ fn test_minimap_marker_toggle_releases_marker_cache_and_reuses_layout_evidence()
         .set_text(&format!("{}\nshort\n", "m".repeat(121)));
 
     wait_until(Duration::from_secs(2), || {
-        page.long_line_warning_count_for_test() == 1
+        page.minimap_evidence().long_line_warning_count == 1
     });
-    let before = page.minimap_analysis_snapshot_for_test();
+    let before = page.minimap_evidence();
     settings
         .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, false)
         .expect("disable markers");
     wait_until(Duration::from_secs(2), || {
-        let snapshot = page.minimap_analysis_snapshot_for_test();
+        let snapshot = page.minimap_evidence();
         snapshot.cache_owned
             && !snapshot.marker_cache_owned
-            && page.long_line_warning_count_for_test() == 0
+            && page.minimap_evidence().long_line_warning_count == 0
     });
-    let disabled = page.minimap_analysis_snapshot_for_test();
+    let disabled = page.minimap_evidence();
     assert_eq!(disabled.slices, before.slices);
 
     settings
         .set_boolean(keys::MINIMAP_LONG_LINE_MARKERS_VISIBLE, true)
         .expect("re-enable markers");
     wait_until(Duration::from_secs(2), || {
-        page.long_line_warning_count_for_test() == 1
-            && page.minimap_analysis_snapshot_for_test().marker_cache_owned
+        page.minimap_evidence().long_line_warning_count == 1
+            && page.minimap_evidence().marker_cache_owned
     });
-    assert!(page.minimap_analysis_snapshot_for_test().slices > disabled.slices);
+    assert!(page.minimap_evidence().slices > disabled.slices);
 }
 
 #[test]
@@ -1187,10 +1330,10 @@ fn test_minimap_teardown_cancels_cursor_and_continuation_source() {
     page.buffer().set_text(&"short\n".repeat(40_000));
 
     wait_until(Duration::from_secs(2), || {
-        let snapshot = page.minimap_analysis_snapshot_for_test();
+        let snapshot = page.minimap_evidence();
         snapshot.cancellations >= 1 && !snapshot.active && !snapshot.source_armed
     });
-    let snapshot = page.minimap_analysis_snapshot_for_test();
+    let snapshot = page.minimap_evidence();
     assert!(!snapshot.cache_owned);
     assert_eq!(snapshot.terminals, 0);
 }
@@ -1213,7 +1356,7 @@ fn test_minimap_wrapped_budget_stops_after_sliced_extreme_line_evidence() {
     });
 
     assert!(!page.is_minimap_visible());
-    assert!(!page.minimap_projection_attached_for_test());
+    assert!(!page.minimap_evidence().projection_attached);
 }
 
 #[test]
@@ -1315,7 +1458,7 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
         page.load_evidence().installation_active
     });
     assert!(page.load_evidence().projection_suspended);
-    assert!(!page.minimap_projection_attached_for_test());
+    assert!(!page.minimap_evidence().projection_attached);
     assert!(!page.source_view().is_editable());
     wait_until(Duration::from_secs(15), || {
         page.load_state() == EditorLoadState::Loaded
@@ -1325,7 +1468,7 @@ fn test_large_unicode_load_installs_in_exact_bounded_slices() {
     assert!(page.load_evidence().installation_slice_count > 1);
     assert!(!page.load_evidence().installation_active);
     assert!(!page.load_evidence().projection_suspended);
-    assert!(page.minimap_projection_attached_for_test());
+    assert!(page.minimap_evidence().projection_attached);
     assert!(!page.is_modified());
     assert!(!page.draft_dirty());
     assert!(page.source_view().is_editable());
@@ -2754,11 +2897,17 @@ fn test_minimap_pending_refresh_marks_work_pending() {
     let page = LushtextEditorPage::new();
 
     wait_until(std::time::Duration::from_secs(2), || {
-        !page.minimap_work_pending_for_test()
+        !page.minimap_evidence().work_pending
     });
-    assert!(!page.minimap_work_pending_for_test());
-    page.mark_minimap_refresh_pending_for_test();
-    assert!(page.minimap_work_pending_for_test());
+    assert!(!page.minimap_evidence().work_pending);
+    {
+        // Drive a real refresh through the production path — the buffer's
+        // `insert-text` handler schedules the debounced marker refresh — rather
+        // than setting the pending flag through a test-only actuation seam.
+        use gtk4::prelude::TextBufferExt;
+        page.source_view().buffer().insert_at_cursor("x");
+    }
+    assert!(page.minimap_evidence().work_pending);
 }
 
 #[test]
@@ -2888,7 +3037,7 @@ fn test_minimap_native_viewport_effect_projects_inside_source_map() {
     // native effect's historical geometry, not an app-owned replacement.
     let native_slider_outset = 13.0;
     let viewport_bounds = page
-        .minimap_viewport_bounds_for_test()
+        .minimap_evidence().viewport_bounds
         .expect("visible minimap should project native viewport bounds");
 
     assert!(
@@ -2929,10 +3078,10 @@ fn test_minimap_viewport_top_delta_to_first_content_row_survives_width_changes()
         wait_for_minimap_ready(&page);
 
         let viewport = page
-            .minimap_viewport_bounds_for_test()
+            .minimap_evidence().viewport_bounds
             .expect("visible minimap should project viewport bounds");
         let content = page
-            .minimap_first_content_row_bounds_for_test()
+            .minimap_evidence().first_content_row_bounds
             .expect("visible minimap should project first content row");
         viewport.y - content.y
     }
@@ -2962,7 +3111,7 @@ fn test_minimap_native_viewport_effect_reprojects_after_mid_file_scroll() {
     wait_for_minimap_ready(&page);
 
     let top_bounds = page
-        .minimap_viewport_bounds_for_test()
+        .minimap_evidence().viewport_bounds
         .expect("top-of-file viewport should project");
     let buffer = page.buffer();
     let mid_iter = buffer
@@ -2980,14 +3129,14 @@ fn test_minimap_native_viewport_effect_reprojects_after_mid_file_scroll() {
     wait_until(std::time::Duration::from_secs(10), || {
         page.source_view().visible_rect().y() > 0
             && page
-                .minimap_viewport_bounds_for_test()
+                .minimap_evidence().viewport_bounds
                 .is_some_and(|bounds| bounds.y > top_bounds.y + 1.0)
     });
 
     let source_map = minimap_source_map(&page);
     let map_height = f64::from(source_map.height());
     let scrolled_bounds = page
-        .minimap_viewport_bounds_for_test()
+        .minimap_evidence().viewport_bounds
         .expect("mid-file viewport should project");
 
     assert!(
@@ -3824,8 +3973,8 @@ fn test_settings_minimap_width_bounds_overlay_width_request() {
     // initializes the overlay width from persisted state.
     let page = LushtextEditorPage::new();
     assert_eq!(
-        page.imp().minimap_overlay.width_request(),
-        88,
+        page.minimap_evidence().overlay_width_request,
+        Some(88),
         "new editor pages should initialize minimap width from GSettings"
     );
 
@@ -3835,14 +3984,14 @@ fn test_settings_minimap_width_bounds_overlay_width_request() {
         .set_int(keys::MINIMAP_WIDTH, 160)
         .expect("set maximum minimap width");
     wait_until(std::time::Duration::from_secs(2), || {
-        page.imp().minimap_overlay.width_request() == 160
+        page.minimap_evidence().overlay_width_request == Some(160)
     });
 
     settings
         .set_int(keys::MINIMAP_WIDTH, 64)
         .expect("set minimum minimap width");
     wait_until(std::time::Duration::from_secs(2), || {
-        page.imp().minimap_overlay.width_request() == 64
+        page.minimap_evidence().overlay_width_request == Some(64)
     });
 
     settings

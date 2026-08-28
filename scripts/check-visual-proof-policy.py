@@ -38,6 +38,13 @@ VISUAL_SENSITIVE_SUFFIXES = (
     ".css",
     ".ui",
 )
+# The minimap workflow's role home. This is a *prefix* rather than a literal
+# file path so that a later split inside the directory cannot silently disarm the
+# two invariants below: a gate keyed on one file name stops protecting anything
+# the moment that file is renamed, and it keeps exiting 0 while it does.
+# `crates/cargo-gtk-proof/src/policy.rs` implements the same predicate and must
+# stay keyed identically; both sides carry a self-test asserting it.
+NATIVE_MINIMAP_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/editor_page/minimap/"
 NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
 NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
 WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS = (
@@ -70,8 +77,21 @@ def delegate_cli_to_rust(argv: list[str]) -> int:
         return 2
 
 
-if __name__ == "__main__":
-    sys.exit(delegate_cli_to_rust(sys.argv[1:]))
+def _cli_entry_point(argv: list[str]) -> int:
+    """Run this module's own self-tests, then delegate the real check to Rust.
+
+    `crates/cargo-gtk-proof` owns the authoritative policy check, but this
+    module's predicates stay live: `scripts/visual-geometry-smoke.py` imports it
+    and computes the recorded fingerprint from these functions. Running
+    `run_self_tests()` here is what makes this side of the path-keyed-gate parity
+    assertion execute; delegating `--self-test` straight through would leave the
+    Python half asserting nothing while the Rust half passed.
+    """
+
+    if "--self-test" in argv:
+        run_self_tests()
+        print("PASS: visual proof policy self-tests (python)")
+    return delegate_cli_to_rust(argv)
 
 
 def run_git(args: list[str]) -> list[str]:
@@ -139,7 +159,7 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
     required: set[str] = set()
     for path in (item.replace("\\", "/") for item in paths):
         if (
-            path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
+            path.startswith(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/window/actions.rs"
             or path == "crates/lushtext-core/src/ui/window/imp.rs"
             or path == "crates/lushtext-core/src/ui/automation.rs"
@@ -165,7 +185,7 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
     for path in (item.replace("\\", "/") for item in paths):
         if (
             path == "crates/lushtext-core/src/ui/editor_page/imp.rs"
-            or path == "crates/lushtext-core/src/ui/editor_page/minimap.rs"
+            or path.startswith(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/editor_page/overscroll.rs"
             or path == "crates/lushtext-core/src/ui/window/actions.rs"
             or path == "crates/lushtext-core/src/ui/window/imp.rs"
@@ -595,6 +615,23 @@ def run_self_tests() -> None:
         ["crates/cargo-gtk-proof/src/live.rs"]
     ) == [NATIVE_MINIMAP_ANIMATION_INVARIANT]
     assert required_invariants_for_changes(["resources/ui/window.blp"]) == []
+
+    # Path-keyed-gate parity. `crates/cargo-gtk-proof/src/policy.rs` implements
+    # this same predicate; nothing links the two, so each side asserts the
+    # minimap role home separately. A one-sided re-key would otherwise leave the
+    # two implementations disagreeing while both kept exiting 0.
+    for minimap_role_path in (
+        "crates/lushtext-core/src/ui/editor_page/minimap/mod.rs",
+        "crates/lushtext-core/src/ui/editor_page/minimap/policy.rs",
+        "crates/lushtext-core/src/ui/editor_page/minimap/reflow_execution.rs",
+    ):
+        assert is_visual_sensitive(minimap_role_path)
+        assert required_invariants_for_changes([minimap_role_path]) == [
+            NATIVE_MINIMAP_HIGHLIGHT_INVARIANT
+        ]
+        assert required_animation_invariants_for_changes([minimap_role_path]) == [
+            NATIVE_MINIMAP_ANIMATION_INVARIANT
+        ]
     assert visual_change_fingerprint(["docs/automation.md"])["digest"] != visual_change_fingerprint(
         ["missing-visual-proof-file.rs"]
     )["digest"]
@@ -826,4 +863,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_cli_entry_point(sys.argv[1:]))
