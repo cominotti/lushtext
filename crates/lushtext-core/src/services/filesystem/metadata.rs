@@ -90,6 +90,20 @@ pub fn inode(path: &Path) -> std::io::Result<u64> {
     sys::inode(path)
 }
 
+/// Identity of the entry itself, not of a symlink's target.
+///
+/// Use this when the object being identified is the directory entry the user pointed
+/// at — a confirmed delete, for example. `inode` follows the link, so a dangling
+/// symlink has no identity under it and any identity check would refuse forever.
+///
+/// # Errors
+///
+/// Returns the platform error when the entry cannot be inspected — including when it
+/// does not exist — or `Unsupported` on non-Unix targets.
+pub fn link_inode(path: &Path) -> std::io::Result<u64> {
+    sys::link_inode(path)
+}
+
 pub(crate) fn modified_at_secs(metadata: &sys::Metadata) -> Option<u64> {
     metadata
         .modified()

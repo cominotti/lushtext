@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Section-owned file peek workflow.
+//! `execution` role for the workspace tree workflow's **file peek** stage order:
+//! `Space` on a selected row, bounded read, transient preview popover, dismissal.
+//!
+//! # Role
+//!
+//! Coordination, `execution`, qualified by the stage order it serves, nested under the
+//! workflow's canonical role home in `ui/sidebar/`. Renamed from `peek.rs` for symmetry
+//! with its siblings; the topic was already right, the role was simply unstated.
 //!
 //! The workspace section already owns selection, row recycling, and anchor
-//! invalidation, so the temporary preview stays here as one local popover plus
-//! a small async request state machine.
+//! invalidation, so the temporary preview stays here as one local popover plus a small
+//! async request state machine.
+//!
+//! # Inversion to be aware of
+//!
+//! The peek body is read off the GTK thread, so control resumes in the worker completion.
+//! A completion whose request generation is stale, or whose row has been recycled or
+//! deselected, must not present its popover.
 
 use std::path::PathBuf;
 

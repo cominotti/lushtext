@@ -6,7 +6,7 @@
 //! applies the returned decision. This module never reads GSettings or mutates
 //! widgets, so allocation and breakpoint behavior can be verified without GTK.
 
-use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
+use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
 /// Tiny non-zero floor used before the first real workspace-width sync.
 pub(super) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;

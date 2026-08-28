@@ -1047,4 +1047,90 @@ mod tests {
 
         assert_eq!(removed_directory_roots, vec![PathBuf::from("shared")]);
     }
+
+    // --- Triage of the inherited byte-bounded early-return survivors (slot 5b) ---
+    //
+    // `services/file_tree.rs` carries 12 struct-field-deletion mutants in the
+    // early-return `DirectoryScan` literals of its two scan functions. Slots 4 and
+    // 5a handed 11 of them on as surviving baseline; slot 5b owns the triage.
+    //
+    // Reachability, established from the backend rather than assumed: the only
+    // deterministically reachable error in `sys::visit_directory_entries` is the
+    // initial `openat`, which fails *before any entry is visited*, and a per-entry
+    // `statat` failure `continue`s rather than erroring. So on every reachable error
+    // path `examined_entries`, `peak_retained_entries`, and `peak_retained_bytes` are
+    // all **already zero**, which is exactly what deleting them yields — those
+    // mutants are equivalent without a fault-injection seam. The three tests below
+    // cover the mutants that *are* distinguishable: the byte-bounded path's `error`
+    // flag, and its cancellation path's `cancelled` flag and entry count.
+
+    #[test]
+    fn byte_bounded_scan_reports_read_errors_on_its_own_path() {
+        // The pre-existing error test uses `scan_directory_bounded`, which routes to
+        // the no-byte-limit variant, so the byte-bounded function's own error
+        // literal was never asserted.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let missing = dir.path().join("missing");
+
+        let scan = scan_directory_bounded_with_cancel_and_bytes(&missing, 10, 1000, 4096, || false);
+
+        assert!(
+            scan.error
+                .as_deref()
+                .is_some_and(|message| message.contains(missing.to_string_lossy().as_ref())),
+            "the byte-bounded scan must report which folder it could not read"
+        );
+        assert!(scan.entries.is_empty());
+        assert!(!scan.cancelled, "a read error is not a cancellation");
+        // Zero because `openat` fails before any entry is visited. Asserted so the
+        // reachability argument above is checked rather than merely written down.
+        assert_eq!(scan.examined_entries, 0);
+    }
+
+    #[test]
+    fn byte_bounded_scan_reports_cancellation_with_the_entries_it_had_examined() {
+        // Cancelling *mid-walk* rather than pre-cancelling is what makes
+        // `examined_entries` observable on this path: the cancel check runs before
+        // the counter increments, so allowing two entries through and refusing the
+        // third leaves exactly two examined.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+            fixture::write_text(&dir.path().join(name), "");
+        }
+
+        let mut checks = 0usize;
+        let scan =
+            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 10, 1000, 64 * 1024, || {
+                let seen = checks;
+                checks += 1;
+                seen >= 2
+            });
+
+        assert!(scan.cancelled, "the scan must report that it was cancelled");
+        assert_eq!(
+            scan.examined_entries, 2,
+            "a mid-walk cancellation reports the entries examined before it"
+        );
+        assert!(
+            scan.entries.is_empty(),
+            "a cancelled byte-bounded scan publishes no entries"
+        );
+        assert!(scan.error.is_none(), "a cancellation is not a read error");
+    }
+
+    #[test]
+    fn a_pre_cancelled_byte_bounded_scan_examines_nothing() {
+        // The boundary case of the test above, and the shape the pre-existing
+        // no-byte-limit cancel test already covers: cancelling before the first
+        // entry leaves the counter at zero.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join("visible.txt"), "");
+
+        let scan =
+            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 10, 1000, 4096, || true);
+
+        assert!(scan.cancelled);
+        assert_eq!(scan.examined_entries, 0);
+        assert!(scan.entries.is_empty());
+    }
 }

@@ -1,10 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Refresh orchestration for one workspace section.
+//! `execution` role for the workspace tree workflow's **refresh** stage order:
+//! coalescing targeted and full refresh requests, reconciling rows, and restoring
+//! expansion and selection.
 //!
-//! Manual button clicks and automatic watcher updates both funnel through this
-//! module so subtree reloads, whole-section rebuilds, and state restoration
-//! stay consistent no matter what triggered the refresh.
+//! # Role
+//!
+//! Coordination, `execution`, qualified by the stage order it serves, nested under the
+//! workflow's canonical role home in `ui/sidebar/`. Renamed from `refresh.rs`, which
+//! named the topic but not the job.
+//!
+//! Manual button clicks and automatic watcher updates both funnel through this module
+//! so subtree reloads, whole-section rebuilds, and state restoration stay consistent no
+//! matter what triggered the refresh.
+//!
+//! # Inversions to be aware of
+//!
+//! Refresh is deferred twice over: requests coalesce into a pending plan that a later
+//! main-loop turn drains, and each directory's rows arrive from an admitted scan worker.
+//! Control therefore resumes in the drain and again in each scan completion, and a plan
+//! superseded in between must reach a superseded terminal rather than splicing stale rows.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -20,7 +35,6 @@ use crate::services::workspace_watch::WORKSPACE_WATCH_PATH_CAP;
 
 use super::super::file_tree_item::FileTreeItem;
 use super::LushtextWorkspaceSection;
-#[cfg(feature = "test-utils")]
 use super::WorkspaceScanPressureEvidence;
 
 /// Short debounce for automatic refresh bursts after the watcher already
@@ -119,42 +133,6 @@ impl LushtextWorkspaceSection {
             });
     }
 
-    /// Scalar pressure state for deterministic widget assertions.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn refresh_pressure_for_test(&self) -> (usize, bool) {
-        let runtime = &self.imp().refresh_runtime;
-        (
-            runtime.pending_paths.borrow().len(),
-            runtime.pending_full_reload.get(),
-        )
-    }
-
-    /// Scalar bounded-reconciliation evidence for widget tests.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn reconciliation_metrics_for_test(&self) -> (u64, usize, u64, u64, usize) {
-        let refresh = &self.imp().refresh_runtime;
-        (
-            refresh.reconcile_batch_count.get(),
-            refresh.reconcile_max_batch_rows.get(),
-            refresh.reconcile_terminal_count.get(),
-            refresh.reconcile_superseded_count.get(),
-            self.imp().child_reconcile_sources.borrow().len(),
-        )
-    }
-
-    /// Scalar terminal child-cache work evidence for linear-scale assertions.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn child_cache_rebuild_metrics_for_test(&self) -> (usize, usize) {
-        let refresh = &self.imp().refresh_runtime;
-        (
-            refresh.cache_rebuild_input_rows.get(),
-            refresh.cache_rebuild_operations.get(),
-        )
-    }
-
     /// Apply already-queued pressure immediately for deterministic supersession tests.
     #[cfg(feature = "test-utils")]
     pub fn apply_queued_refresh_for_test(&self) {
@@ -177,19 +155,17 @@ impl LushtextWorkspaceSection {
     }
 
     /// Return direct active/latest ownership and terminal-publication evidence.
-    #[cfg(feature = "test-utils")]
     #[must_use]
-    pub fn child_scan_pressure_for_test(&self) -> WorkspaceScanPressureEvidence {
+    pub(crate) fn child_scan_pressure_evidence(&self) -> WorkspaceScanPressureEvidence {
         let refresh = &self.imp().refresh_runtime;
         WorkspaceScanPressureEvidence {
             active_scans: self.imp().child_active_scans.borrow().len(),
             pending_scans: self.imp().child_pending_scans.borrow().len(),
             admission_waiting_scans: self.imp().child_admission_scans.borrow().len()
                 + self.imp().folder_empty_admission.borrow().len(),
-            aggregate_active_tasks: super::tree_loading::workspace_scan_active_tasks_for_test(),
-            aggregate_task_limit: super::tree_loading::WORKSPACE_SCAN_TASK_LIMIT,
-            aggregate_task_high_water: super::tree_loading::workspace_scan_task_high_water_for_test(
-            ),
+            process_active_scan_tasks: super::scan_admission::active_scan_tasks(),
+            process_scan_task_limit: super::scan_admission::WORKSPACE_SCAN_TASK_LIMIT,
+            process_scan_task_high_water: super::scan_admission::scan_task_high_water(),
             dispatch_queue: refresh.scan_dispatch_queue.borrow().len(),
             dispatch_queue_high_water: refresh.scan_dispatch_queue_high_water.get(),
             dispatch_batch_high_water: refresh.scan_dispatch_batch_high_water.get(),
@@ -206,16 +182,6 @@ impl LushtextWorkspaceSection {
             empty_probe_stale_rejections: refresh.empty_probe_stale_rejections.get(),
             empty_probe_terminal_publications: refresh.empty_probe_terminal_publications.get(),
         }
-    }
-
-    /// Number of top-level emptiness reads completed inside test workers.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn empty_probe_reads_for_test(&self) -> u64 {
-        self.imp()
-            .refresh_runtime
-            .test_empty_probe_reads
-            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn apply_queued_refresh(&self) {
@@ -287,10 +253,7 @@ impl LushtextWorkspaceSection {
             .and_then(|selection| selection.selected_item())
             .and_then(|row| row.downcast::<gtk4::TreeListRow>().ok())
             .and_then(|row| row.item())
-            .and_then(|item| {
-                item.downcast::<super::super::file_tree_item::FileTreeItem>()
-                    .ok()
-            })
+            .and_then(|item| item.downcast::<FileTreeItem>().ok())
             .and_then(|item| item.path())
     }
 
@@ -352,7 +315,7 @@ impl LushtextWorkspaceSection {
                 break;
             };
             if let Some(store) = store.upgrade() {
-                super::tree_loading::populate_child_store(self, &path, &store);
+                super::scan_execution::populate_child_store(self, &path, &store);
             }
             dispatched = dispatched.saturating_add(1);
         }
@@ -368,7 +331,7 @@ impl LushtextWorkspaceSection {
             .is_empty()
         {
             self.imp().refresh_runtime.scan_dispatch_source.take();
-            super::tree_loading::sync_child_scan_busy_state(self);
+            super::scan_execution::sync_child_scan_busy_state(self);
             return;
         }
         let section_weak = self.downgrade();
@@ -382,7 +345,7 @@ impl LushtextWorkspaceSection {
             .refresh_runtime
             .scan_dispatch_source
             .replace(Some(source));
-        super::tree_loading::sync_child_scan_busy_state(self);
+        super::scan_execution::sync_child_scan_busy_state(self);
     }
 
     fn plan_refresh(&self, changed_paths: &HashSet<PathBuf>) -> RefreshPlan {
@@ -508,7 +471,7 @@ impl LushtextWorkspaceSection {
                 .collect::<Vec<_>>();
 
             for path in removed_paths {
-                super::tree_loading::clear_dir_state(self, &path);
+                super::scan_execution::clear_dir_state(self, &path);
             }
 
             let prefix = common_folder_prefix_len(&current_folders, &desired_folders);
@@ -524,7 +487,7 @@ impl LushtextWorkspaceSection {
             )]
             top_level_store.splice(prefix as u32, removed as u32, &replacement);
             self.recache_top_level_store(&top_level_store);
-            super::tree_loading::schedule_child_state_restore(self);
+            super::scan_execution::schedule_child_state_restore(self);
         }
 
         self.schedule_top_level_folder_empty_checks(&top_level_store);
@@ -549,7 +512,7 @@ impl LushtextWorkspaceSection {
                 {
                     continue;
                 }
-                super::folders::schedule_folder_empty_check(
+                super::folder_execution::schedule_folder_empty_check(
                     self,
                     top_level_store,
                     &item,
@@ -581,10 +544,10 @@ fn minimize_refresh_directories(mut directories: Vec<PathBuf>) -> Vec<PathBuf> {
 fn snapshot_folder_rows(store: &gtk4::gio::ListStore) -> Vec<FolderRowState> {
     let mut rows = Vec::with_capacity(store.n_items() as usize);
     for index in 0..store.n_items() {
-        if let Some(item) = store.item(index).and_then(|obj| {
-            obj.downcast::<crate::ui::sidebar::file_tree_item::FileTreeItem>()
-                .ok()
-        }) && let Some(path) = item.path()
+        if let Some(item) = store
+            .item(index)
+            .and_then(|obj| obj.downcast::<FileTreeItem>().ok())
+            && let Some(path) = item.path()
         {
             rows.push(FolderRowState {
                 path,

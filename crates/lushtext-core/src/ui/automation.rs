@@ -32,7 +32,6 @@ use crate::model::automation::{
     READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
 use crate::model::palette::SearchMode;
-use crate::model::workspace::WorkspaceScope;
 use crate::services::action_catalog;
 use crate::services::local_history_service::LocalHistoryAvailability;
 use crate::services::notifications::NotificationSeverity;
@@ -763,7 +762,7 @@ fn window_readiness_blocker(
     }
     if let Some(blocker) = included_blocker(
         predicate,
-        imp.sidebar.imp().workspace_filter_animation_active.get(),
+        imp.sidebar.workspace_filter_animation_active(),
         READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     ) {
         return Some(blocker);
@@ -901,30 +900,39 @@ fn tab_snapshot(index: u32, active: bool, page: &libadwaita::TabPage) -> Automat
 }
 
 /// Summarize workspace scope and persistence state without scanning the filesystem.
+///
+/// **Every field projects from the workspace tree workflow's internal typed evidence
+/// surface, read exactly once**, so the workflow and the exported contract share one
+/// derivation. That matters more here than for most objects: this workflow's model is
+/// a lazily materialized `GtkTreeListModel`, and re-deriving these counts from widgets
+/// is precisely what would make a nominal snapshot read materialize child stores,
+/// start a background scan, and queue a watcher restart. The surface is built to
+/// reach none of those accessors.
+///
+/// Evidence fields that are **not** part of the documented contract — the persistence
+/// generations and failed flag, the flush-waiter count, the expansion set size and its
+/// capture counters, the section counts, the per-section observations, the
+/// process-global scan-admission counters, and the watch/refresh readiness
+/// aggregates — are deliberately not serialized.
 fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
-    let imp = window.imp();
-    let workspaces = imp.sidebar.workspaces_file();
-    let scope = imp.sidebar.current_scope();
-    let scope_workspace_id = scope
-        .workspace_id()
-        .map(|id| bounded_snapshot_text(id.as_str()));
-    let scope_workspace_name = scope.workspace_id().and_then(|id| {
-        workspaces
-            .workspace(id)
-            .map(|workspace| bounded_snapshot_text(&workspace.name))
-    });
+    let evidence = window.imp().sidebar.workspace_snapshot_evidence();
+    // Bound into locals rather than inline: the projection drift gate attributes a
+    // field to its surface by matching `evidence.<field>`, and rustfmt breaks a
+    // chained `evidence\n.field` across lines where that match cannot see it.
+    let scope_workspace_id = evidence.scope_workspace_id;
+    let scope_workspace_name = evidence.scope_workspace_name;
 
     AutomationWorkspaceSnapshot {
-        scope_kind: workspace_scope_name(&scope).to_string(),
-        scope_workspace_id,
-        scope_workspace_name,
-        workspace_count: bounded_len(workspaces.workspaces.len()),
-        folder_count: bounded_len(workspaces.all_workspace_folder_paths().len()),
-        scoped_folder_count: bounded_len(imp.sidebar.current_scope_folder_paths().len()),
-        no_workspaces: workspaces.workspaces.is_empty(),
-        persistence_inflight: imp.sidebar.workspace_persistence_inflight(),
-        persistence_dirty: imp.sidebar.workspace_persistence_pending(),
-        filter_animation_active: imp.sidebar.imp().workspace_filter_animation_active.get(),
+        scope_kind: evidence.scope_kind,
+        scope_workspace_id: scope_workspace_id.map(|id| bounded_snapshot_text(&id)),
+        scope_workspace_name: scope_workspace_name.map(|name| bounded_snapshot_text(&name)),
+        workspace_count: bounded_len(evidence.workspace_count),
+        folder_count: bounded_len(evidence.folder_count),
+        scoped_folder_count: bounded_len(evidence.scoped_folder_count),
+        no_workspaces: evidence.no_workspaces,
+        persistence_inflight: evidence.persistence_inflight,
+        persistence_dirty: evidence.persistence_pending,
+        filter_animation_active: evidence.filter_animation_active,
     }
 }
 
@@ -2008,13 +2016,6 @@ fn load_state_name(state: EditorLoadState) -> &'static str {
         EditorLoadState::Loading => "loading",
         EditorLoadState::Loaded => "loaded",
         EditorLoadState::Failed => "failed",
-    }
-}
-
-fn workspace_scope_name(scope: &WorkspaceScope) -> &'static str {
-    match scope {
-        WorkspaceScope::All => "all",
-        WorkspaceScope::Workspace(_) => "workspace",
     }
 }
 

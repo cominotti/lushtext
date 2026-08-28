@@ -423,12 +423,27 @@ pub(in crate::services) fn inode(path: &Path) -> io::Result<u64> {
         .map_err(io::Error::from)
 }
 
+/// Inode of the entry itself, **without** following a final symlink.
+///
+/// `stat` follows links, so a dangling symlink has no readable identity at all. A
+/// delete confirmed on such a row is a delete of the *link*, which does have one.
+pub(in crate::services) fn link_inode(path: &Path) -> io::Result<u64> {
+    rustix::fs::lstat(path)
+        .map(|stat| stat.st_ino)
+        .map_err(io::Error::from)
+}
+
 #[cfg(not(unix))]
 pub(in crate::services) fn mode(_path: &Path) -> io::Result<u32> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "permission-mode queries require Unix",
     ))
+}
+
+#[cfg(not(unix))]
+pub(in crate::services) fn link_inode(path: &Path) -> io::Result<u64> {
+    inode(path)
 }
 
 #[cfg(not(unix))]

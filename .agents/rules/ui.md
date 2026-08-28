@@ -217,10 +217,16 @@ add a new one before calling the work complete.
   in-place refresh must not rewalk the flattened `GtkTreeListModel` to
   rediscover expansion; the full derivation (`derive_expanded_paths_from_model`)
   is reserved for bootstrap, pre-replacement capture, and the test oracle.
-  Deferred restore callbacks (`schedule_child_state_restore`,
-  `restore_materialized_state`) must read the set at apply time, not clone it
-  at schedule time — a user collapse between scheduling and the callback must
-  never be resurrected by a stale snapshot.
+  Every deferred restore callback must read the set **at apply time**, not clone
+  it at schedule time — a user collapse between scheduling and the callback must
+  never be resurrected by a stale snapshot. The one implementing site is
+  `schedule_child_state_restore`, whose `expanded_paths` borrow lives **inside**
+  the deferred closure rather than in the scheduling scope; keep that placement
+  when the function moves. Do not name a file or module here, because the owning
+  coordination module is renamed by workflow migrations. (Earlier revisions of
+  this rule also named `restore_materialized_state`, which has never existed in
+  the codebase; the nearest real name, `refresh_materialized_view`, is
+  synchronous and does not touch `expanded_paths`.)
 - **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder request, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 

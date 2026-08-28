@@ -54,7 +54,6 @@ use lushtext_core::model::sidecar_identity::{next_record_id, now_epoch_millis, s
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceFolder, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
-use lushtext_core::model::workspace_scan::WorkspaceScanFlight;
 use lushtext_core::model::workspace_search::{
     WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
 };
@@ -92,6 +91,7 @@ use lushtext_core::ui::search_panel::policy::{
     WorkspaceSearchSubmission,
 };
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
+use lushtext_core::ui::sidebar::policy::WorkspaceScanFlight;
 use lushtext_core::ui::sidebar::workspace_section::child_cache_rebuild_operation_evidence_for_benchmark;
 
 // ---------------------------------------------------------------------------
@@ -3195,7 +3195,7 @@ fn bench_quality_gap_scale(c: &mut Criterion) {
 
     fn workspace_scan_pressure(
         requests: usize,
-    ) -> lushtext_core::model::workspace_scan::WorkspaceScanFlightMetrics {
+    ) -> lushtext_core::ui::sidebar::policy::WorkspaceScanFlightMetrics {
         let mut flight = WorkspaceScanFlight::default();
         for _ in 0..requests {
             let _ = flight.submit(1);

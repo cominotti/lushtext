@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Icon presentation for workspace file-tree rows.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! Chooses the icon for one file-tree row. Pure presentation.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use gtk4::gio;
 use gtk4::prelude::*;

@@ -225,6 +225,19 @@ impl LushtextEditorPage {
     /// `TemplateChild::try_get()` does not have to read it again through the
     /// panicking accessor. The evidence surface must answer for a disposed page,
     /// and this is the seam that lets it.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(
+            clippy::unused_self,
+            reason = "`self` is read only by the `test-utils` availability override below, so \
+                      the receiver is genuinely unused in a default-feature build. It stays a \
+                      method because it is the evidence surface's seam: callers hold the page \
+                      and must reach it the same way in both feature configurations. Gated \
+                      with `cfg_attr` so the expectation is self-policing — it fires exactly \
+                      in the configuration where the receiver is unused, and fails the build \
+                      if that ever stops being true."
+        )
+    )]
     pub(crate) fn live_local_history_availability_for_chars(
         &self,
         char_count: i32,

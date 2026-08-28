@@ -5,24 +5,34 @@
 //! Each section manages one workspace's file tree (GtkListView + TreeListModel),
 //! context menus for files and the workspace header, and callback forwarding
 //! to the parent sidebar.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! The section subclass's private state, template children, construction, and
+//! disposal, including the runtime state structs the coordination roles read and
+//! write. GTK subclass plumbing, not coordination.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use super::context_menus::FileContextMenuWiring;
 pub(super) use super::context_menus::FileContextTarget;
-use super::folders::{ActiveFolderEmptyProbe, FolderEmptyProbeKey, PendingFolderEmptyProbe};
-use super::tree_loading::{ActiveChildScan, PendingChildScan};
-use super::watch_targets::{
-    MaterializedWatchTargets, WatchLifetimeGeneration, WatchTargetGeneration,
+use super::folder_execution::{
+    ActiveFolderEmptyProbe, FolderEmptyProbeKey, PendingFolderEmptyProbe,
 };
+use super::scan_execution::{ActiveChildScan, PendingChildScan};
+use super::watch_targets::MaterializedWatchTargets;
 use crate::model::workspace::{
     FolderTreeEntry, WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId,
 };
-use crate::model::workspace_scan::WorkspaceScanFlight;
 use crate::services::file_peek::PeekRequestToken;
 use crate::services::file_tree::DirectoryRowState;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::workspace_watch::WorkspaceWatcher;
 use crate::ui::accessibility;
-use crate::ui::sidebar::SidebarFileRowStateSnapshot;
+use crate::ui::sidebar::policy::WorkspaceScanFlight;
+use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
+use crate::ui::sidebar::seams::{WatchLifetimeGeneration, WatchTargetGeneration};
 use gtk_lush_settle::Debounce;
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -260,7 +270,7 @@ pub struct LushtextWorkspaceSection {
     /// Stable ids for configured top-level workspace folders, keyed by path.
     pub workspace_folder_ids: RefCell<HashMap<PathBuf, WorkspaceFolderId>>,
     /// Remember expanded paths across drill-downs to restore tree state.
-    pub expanded_paths: RefCell<std::collections::HashSet<PathBuf>>,
+    pub expanded_paths: RefCell<HashSet<PathBuf>>,
     /// Path to select and scroll to once it loads (used after navigating back).
     pub pending_selection: RefCell<Option<PathBuf>>,
     /// Whether this section's folder body is hidden by the workspace header disclosure.
@@ -292,7 +302,7 @@ pub struct LushtextWorkspaceSection {
     /// Weak refs to child ListStores for direct model manipulation.
     pub dir_stores: RefCell<HashMap<PathBuf, glib::WeakRef<gio::ListStore>>>,
     /// Latest window-owned open/active tab projection for file-row decoration.
-    pub(super) file_row_state_snapshot: RefCell<Rc<SidebarFileRowStateSnapshot>>,
+    pub(crate) file_row_state_snapshot: RefCell<Rc<SidebarFileRowStateSnapshot>>,
     /// Scalar one-active plus one-latest ownership policy per materialized store.
     pub(super) child_scan_flights: RefCell<HashMap<usize, WorkspaceScanFlight>>,
     /// Admitted scan payload per store; strong GTK ownership stays in the worker handoff.
@@ -490,7 +500,7 @@ impl ObjectImpl for LushtextWorkspaceSection {
     fn dispose(&self) {
         self.obj().unregister_folder_reorder_section();
         self.obj().stop_workspace_watch();
-        super::tree_loading::clear_all_dir_state(&self.obj());
+        super::scan_execution::clear_all_dir_state(&self.obj());
 
         if let Some(popover) = self.context_menu.borrow_mut().take() {
             popover.unparent();
@@ -506,3 +516,161 @@ impl ObjectImpl for LushtextWorkspaceSection {
 
 impl WidgetImpl for LushtextWorkspaceSection {}
 impl BoxImpl for LushtextWorkspaceSection {}
+
+impl LushtextWorkspaceSection {
+    /// The context-menu target's path and workspace-folder id, for the evidence surface.
+    ///
+    /// Returns owned values so `FileContextTarget` stays private to this directory —
+    /// the canonical role home needs the two facts, not the type.
+    pub(crate) fn context_target_evidence(&self) -> (Option<PathBuf>, Option<WorkspaceFolderId>) {
+        let target = self.context_target.borrow();
+        (
+            target.as_ref().map(|target| target.path.clone()),
+            target
+                .as_ref()
+                .and_then(|target| target.workspace_folder_id.clone()),
+        )
+    }
+}
+
+impl RefreshRuntimeState {
+    /// Empty-probe reads issued, for the evidence surface.
+    ///
+    /// The counter itself is test-only storage, so a default-feature build reports 0
+    /// rather than the field existing unconditionally — the evidence surface stays
+    /// buildable in production without carrying test storage into it.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(
+            clippy::unused_self,
+            reason = "the counter this reports is recorded only under `test-utils`, so \
+                      the receiver is genuinely unused in a default-feature build. It \
+                      stays a method because the evidence surface reaches it uniformly \
+                      in both configurations. Gated with `cfg_attr` so the expectation \
+                      is self-policing: it fires exactly where the receiver is unused, \
+                      and fails the build if that stops being true."
+        )
+    )]
+    pub(crate) fn empty_probe_reads_for_evidence(&self) -> u64 {
+        #[cfg(feature = "test-utils")]
+        {
+            self.test_empty_probe_reads
+                .load(std::sync::atomic::Ordering::Acquire)
+        }
+        #[cfg(not(feature = "test-utils"))]
+        {
+            0
+        }
+    }
+}
+
+impl WatchRuntimeState {
+    /// Every watch fact the evidence surface reports, read in one pass.
+    ///
+    /// One accessor rather than seven widened fields: the runtime's generations and
+    /// mailbox stay private to `workspace_section`, and the borrow of `targets` is
+    /// taken and dropped here rather than crossing a module boundary.
+    pub(crate) fn watch_evidence(
+        &self,
+    ) -> (
+        Vec<crate::services::workspace_watch::WorkspaceWatchTarget>,
+        u64,
+        usize,
+        bool,
+        bool,
+        Option<crate::services::workspace_watch::WorkspaceWatchMailboxSnapshot>,
+    ) {
+        let (targets, generation, touched, current) = {
+            let mirror = self.targets.borrow();
+            (
+                mirror.effective_targets(),
+                mirror.generation().value_for_evidence(),
+                {
+                    #[cfg(feature = "test-utils")]
+                    {
+                        mirror.touched_rows_for_evidence()
+                    }
+                    #[cfg(not(feature = "test-utils"))]
+                    {
+                        0
+                    }
+                },
+                mirror.generation(),
+            )
+        };
+        let is_current = self.installed_generation.get() == Some(current);
+        let unavailability_is_current = self.unavailable_generation.get() == Some(current);
+        let mailbox = self
+            .watcher
+            .borrow()
+            .as_ref()
+            .map(crate::services::workspace_watch::WorkspaceWatcher::mailbox_snapshot);
+        (
+            targets,
+            generation,
+            touched,
+            is_current,
+            unavailability_is_current,
+            mailbox,
+        )
+    }
+
+    /// Reset the mirror's touched-row counter. A drive, not an observation.
+    #[cfg(feature = "test-utils")]
+    pub(crate) fn reset_watch_target_rows_touched(&self) {
+        self.targets.borrow_mut().reset_touched_rows();
+    }
+
+    /// Install workers started, for restart-churn assertions in the evidence surface.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(
+            clippy::unused_self,
+            reason = "the counter this reports is recorded only under `test-utils`, so \
+                      the receiver is genuinely unused in a default-feature build. It \
+                      stays a method because the evidence surface reaches it uniformly \
+                      in both configurations. Gated with `cfg_attr` so the expectation \
+                      is self-policing: it fires exactly where the receiver is unused, \
+                      and fails the build if that stops being true."
+        )
+    )]
+    pub(crate) fn worker_starts_for_evidence(&self) -> usize {
+        #[cfg(feature = "test-utils")]
+        {
+            self.test_worker_starts.get()
+        }
+        #[cfg(not(feature = "test-utils"))]
+        {
+            0
+        }
+    }
+
+    /// Notices GTK consumed on the most recent poll, for the evidence surface.
+    #[cfg_attr(
+        not(feature = "test-utils"),
+        expect(
+            clippy::unused_self,
+            reason = "the counter this reports is recorded only under `test-utils`, so \
+                      the receiver is genuinely unused in a default-feature build. It \
+                      stays a method because the evidence surface reaches it uniformly \
+                      in both configurations. Gated with `cfg_attr` so the expectation \
+                      is self-policing: it fires exactly where the receiver is unused, \
+                      and fails the build if that stops being true."
+        )
+    )]
+    pub(crate) fn last_poll_notices_for_evidence(&self) -> usize {
+        #[cfg(feature = "test-utils")]
+        {
+            self.test_last_poll_notices.get()
+        }
+        #[cfg(not(feature = "test-utils"))]
+        {
+            0
+        }
+    }
+
+    /// Whether the watch-install worker is in flight, for the evidence surface.
+    pub(crate) fn watch_worker_inflight_for_evidence(&self) -> bool {
+        self.worker_inflight.get()
+    }
+}

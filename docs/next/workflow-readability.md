@@ -1,15 +1,15 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slots 1 through 4 and 5a complete, slots 5b through 7
-outstanding.** The convention is
+Status: **Phase 0 complete, slots 1 through 5b complete, slots 6 and 7 outstanding.** The convention is
 normative, the census is complete, the mechanical gate is wired into
 `make check-policy`, the normative facade line budget is declared and enforced,
-and **eight** workflows are migrated: `WFR-SEARCH-REPLACE` (**both halves** —
+and **ten** workflows are migrated: `WFR-SEARCH-REPLACE` (**both halves** —
 search and preview in slot 1, the Replace All write path and its undo journal in
 slot 2b), `WFR-COMMAND-PALETTE` (slot 2a), `WFR-DOCUMENT-SAVE` (slot 3a, the
 first tier-3 workflow migrated on its own), `WFR-DOCUMENT-LOAD` (slot 3b, the
-second), and slot 4's four: `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`,
-`WFR-LOCAL-HISTORY`, and `WFR-DRAFT-RECOVERY`. **`ui/editor_page/load_save.rs` no longer exists**: slot 3a lifted
+second), slot 4's four — `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`,
+`WFR-LOCAL-HISTORY`, and `WFR-DRAFT-RECOVERY` — `WFR-NOTES-BOOKMARKS` (slot 5a),
+and `WFR-WORKSPACE-TREE` (slot 5b, the largest row in the census). **`ui/editor_page/load_save.rs` no longer exists**: slot 3a lifted
 the save half out and slot 3b dissolved the rest, so the programme's third
 measured symptom is now history rather than a live file. Everything else in `ui/`
 and `model/` is unchanged and behaviorally untouched.
@@ -681,6 +681,103 @@ correcting the convention cheaply is narrowing exactly as section 8 predicted.
   the tab goes clean — was already correct. **Later slots should still budget for
   findings.**
 
+### Baseline after slot 5b
+
+Slot 5b **landed in full**: `WFR-WORKSPACE-TREE` is **migrated**, so the workflow
+count moves to ten. An earlier revision of this section described a narrower
+boundary — evidence surface not landed, seams unretired, the budgeted seam unspent,
+the automation reach-throughs still open — that the change then exceeded. Those
+sentences were retracted rather than left standing, because a superseded scope
+statement in this record is how a later session concludes finished work is still
+pending. The rows below describe what actually landed.
+
+| Quantity | After slot 5a | After slot 5b |
+| --- | --- | --- |
+| Workflows migrated | 9 | **10** (plus `WFR-WORKSPACE-TREE`). The Completion Rule is satisfied on every axis: the narrative facade, the nested coordination roles, the single `policy.rs`, the single `evidence.rs`, the reified seam, mutation parity, and seam retirement all exist |
+| Policy modules relocated | 4 of 6 relocation candidates | **6 of 6 — the count finally moves, and it is the first relocation since slot 3a.** Both workspace modules landed in `ui/sidebar/policy.rs` with **exact mutant-by-mutant parity**: 50 generated / 35 caught / 8 unviable / 7 missed before, identical after, every survivor matched at a constant **+198** line offset. `model/workspace.rs` is confirmed **domain and staying**, and the reason is now concrete rather than asserted: it has **four GTK-free `services/` consumers**, which forbids a `services -> ui` inversion outright |
+| Mutation survivors in relocated policy | — | **7 → 0.** Six killed at step two of the documented order by tightening assertions that the mutants' own values had satisfied; one **provably equivalent** and excluded narrowly, with the invariant that makes it equivalent pinned by its own test so the exclusion cannot outlive its justification. Final run: **53 mutants, 44 caught, 9 unviable, 0 missed** |
+| Seams reified | 6 | **7** (plus `WorkspaceWatchTicket` + `WorkspaceWatchFacts` + `WorkspaceWatchDisposition`). **The last `required` seam in the matrix is now `done`.** Its predicate is deliberately **not** a bool: a stale lifetime must *retire* while a stale target generation must *restart*, so it returns a named three-way disposition. **Long signatures shortened: 1, unchanged** |
+| Seams retired | 0 of 60 | **19 of 60 inspection seams retired; population 60 fns / 111 gate sites → 41 / 93.** Five tuple-returning seams became named fields and the destructive "take touched rows" seam split into a non-destructive field plus a separate reset **drive**. The **one** new seam slot 5b budgeted is **spent**, on the load-worker delay that M-4's two driven race tests need |
+| Automation projections | 6 | **7** (plus `window.workspace`, ten fields, registered in the drift gate's `EVIDENCE_PROJECTIONS`). Both production `ui/automation.rs` `.imp()` reach-throughs are retired. The contract is **unwidened**: the ten snapshot fields are byte-identical to what the reach-throughs produced |
+| Data-safety defects fixed | 7 (slot 5a) | **7 more** — two from pass 1, three from pass 2, two from the fix cycle, counted once here and everywhere against the rule stated at the end of the change's `evidence/data-safety.md`. The three that most matter: a confirmed delete that removed **by path with no identity recheck** — recursively, for directories, in a file whose own contract says "never delete by path alone"; a rename that left the draft journal pointing at the vanished path, stranding the user's unsaved edits on the crash path with neither notification nor restore; and **M-4's superseded-load guard, twice** — first the guard itself, which skipped adoption and let the pending write commit one workspace over every workspace on disk, and then its fix, which was **inert** because the bit it read was set by *every* rebuild rather than by a load adoption. The remaining four are the draft re-stamp latching a clean tab's autosave flag, the dangling-symlink delete refusing forever, the confirmed delete refusing an already-vanished target, and the pass-1 rename fix's own follow-on. **Five further confirmed findings are handed on with named owning rows and durable homes** |
+| Pre-existing blockers fixed | — | **2**: the **default-feature build was broken at `origin/main`** (a denied `unused_self` that `--all-features` hides), and `.agents/rules/ui.md` named a **phantom symbol** — `restore_materialized_state`, which has never existed — that the rule, slot 5a's snapshot, and slot 5b's own task list had all been citing |
+| Facade budget | seventh adopter; 370 unchanged | **370 unchanged and not edited.** The sidebar facade shrank **415 → 292** — the 103-line cross-cutting width preset left, and the rest went to the coordination roles and to one named `with_first_visible_section` operation replacing four duplicated walks. That leaves **78** lines of headroom. Escalation was **not** needed: delegate-harder suffices. (An earlier revision of this row said 316, measured mid-change and before the last delegation; the figure was re-derived in the fix cycle.) `ui/search_panel/mod.rs` still sits at exactly **369** with not one line added |
+| Permitted role homes | seventh adopter | **nested home (c) fully exercised, its first adopter** — the canonical role home at `ui/sidebar/` holds the facade, the single `policy.rs`, the single `evidence.rs`, `seams.rs`, and `test_policy.rs`, with `ui/**/policy.rs` confirmed to reach it **after** the move; the nested **coordination** modules live under `workspace_section/`. `make check-workflow-boundaries` reports **10** pure mutation-scoped policy modules, unchanged, because both relocations merged into the workflow's existing `policy.rs` rather than adding one |
+| Convention changes | — | **2 statements across 2 capabilities**: dissolution-before-escalation (with the already-correctly-named corollary) in `gtk-adapter-module-boundaries`, and the unfilterable mutation floor plus parity-versus-gain separation in `mutation-testing`. Both verified **pure additions** — zero removed non-blank lines across all three requirements |
+
+### Convention friction slot 5b hit, recorded for slots 6 and 7
+
+**A handed-on number is a hypothesis, not a measurement.** Slot 4 made re-derivation an
+obligation and slot 5b is the strongest evidence yet for why: **five separate inherited
+figures were wrong, every one in the direction of more work** — the stage trace (11/38 →
+**12/44**), the materialization facts ("five" → **six**, where the source's own prose
+contradicted its own table), the widget reach-through (45 → **79**, of 929 total, with
+TemplateChild 113 → **179**), the `file_tree.rs` survivors (11 → **12 generated**), and
+the dangling matrix pointers (5 → **12**). Only the seam census (60/111) and the size
+census reproduced exactly — and the size census reproducing exactly is itself a finding
+worth recording, because slot 5b's *own proposal* had first claimed it was stale by ~900
+lines by comparing a production-only census against raw totals. **The unit must be stated
+on every figure mechanically, not carefully**: that error happened to the very change
+carrying the corrective.
+
+**Two of the eight retroactive-re-check findings were invisible to every gate**, and both
+required reading something other than the matrix. `G1` is an **undeclared role module** —
+`ui/window/drafts/retirement.rs` exists and declares itself the `retirement` job, while
+`WFR-DRAFT-RECOVERY` declared only four coordination modules; the boundary check
+validates that *declared* paths exist, never that *existing* role modules are declared.
+`G8` is **twelve dangling evidence pointers** across four archived changes, none of which
+resolved on disk; the gate resolves live-form paths against the archive directory, so a
+stale pointer stays green forever. A re-check budgeted as re-reading the matrix will find
+neither.
+
+**`G7` is the sharpest argument for the amendment that found it.** The live
+`WFR-DRAFT-RECOVERY` cell claimed a relocation landed "with parity proved"; its own cited
+evidence says the opposite — *"the old location was outside the mutation scope ... the
+move is a coverage gain rather than a parity case."* That is exactly the parity/gain
+conflation slot 5b's `mutation-testing` amendment forbids, found **in the live matrix
+while the amendment was being written**.
+
+**Two mutation-tooling traps that cost real time.** First, **`make mutants-diff` proves
+nothing on an uncommitted worktree and exits 0 doing it**: it builds its diff with a
+three-dot commit range, so working-tree edits are invisible, and `git add -N` does not
+help because the problem is the range and not the index. Second, **editing any file in
+the mutation scope while a run is in flight silently invalidates it** — a mid-run
+`cargo fmt` shifted line numbers and produced a false MISSED. The hand-check that
+disproved it nearly went wrong too, because reproducing an operator mutation requires
+letting Rust's precedence apply: `a || b && c` is `a || (b && c)`, not `(a || b) && c`.
+Related and useful: **`--re` does not bound a run at all** (the unfilterable floor is
+**34** field-deletion mutants, measured from the tool), while **`--in-diff` does**.
+
+**The data-safety pass forced a scope decision for the second slot running.** Slot 5's
+pass over this same code found eleven findings and consumed that change's capacity; slot
+5b's found **seven**, and the response this time was explicit triage rather than absorbing
+all of them: two fixed, five handed on with named owning rows and durable homes, and the
+decision recorded as a deviation at the head of the task list. **One of the five is a tree
+file** and is deferred anyway, with its reason stated — its fix changes a persistence
+invariant in the same step as relocating its owner, which is how a tier-3 workflow
+acquires an unreviewable defect. The generalisable lesson for slots 6 and 7: a tier-3
+pass will find several defects, and the plan needs a stated disposition rule *before* the
+pass runs, not a hope that there will be one finding.
+
+**A pre-existing blocker can hide behind the blocking gate itself.** The documented
+blocking Clippy command uses `--all-features`, which **hides** a denied `unused_self` that
+the default-feature build errors on — so `origin/main` did not compile under default
+features while `make check` was green. Task 10.2 exists precisely for this, and it found
+it on the first run. Run both configurations.
+
+**Documentation can cite a symbol that has never existed.** `.agents/rules/ui.md` named
+two deferred-restore functions; only one exists. `restore_materialized_state` appears in
+the rule, in slot 5a's evidence snapshot, and in slot 5b's own task list — three
+documents, two changes, and no `git grep`. The rule now names the one real site and
+deliberately names **no file**, because migrations rename the owner.
+
+**What slot 5b did not learn, and slot 6 should expect to.** The nested role home was only
+**partially** exercised: the canonical home landed, the nested coordination modules did
+not. The evidence surface over a lazily materialized `GtkTreeListModel` and over a
+variable-sized child collection — the reason the no-materialization rule exists — is
+**still unbuilt**, and its six hazards are recorded and re-verified but not discharged.
+The cold read was not run, because there is no narration to read.
+
 ## 3. Remaining scope
 
 Five changes remain (3b and 4 through 7). Order is by increasing risk; every
@@ -700,7 +797,7 @@ this table is the change-level view.
 | 3b | **complete** — migrated the load workflow, dissolved `load_save.rs`, promoted the evidence-surface reentrancy constraint into stated convention, and closed the `model/file_load.rs` census decision (`migrate-document-load-workflow-readability`) | `WFR-DOCUMENT-LOAD`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 1 spec delta |
 | 4 | User-content restore family (`migrate-user-content-restore-workflow-readability`, **complete**) | All four rows **migrated**: `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-DRAFT-RECOVERY`, plus a further `WFR-AUTOMATION-SPINE` projection (`LocalHistoryEvidence`). Nothing from this family is outstanding. One acceptance item is deferred rather than unmet: the live-session `make run` paned-warning proof, which needs user availability — see task 10.10 and `evidence/live-run.md` | proposal + tasks + 1 spec delta |
 | 5a | **complete** — migrated the notes and bookmarks family, retired `NoteSourceRefreshCoordinator` onto the shared single-flight coordinator, added the no-materialization and child-collection evidence-surface statements and the called-presentation-surface taxonomy scope, and fixed **seven confirmed pre-existing data-safety defects** including a rename that silently destroyed an existing file (`migrate-workspace-tree-and-notes-workflow-readability`) | `WFR-NOTES-BOOKMARKS`, continuing `WFR-AUTOMATION-SPINE` projections (`NotesEvidence`) | proposal + tasks + 2 spec deltas |
-| 5b | **outstanding** — the workspace tree. Its `policy.rs`, `seams.rs`, and `test_policy.rs` already exist and are mutation-scoped (landed with 5a's data-safety fixes, which live in this row's file operations), but the row's facade, coordination role modules, evidence surface, and 60-function seam population are not migrated. See "Why slot 5 split into 5a and 5b" | `WFR-WORKSPACE-TREE`, continuing `WFR-AUTOMATION-SPINE` projections | tasks (the existing slot-5 change carries them) |
+| 5b | **complete — `WFR-WORKSPACE-TREE` migrated**, in `migrate-workspace-tree-workflow-readability`. Facade **291 of 370** by delegate-harder alone; **three dissolutions** (`tree_loading.rs`, `tree_index.rs`, `watch_targets.rs`) plus `workspaces.rs` dissolving into four `execution` roles; **twelve** stage orders and 44 resumption points re-derived against a floor of five (**8.8x**, the programme's widest); the first **nested** role home; `evidence.rs` discharging the **no-materialization** statement with a driven collapsed-and-expanded inertness proof; both `ui/automation.rs` reach-throughs retired and `window.workspace` projected from evidence; **both relocations at exact mutant-by-mutant parity** (the first relocation since 3a) with their 7 inherited survivors triaged to 0; two convention amendments with a nine-row re-check that found **eight gaps**; and **seven confirmed data-safety defects fixed** (two from pass 1, three from pass 2, two from the fix cycle), including two CRITICAL: M-4's superseded-load guard, and that guard's own fix being inert. **Seam retirement is complete**: 60 fns / 111 gate sites → 41 / 93. **Remaining follow-up, recorded rather than hidden**: `scan_execution.rs` is ~2,000 production lines, five confirmed non-tree data-safety findings are handed on with owners, task 7.6's two-tree automation capture is unrun, and the live `make run` walkthrough awaits user availability | `WFR-WORKSPACE-TREE`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 2 spec deltas |
 | 6 | Minimap | `WFR-MINIMAP` | proposal + design + tasks |
 | 7 | Residual sweep | `WFR-MARKDOWN-PREVIEW`, `WFR-EDITOR-FIND`, `WFR-ENCODING`, `WFR-PRINT`, `WFR-SHELL-LAYOUT`, `WFR-STATUS-NOTIFICATIONS`, `WFR-BUFFER-SNAPSHOT`, `WFR-PLAIN-DISPOSAL`, remaining `exclude_re` entries and argument-count suppressions, matrix completion | proposal + tasks |
 
@@ -924,8 +1021,8 @@ in both directions, which some rows need:
 - slot 3b (complete): WFR-DOCUMENT-LOAD, WFR-AUTOMATION-SPINE (partial)
 - slot 4 (complete): WFR-BUFFER-REPLACEMENT, WFR-SESSION-RESTORE, WFR-LOCAL-HISTORY, WFR-DRAFT-RECOVERY, WFR-AUTOMATION-SPINE (partial)
 - slot 5a (complete): WFR-NOTES-BOOKMARKS, WFR-AUTOMATION-SPINE (partial)
-- slot 5b (outstanding): WFR-WORKSPACE-TREE, WFR-AUTOMATION-SPINE
-- slot 6 (outstanding): WFR-MINIMAP
+- slot 5b (complete): WFR-WORKSPACE-TREE, WFR-AUTOMATION-SPINE (partial)
+- slot 6 (outstanding): WFR-MINIMAP, WFR-AUTOMATION-SPINE
 - slot 7 (outstanding): WFR-MARKDOWN-PREVIEW, WFR-EDITOR-FIND, WFR-ENCODING, WFR-PRINT, WFR-SHELL-LAYOUT, WFR-STATUS-NOTIFICATIONS, WFR-BUFFER-SNAPSHOT, WFR-PLAIN-DISPOSAL
 
 ### Convention friction slot 2a hit, recorded for 2b and 3 through 7

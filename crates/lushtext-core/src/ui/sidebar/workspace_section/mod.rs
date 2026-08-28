@@ -1,44 +1,85 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Per-workspace section widget: header, tree, and context-menu callbacks.
+//! Per-workspace section widget, and the nested coordination role modules of the
+//! workspace tree workflow.
 //!
-//! Folder-tree loading and drill-down flows live in `folders.rs`, file operations
-//! live in `actions.rs`, and index/cache helpers live in their dedicated files.
+//! # Role of this module
+//!
+//! This module itself is a **called presentation surface**, not a role: it is the
+//! section GObject's public wrapper. The workflow's canonical role home is the
+//! parent directory `ui/sidebar/`, which holds the narrative facade, the single
+//! `policy.rs`, the single `evidence.rs`, and `seams.rs`. This directory holds the
+//! workflow's **nested** coordination role modules, which is the arrangement
+//! `gtk-adapter-module-boundaries` permits for one workflow spanning a directory and
+//! a widget subdirectory of it.
+//!
+//! # Coordination roles here
+//!
+//! | Module | Role | Stage order it serves |
+//! | --- | --- | --- |
+//! | `scan_admission` | `admission` | the per-child-store directory-scan flight |
+//! | `scan_execution` | `execution` | the child scan worker, reconciliation, and child-store materialization |
+//! | `refresh_execution` | `execution` | targeted in-place and full refresh coalescing |
+//! | `folder_execution` | `execution` | top-level folder rows, the empty probe, focused-folder drilldown |
+//! | `file_execution` | `execution` | file create, inline rename, delete |
+//! | `peek_execution` | `execution` | `Space` file peek |
+//! | `reorder_execution` | `execution` | workspace-folder reorder drag and drop |
+//! | `watch` | `watch` | watcher install, mailbox reconcile, and target mirroring |
+//!
+//! `watch.rs` **keeps its name**: it already carries a correct bounded role name, and
+//! the convention forbids renaming a stable correct module for symmetry with newly
+//! named siblings. Read the asymmetry as deliberate, not as an oversight.
+//!
+//! # Called presentation surfaces here
+//!
+//! `mod.rs` (this file), `imp.rs`, `row_factory.rs`, `context_menus.rs`,
+//! `row_accessibility.rs`, and `icon_presentation.rs` are called presentation
+//! surfaces. They carry no role, own no `policy.rs` or `evidence.rs`, and keep every
+//! behavior obligation stated in their own module docs.
+//!
+//! # Neither a role nor a presentation surface
+//!
+//! `watch_targets.rs` is a **plain data structure owned by the `watch` role** — an
+//! incremental mirror of the flattened model's watch contributions, with no GTK
+//! import, no widget, and no stage of its own. Naming it a coordination role would
+//! give `watch` two role modules for one job; calling it a presentation surface would
+//! be false, because it projects nothing onto widgets. It is classified here so a
+//! reader does not have to conclude it was overlooked. It is not `policy.rs`
+//! because it is stateful bookkeeping rather than a pure decision, and the workflow
+//! already owns exactly one `policy.rs` at its canonical role home.
 
-mod actions;
 mod context_menus;
-mod dnd;
-mod folders;
+mod file_execution;
+mod folder_execution;
 mod icon_presentation;
 // gtk-rs custom widgets keep their public wrapper in `mod.rs` and the private
 // ObjectSubclass/template state in `imp.rs`, matching GLib's split between the
 // reference-counted object API and per-instance implementation data.
 mod imp;
-mod peek;
-mod refresh;
+mod peek_execution;
+mod refresh_execution;
+mod reorder_execution;
 mod row_accessibility;
 mod row_factory;
-mod tree_index;
-mod tree_loading;
+mod scan_admission;
+mod scan_execution;
 mod watch;
 mod watch_targets;
 
 #[cfg(feature = "test-utils")]
 use std::collections::HashSet;
 use std::path::Path;
-#[cfg(feature = "test-utils")]
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
-use super::SidebarFileRowStateSnapshot;
 use super::file_tree_item::FileTreeItem;
 use crate::model::workspace::{WorkspaceFolderId, WorkspaceFolderMoveDirection, WorkspaceId};
 use crate::services::notifications::NotificationSeverity;
 use crate::ui::accessibility;
+use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 
 // glib::wrapper! generates the public GObject wrapper around the private
 // imp.rs subclass; the extends/implements list declares the GTK interfaces the
@@ -65,16 +106,25 @@ pub struct WorkspaceFolderReorderHoverDecision {
     pub accepts_drop: bool,
 }
 
-/// Test-only direct ownership evidence for materialized directory scans.
-#[cfg(feature = "test-utils")]
+/// Direct ownership evidence for materialized directory scans.
+///
+/// The three `process_*` fields are **process-global**, shared by every workspace
+/// section in every window, exactly as `scan_admission`'s module doc requires any
+/// projection of those counters to say. They were once named `aggregate_*`, which
+/// read as "summed over this section's stores" — the reading that module exists to
+/// prevent, because a window with no workspaces would then appear to report scans
+/// belonging elsewhere. Every other field here is per-section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceScanPressureEvidence {
     pub active_scans: usize,
     pub pending_scans: usize,
     pub admission_waiting_scans: usize,
-    pub aggregate_active_tasks: usize,
-    pub aggregate_task_limit: usize,
-    pub aggregate_task_high_water: usize,
+    /// Directory-scan tasks currently admitted **process-wide**.
+    pub process_active_scan_tasks: usize,
+    /// The **process-wide** admitted-scan ceiling.
+    pub process_scan_task_limit: usize,
+    /// High-water mark of admitted scan tasks **process-wide**.
+    pub process_scan_task_high_water: usize,
     pub dispatch_queue: usize,
     pub dispatch_queue_high_water: usize,
     pub dispatch_batch_high_water: usize,
@@ -217,28 +267,6 @@ impl LushtextWorkspaceSection {
             open_identities,
             active_identities,
         )));
-    }
-
-    /// Test helper for reading the row currently targeted by the file context menu.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn context_target_path_for_test(&self) -> Option<PathBuf> {
-        self.imp()
-            .context_target
-            .borrow()
-            .as_ref()
-            .map(|target| target.path.clone())
-    }
-
-    /// Test helper for reading the targeted workspace-folder id, when present.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn context_target_workspace_folder_id_for_test(&self) -> Option<WorkspaceFolderId> {
-        self.imp()
-            .context_target
-            .borrow()
-            .as_ref()
-            .and_then(|target| target.workspace_folder_id.clone())
     }
 
     /// Test helper for action tests that do not need a realized row expander.
@@ -482,7 +510,7 @@ impl LushtextWorkspaceSection {
         self.request_workspace_folder_drop(
             dragged_folder_id,
             target_folder_id,
-            dnd::DropPosition::Before,
+            reorder_execution::DropPosition::Before,
         )
     }
 
@@ -497,7 +525,7 @@ impl LushtextWorkspaceSection {
         self.request_workspace_folder_drop(
             dragged_folder_id,
             target_folder_id,
-            dnd::DropPosition::After,
+            reorder_execution::DropPosition::After,
         )
     }
 
@@ -512,7 +540,7 @@ impl LushtextWorkspaceSection {
         self.drop_indicator_would_show_for_test(
             dragged_folder_id,
             target_folder_id,
-            dnd::DropPosition::Before,
+            reorder_execution::DropPosition::Before,
         )
     }
 
@@ -527,7 +555,7 @@ impl LushtextWorkspaceSection {
         self.drop_indicator_would_show_for_test(
             dragged_folder_id,
             target_folder_id,
-            dnd::DropPosition::After,
+            reorder_execution::DropPosition::After,
         )
     }
 
@@ -545,7 +573,7 @@ impl LushtextWorkspaceSection {
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn workspace_folder_reorder_drag_owns_row_hover_for_test() -> bool {
-        dnd::folder_reorder_drag_owns_row_hover_for_test()
+        reorder_execution::folder_reorder_drag_owns_row_hover_for_test()
     }
 
     /// Test helper for simulating a shield hover at the row's before edge.
@@ -571,14 +599,7 @@ impl LushtextWorkspaceSection {
     /// Test helper for starting a fresh fallback-counter observation window.
     #[cfg(feature = "test-utils")]
     pub fn reset_workspace_folder_reorder_drag_hover_fallback_count_for_test(&self) {
-        tree_loading::reset_drag_hover_child_model_count_for_test();
-    }
-
-    /// Test helper for reading the defensive drag-hover child-model fallback counter.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn workspace_folder_reorder_drag_hover_fallback_count_for_test(&self) -> usize {
-        tree_loading::drag_hover_child_model_count_for_test()
+        reorder_execution::reset_drag_hover_child_model_count_for_test();
     }
 
     /// Test helper exposing the realized CSS state for a file-tree row.
@@ -606,7 +627,7 @@ pub(super) fn sync_file_row_state_for_overlay(
 #[doc(hidden)]
 #[must_use]
 pub fn child_cache_rebuild_operation_evidence_for_benchmark(row_count: usize) -> (usize, usize) {
-    tree_index::child_cache_rebuild_operation_evidence(row_count)
+    scan_execution::child_cache_rebuild_operation_evidence(row_count)
 }
 
 pub(super) fn reset_file_row_state_for_overlay(overlay: &gtk4::Overlay) {
@@ -665,7 +686,16 @@ fn apply_file_row_visual_state(overlay: &gtk4::Overlay, state: FileRowVisualStat
     }
 }
 
-fn for_each_realized_file_row_overlay(
+/// Visit every realized file-row overlay in this section's list view.
+///
+/// `GtkListView` exposes only realized/recycled row widgets, so every caller is
+/// intentionally limited to visible rows: an unrealized row cannot carry a shield,
+/// a marker, or pointer hover until GTK binds it.
+///
+/// One walk, not one per caller. `reorder_execution` kept a byte-identical private
+/// copy under a second name until this became shared, which is how a fix to one of
+/// them silently missed the other.
+pub(super) fn for_each_realized_file_row_overlay(
     section: &LushtextWorkspaceSection,
     mut visit: impl FnMut(gtk4::Overlay),
 ) {
@@ -692,8 +722,12 @@ fn file_row_state_indicator(overlay: &gtk4::Overlay) -> Option<gtk4::Widget> {
     None
 }
 
+/// Find the realized overlay whose row currently renders `target_path`.
+///
+/// Shared with `reorder_execution` for the same reason as the walk above: it had a
+/// byte-identical private copy under a second name.
 #[cfg(feature = "test-utils")]
-fn realized_file_row_overlay_for_path(
+pub(super) fn realized_file_row_overlay_for_path(
     section: &LushtextWorkspaceSection,
     target_path: &Path,
 ) -> Option<gtk4::Overlay> {
@@ -714,7 +748,7 @@ fn realized_file_row_overlay_for_path(
 
 /// Activate a row: open files, toggle directories, and ignore reorder drags.
 fn activate_file_at(list_view: &gtk4::ListView, position: u32, callback: &dyn Fn(&Path)) {
-    if dnd::folder_reorder_drag_is_active() {
+    if reorder_execution::folder_reorder_drag_is_active() {
         return;
     }
 
@@ -741,4 +775,27 @@ impl Default for LushtextWorkspaceSection {
     fn default() -> Self {
         Self::new(WorkspaceId::default())
     }
+}
+
+/// Directory-scan tasks currently admitted **process-wide**, for the evidence surface.
+///
+/// Process-global rather than per-section, and named so at every layer. Reading an
+/// `AtomicUsize` cannot materialize toolkit state.
+pub(crate) fn process_active_scan_tasks() -> usize {
+    scan_admission::active_scan_tasks()
+}
+
+/// High-water mark of admitted scan tasks **process-wide**.
+pub(crate) fn process_scan_task_high_water() -> usize {
+    scan_admission::scan_task_high_water()
+}
+
+/// The **process-wide** admitted-scan ceiling.
+pub(crate) const fn process_scan_task_limit() -> usize {
+    scan_admission::WORKSPACE_SCAN_TASK_LIMIT
+}
+
+/// Times the reorder drag fell back to the inert row shield, process-wide.
+pub(crate) fn drag_hover_child_model_count() -> usize {
+    reorder_execution::drag_hover_child_model_count()
 }

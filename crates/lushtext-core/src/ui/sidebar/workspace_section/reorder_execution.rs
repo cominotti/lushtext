@@ -1,23 +1,44 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Drag-and-drop reorder support for top-level workspace folder rows.
+//! `execution` role for the workspace tree workflow's **folder reorder** stage order:
+//! the drag, the inert row shield, the insertion indicator, and the drop.
 //!
-//! GTK recycles `GtkListView` row widgets, so this module treats row widgets as
-//! event surfaces only. Every drag/drop operation re-reads the currently bound
-//! `TreeListRow` and moves folders by stable `WorkspaceFolderId`.
+//! # Role
+//!
+//! Coordination, `execution`, qualified by the stage order it serves, nested under the
+//! workflow's canonical role home in `ui/sidebar/`. Renamed from `dnd.rs`, a mechanism
+//! abbreviation: it named the toolkit facility rather than the workflow stage, which is
+//! exactly what intent-first naming asks a cross-module module name not to do.
+//!
+//! GTK recycles `GtkListView` row widgets, so this module treats row widgets as event
+//! surfaces only. Every drag/drop operation re-reads the currently bound `TreeListRow`
+//! and moves folders by stable `WorkspaceFolderId`.
+//!
+//! # Inversion to be aware of
+//!
+//! Hover is driven by GTK's own drop-target machinery, so the shield that keeps hover
+//! inert must own every row surface for the whole drag rather than being decided per
+//! row at bind time. Control resumes on each GTK motion callback, not in a loop here.
 
 use glib::prelude::{StaticType, ToValue};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gdk;
 use gtk4::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::model::workspace::{WorkspaceFolderId, WorkspaceId};
 use crate::ui::accessibility;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
 
+// The realized-row overlay walks are the presentation surface's, shared rather than
+// re-copied here: this module kept byte-identical private copies under second names
+// until they moved to one owner.
 use super::LushtextWorkspaceSection;
+use super::for_each_realized_file_row_overlay;
+#[cfg(feature = "test-utils")]
+use super::realized_file_row_overlay_for_path;
 
 /// Drop edge relative to the target folder row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +221,7 @@ impl LushtextWorkspaceSection {
     /// Match realized row shields to the current global reorder-drag state.
     pub(super) fn sync_folder_reorder_shields_for_active_drag(&self) {
         let active = folder_reorder_drag_is_active();
-        for_each_realized_row_overlay(self, |overlay| {
+        for_each_realized_file_row_overlay(self, |overlay| {
             set_reorder_shield_targetable(&overlay, active);
             if !active {
                 hide_reorder_indicator(&overlay);
@@ -213,7 +234,7 @@ impl LushtextWorkspaceSection {
 
     /// Repaint realized row drag handles after the top-level folder set changes.
     pub(crate) fn sync_workspace_folder_reorder_handles(&self) {
-        for_each_realized_row_overlay(self, |overlay| {
+        for_each_realized_file_row_overlay(self, |overlay| {
             let show_handle =
                 workspace_folder_reorder_handle_should_show_for_overlay(self, &overlay);
             set_reorder_handle_visible(&overlay, show_handle);
@@ -308,7 +329,7 @@ impl LushtextWorkspaceSection {
     /// Simulate the shield's before-edge hover path without brittle pointer synthesis.
     pub(super) fn simulate_reorder_hover_before_for_test(
         &self,
-        target_path: &std::path::Path,
+        target_path: &Path,
     ) -> super::WorkspaceFolderReorderHoverDecision {
         self.simulate_reorder_hover_for_test(target_path, DropPosition::Before)
     }
@@ -317,7 +338,7 @@ impl LushtextWorkspaceSection {
     /// Simulate the shield's after-edge hover path without brittle pointer synthesis.
     pub(super) fn simulate_reorder_hover_after_for_test(
         &self,
-        target_path: &std::path::Path,
+        target_path: &Path,
     ) -> super::WorkspaceFolderReorderHoverDecision {
         self.simulate_reorder_hover_for_test(target_path, DropPosition::After)
     }
@@ -325,12 +346,12 @@ impl LushtextWorkspaceSection {
     #[cfg(feature = "test-utils")]
     fn simulate_reorder_hover_for_test(
         &self,
-        target_path: &std::path::Path,
+        target_path: &Path,
         position: DropPosition,
     ) -> super::WorkspaceFolderReorderHoverDecision {
         hide_all_reorder_indicators(self);
         let decision = active_drag_hover_decision_for_path(self, target_path, position);
-        if let Some(overlay) = realized_overlay_for_path(self, target_path) {
+        if let Some(overlay) = realized_file_row_overlay_for_path(self, target_path) {
             set_reorder_shield_targetable(&overlay, folder_reorder_drag_is_active());
             if let Some(drop_surface) = reorder_indicator_surface(&overlay) {
                 let shown_position = Cell::new(None);
@@ -494,7 +515,7 @@ fn active_drag_hover_decision_for_target(
 #[cfg(feature = "test-utils")]
 fn active_drag_hover_decision_for_path(
     section: &LushtextWorkspaceSection,
-    target_path: &std::path::Path,
+    target_path: &Path,
     position: DropPosition,
 ) -> FolderReorderHoverDecision {
     let target_folder_id = workspace_folder_id_for_path(section, target_path);
@@ -585,7 +606,7 @@ fn workspace_folder_id_for_tree_row(tree_row: &gtk4::TreeListRow) -> Option<Work
 #[cfg(feature = "test-utils")]
 fn workspace_folder_id_for_path(
     section: &LushtextWorkspaceSection,
-    target_path: &std::path::Path,
+    target_path: &Path,
 ) -> Option<WorkspaceFolderId> {
     if !section.imp().drilldown_stack.borrow().is_empty() {
         return None;
@@ -647,22 +668,6 @@ fn sync_registered_folder_reorder_shields() {
     });
 }
 
-fn for_each_realized_row_overlay(
-    section: &LushtextWorkspaceSection,
-    mut visit: impl FnMut(gtk4::Overlay),
-) {
-    // GtkListView exposes only realized/recycled row widgets; shield sync is
-    // intentionally limited to visible rows because unrealized rows cannot
-    // receive pointer hover until GTK binds them.
-    let mut row_widget = section.imp().file_tree_view.first_child();
-    while let Some(row) = row_widget {
-        if let Some(overlay) = row.first_child().and_downcast::<gtk4::Overlay>() {
-            visit(overlay);
-        }
-        row_widget = row.next_sibling();
-    }
-}
-
 fn workspace_folder_reorder_handle_should_show_for_overlay(
     section: &LushtextWorkspaceSection,
     overlay: &gtk4::Overlay,
@@ -712,7 +717,7 @@ fn hide_reorder_indicator(overlay: &gtk4::Overlay) {
 
 #[cfg(feature = "test-utils")]
 fn hide_all_reorder_indicators(section: &LushtextWorkspaceSection) {
-    for_each_realized_row_overlay(section, |overlay| {
+    for_each_realized_file_row_overlay(section, |overlay| {
         hide_reorder_indicator(&overlay);
     });
 }
@@ -748,22 +753,52 @@ fn reorder_indicator_surface(overlay: &gtk4::Overlay) -> Option<gtk4::Box> {
     None
 }
 
-#[cfg(feature = "test-utils")]
-fn realized_overlay_for_path(
+// ---------------------------------------------------------------------------
+// Drag-hover child-model shield.
+//
+// Dissolved in from the pre-convention `tree_loading.rs`. It reads as scan code
+// because it builds a child model, but its purpose is the **reorder** stage order's
+// inert-hover contract: when GTK asks a hovered folder for children during a
+// workspace-folder reorder drag, hand back an empty model so hovering can never
+// expand a folder, materialize descendants, or restart a watch.
+// ---------------------------------------------------------------------------
+thread_local! {
+    /// Counts defensive DnD child-model fallbacks during widget regression tests.
+    static DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn empty_children_model_for_drag_hover(
     section: &LushtextWorkspaceSection,
-    target_path: &std::path::Path,
-) -> Option<gtk4::Overlay> {
-    let mut row_widget = section.imp().file_tree_view.first_child();
-    while let Some(row) = row_widget {
-        if let Some(overlay) = row.first_child().and_downcast::<gtk4::Overlay>()
-            && let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>()
-            && let Some(tree_row) = expander.list_row()
-            && let Some(item) = tree_row.item().and_downcast::<FileTreeItem>()
-            && item.path().as_deref() == Some(target_path)
+    dir_path: &Path,
+) -> gio::ListStore {
+    #[cfg(feature = "test-utils")]
+    DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT.with(|count| count.set(count.get() + 1));
+
+    let store = gio::ListStore::new::<FileTreeItem>();
+    let path = dir_path.to_path_buf();
+    let section_weak = section.downgrade();
+    // GTK can ask TreeListModel for children if a row auto-expands during DnD
+    // hover. Return an empty temporary model and collapse the row back without
+    // scanning or restarting watches; reorder hover must only move the line cue.
+    glib::idle_add_local_once(move || {
+        if let Some(section) = section_weak.upgrade()
+            && let Some(row) = section.find_dir_row(&path)
+            && row.is_expanded()
         {
-            return Some(overlay);
+            suppress_next_expanded_watch_for_drag(&row);
+            row.set_expanded(false);
         }
-        row_widget = row.next_sibling();
-    }
-    None
+    });
+    store
+}
+
+/// Reset the defensive DnD fallback counter before a widget-test observation.
+#[cfg(feature = "test-utils")]
+pub(super) fn reset_drag_hover_child_model_count_for_test() {
+    DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT.with(|count| count.set(0));
+}
+
+/// Read how often drag hover accidentally requested child-model creation.
+pub(crate) fn drag_hover_child_model_count() -> usize {
+    DRAG_HOVER_EMPTY_CHILD_MODEL_COUNT.with(Cell::get)
 }

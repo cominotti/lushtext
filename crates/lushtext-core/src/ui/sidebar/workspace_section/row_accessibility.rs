@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Accessibility projection and expanded-state hooks for recycled tree rows.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! Row accessibility projection: applies per-item accessible metadata on bind and
+//! clears it on unbind so a recycled row cannot keep a previous item's name,
+//! description, selection, or set-position.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use super::super::file_tree_item::FileTreeItem;
 use crate::ui::accessibility::{self, RowAccessibility};

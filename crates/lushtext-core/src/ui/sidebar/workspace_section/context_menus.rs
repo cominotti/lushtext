@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Section-owned file-tree and workspace-header context menus.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! Context-menu and gesture lifecycle for file rows and workspace headers, including
+//! click-position targeting. Menu plumbing, not coordination.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use super::super::file_tree_item::FileTreeItem;
 use super::imp;

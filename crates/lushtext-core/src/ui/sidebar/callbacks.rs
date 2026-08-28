@@ -5,6 +5,15 @@
 //! The workspace sections speak in widget-local callbacks; this slice translates
 //! those events into the sidebar's outward callback surface and workspace-level
 //! handlers without repeating the same weak-upgrade glue inline.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! Projects the workflow onto the window's callback slots: it stores and forwards the
+//! file and workspace callbacks the window registers. It holds no ordered stage of
+//! its own.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use std::path::Path;
 

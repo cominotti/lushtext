@@ -1,6 +1,8 @@
 # Rust build artifacts
 /target/
 /mutants.out*/
+# Default MUTANTS_DIFF_FILE written by scripts/run-mutants.sh in diff/ci-pr mode.
+/git.diff
 
 # SonarQube Cloud scanner cache and local API reports
 /.sonar/

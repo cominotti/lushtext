@@ -459,4 +459,44 @@ mod tests {
 
         assert_eq!(outcome, MutationOutcome::AlreadyAbsent);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn link_inode_identifies_a_dangling_symlink_where_inode_cannot() {
+        // The confirmed-delete recheck asks "is this still the object the user
+        // pointed at". `inode` follows the final symlink, so a dangling link has no
+        // identity under it and the recheck would refuse forever — while the delete
+        // the user confirmed is a delete of the *link*, which does have one. That
+        // asymmetry is the whole reason `link_inode` exists, so it is asserted here
+        // rather than left to the caller's comment.
+        let dir = TempDir::new().expect("temp dir");
+        let link = dir.path().join("dangling");
+        fixture::symlink(&dir.path().join("no-such-target"), &link);
+
+        assert!(
+            metadata::inode(&link).is_err(),
+            "`inode` follows the link, so a dangling link has no identity under it"
+        );
+        let identity = metadata::link_inode(&link).expect("the link entry itself has an inode");
+
+        // Stable across reads, which is what makes it usable as a recheck.
+        assert_eq!(identity, metadata::link_inode(&link).expect("second read"));
+        // And distinct from a real neighbouring entry, so the recheck can tell them apart.
+        let neighbour = dir.path().join("real.txt");
+        fixture::write_text(&neighbour, "x");
+        assert_ne!(
+            identity,
+            metadata::link_inode(&neighbour).expect("neighbour identity")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn link_inode_reports_a_missing_entry_rather_than_inventing_an_identity() {
+        // The other half of the confirmed-delete contract: a vanished target must be
+        // distinguishable from a readable one, because the two take different verdicts.
+        let dir = TempDir::new().expect("temp dir");
+
+        assert!(metadata::link_inode(&dir.path().join("absent")).is_err());
+    }
 }

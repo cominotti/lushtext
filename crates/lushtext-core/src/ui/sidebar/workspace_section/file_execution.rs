@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! File operation actions for workspace sections: create, rename, delete.
+//! `execution` role for the workspace tree workflow's **file operation** stage order:
+//! create, inline rename, and confirmed delete.
+//!
+//! # Role
+//!
+//! Coordination, `execution`, qualified by the stage order it serves, nested under the
+//! workflow's canonical role home in `ui/sidebar/`. Renamed from `actions.rs`, which
+//! named no job at all: "actions" described the GTK plumbing the entry points happen to
+//! arrive through, not the ordered stages this module owns.
+//!
+//! # Inversions to be aware of
+//!
+//! Every destructive stage here crosses a worker. `show_delete_confirmation` captures the
+//! confirmed object's `link_inode` while the **user-paced** dialog is open and rechecks it
+//! under the target write guard on the worker, so control resumes in the completion, not
+//! at the dialog. `create_unique` and the rename stage carry a `FileOperationTicket` for
+//! the same reason: the row, the section's live context, and the name on disk can all
+//! change while the worker runs.
 
 use super::FileTreeItem;
 use crate::services::filesystem::{
@@ -11,12 +28,43 @@ use crate::ui::accessibility;
 use crate::ui::sidebar::policy::{
     self, MAX_UNIQUE_NAME_ATTEMPTS, RenameIntent, WorkspaceRenameRefusal,
 };
-use crate::ui::sidebar::seams::{FileOperationFacts, FileOperationTicket};
+use crate::ui::sidebar::seams::{FileOperationFacts, FileOperationTargetKind, FileOperationTicket};
 use glib::prelude::*;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 use std::path::{Path, PathBuf};
+
+/// Result of one user-confirmed delete, separating a safety refusal from a failure.
+///
+/// # Why a refusal is its own outcome
+///
+/// The delete confirmation is user-paced, so an unbounded amount of time passes
+/// between the dialog naming an object and the user answering. The path is only a
+/// *name*; over that window the sidebar's own inline rename, an editor Save As, or
+/// an external `mv` can make the name refer to a different object. Deleting the
+/// name rather than the confirmed object destroys whatever now answers to it —
+/// and the confirmed-directory branch is deliberately recursive, so the blast
+/// radius is a whole unrelated subtree with no undo.
+///
+/// Kind substitution alone fails safe (`remove_dir_all` on a regular file is
+/// `ENOTDIR`, `remove_file` on a directory is `EISDIR`), so the dangerous case is
+/// **same-kind** substitution, which the inode recheck is what catches.
+///
+/// A refusal is therefore not an error: nothing was destroyed, and the tree row is
+/// left alone because it no longer describes what the user confirmed.
+enum ConfirmedDeleteOutcome {
+    /// The confirmed object was removed, or was already gone.
+    ///
+    /// Both reach the same completion because the user's intent is satisfied either
+    /// way and the tree row must be reconciled either way.
+    Removed,
+    /// The path refers to a **different** object than the one confirmed, or the
+    /// confirmed object's identity was never readable; nothing was deleted.
+    RefusedIdentityChanged,
+    /// The removal was attempted against the confirmed object and failed.
+    Failed(std::io::Error),
+}
 
 impl super::LushtextWorkspaceSection {
     // --- File tree operations ---
@@ -260,12 +308,15 @@ impl super::LushtextWorkspaceSection {
         // projection to a different file's row. See `sidebar::seams`.
         let ticket = FileOperationTicket::new(
             old_path.to_path_buf(),
-            self.imp()
-                .context_target
-                .borrow()
-                .as_ref()
-                .is_some_and(|target| target.is_dir),
-            is_new,
+            FileOperationTargetKind {
+                is_dir: self
+                    .imp()
+                    .context_target
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|target| target.is_dir),
+                is_new,
+            },
         );
         let row = self
             .imp()
@@ -308,7 +359,7 @@ impl super::LushtextWorkspaceSection {
                                 // the old subtree state is retired; the renamed
                                 // rows stay expanded in place.
                                 section.rename_expanded_subtree(&old_path, &new_path);
-                                super::tree_loading::clear_dir_state(&section, &old_path);
+                                super::scan_execution::clear_dir_state(&section, &old_path);
                                 imp.dir_rows
                                     .borrow_mut()
                                     .insert(new_path.clone(), tree_row.downgrade());
@@ -334,7 +385,7 @@ impl super::LushtextWorkspaceSection {
                             // a stale row, and let the next refresh re-project.
                             if ticket.is_dir() {
                                 section.rename_expanded_subtree(&old_path, &new_path);
-                                super::tree_loading::clear_dir_state(&section, &old_path);
+                                super::scan_execution::clear_dir_state(&section, &old_path);
                             }
                             section.rename_cached_item(&old_path, &new_path);
                             section.request_workspace_watch_restart();
@@ -432,6 +483,16 @@ impl super::LushtextWorkspaceSection {
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
 
+        // Identity of the object the dialog's heading names, captured while the
+        // user is being asked. The confirmation window is user-paced and
+        // unbounded, so the name can come to refer to a different object before
+        // the answer arrives; see `ConfirmedDeleteOutcome`.
+        // `link_inode`, not `inode`: the object the user confirmed is the directory
+        // entry they pointed at. `inode` follows a final symlink, so a dangling link
+        // has no readable identity and the recheck below would refuse forever, leaving
+        // a confirmed delete silently doing nothing.
+        let expected_inode = fs_metadata::link_inode(&path).ok();
+
         let section_weak = self.downgrade();
         let path_c = path;
         dialog.connect_response(None::<&str>, move |_, response| {
@@ -455,28 +516,65 @@ impl super::LushtextWorkspaceSection {
                     // confirmed "Delete this directory". That is unlike the
                     // placeholder cleanup below, whose directory branch is
                     // empty-only precisely because nothing there was confirmed.
-                    let guard = fs_write::TargetWriteGuard::acquire(&path_for_io);
-                    let result = match guard {
-                        Ok(_guard) => {
-                            if is_dir {
-                                fs_mutate::remove_dir_all_if_exists(&path_for_io)
-                            } else {
-                                fs_mutate::remove_file_if_exists(&path_for_io)
-                            }
+                    let _guard = match fs_write::TargetWriteGuard::acquire(&path_for_io) {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            return (path_for_io, ConfirmedDeleteOutcome::Failed(error));
                         }
-                        Err(error) => Err(error),
                     };
-                    (path_for_io, result)
+                    // Recheck identity under the guard, exactly as
+                    // `spawn_temp_item_cleanup` does and as its own contract
+                    // requires: never delete by path alone. The decision itself
+                    // is pure and lives in `policy`, so it carries mutation
+                    // coverage rather than sitting inline in a GTK closure.
+                    let current_inode = fs_metadata::link_inode(&path_for_io).ok();
+                    match policy::confirmed_delete_verdict(expected_inode, current_inode) {
+                        policy::ConfirmedDeleteVerdict::Proceed => {}
+                        policy::ConfirmedDeleteVerdict::ReconcileAlreadyGone => {
+                            // Nothing to destroy: the confirmed object is already gone.
+                            // Reconcile the row exactly as the pre-recheck code did
+                            // through `remove_*_if_exists`, rather than reporting a
+                            // failed delete for an object that is not there.
+                            return (path_for_io, ConfirmedDeleteOutcome::Removed);
+                        }
+                        policy::ConfirmedDeleteVerdict::RefuseIdentityChanged => {
+                            return (path_for_io, ConfirmedDeleteOutcome::RefusedIdentityChanged);
+                        }
+                    }
+                    let outcome = if is_dir {
+                        fs_mutate::remove_dir_all_if_exists(&path_for_io)
+                    } else {
+                        fs_mutate::remove_file_if_exists(&path_for_io)
+                    };
+                    let outcome = match outcome {
+                        Ok(_) => ConfirmedDeleteOutcome::Removed,
+                        Err(error) => ConfirmedDeleteOutcome::Failed(error),
+                    };
+                    (path_for_io, outcome)
                 },
-                |section, (path, result)| match result {
-                    Ok(_) => {
+                |section, (path, outcome)| match outcome {
+                    ConfirmedDeleteOutcome::Removed => {
                         let _ = section.remove_from_model(&path);
                         if let Some(ref cb) = *section.imp().delete_callback.borrow() {
                             cb(&path);
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to delete {}: {}", path.display(), e);
+                    ConfirmedDeleteOutcome::RefusedIdentityChanged => {
+                        // Not an error: nothing was destroyed, and the tree row is
+                        // deliberately left alone because it no longer describes what
+                        // the user confirmed. But a destructive action that silently
+                        // does nothing is its own defect, so say so.
+                        tracing::warn!(
+                            "Refused to delete {}: the path no longer refers to the confirmed item",
+                            path.display()
+                        );
+                        section.emit_message(
+                            "That item changed on disk and was not deleted.",
+                            NotificationSeverity::Warning,
+                        );
+                    }
+                    ConfirmedDeleteOutcome::Failed(error) => {
+                        tracing::error!("Failed to delete {}: {}", path.display(), error);
                     }
                 },
             );

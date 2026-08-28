@@ -28,6 +28,4 @@ pub mod recent_document;
 pub mod session;
 pub mod sidecar_identity;
 pub mod workspace;
-pub mod workspace_persistence;
-pub mod workspace_scan;
 pub mod workspace_search;

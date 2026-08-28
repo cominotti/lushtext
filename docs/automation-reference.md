@@ -646,6 +646,39 @@ once, by the identity's owner, not by every workflow that consumes it.*
 | `window.notes` | `NotesEvidence` | `active_document_bookmark_count` | `notes.active_document_bookmark_count` |
 | `window.notes` | `NotesEvidence` | `active_line_has_bookmark` | `notes.active_line_has_bookmark` |
 | `window.notes` | `NotesEvidence` | `folder_note_available` | `notes.folder_note_available` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `scope_kind` | `workspace.scope_kind` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `scope_workspace_id` | `workspace.scope_workspace_id` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `scope_workspace_name` | `workspace.scope_workspace_name` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `workspace_count` | `workspace.workspace_count` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `folder_count` | `workspace.folder_count` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `scoped_folder_count` | `workspace.scoped_folder_count` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `no_workspaces` | `workspace.no_workspaces` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `persistence_inflight` | `workspace.persistence_inflight` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `persistence_pending` | `workspace.persistence_dirty` |
+| `window.workspace` | `WorkspaceTreeEvidence` | `filter_animation_active` | `workspace.filter_animation_active` |
+
+Registered by slot 5b: `window.workspace` is the sixth projecting object, and **all
+ten of its fields** project from the workspace tree surface's single shared
+derivation, read once per snapshot. That derivation is also what
+`WorkspaceTreeEvidence` builds itself from, so the polled snapshot never allocates
+the surface's per-section collections and the two values still cannot drift — and
+the ten fields the drift gate attributes are the ones `WorkspaceTreeEvidence`
+declares. That matters more here than for the other five, because this workflow's
+model is a lazily materialized `GtkTreeListModel`: re-deriving these counts from
+widgets is exactly what would make a nominal snapshot read materialize child stores,
+start a background scan, and queue a watcher restart. The surface is built to reach
+none of those accessors, and its inertness is proved with reads taken both collapsed
+and expanded.
+
+Its three readiness blockers — `workspace-persist`, `workspace-tree-refresh`, and
+`workspace-filter-animation` — are **polled**, so each reads a cheap facade accessor
+rather than building the whole surface per poll. Each is nonetheless identical to its
+evidence field **by construction**, because both read the same one cell or the same
+one delegation. Retiring the two `ui/automation.rs` `.imp()` reach-throughs is what
+bought that guarantee.
+
+`workspace-sidebar-animation` is deliberately **not** here: that blocker follows the
+sidebar show/hide animation and belongs to `WFR-SHELL-LAYOUT`, not to this row.
 
 | Anchor | Field | Type | Meaning |
 | --- | --- | --- | --- |

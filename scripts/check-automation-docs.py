@@ -117,6 +117,19 @@ EVIDENCE_PROJECTIONS = (
         REPO_ROOT / "crates/lushtext-core/src/ui/window/notes/evidence.rs",
         "notes_snapshot",
     ),
+    # `window.workspace` projects the ten scalars of the workspace tree
+    # workflow's surface. `workspace_snapshot` reads them through the surface's
+    # single shared derivation, but every one of those fields is declared on
+    # `WorkspaceTreeEvidence` — the surface widget tests read and the one this
+    # gate attributes against — so the surface remains the drift authority and a
+    # rename on either side is a finding. The default `evidence` binding is
+    # correct: `window.workspace` is fed by exactly one workflow.
+    EvidenceProjection(
+        "window.workspace",
+        "WorkspaceTreeEvidence",
+        REPO_ROOT / "crates/lushtext-core/src/ui/sidebar/evidence.rs",
+        "workspace_snapshot",
+    ),
 )
 
 

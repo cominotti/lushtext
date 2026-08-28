@@ -1,33 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Incremental materialized watch-target bookkeeping for a flattened tree.
+//!
+//! # Role: none — a data structure owned by the `watch` role
+//!
+//! Deliberately classified rather than left for a reader to infer. This module is a
+//! plain incremental mirror owned by `watch.rs`: no GTK import, no widget, no stage of
+//! its own, and no ordered side effect. It is therefore **not** one of the five roles
+//! (giving `watch` a second role module would split one coordination job in two), and
+//! **not** a called presentation surface (it projects nothing onto widgets). It is not
+//! `policy.rs` either: it is stateful bookkeeping rather than a pure decision, and this
+//! workflow owns exactly one `policy.rs`, at its canonical role home in `ui/sidebar/`.
+//!
+//! The workflow's matrix row records the same classification.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::services::workspace_watch::WorkspaceWatchTarget;
-
-/// Monotonic identity for one effective materialized target set.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct WatchTargetGeneration(u64);
-
-impl WatchTargetGeneration {
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub(super) const fn value(self) -> u64 {
-        self.0
-    }
-}
-
-/// Monotonic identity for one workspace-section object lifetime.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct WatchLifetimeGeneration(u64);
-
-impl WatchLifetimeGeneration {
-    #[must_use]
-    pub(super) fn next(self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
-}
+// The two generation newtypes moved to the workflow's `seams.rs`: they are seam
+// values, captured at dispatch and compared at completion.
+use crate::ui::sidebar::seams::WatchTargetGeneration;
 
 /// Owned target snapshot passed from GTK orchestration to watcher workers.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,6 +44,9 @@ pub(super) struct MaterializedWatchTargets {
     fallback: BTreeMap<WorkspaceWatchTarget, usize>,
     model_mounted: bool,
     generation: WatchTargetGeneration,
+    /// Gated identically to every writer and reader below: a field only the
+    /// `test-utils` build ever touches is `dead_code` in a default-feature build,
+    /// and `make check` runs `--all-features`, so nothing else would report it.
     #[cfg(feature = "test-utils")]
     touched_rows: usize,
 }
@@ -190,7 +185,7 @@ impl MaterializedWatchTargets {
         }
     }
 
-    fn effective_targets(&self) -> Vec<WorkspaceWatchTarget> {
+    pub(super) fn effective_targets(&self) -> Vec<WorkspaceWatchTarget> {
         let counts = if self.model_mounted {
             &self.counts
         } else {
@@ -206,7 +201,7 @@ impl MaterializedWatchTargets {
         let _ = touched;
         let changed = before != self.effective_targets();
         if changed {
-            self.generation.0 = self.generation.0.wrapping_add(1);
+            self.generation = self.generation.next();
         }
         changed
     }
@@ -217,7 +212,7 @@ impl MaterializedWatchTargets {
         #[cfg(not(feature = "test-utils"))]
         let _ = touched;
         if changed {
-            self.generation.0 = self.generation.0.wrapping_add(1);
+            self.generation = self.generation.next();
         }
         changed
     }
@@ -234,8 +229,18 @@ impl MaterializedWatchTargets {
 
     #[cfg(feature = "test-utils")]
     #[must_use]
-    pub(super) fn take_touched_rows(&mut self) -> usize {
-        std::mem::take(&mut self.touched_rows)
+    /// Rows touched since the last reset, **without** resetting.
+    ///
+    /// The pre-convention seam was a `take`, so counting mutated. The evidence surface
+    /// must not change the metric it reports, so observation and reset are separate.
+    pub(super) const fn touched_rows_for_evidence(&self) -> usize {
+        self.touched_rows
+    }
+
+    /// Reset the touched-row counter. A drive, not an observation.
+    #[cfg(feature = "test-utils")]
+    pub(super) const fn reset_touched_rows(&mut self) {
+        self.touched_rows = 0;
     }
 }
 

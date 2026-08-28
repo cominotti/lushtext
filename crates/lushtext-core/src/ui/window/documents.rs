@@ -18,7 +18,7 @@ use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
 use crate::ui::accessibility::AnnouncementLane;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
-use crate::ui::sidebar::SidebarFileRowStateSnapshot;
+use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
@@ -1033,6 +1033,26 @@ impl LushtextWindow {
                 paths.insert(open_path_key(&updated));
                 drop(paths);
                 editor.set_file_path(&updated);
+                // Re-stamp the draft journal against the new identity.
+                //
+                // A settled autosave has already cleared `draft_dirty`, so without this
+                // the persisted `DraftEntry` keeps `original_path` pointing at a path
+                // that no longer exists. On the next launch the restore resolves it to
+                // `Skip(Unavailable)` — the one arm with neither a notification nor a
+                // restore — so the user's unsaved edits sit in an on-disk body no
+                // surface ever offers.
+                //
+                // **Gated on `is_modified()`, and the gate is load-bearing.** Autosave
+                // eligibility already requires `is_modified()`, so a clean tab would
+                // never become a candidate, `set_draft_dirty(false)` would never run,
+                // and the flag would latch `true` forever. The buffer's own
+                // `connect_changed` decides whether to schedule the **750 ms
+                // first-dirty** autosave from `!draft_dirty()`, so a latched flag would
+                // silently downgrade that tab's first durable draft to the 5 s tick —
+                // losing exactly the edits the fast path exists to capture.
+                if editor.is_modified() {
+                    editor.set_draft_dirty(true);
+                }
                 self.refresh_canonical_path_after_rename(editor, &updated);
                 page.set_title(&editor.title());
             }

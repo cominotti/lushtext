@@ -428,9 +428,18 @@ Cargo workspace:
   cross-turn projection state and `text_flow.rs` for its stateless text-flow
   primitives) around the render-orchestration `mod.rs`. Recycled workspace
   row wiring is split under `ui/sidebar/workspace_section/` into
-  `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`. Plain policy
-  for per-store scan ownership, weighted disposal, and minimap analysis lives
-  in `model/{workspace_scan,workspace_search,workspace_persistence,plain_disposal,minimap_analysis}.rs`.
+  `row_factory.rs`, `row_accessibility.rs`, and `context_menus.rs`. The workspace
+  tree workflow follows the workflow-readability convention with a **nested** role
+  home: `ui/sidebar/mod.rs` is its narrative facade, `policy.rs`, `evidence.rs`, and
+  `seams.rs` sit beside it, and the per-section coordination roles
+  (`scan_admission.rs`, `scan_execution.rs`, `refresh_execution.rs`,
+  `folder_execution.rs`, `file_execution.rs`, `peek_execution.rs`,
+  `reorder_execution.rs`, `watch.rs`) live in `workspace_section/`. Plain policy
+  for weighted disposal, workspace search, and minimap analysis lives in
+  `model/{workspace_search,plain_disposal,minimap_analysis}.rs`, while the
+  workspace tree workflow's own pure policy — per-store scan ownership,
+  workspace-save generations, inline-rename intent, and the confirmed-delete
+  identity verdict — lives beside that workflow in `ui/sidebar/policy.rs`.
 - `crates/lushtext` - thin binary entry point plus integration tests.
 - `crates/gtk-lush/` - governed `0.0.0` GTK Lush family crates for extracting
   reusable GTK4/Libadwaita patterns. These are functional in-tree APIs, not

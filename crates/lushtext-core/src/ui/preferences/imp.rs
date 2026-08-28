@@ -10,7 +10,7 @@
 
 use crate::config::keys;
 use crate::ui::accessibility;
-use crate::ui::sidebar::WorkspaceSidebarWidthPreset;
+use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 use glib::value::ToValue;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;

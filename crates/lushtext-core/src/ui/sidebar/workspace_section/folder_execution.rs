@@ -1,10 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Folder-tree loading, drill-down, and folder expansion helpers for one workspace section.
+//! `execution` role for the workspace tree workflow's **top-level folder row** stage
+//! order: folder-tree loading, the emptiness probe, drill-down focus, and expansion.
 //!
-//! This slice keeps the tree-model and drill-down orchestration together so the
-//! public facade can stay focused on the widget API and callback surface.
+//! # Role
+//!
+//! Coordination, `execution`, qualified by the stage order it serves, nested under the
+//! workflow's canonical role home in `ui/sidebar/`. Renamed from `folders.rs`, a topic
+//! label rather than a job: it said what the module is about without saying what it is
+//! to the workflow.
+//!
+//! Keeping the tree-model and drill-down orchestration together lets the public facade
+//! stay focused on the widget API and callback surface.
+//!
+//! # Inversion to be aware of
+//!
+//! The emptiness probe is admitted through `scan_admission` and reads the directory on a
+//! worker, so a folder row's final expander state is decided at that completion rather
+//! than when the row is built. A refused probe is re-armed by the admission retry, not by
+//! this module.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use gtk4::prelude::*;
@@ -12,13 +28,13 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, glib};
 
 use crate::model::workspace::{FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId};
-use crate::model::workspace_scan::{
-    WorkspaceScanFinish as ChildScanFinish, WorkspaceScanSubmission as ChildScanSubmission,
-    WorkspaceScanTicket as ChildScanTicket,
-};
 use crate::services;
 use crate::ui::accessibility;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
+use crate::ui::sidebar::policy::{
+    WorkspaceScanFinish as ChildScanFinish, WorkspaceScanSubmission as ChildScanSubmission,
+    WorkspaceScanTicket as ChildScanTicket,
+};
 
 use super::LushtextWorkspaceSection;
 
@@ -75,7 +91,7 @@ impl LushtextWorkspaceSection {
         self.prepare_workspace_watch_model(folders);
         self.dismiss_peek_for_rebuild();
         self.save_expanded_paths();
-        super::tree_loading::clear_all_dir_state(self);
+        super::scan_execution::clear_all_dir_state(self);
         self.reset_item_cache();
         let top_level_store = gio::ListStore::new::<FileTreeItem>();
         for entry in folders {
@@ -102,7 +118,7 @@ impl LushtextWorkspaceSection {
                     return None;
                 }
                 file_item.path().map(|path| {
-                    super::tree_loading::build_children_model(&section, &path)
+                    super::scan_execution::build_children_model(&section, &path)
                         .upcast::<gio::ListModel>()
                 })
             });
@@ -298,11 +314,8 @@ impl LushtextWorkspaceSection {
 
     /// Hide or reveal the section body without changing folder-row expansion state.
     pub fn set_section_body_collapsed(&self, collapsed: bool) {
-        if self.imp().section_body_collapsed.replace(collapsed) == collapsed {
-            self.sync_section_body_visibility();
-            return;
-        }
-        if collapsed {
+        let changed = self.imp().section_body_collapsed.replace(collapsed) != collapsed;
+        if changed && collapsed {
             self.dismiss_peek_for_rebuild();
         }
         self.sync_section_body_visibility();
@@ -497,7 +510,7 @@ pub(super) fn schedule_folder_empty_check(
     section: &LushtextWorkspaceSection,
     top_level_store: &gio::ListStore,
     item: &FileTreeItem,
-    folder_path: std::path::PathBuf,
+    folder_path: PathBuf,
     initial_index: u32,
 ) {
     let key = item.workspace_folder_id().map_or_else(
@@ -554,7 +567,7 @@ pub(super) fn schedule_folder_empty_check(
             if cancelled_before_admission {
                 finish_folder_empty_probe(section, key, cancel_active);
             } else {
-                super::tree_loading::sync_child_scan_busy_state(section);
+                super::scan_execution::sync_child_scan_busy_state(section);
             }
         }
     }
@@ -576,14 +589,14 @@ fn start_folder_empty_probe(
         finish_folder_empty_probe(section, key, request.ticket);
         return;
     }
-    let Some(permit) = super::tree_loading::try_acquire_workspace_scan_permit() else {
+    let Some(permit) = super::scan_admission::try_acquire_workspace_scan_permit() else {
         section
             .imp()
             .folder_empty_admission
             .borrow_mut()
             .insert(key, request);
-        super::tree_loading::arm_workspace_scan_admission_retry(section);
-        super::tree_loading::sync_child_scan_busy_state(section);
+        super::scan_admission::arm_workspace_scan_admission_retry(section);
+        super::scan_execution::sync_child_scan_busy_state(section);
         return;
     };
     section
@@ -608,7 +621,7 @@ fn start_folder_empty_probe(
             folder_path: request.folder_path.clone(),
         },
     );
-    super::tree_loading::sync_child_scan_busy_state(section);
+    super::scan_execution::sync_child_scan_busy_state(section);
 
     let section_weak = section.downgrade();
     let path_for_check = request.folder_path.clone();
@@ -780,7 +793,7 @@ fn finish_folder_empty_probe(
         }
         ChildScanFinish::Stale | ChildScanFinish::Terminal => None,
     };
-    super::tree_loading::sync_child_scan_busy_state(section);
+    super::scan_execution::sync_child_scan_busy_state(section);
     if let Some(request) = latest {
         start_folder_empty_probe(section, key, request);
     }
@@ -788,7 +801,7 @@ fn finish_folder_empty_probe(
 
 pub(super) fn cancel_folder_empty_probes_under_roots(
     section: &LushtextWorkspaceSection,
-    roots: &std::collections::HashSet<std::path::PathBuf>,
+    roots: &HashSet<PathBuf>,
 ) {
     let under_removed_root =
         |path: &Path| path.ancestors().any(|ancestor| roots.contains(ancestor));
@@ -818,7 +831,7 @@ pub(super) fn cancel_folder_empty_probes_under_roots(
                     under_removed_root(&pending.folder_path).then_some(key.clone())
                 }),
         )
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<HashSet<_>>();
     for key in keys {
         section.imp().folder_empty_active.borrow_mut().remove(&key);
         section.imp().folder_empty_pending.borrow_mut().remove(&key);
@@ -831,5 +844,5 @@ pub(super) fn cancel_folder_empty_probes_under_roots(
             flight.cancel_all();
         }
     }
-    super::tree_loading::sync_child_scan_busy_state(section);
+    super::scan_execution::sync_child_scan_busy_state(section);
 }

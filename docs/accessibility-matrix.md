@@ -108,10 +108,14 @@ implementation and are allowed. The remaining direct-call baseline is:
 
 | Location | Current direct call | Decision |
 | --- | --- | --- |
-| `crates/lushtext-core/src/ui/sidebar/imp.rs` | Workspace selector and New Workspace labels/descriptions use `update_property`. | Normalize through `ui::accessibility::set_labelled_description`. |
-| `crates/lushtext-core/src/ui/sidebar/workspace_section/folders.rs` | Workspace row/folder description uses `update_property`. | Normalize through `ui::accessibility::set_labelled_description`. |
-| `crates/lushtext-core/src/ui/window/dialogs.rs` | Modified-document group role and checkbox labels/descriptions use direct role/property calls. | Normalize through `ui::accessibility::set_role` and `set_labelled_description`. |
-| `crates/lushtext-core/src/ui/info_bar/imp.rs` | Inline alert role uses `set_accessible_role` directly. | Normalize through `ui::accessibility::set_role`. |
+| — | **none** | The baseline is empty: re-running the audit command above (narrowed to `set_accessible_role`, `.update_property(`, `.update_state(`, `.update_relation(`) over the current tree returns no hit outside `ui/accessibility.rs`. |
+
+Historical baseline, kept so a reader can tell "cleared" from "never audited":
+`ui/sidebar/imp.rs`, `ui/sidebar/workspace_section/folders.rs`,
+`ui/window/dialogs.rs`, and `ui/info_bar/imp.rs` each carried one direct call and
+each was normalized through `ui::accessibility`. The `folders.rs` pointer was
+additionally **dangling** — the workspace-tree migration renamed that module to
+`workspace_section/folder_execution.rs` — which is what prompted this re-audit.
 
 No permanent exception is currently justified. If a future GTK contract requires
 one, add an explicit allowlist entry with owner, GTK reason, proof lane, and

@@ -80,6 +80,28 @@ exclude_re = [
     # Equivalent for stable directory entries: non-symlink classification is
     # identical whether it uses `DirEntry::file_type()` or follows with metadata.
     "crates/lushtext-core/src/services/file_tree\\.rs:.*replace match guard !file_type\\.is_symlink\\(\\) with false in classify_entry",
+    # Equivalent under the workspace persistence state machine's own invariants,
+    # confirmed by slot 5b's triage of the seven survivors this module inherited
+    # when it relocated out of `model/workspace_persistence.rs`.
+    #
+    # `has_pending_work` is `requested != durable || in_flight.is_some() ||
+    # failed.is_some()`. Replacing the *second* `||` yields `a || (b && c)`, which
+    # differs from `a || b || c` only when `a` is false and exactly one of `b`/`c`
+    # is true. Both such states are unreachable: `in_flight` and `failed` are
+    # mutually exclusive (`apply_failure` clears the worker slot before recording
+    # the failure, and `start`/`apply_success` clear the failure), and each of them
+    # implies `requested != durable` — `start` requires it, and only `apply_success`
+    # advances `durable`, which clears both. So the trailing disjuncts are
+    # *defensive redundancy* rather than live logic, and no test can distinguish the
+    # mutant.
+    #
+    # The invariant is pinned by
+    # `an_in_flight_write_and_a_recorded_failure_are_mutually_exclusive_and_both_imply_dirt`,
+    # which fails if a future change makes either state reachable — at which point
+    # this exclusion must be removed rather than widened. Scoped to this one
+    # operator in this one function: the first `||`, the `!=`, and the function's
+    # return value all still mutate and are all killed.
+    "crates/lushtext-core/src/ui/sidebar/policy\\.rs:.*:68: replace \\|\\| with && in WorkspacePersistenceState::has_pending_work",
     # Equivalent on LushText's Linux target: this non-Unix advisory-lock stub is
     # not compiled or called in the mutation test target.
     "crates/lushtext-core/src/services/durable_write\\.rs:131:.*FileWriteLock::acquire -> std::io::Result<Option<Self>>",

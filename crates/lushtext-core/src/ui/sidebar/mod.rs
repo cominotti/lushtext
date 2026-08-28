@@ -1,283 +1,160 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Multi-workspace sidebar: fixed affordances, workspace sections, and persistence.
+//! The workspace tree workflow: workspaces, their folders, the file tree inside
+//! them, and everything that keeps all three agreeing with the disk.
 //!
-//! The public widget facade stays here, while section callback forwarding,
-//! workspace lifecycle flows, and folder/workspace dialogs live in dedicated
-//! sibling modules to keep this driving adapter easier to navigate.
+//! This module is the workflow's **narrative facade** and its **canonical role home**.
+//! It narrates the ordered stages and delegates every one of them; it owns no timer,
+//! no admission bookkeeping, no generation counter, and no widget mutation. The role
+//! home is **nested**: the single `policy.rs`, `evidence.rs`, and `seams.rs` live here
+//! beside this file, while the per-section coordination roles live in
+//! `workspace_section/`, whose own module doc lists them.
+//!
+//! # Roles at this level
+//!
+//! | Module | Role |
+//! | --- | --- |
+//! | `policy.rs` | pure policy — the workflow's only one. Imports no GTK-family crate, which is what keeps it inside the default mutation scope |
+//! | `evidence.rs` | evidence — the one typed observation surface, and the only thing `window.workspace` projects from |
+//! | `seams.rs` | seam value objects — `WorkspaceWatchTicket`, `FileOperationTicket`, the watch generations, and the window's file-row projection |
+//! | `list_execution.rs` | coordination, `execution`: workspace-list load and add / rename / unlist |
+//! | `membership_execution.rs` | coordination, `execution`: a workspace's folder add / remove / reorder |
+//! | `filter_execution.rs` | coordination, `execution`: the workspace scope filter and its fade |
+//! | `persist_execution.rs` | coordination, `execution`: the `workspaces.json` pipeline |
+//! | `callbacks.rs`, `dialogs.rs`, `imp.rs` | **called presentation surfaces** — no role |
+//! | `width_preset.rs` | **not this workflow's**: `WFR-SHELL-LAYOUT` owns it |
+//! | `file_tree_item.rs` | outside this workflow — no coordination tier |
+//!
+//! # The twelve stage orders, and where control resumes
+//!
+//! Every one of these is deferred somewhere, so "where control resumes" is the part a
+//! reader cannot guess. `⇢` marks a stage boundary control does **not** cross
+//! synchronously.
+//!
+//! | Stage order | Ordered stages | Control resumes |
+//! | --- | --- | --- |
+//! | workspace-list load | read `workspaces.json` ⇢ adopt and build sections | in the worker completion, **only if** no mutation superseded the request generation captured at dispatch — otherwise the load is discarded rather than reverting the user's newer workspace |
+//! | workspace add / rename / unlist | dialog ⇢ response → mutate → request persistence | in the dialog response, then synchronously into `persist_execution` |
+//! | folder add / remove / reorder | `Add Folder` dialog, a row remove request, or a **reorder drag-and-drop drop** ⇢ resolve folder identity off the GTK thread ⇢ apply → persist | in the identity worker's completion; that is the only off-GTK stage in the membership family |
+//! | persistence | debounce ⇢ worker write ⇢ terminal → retry ladder or settle | in the debounce, then the worker terminal; a close-time flush bypasses the debounce and **aborts the close** if it fails |
+//! | scope filter | selection → fade out ⇢ apply visibility ⇢ settle | in the revealer's `child-revealed` notification, with a headless safety-net timer as fallback |
+//! | top-level folder rows | seed rows → probe emptiness ⇢ publish | in the empty-probe worker, which is admission-gated and can be refused and retried |
+//! | directory scan and expansion | expand → admit ⇢ scan worker ⇢ batched reconcile ⇢ deferred expansion restore | in the scan worker, then per reconcile batch, then in the restore callback — see the warning below |
+//! | targeted in-place refresh | coalesce ⇢ debounce ⇢ plan → splice | in the refresh debounce; a pending full refresh releases and dominates queued targeted paths |
+//! | watcher install and mailbox | compute targets ⇢ install worker ⇢ poll mailbox ⇢ reconcile | in the install completion, validated as a unit by `WorkspaceWatchTicket`: a stale lifetime **retires**, a stale target generation **restarts** |
+//! | file create / rename / delete | inline entry or dialog ⇢ filesystem worker ⇢ project onto the row → migrate sidecars | in the worker completion, gated by `FileOperationTicket` so a recycled row is never rewritten; sidecar migration is a **call** into the notes workflow, after the row updates settle |
+//! | `Space` peek | key (captured on the list view, gated against focused controls that own their keys) ⇢ read worker ⇢ popover | in the peek worker, rejected if the request token or path changed |
+//! | focused-folder drilldown | activate → reseed rows ⇢ scan ⇢ restore expansion | in the scan for the new root; leaving restores the original folder seeds |
+//!
+//! # The inversion most easily read wrong
+//!
+//! The **deferred expansion restore** at the end of the scan order. `expanded_paths`
+//! is authoritative live state, and the restore callback must read it **at apply
+//! time**, not clone it when it is scheduled. A snapshot taken at schedule time
+//! resurrects a collapse the user performed in between — silently, and only for users
+//! whose filesystem is slow enough to make the window wide. Its borrow lives inside
+//! the deferred closure for exactly that reason.
+//!
+//! Related, and equally easy to break: a targeted refresh must **not** rewalk the
+//! flattened model to rediscover expansion. The full derivation is reserved for
+//! bootstrap, pre-replacement capture, and the test oracle, and the evidence surface
+//! must not call it at all — it advances the very counters that surface reports.
+//!
+//! # State this workflow shares with others
+//!
+//! | Shared with | What, and which direction it flows |
+//! | --- | --- |
+//! | the cross-cutting startup gate | it calls `load_workspaces()`; this workflow does not decide when startup runs |
+//! | `WFR-SHELL-LAYOUT` | the window pushes the open/active file-row projection **down** into the sidebar; the sidebar treats those paths as display identities only. That row also owns the sidebar show/hide animation and the width preset |
+//! | `WFR-COMMAND-PALETTE` | the sidebar's structure-changed signal drives the palette's file index; the sidebar does not know the index exists |
+//! | `WFR-NOTES-BOOKMARKS` | a rename **calls** `migrate_note_sidecars_after_rename`; a context menu route opens notes. Called, never reached into |
+//! | `WFR-LOCAL-HISTORY` | a context menu route calls `show_local_history_for_path` |
+//! | `WFR-AUTOMATION-SPINE` | `window.workspace` projects from `evidence.rs`, and three readiness blockers read cheap accessors that are identical to it by construction |
 
 mod callbacks;
 mod dialogs;
+pub mod evidence;
 pub mod file_tree_item;
 pub mod policy;
-mod seams;
+pub(crate) mod seams;
 #[cfg(feature = "test-utils")]
 mod test_policy;
 // Private GObject implementation for the template-backed sidebar shell.
 mod imp;
+// Cross-cutting, and NOT this workflow's: the workspace sidebar width preset is
+// `WFR-SHELL-LAYOUT`'s value, consumed by Preferences and the window shell. It
+// lives here because it names a sidebar dimension, not because this workflow owns
+// it. See the module doc.
+mod filter_execution;
+mod list_execution;
+mod membership_execution;
+mod persist_execution;
+pub mod width_preset;
 pub mod workspace_section;
-mod workspaces;
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use glib::Object;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::prelude::*;
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
 use crate::services::notifications::NotificationSeverity;
+use seams::SidebarFileRowStateSnapshot;
 
 #[cfg(feature = "test-utils")]
 pub use test_policy::{
-    set_workspace_placeholder_cleanup_delay_for_test, set_workspace_rename_worker_delay_for_test,
+    set_workspace_load_worker_delay_for_test, set_workspace_placeholder_cleanup_delay_for_test,
+    set_workspace_rename_worker_delay_for_test,
 };
 
 pub use file_tree_item::FileTreeItem;
 pub use workspace_section::LushtextWorkspaceSection as WorkspaceSection;
 
-/// Debounce interval for persisting workspace changes to disk (ms).
-pub(super) const PERSIST_DEBOUNCE_MS: u64 = 150;
-
-/// Typed user-safe failure returned by an asynchronous workspace close flush.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkspacePersistenceFlushError {
-    message: String,
-}
-
-impl WorkspacePersistenceFlushError {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for WorkspacePersistenceFlushError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for WorkspacePersistenceFlushError {}
-
-/// Window-owned projection of file tabs that sidebar rows may render.
-///
-/// The sidebar treats these paths as display identities only. The window still
-/// owns duplicate detection, active-tab selection, canonical reconciliation,
-/// and failed-load handling.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SidebarFileRowStateSnapshot {
-    open_identities: HashSet<PathBuf>,
-    active_identities: HashSet<PathBuf>,
-}
-
-impl SidebarFileRowStateSnapshot {
-    /// Build a snapshot from the open and active file identities visible to the window.
-    #[must_use]
-    pub(crate) fn from_identities(
-        open_identities: HashSet<PathBuf>,
-        active_identities: HashSet<PathBuf>,
-    ) -> Self {
-        Self {
-            open_identities,
-            active_identities,
-        }
-    }
-
-    /// Return whether a file-tree path is open in any tab.
-    #[must_use]
-    pub(crate) fn is_open(&self, path: &Path) -> bool {
-        self.open_identities.contains(path)
-    }
-
-    /// Return whether a file-tree path is the active tab.
-    #[must_use]
-    pub(crate) fn is_active(&self, path: &Path) -> bool {
-        self.active_identities.contains(path)
-    }
-}
-
 impl LushtextSidebar {
-    /// Return whether workspace persistence remains dirty, active, failed, or retry-waiting.
+    /// Whether workspace persistence remains dirty, active, failed, or retry-waiting.
+    ///
+    /// A cheap read for the polled `workspace-persist` readiness blocker, identical by
+    /// construction to `WorkspaceTreeEvidence::persistence_pending`.
     #[must_use]
     pub(crate) fn workspace_persistence_pending(&self) -> bool {
         self.imp().persistence.borrow().has_pending_work()
     }
 
-    /// Return whether one workspace snapshot currently owns the worker slot.
+    /// Whether the workspace scope filter fade sequence is currently running.
+    ///
+    /// A cheap read for the polled `workspace-filter-animation` readiness blocker,
+    /// identical by construction to `WorkspaceTreeEvidence::filter_animation_active`
+    /// because both read the one cell. Retiring the old `ui/automation.rs` `imp()`
+    /// reach-through is what this accessor bought.
     #[must_use]
-    pub(crate) fn workspace_persistence_inflight(&self) -> bool {
-        self.imp()
-            .persistence
-            .borrow()
-            .in_flight_generation()
-            .is_some()
+    pub(crate) fn workspace_filter_animation_active(&self) -> bool {
+        self.imp().workspace_filter_animation_active.get()
     }
 
     /// Whether any section still has watcher lifecycle, mailbox, or refresh work.
     pub(crate) fn workspace_refresh_blocks_readiness(&self) -> bool {
-        self.imp()
-            .sections
-            .borrow()
-            .iter()
-            .any(WorkspaceSection::workspace_refresh_blocks_readiness)
+        self.any_section_blocks_refresh_readiness()
     }
 
     /// Move focus to the first visible workspace file tree.
-    ///
-    /// This is a UI-adapter helper for keyboard and automation entry points.
-    /// The sidebar owns section visibility, so callers do not need to inspect
-    /// the current workspace filter before requesting focus.
     pub(crate) fn focus_first_visible_file_tree(&self) -> bool {
-        self.imp()
-            .sections
-            .borrow()
-            .iter()
-            .find(|section| section.is_visible())
-            .is_some_and(WorkspaceSection::focus_file_tree)
+        self.with_first_visible_section(WorkspaceSection::focus_file_tree)
     }
 
     /// Move focus to the first visible workspace header control.
-    ///
-    /// Header context-menu shortcuts bubble from the focused collapse button to
-    /// the header controller, giving keyboard users an equivalent menu path.
     pub(crate) fn focus_first_visible_header_controls(&self) -> bool {
-        self.imp()
-            .sections
-            .borrow()
-            .iter()
-            .find(|section| section.is_visible())
-            .is_some_and(WorkspaceSection::focus_header_controls)
+        self.with_first_visible_section(WorkspaceSection::focus_header_controls)
     }
 
     /// Open the selected row's context menu in the first visible workspace tree.
-    ///
-    /// Used by automation smoke when synthetic keyboard events are unavailable;
-    /// the section still applies the same selection and menu wiring as keyboard
-    /// or pointer activation.
     pub(crate) fn show_first_visible_file_tree_context_menu(&self) -> bool {
-        self.imp()
-            .sections
-            .borrow()
-            .iter()
-            .find(|section| section.is_visible())
-            .is_some_and(WorkspaceSection::show_selected_file_context_menu)
+        self.with_first_visible_section(WorkspaceSection::show_selected_file_context_menu)
     }
 
     /// Open the first visible workspace header's context menu.
     pub(crate) fn show_first_visible_header_context_menu(&self) -> bool {
-        self.imp()
-            .sections
-            .borrow()
-            .iter()
-            .find(|section| section.is_visible())
-            .is_some_and(WorkspaceSection::show_header_context_menu)
-    }
-}
-
-/// Supported named workspace sidebar presets used by Preferences and shell math.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkspaceSidebarWidthPreset {
-    Small,
-    Comfy,
-    Large,
-}
-
-impl WorkspaceSidebarWidthPreset {
-    pub const DEFAULT: Self = Self::Comfy;
-    pub const ALL: [Self; 3] = [Self::Small, Self::Comfy, Self::Large];
-
-    /// Return the user-visible label for the preset picker.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Small => "Small",
-            Self::Comfy => "Comfy",
-            Self::Large => "Large",
-        }
-    }
-
-    /// Return the stored preset hint fraction used to identify the selected preset.
-    #[must_use]
-    pub const fn fraction(self) -> f64 {
-        match self {
-            Self::Small => 0.2,
-            Self::Comfy => 0.3,
-            Self::Large => 0.4,
-        }
-    }
-
-    /// Map an arbitrary stored fraction back onto the nearest supported preset.
-    #[must_use]
-    pub fn from_fraction(fraction: f64) -> Self {
-        let small_delta = (fraction - Self::Small.fraction()).abs();
-        let comfy_delta = (fraction - Self::Comfy.fraction()).abs();
-        let large_delta = (fraction - Self::Large.fraction()).abs();
-        let min_delta = small_delta.min(comfy_delta.min(large_delta));
-
-        if (comfy_delta - min_delta).abs() < f64::EPSILON {
-            Self::Comfy
-        } else if (small_delta - min_delta).abs() < f64::EPSILON {
-            Self::Small
-        } else {
-            Self::Large
-        }
-    }
-
-    /// Convert the preset into a stable position for Adwaita combo rows.
-    #[must_use]
-    pub const fn index(self) -> u32 {
-        match self {
-            Self::Small => 0,
-            Self::Comfy => 1,
-            Self::Large => 2,
-        }
-    }
-
-    /// Convert a combo-row selection back into a workspace width preset.
-    #[must_use]
-    pub const fn from_index(index: u32) -> Option<Self> {
-        match index {
-            0 => Some(Self::Small),
-            1 => Some(Self::Comfy),
-            2 => Some(Self::Large),
-            _ => None,
-        }
-    }
-
-    /// Lower bound for this preset once the sidebar is side-by-side on desktop widths.
-    #[must_use]
-    pub const fn min_width_sp(self) -> f64 {
-        match self {
-            Self::Small => 220.0,
-            Self::Comfy => 280.0,
-            Self::Large => 340.0,
-        }
-    }
-
-    /// Upper bound that keeps the sidebar comfortable on wide and ultrawide windows.
-    #[must_use]
-    pub const fn max_width_sp(self) -> f64 {
-        match self {
-            Self::Small => 280.0,
-            Self::Comfy => 360.0,
-            Self::Large => 440.0,
-        }
-    }
-
-    /// Convert the preset's hint fraction into a bounded visible width for the current window.
-    #[must_use]
-    pub fn clamped_width_sp(self, window_width: i32) -> f64 {
-        (f64::from(window_width.max(1)) * self.fraction())
-            .clamp(self.min_width_sp(), self.max_width_sp())
-    }
-
-    /// Return the effective split-view fraction after clamping this preset for the window width.
-    #[must_use]
-    pub fn effective_fraction(self, window_width: i32) -> f64 {
-        (self.clamped_width_sp(window_width) / f64::from(window_width.max(1))).min(1.0)
+        self.with_first_visible_section(WorkspaceSection::show_header_context_menu)
     }
 }
 

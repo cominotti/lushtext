@@ -1619,8 +1619,8 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
     );
 
     section.stop_workspace_watch_for_test();
-    let initial_generation = section.watch_target_generation_for_test();
-    let initial_targets = section.watch_targets_for_test();
+    let initial_generation = section.workspace_section_evidence().watch_target_generation;
+    let initial_targets = section.workspace_section_evidence().watch_targets;
     let nested_row = row_for_path(&section, &nested).expect("nested folder should be visible");
     let second_row =
         row_for_path(&section, second.path()).expect("second top-level folder should be visible");
@@ -1755,7 +1755,7 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
                 "reorder hover should not emit any expanded-state transition"
             );
             assert_eq!(
-                section.workspace_folder_reorder_drag_hover_fallback_count_for_test(),
+                section.workspace_section_evidence().reorder_drag_hover_fallback_count,
                 0,
                 "shield-owned hover should never request the defensive child-model fallback"
             );
@@ -1780,12 +1780,12 @@ fn test_workspace_folder_reorder_drag_hover_does_not_expand_or_restart_watch() {
         "ending the drag should clear all insertion-line feedback"
     );
     assert_eq!(
-        section.watch_target_generation_for_test(),
+        section.workspace_section_evidence().watch_target_generation,
         initial_generation,
         "drag-hover expansion suppression must not restart workspace watching"
     );
     assert_eq!(
-        section.watch_targets_for_test(),
+        section.workspace_section_evidence().watch_targets,
         initial_targets,
         "drag hover should leave materialized watch coverage unchanged"
     );
@@ -2532,15 +2532,9 @@ fn test_descendant_file_context_menu_keeps_file_actions_under_workspace_folder()
     assert!(!labels.iter().any(|label| label == "Remove from Workspace"));
     assert!(!labels.iter().any(|label| label == "Move Up"));
     assert!(!labels.iter().any(|label| label == "Move Down"));
-    assert!(
-        section
-            .context_target_workspace_folder_id_for_test()
-            .is_none()
-    );
-    assert_eq!(
-        section.context_target_path_for_test().as_deref(),
-        Some(file.as_path())
-    );
+    let context = section.workspace_section_evidence();
+    assert!(context.context_target_workspace_folder_id.is_none());
+    assert_eq!(context.context_target_path.as_deref(), Some(file.as_path()));
 
     let activated = Rc::new(RefCell::new(None::<PathBuf>));
     let activated_clone = Rc::clone(&activated);
@@ -2631,15 +2625,9 @@ fn test_file_tree_context_menu_opens_from_keyboard_for_selected_row() {
     assert!(labels.iter().any(|label| label == "Focus Folder"));
     assert!(labels.iter().any(|label| label == "Rename"));
     assert!(labels.iter().any(|label| label == "Delete"));
-    assert_eq!(
-        section.context_target_path_for_test().as_deref(),
-        Some(nested.as_path())
-    );
-    assert!(
-        section
-            .context_target_workspace_folder_id_for_test()
-            .is_none()
-    );
+    let context = section.workspace_section_evidence();
+    assert_eq!(context.context_target_path.as_deref(), Some(nested.as_path()));
+    assert!(context.context_target_workspace_folder_id.is_none());
 
     section
         .activate_action("section.focus-folder", None)
@@ -2702,7 +2690,8 @@ fn test_file_tree_keyboard_context_menu_exposes_workspace_folder_reorder() {
     assert!(labels.iter().any(|label| label == "Remove from Workspace"));
     assert_eq!(
         section
-            .context_target_workspace_folder_id_for_test()
+            .workspace_section_evidence()
+            .context_target_workspace_folder_id
             .as_ref(),
         Some(&second_id)
     );
@@ -2875,15 +2864,9 @@ fn test_descendant_focus_folder_does_not_mutate_workspace_folder_membership() {
     assert!(labels.iter().any(|label| label == "Delete"));
     assert!(!labels.iter().any(|label| label == "Open Folder Note…"));
     assert!(!labels.iter().any(|label| label == "Remove from Workspace"));
-    assert!(
-        section
-            .context_target_workspace_folder_id_for_test()
-            .is_none()
-    );
-    assert_eq!(
-        section.context_target_path_for_test().as_deref(),
-        Some(nested.as_path())
-    );
+    let context = section.workspace_section_evidence();
+    assert!(context.context_target_workspace_folder_id.is_none());
+    assert_eq!(context.context_target_path.as_deref(), Some(nested.as_path()));
     section.focus_folder(&nested);
     flush_events();
 
@@ -3414,7 +3397,7 @@ fn test_watch_targets_keep_stable_path_order() {
         WorkspaceWatchTarget::directory(second.path().to_path_buf()),
     ];
     expected.sort();
-    assert_eq!(section.watch_targets_for_test(), expected);
+    assert_eq!(section.workspace_section_evidence().watch_targets, expected);
 }
 
 #[test]
@@ -3432,7 +3415,7 @@ fn test_watch_targets_ignore_collapsed_descendants_until_expanded() {
     )]);
 
     assert_eq!(
-        section.watch_targets_for_test(),
+        section.workspace_section_evidence().watch_targets,
         vec![WorkspaceWatchTarget::directory(parent.path().to_path_buf())],
         "collapsed broad folders should not recursively watch descendants"
     );
@@ -3441,7 +3424,7 @@ fn test_watch_targets_ignore_collapsed_descendants_until_expanded() {
     section.expand_folders();
     wait_until(Duration::from_secs(5), || tree_contains_path(&section, &nested));
     assert_eq!(
-        section.watch_targets_for_test(),
+        section.workspace_section_evidence().watch_targets,
         vec![WorkspaceWatchTarget::directory(parent.path().to_path_buf())],
         "visible but collapsed descendants remain manual-refresh territory"
     );
@@ -3451,11 +3434,11 @@ fn test_watch_targets_ignore_collapsed_descendants_until_expanded() {
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || {
         section
-            .watch_targets_for_test()
+            .workspace_section_evidence().watch_targets
             .contains(&WorkspaceWatchTarget::directory(nested.clone()))
     });
     assert_eq!(
-        section.watch_targets_for_test(),
+        section.workspace_section_evidence().watch_targets,
         vec![
             WorkspaceWatchTarget::directory(parent.path().to_path_buf()),
             WorkspaceWatchTarget::directory(nested),
@@ -3655,7 +3638,7 @@ fn test_inline_rename_completion_ignores_a_row_retargeted_mid_flight() {
 
     wait_until(Duration::from_secs(10), || fixture::exists(&renamed));
     wait_until(Duration::from_secs(10), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
 
     // The bystander row must still describe the bystander file.
@@ -3669,16 +3652,13 @@ fn test_inline_rename_completion_ignores_a_row_retargeted_mid_flight() {
     );
     fixture::assert_text(&bystander, "bystander\n");
     // The renamed file must be watched, and the old path must not be.
-    let targets = section.watch_targets_for_test();
+    let targets = section.workspace_section_evidence().watch_targets;
     assert!(
         !targets.contains(&WorkspaceWatchTarget::directory(source.clone())),
         "the stale path must not remain a watch target"
     );
     assert!(
-        section
-            .watch_targets_for_test()
-            .iter()
-            .all(|target| target.path != source),
+        targets.iter().all(|target| target.path != source),
         "the renamed file's old path must not survive anywhere in the watch mirror"
     );
 }
@@ -3775,7 +3755,7 @@ fn test_inline_rename_refreshes_expanded_directory_watch_target() {
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || {
         section
-            .watch_targets_for_test()
+            .workspace_section_evidence().watch_targets
             .contains(&WorkspaceWatchTarget::directory(nested.clone()))
     });
     wait_until(Duration::from_secs(5), || {
@@ -3798,17 +3778,17 @@ fn test_inline_rename_refreshes_expanded_directory_watch_target() {
     wait_until(Duration::from_secs(10), || {
         fixture::exists(&renamed)
             && section
-                .watch_targets_for_test()
+                .workspace_section_evidence().watch_targets
                 .contains(&WorkspaceWatchTarget::directory(renamed.clone()))
-            && section.workspace_watcher_is_current_for_test()
+            && section.workspace_section_evidence().watcher_is_current
     });
     assert!(
         !section
-            .watch_targets_for_test()
+            .workspace_section_evidence().watch_targets
             .contains(&WorkspaceWatchTarget::directory(nested.clone())),
         "the in-place rename must release the stale directory target"
     );
-    let live = section.expanded_paths_for_test();
+    let live = section.workspace_section_evidence().expanded_paths;
     assert!(
         live.contains(&renamed) && !live.contains(&nested),
         "expansion intent must follow the renamed directory prefix"
@@ -3854,7 +3834,7 @@ fn test_one_row_collapse_touches_only_its_incremental_watch_delta() {
             .set_expanded(true);
     }
     wait_until(Duration::from_secs(5), || {
-        section.watch_targets_for_test().len() == children.len() + 1
+        section.workspace_section_evidence().watch_targets.len() == children.len() + 1
     });
     wait_until(Duration::from_secs(10), || {
         children
@@ -3862,7 +3842,10 @@ fn test_one_row_collapse_touches_only_its_incremental_watch_delta() {
             .all(|child| tree_contains_path(&section, &child.join("entry.txt")))
     });
     flush_events();
-    let _ = section.take_watch_target_rows_touched_for_test();
+    // Reset before the measured collapse. The retired seam was a destructive `take`,
+    // whose only purpose here was this reset; the count itself now comes from the
+    // evidence surface, which must not mutate what it reports.
+    section.reset_watch_target_rows_touched_for_test();
 
     let collapsed = &children[children.len() / 2];
     row_for_path(&section, collapsed)
@@ -3870,12 +3853,12 @@ fn test_one_row_collapse_touches_only_its_incremental_watch_delta() {
         .set_expanded(false);
     wait_until(Duration::from_secs(5), || {
         !section
-            .watch_targets_for_test()
+            .workspace_section_evidence().watch_targets
             .contains(&WorkspaceWatchTarget::directory(collapsed.clone()))
     });
 
     assert!(
-        section.take_watch_target_rows_touched_for_test() <= 2,
+        section.workspace_section_evidence().watch_target_rows_touched <= 2,
         "one collapse should touch only the changed row and its removed child splice"
     );
 }
@@ -3958,7 +3941,7 @@ fn test_stale_watcher_failure_is_ignored_after_targets_are_superseded() {
     )]);
 
     wait_until(Duration::from_secs(3), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
     assert!(
         messages
@@ -3999,10 +3982,10 @@ fn test_rapid_successful_watcher_generations_install_only_the_latest() {
     }
 
     wait_until(Duration::from_secs(4), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
     assert_eq!(
-        section.watch_targets_for_test(),
+        section.workspace_section_evidence().watch_targets,
         vec![WorkspaceWatchTarget::directory(
             folders.last().expect("latest folder").path().to_path_buf()
         )]
@@ -4018,7 +4001,7 @@ fn test_rapid_successful_watcher_generations_install_only_the_latest() {
         Some(1)
     );
     assert_eq!(
-        section.workspace_watcher_worker_starts_for_test(),
+        section.workspace_section_evidence().watcher_worker_starts,
         2,
         "one slow generation and one latest handoff should bound worker starts"
     );
@@ -4052,7 +4035,7 @@ fn test_stopping_section_during_slow_start_rejects_returned_handle() {
     wait_until(Duration::from_secs(1), || completion_window.get());
     assert!(section.imp().watch_runtime.watcher.borrow().is_none());
     assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
-    assert!(!section.workspace_watcher_is_current_for_test());
+    assert!(!section.workspace_section_evidence().watcher_is_current);
 }
 
 #[test]
@@ -4066,7 +4049,7 @@ fn test_workspace_watch_batches_take_one_notice_and_bound_refresh_paths() {
     )]);
     let _window = present_section_window(&section);
     wait_until(Duration::from_secs(5), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
     section.pause_workspace_watch_polling_for_test();
 
@@ -4080,14 +4063,23 @@ fn test_workspace_watch_batches_take_one_notice_and_bound_refresh_paths() {
     ]);
     section.merge_workspace_watch_paths_for_test(vec![gamma]);
 
-    let (mailbox, refresh_paths, refresh_full, _) =
-        section.workspace_watch_pressure_for_test();
+    let pressure = section.workspace_section_evidence();
+    let (mailbox, refresh_paths, refresh_full) = (
+        pressure.watch_mailbox,
+        pressure.refresh_pending_paths,
+        pressure.refresh_pending_full_reload,
+    );
     assert_eq!(mailbox.expect("installed mailbox").retained_paths, 3);
     assert_eq!(refresh_paths, 0);
     assert!(!refresh_full);
     assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
-    let (mailbox, refresh_paths, refresh_full, notices) =
-        section.workspace_watch_pressure_for_test();
+    let pressure = section.workspace_section_evidence();
+    let (mailbox, refresh_paths, refresh_full, notices) = (
+        pressure.watch_mailbox,
+        pressure.refresh_pending_paths,
+        pressure.refresh_pending_full_reload,
+        pressure.watch_last_poll_notices,
+    );
     assert_eq!(mailbox.expect("installed mailbox").retained_paths, 0);
     assert_eq!(refresh_paths, 3);
     assert!(!refresh_full);
@@ -4099,10 +4091,18 @@ fn test_workspace_watch_batches_take_one_notice_and_bound_refresh_paths() {
             .map(|index| folder.path().join(format!("bulk-{index}")))
             .collect(),
     );
-    assert_eq!(section.refresh_pressure_for_test(), (0, true));
+    {
+        let evidence = section.workspace_section_evidence();
+        assert_eq!(evidence.refresh_pending_paths, 0);
+        assert!(evidence.refresh_pending_full_reload);
+    }
     section.queue_auto_refresh_for_test(vec![folder.path().join("ignored-later")]);
+    let pressure = section.workspace_section_evidence();
     assert_eq!(
-        section.refresh_pressure_for_test(),
+        (
+            pressure.refresh_pending_paths,
+            pressure.refresh_pending_full_reload
+        ),
         (0, true),
         "a pending full refresh must not retain later targeted paths"
     );
@@ -4119,7 +4119,7 @@ fn test_workspace_watch_overflow_promotes_once_before_gtk_poll() {
     )]);
     let _window = present_section_window(&section);
     wait_until(Duration::from_secs(5), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
     section.pause_workspace_watch_polling_for_test();
 
@@ -4128,17 +4128,25 @@ fn test_workspace_watch_overflow_promotes_once_before_gtk_poll() {
             .map(|index| folder.path().join(format!("storm-{index}")))
             .collect(),
     );
-    let (mailbox, _, _, _) = section.workspace_watch_pressure_for_test();
+    let mailbox = section.workspace_section_evidence().watch_mailbox;
     let mailbox = mailbox.expect("installed mailbox");
     assert_eq!(mailbox.retained_paths, 0);
     assert!(mailbox.full_refresh);
 
     assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
-    assert_eq!(section.refresh_pressure_for_test(), (0, true));
-    assert!(section.workspace_refresh_blocks_readiness_for_test());
+    {
+        let evidence = section.workspace_section_evidence();
+        assert_eq!(evidence.refresh_pending_paths, 0);
+        assert!(evidence.refresh_pending_full_reload);
+    }
+    assert!(section.workspace_section_evidence().refresh_blocks_readiness);
     section.merge_workspace_watch_paths_for_test(vec![folder.path().join("later")]);
     assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
-    assert_eq!(section.refresh_pressure_for_test(), (0, true));
+    {
+        let evidence = section.workspace_section_evidence();
+        assert_eq!(evidence.refresh_pending_paths, 0);
+        assert!(evidence.refresh_pending_full_reload);
+    }
 }
 
 #[test]
@@ -4155,16 +4163,16 @@ fn test_workspace_readiness_waits_for_active_child_scan_application() {
     let _window = present_section_window(&section);
     section.expand_folders();
     wait_until(Duration::from_secs(5), || {
-        let evidence = section.child_scan_pressure_for_test();
+        let evidence = section.workspace_section_evidence().scan_pressure;
         evidence.active_scans > 0 || evidence.active_empty_probes > 0
     });
 
-    assert!(section.workspace_refresh_blocks_readiness_for_test());
+    assert!(section.workspace_section_evidence().refresh_blocks_readiness);
 
     wait_until(Duration::from_secs(5), || {
-        !section.workspace_refresh_blocks_readiness_for_test()
+        !section.workspace_section_evidence().refresh_blocks_readiness
     });
-    assert!(!section.workspace_refresh_blocks_readiness_for_test());
+    assert!(!section.workspace_section_evidence().refresh_blocks_readiness);
 }
 
 #[test]
@@ -4196,24 +4204,24 @@ fn test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live() {
     }
 
     wait_until(Duration::from_secs(10), || {
-        let evidence = sections[0].child_scan_pressure_for_test();
+        let evidence = sections[0].workspace_section_evidence().scan_pressure;
         let waiting = sections
             .iter()
             .map(|section| {
                 section
-                    .child_scan_pressure_for_test()
+                    .workspace_section_evidence().scan_pressure
                     .admission_waiting_scans
             })
             .sum::<usize>();
-        evidence.aggregate_active_tasks == evidence.aggregate_task_limit && waiting >= 2
+        evidence.process_active_scan_tasks == evidence.process_scan_task_limit && waiting >= 2
     });
 
-    let pressure = sections[0].child_scan_pressure_for_test();
+    let pressure = sections[0].workspace_section_evidence().scan_pressure;
     let waiting_high_water = sections
         .iter()
         .map(|section| {
             section
-                .child_scan_pressure_for_test()
+                .workspace_section_evidence().scan_pressure
                 .admission_waiting_scans
         })
         .sum::<usize>();
@@ -4221,7 +4229,7 @@ fn test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live() {
         .iter()
         .filter(|section| {
             section
-                .child_scan_pressure_for_test()
+                .workspace_section_evidence().scan_pressure
                 .admission_waiting_scans
                 > 0
         })
@@ -4230,12 +4238,12 @@ fn test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live() {
     assert!(
         admission_waiters
             .iter()
-            .all(|section| section.workspace_refresh_blocks_readiness_for_test()),
+            .all(|section| section.workspace_section_evidence().refresh_blocks_readiness),
         "sections waiting only for process-wide admission must still block readiness"
     );
-    assert_eq!(pressure.aggregate_task_limit, 4);
-    assert!(pressure.aggregate_active_tasks <= pressure.aggregate_task_limit);
-    assert!(pressure.aggregate_task_high_water <= pressure.aggregate_task_limit);
+    assert_eq!(pressure.process_scan_task_limit, 4);
+    assert!(pressure.process_active_scan_tasks <= pressure.process_scan_task_limit);
+    assert!(pressure.process_scan_task_high_water <= pressure.process_scan_task_limit);
     let heartbeat = Rc::new(Cell::new(false));
     let heartbeat_clone = Rc::clone(&heartbeat);
     glib::idle_add_local_once(move || heartbeat_clone.set(true));
@@ -4243,20 +4251,20 @@ fn test_workspace_scan_admission_bounds_multiple_sections_and_keeps_gtk_live() {
     wait_until(Duration::from_secs(10), || {
         sections
             .iter()
-            .all(|section| !section.workspace_refresh_blocks_readiness_for_test())
+            .all(|section| !section.workspace_section_evidence().refresh_blocks_readiness)
     });
 
-    let terminal = sections[0].child_scan_pressure_for_test();
-    assert_eq!(terminal.aggregate_active_tasks, 0);
-    assert!(terminal.aggregate_task_high_water <= terminal.aggregate_task_limit);
+    let terminal = sections[0].workspace_section_evidence().scan_pressure;
+    assert_eq!(terminal.process_active_scan_tasks, 0);
+    assert!(terminal.process_scan_task_high_water <= terminal.process_scan_task_limit);
     eprintln!(
         "workspace-scan-aggregate-evidence sections={} task_limit={} active_high_water={} admission_waiting={} gtk_heartbeat={} terminal_active={}",
         sections.len(),
-        pressure.aggregate_task_limit,
-        terminal.aggregate_task_high_water,
+        pressure.process_scan_task_limit,
+        terminal.process_scan_task_high_water,
         waiting_high_water,
         heartbeat.get(),
-        terminal.aggregate_active_tasks,
+        terminal.process_active_scan_tasks,
     );
     drop((windows, folders));
 }
@@ -4282,18 +4290,18 @@ fn test_slow_directory_refresh_churn_keeps_one_active_and_one_weak_latest_reques
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || {
         tree_contains_path(&section, &nested.join("existing.txt"))
-            && !section.workspace_refresh_blocks_readiness_for_test()
+            && !section.workspace_section_evidence().refresh_blocks_readiness
     });
     section.stop_workspace_watch_for_test();
     section.set_child_scan_delay_for_test(Duration::from_millis(150));
-    let before = section.child_scan_pressure_for_test();
+    let before = section.workspace_section_evidence().scan_pressure;
 
     section.queue_auto_refresh_for_test(vec![nested.join("first-change")]);
     section.apply_queued_refresh_for_test();
     wait_until(Duration::from_secs(5), || {
-        section.child_scan_pressure_for_test().active_scans == 1
+        section.workspace_section_evidence().scan_pressure.active_scans == 1
     });
-    let admitted = section.child_scan_pressure_for_test();
+    let admitted = section.workspace_section_evidence().scan_pressure;
     assert_eq!(admitted.mirror_captures, before.mirror_captures + 1);
 
     fixture::write_text(&latest, "latest");
@@ -4301,7 +4309,7 @@ fn test_slow_directory_refresh_churn_keeps_one_active_and_one_weak_latest_reques
         section.queue_auto_refresh_for_test(vec![nested.join(format!("change-{index}"))]);
         section.apply_queued_refresh_for_test();
     }
-    let pressured = section.child_scan_pressure_for_test();
+    let pressured = section.workspace_section_evidence().scan_pressure;
     assert_eq!(pressured.active_scans, 1);
     assert_eq!(pressured.pending_scans, 1);
     assert_eq!(pressured.active_per_store_high_water, 1);
@@ -4318,10 +4326,10 @@ fn test_slow_directory_refresh_churn_keeps_one_active_and_one_weak_latest_reques
     wait_until(Duration::from_secs(2), || heartbeat.get());
     wait_until(Duration::from_secs(10), || {
         tree_contains_path(&section, &latest)
-            && !section.workspace_refresh_blocks_readiness_for_test()
+            && !section.workspace_section_evidence().refresh_blocks_readiness
     });
 
-    let terminal = section.child_scan_pressure_for_test();
+    let terminal = section.workspace_section_evidence().scan_pressure;
     assert_eq!(terminal.active_scans, 0);
     assert_eq!(terminal.pending_scans, 0);
     assert_eq!(terminal.mirror_captures, before.mirror_captures + 2);
@@ -4359,7 +4367,7 @@ fn test_store_removal_cancels_active_and_pending_scans_without_recreating_state(
         .expect("nested directory row")
         .set_expanded(true);
     wait_until(Duration::from_secs(5), || {
-        !section.workspace_refresh_blocks_readiness_for_test()
+        !section.workspace_section_evidence().refresh_blocks_readiness
     });
     section.stop_workspace_watch_for_test();
     section.set_child_scan_delay_for_test(Duration::from_millis(150));
@@ -4368,17 +4376,17 @@ fn test_store_removal_cancels_active_and_pending_scans_without_recreating_state(
     section.queue_auto_refresh_for_test(vec![nested.join("latest")]);
     section.apply_queued_refresh_for_test();
     wait_until(Duration::from_secs(5), || {
-        let evidence = section.child_scan_pressure_for_test();
+        let evidence = section.workspace_section_evidence().scan_pressure;
         evidence.active_scans == 1 && evidence.pending_scans == 1
     });
 
     section.load_folders(&[]);
 
-    let cleared = section.child_scan_pressure_for_test();
+    let cleared = section.workspace_section_evidence().scan_pressure;
     assert_eq!(cleared.active_scans, 0);
     assert_eq!(cleared.pending_scans, 0);
     wait_until(Duration::from_secs(5), || {
-        !section.workspace_refresh_blocks_readiness_for_test()
+        !section.workspace_section_evidence().refresh_blocks_readiness
     });
     assert!(!section.has_folders());
     assert!(!tree_contains_path(&section, &nested));
@@ -4396,21 +4404,21 @@ fn test_stale_empty_folder_probe_cannot_overwrite_newer_nonempty_evidence() {
     )]);
     let _window = present_section_window(&section);
     wait_until(Duration::from_secs(5), || {
-        section.child_scan_pressure_for_test().active_empty_probes == 1
-            && section.empty_probe_reads_for_test() >= 1
+        section.workspace_section_evidence().scan_pressure.active_empty_probes == 1
+            && section.workspace_section_evidence().empty_probe_reads >= 1
     });
 
     fixture::write_text(&folder.path().join("new.txt"), "new");
     section.imp().refresh_button.emit_clicked();
     section.apply_queued_refresh_for_test();
     wait_until(Duration::from_secs(5), || {
-        section.child_scan_pressure_for_test().pending_empty_probes == 1
+        section.workspace_section_evidence().scan_pressure.pending_empty_probes == 1
     });
     wait_until(Duration::from_secs(10), || {
-        let evidence = section.child_scan_pressure_for_test();
+        let evidence = section.workspace_section_evidence().scan_pressure;
         evidence.active_empty_probes == 0
             && evidence.pending_empty_probes == 0
-            && !section.workspace_refresh_blocks_readiness_for_test()
+            && !section.workspace_section_evidence().refresh_blocks_readiness
     });
 
     let top_level_store = section
@@ -4424,7 +4432,7 @@ fn test_stale_empty_folder_probe_cannot_overwrite_newer_nonempty_evidence() {
         .item(0)
         .and_downcast::<FileTreeItem>()
         .expect("configured folder row");
-    let evidence = section.child_scan_pressure_for_test();
+    let evidence = section.workspace_section_evidence().scan_pressure;
     assert_eq!(item.is_empty(), Some(false));
     assert!(evidence.empty_probe_stale_rejections >= 1);
     assert!(evidence.empty_probe_terminal_publications >= 1);
@@ -4444,7 +4452,8 @@ fn test_workspace_watch_error_disconnect_preserves_change_and_manual_recovery() 
     let _window = present_section_window(&section);
     section.expand_folders();
     wait_until(Duration::from_secs(5), || {
-        section.workspace_watcher_is_current_for_test() && tree_contains_path(&section, &existing)
+        section.workspace_section_evidence().watcher_is_current
+            && tree_contains_path(&section, &existing)
     });
     section.pause_workspace_watch_polling_for_test();
 
@@ -4458,7 +4467,11 @@ fn test_workspace_watch_error_disconnect_preserves_change_and_manual_recovery() 
     section.disconnect_workspace_watch_for_test();
 
     assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
-    assert_eq!(section.refresh_pressure_for_test(), (1, false));
+    {
+        let evidence = section.workspace_section_evidence();
+        assert_eq!(evidence.refresh_pending_paths, 1);
+        assert!(!evidence.refresh_pending_full_reload);
+    }
     assert!(section.imp().watch_runtime.watcher.borrow().is_none());
     assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
     assert!(
@@ -4482,7 +4495,7 @@ fn test_workspace_watch_error_disconnect_preserves_change_and_manual_recovery() 
     });
     assert!(section.imp().refresh_button.is_sensitive());
     wait_until(Duration::from_secs(5), || {
-        !section.workspace_refresh_blocks_readiness_for_test()
+        !section.workspace_section_evidence().refresh_blocks_readiness
     });
 }
 
@@ -4497,7 +4510,7 @@ fn test_disconnected_workspace_watcher_settles_as_unavailable() {
     )]);
     let _window = present_section_window(&section);
     wait_until(Duration::from_secs(5), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
     section.pause_workspace_watch_polling_for_test();
 
@@ -4506,7 +4519,7 @@ fn test_disconnected_workspace_watcher_settles_as_unavailable() {
 
     assert!(section.imp().watch_runtime.watcher.borrow().is_none());
     assert!(
-        !section.workspace_refresh_blocks_readiness_for_test(),
+        !section.workspace_section_evidence().refresh_blocks_readiness,
         "a disconnected watcher has reported terminal unavailability and cannot remain pending"
     );
 }
@@ -4523,17 +4536,17 @@ fn test_old_watcher_disconnect_does_not_settle_new_target_generation() {
     )]);
     let _window = present_section_window(&section);
     wait_until(Duration::from_secs(5), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
     section.pause_workspace_watch_polling_for_test();
-    let first_generation = section.watch_target_generation_for_test();
+    let first_generation = section.workspace_section_evidence().watch_target_generation;
 
     section.load_workspace_folders(&[WorkspaceFolder::with_id(
         WorkspaceFolderId::new("second"),
         second.path().to_path_buf(),
     )]);
     assert_ne!(
-        section.watch_target_generation_for_test(),
+        section.workspace_section_evidence().watch_target_generation,
         first_generation,
         "replacement targets must advance before the old watcher disconnects"
     );
@@ -4541,15 +4554,15 @@ fn test_old_watcher_disconnect_does_not_settle_new_target_generation() {
     assert_eq!(section.poll_workspace_watch_once_for_test(), 1);
 
     assert!(
-        !section.workspace_watcher_unavailability_is_current_for_test(),
+        !section.workspace_section_evidence().watcher_unavailability_is_current,
         "the disconnected watcher may settle only its installed generation"
     );
     assert!(
-        section.workspace_refresh_blocks_readiness_for_test(),
+        section.workspace_section_evidence().refresh_blocks_readiness,
         "the unattempted replacement generation must remain pending"
     );
     wait_until(Duration::from_secs(5), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
 }
 
@@ -4564,7 +4577,7 @@ fn test_hidden_workspace_watch_pressure_stays_bounded_and_retires_cleanly() {
     )]);
     let _window = present_section_window(&section);
     wait_until(Duration::from_secs(5), || {
-        section.workspace_watcher_is_current_for_test()
+        section.workspace_section_evidence().watcher_is_current
     });
     section.set_visible(false);
     section.pause_workspace_watch_polling_for_test();
@@ -4574,7 +4587,7 @@ fn test_hidden_workspace_watch_pressure_stays_bounded_and_retires_cleanly() {
             .collect(),
     );
 
-    let (mailbox, _, _, _) = section.workspace_watch_pressure_for_test();
+    let mailbox = section.workspace_section_evidence().watch_mailbox;
     let mailbox = mailbox.expect("installed mailbox");
     assert_eq!(mailbox.retained_paths, 0);
     assert!(mailbox.full_refresh);
@@ -4843,7 +4856,7 @@ fn test_load_empty_folders_shows_empty_folder_set_state() {
     assert!(section.imp().watch_runtime.watcher.borrow().is_none());
     assert!(section.imp().watch_runtime.poll_source_id.borrow().is_none());
     assert_eq!(
-        section.watch_targets_for_test(),
+        section.workspace_section_evidence().watch_targets,
         Vec::<WorkspaceWatchTarget>::new()
     );
 }
@@ -5070,7 +5083,7 @@ fn test_watcher_start_failure_surfaces_recoverable_feedback() {
         gtk4::AccessibleState::Invalid
     ));
     assert!(
-        !section.workspace_refresh_blocks_readiness_for_test(),
+        !section.workspace_section_evidence().refresh_blocks_readiness,
         "a terminal watcher startup failure must settle readiness as unavailable"
     );
 
@@ -5336,7 +5349,7 @@ fn test_live_expansion_state_matches_full_oracle_across_tree_mutations() {
     let _window = present_section_window(&section);
 
     let assert_matches_oracle = |context: &str| {
-        let live = section.expanded_paths_for_test();
+        let live = section.workspace_section_evidence().expanded_paths;
         let derived = section
             .derived_expanded_paths_for_test()
             .expect("tree model should be present");
@@ -5385,7 +5398,7 @@ fn test_live_expansion_state_matches_full_oracle_across_tree_mutations() {
     });
     assert_matches_oracle("expanded directory removal");
     assert!(
-        !section.expanded_paths_for_test().contains(&alpha_inner),
+        !section.workspace_section_evidence().expanded_paths.contains(&alpha_inner),
         "a later refresh must not resurrect a removed expanded path"
     );
 
@@ -5417,7 +5430,7 @@ fn test_live_expansion_state_matches_full_oracle_across_tree_mutations() {
             row.set_expanded(expand);
             flush_events();
         }
-        let live = section.expanded_paths_for_test();
+        let live = section.workspace_section_evidence().expanded_paths;
         let derived = section
             .derived_expanded_paths_for_test()
             .expect("tree model should be present");
@@ -5490,7 +5503,8 @@ fn test_targeted_refresh_skips_full_expansion_capture_in_large_tree() {
         materialized_rows > 50,
         "the unrelated materialized tree must dominate the affected directory, got {materialized_rows}"
     );
-    let (scans_before, rows_before) = section.expansion_capture_metrics_for_test();
+    let before = section.workspace_section_evidence();
+    let (scans_before, rows_before) = (before.expansion_capture_scans, before.expansion_capture_rows);
 
     // One-directory targeted refresh among many unrelated materialized rows.
     let created = target.join("created.txt");
@@ -5500,7 +5514,8 @@ fn test_targeted_refresh_skips_full_expansion_capture_in_large_tree() {
         tree_contains_path(&section, &created)
     });
 
-    let (scans_after, rows_after) = section.expansion_capture_metrics_for_test();
+    let after = section.workspace_section_evidence();
+    let (scans_after, rows_after) = (after.expansion_capture_scans, after.expansion_capture_rows);
     assert_eq!(
         scans_after, scans_before,
         "a targeted in-place refresh must not run a full expansion derivation"
@@ -5511,8 +5526,11 @@ fn test_targeted_refresh_skips_full_expansion_capture_in_large_tree() {
     );
 
     // Reconciliation work stays bounded by the affected directory.
-    let (_batches, max_batch_rows, _terminals, _superseded, live_sources) =
-        section.reconciliation_metrics_for_test();
+    let reconcile = section.workspace_section_evidence();
+    let (max_batch_rows, live_sources) = (
+        reconcile.reconcile_max_batch_rows,
+        reconcile.child_reconcile_sources,
+    );
     assert!(
         max_batch_rows <= 4,
         "the accepted splice must stay proportional to the affected directory, got {max_batch_rows}"
@@ -5528,9 +5546,9 @@ fn test_targeted_refresh_skips_full_expansion_capture_in_large_tree() {
     );
     assert_eq!(selected_path(&section).as_deref(), Some(seed.as_path()));
     wait_until(Duration::from_secs(5), || {
-        !section.workspace_refresh_blocks_readiness_for_test()
+        !section.workspace_section_evidence().refresh_blocks_readiness
     });
-    let live = section.expanded_paths_for_test();
+    let live = section.workspace_section_evidence().expanded_paths;
     let derived = section
         .derived_expanded_paths_for_test()
         .expect("tree model should be present");
@@ -5726,13 +5744,16 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
         .set_expanded(true);
     wait_until(Duration::from_secs(30), || {
         tree_contains_path(&section, &nested.join("row-00499.txt"))
-            && !section.workspace_refresh_blocks_readiness_for_test()
+            && !section.workspace_section_evidence().refresh_blocks_readiness
     });
     section.stop_workspace_watch_for_test();
     section.set_reconciliation_batch_delay_for_test(Duration::from_millis(20));
     select_path(&section, &selected);
-    let (_, _, terminal_before, superseded_before, _) =
-        section.reconciliation_metrics_for_test();
+    let reconcile_before = section.workspace_section_evidence();
+    let (terminal_before, superseded_before) = (
+        reconcile_before.reconcile_terminal_count,
+        reconcile_before.reconcile_superseded_count,
+    );
 
     for index in 100..400 {
         fixture::remove_file(&nested.join(format!("row-{index:05}.txt")));
@@ -5740,11 +5761,16 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
     }
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(30), || {
-        let (batches, max_batch, _, _, sources) = section.reconciliation_metrics_for_test();
+        let reconcile = section.workspace_section_evidence();
+        let (batches, max_batch, sources) = (
+            reconcile.reconcile_batch_count,
+            reconcile.reconcile_max_batch_rows,
+            reconcile.child_reconcile_sources,
+        );
         batches > 0
             && max_batch <= 256
             && sources > 0
-            && section.workspace_refresh_blocks_readiness_for_test()
+            && section.workspace_section_evidence().refresh_blocks_readiness
     });
 
     fixture::write_text(&latest, "latest");
@@ -5774,17 +5800,38 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
         tree_contains_path(&section, &latest),
         tree_contains_path(&section, &middle),
         tree_contains_path(&section, &removed),
-        section.reconciliation_metrics_for_test(),
-        section.workspace_refresh_blocks_readiness_for_test(),
+        // All five reconciliation metrics, as the pre-migration
+        // `reconciliation_metrics_for_test()` 5-tuple reported. Reading one field of the
+        // surface and still labelling it `metrics` would leave a diagnostic that names
+        // more than it shows — the failure this message exists to explain is about
+        // batching and supersession, not about the batch count alone.
+        {
+            let metrics = section.workspace_section_evidence();
+            (
+                metrics.reconcile_batch_count,
+                metrics.reconcile_max_batch_rows,
+                metrics.reconcile_terminal_count,
+                metrics.reconcile_superseded_count,
+                metrics.child_reconcile_sources,
+            )
+        },
+        section.workspace_section_evidence().refresh_blocks_readiness,
     );
     wait_until(Duration::from_secs(30), || {
-        !section.workspace_refresh_blocks_readiness_for_test()
+        !section.workspace_section_evidence().refresh_blocks_readiness
     });
     assert_eq!(selected_path(&section).as_deref(), Some(selected.as_path()));
 
-    let (_, max_batch, terminal_after, superseded_after, sources) =
-        section.reconciliation_metrics_for_test();
-    let (cache_input_rows, cache_operations) = section.child_cache_rebuild_metrics_for_test();
+    let reconcile_after = section.workspace_section_evidence();
+    let (max_batch, terminal_after, superseded_after, sources) = (
+        reconcile_after.reconcile_max_batch_rows,
+        reconcile_after.reconcile_terminal_count,
+        reconcile_after.reconcile_superseded_count,
+        reconcile_after.child_reconcile_sources,
+    );
+    let cache = section.workspace_section_evidence();
+    let (cache_input_rows, cache_operations) =
+        (cache.cache_rebuild_input_rows, cache.cache_rebuild_operations);
     assert!(max_batch <= 256, "GTK changed-row batches must remain bounded");
     assert_eq!(sources, 0, "terminal refresh must release every GLib source");
     assert!(cache_input_rows > 0);
@@ -5826,7 +5873,7 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
     section.set_reconciliation_batch_delay_for_test(Duration::from_millis(200));
     section.imp().refresh_button.emit_clicked();
     wait_until(Duration::from_secs(30), || {
-        section.reconciliation_metrics_for_test().4 > 0
+        section.workspace_section_evidence().child_reconcile_sources > 0
     });
     let section_weak = section.downgrade();
     window.set_child(gtk4::Widget::NONE);

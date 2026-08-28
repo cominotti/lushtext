@@ -4,12 +4,20 @@
 //!
 //! Manages workspace sections, the fixed workspace selector row, and debounced
 //! persistence of workspace state to disk.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! The sidebar subclass's private state, template children, construction, and
+//! disposal. GTK subclass plumbing, not coordination.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
-use crate::model::workspace_persistence::WorkspacePersistenceState;
 use crate::services::notifications::NotificationSeverity;
 use crate::ui::accessibility;
-use crate::ui::sidebar::SidebarFileRowStateSnapshot;
+use crate::ui::sidebar::policy::WorkspacePersistenceState;
+use crate::ui::sidebar::seams::SidebarFileRowStateSnapshot;
 use gtk_lush_settle::{Debounce, SupersedingTimer};
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -27,7 +35,7 @@ type WorkspaceCallback = Box<dyn Fn(WorkspaceId)>;
 type FolderNotePathCallback = Box<dyn Fn(WorkspaceId, PathBuf)>;
 type WorkspaceScopeCallback = Box<dyn Fn(WorkspaceScope)>;
 type WorkspacePersistenceFlushCallback =
-    Box<dyn FnOnce(Result<(), super::WorkspacePersistenceFlushError>)>;
+    Box<dyn FnOnce(Result<(), super::persist_execution::WorkspacePersistenceFlushError>)>;
 
 /// Private template implementation for the multi-workspace sidebar.
 ///
@@ -58,6 +66,20 @@ pub struct LushtextSidebar {
     /// Current in-memory workspace configuration. Cloned out of `RefCell`
     /// for background save operations.
     pub workspaces_file: RefCell<WorkspacesFile>,
+    /// Whether any workspace **load** has been adopted into `workspaces_file` yet.
+    ///
+    /// Distinguishes "this workspace is absent because the user deleted it" from
+    /// "absent because nothing has been loaded yet" — which is the only thing that
+    /// makes a superseded load safe to merge. See `merge_superseded_workspace_load`.
+    ///
+    /// **Only the load-adoption path may set this.** An earlier version set it inside
+    /// `build_sections_from_file`, which every mutation reaches through
+    /// `rebuild_sections_from_state` — so creating a workspace before the first load
+    /// completed already flipped the bit, the superseded load then chose
+    /// `KeepMemory`, and the pending write committed the one new workspace over every
+    /// workspace on disk. The bit means "a load was adopted", so nothing but a load
+    /// adoption may write it.
+    pub(super) load_adopted: Cell<bool>,
     /// Live workspace section widgets in display order.
     pub sections: RefCell<Vec<LushtextWorkspaceSection>>,
     /// Window-owned tab projection forwarded into every workspace section.
@@ -119,6 +141,7 @@ impl Default for LushtextSidebar {
             workspace_list_revealer: TemplateChild::default(),
             new_workspace_button: TemplateChild::default(),
             workspaces_file: RefCell::default(),
+            load_adopted: Cell::new(false),
             sections: RefCell::default(),
             file_row_state_snapshot: RefCell::default(),
             current_scope: RefCell::new(WorkspaceScope::All),

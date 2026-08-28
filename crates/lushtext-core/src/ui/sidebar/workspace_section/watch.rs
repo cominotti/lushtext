@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Incremental filesystem watcher lifecycle for one workspace section.
+//! `watch` role for the workspace tree workflow: watcher install, mailbox reconcile,
+//! and the materialized target mirror for one workspace section.
+//!
+//! # Role
+//!
+//! Coordination, `watch`, nested under the workflow's canonical role home in
+//! `ui/sidebar/`. This module **keeps its pre-convention name** because that name is
+//! already a correct bounded role name; renaming a stable correct module for symmetry
+//! with newly named siblings is what the convention forbids. It owns `watch_targets.rs`
+//! as a plain data structure rather than as a second role module.
+//!
+//! # Inversion to be aware of
+//!
+//! Watcher installation runs off the GTK thread against a captured target generation,
+//! so control resumes in the install completion. A completion whose generation is no
+//! longer the effective one must neither adopt its handle nor record unavailability
+//! against the newer targets.
 
 use std::time::Duration;
 
@@ -11,12 +27,13 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::model::workspace::FolderTreeEntry;
 use crate::services::notifications::NotificationSeverity;
-#[cfg(feature = "test-utils")]
-use crate::services::workspace_watch::WorkspaceWatchMailboxSnapshot;
 use crate::services::workspace_watch::{
     WorkspaceWatchChange, WorkspaceWatchError, WorkspaceWatchTarget, WorkspaceWatcher,
 };
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
+use crate::ui::sidebar::seams::{
+    WorkspaceWatchDisposition, WorkspaceWatchFacts, WorkspaceWatchTicket,
+};
 
 use super::LushtextWorkspaceSection;
 use super::watch_targets::RowWatchContribution;
@@ -40,7 +57,7 @@ impl LushtextWorkspaceSection {
         if refresh.pending_full_reload.get() || !refresh.pending_paths.borrow().is_empty() {
             return true;
         }
-        if super::tree_loading::child_scan_blocks_readiness(self) {
+        if super::scan_execution::child_scan_blocks_readiness(self) {
             return true;
         }
 
@@ -73,13 +90,6 @@ impl LushtextWorkspaceSection {
                 || snapshot.disconnected
                 || snapshot.busy
         })
-    }
-
-    /// Test seam for the same scalar state used by automation readiness.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn workspace_refresh_blocks_readiness_for_test(&self) -> bool {
-        self.workspace_refresh_blocks_readiness()
     }
 
     /// Switch to configured-folder fallback while a flattened model is replaced.
@@ -167,7 +177,7 @@ impl LushtextWorkspaceSection {
             if let Some(section) = section_weak.upgrade() {
                 section.record_row_expansion_transition(row);
             }
-            if super::dnd::expanded_watch_should_be_suppressed(row) {
+            if super::reorder_execution::expanded_watch_should_be_suppressed(row) {
                 return;
             }
             let row_weak = row.downgrade();
@@ -265,8 +275,10 @@ impl LushtextWorkspaceSection {
             .test_worker_starts
             .set(self.imp().watch_runtime.test_worker_starts.get() + 1);
 
+        let ticket = WorkspaceWatchTicket::new(generation, lifetime);
+
         gtk_lush_tasks::spawn_blocking_then(
-            (section_weak, generation, lifetime),
+            (section_weak, ticket),
             move || {
                 #[cfg(feature = "test-utils")]
                 std::thread::sleep(drop_delay);
@@ -279,21 +291,32 @@ impl LushtextWorkspaceSection {
                     WatchWorkerResult::Started(WorkspaceWatcher::start(&targets))
                 }
             },
-            |(section_weak, generation, lifetime), result| {
+            |(section_weak, ticket), result| {
                 let Some(section) = section_weak.upgrade() else {
                     retire_worker_result(result);
                     return;
                 };
                 section.imp().watch_runtime.worker_inflight.set(false);
-                if section.imp().watch_runtime.lifetime_generation.get() != lifetime {
-                    retire_worker_result(result);
-                    return;
+                // One seam value validated as a unit, so the two stale cases stay
+                // distinguishable: a stale lifetime retires, a stale target
+                // generation re-enters the install.
+                let facts = WorkspaceWatchFacts::new(
+                    section.imp().watch_runtime.targets.borrow().generation(),
+                    section.imp().watch_runtime.lifetime_generation.get(),
+                );
+                match ticket.disposition(&facts) {
+                    WorkspaceWatchDisposition::Retire => {
+                        retire_worker_result(result);
+                        return;
+                    }
+                    WorkspaceWatchDisposition::Restart => {
+                        let _ = section.imp().watch_runtime.restart_debounce.invalidate();
+                        section.start_current_workspace_watch_retiring(stale_watcher(result));
+                        return;
+                    }
+                    WorkspaceWatchDisposition::Install => {}
                 }
-                if section.imp().watch_runtime.targets.borrow().generation() != generation {
-                    let _ = section.imp().watch_runtime.restart_debounce.invalidate();
-                    section.start_current_workspace_watch_retiring(stale_watcher(result));
-                    return;
-                }
+                let generation = ticket.targets_generation();
 
                 match result {
                     WatchWorkerResult::Retired => {
@@ -417,50 +440,13 @@ impl LushtextWorkspaceSection {
         self.emit_message(message, NotificationSeverity::Warning);
     }
 
-    /// Test helper for verifying incremental watcher target selection.
+    /// Reset the count of rows touched by target bookkeeping.
+    ///
+    /// A **drive**, not an observation: the count itself is read from the evidence
+    /// surface. The pre-convention seam was a `take`, so counting mutated.
     #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn watch_targets_for_test(&self) -> Vec<WorkspaceWatchTarget> {
-        self.imp().watch_runtime.targets.borrow().snapshot().targets
-    }
-
-    /// Return and reset the count of rows touched by target bookkeeping.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn take_watch_target_rows_touched_for_test(&self) -> usize {
-        self.imp()
-            .watch_runtime
-            .targets
-            .borrow_mut()
-            .take_touched_rows()
-    }
-
-    /// Return the effective target generation for restart-churn assertions.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn watch_target_generation_for_test(&self) -> u64 {
-        self.imp()
-            .watch_runtime
-            .targets
-            .borrow()
-            .generation()
-            .value()
-    }
-
-    /// Whether the installed backend belongs to the latest effective targets.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn workspace_watcher_is_current_for_test(&self) -> bool {
-        let current = self.imp().watch_runtime.targets.borrow().generation();
-        self.imp().watch_runtime.installed_generation.get() == Some(current)
-    }
-
-    /// Whether terminal unavailability belongs to the latest effective targets.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn workspace_watcher_unavailability_is_current_for_test(&self) -> bool {
-        let current = self.imp().watch_runtime.targets.borrow().generation();
-        self.imp().watch_runtime.unavailable_generation.get() == Some(current)
+    pub fn reset_watch_target_rows_touched_for_test(&self) {
+        self.imp().watch_runtime.reset_watch_target_rows_touched();
     }
 
     /// Configure section-local worker delays for lifecycle responsiveness tests.
@@ -468,13 +454,6 @@ impl LushtextWorkspaceSection {
     pub fn set_workspace_watcher_delays_for_test(&self, start: Duration, drop: Duration) {
         self.imp().watch_runtime.test_start_delay.set(start);
         self.imp().watch_runtime.test_drop_delay.set(drop);
-    }
-
-    /// Return section-local lifecycle worker starts for latest-only assertions.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn workspace_watcher_worker_starts_for_test(&self) -> usize {
-        self.imp().watch_runtime.test_worker_starts.get()
     }
 
     /// Merge a path batch into the installed handle without touching the filesystem.
@@ -499,28 +478,6 @@ impl LushtextWorkspaceSection {
         if let Some(watcher) = self.imp().watch_runtime.watcher.borrow().as_ref() {
             watcher.mark_disconnected_for_test();
         }
-    }
-
-    /// Scalar mailbox, refresh-plan, and per-poll evidence without retained paths.
-    #[cfg(feature = "test-utils")]
-    #[must_use]
-    pub fn workspace_watch_pressure_for_test(
-        &self,
-    ) -> (Option<WorkspaceWatchMailboxSnapshot>, usize, bool, usize) {
-        let mailbox = self
-            .imp()
-            .watch_runtime
-            .watcher
-            .borrow()
-            .as_ref()
-            .map(WorkspaceWatcher::mailbox_snapshot_for_test);
-        let (refresh_paths, refresh_full) = self.refresh_pressure_for_test();
-        (
-            mailbox,
-            refresh_paths,
-            refresh_full,
-            self.imp().watch_runtime.test_last_poll_notices.get(),
-        )
     }
 
     /// Pause the timer so one poll callback can be asserted deterministically.

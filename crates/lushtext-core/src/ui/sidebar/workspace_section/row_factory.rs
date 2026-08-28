@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Recycled file-tree row setup, projection, and cleanup.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! List-factory row projection: setup, bind, and unbind for recycled file-tree rows.
+//!
+//! **Deliberately not a role, so that no role move touches its two hardest
+//! contracts**: the `GtkTreeExpander` internal-gesture disable that makes
+//! double-click activate files while directories expand, and the rename-entry
+//! cleanup that must run on both bind and unbind.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use super::super::file_tree_item::FileTreeItem;
 use super::context_menus::FileContextTarget;
@@ -90,7 +102,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
         let list_item_weak = list_item.downgrade();
         let overlay_weak = overlay.downgrade();
         focus_btn.connect_clicked(move |_| {
-            if super::dnd::folder_reorder_drag_is_active() {
+            if super::reorder_execution::folder_reorder_drag_is_active() {
                 return;
             }
             if let Some(list_item) = list_item_weak.upgrade()
@@ -165,7 +177,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
         let motion = gtk4::EventControllerMotion::new();
         let btn_enter = focus_btn.clone();
         motion.connect_enter(move |_, _, _| {
-            if super::dnd::folder_reorder_drag_is_active() {
+            if super::reorder_execution::folder_reorder_drag_is_active() {
                 btn_enter.set_visible(false);
                 return;
             }
@@ -214,7 +226,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
             .expect("overlay child is TreeExpander");
 
         expander.set_list_row(Some(&tree_row));
-        super::dnd::reset_reorder_row_for_bind(&overlay);
+        super::reorder_execution::reset_reorder_row_for_bind(&overlay);
         clear_expanded_accessibility_hook(&overlay);
 
         let focus_btn = focus_button_for_overlay(&overlay).expect("focus_btn missing");
@@ -276,7 +288,9 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
             }
 
             let show_reorder_handle = section_weak.upgrade().is_some_and(|section| {
-                super::dnd::workspace_folder_reorder_handle_should_show(&section, &tree_row)
+                super::reorder_execution::workspace_folder_reorder_handle_should_show(
+                    &section, &tree_row,
+                )
             });
             drag_handle.set_visible(show_reorder_handle);
             drag_handle.set_sensitive(show_reorder_handle);
@@ -407,7 +421,7 @@ pub(super) fn setup(imp: &imp::LushtextWorkspaceSection) {
             }
 
             super::reset_file_row_state_for_overlay(&overlay);
-            super::dnd::reset_reorder_row_for_unbind(&overlay);
+            super::reorder_execution::reset_reorder_row_for_unbind(&overlay);
             clear_expanded_accessibility_hook(&overlay);
             accessibility::clear_row_accessibility(&overlay);
             accessibility::set_expanded(&overlay, None);

@@ -4,6 +4,15 @@
 //!
 //! This slice owns GTK dialog presentation and the follow-up workspace updates
 //! that happen once the user confirms a sidebar action.
+//!
+//! # Role: called presentation surface — **not** one of the five roles
+//!
+//! Constructs the workflow's workspace and folder dialogs and reports their responses
+//! back to the coordination roles. Dialog chrome, not coordination: the stages a
+//! response triggers live in `list_execution` and `membership_execution`.
+//!
+//! It owns no `policy.rs` and no `evidence.rs`, and it keeps every behavior obligation
+//! stated below and in the workflow's matrix row.
 
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
