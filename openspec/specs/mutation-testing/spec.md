@@ -28,7 +28,6 @@ not inert: it is a recorded equivalence claim that no longer protects the mutant
 describes, so the mutant it was written for either survives unexplained or falls
 under a different entry's reach without anyone deciding that it should.
 
-
 **Because the scope selects pure decision logic by naming convention, pure policy
 in a UI directory under any other file name is silently outside the scope while
 every command still exits 0.** This is the inclusion-side form of the same defect
@@ -132,6 +131,49 @@ because a reader cannot distinguish it from a live exclusion.
 - **THEN** the entry is deleted
 - **AND** the change states whether the mutant it was written for still exists,
   and triages it in the documented order if it does
+
+#### Scenario: Unclassified pure UI module is discovered
+- **WHEN** a module under `ui/` satisfies the check's stated purity predicate, holds
+  decision logic, is not named `policy.rs`, and declares no workflow role
+- **THEN** `make check-policy` fails and names the module
+- **AND** the failure is not avoidable by the existing purity and reachability
+  checks, which can only inspect files the convention already selects
+
+#### Scenario: A GTK-free module carrying a declared role is already classified
+- **WHEN** a GTK-free module under `ui/` is a narrative facade, a seam value-object
+  module, a bounded coordination role, an evidence surface, a per-workflow test
+  policy, or a recorded called presentation surface
+- **THEN** the discovery check treats it as classified and does not require it to be
+  renamed to `policy.rs`
+- **AND** the check does not fail on a tree that conforms to the convention
+
+#### Scenario: Declaring a role does not launder unclassified decision logic
+- **WHEN** a module declares a workflow role it does not perform, in order to pass
+  the discovery check
+- **THEN** that is a false role claim under the role-assignment requirement and is
+  rejected there
+- **AND** the classification is not treated as a content escape from the mutation
+  scope
+
+#### Scenario: Deleting a hand-listed entry and renaming the module happen together
+- **WHEN** a pure module is reached by the scope only through a hand-listed entry
+- **THEN** the change that deletes the entry also renames the module into the naming
+  convention
+- **AND** it does not leave the logic outside the scope, nor leave a redundant entry
+  beside the renamed module
+
+#### Scenario: Renaming a pure UI module into the convention reports a gain
+- **WHEN** a migration renames an already-pure UI module into `policy.rs`
+- **THEN** its mutation result is reported as a gain from zero rather than as a
+  parity claim, because the module was never inside the scope
+- **AND** the figure names the invocation and the file-level anchors it was
+  measured against
+
+#### Scenario: A calibration comment without a matching entry is retired
+- **WHEN** a configuration comment records that a file was calibrated out of the
+  mutation scope, and no current scope entry selects that file
+- **THEN** the comment is retired or corrected in the change that finds it
+- **AND** the configuration does not carry a decision it is not implementing
 
 ### Requirement: Pull Request Mutation Gate
 The project SHALL run changed-code mutation testing for pull requests after the non-widget test suite is known to pass.
@@ -333,3 +375,4 @@ target so generated property cases are not multiplied by the number of mutants.
   mutation scope, and no current scope entry selects that file
 - **THEN** the comment is retired or corrected in the change that finds it
 - **AND** the configuration does not carry a decision it is not implementing
+
