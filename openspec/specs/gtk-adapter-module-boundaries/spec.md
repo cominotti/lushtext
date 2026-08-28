@@ -235,6 +235,26 @@ and the bounded set is not widened by the qualification. A workflow MUST NOT tak
 ill-fitting bounded name merely because the fitting one is already spent on a
 different stage order of the same workflow.
 
+Before a migration amends the bounded set for a pre-convention module that no
+listed role name describes, it SHALL first determine whether that module is **one
+coordination job at all**. A role name names a coordination *job*; it never names
+a module's pre-convention topic. Where the module is not one job — where its
+contents separate into pure decisions, seam value objects, evidence fields, and
+one or more coordination jobs that existing role names already describe — the
+migration SHALL **dissolve** it across those existing roles rather than adding a
+role name for its topic, and SHALL record each part's destination in the
+workflow's matrix row. Escalation by amendment remains available and remains
+required for a genuinely novel *single* coordination job; it is not the response
+to a module that merely fails to be one. Dissolution is not a licence to scatter:
+each part still lands in exactly one role, and a part with no role destination
+means the module was not fully understood rather than that a new role name is
+needed.
+
+The stage-order qualification above applies to modules a migration **creates or
+renames**. A module that already carries a correct bounded role name SHALL NOT be
+renamed or qualified for symmetry with newly named siblings, because renaming a
+stable correct module is churn that a reader must diff to understand.
+
 The bounded set is a review contract, not a mechanically enforced one: the workflow
 boundary check validates that a migrated row's declared role paths exist, and does
 not verify that a coordination module's name is drawn from the set. A migration
@@ -366,6 +386,34 @@ which a migration MUST verify after the move rather than assume.
 - **WHEN** a workflow needs a coordination job outside the recorded role names
 - **THEN** the change amends this specification to add the role name
 - **AND** it does not overload an existing role name to fit
+
+#### Scenario: Pre-convention module that is not one job is dissolved rather than named
+
+- **WHEN** a migrating workflow holds a pre-convention module that no bounded role
+  name describes, and the module's contents separate into pure decisions, seam
+  value objects, evidence fields, or more than one coordination job that existing
+  role names already describe
+- **THEN** the migration dissolves that module across those existing roles instead
+  of amending the bounded set to name its topic
+- **AND** the workflow's matrix row records each part's destination, and the
+  bounded coordination set is unchanged
+
+#### Scenario: Cohesion is checked before the bounded set is amended
+
+- **WHEN** a migration is about to propose a new coordination role name for a
+  module that fits no listed name
+- **THEN** it first records whether that module is one cohesive coordination job
+- **AND** an amendment is proposed only for a genuinely novel single job, so a
+  module that is simply not one job is not the reason the closed taxonomy grows
+
+#### Scenario: An already correctly named coordination module is not renamed for symmetry
+
+- **WHEN** a migration creates or renames coordination modules beside a sibling
+  that already carries a correct bounded role name
+- **THEN** that sibling keeps its name and is not qualified with a stage order for
+  symmetry
+- **AND** the migration records it as already correct rather than leaving a reader
+  to diff an unexplained rename
 
 #### Scenario: Decomposition assigns roles rather than only splitting lines
 
