@@ -290,5 +290,176 @@ class AgentSkillValidatorTests(unittest.TestCase):
         )
 
 
+class RuleFrontmatterTests(unittest.TestCase):
+    """Prove each rule-scope finding fires, and that a conforming tree passes.
+
+    A frontmatter check that matches nothing does not fail -- it passes while
+    enforcing nothing -- so both directions are asserted for every finding.
+    """
+
+    # Injected rather than read from git, so the fixtures assert the glob
+    # semantics instead of the repository's current file list.
+    TRACKED = (
+        "crates/lushtext-core/src/ui/window/mod.rs",
+        "crates/lushtext/tests/widget/window.rs",
+        "resources/ui/window.blp",
+        "scripts/check-workflow-boundaries.py",
+    )
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name) / "rules"
+        self.root.mkdir()
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def write_rule(self, name: str, text: str) -> Path:
+        path = self.root / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def errors(self, tracked: tuple[str, ...] | None = None) -> list[str]:
+        return VALIDATOR.validate_rules(
+            self.root, self.TRACKED if tracked is None else tracked
+        )
+
+    def test_scoped_and_global_rules_both_pass(self) -> None:
+        self.write_rule(
+            "scoped.md",
+            "---\n"
+            "description: Scoped fixture rule\n"
+            "paths:\n"
+            '  - "crates/**/src/ui/**"\n'
+            '  - "resources/ui/**"\n'
+            "---\n\n# Scoped\n",
+        )
+        self.write_rule(
+            "global-with-frontmatter.md",
+            "---\ndescription: Global fixture rule\n---\n"
+            f"{VALIDATOR.GLOBAL_RULE_MARKER}\n\n# Global\n",
+        )
+        self.write_rule(
+            "global-without-frontmatter.md",
+            f"{VALIDATOR.GLOBAL_RULE_MARKER}\n\n# Global, no frontmatter\n",
+        )
+        self.assertEqual(self.errors(), [])
+
+    def test_cursor_globs_key_is_rejected(self) -> None:
+        self.write_rule(
+            "cursor.md",
+            "---\ndescription: Cursor-style rule\nglobs: \"**/*.rs\"\n---\n\n# Body\n",
+        )
+        errors = self.errors()
+        self.assertTrue(
+            any("`globs:` is not a scoping key the agent recognizes" in error for error in errors),
+            errors,
+        )
+
+    def test_unscoped_and_unmarked_rule_is_rejected(self) -> None:
+        self.write_rule("silent.md", "---\ndescription: Silent scope\n---\n\n# Body\n")
+        errors = self.errors()
+        self.assertTrue(any("its scope is unstated" in error for error in errors), errors)
+
+    def test_rule_with_no_frontmatter_and_no_marker_is_rejected(self) -> None:
+        self.write_rule("bare.md", "# Body only\n")
+        errors = self.errors()
+        self.assertTrue(any("its scope is unstated" in error for error in errors), errors)
+
+    def test_malformed_paths_value_is_rejected(self) -> None:
+        self.write_rule(
+            "scalar-paths.md",
+            "---\ndescription: Scalar paths\npaths: \"**/*.rs\"\n---\n\n# Body\n",
+        )
+        self.write_rule(
+            "empty-item.md",
+            "---\ndescription: Empty item\npaths:\n  - \" \"\n---\n\n# Body\n",
+        )
+        errors = self.errors()
+        self.assertEqual(
+            sum("must be a non-empty list of glob strings" in error for error in errors),
+            2,
+            errors,
+        )
+
+    def test_paths_list_and_global_marker_together_are_rejected(self) -> None:
+        self.write_rule(
+            "both.md",
+            "---\n"
+            "description: Scope stated twice\n"
+            "paths:\n"
+            '  - "crates/**/src/ui/**"\n'
+            "---\n"
+            f"{VALIDATOR.GLOBAL_RULE_MARKER}\n\n# Body\n",
+        )
+        errors = self.errors()
+        self.assertTrue(
+            any("its scope is stated twice" in error for error in errors), errors
+        )
+        # And the conforming halves stay clean, so the finding is about the
+        # combination rather than about either key on its own.
+        self.write_rule(
+            "scoped-only.md",
+            "---\ndescription: Scoped only\npaths:\n"
+            '  - "resources/ui/**"\n---\n\n# Body\n',
+        )
+        self.write_rule(
+            "global-only.md",
+            "---\ndescription: Global only\n---\n"
+            f"{VALIDATOR.GLOBAL_RULE_MARKER}\n\n# Body\n",
+        )
+        twice = [error for error in self.errors() if "its scope is stated twice" in error]
+        self.assertEqual(len(twice), 1, twice)
+        self.assertIn("both.md", twice[0])
+
+    def test_dead_paths_glob_is_reported_and_live_globs_are_not(self) -> None:
+        self.write_rule(
+            "live.md",
+            "---\ndescription: Live scope\npaths:\n"
+            '  - "crates/**/src/ui/**"\n'
+            '  - "scripts/check-workflow-boundaries.py"\n'
+            # One brace branch matching is enough for the glob to be live.
+            '  - "resources/ui/**.{blp,css}"\n'
+            "---\n\n# Body\n",
+        )
+        self.write_rule(
+            "dead.md",
+            "---\ndescription: Dead scope\npaths:\n"
+            '  - "crates/lushtext/tests/widget/**"\n'
+            '  - "crates/renamed-away/**"\n'
+            '  - "resources/ui/**.{css,svg}"\n'
+            "---\n\n# Body\n",
+        )
+        errors = self.errors()
+        dead = [error for error in errors if "matches no tracked file" in error]
+        self.assertEqual(len(dead), 2, errors)
+        self.assertTrue(all("dead.md" in error for error in dead), dead)
+        self.assertTrue(any("crates/renamed-away/**" in error for error in dead), dead)
+        self.assertTrue(any("resources/ui/**.{css,svg}" in error for error in dead), dead)
+
+    def test_dead_scope_half_is_skipped_when_the_tracked_set_is_unknown(self) -> None:
+        # git failing must not invent a dead-scope finding, and must not suppress
+        # the findings that do not depend on the tracked set.
+        self.write_rule(
+            "unanswerable.md",
+            "---\ndescription: Unanswerable scope\npaths:\n"
+            '  - "crates/renamed-away/**"\n---\n\n# Body\n',
+        )
+        self.write_rule("silent.md", "---\ndescription: Silent scope\n---\n\n# Body\n")
+        original = VALIDATOR.tracked_repository_files
+        VALIDATOR.tracked_repository_files = lambda: None
+        try:
+            errors = VALIDATOR.validate_rules(self.root)
+        finally:
+            VALIDATOR.tracked_repository_files = original
+        self.assertEqual([e for e in errors if "matches no tracked file" in e], [])
+        self.assertTrue(any("its scope is unstated" in error for error in errors), errors)
+
+    def test_missing_or_empty_rules_root_is_reported(self) -> None:
+        self.assertTrue(any("no rule files found" in error for error in self.errors()))
+        empty = Path(self.tempdir.name) / "absent"
+        self.assertTrue(any("rules root is missing" in error for error in VALIDATOR.validate_rules(empty)))
+
+
 if __name__ == "__main__":
     unittest.main()

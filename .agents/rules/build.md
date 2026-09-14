@@ -1,6 +1,24 @@
 ---
 description: Build system and compilation rules
-globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_options.txt,build-aux/**}"
+paths:
+  - "Cargo.toml"
+  - "Cargo.lock"
+  - "*/Cargo.toml"
+  - "crates/**/Cargo.toml"
+  - "crates/**/*.rs"
+  - "Makefile"
+  - ".cargo/**"
+  - ".config/**"
+  - ".github/workflows/**"
+  - "**/build.rs"
+  - "meson.build"
+  - "**/meson.build"
+  - "meson_options.txt"
+  - "build-aux/**"
+  - "scripts/**"
+  - "snap/**"
+  - "fuzz/**"
+  - "sonar-project.properties"
 ---
 
 # Build Rules
@@ -250,20 +268,26 @@ decision logic but carries no declared workflow role**, which is the
 inclusion-side blind spot of a scope decided by naming convention — the purity
 and reachability halves can only inspect files the convention already selects, so
 pure policy under any other file name was silently uncovered while every command
-exited 0; when a workflow marked migrated in
-`docs/workflow-readability-matrix.md` lacks its required roles; when a matrix
-row claims evidence that is absent; when the matrix declares roles for a row that
-is not marked migrated; when a normative facade line budget has been declared and
-a migrated row's facade exceeds it; or when the programme record's slot ledger in
+exited 0; **when a `.rs` file sits in a migrated row's role home and that row's
+matrix text declares it nowhere**, so a module in the one directory the
+convention claims to have classified cannot stay unclassified; when a workflow
+marked migrated in `docs/workflow-readability-matrix.md` lacks its required
+roles; when a matrix row claims evidence that is absent; when the matrix declares
+roles for a row that is not marked migrated; when a normative facade line budget
+has been declared and a migrated row's facade exceeds it; **when the count of
+externally reachable `*_for_test` declarations exceeds the figure recorded under
+the matrix's `### Externally reachable test-seam ceiling`**, which ratchets the
+shadow introspection API
+the evidence surfaces retired; or when the programme record's slot ledger in
 `docs/next/workflow-readability.md` disagrees with the matrix about which
-workflows are migrated and which are still outstanding. That record is the
-programme's why/baseline/remaining-scope narrative and must advance in the same
-change as the matrix. `docs/workflow-readability-matrix.md` is the
-completion source of truth for that convention: every workflow has a stable
-`WFR-*` row id, and a workflow may be marked `migrated` only when the row's
-facade, coordination, policy, and evidence roles, seam value object, mutation
-parity evidence, and evidence-surface consolidation all exist. Update the
-matching row in the same change as the code.
+workflows are migrated. The programme is closed, so that record is frozen except
+its deferral inventory, which may be appended; the matrix row is what a change
+updates, in the same change as the code.
+
+`docs/workflow-readability-matrix.md` is the completion source of truth for that
+convention, and the convention itself is normative in
+[`.agents/rules/workflow-convention.md`](./workflow-convention.md) with its
+ordered procedure in the `lushtext-workflow` skill.
 
 Portal and headless smoke scripts must keep their temporary runtime directories
 short (for example directly under `$XDG_RUNTIME_DIR` or `/tmp`) rather than

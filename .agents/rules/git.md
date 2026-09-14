@@ -1,7 +1,7 @@
 ---
 description: Git conventions and commit rules
-globs: *
 ---
+<!-- global rule: loaded for every request -->
 
 # Git Rules
 

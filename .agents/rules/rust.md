@@ -1,6 +1,7 @@
 ---
 description: Rust coding conventions for lushtext
-globs: "**/*.rs"
+paths:
+  - "**/*.rs"
 ---
 
 # Rust Conventions
@@ -115,216 +116,22 @@ autosave, encoding analysis, preview flows, or optional marker scans.
 
 ## Workflow Vocabulary And Boundaries
 
-A workflow is the reader's entry point: one user-initiated operation with
-ordered stages that crosses the adapter boundary into coordination and pure
-policy — Ctrl+S, workspace search, draft recovery. The workflow and its domain
-vocabulary are what
-a reader must learn first; the coordination machinery below is the tier a
+A workflow is the reader's entry point: one user-initiated operation with ordered
+stages that crosses the adapter boundary into coordination and pure policy —
+Ctrl+S, workspace search, draft recovery. The workflow and its domain vocabulary
+are what a reader must learn first; the coordination machinery below is the tier a
 workflow reaches into, not the entry point.
 
-`docs/workflow-readability-matrix.md` is the completion source of truth for which
-workflows follow the convention. Every workflow has a stable `WFR-*` row; update
-its row in the same change as the code, and read the row before restructuring a
-workflow so an `exempt` or `deferred` classification is not silently overridden.
-
-The migration programme is **complete**: every workflow has a terminal matrix row
-— **22 `migrated`**, 5 `cross-cutting`, 1 `exempt`, and 1 `superseded` — and the
-gate rejects any transitional status once the programme record's slot ledger
-declares no slot outstanding. New work adds a row and follows the convention; it
-does not re-open the programme.
-`docs/next/workflow-readability.md` is its record: the measured problem, the
-baseline of what is actually migrated, the remaining per-change scope and slot
-ledger, the sequencing rationale, the rejected alternatives (a new policy layer,
-a naming-only pass, horizontal slicing), and the deferred work (actuation test
-seams, state-machine reification of inverted drains) with the bar that would
-justify it. Read it before planning workflow-structure work, and advance it in
-the same change as the matrix.
-
-A migrated workflow assigns each of its modules exactly one role:
-
-- **Narrative facade** — the workflow's public module surface. It narrates the
-  ordered stages with their intent named and delegates every stage to another
-  role. It must not own timers, admission bookkeeping, generation counters, or
-  GTK widget mutation. Where stages are connected by a deferred drain, idle
-  callback, or worker completion instead of a direct call, the facade documents
-  that inversion and names the point where control resumes. Facades have a
-  normative size budget, set from the first migration's measured facade and
-  recorded in the "Facade size budget" section of
-  `docs/workflow-readability-matrix.md`; changing that number follows the
-  retroactive-amendment rule.
-- **Seam value objects** — the reified identity/freshness/intent values described
-  below.
-- **Pure policy** — `policy.rs`, one per workflow, inside that workflow's own
-  directory.
-- **Coordination** — one module per coordination job, named from the bounded set
-  `admission`, `execution`, `retirement`, `watch`, `journal`. A workflow may own
-  more than
-  one. `runtime.rs` is not a role name: it says only that the module is
-  machinery. `journal` is the job of maintaining a durable, generation-guarded
-  record that a later stage of the same workflow reads back — installing and
-  clearing it under a freshness guard, writing and deleting it on a worker,
-  recovering it at startup with stale-record cleanup, and handing it back. It is
-  the opposite of `retirement`, which destroys a payload the workflow is finished
-  with. A coordination job no listed name describes requires amending
-  `openspec/specs/gtk-adapter-module-boundaries/spec.md`, not overloading an
-  existing name. Where **one** workflow owns several ordered stage orders in one
-  directory and more than one of them needs a coordination module of the same
-  shape, the module name may qualify a bounded role name with the stage order it
-  serves (`query_execution.rs` and `index_execution.rs` in
-  `ui/command_palette/`, `replace_execution.rs` in `ui/search_panel/`), using the
-  workflow's own domain vocabulary for the
-  qualifier while the suffix stays a bounded role name. Do not take an
-  ill-fitting bounded name because the fitting one is already spent on another
-  stage order of the same workflow. The bounded set is a review contract:
-  `make check-workflow-boundaries` validates only that declared role paths exist,
-  so no gate rejects an off-set name.
-- **Called presentation surface** — **not a role.** A module that only projects
-  the workflow onto widgets — GTK subclass state and template children,
-  list-factory row projection, the row model object a factory binds,
-  context-menu and gesture lifecycle, row accessibility projection, shared
-  dialog chrome, window-side target resolution, or a per-surface capture adapter
-  a canonical role home calls — is outside the five-name taxonomy. It MUST NOT
-  take one of the role names and MUST NOT own a `policy.rs` or an `evidence.rs`.
-  Record it in **both** its own module doc and the workflow's matrix row. Do not
-  label such a module "adapter detail": that label was used by six migrated rows,
-  is defined nowhere, and was retired when this statement landed.
-- **Evidence** — `evidence.rs`, one per workflow, at the narrowest visibility its
-  readers require. Because one accessor reads the whole surface through shared
-  borrows, **no evidence field may be read from inside a mutable borrow of the
-  same state**, and every surface owes the proof test for it. See the
-  evidence-surface rules in `.agents/rules/widget-wiring.md`.
-
-A workflow's roles live in one of **two permitted homes**. A workflow whose role
-file names do not collide with a sibling's keeps flat, workflow-scoped role names
-in the shared directory. Where a directory hosts several workflows and more than
-one owns pure policy or an evidence surface, the fixed `policy.rs` /
-`evidence.rs` names cannot be shared, so a workflow's roles MAY live in a
-**per-workflow subdirectory** of that directory, whose `mod.rs` is the facade and
-whose role files keep the unqualified `policy.rs`, `evidence.rs`, and bounded
-coordination names — `ui/editor_page/save/` is the first. A workflow-prefixed
-`save_policy.rs` is not a substitute: it leaves the `ui/**/policy.rs` mutation
-scope, which is a blocking coverage regression. Migration never requires
-restructuring a whole directory into one subdirectory per workflow, and the
-choice is recorded in the workflow's matrix row.
-
-Splitting a large file into siblings without assigning roles does not satisfy the
-convention. Roles are expressed with plain modules and narrow owner references;
-do not add a trait, manager type, or crate solely to move code.
-
-### Seam value objects
-
-Reify a field bundle as a named value object when it crosses **two or more**
-function boundaries or is reconstructed at two or more call sites. Construct it
-once at the workflow entry point and validate it as a unit. A bundle used by
-exactly one private helper and reconstructed nowhere else does not need one — the
-rule targets seams, not every long signature.
-
-A workflow's role home may also be **nested**: where one workflow owns a
-directory and a widget subdirectory of it, name one of them the canonical role
-home — holding the facade, the single `policy.rs`, and the single `evidence.rs` —
-while modules in the other take bounded coordination role names or are recorded
-as called presentation surfaces. The `ui/**/policy.rs` mutation glob reaches
-either location, which a migration must **verify after the move** rather than
-assume.
-
-A migrating workflow **classifies** its pre-convention focused siblings rather
-than choosing between a topical decomposition requirement and the role
-requirement. The topical split is what the modules *do*; the role, where one
-applies, is what they *are* to the workflow, and neither replaces the other.
-
-**A value must not be renamed while crossing a seam.** Passing a value that means
-one thing into a parameter that names it something else is the archetype defect
-this rule exists to make unrepresentable: it is invisible to review and invisible
-to tests while both names denote the same value. Reify the bundle so the
-mismatched call becomes a type error.
-
-Reuse the shape the codebase already uses rather than inventing a parallel one:
-
-- **Ticket + Facts + predicate** — a `*Ticket` captures the expectation at
-  dispatch, a `*Facts` captures observed live state at completion, and one
-  `*_is_current(ticket, facts)` predicate validates them together. Existing
-  instances include `DraftRestoreTicket` + `DraftRestoreFacts` and
-  `BaselineCaptureTicket` + `BaselineCaptureFacts`. The `Ticket::is_current(&editor)`
-  variant reads live state directly (`SaveCompletionTicket`).
-- **Coordinator generation identity** — where a coordinator already owns the
-  generation and exposes `is_current(generation)`, that coordinator *is* the seam
-  value object and no additional type is required.
-
-Treat `#[expect(clippy::too_many_arguments)]` on a cross-module workflow boundary
-as a marker of an unreified seam to be fixed, not as an accepted exception.
-Domain catalog construction in `model/` whose parameters each name a documented
-external contract field is outside this rule and keeps its reasoned suppression.
-
-### Policy purity
-
-A `policy.rs` module must contain no `gtk4`, `glib`, `gio`, `libadwaita`, or
-`sourceview5` import. That purity is what keeps it inside the default mutation
-scope, which reaches `ui/**/policy.rs` by convention. `make
-check-workflow-boundaries` fails on a violation and names the file and import.
-
-**Because that scope is decided by *name*, the converse defect is the one to watch
-for: pure decision logic in `ui/` under any other file name is silently outside
-the scope while every command exits 0.** Purity and reachability checks can only
-inspect files the convention already selects, so the same gate also **discovers**
-GTK-free `ui/` modules that are not named `policy.rs` and fails naming any that
-holds decision logic and carries no declared role. Classification is by the
-module's **declared role**, not by permitted contents — a GTK-free narrative
-facade, `seams.rs`, bounded coordination role, `evidence.rs`, or `test_policy.rs`
-is already correctly named, and a module that is genuinely cross-cutting says so
-in its module doc and names its owning row. Declaring a role a module does not
-perform is a false role claim, reviewed as such. Two real instances were found by
-this check and renamed into the convention: `ui/window/adaptive_shell.rs`
-(248 production lines, **0 mutants** generated before the rename) and
-`ui/markdown_preview/inline_footnotes.rs` (214 production lines of decision
-logic, in scope only through a hand-listed entry). Report such a rename's result
-as a **gain from zero** where the module was never in scope, and as a **parity
-claim** only where an entry did select it.
-
-Pure policy moves beside its consumer only when it has a single **owning
-workflow**. Eligibility is counted in owning workflows, not consuming files: pure
-policy whose only consumer is its own coordination adapter is cross-cutting when
-that adapter serves several workflows, and stays in its shared location with the
-matrix recording it as cross-cutting. Do not place a module in `model/` solely to
-obtain test or mutation tooling reach.
-
-A workflow whose pure decision logic is **entirely** cross-cutting therefore owns
-no `policy.rs`, and it is still a **complete** migrated row: its matrix entry
-declares no pure policy role and names the cross-cutting module plus the other
-owning workflows that keep it shared. The absence is a recorded conclusion with
-its evidence, exactly like a workflow with no qualifying seam bundle — not an
-unmet obligation. Reaching that conclusion requires **probing** the workflow's own
-GTK adapter for separable pure decisions first and recording the negative finding;
-"the domain module stays" has never by itself implied "the workflow owns no
-policy". Never manufacture a local `policy.rs` by copying, forking, or
-re-implementing part of the cross-cutting module, and never duplicate a shared
-limit or shared arithmetic to obtain one: two workflows needing the same pure
-threshold both **call** the cross-cutting owner, because a forked shared limit can
-drift while both copies still read as correct. A one-line delegating alias under a
-second domain name is not a duplicate and may stay when it makes the calling
-workflow's narration read in its own vocabulary — say so in the alias's own doc
-comment, naming the owner and the contract.
-
-### Re-deriving a row's measured cells
-
-A migrating workflow **re-derives** its matrix row's measured cells — current
-size, per-kind test seam counts, and pure-policy consumer count — from the code
-and corrects them in the same change, rather than inheriting the census figures or
-reporting against them. Re-derivation is **row-scoped**: count only what the
-workflow owns, never pooling shared service files, cross-cutting modules, or
-neighbouring files the workflow merely calls. Size figures count production lines,
-excluding `#[cfg(test)]` modules — including a co-located test module that lives
-in its own file behind `#[cfg(test)] mod tests;`, which a naive per-file scan
-counts as production. Name any shared population the old cell had pooled together
-with the rows that share it, so a later slot reading from the other side does not
-re-derive it as its own. A correction may move a figure in **either direction**,
-and an unchanged cell is not the expected outcome.
-
-### Intent-first naming
-
-Public, `pub(crate)`, `pub(super)`, and cross-module workflow operations are named
-for the workflow intent they express, not the mechanism they happen to use.
-Private helpers inside a coordination module may keep mechanism names when the
-owning module makes the mechanism obvious.
+The convention itself — roles, role homes, seam value objects, policy purity and
+placement, evidence surfaces, intent-first naming, and re-derived measured cells —
+is normative in
+[`.agents/rules/workflow-convention.md`](./workflow-convention.md), with the
+per-workflow status in `docs/workflow-readability-matrix.md` and the procedure in
+the `lushtext-workflow` skill. Read the rule before restructuring a workflow. The
+criteria formerly stated here — cross-cutting eligibility, the seam value-object
+rule, and the `#[expect(clippy::too_many_arguments)]` exemption for domain catalog
+construction — now live there, so an older citation of *this* file for one of them
+resolves in one hop.
 
 ## Coordination Vocabulary
 
@@ -563,7 +370,7 @@ When production code approaches 1000 lines:
 2. **Never split mid-impl block.** Keep all trait impls for a type in one file. Split by extracting private helper functions into sibling modules, then calling them from the main impl.
 3. **Prefer vertical, not horizontal splitting.** A 900-line file with one clear responsibility is better than 3 files that constantly cross-reference each other.
 4. **Split GTK adapters by workflow before inventing new abstraction layers.** If a widget starts mixing unrelated flows (actions, notifications, persistence, search runtime, focus recovery), prefer sibling modules under the widget folder over new traits or faux-manager types.
-5. **Promote repeated field bundles into named value objects or state groupings.** Where the bundle lands depends on what it means. A domain-concept bundle — real domain vocabulary shared across several workflows — belongs in `model/`. A workflow seam bundle (identity, freshness, or intent values crossing that one workflow's boundaries, for example query text + toggle state) is reified beside its workflow per the seam value-object rule; never place a module in `model/` merely to obtain tooling reach. See the Workflow Vocabulary And Boundaries section. If an `imp` struct accumulates unrelated timers/counters/maps, group them into small helper structs with clear workflow ownership.
+5. **Promote repeated field bundles into named value objects or state groupings.** Where the bundle lands depends on what it means. A domain-concept bundle — real domain vocabulary shared across several workflows — belongs in `model/`. A workflow seam bundle (identity, freshness, or intent values crossing that one workflow's boundaries, for example query text + toggle state) is reified beside its workflow per the seam value-object rule; never place a module in `model/` merely to obtain tooling reach. See the seam value-object section of `.agents/rules/workflow-convention.md`. If an `imp` struct accumulates unrelated timers/counters/maps, group them into small helper structs with clear workflow ownership.
 
 ## Testing
 

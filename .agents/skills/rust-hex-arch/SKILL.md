@@ -91,8 +91,10 @@ the first two name nothing and `runtime` says only that the module is machinery.
 ### Assign one workflow role per module
 
 A **workflow** is one user-initiated operation with ordered stages that crosses
-the adapter boundary into coordination and pure policy. Each module of a migrated
-workflow carries exactly one role:
+the adapter boundary into coordination and pure policy. The convention is
+normative in `.agents/rules/workflow-convention.md`; the review checklist below
+is the reviewer's working summary of it, so consult the rule when the two could
+be read differently. Each module of a migrated workflow carries exactly one role:
 
 | Role | File | Owns |
 |---|---|---|
@@ -134,10 +136,16 @@ Rules to enforce when reviewing a decomposition:
 - Do not introduce a trait, manager type, or crate to express a role split. Plain
   modules and narrow owner references only.
 
+- Modules that only project the workflow onto widgets are **called presentation
+  surfaces**, not roles. They take none of the five names, own no `policy.rs` or
+  `evidence.rs`, and must be declared by a backticked path in the workflow's
+  matrix row — the gate fails on an undeclared `.rs` file in a migrated role home.
+
 `docs/workflow-readability-matrix.md` is the completion source of truth: check the
 workflow's `WFR-*` row for its status, owned policy, seam value object, and risk
-tier before recommending a restructure. A row marked `exempt` or `deferred` must
-not be forced into the convention.
+tier before recommending a restructure. Every row is terminal; a row marked
+`exempt`, `cross-cutting`, or `superseded` must not be forced into the
+convention.
 
 ### Co-locate pure policy with its owning workflow
 

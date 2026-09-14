@@ -1053,6 +1053,39 @@ condition.
 | The bounded **startup activation-open queue** | closed here, not deferred: capped at `MAX_PENDING_ACTIVATION_OPENS` (64) with the overflow **dropped and reported** rather than opened immediately, because returning "not queued" would defeat the gate. **Its coverage gap is recorded**: reaching the queued state needs a startup compatibility dialog, and spending an actuation seam for it is against the standing budget | `WFR-STARTUP-PREFLIGHT` |
 | The `ui/automation.rs` **ratchet row** | **open, and must not be struck retired.** The recorded occurrence is gone; the reading expression persists at **8** sites. Its new owning row is `WFR-TAB-STRIP` | `WFR-AUTOMATION-SPINE` |
 
+**Appended after closure — guidance hardening (2026-09-14,
+`harden-workflow-convention-guidance`).** Not a reopening of the programme and
+not a new deferral: a record of what the closeout left to review rather than to
+mechanism, so a later reader does not re-derive it. Nothing above is amended.
+
+- **The convention had no single normative home.** It was stated across
+  `.agents/rules/rust.md` (~213 lines), `.agents/rules/widget-wiring.md` (~114),
+  `AGENTS.md` (~56), and `.agents/rules/build.md` (~23), with overlap, so an
+  amendment could land in one copy and leave the others contradicting it. It now
+  lives in `.agents/rules/workflow-convention.md`, with those four carrying
+  pointers and the ordered procedure in the `lushtext-workflow` skill.
+- **Two convention obligations were enforced only by review** and are now
+  mechanical in `make check-workflow-boundaries`: every `.rs` file in a `migrated`
+  row's role home must be declared by that row (**20 real findings across 7 rows**
+  on the closed tree — each already classified correctly in its own module doc,
+  but named in the matrix only as a bare stem or a brace expansion, neither of
+  which a check can resolve; all 20 were fixed by *declaring*, none by renaming or
+  by weakening the check), and the externally reachable `*_for_test` count may not
+  exceed the ceiling the matrix records (**165**, the figure this record's own
+  refreshed Measurement Definitions table states, with the same predicate).
+- **A third fail-open, found while adding the ratchet.** Keying the ceiling parser
+  on the parent `## Measurement Definitions` heading looked equivalent to keying
+  it on its own `###` subsection and was not: the parser resets on any `#` line,
+  so the real matrix read as having no ceiling while a flatter fixture passed. The
+  real-tree entry point now reports an unparsed ceiling as a finding, and the
+  fixture mirrors the real heading shape. This is the same shape as the five
+  fail-opens slot 7b closed in the reconciliation gate, in a rule one change old.
+- **Agent guidance was partly unreachable.** `.claude/CLAUDE.md` pointed at a path
+  that has never existed, and six of seven rule files scoped themselves with
+  Cursor's `globs:` key, which Claude Code does not recognise — so they loaded
+  globally while reading as scoped. Both are fixed and both are now checked by
+  `make check-agent-docs`.
+
 **The `[~]` reconciliation, re-grepped in slot 7b and corrected — the inherited
 numbers were wrong in every position.** The record said *23 markers, 16 of them
 slot 5a's, nine genuinely open*. Re-derived by grepping `openspec/changes/**`

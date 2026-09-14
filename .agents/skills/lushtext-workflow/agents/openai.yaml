@@ -1,0 +1,6 @@
+interface:
+  display_name: "LushText Workflow"
+  short_description: "Add or change a workflow under the role convention"
+  default_prompt: "Use $lushtext-workflow to structure this workflow under the readability role convention."
+policy:
+  allow_implicit_invocation: true

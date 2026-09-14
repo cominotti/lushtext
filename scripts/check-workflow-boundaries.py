@@ -40,6 +40,28 @@ Four mechanical guarantees, all derived from
    path leaves this rule inert (the fixtures that exercise other rules do so);
    the real-tree entry point always passes the canonical path, so a missing
    record is reported rather than silently skipped.
+7. Role-home declaration: every `.rs` file in a `migrated` row's role home is
+   the facade, the GTK subclass state file, a fixed role name, a bounded or
+   stage-qualified coordination role, or a file that row's own matrix text names
+   by a backticked repository path. A role home is the directory holding the
+   declared facade plus any subdirectory of it the row itself names through a
+   declared role path -- the nested home the convention permits. Enumeration is
+   non-recursive in each, so a workflow is never made responsible for a
+   neighbour's directory. A module in the one directory the convention claims to
+   have classified must not be unclassified, and the declaration has to be
+   machine-readable: a bare stem or a brace expansion classifies a file for a
+   human reader while leaving this check blind.
+8. Test-seam ratchet: the count of externally reachable `*_for_test`
+   declarations under `crates/lushtext-core/src` must not exceed the ceiling the
+   matrix records. Only excess fails. A count below the ceiling passes without a
+   finding, because forcing the figure down on every cleanup would train a reader
+   to treat it as a number to adjust rather than a ceiling to stay under.
+   `cfg(feature = "test-utils")` sites are deliberately NOT ratcheted: that
+   population rises as workflows gain gated evidence surfaces, so ratcheting it
+   would penalise the convention being followed. An unparsed ceiling is itself a
+   finding when the caller requires one -- which the real-tree entry point does --
+   because a rule that checked nothing would otherwise retire the programme's
+   headline ratchet while exiting 0.
 """
 
 from __future__ import annotations
@@ -159,6 +181,30 @@ TERMINAL_NON_MIGRATING_STATUSES = ("cross-cutting", "exempt", SUPERSEDED_STATUS)
 # strip each captured group, so requiring a non-space first character is
 # behaviour-identical.
 ROLE_LINE_RE = re.compile(r"^-\s+([A-Za-z][A-Za-z ]*?):\s*(\S.*)$")
+# Stems the convention assigns no role name to but that every role home carries:
+# the facade and the GTK subclass state file. `imp.rs` is a called presentation
+# surface in every migrated row, so requiring each row to re-declare it would add
+# 22 identical lines that carry no information.
+ROLE_HOME_EXEMPT_STEMS = ("mod", "imp")
+# The ceiling's own subsection, read exactly like `Facade size budget`: only that
+# heading's body is scanned, so a figure cannot be smuggled in from prose
+# elsewhere. Keying on the parent `## Measurement Definitions` instead looks
+# equivalent and is not -- the parser resets on any `#` line, so the real tree's
+# `###` subsection heading closed the section and the rule read as inert while a
+# flatter fixture passed. That is the shape of fail-open this file closes
+# elsewhere, so the real-tree entry point now also reports an unparsed ceiling.
+MEASUREMENT_SECTION_HEADING = "### Externally reachable test-seam ceiling"
+# The machine-readable ceiling declared inside it, in the same shape as the facade
+# budget.
+SEAM_CEILING_RE = re.compile(
+    r"^-\s+externally reachable `\\?\*_for_test` declaration ceiling:\s*(\d+)\s*$"
+)
+# `pub fn` / `pub(crate) fn` whose name ends `_for_test`, which is the predicate
+# `docs/next/workflow-readability.md` records this figure against. `pub(super)`
+# declarations are outside it by design.
+FOR_TEST_DECLARATION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])pub(?:\(crate\))?\s+fn\s+[A-Za-z0-9_]*_for_test(?![A-Za-z0-9_])"
+)
 EXAMINE_GLOBS_RE = re.compile(r"^examine_globs\s*=\s*\[", re.MULTILINE)
 
 
@@ -940,6 +986,197 @@ def superseded_findings(rows: list[MatrixRow]) -> list[str]:
     return findings
 
 
+# --- Check 7: every module in a migrated role home is declared --------------
+
+
+def parse_role_sections(text: str) -> dict[str, str]:
+    """Return the raw body of each `### WFR-*` subsection of the roles section.
+
+    `parse_role_declarations` keeps only lines matching the `- role: value` shape,
+    which is right for the role rules but wrong here: a row may classify a module
+    in ordinary prose inside the same subsection, and that prose is still the
+    row's own text.
+    """
+    sections: dict[str, str] = {}
+    current: str | None = None
+    buffer: list[str] = []
+    in_section = False
+    in_fence = False
+
+    def flush() -> None:
+        nonlocal current, buffer
+        if current is not None:
+            sections[current] = "\n".join(buffer)
+        current = None
+        buffer = []
+
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            if in_section and current is not None:
+                buffer.append(line)
+            continue
+        if not in_fence and line.startswith("## "):
+            flush()
+            in_section = line.strip() == ROLES_SECTION_HEADING
+            continue
+        if not in_section:
+            continue
+        if not in_fence and line.startswith("### "):
+            flush()
+            current = line.removeprefix("### ").strip()
+            continue
+        if current is not None:
+            buffer.append(line)
+    flush()
+    return sections
+
+
+def named_paths(text: str) -> set[str]:
+    """Return every backticked token in `text` that resolves to a repo path."""
+    resolved: set[str] = set()
+    for token in BACKTICKED_RE.findall(text):
+        claim = normalize_claim(token)
+        if claim is not None:
+            resolved.add(claim)
+    return resolved
+
+
+def role_home_directories(
+    declaration: RoleDeclaration, facade: str
+) -> list[str]:
+    """Return the row's role home directories, closest-first.
+
+    The facade's directory is always a home. A second home is admitted only when
+    it is a **subdirectory of it** that the row names through a declared role
+    path -- the convention's nested role home. Admitting every directory holding a
+    declared role would make a row that declares one coordination module in a
+    shared directory responsible for every other workflow's files there.
+    """
+    facade_dir = Path(facade).parent
+    homes = {facade_dir}
+    for value in declaration.roles.values():
+        for claim in named_paths(value):
+            candidate = Path(claim).parent
+            if candidate != facade_dir and facade_dir in candidate.parents:
+                homes.add(candidate)
+    return [str(home) for home in sorted(homes)]
+
+
+def role_home_findings(
+    rows: list[MatrixRow],
+    declarations: dict[str, RoleDeclaration],
+    sections: dict[str, str],
+    root: Path,
+) -> list[str]:
+    """Return findings for undeclared modules in a migrated row's role home."""
+    findings: list[str] = []
+    for row in rows:
+        if row.status != MIGRATED_STATUS:
+            continue
+        declaration = declarations.get(row.row_id)
+        if declaration is None:
+            # Rule 3 already reports the missing declaration.
+            continue
+        facade = declared_facade_path(declaration.roles.get("facade", ""))
+        if facade is None or not (root / facade).is_file():
+            # Rules 3 and 4 already report an unreadable or absent facade claim.
+            continue
+        declared = named_paths(" | ".join(row.cells)) | named_paths(
+            sections.get(row.row_id, "")
+        )
+        for home in role_home_directories(declaration, facade):
+            for path in sorted((root / home).glob("*.rs")):
+                stem = path.stem
+                if stem in ROLE_HOME_EXEMPT_STEMS or has_convention_role_name(path.name):
+                    continue
+                relative = f"{home}/{path.name}"
+                if relative in declared:
+                    continue
+                findings.append(
+                    f"{display_path(MATRIX_PATH)}:{declaration.line_number} row "
+                    f"{row.row_id} has an undeclared module in its role home: "
+                    f"{relative} carries no convention role name and this row's "
+                    "matrix text names it nowhere. Declare it as a called "
+                    "presentation surface or coordination role in the matrix row, "
+                    "as a backticked repository path"
+                )
+    return findings
+
+
+# --- Check 8: the externally reachable test-seam ratchet ---------------------
+
+
+def parse_seam_ceiling(text: str) -> int | None:
+    """Read the recorded `*_for_test` declaration ceiling, or None while unset."""
+    in_section = False
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if line.startswith("#"):
+            in_section = line.strip() == MEASUREMENT_SECTION_HEADING
+            continue
+        if not in_section:
+            continue
+        match = SEAM_CEILING_RE.match(line.strip())
+        if match is not None:
+            return int(match.group(1))
+    return None
+
+
+def count_for_test_declarations(root: Path) -> int:
+    """Count `pub`/`pub(crate)` `*_for_test` declarations in the governed crate.
+
+    Counted over comment- and string-stripped code so a doc comment naming a
+    retired getter cannot inflate the figure the ratchet compares.
+    """
+    core = root / CORE_SRC
+    if not core.is_dir():
+        return 0
+    total = 0
+    for path in sorted(core.rglob("*.rs")):
+        for _, line in code_lines(path.read_text(encoding="utf-8")):
+            total += len(FOR_TEST_DECLARATION_RE.findall(line))
+    return total
+
+
+def seam_ratchet_findings(text: str, root: Path, *, required: bool) -> list[str]:
+    """Return a finding when the seam count exceeds the recorded ceiling.
+
+    `required` is set by the real-tree entry point. A fixture exercising another
+    rule carries no ceiling and must leave this inert, but the real matrix losing
+    its declaration -- by a reworded heading, say -- would silently retire the
+    programme's headline ratchet while the gate kept exiting 0. The flag is
+    explicit rather than inferred from another rule's argument, so a fixture for
+    one rule cannot turn a second rule on by accident.
+    """
+    ceiling = parse_seam_ceiling(text)
+    if ceiling is None:
+        if required:
+            return [
+                f"{display_path(MATRIX_PATH)}: no "
+                f"`{MEASUREMENT_SECTION_HEADING.removeprefix('### ')}` declaration was "
+                "parsed, so the `*_for_test` ratchet checked nothing; restore the "
+                "section's `- externally reachable `*_for_test` declaration ceiling: "
+                "<integer>` line or update this check together with it"
+            ]
+        return []
+    actual = count_for_test_declarations(root)
+    if actual <= ceiling:
+        return []
+    return [
+        f"{display_path(MATRIX_PATH)}: {actual} externally reachable `*_for_test` "
+        f"declarations under {CORE_SRC} exceed the recorded ceiling of {ceiling}. "
+        "Extend the owning workflow's evidence surface with the fact the test "
+        "needs and delete the getter; or, deliberately, raise the ceiling in the "
+        "matrix's Measurement Definitions in this same change with a stated reason"
+    ]
+
+
 def record_findings(
     rows: list[MatrixRow], record_path: Path, slot_column_located: bool
 ) -> list[str]:
@@ -1095,6 +1332,8 @@ def check_tree(
     matrix_path: Path,
     mutants_config: Path,
     record_path: Path | None = None,
+    *,
+    require_seam_ceiling: bool = False,
 ) -> list[str]:
     """Return every workflow boundary finding for one checkout root."""
     findings: list[str] = []
@@ -1133,6 +1372,10 @@ def check_tree(
     findings.extend(
         facade_size_findings(rows, declarations, parse_facade_budget(text), root)
     )
+    findings.extend(
+        role_home_findings(rows, declarations, parse_role_sections(text), root)
+    )
+    findings.extend(seam_ratchet_findings(text, root, required=require_seam_ceiling))
     if record_path is not None:
         findings.extend(record_findings(rows, record_path, slot_column_located))
     return findings
@@ -2114,6 +2357,262 @@ def run_self_test() -> None:
         if findings:
             raise AssertionError(f"expected non-code GTK mentions to pass, got {findings}")
 
+    # --- Check 7: role-home declaration ------------------------------------
+
+    home_row = "| WFR-EXAMPLE | Example | none | migrated |\n"
+
+    def home_roles(extra: str = "") -> str:
+        return (
+            "\n## Migrated Workflow Roles\n\n### WFR-EXAMPLE\n\n"
+            "- facade: `ui/search_panel/mod.rs`\n"
+            "- coordination: `ui/search_panel/execution.rs`\n"
+            "- policy: `ui/search_panel/policy.rs`\n"
+            "- evidence: `ui/search_panel/evidence.rs`\n"
+            "- mutation parity: none\n" + extra
+        )
+
+    def write_home(root: Path, *, extra_modules: tuple[str, ...] = ()) -> None:
+        panel = root / CORE_SRC / "ui/search_panel"
+        write(panel / "mod.rs", "//! Facade.\n")
+        write(panel / "imp.rs", "//! Subclass state.\n")
+        write(panel / "execution.rs", "//! Coordination.\n")
+        write(panel / "policy.rs", "//! Pure.\npub fn decide() -> bool { true }\n")
+        write(panel / "evidence.rs", "//! Surface.\npub struct Facts;\n")
+        write(panel / "seams.rs", "//! Seams.\npub struct Ticket;\n")
+        write(panel / "test_policy.rs", "//! Test policy.\npub struct Policy;\n")
+        write(panel / "replace_execution.rs", "//! Stage-qualified coordination.\n")
+        for name in extra_modules:
+            write(panel / name, "//! A called presentation surface.\n")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Negative: a home holding only convention names plus `mod`/`imp` passes.
+        matrix, config = build_fixture(root, matrix_body=home_row, roles=home_roles())
+        write_home(root)
+        findings = check_tree(root, matrix, config)
+        if any("undeclared module in its role home" in f for f in findings):
+            raise AssertionError(f"expected a conventional home to pass, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Positive: an extra module the row names nowhere is a finding.
+        matrix, config = build_fixture(root, matrix_body=home_row, roles=home_roles())
+        write_home(root, extra_modules=("list_factory.rs",))
+        findings = check_tree(root, matrix, config)
+        if not any(
+            "undeclared module in its role home" in f and "list_factory.rs" in f
+            for f in findings
+        ):
+            raise AssertionError(f"expected an undeclared-module finding, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Declaring it by a backticked repository path clears the finding, and a
+        # bare stem does not -- the declaration has to be machine-readable.
+        matrix, config = build_fixture(
+            root,
+            matrix_body=home_row,
+            roles=home_roles(
+                "- called presentation surfaces: `ui/search_panel/list_factory.rs`\n"
+            ),
+        )
+        write_home(root, extra_modules=("list_factory.rs", "results.rs"))
+        findings = check_tree(root, matrix, config)
+        if any("list_factory.rs" in f for f in findings):
+            raise AssertionError(f"expected a declared path to pass, got {findings}")
+        if not any("results.rs" in f for f in findings):
+            raise AssertionError(
+                f"expected the still-undeclared sibling to fail, got {findings}"
+            )
+
+        matrix, config = build_fixture(
+            root,
+            matrix_body=home_row,
+            roles=home_roles("- called presentation surfaces: `list_factory.rs`\n"),
+        )
+        findings = check_tree(root, matrix, config)
+        if not any("list_factory.rs" in f for f in findings):
+            raise AssertionError(
+                f"expected a bare stem to leave the module undeclared, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A subdirectory the row names through a declared role IS a nested home;
+        # one it never names is outside this row's responsibility.
+        matrix, config = build_fixture(
+            root,
+            matrix_body=home_row,
+            roles=home_roles(
+                "- watch: `ui/search_panel/section/watch.rs`\n"
+            ),
+        )
+        write_home(root)
+        write(root / CORE_SRC / "ui/search_panel/section/watch.rs", "//! Watch.\n")
+        write(root / CORE_SRC / "ui/search_panel/section/row_factory.rs", "//! Rows.\n")
+        write(root / CORE_SRC / "ui/search_panel/neighbour/other.rs", "//! Elsewhere.\n")
+        findings = check_tree(root, matrix, config)
+        if not any("section/row_factory.rs" in f for f in findings):
+            raise AssertionError(
+                f"expected the named nested home to be enumerated, got {findings}"
+            )
+        if any("neighbour/other.rs" in f for f in findings):
+            raise AssertionError(
+                f"expected an unnamed subdirectory to stay out of scope, got {findings}"
+            )
+
+    # --- Check 8: the externally reachable test-seam ratchet ----------------
+
+    def measurement_section(ceiling: int | None) -> str:
+        declaration = (
+            ""
+            if ceiling is None
+            else f"- externally reachable `\\*_for_test` declaration ceiling: {ceiling}\n"
+        )
+        return (
+            "\n## Measurement Definitions\n\n"
+            "### Externally reachable test-seam ceiling\n\nDeclared as:\n\n```\n"
+            "- externally reachable `\\*_for_test` declaration ceiling: <integer>\n"
+            f"```\n\n{declaration}"
+        )
+
+    def write_seams(root: Path, count: int) -> None:
+        # The fixture declares a role in its module doc so Check 3's discovery
+        # half does not also fire on a GTK-free file full of `fn`s.
+        #
+        # The visibilities are mixed on purpose, and the count is asserted rather
+        # than assumed. A fixture built only from `pub fn` would still produce
+        # every expected verdict if the predicate were narrowed to `pub\s+fn`, so
+        # the ratchet would read as proven while silently ignoring every
+        # `pub(crate)` seam; and `pub(super)` is outside the predicate by design,
+        # so one must be present to prove it is *not* counted.
+        declarations = [
+            f"pub fn probe_{index}_for_test() -> bool {{ true }}"
+            for index in range(count - 1)
+        ]
+        declarations.append(
+            f"pub(crate) fn probe_{count - 1}_for_test() -> bool {{ true }}"
+        )
+        body = (
+            "//! Role: called presentation surface.\n"
+            + "".join(f"{line}\n" for line in declarations)
+            + "pub(super) fn uncounted_for_test() -> bool { true }\n"
+        )
+        write(root / CORE_SRC / "ui/search_panel/imp.rs", body)
+        observed = count_for_test_declarations(root)
+        if observed != count:
+            raise AssertionError(
+                f"fixture must declare exactly {count} externally reachable seams "
+                f"({count - 1} `pub` plus 1 `pub(crate)`, alongside 1 uncounted "
+                f"`pub(super)`), but the predicate counted {observed}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Equal to the ceiling passes; the ratchet fails only on excess.
+        matrix, config = build_fixture(
+            root, matrix_body=clean_row, budget_section=measurement_section(2)
+        )
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write_seams(root, 2)
+        findings = check_tree(root, matrix, config)
+        if any("exceed the recorded ceiling" in f for f in findings):
+            raise AssertionError(f"expected an at-ceiling count to pass, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Below the ceiling passes without a finding: a cleanup must not be
+        # required to also edit the matrix, or the figure becomes a number to
+        # adjust rather than a ceiling to stay under.
+        matrix, config = build_fixture(
+            root, matrix_body=clean_row, budget_section=measurement_section(5)
+        )
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write_seams(root, 1)
+        findings = check_tree(root, matrix, config)
+        if findings:
+            raise AssertionError(f"expected a below-ceiling count to pass, got {findings}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Above the ceiling fails, and the message names both remedies in order.
+        matrix, config = build_fixture(
+            root, matrix_body=clean_row, budget_section=measurement_section(2)
+        )
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write_seams(root, 3)
+        findings = check_tree(root, matrix, config)
+        breach = [f for f in findings if "exceed the recorded ceiling" in f]
+        if not breach:
+            raise AssertionError(f"expected an over-ceiling finding, got {findings}")
+        if "evidence surface" not in breach[0] or "raise the ceiling" not in breach[0]:
+            raise AssertionError(f"expected both remedies named, got {breach[0]!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # `pub(super)` is outside the predicate, and `cfg(feature = "test-utils")`
+        # sites are deliberately not ratcheted -- that population rises as
+        # workflows gain gated evidence surfaces.
+        matrix, config = build_fixture(
+            root, matrix_body=clean_row, budget_section=measurement_section(0)
+        )
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write(
+            root / CORE_SRC / "ui/search_panel/imp.rs",
+            "//! Role: called presentation surface.\n"
+            '#[cfg(feature = "test-utils")]\n'
+            "pub(super) fn hidden_for_test() -> bool { true }\n"
+            '#[cfg(feature = "test-utils")]\n'
+            "pub(super) fn another_for_test() -> bool { true }\n",
+        )
+        findings = check_tree(root, matrix, config)
+        if findings:
+            raise AssertionError(
+                f"expected `pub(super)` seams and gate sites to be outside the "
+                f"ratchet, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # No declaration leaves the rule inert for a fixture exercising another
+        # rule -- but the real-tree entry point, which always passes a record
+        # path, reports it rather than silently retiring the ratchet.
+        matrix, config = build_fixture(root, matrix_body=clean_row)
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write_seams(root, 99)
+        findings = check_tree(root, matrix, config)
+        if findings:
+            raise AssertionError(f"expected an undeclared ceiling to be inert, got {findings}")
+
+        findings = check_tree(root, matrix, config, require_seam_ceiling=True)
+        if not any("ratchet checked nothing" in finding for finding in findings):
+            raise AssertionError(
+                f"expected a missing ceiling to be reported on the real-tree entry "
+                f"point, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # And the declaration must be read from its own subsection: keying on the
+        # parent `## Measurement Definitions` looks equivalent and silently made
+        # the rule inert on the real matrix, whose declaration sits under a `###`.
+        matrix, config = build_fixture(
+            root,
+            matrix_body=clean_row,
+            budget_section=(
+                "\n## Measurement Definitions\n\n"
+                "- externally reachable `\\*_for_test` declaration ceiling: 1\n"
+            ),
+        )
+        write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+        write_seams(root, 3)
+        findings = check_tree(root, matrix, config, require_seam_ceiling=True)
+        if not any("ratchet checked nothing" in finding for finding in findings):
+            raise AssertionError(
+                f"expected a declaration outside the ceiling's own subsection to be "
+                f"unparsed and reported, got {findings}"
+            )
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -2127,7 +2626,13 @@ def main() -> int:
     if args.self_test:
         run_self_test()
 
-    findings = check_tree(REPO_ROOT, MATRIX_PATH, MUTANTS_CONFIG_PATH, RECORD_PATH)
+    findings = check_tree(
+        REPO_ROOT,
+        MATRIX_PATH,
+        MUTANTS_CONFIG_PATH,
+        RECORD_PATH,
+        require_seam_ceiling=True,
+    )
     if findings:
         print("workflow boundary policy violations:")
         for finding in findings:

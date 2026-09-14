@@ -143,9 +143,12 @@ Rules for reading state in tests:
 - Actuation seams are deferred by decision, not by oversight. Needing a new one
   is a finding to report — name the dialog or timer boundary that is missing —
   rather than a seam to add quietly.
-- Unmigrated workflows keep their existing `_for_test` inspection functions;
-  consult the matrix row before choosing where to read state, and do not grow the
-  count in a workflow whose migration slot is upcoming.
+- Every workflow in the tree is migrated or otherwise terminal, so there is no
+  "keep the old getters until my slot" case. A fact the surface does not expose is
+  added to the evidence surface, not to a new `_for_test` inspection function;
+  `make check-workflow-boundaries` ratchets the externally reachable `*_for_test`
+  count recorded in `docs/workflow-readability-matrix.md`. Consult the row for the
+  workflow's evidence surface before choosing where to read state.
 
 Seam counts have two denominators: gated declarations and gate attribute sites.
 State which one you are reporting; one gated `impl` or `mod` block can cover many

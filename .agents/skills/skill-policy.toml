@@ -4,6 +4,7 @@ excluded_prefixes = ["openspec-", "speckit-"]
 [implicit_invocation]
 learn = true
 gtk-perf-review = true
+lushtext-workflow = true
 gtk-perf-rust-optimize = false
 gtk-perf-scale = false
 gtk-responsiveness = false

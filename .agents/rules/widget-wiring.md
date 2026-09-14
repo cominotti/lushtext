@@ -1,3 +1,12 @@
+---
+description: GTK widget composition, signal wiring, and widget-test rules
+paths:
+  - "crates/lushtext-core/src/ui/**"
+  - "crates/lushtext/tests/widget/**"
+  - "crates/lushtext-core/src/services/action_catalog/**"
+  - "resources/ui/**"
+---
+
 # Widget Wiring Rules
 
 Every interactive element in a widget must be fully wired -- no dead-end buttons, entries, or signals.
@@ -278,118 +287,28 @@ Every wired signal must have a widget test that asserts the expected state chang
 
 **Read the workflow's evidence surface, not per-field test getters.** A migrated
 workflow exposes one typed evidence surface (`evidence.rs`) that is the single
-source of its observable state. Widget tests read that value. Do not add another
-`pub fn *_for_test` getter for a counter, pending flag, queue depth, bound, or
-freshness token: when a test needs a fact the surface does not expose, extend the
-evidence surface with that field and read it from there. A new per-field
-inspection function is a regression back to the shadow introspection API the
-evidence surface replaced.
+source of its observable state, and widget tests read that value instead of a
+`pub fn *_for_test` getter per counter, pending flag, queue depth, bound, or
+freshness token. Every workflow in the tree is migrated or otherwise terminal, so
+a fact the surface does not expose is added to the surface rather than to a new
+inspection function; the gate ratchets the externally reachable `*_for_test` count
+recorded in `docs/workflow-readability-matrix.md`.
 
-- Reading an evidence surface must not mutate workflow state, timers, queues, or
-  generation counters, and must not require the workflow to be in a particular
-  stage. **A disposed widget is a stage.** GTK4 clears template children in
-  `dispose()`, before Rust's `Drop`, so any evidence field derived from a
-  `TemplateChild` must be read through `try_get()` and give an honest answer
-  when the child is gone; the panicking accessor turns a teardown observation
-  into a crash. This is a hazard consolidation creates: scattered per-field
-  getters each read one narrow thing, while one surface makes every field
-  reachable from every observation point.
-- **An evidence surface must not reach a disposed child *transitively* either.**
-  The direct hazard — reading a `TemplateChild` through its panicking accessor —
-  is the one the rule above names, and it is the easy half. The harder half is
-  that a surface built out of the workflow's **own production accessors**
-  inherits their panics: production only ever calls them on a live window, so
-  they are correct, and the surface is not. The geometry surface in slot 7b was
-  written from `rendered_workspace_sidebar_visible()`,
-  `rendered_document_properties_visible()`, and
-  `document_properties_uses_bottom_sheet()`, each of which derefs a template
-  child, and its own disposal proof caught the panic — *"Failed to retrieve
-  template child"* — before it shipped. Derive the fact defensively in the
-  surface and leave the production accessor alone; do not widen a production
-  accessor to `try_get()` for the surface's benefit, because that changes
-  production behaviour to satisfy an observation.
-- **Disposing a still-parented widget is itself a `Gtk-CRITICAL`.** A disposal
-  proof that calls `run_dispose()` on a child whose parent still holds a
-  reference produces *"has a parent ... during dispose"*, which the widget lane
-  treats as unexpected warning output and fails on. Detach first (for a popover,
-  `menu_button.set_popover(None)`), then dispose, so the observation is about
-  the surface rather than about the test's teardown order.
-- **A workflow that spans two separately observable GObjects may expose one
-  accessor per object.** "One accessor reads the whole surface" is about not
-  scattering per-field getters, not about the object count: where a workflow has
-  a nested role home and one of its objects exists in tests without the other —
-  a bare `LushtextOpenPopover` with no window — a single accessor would only be
-  callable from half of them. `WFR-WORKSPACE-TREE` established the shape
-  (`workspace_tree_evidence` / `workspace_section_evidence`) and
-  `WFR-RECENT-DOCUMENTS` follows it. This is a reading of the
-  `A migrated workflow exposes one typed evidence surface` requirement in
-  `openspec/specs/workflow-evidence-surfaces/spec.md`, not an exemption from it:
-  each accessor must still read its object's **whole** surface, and the plural
-  must be stated in the module doc and the matrix row so it reads as the
-  precedent it follows rather than a relapse.
-- **Reading must not make the toolkit do work.** A GTK collection may create its
-  children on demand — `GtkTreeListModel` is the one in this tree — so an
-  accessor that walks such a collection to answer a question *performs* work: it
-  can materialize descendants, register stores, start background scans, and
-  restart dependent lifecycles such as filesystem watches, while every field it
-  produced still reads as a pure observation. An evidence surface therefore MUST
-  NOT call an accessor that lazily creates toolkit state, and MUST NOT call a
-  derivation that mutates a cache or advances a counter **the surface itself
-  reports** — an observer that changes the metric it observes is not an
-  observation. Where the workflow's own code reaches such an accessor safely only
-  because of a guard, derive the field from the workflow's authoritative state
-  instead of repeating the guarded walk. **Prove it, do not assert it**: read the
-  surface with the collection unmaterialized and with it materialized, and show
-  the admission counters, registries, generations, and derivation metrics
-  identical before and after each read.
-- **A field aggregated over a variable-sized set of child widgets** must be
-  bounded, must answer honestly when the set is empty, and must **skip a disposed
-  child rather than panicking on it** — the disposed-widget rule applied to a set
-  rather than to one child.
-- **No evidence field may be read from inside a mutable borrow of the state the
-  accessor reads.** This follows from "one accessor reads the whole surface"
-  plus interior mutability, and it is a runtime panic rather than a compile
-  error, so it is stated here once instead of being rediscovered per workflow.
-  The accessor should compute every derived scalar first and drop each `Ref`
-  before building the surface's struct literal, so no borrow outlives the value
-  it produced; record the constraint in the module doc where the surface is
-  defined; and never add a second, narrower accessor to make a nested read
-  possible — that reintroduces the scattered getters the surface replaced.
-  Prove it with a test that **drives the workflow through each operation that
-  takes such a mutable borrow, reads the surface *after* each one, and asserts
-  that repeated reads of unchanged state are identical.** Do not write a test
-  that reads the surface *while* a borrow is held: that is the panic the
-  constraint prevents, not a demonstration of it. Reference implementations:
-  `search_panel::test_evidence_reads_stay_side_effect_free_across_journal_mutation`,
-  `editor_page::test_load_evidence_reads_stay_side_effect_free_across_load_mutation`.
-- **A surface that mixes per-session state with process-wide counters must not be
-  compared as one value in a reentrancy proof.** "One accessor reads the whole
-  surface" does not imply "every proof compares the whole surface": compare the
-  part the invariant is about. A process-wide counter advanced from a worker
-  thread — `SNAPSHOT_WORKER_DROPS` in `ui/buffer_snapshot.rs` is the one in this
-  tree — can advance between any two consecutive reads without either read having
-  caused it, so a whole-surface equality silently asserts "no background work
-  landed while I was looking". That is not the rule, is not stable, and fails at
-  random under load while *looking* exactly like the production accessor mutating
-  its own metric. For the counter invariant itself, quiesce the owning lane first
-  and assert it was still quiescent afterwards; only then is an advancement
-  attributable to the reads.
-- An evidence surface is an internal type of the owning crate at the narrowest
-  visibility its readers need. It is never added to the public D-Bus automation
-  schema; once a workflow migrates, its automation snapshot fields *project*
-  from that surface instead, and drift coverage extends as workflows migrate
-  (see `docs/automation-reference.md` and the Action Catalog section above).
-- Test-only timing and limit overrides belong in the workflow's one test policy
-  value, not in several independent module-level statics, and no override storage
-  may compile without the test feature.
-- Test-only actuation seams that drive a step otherwise reachable only through a
-  file chooser, alert dialog, timer, or worker completion are a known deferred
-  category, not a pattern to extend. See the `gtk-testing` skill for the seam
-  taxonomy before adding one.
+The surface's invariants — one accessor per surface (or per object for a nested
+two-object home), no mutation on read, `try_get()` for disposed children including
+transitive reach, no toolkit work or lazy materialization, bounded aggregation
+over child sets, no read inside a mutable borrow, and quiescing worker-thread
+counters before comparing — plus the three driven proofs each surface owes, are
+normative in
+[`.agents/rules/workflow-convention.md`](./workflow-convention.md), as is the
+one-`test_policy.rs` rule for test-only timing and limit overrides. The criteria
+formerly stated here now live there, so an older citation of *this* file for one of
+them resolves in one hop. Test-only actuation seams remain a deferred category; see
+the `gtk-testing` skill's seam taxonomy before adding one.
 
-Workflows that are not yet migrated keep their existing `*_for_test` inspection
-functions; consult `docs/workflow-readability-matrix.md` for the workflow's
-status and evidence surface before choosing where to read state.
+Widget tests that need accessibility metadata proof but not a live accessibility
+bridge can use `ui::accessibility::test_audit::AccessibleAudit`; it complements,
+but does not replace, `make accessibility-smoke`.
 
 **State-extreme coverage is mandatory for collection and browser surfaces:** If a
 widget presents rows, tabs, notes, bookmarks, snapshots, command results, search

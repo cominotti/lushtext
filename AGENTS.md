@@ -28,6 +28,7 @@ Keep this index in sync with `.agents/rules/*.md`. When a new rule file is added
 - `rust.md` — Rust language, filesystem/draft-cleanup identity, error-type naming, numeric-literal ownership, module-splitting, and state-grouping conventions
 - `ui.md` — UI, theming, accessibility metadata/keyboard parity, state-extreme visibility checks, grouped-row dialog/detail readability, GSettings binding rules, AdwSidebar/ViewSwitcher fit rules, Libadwaita template-validation and runtime builder-diagnostics caveats, adaptive dialog navigation, file-tree DnD/TreeExpander behavior, TextView child-anchor geometry, adaptive bottom-sheet sizing, and GTK paned geometry/animation conventions
 - `widget-wiring.md` — GTK widget composition, signal wiring, GTK Lush signal/settle helpers, accessibility helper/row metadata wiring, declarative projection bindings, factory row projection refresh, state-extreme coverage, menu popup lifecycle, tab projection state, live paned-validation, and allocation-frame animation rules
+- `workflow-convention.md` — the normative workflow readability convention: roles, role homes, seam value objects, policy purity and placement, evidence-surface invariants and their driven proofs, intent-first naming, and re-derived measured cells
 
 ## Architecture
 
@@ -159,45 +160,19 @@ recovery), and each of its modules carries exactly one role:
 | Coordination | `admission`, `execution`, `retirement`, `watch`, `journal`, optionally prefixed with the stage order served (`index_execution`, `replace_execution`) | timers, budgets, generations, dispatch, durable generation-guarded records; a workflow may own more than one |
 | Evidence | `evidence.rs` | one typed surface that is the single source of the workflow's observable state |
 
-- A workflow's roles live in one of **two permitted homes**: flat,
-  workflow-scoped role names in a shared directory when they do not collide, or a
-  **per-workflow subdirectory** whose `mod.rs` is the facade and whose role files
-  keep the unqualified `policy.rs`, `evidence.rs`, and bounded coordination names
-  (`ui/editor_page/save/`). The subdirectory is required only when a sibling
-  workflow in the same directory already owns the fixed names, because a
-  workflow-prefixed `save_policy.rs` would leave the `ui/**/policy.rs` mutation
-  scope. Migration never requires restructuring a whole directory.
-- Pure policy lives beside its consumer when it has a single **owning workflow**;
-  eligibility counts owning workflows, not consuming files. Cross-cutting policy
-  such as `plain_disposal` stays shared; see the matrix's cross-cutting
-  eligibility list for the authoritative set. Nothing belongs in `model/` solely
-  to obtain tooling reach — the
-  mutation scope reaches `ui/**/policy.rs` by convention.
-- Widget tests read the evidence surface; automation snapshots project from it and
-  the exported D-Bus contract is unchanged by that projection. Do not add new
-  per-field `*_for_test` inspection getters.
-- Cross-module workflow operations are named for intent, not mechanism, and a
-  value is never renamed while crossing a seam.
-- Coordination role names come from the bounded set, and where one workflow owns
-  several stage orders in one directory that each need the same role, the name may
-  be qualified with the stage order it serves (`query_execution.rs` and
-  `index_execution.rs` in `ui/command_palette/`). The bounded set is a **review**
-  contract: `make check-workflow-boundaries` validates that declared role paths
-  exist, not that a name is drawn from the set.
-- `docs/workflow-readability-matrix.md` is the completion source of truth: every
-  workflow has a stable `WFR-*` row with its status, owned policy, seam value
-  object, evidence surface, risk tier, and migration slot. Read the row for the
-  current per-workflow status before restructuring a workflow, update it in the
-  same change, and run `make check-workflow-boundaries`.
-- Amending the convention requires re-migrating every already-migrated workflow in
-  the same change. Two generations of the convention must not coexist.
-- `docs/next/workflow-readability.md` is the programme record: the measured problem
-  this solves, the measured migration baseline, the per-change scope with its
-  machine-readable slot ledger, the sequencing rationale, the rejected
-  alternatives, and the deferred items with the bar that would justify taking
-  them on. **Read it before planning any workflow-structure work**, and advance
-  it in the same change as the matrix — `make check-workflow-boundaries` compares
-  the two.
+Modules that only project the workflow onto widgets are **called presentation
+surfaces**, not roles, and are declared in the workflow's matrix row.
+
+The convention is normative in
+[`.agents/rules/workflow-convention.md`](./.agents/rules/workflow-convention.md):
+role homes (flat, per-workflow subdirectory, or nested), seam value objects,
+policy purity and placement, the evidence-surface invariants and their three
+driven proofs, intent-first naming, and re-derived measured cells. Per-workflow
+status lives in `docs/workflow-readability-matrix.md`; the ordered procedure lives
+in the `lushtext-workflow` skill. The migration programme is closed and its record
+`docs/next/workflow-readability.md` is frozen except its deferral inventory.
+Amending the convention requires re-migrating every migrated workflow in the same
+change.
 
 ## Nested AGENTS.md Files
 
@@ -451,6 +426,7 @@ This rule is mandatory and has no exceptions.
 - Local workspace files for read-only snapshot reads; transient in-memory peek state only; no new XDG, draft, session, or GSettings persistence (001-file-peek)
 
 ## Recent Changes
+- harden-workflow-convention-guidance (2026-09-14): The workflow-readability programme is **closed** — every `WFR-*` row is terminal (22 migrated, 5 cross-cutting, 1 exempt, 1 superseded) and `docs/next/workflow-readability.md` is frozen except its deferral inventory. The convention moved to one normative rule, `.agents/rules/workflow-convention.md`, with `rust.md`, `widget-wiring.md`, `build.md`, and this file pointing at it and the `lushtext-workflow` skill holding the procedure. Rule files now scope themselves with the `paths:` key Claude Code honours instead of Cursor's ignored `globs:`, `.claude/CLAUDE.md` resolves again, and `make check-workflow-boundaries` gained two gates: every `.rs` file in a migrated role home must be declared by its row, and the externally reachable `*_for_test` count may not exceed the figure recorded in the matrix.
 - automate-flathub-releases: Added an Invowk-style release command surface, release metadata synchronization, generated Flathub manifest updates, domain-verification checks for `cominotti.dev`, and release workflows that keep Flathub publication as a reviewable PR by default.
 - add-snap-packaging: Scaffolded the Ubuntu Snap (`snap/snapcraft.yaml`, `scripts/run-snap-smoke.sh`, `scripts/verify-snap-identity.sh`, `.github/workflows/snap.yml`, Snap Makefile targets). Strict confinement + portals, reuses the Meson/Cargo build via a `layout:` bind-mount, Unlisted + edge-only release. Build is gated on the unpublished GNOME 50 platform snap (`core26`).
 - 001-file-peek: Added Rust 1.96.0 (Edition 2024) + GTK4 0.11, Libadwaita 0.9, GtkSourceView 5 0.11, gio/glib/pango 0.22, existing `spawn_blocking_then` background executor

@@ -1,7 +1,7 @@
 ---
 description: Documentation maintenance rules
-globs: "**/*.{rs,ui,css,toml}"
 ---
+<!-- global rule: loaded for every request -->
 
 # Documentation Maintenance
 
@@ -16,7 +16,7 @@ Whenever code changes are made, evaluate whether the following files need update
 5. **`docs/accessibility-matrix.md`** — accessibility surface/state row ids, smoke/visual/manual proof mapping, stable anchors, and uncovered row status when UI accessibility behavior changes
 6. **`docs/accessibility-orca-checklist.md`** — manual Orca validation fields, workflow matrix rows, privacy boundaries, and sample bounded release artifact when manual screen-reader expectations change
 7. **`docs/workflow-readability-matrix.md`** — workflow `WFR-*` row ids, file sets, owned pure policy, test-seam counts, seam value objects, evidence surfaces, risk tiers, and migration status when workflow structure changes
-8. **`docs/next/*.md`** — the repository's planned-work records. When a change advances, rescopes, defers, or completes a phase of a multi-change programme documented there (for example `docs/next/workflow-readability.md` or `docs/next/gtk-lush.md`), update that record's posture, baseline, remaining scope, and deferrals in the same change instead of leaving it describing a superseded plan
+8. **`docs/next/*.md`** — the repository's planned-work records. When a change advances, rescopes, defers, or completes a phase of a multi-change programme documented there (for example `docs/next/gtk-lush.md`), update that record's posture, baseline, remaining scope, and deferrals in the same change instead of leaving it describing a superseded plan (a closed programme's record, such as `docs/next/workflow-readability.md`, only takes appended deferral entries)
 9. **`.agents/skills/*/references/*.md`** — testing patterns, async patterns, architecture references
 
 **CRITICAL: `README.md` must always be kept in sync with the code.** It is the project's public-facing documentation and the first thing contributors and users see. When any of the following change, the README must be updated in the same commit or PR:
@@ -34,8 +34,8 @@ Whenever code changes are made, evaluate whether the following files need update
 - New or changed accessible name, role, description, state, relation, announcement, keyboard path, stable AT-SPI anchor, accessibility smoke scenario, visual accessibility caveat, or manual screen-reader expectation → update `docs/accessibility.md` and the relevant rows in `docs/accessibility-matrix.md`; update `docs/end-user-coverage.md` when release or smoke-lane expectations change; update `docs/automation.md` and `docs/automation-reference.md` when stable anchors, helper flags, snapshot fields, readiness predicates, or artifact fields change
 - Automation, portal/sandbox, or Flatpak permission posture changes → update
   the user/developer automation docs and run `make check-flatpak-permissions`
-- Workflow structure changed (module role added or renamed, pure policy relocated, seam value object introduced, evidence surface added or extended, test seam retired, or a workflow migrated to the readability convention) → update the workflow's row in `docs/workflow-readability-matrix.md`, advance the matching slot in `docs/next/workflow-readability.md` (status line, baseline, remaining-scope table, slot ledger), and run `make check-workflow-boundaries`
-- A workflow **migrated** to the readability convention additionally **re-derives** its row's measured cells — current size, per-kind seam counts, pure-policy consumer count — row-scoped and excluding `#[cfg(test)]` modules, and names any shared population the old cell had pooled together with the rows that share it. Inheriting the census figure, or reporting the migration against it, is the drift this obligation exists to prevent; see the "Re-deriving a row's measured cells" section of `.agents/rules/rust.md`
+- Workflow structure changed (module role added or renamed, pure policy relocated, seam value object introduced, evidence surface added or extended, test seam retired, or a workflow migrated to the readability convention) → update the workflow's row in `docs/workflow-readability-matrix.md` and run `make check-workflow-boundaries`. The migration programme is closed, so the programme record `docs/next/workflow-readability.md` is frozen except its deferral inventory, which may be appended; do not rewrite its baselines, slot ledger, or history
+- A workflow **migrated or materially restructured** under the readability convention additionally **re-derives** its row's measured cells — current size, per-kind seam counts, pure-policy consumer count — row-scoped and excluding `#[cfg(test)]` modules, and names any shared population the old cell had pooled together with the rows that share it. Inheriting the census figure, or reporting the migration against it, is the drift this obligation exists to prevent; see the "Re-deriving a row's measured cells" section of `.agents/rules/workflow-convention.md`
 - A phase of a `docs/next/` planned-work programme advanced, was rescoped, or was deferred → update that record in the same change; a stale planned-work record is how a future session concludes finished work is still pending, or that outstanding work is done
 - New pattern introduced (timer, signal, async) → document in the appropriate rules file
 - New convention discovered or existing one refined → update rust.md or widget-wiring.md

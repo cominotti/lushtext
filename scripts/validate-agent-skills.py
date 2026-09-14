@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -14,6 +15,17 @@ from urllib.parse import unquote
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SKILLS_ROOT = REPO_ROOT / ".agents" / "skills"
+DEFAULT_RULES_ROOT = REPO_ROOT / ".agents" / "rules"
+# Claude Code scopes a rule file with a `paths:` list of globs, and loads a file
+# with no `paths:` key unconditionally. Cursor's `globs:` key is not recognized,
+# so a file carrying it loads globally while *reading* as if it were scoped --
+# the silent failure this check exists to catch.
+RULE_SCOPE_KEY = "paths"
+UNRECOGNIZED_SCOPE_KEYS = ("globs",)
+# An inert HTML comment rather than a frontmatter key: the agent's handling of an
+# unknown frontmatter key is undocumented, and relying on undocumented frontmatter
+# behavior is the defect this check closes.
+GLOBAL_RULE_MARKER = "<!-- global rule: loaded for every request -->"
 REGISTRY_FILENAME = "skill-policy.toml"
 FRONTMATTER_KEYS = {"name", "description"}
 INTERFACE_KEYS = {
@@ -32,6 +44,7 @@ TOC_RE = re.compile(r"^## (?:Table of Contents|Contents)\s*$", re.MULTILINE)
 KEY_VALUE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(.*)$")
 EXPLICIT_ANCHOR_RE = re.compile(r"<(?:a\s+(?:id|name)|span\s+id)=[\"']([^\"']+)[\"']", re.I)
 EXTERNAL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+BRACE_RE = re.compile(r"\{([^{}]*)\}")
 
 
 class SubsetYamlError(ValueError):
@@ -133,6 +146,77 @@ def load_policy_registry(skills_root: Path, errors: list[str]) -> dict[str, obje
                 f"{display_path(path)}: release.required_workflow_roles must be unique strings"
             )
     return registry
+
+
+def expand_braces(pattern: str) -> list[str]:
+    """Expand `{a,b}` alternation into the flat list of literal glob patterns."""
+
+    match = BRACE_RE.search(pattern)
+    if match is None:
+        return [pattern]
+    head, tail = pattern[: match.start()], pattern[match.end() :]
+    expanded: list[str] = []
+    for option in match.group(1).split(","):
+        expanded.extend(expand_braces(f"{head}{option}{tail}"))
+    return expanded
+
+
+def glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """Translate one globset-style pattern into an anchored regex.
+
+    Deliberately the same translation `scripts/check-workflow-boundaries.py`
+    uses -- `**/` spans zero or more path components and a trailing `**` spans the
+    rest of the path -- so the two gates cannot disagree about what a repository
+    glob means.
+    """
+
+    parts: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern.startswith("**/", index):
+            parts.append(r"(?:[^/]+/)*")
+            index += 3
+        elif pattern.startswith("**", index):
+            parts.append(r".*")
+            index += 2
+        elif char == "*":
+            parts.append(r"[^/]*")
+            index += 1
+        elif char == "?":
+            parts.append(r"[^/]")
+            index += 1
+        else:
+            parts.append(re.escape(char))
+            index += 1
+    return re.compile("^" + "".join(parts) + "$")
+
+
+def glob_matches_any(pattern: str, tracked: tuple[str, ...]) -> bool:
+    """Return whether a rule-scope glob selects at least one tracked file."""
+
+    matchers = [glob_to_regex(expansion) for expansion in expand_braces(pattern)]
+    return any(matcher.match(candidate) for candidate in tracked for matcher in matchers)
+
+
+def tracked_repository_files() -> tuple[str, ...] | None:
+    """Return the tracked paths, or None when git cannot answer.
+
+    A `None` skips the dead-scope half rather than guessing: an unanswerable
+    question must not become a finding, and must not become a silent pass on the
+    findings it *can* answer either.
+    """
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return tuple(entry for entry in completed.stdout.split("\0") if entry)
 
 
 def display_path(path: Path) -> str:
@@ -593,6 +677,91 @@ def validate_markdown(skill_dir: Path, allowed_root: Path, errors: list[str]) ->
                     errors.append(f"{display_path(path)}: broken Markdown anchor {target!r}")
 
 
+def validate_rules(
+    rules_root: Path, tracked_files: tuple[str, ...] | None = None
+) -> list[str]:
+    """Validate that every rule file declares the scope the agent actually honors.
+
+    Four findings, all silent without this check:
+
+    * a rule that is neither path-scoped nor explicitly global has an unstated
+      scope, so nobody can tell from the file whether it reaches a given request;
+    * a rule carrying an unrecognized scoping key such as Cursor's ``globs:``
+      loads for *every* request while reading as if it were narrow;
+    * a rule carrying both a ``paths:`` list and the global marker states its
+      scope twice, and the two statements contradict each other, so the file
+      cannot be read as authoritative either way;
+    * a ``paths:`` glob matching no tracked file is dead scope -- it reads as
+      coverage while selecting nothing, which is how a rename silently narrows a
+      rule.
+
+    `tracked_files` is injected by the self-tests; production passes ``None`` and
+    the tracked set is read from git.
+    """
+
+    errors: list[str] = []
+    if not rules_root.is_dir():
+        return [f"{display_path(rules_root)}: rules root is missing"]
+    rule_files = sorted(rules_root.glob("*.md"))
+    if not rule_files:
+        return [f"{display_path(rules_root)}: no rule files found"]
+    tracked = tracked_repository_files() if tracked_files is None else tracked_files
+    for path in rule_files:
+        text = path.read_text(encoding="utf-8")
+        match = FRONTMATTER_RE.match(text)
+        body = text[match.end() :] if match else text
+        data: object = {}
+        if match:
+            data = load_yaml(path, match.group(1), errors)
+            if not isinstance(data, dict):
+                errors.append(f"{display_path(path)}: frontmatter must be a mapping")
+                continue
+        for key in UNRECOGNIZED_SCOPE_KEYS:
+            if key in data:
+                errors.append(
+                    f"{display_path(path)}: `{key}:` is not a scoping key the agent "
+                    f"recognizes, so this rule loads for every request while reading as "
+                    f"if it were scoped; use a `{RULE_SCOPE_KEY}:` list or drop the key "
+                    f"and add the global marker"
+                )
+        if RULE_SCOPE_KEY in data:
+            scope = data[RULE_SCOPE_KEY]
+            if (
+                not isinstance(scope, list)
+                or not scope
+                or any(not isinstance(value, str) or not value.strip() for value in scope)
+            ):
+                errors.append(
+                    f"{display_path(path)}: `{RULE_SCOPE_KEY}:` must be a non-empty list "
+                    "of glob strings"
+                )
+                continue
+            if GLOBAL_RULE_MARKER in body:
+                errors.append(
+                    f"{display_path(path)}: declares a `{RULE_SCOPE_KEY}:` list *and* "
+                    f"carries the `{GLOBAL_RULE_MARKER}` marker, so its scope is stated "
+                    "twice and the two statements disagree; remove the marker or remove "
+                    f"the `{RULE_SCOPE_KEY}:` list"
+                )
+            if tracked is not None:
+                for glob in scope:
+                    if not glob_matches_any(glob, tracked):
+                        errors.append(
+                            f"{display_path(path)}: `{RULE_SCOPE_KEY}:` glob {glob!r} "
+                            "matches no tracked file, so that scope entry is dead and "
+                            "reads as coverage while selecting nothing; re-key it or "
+                            "drop it"
+                        )
+            continue
+        if GLOBAL_RULE_MARKER not in body:
+            errors.append(
+                f"{display_path(path)}: declares no `{RULE_SCOPE_KEY}:` list and carries "
+                f"no `{GLOBAL_RULE_MARKER}` marker, so its scope is unstated; add the "
+                "list or mark the file global on purpose"
+            )
+    return sorted(set(errors))
+
+
 def validate_skills(skills_root: Path) -> list[str]:
     errors: list[str] = []
     if not skills_root.is_dir():
@@ -646,6 +815,7 @@ def validate_skills(skills_root: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skills-root", type=Path, default=DEFAULT_SKILLS_ROOT)
+    parser.add_argument("--rules-root", type=Path, default=DEFAULT_RULES_ROOT)
     parser.add_argument("--print-filesystem-contract-paths", action="store_true")
     args = parser.parse_args(argv)
     if args.print_filesystem_contract_paths:
@@ -658,9 +828,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(registry["filesystem_contract"]["paths"]))
         return 0
     errors = validate_skills(args.skills_root.resolve())
-    if errors:
-        print("Agent skill validation failed:", file=sys.stderr)
-        for error in errors:
+    rule_errors = validate_rules(args.rules_root.resolve())
+    if errors or rule_errors:
+        print("Agent guidance validation failed:", file=sys.stderr)
+        for error in [*errors, *rule_errors]:
             print(f"- {error}", file=sys.stderr)
         return 1
     registry_errors: list[str] = []
@@ -676,7 +847,8 @@ def main(argv: list[str] | None = None) -> int:
         if path.is_dir()
         and not path.name.startswith(prefixes)
     )
-    print(f"Validated {count} maintained agent skills.")
+    rule_count = len(sorted(args.rules_root.resolve().glob("*.md")))
+    print(f"Validated {count} maintained agent skills and {rule_count} rule files.")
     return 0
 
 

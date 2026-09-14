@@ -545,11 +545,15 @@ own a `policy.rs`. Probing an adapter for separable decisions before accepting
 that conclusion is a requirement of the convention precisely because "the census
 said none" keeps turning out to be wrong.
 
-Per-workflow status, owned pure policy, seam value objects, risk tiers, and
-migration slots live in
+The convention is normative in
+[`.agents/rules/workflow-convention.md`](.agents/rules/workflow-convention.md),
+with the ordered procedure in the `lushtext-workflow` agent skill. Per-workflow
+status, owned pure policy, seam value objects, and risk tiers live in
 [`docs/workflow-readability-matrix.md`](docs/workflow-readability-matrix.md), and
-`make check-workflow-boundaries` checks conformance. The programme's rationale,
-measured baseline, per-change scope, and deferred work are recorded in
+`make check-workflow-boundaries` checks conformance — including that every module
+in a migrated role home is declared by its row and that the externally reachable
+`*_for_test` count stays within the recorded ceiling. The migration programme is
+closed; its rationale, measured baseline, and deferred work are recorded in
 [`docs/next/workflow-readability.md`](docs/next/workflow-readability.md).
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)

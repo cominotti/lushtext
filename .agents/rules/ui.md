@@ -1,6 +1,13 @@
 ---
 description: UI and GTK widget design rules
-globs: "**/*.{rs,ui,css}"
+paths:
+  - "crates/lushtext-core/src/ui/**"
+  - "crates/lushtext/tests/widget/**"
+  - "resources/**"
+  - "**/*.blp"
+  - "**/*.ui"
+  - "**/*.css"
+  - "**/*.rs"
 ---
 
 # UI Design Rules

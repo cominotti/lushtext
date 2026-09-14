@@ -1,7 +1,7 @@
 ---
 description: Mandatory rule for handling pre-existing blockers and broken verification paths
-globs: *
 ---
+<!-- global rule: loaded for every request -->
 
 # Pre-existing Blockers Rule
 
