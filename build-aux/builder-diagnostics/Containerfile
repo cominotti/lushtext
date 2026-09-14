@@ -5,6 +5,20 @@
 # This image is built and published outside the diagnostics smoke lane. The
 # smoke lane consumes a pinned tag or digest so CI can run builder diagnostics
 # without rebuilding GTK on every invocation.
+#
+# The image intentionally declares no non-root `USER`, and both consumers depend
+# on that:
+#
+#   * `.github/workflows/end-user-smoke.yml` runs the `builder-diagnostics` lane
+#     with this image as the job container, and that job's shared steps run
+#     `dnf install -y` and install a Rust toolchain inside it. A non-root default
+#     user breaks the lane at its first step.
+#   * `scripts/run-builder-diagnostics.sh` always passes `--user "$(id -u):$(id -g)"`
+#     when it runs the image, so the container process is already the invoking
+#     host user and never root there.
+#
+# The matching `docker:S6471` finding is suppressed by resource in
+# `sonar-project.properties` with this rationale.
 
 FROM registry.fedoraproject.org/fedora:44
 
@@ -21,6 +35,14 @@ ENV LD_LIBRARY_PATH="${PREFIX}/lib64:${PREFIX}/lib"
 ENV GI_TYPELIB_PATH="${PREFIX}/lib64/girepository-1.0:${PREFIX}/lib/girepository-1.0"
 ENV XDG_DATA_DIRS="${PREFIX}/share:/usr/local/share:/usr/share"
 
+# The toolchain install and the three GNOME source builds are one layer. They
+# ran as four consecutive RUN instructions, which bought nothing: the publishing
+# workflow builds this image cold on a fresh runner with no BuildKit cache
+# import or export configured, so no step here has a cache-invalidation boundary
+# to preserve, and neither `docs/blueprint-validation.md` nor
+# `.github/workflows/builder-diagnostics-runtime.yml` documents one. Each build
+# still removes its own clone and build tree before the next begins, so the
+# merge does not grow the published image.
 RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False install -y \
         appstream-devel \
         at-spi2-core \
@@ -85,9 +107,8 @@ RUN dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps
         wayland-devel \
         wayland-protocols-devel \
         wireplumber \
-    && dnf clean all
-
-RUN git clone --depth 1 --branch "${GTK_REF}" https://gitlab.gnome.org/GNOME/gtk.git /tmp/gtk \
+    && dnf clean all \
+    && git clone --depth 1 --branch "${GTK_REF}" https://gitlab.gnome.org/GNOME/gtk.git /tmp/gtk \
     && meson setup /tmp/gtk-build /tmp/gtk --prefix "${PREFIX}" --buildtype=debugoptimized \
         -Dintrospection=enabled \
         -Dmedia-gstreamer=disabled \
@@ -96,14 +117,12 @@ RUN git clone --depth 1 --branch "${GTK_REF}" https://gitlab.gnome.org/GNOME/gtk
         -Dbuild-testsuite=false \
         -Dbuild-examples=false \
     && meson install -C /tmp/gtk-build \
-    && rm -rf /tmp/gtk /tmp/gtk-build
-
-RUN git clone --depth 1 --branch "${LIBADWAITA_REF}" https://gitlab.gnome.org/GNOME/libadwaita.git /tmp/libadwaita \
+    && rm -rf /tmp/gtk /tmp/gtk-build \
+    && git clone --depth 1 --branch "${LIBADWAITA_REF}" https://gitlab.gnome.org/GNOME/libadwaita.git /tmp/libadwaita \
     && meson setup /tmp/libadwaita-build /tmp/libadwaita --prefix "${PREFIX}" --buildtype=debugoptimized \
     && meson install -C /tmp/libadwaita-build \
-    && rm -rf /tmp/libadwaita /tmp/libadwaita-build
-
-RUN git clone --depth 1 --branch "${GTKSOURCEVIEW_REF}" https://gitlab.gnome.org/GNOME/gtksourceview.git /tmp/gtksourceview \
+    && rm -rf /tmp/libadwaita /tmp/libadwaita-build \
+    && git clone --depth 1 --branch "${GTKSOURCEVIEW_REF}" https://gitlab.gnome.org/GNOME/gtksourceview.git /tmp/gtksourceview \
     && meson setup /tmp/gtksourceview-build /tmp/gtksourceview --prefix "${PREFIX}" --buildtype=debugoptimized \
     && meson install -C /tmp/gtksourceview-build \
     && rm -rf /tmp/gtksourceview /tmp/gtksourceview-build

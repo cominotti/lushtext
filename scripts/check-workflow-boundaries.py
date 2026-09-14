@@ -127,7 +127,18 @@ SLOT_ENTRY_RE = re.compile(r"(WFR-[A-Z0-9-]+)(\s*\(partial\))?", re.IGNORECASE)
 # The ledger's *shape* without its vocabulary, used only to tell a malformed
 # ledger line from ordinary prose that happens to mention a slot. A line matching
 # this but not `SLOT_LEDGER_RE` is a dropped claim rather than a sentence.
-SLOT_LEDGER_SHAPE_RE = re.compile(r"^-\s+slot\s+\S+\s*\(?[^)]*\)?\s*:", re.IGNORECASE)
+#
+# Every quantifier below is disjoint from what follows it -- `\s+` is followed by
+# a literal, and `[^:]*` is followed by the single character it excludes -- so the
+# pattern is deterministic and cannot backtrack super-linearly. The earlier form
+# ended `\s*\(?[^)]*\)?\s*:`, three overlapping runs whose failing case was
+# quadratic. This form accepts a strict *superset* of that one, so the
+# malformed-line detector cannot have been narrowed: enumerating every suffix
+# over `- s(l)o:t7` up to length 6, plus 200k random strings, found zero lines
+# the old pattern matched and this one does not. It additionally catches shapes
+# such as `- slot 7b (a) (b): x`, which the old pattern let pass as prose even
+# though it is plainly a dropped claim.
+SLOT_LEDGER_SHAPE_RE = re.compile(r"^-\s+slot\s+\S[^:]*:", re.IGNORECASE)
 # Statuses that owe no outstanding-slot entry: the work is either done or the row
 # is deliberately never migrated.
 SETTLED_STATUSES = ("migrated", "exempt", SUPERSEDED_STATUS)
@@ -876,7 +887,18 @@ def parse_slot_ledger(text: str) -> tuple[list[SlotClaim], list[tuple[int, str]]
     return claims, malformed
 
 
-SUPERSEDED_REPLACEMENT_RE = re.compile(r"\*\*Superseded by:\*\*\s*(.+?)(?:\.|\Z)", re.S)
+# The sentence in a `superseded` row that names the rows taking its scope. It
+# ends at the first *sentence-terminating* period -- one followed by whitespace
+# or the end of the cell -- so a backticked path such as
+# `ui/window/tab_strip/mod.rs` inside the sentence cannot truncate the capture at
+# its own dot and silently drop every replacement named after it. The earlier
+# form, `\s*(.+?)(?:\.|\Z)`, stopped at the *first* period of any kind.
+#
+# The two alternatives are disjoint on their first character and each consumes
+# exactly one, so the loop is deterministic and needs no reluctant quantifier.
+# `re.S` is gone because no `.` metacharacter remains for it to widen; `[^.]`
+# already spans newlines, so the old DOTALL reach is preserved.
+SUPERSEDED_REPLACEMENT_RE = re.compile(r"\*\*Superseded by:\*\*((?:[^.]|\.(?!\s|\Z))*)")
 
 
 def superseded_findings(rows: list[MatrixRow]) -> list[str]:
@@ -1895,6 +1917,27 @@ def run_self_test() -> None:
             raise AssertionError(
                 f"expected prose mentioning slots to stay inert, got {findings}"
             )
+        # Punctuation, not only vocabulary: a ledger line can drop its claim by
+        # losing its parenthetical or by growing a second one. Both parse as
+        # prose under `SLOT_LEDGER_RE`, so only the shape detector stands
+        # between them and a silently dropped slot. The doubled parenthetical is
+        # also the arm that pins the shape rewrite's deliberate broadening --
+        # the previous `\s*\(?[^)]*\)?\s*:` tail let it pass.
+        for dropped in (
+            "- slot 2 outstanding: WFR-PENDING\n",
+            "- slot 2 (outstanding) (again): WFR-PENDING\n",
+        ):
+            matrix, config, record = slotted_fixture(
+                root,
+                agreeing_body,
+                "- slot 1 (complete): WFR-EXAMPLE\n" + dropped,
+            )
+            findings = check_tree(root, matrix, config, record)
+            if not any("does not parse as" in f for f in findings):
+                raise AssertionError(
+                    f"expected `{dropped.strip()}` to be reported as a dropped "
+                    f"claim, got {findings}"
+                )
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2000,6 +2043,27 @@ def run_self_test() -> None:
         if not any("WFR-GHOST" in f and "does not carry" in f for f in findings):
             raise AssertionError(
                 f"expected an unknown replacement row to be a finding, got {findings}"
+            )
+        # A replacement sentence may name a path, and a path carries dots. The
+        # capture has to reach the end of the sentence: here the ghost row is
+        # named *after* `mod.rs`, so a capture that stopped at the first period
+        # of any kind would verify only the first replacement and report
+        # nothing. The `mod.rs` file is created because the matrix's own
+        # evidence check existence-tests backticked path claims.
+        write(root / CORE_SRC / "ui/window/tab_strip/mod.rs", "pub struct TabStrip;\n")
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-REPLACED | Replaced | tier-3 | none | superseded — "
+            "**Superseded by:** `WFR-EXAMPLE`, whose role home is "
+            "`ui/window/tab_strip/mod.rs`, and `WFR-GHOST`. The row is kept. |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("WFR-GHOST" in f and "does not carry" in f for f in findings):
+            raise AssertionError(
+                "expected a replacement named after a dotted path to be captured, "
+                f"got {findings}"
             )
 
     with tempfile.TemporaryDirectory() as tmp:

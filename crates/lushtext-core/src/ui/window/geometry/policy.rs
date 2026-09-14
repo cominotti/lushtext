@@ -314,12 +314,14 @@ mod tests {
         }
     }
 
-    /// Tests below this point were added when `adaptive_shell.rs` became this
-    /// `policy.rs`. The rename brought 248 production lines of already-pure
-    /// geometry policy inside the `ui/**/policy.rs` mutation convention, and it
-    /// had generated **zero** mutants before, so it had never been mutation
-    /// tested at all. Fifteen survivors on the first run; each test here names
-    /// the decision it pins.
+    // Tests below this point were added when `adaptive_shell.rs` became this
+    // `policy.rs`. The rename brought 248 production lines of already-pure
+    // geometry policy inside the `ui/**/policy.rs` mutation convention, and it
+    // had generated **zero** mutants before, so it had never been mutation
+    // tested at all. Fifteen survivors on the first run; each test here names
+    // the decision it pins. This is the test module's own narrative rather than
+    // documentation of the one test that happens to follow it, so it is a plain
+    // comment: a `///` block here would attach to that single `#[test]`.
 
     #[test]
     fn layout_names_are_the_exact_adwaita_layout_ids() {

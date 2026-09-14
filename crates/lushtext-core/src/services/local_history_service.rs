@@ -701,9 +701,7 @@ fn capture_snapshot_for_identity_locked(
         .with_context(|| format!("failed to create {}", doc_dir.display()))?;
     // Write the body before the index so a crash leaves repairable text
     // evidence instead of metadata that points at a missing snapshot.
-    editor_io::write_snapshot_to_path(&snapshot_path(&doc_dir, &meta.snapshot_id), &normalized)
-        .map(|_| ())
-        .map_err(anyhow::Error::from)?;
+    editor_io::write_snapshot_to_path(&snapshot_path(&doc_dir, &meta.snapshot_id), &normalized)?;
 
     document.identity = identity;
     document.snapshots.push(meta.clone());
