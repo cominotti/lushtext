@@ -52,17 +52,18 @@ export_widget_test_env() {
     export GSK_RENDERER
 }
 
-emit_sanitized_widget_log() {
-    local log_file="$1"
-    local filtered_log
-    filtered_log="$(mktemp)"
+# Sanitize the harness output as it flows past instead of after the run ends.
+# Line-buffered filters keep per-test progress visible in the job log, so a
+# cancelled run (for example a GitHub Actions job timeout) still shows how far
+# the suite got. `grep` exits 1 when every line was benign noise, which must not
+# be mistaken for a harness failure.
+emit_sanitized_widget_stream() {
+    local noise_filter=(cat)
     if [[ -n "${BENIGN_WIDGET_NOISE_REGEX}" ]]; then
-        grep -Ev "$BENIGN_WIDGET_NOISE_REGEX" "$log_file" >"$filtered_log" || true
-    else
-        cp "$log_file" "$filtered_log"
+        noise_filter=(grep --line-buffered -Ev "$BENIGN_WIDGET_NOISE_REGEX")
     fi
-    awk 'NF { print; blank = 0; next } !blank { print; blank = 1 }' "$filtered_log"
-    rm -f "$filtered_log"
+    { "${noise_filter[@]}" || true; } \
+        | awk 'NF { print; fflush(); blank = 0; next } !blank { print; fflush(); blank = 1 }'
 }
 
 check_for_unexpected_widget_warnings() {
@@ -96,14 +97,13 @@ self_test_warning_classification() {
 run_with_widget_log() {
     local log_file
     log_file="$(mktemp)"
-    local status
-    if "$@" >"$log_file" 2>&1; then
-        status=0
-    else
-        status=$?
-    fi
+    local status=0
+    # `tee` keeps the full unfiltered capture that the warning classification
+    # scan below reads, while the sanitized stream reaches the caller's
+    # terminal or CI job log live. `pipefail` is already set, so the harness
+    # exit code still propagates.
+    "$@" 2>&1 | tee "$log_file" | emit_sanitized_widget_stream || status=$?
 
-    emit_sanitized_widget_log "$log_file"
     if ! check_for_unexpected_widget_warnings "$log_file"; then
         rm -f "$log_file"
         return 1

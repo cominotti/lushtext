@@ -279,7 +279,10 @@ jobs:
   widget-tests:
     name: Widget Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Policy ceiling (scripts/check-workflow-timeouts.py). The lane measured
+    # ~25 minutes on the shared runner after slot 7b; sharding the widget
+    # binary is the next step, not a higher timeout.
+    timeout-minutes: 30
     container:
       image: registry.fedoraproject.org/fedora:44
 
