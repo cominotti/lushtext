@@ -91,6 +91,29 @@ collection is empty, and MUST skip a disposed child rather than panicking on it 
 the same reasoning as the disposed-widget rule, applied to a set rather than to
 one child.
 
+**A cross-cutting coordination lane owes the surface even though it owes no
+facade.** A lane that the matrix records as `cross-cutting` — shared coordination
+consumed by several workflows, with no user-initiated operation of its own — is not
+a workflow: it carries no narrative facade, no coordination role names, and no
+`policy.rs`. Where such a lane nonetheless exposes observable state through
+test-only inspection seams, it SHALL expose that state through **one** typed
+surface, subject to the same visibility, reentrancy, non-materialization, and
+bounded-child rules stated above, with the same three proofs. Two or more parallel
+typed observation values over one lane's state are the duplication this requirement
+already forbids, and consolidating them MUST NOT move or duplicate a limit the lane
+shares with a workflow that calls it.
+
+The surface's file MAY keep the lane's own name rather than being called
+`evidence.rs`, because `evidence.rs` is a workflow **role** name and a lane carries
+no roles; what is fixed is that exactly one surface exists.
+
+Because every settled rule above is written to fire when a workflow migrates, and a
+`cross-cutting` lane never migrates, that trigger never arrives. The obligation is
+therefore discharged by the change that closes the migration programme, and MUST
+NOT be deferred to a migration that will not occur. Discharging it does not change
+the lane's status: it stays `cross-cutting`, and its census resolution against
+relocation stands.
+
 #### Scenario: Evidence replaces scattered getters
 - **WHEN** a workflow is migrated
 - **THEN** its inspection state is readable from one typed evidence value
@@ -170,6 +193,29 @@ one child.
   convention
 - **THEN** its migration folds them into the workflow's single evidence surface
 - **AND** it does not leave a second typed observation path alongside the surface
+
+#### Scenario: Cross-cutting lane consolidates onto one surface
+- **WHEN** a lane the matrix records as `cross-cutting` exposes observable state
+  through test-only inspection seams
+- **THEN** that state is readable from exactly one typed surface, subject to the
+  visibility, reentrancy, non-materialization, and bounded-child rules and their
+  three proofs
+- **AND** the lane gains no facade, no coordination role name, and no `policy.rs`
+
+#### Scenario: Parallel observation types on one lane are consolidated
+- **WHEN** a cross-cutting lane exposes two or more parallel typed observation
+  values over the same state
+- **THEN** they are consolidated into that lane's single surface
+- **AND** a limit the lane shares with a workflow that calls it is neither moved nor
+  duplicated by the consolidation
+
+#### Scenario: A lane's surface obligation is discharged at programme close
+- **WHEN** the migration programme's closing change runs and a `cross-cutting` lane
+  still owes its surface consolidation or a visibility narrowing
+- **THEN** that change discharges the obligation, because no migration event will
+  ever fire for the lane
+- **AND** the lane's status stays `cross-cutting` and its resolution against
+  relocation is unchanged
 
 ### Requirement: Automation snapshots project from workflow evidence
 Automation snapshot construction SHALL read migrated workflows through their

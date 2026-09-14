@@ -36,8 +36,20 @@ gitignore = true
 # `ui/window/adaptive_shell.rs` became `ui/window/policy.rs` for exactly that
 # reason. It was already pure and already correct, and it was reached by no entry
 # at all, so it generated **0** mutants; after the rename the convention reaches
-# it and generates **80**. That is a gain from zero and must not be reported as
-# parity -- there was no before-count to claim parity against.
+# it. That is a gain from zero and must not be reported as parity -- there was no
+# before-count to claim parity against. Slot 7a recorded the gain as **80**;
+# re-derived from the tool in slot 7b it is **81**, so the recorded figure was
+# stale by one.
+#
+# Slot 7b then moved that module again, to
+# `ui/window/geometry/policy.rs`, when `WFR-SHELL-GEOMETRY` took a per-workflow
+# role home. **No entry here needed re-keying**, and that is the point of the
+# convention rather than luck: the scope reaches it through `ui/**/policy.rs` by
+# name, so a nested role home stays inside it. Verified after the move rather
+# than assumed, per the nested-home rule, and reported as **relocation parity:
+# 81 before, 81 after**, measured at the old path from a clean worktree at
+# `69f78b09` and at the new path in this tree. No `exclude_re` entry references
+# the module at either path, so nothing was silently disarmed.
 #
 # `ui/editor_page/minimap.rs` retired here when the minimap workflow migrated to
 # `ui/editor_page/minimap/`. It was **not** re-pointed: the whole purpose of

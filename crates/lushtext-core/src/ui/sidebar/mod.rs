@@ -22,7 +22,7 @@
 //! | `filter_execution.rs` | coordination, `execution`: the workspace scope filter and its fade |
 //! | `persist_execution.rs` | coordination, `execution`: the `workspaces.json` pipeline |
 //! | `callbacks.rs`, `dialogs.rs`, `imp.rs` | **called presentation surfaces** — no role |
-//! | `width_preset.rs` | **not this workflow's**: `WFR-SHELL-LAYOUT` owns it |
+//! | `width_preset.rs` | **not this workflow's**: `WFR-SHELL-GEOMETRY` owns it |
 //! | `file_tree_item.rs` | outside this workflow — no coordination tier |
 //!
 //! # The twelve stage orders, and where control resumes
@@ -65,7 +65,8 @@
 //! | Shared with | What, and which direction it flows |
 //! | --- | --- |
 //! | the cross-cutting startup gate | it calls `load_workspaces()`; this workflow does not decide when startup runs |
-//! | `WFR-SHELL-LAYOUT` | the window pushes the open/active file-row projection **down** into the sidebar; the sidebar treats those paths as display identities only. That row also owns the sidebar show/hide animation and the width preset |
+//! | `WFR-TAB-STRIP` | the window pushes the open/active file-row projection **down** into the sidebar; the sidebar treats those paths as display identities only |
+//! | `WFR-SHELL-GEOMETRY` | owns the sidebar show/hide animation, its readiness blocker, and the width preset this directory hosts |
 //! | `WFR-COMMAND-PALETTE` | the sidebar's structure-changed signal drives the palette's file index; the sidebar does not know the index exists |
 //! | `WFR-NOTES-BOOKMARKS` | a rename **calls** `migrate_note_sidecars_after_rename`; a context menu route opens notes. Called, never reached into |
 //! | `WFR-LOCAL-HISTORY` | a context menu route calls `show_local_history_for_path` |
@@ -82,7 +83,7 @@ mod test_policy;
 // Private GObject implementation for the template-backed sidebar shell.
 mod imp;
 // Cross-cutting, and NOT this workflow's: the workspace sidebar width preset is
-// `WFR-SHELL-LAYOUT`'s value, consumed by Preferences and the window shell. It
+// `WFR-SHELL-GEOMETRY`'s value, consumed by Preferences and the window shell. It
 // lives here because it names a sidebar dimension, not because this workflow owns
 // it. See the module doc.
 mod filter_execution;

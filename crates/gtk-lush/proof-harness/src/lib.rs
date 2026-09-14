@@ -182,8 +182,38 @@ pub struct RecommendedEnvironment {
 /// remain `unsafe`-free. In Rust 2024, changing process environment is unsafe
 /// once other threads may exist, and only the application knows that startup
 /// invariant.
+///
+/// Every entry disables a desktop-session subsystem that the private headless
+/// compositor advertises but cannot actually provide: the accessibility bus,
+/// the portal service, a GPU, and — since the input-method entry landed — an
+/// input method.
+///
+/// # Why `GTK_IM_MODULE` is on this list
+///
+/// Mutter's headless session advertises `zwp_text_input_manager_v3`, so GTK
+/// selects its Wayland input-method backend and enables the text-input protocol
+/// for every focused editable. There is no input method behind it, and no user
+/// typing into it — but the protocol round-trips are real, and destroying a
+/// focused `GtkEntry` races them. When the compositor's next text-input event
+/// arrives after the context is gone, `gtk_im_context_wayland_get_global()`
+/// dereferences a stale pointer, which surfaces as
+/// `gtk_widget_get_display: assertion 'GTK_IS_WIDGET (widget)' failed`, the same
+/// for the display, and then a **SIGSEGV** in `wl_proxy_get_version`.
+///
+/// This was measured, not inferred. A suite that destroys a focused inline-rename
+/// entry failed **9 of 40** isolated runs; with `gtk-im-context-simple` selected
+/// it failed **0 of 30**. Three application-side orderings were tried first —
+/// grabbing focus to the owning list view before unparenting, clearing the
+/// window focus before unparenting, and keeping the entry alive past removal —
+/// and every one was neutral or **worse**, because the dangling state lives in
+/// GTK's private per-display IM global where application code cannot reach it.
+///
+/// Selecting the simple context is therefore the narrowest available fix and is
+/// the same kind of statement the other three entries make: *this compositor is
+/// not a desktop session, so do not start the client half of a desktop service
+/// against it.* It is not a claim that the underlying GTK race is fixed.
 #[must_use]
-pub const fn recommended_pre_gtk_environment() -> [RecommendedEnvironment; 4] {
+pub const fn recommended_pre_gtk_environment() -> [RecommendedEnvironment; 5] {
     [
         RecommendedEnvironment {
             key: "NO_AT_BRIDGE",
@@ -200,6 +230,10 @@ pub const fn recommended_pre_gtk_environment() -> [RecommendedEnvironment; 4] {
         RecommendedEnvironment {
             key: "GSK_RENDERER",
             value: "cairo",
+        },
+        RecommendedEnvironment {
+            key: "GTK_IM_MODULE",
+            value: "gtk-im-context-simple",
         },
     ]
 }
@@ -612,6 +646,12 @@ mod tests {
         assert_eq!(values[1].value, "no-portals");
         assert_eq!(values[2].key, "GTK_USE_PORTAL");
         assert_eq!(values[3].value, "cairo");
+        // The input-method entry is load-bearing rather than cosmetic: without
+        // it, destroying a focused editable under headless Mutter segfaults in
+        // GTK's Wayland text-input backend. Asserted by key *and* value, because
+        // an empty or `wayland` value would re-enable the backend it disables.
+        assert_eq!(values[4].key, "GTK_IM_MODULE");
+        assert_eq!(values[4].value, "gtk-im-context-simple");
     }
 
     #[test]

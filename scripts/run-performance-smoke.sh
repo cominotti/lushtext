@@ -189,6 +189,7 @@ case " $FILTERS " in
                 tail -n 160 "$widget_log" >&2 || true
                 smoke_fail "workspace-persistence fault proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
             fi
+            smoke_assert_widget_ran "$widget_log" "workspace-persistence proof '$widget_filter'"
         done
         {
             echo "## workspace_persistence_fault_matrix"
@@ -213,7 +214,7 @@ case " $FILTERS " in
                 tail -n 120 "$widget_log" >&2 || true
                 smoke_fail "headless transient file-load proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
             fi
-            smoke_assert_ran "$widget_log" "widget proof '$widget_filter'"
+            smoke_assert_widget_ran "$widget_log" "widget proof '$widget_filter'"
         done
         {
             echo "## transient_file_load_headless"
@@ -282,7 +283,7 @@ case " $FILTERS " in
                 tail -n 160 "$widget_log" >&2 || true
                 smoke_fail "headless quality-gap proof failed for '$widget_filter'. Artifacts: $ARTIFACT_DIR"
             fi
-            smoke_assert_ran "$widget_log" "widget proof '$widget_filter'"
+            smoke_assert_widget_ran "$widget_log" "widget proof '$widget_filter'"
         done
         {
             echo "## quality_gap_scale_headless"
@@ -338,7 +339,7 @@ case " $FILTERS " in
             tail -n 120 "$widget_log" >&2 || true
             smoke_fail "Markdown retirement-pressure proof failed. Artifacts: $ARTIFACT_DIR"
         fi
-        smoke_assert_ran "$widget_log" "Markdown retirement-pressure proof"
+        smoke_assert_widget_ran "$widget_log" "Markdown retirement-pressure proof"
         {
             echo "## markdown_retirement_pressure"
             grep -E "markdown-retirement-bound-evidence|test result:" "$widget_log" || true
@@ -356,7 +357,7 @@ case " $FILTERS " in
             tail -n 120 "$widget_log" >&2 || true
             smoke_fail "reentrant buffer-replacement proof failed. Artifacts: $ARTIFACT_DIR"
         fi
-        smoke_assert_ran "$widget_log" "reentrant buffer-replacement proof"
+        smoke_assert_widget_ran "$widget_log" "reentrant buffer-replacement proof"
         {
             echo "## buffer_replacement_reentrancy"
             grep -E "buffer-replacement-reentrant-evidence|test result:" "$widget_log" || true

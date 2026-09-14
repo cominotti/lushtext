@@ -7,8 +7,8 @@ use crate::common::{
     ensure_gtk_init, fixture, flush_after_delay, flush_events, isolated_data_dir, present_window,
     wait_until,
 };
-use glib::subclass::prelude::ObjectSubclassIsExt;
 use glib::prelude::ToValue;
+use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 use lushtext_core::model::palette::{
     CommandCategory, CommandDef, IndexedFile, PaletteFileEntry, PaletteFileIdentity,
@@ -17,19 +17,15 @@ use lushtext_core::model::palette::{
 use lushtext_core::model::workspace::{
     WorkspaceConfig, WorkspaceId, WorkspaceScope, WorkspacesFile,
 };
+use lushtext_core::services::palette::{FileIndex, MAX_INDEXED_FILES, NoteSourceRefreshRequest};
 use lushtext_core::services::{json_store, workspace_manager};
-use lushtext_core::services::palette::{
-    FileIndex, MAX_INDEXED_FILES, NoteSourceRefreshRequest,
-};
 use lushtext_core::ui::accessibility::{self, test_audit::AccessibleAudit};
+use lushtext_core::ui::command_palette::item::PaletteItem;
 use lushtext_core::ui::command_palette::{
     CommandPaletteTestPolicy, LushtextCommandPalette, apply_palette_row_accessibility_for_test,
     file_index_retirement_snapshot_for_test,
 };
-use lushtext_core::ui::command_palette::item::PaletteItem;
-use lushtext_core::ui::plain_disposal::{
-    hold_disposal_capacity_for_test, lane_snapshot_for_test,
-};
+use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -96,7 +92,11 @@ fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, 
     let workspaces = WorkspacesFile {
         current_scope: initial_scope,
         workspaces: vec![
-            WorkspaceConfig::with_one_folder(WorkspaceId::new("ws-left"), "left", left_folder.clone()),
+            WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("ws-left"),
+                "left",
+                left_folder.clone(),
+            ),
             WorkspaceConfig::with_one_folder(
                 WorkspaceId::new("ws-right"),
                 "right",
@@ -196,7 +196,12 @@ fn bookmark_note(title: &str, subtitle: &str, path: PathBuf, line: u32) -> Palet
     }
 }
 
-fn open_tab_bookmark_note(title: &str, subtitle: &str, path: PathBuf, line: u32) -> PaletteNoteEntry {
+fn open_tab_bookmark_note(
+    title: &str,
+    subtitle: &str,
+    path: PathBuf,
+    line: u32,
+) -> PaletteNoteEntry {
     PaletteNoteEntry {
         category: PaletteNoteCategory::OpenTabs,
         ..bookmark_note(title, subtitle, path, line)
@@ -391,7 +396,10 @@ fn test_command_palette_mode_dropdown_changes_mode() {
     palette.open();
     flush_events();
 
-    palette.imp().mode_dropdown.set_selected(SearchMode::Files.position());
+    palette
+        .imp()
+        .mode_dropdown
+        .set_selected(SearchMode::Files.position());
     flush_events();
 
     assert_eq!(palette.mode(), SearchMode::Files);
@@ -421,7 +429,10 @@ fn test_command_palette_tab_syncs_mode_dropdown() {
         glib::Propagation::Stop,
     );
     assert_eq!(palette.mode(), SearchMode::Files);
-    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Files.position());
+    assert_eq!(
+        palette.imp().mode_dropdown.selected(),
+        SearchMode::Files.position()
+    );
 
     assert_eq!(
         emit_key(
@@ -431,7 +442,10 @@ fn test_command_palette_tab_syncs_mode_dropdown() {
         glib::Propagation::Stop,
     );
     assert_eq!(palette.mode(), SearchMode::Notes);
-    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Notes.position());
+    assert_eq!(
+        palette.imp().mode_dropdown.selected(),
+        SearchMode::Notes.position()
+    );
 
     assert_eq!(
         emit_key(
@@ -441,7 +455,10 @@ fn test_command_palette_tab_syncs_mode_dropdown() {
         glib::Propagation::Stop,
     );
     assert_eq!(palette.mode(), SearchMode::Files);
-    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Files.position());
+    assert_eq!(
+        palette.imp().mode_dropdown.selected(),
+        SearchMode::Files.position()
+    );
 }
 
 #[test]
@@ -473,7 +490,10 @@ fn test_command_palette_keyboard_mode_cycle_then_escape_restores_editor_focus() 
         glib::Propagation::Stop,
     );
     assert_eq!(palette.mode(), SearchMode::Notes);
-    assert_eq!(palette.imp().mode_dropdown.selected(), SearchMode::Notes.position());
+    assert_eq!(
+        palette.imp().mode_dropdown.selected(),
+        SearchMode::Notes.position()
+    );
 
     // Escape arrives as SearchEntry's stop-search signal, so this keeps the
     // test on GTK's keyboard path while avoiding compositor-level key injection.
@@ -515,7 +535,10 @@ fn test_command_palette_placeholder_changes_with_mode() {
     assert_eq!(palette.mode(), SearchMode::Files);
     assert_eq!(imp.mode_dropdown.selected(), SearchMode::Files.position());
     assert_eq!(
-        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
+        imp.search_entry
+            .placeholder_text()
+            .expect("expected operation to succeed")
+            .as_str(),
         SearchMode::Files.placeholder(),
     );
 
@@ -523,15 +546,24 @@ fn test_command_palette_placeholder_changes_with_mode() {
     assert_eq!(palette.mode(), SearchMode::Notes);
     assert_eq!(imp.mode_dropdown.selected(), SearchMode::Notes.position());
     assert_eq!(
-        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
+        imp.search_entry
+            .placeholder_text()
+            .expect("expected operation to succeed")
+            .as_str(),
         SearchMode::Notes.placeholder(),
     );
 
     imp.set_mode(imp.mode.get().next());
     assert_eq!(palette.mode(), SearchMode::Commands);
-    assert_eq!(imp.mode_dropdown.selected(), SearchMode::Commands.position());
     assert_eq!(
-        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
+        imp.mode_dropdown.selected(),
+        SearchMode::Commands.position()
+    );
+    assert_eq!(
+        imp.search_entry
+            .placeholder_text()
+            .expect("expected operation to succeed")
+            .as_str(),
         SearchMode::Commands.placeholder(),
     );
 
@@ -539,7 +571,10 @@ fn test_command_palette_placeholder_changes_with_mode() {
     assert_eq!(palette.mode(), SearchMode::All);
     assert_eq!(imp.mode_dropdown.selected(), SearchMode::All.position());
     assert_eq!(
-        imp.search_entry.placeholder_text().expect("expected operation to succeed").as_str(),
+        imp.search_entry
+            .placeholder_text()
+            .expect("expected operation to succeed")
+            .as_str(),
         SearchMode::All.placeholder(),
     );
 }
@@ -691,9 +726,11 @@ fn test_command_palette_rapid_queries_keep_one_active_one_latest_and_final_acces
 
     assert!(palette.evidence().observed_search_cancellations > 0);
     assert!(palette.evidence().last_cancelled_search_examined <= 2_000);
-    assert!(!palette_labels(&palette)
-        .iter()
-        .any(|label| label.contains("intermediate")));
+    assert!(
+        !palette_labels(&palette)
+            .iter()
+            .any(|label| label.contains("intermediate"))
+    );
     assert!(!gtk4::test_accessible_has_state(
         &*palette.imp().search_entry,
         gtk4::AccessibleState::Busy,
@@ -781,9 +818,11 @@ fn test_command_palette_incremental_index_worker_publishes_then_clears_readiness
     });
 
     assert_eq!(palette.pending_index_update_count(), 0);
-    assert!(palette_labels(&palette)
-        .iter()
-        .any(|label| label == "created-latest.rs"));
+    assert!(
+        palette_labels(&palette)
+            .iter()
+            .any(|label| label == "created-latest.rs")
+    );
 }
 
 #[test]
@@ -920,11 +959,11 @@ fn test_incremental_index_count_cap_escalates_independently_of_the_byte_cap() {
 fn test_incremental_index_capacity_retry_is_paced_and_resumes_after_release() {
     ensure_gtk_init();
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let capacity_hold = hold_disposal_capacity_for_test();
-    let full_before = lane_snapshot_for_test().full_outcomes;
+    let full_before = plain_disposal_evidence().ordinary.snapshot.full_outcomes;
     let palette = LushtextCommandPalette::new();
 
     palette.update_index_file_deleted(Path::new("/synthetic/deferred-delete"));
@@ -932,11 +971,11 @@ fn test_incremental_index_capacity_retry_is_paced_and_resumes_after_release() {
 
     assert_eq!(palette.pending_index_update_count(), 1);
     assert!(!palette.evidence().index_update_worker_running);
-    let full_after_first_attempt = lane_snapshot_for_test().full_outcomes;
+    let full_after_first_attempt = plain_disposal_evidence().ordinary.snapshot.full_outcomes;
     assert_eq!(full_after_first_attempt, full_before + 1);
     flush_after_delay(Duration::from_millis(200));
     assert_eq!(
-        lane_snapshot_for_test().full_outcomes,
+        plain_disposal_evidence().ordinary.snapshot.full_outcomes,
         full_after_first_attempt,
         "capacity polling must not rerun the whole index mutation in a tight loop"
     );
@@ -977,8 +1016,7 @@ fn test_incremental_index_update_queue_coalesces_overflow_to_one_rebuild() {
     assert_eq!(drained.queued_index_update_bytes, 0);
     assert!(!drained.index_rebuild_pending);
     assert_eq!(
-        drained.max_queued_index_updates,
-        overflowed.max_queued_index_updates,
+        drained.max_queued_index_updates, overflowed.max_queued_index_updates,
         "the queue's declared ceilings are policy, not state"
     );
     assert_eq!(
@@ -1037,9 +1075,7 @@ fn test_command_palette_retires_last_owned_rejected_incremental_index_off_gtk() 
         "retire-rejected",
         MAX_INDEXED_FILES,
     ));
-    palette.update_index_file_deleted(&PathBuf::from(
-        "/synthetic/retire-rejected/missing.rs",
-    ));
+    palette.update_index_file_deleted(&PathBuf::from("/synthetic/retire-rejected/missing.rs"));
     wait_until(Duration::from_secs(10), || {
         palette.evidence().index_update_worker_running
     });
@@ -1085,7 +1121,10 @@ fn test_command_palette_files_mode_groups_open_tabs_before_workspace_files() {
         "Open Tabs should precede workspace files: {labels:?}",
     );
     assert_eq!(
-        labels.iter().filter(|label| label.as_str() == "alpha.rs").count(),
+        labels
+            .iter()
+            .filter(|label| label.as_str() == "alpha.rs")
+            .count(),
         1,
         "duplicate open/workspace file should only appear once: {labels:?}",
     );
@@ -1198,8 +1237,16 @@ fn test_command_palette_all_mode_groups_sources_by_priority() {
     assert!(labels.iter().any(|label| label == "open_tab.rs"));
     assert!(labels.iter().any(|label| label == "open_workspace.rs"));
     assert!(labels.iter().any(|label| label == "Bookmark · Open task"));
-    assert!(labels.iter().any(|label| label == "Document Note · open_note.rs"));
-    assert!(labels.iter().any(|label| label == "Bookmark · Open tab note"));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Document Note · open_note.rs")
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Bookmark · Open tab note")
+    );
     assert!(labels.iter().any(|label| label == "Open Document Note"));
     assert!(labels.iter().any(|label| label == "Open File"));
     assert!(!labels.iter().any(|label| label == "Notes"));
@@ -1250,11 +1297,17 @@ fn test_command_palette_workspace_file_group_deduplicates_overlapping_folder_row
 
     let labels = palette_labels(&palette);
     assert_eq!(
-        labels.iter().filter(|label| label.as_str() == "main.rs").count(),
+        labels
+            .iter()
+            .filter(|label| label.as_str() == "main.rs")
+            .count(),
         1,
         "overlapping workspace folders should show one palette row: {labels:?}",
     );
-    assert_eq!(row_with_label(&palette, "main.rs").subtitle(), "src/main.rs");
+    assert_eq!(
+        row_with_label(&palette, "main.rs").subtitle(),
+        "src/main.rs"
+    );
 
     palette.set_file_index(FileIndex::rebuild(&[nested_folder, workspace_folder]));
     palette.restart_query_for_test("main");
@@ -1286,7 +1339,10 @@ fn test_command_palette_aggregate_scope_deduplicates_duplicate_workspace_files()
 
     let labels = palette_labels(&palette);
     assert_eq!(
-        labels.iter().filter(|label| label.as_str() == "alpha.rs").count(),
+        labels
+            .iter()
+            .filter(|label| label.as_str() == "alpha.rs")
+            .count(),
         1,
         "aggregate scope should show one row for the same canonical file: {labels:?}",
     );
@@ -1345,9 +1401,17 @@ fn test_command_palette_notes_mode_groups_note_records_by_category() {
         bookmarks < folder_notes && folder_notes < document_notes && document_notes < open_tabs,
         "Notes mode groups should preserve note category order: {labels:?}",
     );
-    assert!(labels.iter().any(|label| label == "Bookmark · Review parser"));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Bookmark · Review parser")
+    );
     assert!(labels.iter().any(|label| label == "Folder Note · Core"));
-    assert!(labels.iter().any(|label| label == "Document Note · parser.rs"));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Document Note · parser.rs")
+    );
     assert!(labels.iter().any(|label| label == "Bookmark · Outside tab"));
     assert!(!labels.iter().any(|label| label == "Commands"));
     assert!(!labels.iter().any(|label| label == "Browse Notes"));
@@ -1385,7 +1449,11 @@ fn test_command_palette_notes_mode_excludes_files_and_commands() {
     rebuild_and_wait_for_label(&palette, "open", "Document Note · open_notes.rs");
     let labels = palette_labels(&palette);
 
-    assert!(labels.iter().any(|label| label == "Document Note · open_notes.rs"));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Document Note · open_notes.rs")
+    );
     assert!(!labels.iter().any(|label| label == "Selected Workspace"));
     assert!(!labels.iter().any(|label| label == "open_notes.rs"));
     assert!(!labels.iter().any(|label| label == "open_notes_tab.rs"));
@@ -1400,7 +1468,9 @@ fn test_command_palette_notes_mode_empty_source_has_no_fake_rows() {
     palette.imp().set_mode(SearchMode::Notes);
 
     palette.restart_query_for_test("");
-    wait_until(Duration::from_secs(5), || palette_labels(&palette).is_empty());
+    wait_until(Duration::from_secs(5), || {
+        palette_labels(&palette).is_empty()
+    });
 
     assert!(palette_labels(&palette).is_empty());
     assert!(
@@ -1488,9 +1558,16 @@ fn test_command_palette_notes_mode_matches_note_content_and_metadata() {
     palette.imp().set_mode(SearchMode::Notes);
 
     rebuild_and_wait_for_label(&palette, "rollout proof", "Document Note · lib.rs");
-    assert_eq!(palette_labels(&palette), vec!["Document Notes", "Document Note · lib.rs"]);
+    assert_eq!(
+        palette_labels(&palette),
+        vec!["Document Notes", "Document Note · lib.rs"]
+    );
 
-    rebuild_and_wait_for_label(&palette, "migration checklist", "Folder Note · Release Workspace");
+    rebuild_and_wait_for_label(
+        &palette,
+        "migration checklist",
+        "Folder Note · Release Workspace",
+    );
     assert_eq!(
         palette_labels(&palette),
         vec!["Folder Notes", "Folder Note · Release Workspace"]
@@ -1503,16 +1580,30 @@ fn test_command_palette_notes_mode_matches_note_content_and_metadata() {
     );
 
     rebuild_and_wait_for_label(&palette, "Line 42", "Bookmark · Ship checkpoint");
-    assert!(palette_labels(&palette).iter().any(|label| label == "Bookmark · Ship checkpoint"));
+    assert!(
+        palette_labels(&palette)
+            .iter()
+            .any(|label| label == "Bookmark · Ship checkpoint")
+    );
 
-    rebuild_and_wait_for_label(&palette, "/workspace/docs", "Folder Note · Release Workspace");
-    assert!(palette_labels(&palette)
-        .iter()
-        .any(|label| label == "Folder Note · Release Workspace"));
+    rebuild_and_wait_for_label(
+        &palette,
+        "/workspace/docs",
+        "Folder Note · Release Workspace",
+    );
+    assert!(
+        palette_labels(&palette)
+            .iter()
+            .any(|label| label == "Folder Note · Release Workspace")
+    );
 
     rebuild_and_wait_for_label(&palette, "/workspace/src/lib.rs", "Document Note · lib.rs");
     let labels = palette_labels(&palette);
-    assert!(labels.iter().any(|label| label == "Bookmark · Ship checkpoint"));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Bookmark · Ship checkpoint")
+    );
     assert!(labels.iter().any(|label| label == "Document Note · lib.rs"));
 }
 
@@ -2413,11 +2504,7 @@ fn test_palette_empty_selected_workspace_scope_has_no_workspace_file_rows() {
         current_scope: WorkspaceScope::workspace(WorkspaceId::new("ws-empty")),
         workspaces: vec![
             WorkspaceConfig::with_folders(WorkspaceId::new("ws-empty"), "empty", Vec::new()),
-            WorkspaceConfig::with_one_folder(
-                WorkspaceId::new("ws-other"),
-                "other",
-                other_folder,
-            ),
+            WorkspaceConfig::with_one_folder(WorkspaceId::new("ws-other"), "other", other_folder),
         ],
     };
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
@@ -2748,7 +2835,10 @@ fn test_evidence_reads_stay_side_effect_free_across_palette_mutation() {
         first_read.queued_index_update_bytes,
         second_read.queued_index_update_bytes
     );
-    assert_eq!(first_read.search_flight.started, second_read.search_flight.started);
+    assert_eq!(
+        first_read.search_flight.started,
+        second_read.search_flight.started
+    );
     assert_eq!(
         first_read.search_flight.cancellation_requests,
         second_read.search_flight.cancellation_requests

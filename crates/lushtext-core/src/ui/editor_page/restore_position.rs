@@ -11,7 +11,7 @@
 //! | editor find | `WFR-EDITOR-FIND` | `set_restore_position` before reloading a file to a match |
 //! | notes and bookmarks | `WFR-NOTES-BOOKMARKS` | `cursor_position` when anchoring a record |
 //! | document load | `WFR-DOCUMENT-LOAD` | `apply_restore_position`, called once from its publish stage |
-//! | the window's tab handling | `WFR-SHELL-LAYOUT` | reads the live position for status and titles |
+//! | the window's tab handling | `WFR-TAB-STRIP` | reads the live position for status and titles |
 //!
 //! Cross-cutting eligibility counts **owning workflows**, not consuming files,
 //! so this group stays in a shared `ui/editor_page/` location and each workflow

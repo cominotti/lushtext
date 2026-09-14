@@ -7,7 +7,7 @@
 //! GTK, so the final GTK owner performs only a guaranteed non-blocking handoff.
 //! Capacity retries retain compact requests, never an unreserved large value.
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 use crate::model::plain_disposal::PlainDisposalLatest;
 #[cfg(feature = "test-utils")]
 use crate::model::plain_disposal::PlainDisposalLatestSnapshot;
@@ -18,7 +18,7 @@ use crate::model::plain_disposal::{
 };
 use crate::services::sync::lock_unpoisoned;
 use crossbeam_channel::{Sender, TrySendError, unbounded};
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt;
@@ -49,7 +49,7 @@ pub(crate) const PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY: u64 = 72 * 1024 * 102
 /// Producers poll capacity once per display frame while retaining one latest job.
 const DISPOSAL_RETRY_INTERVAL: Duration = Duration::from_millis(16);
 /// Rejected-payload retry is retained only for statically small compatibility evidence.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 const MAX_SMALL_PENDING_DISPOSAL_BYTES: u64 = 64 * 1024;
 
 const DISPOSAL_LIMITS: PlainDisposalLimits = PlainDisposalLimits::new(
@@ -672,7 +672,7 @@ impl<T: Send + 'static> Drop for DisposalOwned<T> {
 }
 
 /// Pre-admit a worker-produced value before it is published to GTK.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 pub(crate) fn try_own_for_gtk<T: Send + 'static>(
     weight: u64,
     value: T,
@@ -844,7 +844,7 @@ pub(crate) struct DisposalProducerSnapshot {
     pub(crate) owner_closed: bool,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 struct DisposalProducerInner {
     lane: DisposalLane,
     latest: RefCell<PlainDisposalLatest<DisposalJob>>,
@@ -857,20 +857,20 @@ struct DisposalProducerInner {
 }
 
 /// Small-payload compatibility producer with one latest rejection and retry source.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 #[derive(Clone)]
 pub(crate) struct DisposalProducer {
     inner: Rc<DisposalProducerInner>,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 impl Default for DisposalProducer {
     fn default() -> Self {
         Self::with_lane(disposal_lane())
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 impl DisposalProducer {
     fn with_lane(lane: DisposalLane) -> Self {
         Self {
@@ -975,7 +975,7 @@ impl DisposalProducer {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(feature = "test-utils")]
 fn retry_pending(inner: &Rc<DisposalProducerInner>) -> glib::ControlFlow {
     let Some(job) = inner.latest.borrow_mut().take_for_retry() else {
         inner.latest.borrow_mut().finish_retry();
@@ -1007,32 +1007,111 @@ fn retry_pending(inner: &Rc<DisposalProducerInner>) -> glib::ControlFlow {
     }
 }
 
-/// Return process-wide lane limits for direct regression evidence.
+/// One disposal lane's ceilings and its current-plus-high-water evidence.
+///
+/// A **named component** of `PlainDisposalEvidence` rather than a top-level
+/// accessor of its own: the ordinary and progress lanes are two instances of one
+/// mechanism, not two kinds of thing, and exposing them as two accessors is what
+/// let four parallel observation paths accumulate over one lane's state.
+///
+/// The two field types are `model::plain_disposal` domain types, **called rather
+/// than moved or duplicated**. They are production types with production
+/// consumers, and this lane's census resolution against relocation stands.
 #[cfg(feature = "test-utils")]
-#[must_use]
-pub fn limits_for_test() -> PlainDisposalLimits {
-    DISPOSAL_LIMITS
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlainDisposalLaneEvidence {
+    /// Fixed ceilings this lane admits against.
+    pub limits: PlainDisposalLimits,
+    /// Scalar admission evidence without payload contents.
+    pub snapshot: PlainDisposalSnapshot,
 }
 
-/// Return the reserved progress-lane limits for direct regression evidence.
 #[cfg(feature = "test-utils")]
-#[must_use]
-pub fn progress_limits_for_test() -> PlainDisposalLimits {
-    PROGRESS_DISPOSAL_LIMITS
+impl PlainDisposalLaneEvidence {
+    /// Whether this lane has nothing running and nothing queued.
+    ///
+    /// The predicate a proof needs before it may assert read-to-read identity on
+    /// this lane. It delegates to
+    /// [`PlainDisposalSnapshot::is_quiesced`](crate::model::plain_disposal::PlainDisposalSnapshot::is_quiesced),
+    /// which is the single definition.
+    ///
+    /// It existed only as an open-coded `running_jobs == 0 && queued_jobs == 0`
+    /// written separately at each call site. Naming it here first was **not
+    /// enough**: twelve copies survived in the widget tests, and two of them had
+    /// already drifted to a stronger predicate by also requiring
+    /// `retained_bytes == 0`. Centralizing it on the domain type and rewriting
+    /// all twelve is what makes this claim true.
+    ///
+    /// Note what it does **not** claim: high-water marks and cumulative counters
+    /// keep their values across a quiesce, because they are monotonic records
+    /// rather than live state.
+    #[must_use]
+    pub fn is_quiesced(&self) -> bool {
+        // Delegates rather than re-deriving: `PlainDisposalSnapshot` owns the
+        // one definition of "quiet", so this surface and the dozen widget-test
+        // call sites cannot drift apart.
+        self.snapshot.is_quiesced()
+    }
 }
 
-/// Return process-wide current and high-water lane evidence.
+/// Everything a test or probe may observe about the plain-disposal lane.
+///
+/// **One** typed surface over what were four parallel observation accessors
+/// returning two types. The lane is cross-cutting coordination rather than a
+/// workflow, so it owes this surface but no facade, no coordination role names,
+/// and no `policy.rs`; the file keeps the lane's own name because `evidence.rs`
+/// is a workflow *role* name and a lane carries no roles.
+///
+/// **Reading is side-effect free.** Each field is a copy of a fixed limit
+/// constant or a scalar snapshot taken under the admission lock. Nothing here
+/// admits, reserves, releases, spawns, or asserts.
+///
+/// **What is deliberately absent:** `aggregate_pressure_evidence_for_test` is
+/// **not** folded in. Despite its name and return type it is not an observation
+/// accessor — it spawns worker threads, blocks on a `Condvar`, saturates the
+/// lane, drives GTK heartbeats, and asserts ten invariants. It is an *actuation*
+/// seam that returns evidence, so folding it into this surface would make
+/// reading the surface run a fixture, mutate every counter the surface reports,
+/// and panic on failure. That is precisely what the surface rules forbid, and it
+/// is why this row's eight gated declarations partition as **four observation
+/// plus four actuation** rather than five plus three.
 #[cfg(feature = "test-utils")]
-#[must_use]
-pub fn lane_snapshot_for_test() -> PlainDisposalSnapshot {
-    disposal_lane().snapshot()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlainDisposalEvidence {
+    /// The general-purpose lane every workflow's payloads retire through.
+    pub ordinary: PlainDisposalLaneEvidence,
+    /// The reserved lane that keeps progress-carrying payloads unblocked.
+    pub progress: PlainDisposalLaneEvidence,
 }
 
-/// Return current and high-water evidence for the reserved progress lane.
+#[cfg(feature = "test-utils")]
+impl PlainDisposalEvidence {
+    /// Whether **both** lanes have nothing running and nothing queued.
+    #[must_use]
+    pub fn is_quiesced(&self) -> bool {
+        self.ordinary.is_quiesced() && self.progress.is_quiesced()
+    }
+}
+
+/// Read the whole plain-disposal surface.
+///
+/// The lane's state lives in process-wide atomics that worker threads advance,
+/// so a caller asserting read-to-read identity must first quiesce the lane and
+/// confirm it through `is_quiesced()`; identity is not a property of the
+/// reader's control flow here.
 #[cfg(feature = "test-utils")]
 #[must_use]
-pub fn progress_lane_snapshot_for_test() -> PlainDisposalSnapshot {
-    progress_disposal_lane().snapshot()
+pub fn plain_disposal_evidence() -> PlainDisposalEvidence {
+    PlainDisposalEvidence {
+        ordinary: PlainDisposalLaneEvidence {
+            limits: DISPOSAL_LIMITS,
+            snapshot: disposal_lane().snapshot(),
+        },
+        progress: PlainDisposalLaneEvidence {
+            limits: PROGRESS_DISPOSAL_LIMITS,
+            snapshot: progress_disposal_lane().snapshot(),
+        },
+    }
 }
 
 /// Test-owned exclusive reservation that keeps production admission saturated.
@@ -1263,7 +1342,7 @@ pub fn aggregate_pressure_evidence_for_test() -> DisposalPressureEvidence {
             .iter()
             .map(|producer| producer.snapshot().latest.pending_jobs)
             .sum::<usize>();
-        if pending == 0 && lane_snapshot.running_jobs == 0 && lane_snapshot.queued_jobs == 0 {
+        if pending == 0 && lane_snapshot.is_quiesced() {
             break;
         }
         assert!(

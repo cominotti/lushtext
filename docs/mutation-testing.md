@@ -181,10 +181,21 @@ smaller pure tab policy helpers are extracted. After that correction,
 
 The calibration **comment** recording that decision has since been retired from
 `.cargo/mutants.toml`. It named a file the current `examine_globs` never selects
-— `ui/window/tabs.rs` is neither a `policy.rs` nor a hand-listed entry — so it
+— `ui/window/tabs.rs` was neither a `policy.rs` nor a hand-listed entry — so it
 documented a decision the configuration was not implementing, and a reader could
 not tell it from a live exclusion. The ratchet record above is the durable home
 for the finding; the configuration no longer restates it.
+
+**And the premise has since been overtaken, which is the better outcome.**
+`ui/window/tabs.rs` no longer exists: slot 7b migrated `WFR-TAB-STRIP` into
+`ui/window/tab_strip/`, and the *"smaller pure tab policy helpers"* that
+paragraph was waiting for are now `ui/window/tab_strip/policy.rs` — the
+pinned-segment invariant and every target-eligibility, move-bound, label, and
+status-message rule that follows from it. The convention reaches it by name:
+**46 mutants generated, 46 caught, 0 survivors**, a gain from zero. The GTK
+adapter methods that dominated the 40 missed mutants are in `close_execution.rs`
+and `surfaces.rs`, which are correctly outside the scope for not being policy
+modules — not by exclusion, but because the scope is decided by name.
 
 On June 2, 2026, the minimap cluster was ratcheted separately. The
 non-widget-only focused slice for the then-live

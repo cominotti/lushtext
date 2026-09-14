@@ -15,28 +15,37 @@
 //! was previously pure, correct, and reachable by no scope entry at all, so it
 //! carried zero mutation coverage while every command exited 0.
 //!
-//! The role home is **flat** `ui/window/` rather than a per-workflow
-//! subdirectory. That is a constraint rather than a preference: this workflow's
-//! GTK adapter halves live in `ui/window/imp.rs` and `ui/window/actions.rs`,
-//! which are literal path keys in the native-minimap highlight, native-minimap
-//! animation, and workspace-sidebar animation-matrix visual-proof predicates in
-//! both `scripts/check-visual-proof-policy.py` and
-//! `crates/cargo-gtk-proof/src/policy.rs`. Moving that geometry code into a new
-//! directory no predicate names would disarm two named pixel invariants and the
-//! sidebar animation matrix while every gate still exited 0.
+//! The role home is the per-workflow subdirectory `ui/window/geometry/`, which
+//! this module moved into when the workflow migrated. **The move required a
+//! gate re-key, and the re-key is done.** This workflow's GTK adapter halves
+//! stay behind in `ui/window/imp.rs` (the `size_allocate` vfunc and the
+//! `constructed()` wiring) and `ui/window/actions.rs` (the two toggle action
+//! bodies), and both remain literal path keys in the native-minimap highlight,
+//! native-minimap animation, and workspace-sidebar animation-matrix visual-proof
+//! predicates in **both** `scripts/check-visual-proof-policy.py` and
+//! `crates/cargo-gtk-proof/src/policy.rs`.
+//!
+//! Moving the geometry code here without adding a key **did** disarm two named
+//! pixel invariants and the sidebar animation matrix while every gate exited 0 —
+//! that disarm was observed deliberately before it was fixed, because a
+//! path-keyed gate that matches nothing does not fail. The role home is now a
+//! narrow prefix key in both implementations, each with a parity self-test
+//! proved by a deliberate red. A `ui/window/` prefix was rejected: it would
+//! sweep in seven subdirectories, four of them role homes no predicate has ever
+//! protected.
 
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
 /// Tiny non-zero floor used before the first real workspace-width sync.
-pub(super) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;
+pub(in crate::ui::window) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;
 /// Properties sidebar minimum width in scale-independent pixels.
-pub(super) const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 280.0;
+pub(in crate::ui::window) const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 280.0;
 /// Minimum normal-mode height that preserves persistent chrome and an editor.
-pub(super) const NORMAL_MODE_MIN_HEIGHT_SP: i32 = 360;
+pub const NORMAL_MODE_MIN_HEIGHT_SP: i32 = 360;
 /// Collapse the left workspace pane on narrower windows.
-pub(super) const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
+pub(in crate::ui::window) const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
 /// GNOME Text Editor switches the header Open control to an icon at 400sp.
-pub(super) const OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP: i32 = 400;
+pub(in crate::ui::window) const OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP: i32 = 400;
 
 /// Target total-window width for the visible right properties pane.
 const FIXED_PROPERTIES_SIDEBAR_FRACTION: f64 = 0.25;
@@ -60,7 +69,7 @@ pub enum SecondarySurface {
 
 /// Adaptive presentation currently used for document properties.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PropertiesPresentation {
+pub(in crate::ui::window) enum PropertiesPresentation {
     /// Properties render as the right sidebar of the inner split view.
     Pane,
     /// Properties render as the sheet of the compact bottom sheet.
@@ -85,7 +94,7 @@ impl PropertiesPresentation {
 
 /// Stable inputs for one adaptive-shell decision.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct AdaptiveShellInputs {
+pub(in crate::ui::window) struct AdaptiveShellInputs {
     /// Current allocated or restored window width in scale-independent pixels.
     pub(super) window_width: i32,
     /// Workspace width preset selected by the user.
@@ -102,7 +111,7 @@ pub(super) struct AdaptiveShellInputs {
 
 /// Derived shell geometry and presentation for one stable set of inputs.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct AdaptiveShellLayout {
+pub(in crate::ui::window) struct AdaptiveShellLayout {
     /// Document-properties breakpoint threshold for the current intent.
     pub(super) properties_breakpoint_max_width: i32,
     /// Whether the workspace consumes side-by-side width in this layout.
@@ -117,28 +126,32 @@ pub(super) struct AdaptiveShellLayout {
     pub(super) render_properties: bool,
 }
 
-pub(super) fn properties_breakpoint_condition(max_width_sp: i32) -> String {
+pub(in crate::ui::window) fn properties_breakpoint_condition(max_width_sp: i32) -> String {
     format!("max-width: {max_width_sp}sp")
 }
 
-pub(super) fn workspace_breakpoint_condition() -> String {
+pub(in crate::ui::window) fn workspace_breakpoint_condition() -> String {
     properties_breakpoint_condition(WORKSPACE_BREAKPOINT_MAX_WIDTH_SP)
 }
 
 /// Return the preset-clamped workspace target width for this window.
-pub(super) fn effective_workspace_sidebar_width_sp(input: AdaptiveShellInputs) -> f64 {
+pub(in crate::ui::window) fn effective_workspace_sidebar_width_sp(
+    input: AdaptiveShellInputs,
+) -> f64 {
     input.workspace_preset.clamped_width_sp(input.window_width)
 }
 
 /// Return the preset-clamped workspace fraction for this window.
-pub(super) fn effective_workspace_sidebar_fraction(input: AdaptiveShellInputs) -> f64 {
+pub(in crate::ui::window) fn effective_workspace_sidebar_fraction(
+    input: AdaptiveShellInputs,
+) -> f64 {
     input
         .workspace_preset
         .effective_fraction(input.window_width)
 }
 
 /// Return the right-properties fraction relative to its current inner split.
-pub(super) fn effective_properties_fraction(input: AdaptiveShellInputs) -> f64 {
+pub(in crate::ui::window) fn effective_properties_fraction(input: AdaptiveShellInputs) -> f64 {
     let total_fraction = desired_properties_fraction(input.window_width);
     if derive_adaptive_shell_layout(input).workspace_consumes_width {
         let total_width = f64::from(input.window_width.max(1));
@@ -171,7 +184,7 @@ fn properties_inner_split_width(total_width: f64, workspace_width: f64) -> f64 {
     (total_width - workspace_width).max(1.0)
 }
 
-pub(super) fn desired_properties_fraction(window_width: i32) -> f64 {
+pub(in crate::ui::window) fn desired_properties_fraction(window_width: i32) -> f64 {
     fixed_fraction(
         window_width,
         PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
@@ -179,7 +192,9 @@ pub(super) fn desired_properties_fraction(window_width: i32) -> f64 {
     )
 }
 
-pub(super) fn derive_adaptive_shell_layout(input: AdaptiveShellInputs) -> AdaptiveShellLayout {
+pub(in crate::ui::window) fn derive_adaptive_shell_layout(
+    input: AdaptiveShellInputs,
+) -> AdaptiveShellLayout {
     let workspace_consumes_width = workspace_consumes_width_for_intent(input);
     let workspace_width_sp = if workspace_consumes_width {
         effective_workspace_sidebar_width_sp(input)

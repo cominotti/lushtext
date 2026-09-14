@@ -6,7 +6,7 @@
 //!
 //! This module is **cross-cutting, and it is not the workspace tree workflow's**.
 //! It is the `workspace-sidebar-width-policy` capability's value, owned by
-//! `WFR-SHELL-LAYOUT` (slot 7): Preferences renders it as a picker, and the window
+//! `WFR-SHELL-GEOMETRY` (slot 7b): Preferences renders it as a picker, and the window
 //! shell does the split-view math with it. The workspace tree workflow neither
 //! reads nor writes it — `.agents/rules/ui.md` states plainly that "the window
 //! layer owns the split-view math; the sidebar does not expose a duplicate width
@@ -17,8 +17,8 @@
 //! separately from `ui/sidebar/mod.rs` precisely so the tree workflow's narrative
 //! facade is not 103 lines of a neighbouring row's value type.
 //!
-//! Its three consumers are `ui/preferences/imp.rs`, `ui/window/policy.rs`,
-//! and `ui/window/imp.rs`.
+//! Its three consumers are `ui/preferences/imp.rs`,
+//! `ui/window/geometry/policy.rs`, and `ui/window/geometry/execution.rs`.
 
 /// Supported named workspace sidebar presets used by Preferences and shell math.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

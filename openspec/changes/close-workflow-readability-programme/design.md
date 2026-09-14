@@ -36,7 +36,7 @@ unambiguous. Slot 7's decisions are **inputs** here, not re-openable.
   census resolution that still holds, and the census forbids overriding an `exempt` or
   `cross-cutting` resolution.
 - **No widening of `WFR-EDITOR-MEMORY`'s `exempt` resolution.** That resolution covers
-  `model/editor_memory.rs` only. Stretching it over ~590 production lines of GTK
+  `model/editor_memory.rs` only. Stretching it over the ~406 production lines of GTK
   eviction orchestration would be forcing an exempt row into a scope it was never
   granted — the inverse of the error the exempt label exists to prevent. §E1 gives the
   orchestration its own row instead.
@@ -76,13 +76,16 @@ turned out bigger":
   Mode.
 - Three are **forced by §D1's own findings**, each of which is a coverage obligation
   rather than a preference:
-  - `WFR-TRANSIENT-DISMISSAL` — finding 4 removed `transient_surfaces.rs` from the
-    no-coordination-tier list, on the evidence that it has *"a strictly ordered
-    dismissal ladder **and** a one-tick idle latch"*. A surface off the tier list and
-    in no row is unattributed, which the coverage proof forbids.
-  - `WFR-EDITOR-MEMORY-EVICTION` — finding 2 established that ~590 production lines of
-    eviction orchestration are *"owned by no story anywhere"*. Not a new row, a
-    **newly-visible** one.
+  - `WFR-TRANSIENT-DISMISSAL` — §D1's `transient_surfaces.rs` verdict rejected it as a
+    tier-list entry, on the evidence that it has *"a strictly ordered dismissal ladder
+    **and** a one-tick idle latch"*. It was never on the **live** tier list, so nothing
+    is being removed; a surface rejected from the tier and in no row is simply
+    unattributed, which the coverage proof forbids.
+  - `WFR-EDITOR-MEMORY-EVICTION` — §D1's `focus_indexing.rs` verdict established that
+    the eviction orchestration is *"owned by no story anywhere"*. Not a new row, a
+    **newly-visible** one. Its size is **~406** production lines, not the ~590 the
+    handoff carries — see the proposal's Finding 1b, which also finds that verdict wrong
+    in two further ways.
   - `WFR-STARTUP-PREFLIGHT` — `startup_data.rs` is cross-cutting and owned by none. A
     terminal row with no facade is the only shape that attributes it without claiming
     it is a workflow.
@@ -98,12 +101,12 @@ because *"where two candidates share one stage sequence they are one row, not tw
 
 | Row | Files | Criterion-1 claim task 0.3 must confirm |
 | --- | --- | --- |
-| `WFR-SHELL-GEOMETRY` | geometry halves of `imp.rs` and `actions.rs`, `window/policy.rs`, `sidebar/width_preset.rs`, `focus_indexing.rs`'s geometry story | one ordered sequence: action or breakpoint → property set → allocation clamp → settle-gated notify → persistence on explicit intent. §D1: seven entry points converging on it, smallest external entry surface. Owns the `workspace-sidebar-animation` readiness blocker |
+| `WFR-SHELL-GEOMETRY` | geometry halves of `imp.rs` and `actions.rs`, `window/policy.rs`, `sidebar/width_preset.rs`, **no** `focus_indexing.rs` story (Finding 1b: the file's 'geometry story' is unowned focus restoration and contains no geometry code — task 0.4a-iii places it) | one ordered sequence: action or breakpoint → property set → allocation clamp → settle-gated notify → persistence on explicit intent. §D1: seven entry points converging on it, smallest external entry surface. Owns the `workspace-sidebar-animation` readiness blocker |
 | `WFR-TAB-STRIP` | `tabs.rs`, close/delete half of `documents.rs` | one stage order (close, including the confirmed-close terminal) plus three synchronous projections. Pin, bulk close, and reorder must be shown to share that sequence, not to be three sequences |
 | `WFR-RECENT-DOCUMENTS` | `ui/open_popover/**`, `window/recent_open.rs` | **two** stage orders plus a lazy projection gate. Two stage orders in one row is permitted where they are one workflow's — the exemplar has two — but it must be argued, not assumed |
 | `WFR-FOCUS-MODE` | `focus_mode.rs` | one stage order: reversible chrome suppression with fullscreen ownership and preview compatibility |
 | `WFR-TRANSIENT-DISMISSAL` | `transient_surfaces.rs` | one strictly ordered dismissal ladder with one idle latch. Order is the criterion, not the presence of a timer |
-| `WFR-EDITOR-MEMORY-EVICTION` | ~590 lines extracted from `focus_indexing.rs` | one stage order with its own generation counter and a bounded idle continuation |
+| `WFR-EDITOR-MEMORY-EVICTION` | **~406** lines extracted from `focus_indexing.rs` across two discontiguous ranges, `:56`–`:190` and `:380`–`:667` (Finding 1b) | one stage order with its own generation counter and a bounded idle continuation. Its facade is projected from ~406, not the inherited ~590 |
 | `WFR-STARTUP-PREFLIGHT` | `startup_data.rs` | **fails** criterion 1 by design: it orders five workflows and starts none. Terminal as `cross-cutting`, with the probe evidence delta 1 requires of a non-migrating resolution |
 
 ### The four reassignments, and the cell staling they cause
@@ -117,7 +120,8 @@ change cannot use the "record that they are stale" escape it grants: it re-deriv
 | --- | --- | --- |
 | `dialogs.rs` (861) | `WFR-DOCUMENT-SAVE` and/or `WFR-DRAFT-RECOVERY` | §D1: five stage orders and three unrecorded freshness/identity values, with confirmed-close coordination consumed by two migrated rows. **Which row owns which stage order** is task 0.5's, and the answer may be "both, split by stage" — in which case the file is a coordination module of one and a called presentation surface of the other, not a shared role |
 | `ui/window/search.rs` (955/928) | `WFR-SEARCH-REPLACE` | §D1: *more* than a called presentation surface — two of that workflow's coordination stages plus one coordination job of its own. So it takes **bounded coordination role names**, and the row's cell that reads "all under `ui/search_panel/**`" becomes false and must be corrected |
-| `focus_indexing.rs`'s palette story | `WFR-COMMAND-PALETTE` | that row's cell currently says the file *"stays window code"*. Either the reassignment is right and the cell is wrong, or the cell is right and the story is the geometry row's. Task 0.5c decides on the code |
+| `focus_indexing.rs`'s **two** palette stage orders | `WFR-COMMAND-PALETTE` | overlay control (~104) and file-index build (~171) are two ordered stage orders, not the one the handoff names, and the index build owns its own coordinator — so it is **coordination**, not presentation. That row's cell says the file *"stays window code"*, which the reassignment contradicts. Task 0.4a-ii measures, 0.5c decides |
+| `focus_indexing.rs`'s **focus restoration** (~129) | **undecided — it has no owner** | the handoff calls this *"the geometry story"* and it contains **no geometry code**; two of its four functions are merely geometry-*triggered*, which is a caller relationship. Candidates: its own row, a coordination role of `WFR-SHELL-GEOMETRY` argued on behavior, or a called presentation surface of whichever row owns editor focus. Task 0.4a-iii decides. **Assigning it on the caller relationship would leave a story unowned while every gate exits 0** |
 | `mod.rs`'s `setup_theme_selector` (~100) | undecided | §D1 found it in neither list. A control with no ordered stages belongs on the tier list; a control that participates in the geometry sequence belongs to that row. Task 0.5d decides |
 
 ### The no-coordination tier, and what may not be demoted to it
@@ -134,7 +138,8 @@ caller). Possible: `mod.rs`'s theme selector, per task 0.5d.
 **Two things may not be demoted**, and both are stated because demotion is the cheap
 route to losing an obligation:
 
-- **`transient_surfaces.rs`** — §D1 finding 4 removed it. Do not put it back.
+- **`transient_surfaces.rs`** — §D1's verdict on that file rejected it as a tier
+  entry. Do not propose it again.
 - **`actions.rs`** — §D1: *"not demotable: it contains two of the geometry candidate's
   stages verbatim, and demoting it would be a route to demoting its pixel-proof
   obligations."*
@@ -158,7 +163,7 @@ role names are not merely risky here — they are unavailable. Concretely:
 | `WFR-TAB-STRIP` | `ui/window/tab_strip/` | not `tabs/`: the row's name and its role home should read the same, and `tabs.rs` becomes a role module inside it |
 | `WFR-FOCUS-MODE` | `ui/window/focus_mode/` | one-file row today; the subdirectory exists so its `policy.rs` and `evidence.rs` cannot collide |
 | `WFR-TRANSIENT-DISMISSAL` | `ui/window/transient_dismissal/` | same |
-| `WFR-EDITOR-MEMORY-EVICTION` | `ui/window/editor_memory_eviction/` | the extraction target; `focus_indexing.rs`'s remaining two stories go to their owners |
+| `WFR-EDITOR-MEMORY-EVICTION` | `ui/window/editor_memory_eviction/` | the extraction target; `focus_indexing.rs`'s remaining **three** stories go to their owners, one of which has none yet (task 0.4a-iii) |
 | `WFR-RECENT-DOCUMENTS` | `ui/open_popover/` (canonical), with `window/recent_open.rs` as a **coordination role or called presentation surface** under it | the **nested** home the convention sanctions: one canonical role home holding the facade, the single `policy.rs`, and the single `evidence.rs`, with the module in the other directory taking a bounded role name or being recorded as a called surface |
 
 A row-name/directory-name mismatch is worth one sentence because the convention has
@@ -219,9 +224,13 @@ The requirement is not satisfiable by review, and three steps are ordered:
 **surface**, not the facade, and delta 2 states it. So no facade, no coordination role
 names, no `policy.rs`, and the row stays `cross-cutting`.
 
-**Shape.** One typed surface replacing four parallel typed observation values reached
-through six accessors: `PlainDisposalLimits` × 2 lanes, `PlainDisposalSnapshot` × 2
-lanes, and `DisposalPressureEvidence`. The ordinary and progress lanes are two lanes of
+**Shape.** One typed surface replacing **three** parallel typed observation values
+reached through **five** accessors — `PlainDisposalLimits` (`:1013`, `:1020`),
+`PlainDisposalSnapshot` (`:1027`, `:1034`), `DisposalPressureEvidence` (`:1145`) — under
+the predicate that an observation value is a type returned by a gated accessor to be
+read, and that the ordinary and progress lanes are two *instances* of one type rather
+than two types. With the three actuation holds below, that accounts for all 8 of the
+row's gated declarations. The ordinary and progress lanes are two lanes of
 one mechanism, so the surface names them as components rather than exposing two
 top-level accessors — the shape slot 7a used for `BufferSnapshotEvidence`'s named
 components. The file may keep the lane's own name; what is fixed is that exactly one
@@ -344,10 +353,28 @@ means the items arrive as *claims*, two of which measurement has already falsifi
 hunks → 411; "~70 lines" → 8 sites binding 15 placeholders).
 
 **Rule: re-verify before disposing, and re-derive every figure under a stated
-predicate.** A finding whose only evidence is a label — the "S12" ledger-check holes —
-is not inherited as three holes; it is re-derived from the gate's own documented failure
-conditions, and the disposition follows what the re-derivation finds, including "no hole
-exists".
+predicate.** Applying it to the six items produced three distinct outcomes, which is why
+the rule is a rule rather than a formality:
+
+- **A figure was wrong** — 171 hunks measures 411; "~70 lines" is 8 sites binding 20
+  placeholders.
+- **A target did not exist** — `encoding/dialogs.rs`'s named "near-duplicate pair" is a
+  one-expression default-argument wrapper. Here the honest disposition is to **record the
+  negative**, not to refactor correct code so an inherited claim comes true. Slot 7a's own
+  withdrawal of a false seam correction is the precedent: *"a false correction in a
+  re-derivation table is worse than an uncorrected census figure"*.
+- **A framing was wrong while the finding was right** — the "S12" ledger-check holes
+  arrived as a label with no evidence, and all three reproduce. But they are **fail-opens
+  in the parsing path**, sitting *around* the gate's four documented conditions rather
+  than inside them, so an audit that enumerated the conditions would have reported the
+  gate sound. The task is re-framed as an audit of the parsing path, with the three
+  reproduced holes as its starting findings.
+
+The third outcome is the one worth generalizing: **re-deriving a finding means
+re-deriving what kind of thing it is**, not only its magnitude. Slot 7a recorded the
+same lesson for census cells — *"a census cell can be wrong in its kind, not just its
+number"* — and this is that lesson applied to review findings and, in Finding 1b, to a
+story decomposition.
 
 **The rustfmt gate hole needs its decision made here rather than in the task.** It is
 not a failing check: `cargo fmt --all --check` exits 0. It is a **coverage hole in a

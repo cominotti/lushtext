@@ -3003,7 +3003,8 @@ fn test_replace_all_then_undo_restores_original_file_bytes() {
 
     panel.activate_confirm_replacements();
     wait_until(Duration::from_secs(20), || {
-        fixture::read_text(&first).contains("thread") && fixture::read_text(&second).contains("thread")
+        fixture::read_text(&first).contains("thread")
+            && fixture::read_text(&second).contains("thread")
     });
     fixture::assert_text(&first, "alpha thread beta\nplain line\n");
     fixture::assert_text(&second, "thread only\n");
@@ -3356,7 +3357,12 @@ fn test_replace_all_applies_only_checked_rows_and_records_apply_counts() {
         .find(|replacement| replacement.path == second)
         .expect("a preview row for the second file")
         .match_id;
-    panel.imp().preview.checked_match_ids.borrow_mut().remove(&unchecked);
+    panel
+        .imp()
+        .preview
+        .checked_match_ids
+        .borrow_mut()
+        .remove(&unchecked);
     assert_eq!(panel.evidence().checked_replacement_count, 1);
 
     panel.activate_confirm_replacements();
@@ -3364,10 +3370,7 @@ fn test_replace_all_applies_only_checked_rows_and_records_apply_counts() {
         fixture::read_text(&first).contains("thread")
     });
     fixture::assert_text(&first, "alpha thread beta\n");
-    fixture::assert_text(
-        &second,
-        original_second,
-    );
+    fixture::assert_text(&second, original_second);
 
     wait_until(Duration::from_secs(20), || {
         panel.evidence().last_apply_counts.is_some()
@@ -3464,7 +3467,10 @@ fn test_evidence_reads_stay_side_effect_free_across_journal_mutation() {
         first_read.undo_backup_generation,
         second_read.undo_backup_generation
     );
-    assert_eq!(first_read.preview_generation, second_read.preview_generation);
+    assert_eq!(
+        first_read.preview_generation,
+        second_read.preview_generation
+    );
     assert_eq!(first_read.journal_disk_jobs, second_read.journal_disk_jobs);
     assert_eq!(
         first_read.journal_disk_jobs_in_flight,

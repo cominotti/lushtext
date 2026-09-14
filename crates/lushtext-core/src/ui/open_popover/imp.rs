@@ -6,6 +6,7 @@ use crate::model::recent_document::RecentDocumentRow;
 use crate::services::recent_documents;
 use crate::ui::accessibility::{self, RowAccessibility};
 use crate::ui::open_popover::item::OpenPopoverItem;
+use crate::ui::open_popover::policy;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{self, CompositeTemplate, gio, glib};
@@ -284,9 +285,13 @@ impl WidgetImpl for LushtextOpenPopover {}
 impl PopoverImpl for LushtextOpenPopover {}
 
 impl LushtextOpenPopover {
-    /// Build a test-only snapshot of the row skeleton before recycled rows bind data.
+    /// Build a snapshot of the row skeleton before recycled rows bind data.
+    ///
+    /// Read by the workflow's evidence surface. It constructs a throwaway row
+    /// through the same helper the factory uses, registers nothing, and stores
+    /// nothing, so repeated reads stay identical.
     #[cfg(feature = "test-utils")]
-    pub(super) fn row_layout_snapshot_for_test() -> RecentRowLayoutSnapshot {
+    pub(super) fn row_layout_snapshot() -> RecentRowLayoutSnapshot {
         let row = build_recent_row_widgets();
         RecentRowLayoutSnapshot {
             grid_margin_top: row.grid.margin_top(),
@@ -642,21 +647,16 @@ impl LushtextOpenPopover {
         // position from the old model would be stale.
         self.keyboard_row_position.set(None);
         if items.is_empty() {
-            if query.trim().is_empty() {
-                self.empty_title.set_label("No Recent Documents");
-                accessibility::set_labelled_description(
-                    &*self.empty_state,
-                    "No recent documents",
-                    "No recently opened documents are available",
-                );
-            } else {
-                self.empty_title.set_label("No Matching Documents");
-                accessibility::set_labelled_description(
-                    &*self.empty_state,
-                    "No matching recent documents",
-                    "No recent documents match the current filter",
-                );
-            }
+            // Which of the two empty states the user is in is a policy decision:
+            // an empty history and an over-filtered list look the same on screen
+            // but say different things, so the choice is made in one pure place.
+            let copy = policy::empty_state_copy(&query);
+            self.empty_title.set_label(copy.title);
+            accessibility::set_labelled_description(
+                &*self.empty_state,
+                copy.accessible_name,
+                copy.accessible_description,
+            );
             self.stack.set_visible_child(&*self.empty_state);
         } else {
             self.stack.set_visible_child(&*self.recent_scroller);
@@ -670,12 +670,7 @@ impl LushtextOpenPopover {
         accessibility::set_hidden(&*self.recent_scroller, !list_visible);
         accessibility::set_hidden(&*self.empty_state, list_visible);
 
-        let value_text = match visible_count {
-            0 if query.trim().is_empty() => "No recent documents".to_string(),
-            0 => "No matching recent documents".to_string(),
-            1 => "1 recent document".to_string(),
-            count => format!("{count} recent documents"),
-        };
+        let value_text = policy::list_value_text(query, visible_count);
         accessibility::set_value_text(&*self.list_view, &value_text);
         accessibility::set_value_text(&*self.empty_state, &value_text);
     }
@@ -788,21 +783,6 @@ impl LushtextOpenPopover {
         self.list_view
             .scroll_to(next, gtk4::ListScrollFlags::FOCUS, None);
         glib::Propagation::Stop
-    }
-
-    #[cfg(feature = "test-utils")]
-    /// Report whether the recent list is backed by `NoSelection` for GNOME-style rows.
-    pub(super) fn recent_list_uses_no_selection_for_test(&self) -> bool {
-        self.list_view
-            .model()
-            .and_downcast::<gtk4::NoSelection>()
-            .is_some()
-    }
-
-    #[cfg(feature = "test-utils")]
-    /// Expose the synthetic keyboard-navigation row position for widget tests.
-    pub(super) fn keyboard_row_position_for_test(&self) -> Option<u32> {
-        self.keyboard_row_position.get()
     }
 }
 

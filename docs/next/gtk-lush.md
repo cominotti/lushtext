@@ -191,9 +191,14 @@ The headless verification toolchain, split into:
 
 - **`gtk-lush-proof-harness`** (dev-dependency crate): self-supervising
   headless Mutter + private D-Bus session bootstrap, the per-test subprocess
-  runner with loud flake reporting, and the shared wait helpers
-  (`wait_until` drain semantics, realization/async budgets) as a documented
-  API instead of copy-paste lore.
+  runner with loud flake reporting, the shared wait helpers
+  (`wait_until` drain semantics, realization/async budgets), and
+  `recommended_pre_gtk_environment()` — all as a documented API instead of
+  copy-paste lore. That environment list grew from four settings to **five** in
+  slot 7b (`GTK_IM_MODULE=gtk-im-context-simple`), a breaking signature change
+  this crate can still take because it has not published; the reason is recorded
+  in its CHANGELOG, its README, and `docs/next/persistent-format-hardening.md`
+  S7B-6.
 - **`gtk-lush-proof-spine`** (optional runtime crate): the readiness/snapshot
   protocol scaffolding — interface versioning, readiness predicates/blockers,
   bounded snapshot envelope — as traits the consumer implements with their own

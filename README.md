@@ -387,6 +387,7 @@ make build       # Release build
 make build-debug # Debug build
 make run         # Debug build + fresh GNOME desktop staging
 make test        # Unit + integration + widget tests
+make fmt         # Apply rustfmt everywhere, including widget tests cargo fmt cannot reach
 make check       # fmt + all-feature Clippy + fast policy audits
 make pre-commit  # repo pre-commit gate
 make install-git-hooks
@@ -418,13 +419,13 @@ Cargo workspace:
 - `crates/lushtext-build-support` - build-script helper crate.
 - `crates/lushtext-core` - application logic: domain models, services, and GTK
   widgets. Its main-window adapter keeps pure responsive policy in
-  `ui/window/policy.rs`, keeps draft intent epochs in
-  `ui/window/draft_ordering.rs`, bounds progressive tab restoration in
-  `ui/window/session_restore.rs`, and divides note workflows between the private
-  `ui/window/notes/{bookmarks,editors,browser}.rs` modules. The Markdown preview
+  `ui/window/geometry/policy.rs`, keeps draft intent epochs in
+  `ui/window/drafts/`, bounds progressive tab restoration in
+  `ui/window/session_restore/`, and divides note workflows across the private
+  `ui/window/notes/` role home. The Markdown preview
   adapter is likewise split under `ui/markdown_preview/` into behavior-neutral
   workflow siblings (`images.rs`, `tables.rs`, `code_blocks.rs`, `links.rs`,
-  `inline_footnotes.rs`, plus `continuation.rs` for the generation-owned
+  plus `continuation.rs` for the generation-owned
   cross-turn projection state and `text_flow.rs` for its stateless text-flow
   primitives) around the render-orchestration `mod.rs`. Recycled workspace
   row wiring is split under `ui/sidebar/workspace_section/` into
@@ -544,12 +545,11 @@ own a `policy.rs`. Probing an adapter for separable decisions before accepting
 that conclusion is a requirement of the convention precisely because "the census
 said none" keeps turning out to be wrong.
 
-Migration to this shape is a staged programme. Per-workflow status, owned pure
-policy, seam value objects, risk tiers, and migration slots live in
+Per-workflow status, owned pure policy, seam value objects, risk tiers, and
+migration slots live in
 [`docs/workflow-readability-matrix.md`](docs/workflow-readability-matrix.md), and
-`make check-workflow-boundaries` checks conformance. Unmigrated workflows are
-behaviorally unchanged. The programme's rationale, measured baseline, remaining
-per-change scope, and deferred work are recorded in
+`make check-workflow-boundaries` checks conformance. The programme's rationale,
+measured baseline, per-change scope, and deferred work are recorded in
 [`docs/next/workflow-readability.md`](docs/next/workflow-readability.md).
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)

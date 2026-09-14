@@ -18,7 +18,7 @@ This folder owns the multi-workspace sidebar adapter and its workspace-section s
   configuration lives in `test_policy.rs`, entirely behind
   `#[cfg(feature = "test-utils")]`.
 - `width_preset.rs` is **not this workflow's**. `WorkspaceSidebarWidthPreset` is the
-  `workspace-sidebar-width-policy` capability's value, owned by `WFR-SHELL-LAYOUT`
+  `workspace-sidebar-width-policy` capability's value, owned by `WFR-SHELL-GEOMETRY`
   and consumed by Preferences and the window shell. It lives here only because it
   names a sidebar dimension.
 
@@ -40,7 +40,7 @@ its own module doc lists them.
 | `filter_execution.rs` | coordination `execution`: scope filter and its fade |
 | `persist_execution.rs` | coordination `execution`: the `workspaces.json` pipeline |
 | `callbacks.rs`, `dialogs.rs`, `imp.rs` | **called presentation surfaces** — no role, no `policy.rs`, no `evidence.rs` |
-| `width_preset.rs` | **not this workflow's** — `WFR-SHELL-LAYOUT` owns it |
+| `width_preset.rs` | **not this workflow's** — `WFR-SHELL-GEOMETRY` owns it |
 | `file_tree_item.rs` | outside this workflow — no coordination tier |
 
 `workspace_section/watch_targets.rs` is likewise **neither** a role nor a presentation

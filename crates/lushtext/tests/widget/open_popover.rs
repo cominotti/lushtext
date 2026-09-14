@@ -15,11 +15,28 @@ use lushtext_core::model::recent_document::{RecentDocumentEntry, RecentDocumentR
 use lushtext_core::services::recent_documents;
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::open_popover::LushtextOpenPopover;
+use lushtext_core::ui::open_popover::evidence::{
+    OpenPopoverEvidence, RecentDocumentsJournalEvidence, open_popover_evidence,
+    recent_documents_journal_evidence,
+};
 use lushtext_core::ui::window::LushtextWindow;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
+
+/// Read the popover half of the recent-documents workflow's evidence surface.
+///
+/// A one-line alias for the single accessor, so call sites read as field
+/// accesses on one observation rather than as a family of getters.
+fn popover_evidence(popover: &LushtextOpenPopover) -> OpenPopoverEvidence {
+    open_popover_evidence(popover)
+}
+
+/// Read the journal half of the same surface.
+fn journal_evidence(window: &LushtextWindow) -> RecentDocumentsJournalEvidence {
+    recent_documents_journal_evidence(window)
+}
 
 fn recent_entry(path: impl Into<PathBuf>, secs: u64) -> RecentDocumentEntry {
     RecentDocumentEntry::new(path.into(), None, secs)
@@ -146,15 +163,11 @@ fn active_file_path(window: &LushtextWindow) -> Option<PathBuf> {
 fn active_editor(
     window: &LushtextWindow,
 ) -> Option<lushtext_core::ui::editor_page::LushtextEditorPage> {
-    window
-        .imp()
-        .tab_view
-        .selected_page()
-        .and_then(|page| {
-            page.child()
-                .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
-                .ok()
-        })
+    window.imp().tab_view.selected_page().and_then(|page| {
+        page.child()
+            .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+            .ok()
+    })
 }
 
 fn active_editor_has_focus(
@@ -354,8 +367,8 @@ fn test_open_popover_empty_state_keeps_search_and_chooser_reachable() {
     popover.set_recent_rows(Vec::new());
     popover.prepare_to_show();
 
-    assert_eq!(popover.visible_row_count_for_test(), 0);
-    assert!(!popover.list_visible_for_test());
+    assert_eq!(popover_evidence(&popover).visible_row_count, 0);
+    assert!(!popover_evidence(&popover).list_visible);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::SearchBox)
         .properties(&[
@@ -396,8 +409,8 @@ fn test_open_popover_one_representative_row_uses_file_title() {
 
     popover.set_recent_rows(vec![row("/tmp/project/src/main.rs", 10)]);
 
-    assert_eq!(popover.visible_titles_for_test(), vec!["main.rs"]);
-    assert!(popover.list_visible_for_test());
+    assert_eq!(popover_evidence(&popover).visible_titles, vec!["main.rs"]);
+    assert!(popover_evidence(&popover).list_visible);
     assert!(!gtk4::test_accessible_has_state(
         &popover.list_view_for_test(),
         gtk4::AccessibleState::Hidden
@@ -442,7 +455,7 @@ fn test_open_popover_recent_row_tooltip_shows_full_activation_path() {
             gtk4::AccessibleProperty::Description,
         ])
         .assert_on(&find_remove_button(&popover));
-    assert!(popover.list_visible_for_test());
+    assert!(popover_evidence(&popover).list_visible);
 }
 
 #[test]
@@ -468,10 +481,10 @@ fn test_open_popover_deep_awkward_path_tooltip_stays_complete() {
     wait_until(Duration::from_secs(2), || has_tooltip(&popover, &expected));
     assert_has_path_tooltip(&popover, &path);
     assert_eq!(
-        popover.list_hscrollbar_policy_for_test(),
+        popover_evidence(&popover).scroller.hscrollbar_policy,
         gtk4::PolicyType::Never
     );
-    assert!(!popover.list_propagates_natural_width_for_test());
+    assert!(!popover_evidence(&popover).scroller.propagates_natural_width);
 }
 
 #[test]
@@ -481,15 +494,16 @@ fn test_open_popover_recent_list_uses_no_selection_and_single_click_activation()
 
     popover.set_recent_rows(vec![row("/tmp/project/src/main.rs", 10)]);
 
-    assert!(popover.recent_list_uses_no_selection_for_test());
+    assert!(popover_evidence(&popover).uses_no_selection);
     assert!(popover.list_view_for_test().is_single_click_activate());
 }
 
 #[test]
 fn test_open_popover_recent_row_layout_matches_gnome_text_editor_source() {
     ensure_gtk_init();
-    let popover = LushtextOpenPopover::new();
-    let layout = popover.row_layout_snapshot_for_test();
+    // No popover instance: the row template is a class constant, which is why
+    // it is an associated function and not a field of the evidence surface.
+    let layout = LushtextOpenPopover::row_layout_snapshot_for_test();
 
     assert_eq!(layout.grid_margin_top, 3);
     assert_eq!(layout.grid_margin_bottom, 3);
@@ -613,12 +627,15 @@ fn test_open_popover_search_filters_and_reports_no_matches_without_fake_rows() {
     ]);
 
     popover.set_search_text_for_test("read");
-    assert_eq!(popover.visible_titles_for_test(), vec!["README.md"]);
+    assert_eq!(popover_evidence(&popover).visible_titles, vec!["README.md"]);
 
     popover.set_search_text_for_test("does-not-exist");
-    assert_eq!(popover.visible_row_count_for_test(), 0);
-    assert!(!popover.list_visible_for_test());
-    assert_eq!(popover.empty_title_for_test(), "No Matching Documents");
+    assert_eq!(popover_evidence(&popover).visible_row_count, 0);
+    assert!(!popover_evidence(&popover).list_visible);
+    assert_eq!(
+        popover_evidence(&popover).empty_title,
+        "No Matching Documents"
+    );
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Status)
         .properties(&[
@@ -647,13 +664,17 @@ fn test_open_popover_gnome_scroll_cap_and_extra_rows_stay_model_backed() {
 
     popover.set_recent_rows(rows);
 
-    assert_eq!(popover.visible_row_count_for_test(), 11);
-    assert_eq!(popover.list_min_content_width_for_test(), 250);
-    assert_eq!(popover.list_max_content_width_for_test(), 250);
-    assert_eq!(popover.list_max_content_height_for_test(), 600);
-    assert!(popover.list_propagates_natural_height_for_test());
+    assert_eq!(popover_evidence(&popover).visible_row_count, 11);
+    assert_eq!(popover_evidence(&popover).scroller.min_content_width, 250);
+    assert_eq!(popover_evidence(&popover).scroller.max_content_width, 250);
+    assert_eq!(popover_evidence(&popover).scroller.max_content_height, 600);
+    assert!(
+        popover_evidence(&popover)
+            .scroller
+            .propagates_natural_height
+    );
     assert_eq!(
-        popover.list_hscrollbar_policy_for_test(),
+        popover_evidence(&popover).scroller.hscrollbar_policy,
         gtk4::PolicyType::Never
     );
 }
@@ -670,7 +691,10 @@ fn test_open_popover_search_finds_rows_beyond_visible_scroll_region() {
 
     popover.set_search_text_for_test("target");
 
-    assert_eq!(popover.visible_titles_for_test(), vec!["deep-target.md"]);
+    assert_eq!(
+        popover_evidence(&popover).visible_titles,
+        vec!["deep-target.md"]
+    );
 }
 
 #[test]
@@ -702,7 +726,7 @@ fn test_open_popover_filter_rebinds_path_tooltips_without_stale_leaks() {
 
     let target_tooltip = path_tooltip(&target);
     wait_until(Duration::from_secs(2), || {
-        popover.visible_titles_for_test() == vec!["target.txt"]
+        popover_evidence(&popover).visible_titles == vec!["target.txt"]
             && has_tooltip(&popover, &target_tooltip)
             && !has_tooltip(&popover, &first_tooltip)
     });
@@ -730,9 +754,13 @@ fn test_open_popover_no_match_state_clears_recent_path_tooltips() {
     flush_events();
 
     wait_until(Duration::from_secs(2), || {
-        popover.visible_row_count_for_test() == 0 && !popover.list_visible_for_test()
+        popover_evidence(&popover).visible_row_count == 0
+            && !popover_evidence(&popover).list_visible
     });
-    assert_eq!(popover.empty_title_for_test(), "No Matching Documents");
+    assert_eq!(
+        popover_evidence(&popover).empty_title,
+        "No Matching Documents"
+    );
     assert_lacks_path_tooltip(&popover, &path);
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::SearchBox)
@@ -761,14 +789,17 @@ fn test_open_popover_prepare_clears_stale_search_and_resets_list_scroll() {
 
     popover.set_search_text_for_test("file-13");
     popover.set_list_scroll_value_for_test(120.0);
-    assert_eq!(popover.visible_titles_for_test(), vec!["file-13.txt"]);
-    assert!(popover.list_scroll_value_for_test() > 0.0);
+    assert_eq!(
+        popover_evidence(&popover).visible_titles,
+        vec!["file-13.txt"]
+    );
+    assert!(popover_evidence(&popover).scroller.scroll_value > 0.0);
 
     popover.prepare_to_show();
 
-    assert_eq!(popover.search_entry_for_test().text().as_str(), "");
-    assert_eq!(popover.list_scroll_value_for_test(), 0.0);
-    assert_eq!(popover.visible_titles_for_test()[0], "file-0.txt");
+    assert_eq!(popover_evidence(&popover).query, "");
+    assert_eq!(popover_evidence(&popover).scroller.scroll_value, 0.0);
+    assert_eq!(popover_evidence(&popover).visible_titles[0], "file-0.txt");
 }
 
 #[test]
@@ -791,7 +822,7 @@ fn test_open_popover_enter_activates_first_filtered_match() {
     flush_events();
 
     assert_eq!(activated.borrow().as_ref(), Some(&target));
-    assert_eq!(popover.search_entry_for_test().text().as_str(), "");
+    assert_eq!(popover_evidence(&popover).query, "");
 }
 
 #[test]
@@ -856,7 +887,7 @@ fn test_open_popover_down_and_up_move_focus_between_search_and_first_row() {
         focus_is_inside_widget(&window, &window.imp().open_popover.list_view_for_test())
     });
     assert_eq!(
-        window.imp().open_popover.keyboard_row_position_for_test(),
+        popover_evidence(&window.imp().open_popover).keyboard_row_position,
         Some(0)
     );
 
@@ -869,7 +900,7 @@ fn test_open_popover_down_and_up_move_focus_between_search_and_first_row() {
     );
     flush_events();
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.keyboard_row_position_for_test() == Some(1)
+        popover_evidence(&window.imp().open_popover).keyboard_row_position == Some(1)
     });
 
     assert_eq!(
@@ -881,7 +912,7 @@ fn test_open_popover_down_and_up_move_focus_between_search_and_first_row() {
     );
     flush_events();
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.keyboard_row_position_for_test() == Some(0)
+        popover_evidence(&window.imp().open_popover).keyboard_row_position == Some(0)
             && focus_is_inside_widget(&window, &window.imp().open_popover.list_view_for_test())
     });
 
@@ -926,7 +957,7 @@ fn test_open_popover_gtk_row_focus_syncs_no_selection_keynav_position() {
     remove.grab_focus();
     flush_events();
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.keyboard_row_position_for_test() == Some(1)
+        popover_evidence(&window.imp().open_popover).keyboard_row_position == Some(1)
     });
 
     let row_grid = remove
@@ -939,7 +970,7 @@ fn test_open_popover_gtk_row_focus_syncs_no_selection_keynav_position() {
     );
     flush_events();
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.keyboard_row_position_for_test() == Some(0)
+        popover_evidence(&window.imp().open_popover).keyboard_row_position == Some(0)
             && focus_is_inside_widget(&window, &window.imp().open_popover.list_view_for_test())
     });
 }
@@ -1041,7 +1072,7 @@ fn test_open_popover_hides_already_open_documents_and_reveals_after_close() {
         recent_entry(closed_path, 10),
     ]);
     assert_eq!(
-        window.imp().open_popover.visible_titles_for_test(),
+        popover_evidence(&window.imp().open_popover).visible_titles,
         vec!["closed.txt"]
     );
 
@@ -1052,7 +1083,7 @@ fn test_open_popover_hides_already_open_documents_and_reveals_after_close() {
     });
 
     assert_eq!(
-        window.imp().open_popover.visible_titles_for_test(),
+        popover_evidence(&window.imp().open_popover).visible_titles,
         vec!["open.txt", "closed.txt"]
     );
 }
@@ -1074,15 +1105,15 @@ fn test_open_popover_startup_loaded_recents_visible_with_no_tabs() {
     let window = test_window();
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
-        window.recent_documents_for_test().len() == 1
+        journal_evidence(&window).entries.len() == 1
     });
 
     assert_eq!(window.imp().tab_view.n_pages(), 0);
     open_recent_action(&window);
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test() == vec!["disk-recent.txt"]
+        popover_evidence(&window.imp().open_popover).visible_titles == vec!["disk-recent.txt"]
     });
-    assert!(window.imp().open_popover.list_visible_for_test());
+    assert!(popover_evidence(&window.imp().open_popover).list_visible);
 }
 
 #[test]
@@ -1094,26 +1125,41 @@ fn test_open_popover_recovers_from_recent_growth_without_losing_controls() {
         .join(recent_documents::RECENT_DOCUMENTS_FILE);
     fixture::write_text(&recent_path, r#"{"entries":[]}"#);
     recent_documents::set_recent_after_metadata_hook_for_test(|path| {
-        fixture::write_repeated_bytes(
-            path,
-            b"x",
-            recent_documents::MAX_RECENT_DOCUMENTS_BYTES + 1,
-        );
+        fixture::write_repeated_bytes(path, b"x", recent_documents::MAX_RECENT_DOCUMENTS_BYTES + 1);
     });
 
     let window = test_window();
     present_window(&window);
+    // Task 4.4b: this read used to reach `window.imp().recent_documents.loading`
+    // directly, bypassing the workflow's surface entirely — the one ungated
+    // inspection slot 3b's census missed. It now reads the same fact from the
+    // surface, so the field cannot be renamed out from under the test silently.
     wait_until(Duration::from_secs(5), || {
-        !window.imp().recent_documents.loading.get()
+        !journal_evidence(&window).loading
     });
 
-    assert!(window.recent_documents_for_test().is_empty());
+    assert!(journal_evidence(&window).entries.is_empty());
     open_recent_action(&window);
     wait_until(Duration::from_secs(2), || open_popover_open(&window));
-    assert_eq!(window.imp().open_popover.visible_row_count_for_test(), 0);
-    assert!(!window.imp().open_popover.list_visible_for_test());
-    assert!(window.imp().open_popover.search_entry_for_test().is_visible());
-    assert!(window.imp().open_popover.chooser_button_for_test().is_sensitive());
+    assert_eq!(
+        popover_evidence(&window.imp().open_popover).visible_row_count,
+        0
+    );
+    assert!(!popover_evidence(&window.imp().open_popover).list_visible);
+    assert!(
+        window
+            .imp()
+            .open_popover
+            .search_entry_for_test()
+            .is_visible()
+    );
+    assert!(
+        window
+            .imp()
+            .open_popover
+            .chooser_button_for_test()
+            .is_sensitive()
+    );
 }
 
 #[test]
@@ -1133,15 +1179,16 @@ fn test_open_popover_header_button_rebuilds_startup_loaded_recents() {
     let window = test_window();
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
-        window.recent_documents_for_test().len() == 1
+        journal_evidence(&window).entries.len() == 1
     });
 
     assert_eq!(window.imp().tab_view.n_pages(), 0);
     open_recent_button(&window);
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test() == vec!["disk-button-recent.txt"]
+        popover_evidence(&window.imp().open_popover).visible_titles
+            == vec!["disk-button-recent.txt"]
     });
-    assert!(window.imp().open_popover.list_visible_for_test());
+    assert!(popover_evidence(&window.imp().open_popover).list_visible);
 }
 
 #[test]
@@ -1156,8 +1203,8 @@ fn test_open_popover_same_session_file_chooser_close_reveals_recent() {
     window.select_open_file_for_test(&path);
     wait_until(Duration::from_secs(3), || {
         active_file_path(&window) == Some(path.clone())
-            && window
-                .recent_documents_for_test()
+            && journal_evidence(&window)
+                .entries
                 .iter()
                 .any(|entry| entry.matches_path(&path))
     });
@@ -1170,7 +1217,7 @@ fn test_open_popover_same_session_file_chooser_close_reveals_recent() {
 
     open_recent_action(&window);
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test() == vec!["chooser-opened.txt"]
+        popover_evidence(&window.imp().open_popover).visible_titles == vec!["chooser-opened.txt"]
     });
 }
 
@@ -1189,8 +1236,8 @@ fn test_open_popover_header_button_rebuilds_same_session_closed_recent() {
     window.select_open_file_for_test(&path);
     wait_until(Duration::from_secs(3), || {
         active_file_path(&window) == Some(path.clone())
-            && window
-                .recent_documents_for_test()
+            && journal_evidence(&window)
+                .entries
                 .iter()
                 .any(|entry| entry.matches_path(&path))
     });
@@ -1203,9 +1250,10 @@ fn test_open_popover_header_button_rebuilds_same_session_closed_recent() {
 
     open_recent_button(&window);
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test() == vec!["chooser-button-opened.txt"]
+        popover_evidence(&window.imp().open_popover).visible_titles
+            == vec!["chooser-button-opened.txt"]
     });
-    assert!(window.imp().open_popover.list_visible_for_test());
+    assert!(popover_evidence(&window.imp().open_popover).list_visible);
 }
 
 #[test]
@@ -1231,7 +1279,7 @@ fn test_open_popover_ignores_stale_display_and_canonical_open_identities() {
     open_recent_action(&window);
 
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test() == vec!["stale-open-cache.txt"]
+        popover_evidence(&window.imp().open_popover).visible_titles == vec!["stale-open-cache.txt"]
     });
     assert_eq!(window.imp().tab_view.n_pages(), 0);
 }
@@ -1257,7 +1305,7 @@ fn test_open_popover_updates_when_open_tab_closes_while_popover_visible() {
 
     open_recent_action(&window);
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test() == vec!["already-closed.txt"]
+        popover_evidence(&window.imp().open_popover).visible_titles == vec!["already-closed.txt"]
     });
     gtk4::prelude::ActionGroupExt::activate_action(&window, "close-tab", None);
     flush_events();
@@ -1266,7 +1314,7 @@ fn test_open_popover_updates_when_open_tab_closes_while_popover_visible() {
     });
 
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test()
+        popover_evidence(&window.imp().open_popover).visible_titles
             == vec!["open-while-visible.txt", "already-closed.txt"]
     });
 }
@@ -1297,10 +1345,8 @@ fn test_open_popover_bulk_path_close_reconciles_after_batch() {
 
     open_recent_action(&window);
     wait_until(Duration::from_secs(2), || {
-        window
-            .imp()
-            .open_popover
-            .visible_titles_for_test()
+        popover_evidence(&window.imp().open_popover)
+            .visible_titles
             .is_empty()
     });
 
@@ -1312,7 +1358,7 @@ fn test_open_popover_bulk_path_close_reconciles_after_batch() {
         window.imp().tab_view.n_pages() == 0
     });
     wait_until(Duration::from_secs(10), || {
-        window.imp().open_popover.visible_titles_for_test()
+        popover_evidence(&window.imp().open_popover).visible_titles
             == vec!["first-open.txt", "second-open.txt"]
     });
 
@@ -1362,7 +1408,7 @@ fn test_open_popover_row_remove_keeps_popover_open_and_does_not_open_document() 
 
     assert!(open_popover_open(&window));
     assert_eq!(window.imp().tab_view.n_pages(), 0);
-    assert!(window.recent_documents_for_test().is_empty());
+    assert!(journal_evidence(&window).entries.is_empty());
 }
 
 #[test]
@@ -1379,25 +1425,25 @@ fn test_open_popover_repeated_remove_reaches_empty_state_without_closing() {
     open_recent_action(&window);
     let popover = window.imp().open_popover.clone();
     wait_until(Duration::from_secs(2), || {
-        popover.visible_row_count_for_test() == 2
+        popover_evidence(&popover).visible_row_count == 2
     });
 
     find_remove_button(&popover).emit_clicked();
     flush_events();
     wait_until(Duration::from_secs(2), || {
-        popover.visible_row_count_for_test() == 1
+        popover_evidence(&popover).visible_row_count == 1
     });
 
     find_remove_button(&popover).emit_clicked();
     flush_events();
     wait_until(Duration::from_secs(2), || {
-        popover.visible_row_count_for_test() == 0
+        popover_evidence(&popover).visible_row_count == 0
     });
 
     assert!(open_popover_open(&window));
-    assert!(!popover.list_visible_for_test());
+    assert!(!popover_evidence(&popover).list_visible);
     assert_eq!(window.imp().tab_view.n_pages(), 0);
-    assert!(window.recent_documents_for_test().is_empty());
+    assert!(journal_evidence(&window).entries.is_empty());
 }
 
 #[test]
@@ -1411,7 +1457,7 @@ fn test_open_popover_file_chooser_button_invokes_callback_without_recent_activat
     popover.chooser_button_for_test().emit_clicked();
 
     assert!(called.get());
-    assert_eq!(popover.visible_row_count_for_test(), 0);
+    assert_eq!(popover_evidence(&popover).visible_row_count, 0);
 }
 
 #[test]
@@ -1485,11 +1531,291 @@ fn test_open_popover_awkward_labels_do_not_require_horizontal_scroll() {
         10,
     )]);
 
-    assert_eq!(popover.visible_row_count_for_test(), 1);
-    assert!(popover.list_visible_for_test());
+    assert_eq!(popover_evidence(&popover).visible_row_count, 1);
+    assert!(popover_evidence(&popover).list_visible);
     assert_eq!(
-        popover.list_hscrollbar_policy_for_test(),
+        popover_evidence(&popover).scroller.hscrollbar_policy,
         gtk4::PolicyType::Never
     );
-    assert!(!popover.list_propagates_natural_width_for_test());
+    assert!(!popover_evidence(&popover).scroller.propagates_natural_width);
+}
+
+// --- Evidence-surface proofs (task 4.4c) ------------------------------------
+//
+// The three proofs `.agents/rules/widget-wiring.md` requires of every evidence
+// surface, driven rather than asserted.
+
+#[test]
+fn test_open_popover_evidence_reads_stay_side_effect_free_across_journal_mutation() {
+    ensure_gtk_init();
+    let _guard = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    // Drive the workflow through each operation that takes a mutable borrow of
+    // the state the accessors read, and read *after* each one. Reading while a
+    // borrow is held is the panic the constraint prevents, not a demonstration
+    // of it.
+    let baseline = journal_evidence(&window);
+    assert_eq!(baseline, journal_evidence(&window));
+
+    window.set_recent_documents_for_test(vec![
+        recent_entry("/tmp/first.txt", 30),
+        recent_entry("/tmp/second.txt", 20),
+    ]);
+    let after_seed = journal_evidence(&window);
+    assert_eq!(after_seed.entries.len(), 2);
+    assert_eq!(
+        after_seed,
+        journal_evidence(&window),
+        "two adjacent reads of unchanged journal state must be identical"
+    );
+
+    open_recent_action(&window);
+    wait_until(Duration::from_secs(2), || open_popover_open(&window));
+    let popover = window.imp().open_popover.clone();
+
+    let after_show = popover_evidence(&popover);
+    assert_eq!(
+        after_show,
+        popover_evidence(&popover),
+        "two adjacent reads of an unchanged popover projection must be identical"
+    );
+
+    // A query mutation takes the filter path, which splices the row store.
+    popover.set_search_text_for_test("second");
+    wait_until(Duration::from_secs(2), || {
+        popover_evidence(&popover).visible_titles == vec!["second.txt"]
+    });
+    let after_filter = popover_evidence(&popover);
+    assert_eq!(after_filter, popover_evidence(&popover));
+    assert_ne!(
+        after_filter.visible_titles, after_show.visible_titles,
+        "the drive must actually have changed the state being re-read"
+    );
+
+    // And the journal is still readable, unchanged, from the same point.
+    assert_eq!(after_seed, journal_evidence(&window));
+
+    // --- the remaining mutable-borrow paths ---------------------------------
+    //
+    // The three above cover `entries.borrow_mut()` via seeding and the popover's
+    // own splice. These drive the rest, because "read after each operation that
+    // takes a mutable borrow" is the whole constraint and a partial sweep proves
+    // a partial claim.
+
+    // 4. `remove_recent_document` -> `entries.borrow_mut()` **and**
+    //    `removed_while_loading.borrow_mut()`, plus a generation bump.
+    let before_remove = journal_evidence(&window);
+    window.remove_recent_document_for_test(std::path::Path::new("/tmp/first.txt"));
+    let after_remove = journal_evidence(&window);
+    assert_eq!(after_remove.entries.len(), 1, "the removal took effect");
+    assert_ne!(
+        after_remove.generation, before_remove.generation,
+        "a user mutation advances the journal generation"
+    );
+    assert_eq!(after_remove, journal_evidence(&window));
+
+    // 5. The **startup merge** path: a load completion that lands after a user
+    //    mutation must merge rather than replace, and it borrows `entries`
+    //    mutably to do it. This is the path a stale generation guards, and it
+    //    was the one the surface had never been read across.
+    window.set_recent_documents_for_test(vec![recent_entry("/tmp/second.txt", 20)]);
+    let before_merge = journal_evidence(&window);
+    window.merge_loaded_recent_documents_for_test(vec![
+        recent_entry("/tmp/second.txt", 20),
+        recent_entry("/tmp/from-disk.txt", 5),
+    ]);
+    let after_merge = journal_evidence(&window);
+    assert_eq!(
+        after_merge.entries.len(),
+        2,
+        "the merge added the disk-only entry and did not duplicate the live one"
+    );
+    assert_ne!(after_merge.entries.len(), before_merge.entries.len());
+    assert_eq!(
+        after_merge,
+        journal_evidence(&window),
+        "two adjacent reads after the merge borrow must be identical"
+    );
+}
+
+#[test]
+fn test_open_popover_evidence_answers_honestly_after_the_window_is_disposed() {
+    ensure_gtk_init();
+    let _guard = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+    window.set_recent_documents_for_test(vec![recent_entry("/tmp/disposed.txt", 30)]);
+    open_recent_action(&window);
+    wait_until(Duration::from_secs(2), || open_popover_open(&window));
+
+    let popover = window.imp().open_popover.clone();
+    assert!(popover_evidence(&popover).visible_row_count > 0);
+
+    // Closing is not disposing: GTK defers template-child teardown, so the
+    // surface still answers from live children here. Asserted so the real
+    // disposal below cannot be mistaken for the close having done it.
+    window.close();
+    flush_events();
+    assert!(
+        popover_evidence(&popover).uses_no_selection,
+        "sanity: closing is not disposing, so the model is still reachable"
+    );
+
+    // A disposed widget is a stage. GTK4 clears template children in
+    // `dispose()`, before Rust's `Drop`, so every field derived from one must be
+    // reached through `try_get()` and give an honest neutral answer. The trap
+    // this pins is the panicking `Deref` accessor on a cleared `TemplateChild`,
+    // which would turn a teardown observation into a crash.
+    //
+    // Detach from the header MenuButton first. A parent holds a reference, and
+    // disposing a still-parented widget is itself a `Gtk-CRITICAL` — the
+    // teardown order has to be right for the observation to be about the
+    // surface rather than about the test.
+    window
+        .imp()
+        .open_menu_button
+        .set_popover(None::<&gtk4::Popover>);
+    flush_events();
+
+    // SAFETY: this popover is disposed exactly once, is unparented above, and
+    // everything after this point only reads the evidence surface.
+    unsafe { popover.run_dispose() };
+
+    let after_close = popover_evidence(&popover);
+    assert!(
+        !after_close.list_visible,
+        "a disposed popover must not claim its list page is showing"
+    );
+    assert_eq!(
+        after_close.scroller.scroll_value, 0.0,
+        "a cleared scroller reports the neutral offset rather than panicking"
+    );
+    assert!(
+        !after_close.uses_no_selection,
+        "a cleared list view has no model, so it cannot claim a NoSelection one"
+    );
+    // Reading twice more must still not panic, and must still agree.
+    assert_eq!(after_close, popover_evidence(&popover));
+}
+
+#[test]
+fn test_open_popover_evidence_reads_materialize_no_state() {
+    ensure_gtk_init();
+    let _guard = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    // Extreme 1: nothing in the journal and nothing projected.
+    let empty_journal = journal_evidence(&window);
+    let empty_generation = empty_journal.generation;
+    for _ in 0..5 {
+        assert_eq!(journal_evidence(&window), empty_journal);
+    }
+    assert_eq!(
+        journal_evidence(&window).generation,
+        empty_generation,
+        "reading must not advance the journal generation it reports"
+    );
+
+    // Extreme 2: a populated store, read repeatedly. `rows_store` holds
+    // already-built items, so reading its count and titles creates nothing; and
+    // `row_layout` builds a throwaway row that registers nothing, which is why
+    // repeated reads stay identical.
+    window.set_recent_documents_for_test(
+        (0..12)
+            .map(|index| recent_entry(format!("/tmp/many-{index}.txt"), 100 - index))
+            .collect(),
+    );
+    open_recent_action(&window);
+    wait_until(Duration::from_secs(2), || open_popover_open(&window));
+    let popover = window.imp().open_popover.clone();
+    wait_until(Duration::from_secs(2), || {
+        popover_evidence(&popover).visible_row_count == 12
+    });
+
+    let populated = popover_evidence(&popover);
+    let populated_journal = journal_evidence(&window);
+    for _ in 0..5 {
+        assert_eq!(popover_evidence(&popover), populated);
+        assert_eq!(journal_evidence(&window), populated_journal);
+    }
+    assert_eq!(
+        journal_evidence(&window).generation,
+        populated_journal.generation,
+        "reading the popover surface must not advance the journal generation"
+    );
+    assert!(
+        !journal_evidence(&window).rows_dirty,
+        "reading must not mark the projection stale"
+    );
+}
+
+#[test]
+fn test_open_popover_state_extremes_keep_the_shell_bounded() {
+    ensure_gtk_init();
+    let _guard = isolated_data_dir();
+    let window = test_window();
+    present_window(&window);
+
+    // No context: the action is still reachable and the empty copy is the
+    // history one, not the filter one.
+    open_recent_action(&window);
+    wait_until(Duration::from_secs(2), || open_popover_open(&window));
+    let popover = window.imp().open_popover.clone();
+    let empty = popover_evidence(&popover);
+    assert_eq!(empty.visible_row_count, 0);
+    assert!(!empty.list_visible);
+    assert_eq!(empty.empty_title, "No Recent Documents");
+    assert_eq!(
+        empty.scroller.hscrollbar_policy,
+        gtk4::PolicyType::Never,
+        "an empty status-only surface must not offer a horizontal scrollbar"
+    );
+    window.imp().open_popover.popdown();
+    flush_events();
+
+    // Many-or-awkward: long, deep paths must not widen the popover.
+    window.set_recent_documents_for_test(
+        (0..40)
+            .map(|index| {
+                recent_entry(
+                    format!(
+                        "/tmp/{}/deeply-nested-directory-{index}/a-very-long-document-name-{index}.md",
+                        "nested/".repeat(6)
+                    ),
+                    200 - index,
+                )
+            })
+            .collect(),
+    );
+    open_recent_action(&window);
+    wait_until(Duration::from_secs(2), || open_popover_open(&window));
+    wait_until(Duration::from_secs(3), || {
+        popover_evidence(&popover).visible_row_count == 40
+    });
+    let dense = popover_evidence(&popover);
+    assert!(dense.list_visible);
+    assert_eq!(
+        dense.scroller.max_content_height, 600,
+        "the item region scrolls at GNOME's cap rather than growing the shell"
+    );
+    assert_eq!(dense.scroller.max_content_width, 250);
+    assert!(
+        !dense.scroller.propagates_natural_width,
+        "a long path must not be allowed to widen the popover"
+    );
+    assert_eq!(dense.scroller.hscrollbar_policy, gtk4::PolicyType::Never);
+
+    // Filtered to nothing: the *other* empty state, which is the distinction the
+    // row's policy exists to keep.
+    popover.set_search_text_for_test("no-such-document-anywhere");
+    wait_until(Duration::from_secs(2), || {
+        popover_evidence(&popover).visible_row_count == 0
+    });
+    assert_eq!(
+        popover_evidence(&popover).empty_title,
+        "No Matching Documents"
+    );
 }

@@ -35,6 +35,13 @@ fn configure_widget_test_environment() {
     // - `GSK_RENDERER=cairo` keeps GTK on the CPU fallback renderer so
     //   headless containers do not probe missing Mesa/EGL devices. The runner
     //   can still override this when a renderer-specific bug is being chased.
+    // - `GTK_IM_MODULE=gtk-im-context-simple` keeps GTK off its Wayland
+    //   input-method backend. Headless mutter advertises
+    //   `zwp_text_input_manager_v3` with no input method behind it, and
+    //   destroying a focused `GtkEntry` — every inline rename confirming — then
+    //   races the compositor's reply into a SIGSEGV in `wl_proxy_get_version`.
+    //   This one is a crash guard, not warning suppression; see
+    //   `docs/next/persistent-format-hardening.md` S7B-6.
     // SAFETY: the widget harness sets these variables before any test code
     // initializes GTK, and they stay local to the per-test child process.
     unsafe {

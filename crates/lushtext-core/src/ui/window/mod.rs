@@ -3,32 +3,47 @@
 //! Main application window.
 //!
 //! The window is the top-level driving adapter for the application shell. Its
-//! public API stays here, while document lifecycle, action wiring, notifications,
-//! focus/indexing, and transient-surface dismissal live in dedicated modules to
-//! keep the adapter readable.
+//! public API stays here, while each workflow lives in its own module or role
+//! home: document lifecycle, action wiring, notifications, the command palette's
+//! window side (`palette_shell`), editor-memory eviction, adaptive shell geometry
+//! (`geometry/`), the tab strip (`tab_strip/`), Focus Mode (`focus_mode/`),
+//! transient-surface dismissal (`transient_dismissal/`), and the recent-documents
+//! journal.
+//!
+//! **`setup_theme_selector` below is deliberately not a workflow.** It is a
+//! `gio::Settings` -> `libadwaita::StyleManager` projection installed once plus a
+//! dark-notify handler, and it is recorded in the matrix's
+//! no-coordination-tier list: it reads no paned position, no allocation, no
+//! breakpoint condition, and no width key, and nothing in the geometry sequence
+//! calls it. Do not read its position here as membership in the shell geometry
+//! workflow.
 
 mod actions;
 mod dialogs;
 mod documents;
 mod drafts;
+mod editor_focus;
+mod editor_memory_eviction;
 mod encoding;
-mod focus_indexing;
 mod focus_mode;
-mod policy;
+mod geometry;
 // gtk-rs keeps the private GObject subclass implementation in `imp.rs`; this
 // public module exposes the safe wrapper and workflow methods callers use.
 mod imp;
 pub(crate) mod local_history;
 mod notes;
 pub(crate) mod notifications;
+mod palette_shell;
 mod preview;
 mod print;
+mod recent_documents_journal;
 mod recent_open;
 mod search;
+mod search_progress_execution;
 mod session_restore;
 mod startup_data;
-mod tabs;
-mod transient_surfaces;
+mod tab_strip;
+mod transient_dismissal;
 mod workspace_scope;
 mod zoom;
 
@@ -74,6 +89,16 @@ pub use local_history::{
 #[cfg(feature = "test-utils")]
 pub use drafts::evidence::DraftEvidence;
 #[cfg(feature = "test-utils")]
+pub use editor_memory_eviction::evidence::{
+    EditorMemoryEvictionEvidence, editor_memory_eviction_evidence,
+};
+#[cfg(feature = "test-utils")]
+pub use focus_mode::evidence::{FocusModeEvidence, focus_mode_evidence};
+#[cfg(feature = "test-utils")]
+pub use focus_mode::policy::{FocusModeEntry, FocusModeRestore};
+#[cfg(feature = "test-utils")]
+pub use geometry::evidence::{ShellGeometryEvidence, shell_geometry_evidence};
+#[cfg(feature = "test-utils")]
 pub use local_history::LocalHistoryEvidence;
 #[cfg(feature = "test-utils")]
 pub use local_history::{
@@ -96,6 +121,14 @@ pub use print::{
 pub use search::set_replace_reload_facts_delay_for_test;
 #[cfg(feature = "test-utils")]
 pub use session_restore::evidence::SessionRestoreEvidence;
+#[cfg(feature = "test-utils")]
+pub use tab_strip::evidence::{TabStripEvidence, tab_strip_evidence};
+#[cfg(feature = "test-utils")]
+pub use tab_strip::policy::TabLayoutEntry;
+#[cfg(feature = "test-utils")]
+pub use transient_dismissal::evidence::{TransientDismissalEvidence, transient_dismissal_evidence};
+#[cfg(feature = "test-utils")]
+pub use transient_dismissal::policy::{EscapeOutcome, TransientDismissal, TransientSurfaceState};
 
 /// Map a GSettings `color-scheme` string to its `libadwaita::ColorScheme` variant.
 /// Unknown values fall back to `Default` (follow system).

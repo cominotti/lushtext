@@ -8,14 +8,15 @@ use crate::common::{
 use gio::prelude::*;
 use glib::prelude::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;
-use gtk4::{IconTheme, gdk};
 use gtk4::prelude::{GtkApplicationExt, TextBufferExt};
+use gtk4::{IconTheme, gdk};
 use lushtext_core::app::LushtextApplication;
 use lushtext_core::config;
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::services::{editor_io, json_store, session_service};
 use lushtext_core::ui::automation::app_snapshot;
 use lushtext_core::ui::editor_page::{EditorLoadState, LushtextEditorPage};
+use lushtext_core::ui::open_popover::evidence::recent_documents_journal_evidence;
 use lushtext_core::ui::window::LushtextWindow;
 use sourceview5::StyleSchemeManager;
 use std::path::{Path, PathBuf};
@@ -31,7 +32,12 @@ fn test_new() {
 fn test_app_id() {
     ensure_gtk_init();
     let app = LushtextApplication::new();
-    assert_eq!(app.application_id().expect("expected operation to succeed").as_str(), config::APP_ID);
+    assert_eq!(
+        app.application_id()
+            .expect("expected operation to succeed")
+            .as_str(),
+        config::APP_ID
+    );
 }
 
 #[test]
@@ -58,7 +64,10 @@ fn test_startup_registers_bundled_sourceview_scheme_path() {
     let manager = StyleSchemeManager::default();
     let expected = "resource:///dev/cominotti/lushtext/gtksourceview/styles";
     assert!(
-        manager.search_path().iter().any(|path| path.as_str() == expected),
+        manager
+            .search_path()
+            .iter()
+            .any(|path| path.as_str() == expected),
         "expected bundled sourceview style search path {expected} to be registered"
     );
     assert!(manager.scheme("Adwaita").is_some());
@@ -77,7 +86,10 @@ fn test_startup_registers_bundled_app_icon_path() {
     let theme = IconTheme::for_display(&display);
     let expected = config::RESOURCE_ICON_PATH;
     assert!(
-        theme.resource_path().iter().any(|path| path.as_str() == expected),
+        theme
+            .resource_path()
+            .iter()
+            .any(|path| path.as_str() == expected),
         "expected bundled icon resource path {expected} to be registered"
     );
     assert!(
@@ -237,7 +249,10 @@ fn test_open_activation_deduplicates_canonical_paths_and_focuses_duplicate() {
     fixture::symlink(&alpha, &alpha_link);
     let app = test_lushtext_application();
 
-    open_files(&app, &[alpha.as_path(), beta.as_path(), alpha_link.as_path()]);
+    open_files(
+        &app,
+        &[alpha.as_path(), beta.as_path(), alpha_link.as_path()],
+    );
     let window = active_window(&app);
     wait_for_loaded_tabs(&window, 2);
 
@@ -283,7 +298,10 @@ fn test_open_activation_reuses_existing_window() {
     wait_for_loaded_tabs(&reused, 2);
 
     assert_eq!(reused.as_ptr(), original_window);
-    assert_eq!(active_editor(&reused).file_path().as_deref(), Some(second.as_path()));
+    assert_eq!(
+        active_editor(&reused).file_path().as_deref(),
+        Some(second.as_path())
+    );
 }
 
 #[test]
@@ -300,15 +318,17 @@ fn test_open_activation_close_updates_recent_popover_automation_snapshot() {
     present_window(&window);
     wait_for_loaded_tabs(&window, 1);
     wait_until(Duration::from_secs(3), || {
-        window
-            .recent_documents_for_test()
+        recent_documents_journal_evidence(&window)
+            .entries
             .iter()
             .any(|entry| entry.matches_path(&path))
     });
 
     window.activate_action("close-tab", None);
     flush_events();
-    wait_until(Duration::from_secs(2), || window.imp().tab_view.n_pages() == 0);
+    wait_until(Duration::from_secs(2), || {
+        window.imp().tab_view.n_pages() == 0
+    });
 
     window.activate_action("open-recent", None);
     flush_events();
@@ -360,11 +380,15 @@ fn test_open_activation_retains_failed_paths_without_blocking_reopen() {
     fixture::write_text(&missing, "created after failed activation\n");
     open_files(&app, &[missing.as_path()]);
     wait_for_active_loaded_path(&window, &missing);
-    assert_eq!(editor_text(&active_editor(&window)), "created after failed activation\n");
+    assert_eq!(
+        editor_text(&active_editor(&window)),
+        "created after failed activation\n"
+    );
 
     let unreadable = dir.path().join("directory-target.txt");
     fixture::create_dir(&unreadable);
-    let unreadable_key = fs_metadata::canonical_path(&unreadable).expect("canonical unreadable target");
+    let unreadable_key =
+        fs_metadata::canonical_path(&unreadable).expect("canonical unreadable target");
     open_files(&app, &[unreadable.as_path()]);
     let unreadable_status = unreadable.display().to_string();
     wait_until(Duration::from_secs(3), || {
@@ -381,8 +405,14 @@ fn test_open_activation_retains_failed_paths_without_blocking_reopen() {
     fixture::write_text(&unreadable, "readable after cleanup\n");
     open_files(&app, &[unreadable.as_path()]);
     wait_for_active_loaded_path(&window, &unreadable);
-    assert_eq!(active_editor(&window).file_path().as_deref(), Some(unreadable.as_path()));
-    assert_eq!(editor_text(&active_editor(&window)), "readable after cleanup\n");
+    assert_eq!(
+        active_editor(&window).file_path().as_deref(),
+        Some(unreadable.as_path())
+    );
+    assert_eq!(
+        editor_text(&active_editor(&window)),
+        "readable after cleanup\n"
+    );
 }
 
 #[test]
@@ -409,7 +439,10 @@ fn test_desktop_exec_forwards_documents_and_matches_open_activation() {
     open_files(&app, &[path.as_path()]);
     let window = active_window(&app);
     wait_for_loaded_tabs(&window, 1);
-    assert_eq!(editor_text(&active_editor(&window)), "desktop metadata activation\n");
+    assert_eq!(
+        editor_text(&active_editor(&window)),
+        "desktop metadata activation\n"
+    );
 }
 
 #[test]
@@ -511,7 +544,9 @@ fn test_open_activation_modified_failed_placeholder_remains_recoverable_without_
     app.open(&files, "");
     let window = active_window(&app);
     let failed_editor = active_editor(&window);
-    failed_editor.buffer().set_text("typed into failed placeholder");
+    failed_editor
+        .buffer()
+        .set_text("typed into failed placeholder");
     failed_editor.buffer().set_modified(true);
     let missing_status = missing.display().to_string();
     wait_until(Duration::from_secs(3), || {
@@ -557,7 +592,9 @@ fn test_open_activation_modified_failed_placeholder_restores_draft_after_restart
             && failed_editor.file_path().as_deref() == Some(missing.as_path())
     });
     drop(load_delay);
-    window.flush_dirty_drafts().expect("flush failed-placeholder draft");
+    window
+        .flush_dirty_drafts()
+        .expect("flush failed-placeholder draft");
     window.save_session_sync();
 
     let restored_app = test_lushtext_application();
@@ -608,7 +645,9 @@ fn test_save_after_modified_failed_placeholder_restores_duplicate_bookkeeping() 
         "save from failed tab\n"
     );
     open_files(&app, &[missing.as_path()]);
-    wait_until(Duration::from_secs(3), || window.imp().tab_view.n_pages() == 1);
+    wait_until(Duration::from_secs(3), || {
+        window.imp().tab_view.n_pages() == 1
+    });
     assert_eq!(active_editor(&window).as_ptr(), failed_editor.as_ptr());
 }
 
@@ -643,7 +682,10 @@ fn test_reload_failure_keeps_loaded_tab_file_backed_for_session_restore() {
     window.save_session_sync();
     let restored_session = session_service::load(&json_store::data_dir()).expect("load session");
     assert_eq!(
-        restored_session.tabs.first().and_then(|tab| tab.path.as_ref()),
+        restored_session
+            .tabs
+            .first()
+            .and_then(|tab| tab.path.as_ref()),
         Some(&path),
         "a reload failure on an already-loaded tab must not turn the clean tab into an untitled session entry",
     );

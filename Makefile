@@ -40,6 +40,7 @@
 #   make mutants-smoke - Small cargo-mutants smoke run
 #   make mutants-diff  - Mutation test current changes against origin/main
 #   make mutants-full  - Mutation test the configured deterministic scope
+#   make fmt         - apply rustfmt everywhere, including the widget tests cargo fmt cannot reach
 #   make check       - fmt + all-feature clippy + fast policy audits
 #   make blueprint-generate - Regenerate generated GtkBuilder .ui files from Blueprint .blp sources
 #   make check-blueprint - Validate Blueprint drift and generated UI template contract
@@ -79,7 +80,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -416,9 +417,36 @@ bench-compare:
 	cargo bench -p lushtext-core --bench benchmarks -- --baseline-lenient main
 
 # Formatting check
+#
+# `cargo fmt --all` cannot reach the widget test modules. They are pulled into
+# `crates/lushtext/tests/widget.rs` through
+# `include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"))`, a registry
+# `build.rs` generates by scanning the directory, so rustfmt's module walk never
+# sees them and `cargo fmt --all --check` passed while formatting **nothing**
+# under `tests/widget/`. That is a gate-coverage hole, not a style preference:
+# 18 files had accumulated unformatted code behind a green gate.
+#
+# The reach mechanism is an explicit rustfmt invocation over the directory.
+# There is no conflict with the registry generation to record as a gating
+# condition — the registry keys on file *names*, which formatting does not
+# change — so the hole is closed rather than deferred.
+WIDGET_TEST_SOURCES := $(wildcard crates/lushtext/tests/widget/*.rs)
+# An empty wildcard would make both recipes below fail **open**: `rustfmt` with no
+# file arguments reads stdin and exits 0, so a moved or renamed directory would
+# turn the reach this target exists to provide back into a silent no-op — the
+# same class of hole the target was added to close.
+$(if $(WIDGET_TEST_SOURCES),,$(error WIDGET_TEST_SOURCES is empty: crates/lushtext/tests/widget/*.rs matched nothing, so the widget-test formatting reach would silently do nothing))
+
 check-fmt:
 	@echo "Checking formatting..."
 	cargo fmt --all -- --check
+	@echo "Checking widget-test formatting (outside cargo fmt's module walk)..."
+	rustfmt --edition 2024 --check $(WIDGET_TEST_SOURCES)
+
+# Apply formatting everywhere, including the widget tests cargo fmt cannot reach.
+fmt:
+	cargo fmt --all
+	rustfmt --edition 2024 $(WIDGET_TEST_SOURCES)
 
 # Clippy gate matching CI
 check-clippy:

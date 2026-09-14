@@ -201,7 +201,7 @@ mod tests {
             config.headless_runner_env(),
             "GTK_LUSH_ADOPTION_LAB_HEADLESS"
         );
-        assert_eq!(recommended_pre_gtk_environment().len(), 4);
+        assert_eq!(recommended_pre_gtk_environment().len(), 5);
     }
 
     #[test]

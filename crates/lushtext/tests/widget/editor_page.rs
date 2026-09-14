@@ -23,18 +23,16 @@ use lushtext_core::ui::editor_page::save::policy::{SaveCaptureMode, SaveWriteCla
 use lushtext_core::ui::editor_page::{
     BookmarkEditError, BookmarkNavigationDirection, BookmarkToggleState,
     BufferReplacementCancelReason, BufferReplacementWorkflow, BufferSnapshotCancelReason,
-    BufferSnapshotOutcome, BufferSnapshotTestEdit,
-    BufferSnapshotTestMutation, BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError,
-    LoadOutcome, LushtextEditorPage, MinimapAvailability, MinimapMarkerKind,
-    buffer_snapshot_evidence,
-    coalesce_snapshot_payload_for_test, snapshot_buffer_text_async_for_test,
-    set_next_load_body_disposal_probe_for_test,
-    set_next_load_disposal_reservation_weight_for_test,
+    BufferSnapshotOutcome, BufferSnapshotTestEdit, BufferSnapshotTestMutation,
+    BufferSnapshotTestTrigger, EditorLoadState, EditorSaveError, LoadOutcome, LushtextEditorPage,
+    MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
+    coalesce_snapshot_payload_for_test, set_next_load_body_disposal_probe_for_test,
+    set_next_load_disposal_reservation_weight_for_test, snapshot_buffer_text_async_for_test,
 };
 // The row's only test seam retired: the throttling key is production pure
 // policy now, so the test reads the same function production reads.
+use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
 use lushtext_core::ui::window::inline_alert_announcement_key;
-use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, lane_snapshot_for_test};
 use sourceview5::prelude::*;
 use std::assert_matches;
 use std::cell::{Cell, RefCell};
@@ -95,7 +93,7 @@ fn wait_for_save_snapshot(page: &LushtextEditorPage) {
         "save snapshot was not installed within {timeout:?}: saving={} admission={:?} disposal={:?}",
         page.is_saving(),
         page.save_evidence(),
-        lane_snapshot_for_test()
+        plain_disposal_evidence().ordinary.snapshot
     );
 }
 
@@ -125,7 +123,7 @@ fn wait_for_save_result(
         "save did not finish within {timeout:?}: saving={} snapshot={snapshot:?} admission={:?} disposal={:?}",
         page.is_saving(),
         page.save_evidence(),
-        lane_snapshot_for_test()
+        plain_disposal_evidence().ordinary.snapshot
     );
 }
 
@@ -1144,7 +1142,11 @@ fn test_minimap_evidence_reads_stay_side_effect_free_across_analysis_mutation() 
     let page = LushtextEditorPage::new();
 
     let idle = page.minimap_evidence();
-    assert_eq!(idle, page.minimap_evidence(), "idle reads must be identical");
+    assert_eq!(
+        idle,
+        page.minimap_evidence(),
+        "idle reads must be identical"
+    );
 
     // `record_modified_lines` holds `modified_lines_cache` and `modified_marks`
     // mutably across `create_source_mark`, which emits `mark-set`.
@@ -1216,7 +1218,10 @@ fn test_minimap_evidence_reads_do_not_advance_the_metrics_they_report() {
     let settled = page.minimap_evidence();
     for _ in 0..5 {
         let repeated = page.minimap_evidence();
-        assert_eq!(repeated.slices, settled.slices, "reads must not add a slice");
+        assert_eq!(
+            repeated.slices, settled.slices,
+            "reads must not add a slice"
+        );
         assert_eq!(
             repeated.cancellations, settled.cancellations,
             "reads must not cancel"
@@ -1233,7 +1238,10 @@ fn test_minimap_evidence_reads_do_not_advance_the_metrics_they_report() {
         assert_eq!(repeated.cache_generation, settled.cache_generation);
         assert_eq!(repeated.cached_characters, settled.cached_characters);
         assert_eq!(repeated.work_pending, settled.work_pending);
-        assert_eq!(repeated.reflow_settle_pending, settled.reflow_settle_pending);
+        assert_eq!(
+            repeated.reflow_settle_pending,
+            settled.reflow_settle_pending
+        );
     }
 }
 
@@ -1563,7 +1571,7 @@ fn test_nine_accepted_load_baselines_do_not_exhaust_transit_slots() {
     ensure_gtk_init();
     let _settings = enable_minimap_for_tests(false);
     let dir = tempfile::tempdir().expect("nine baseline fixture");
-    let before = lane_snapshot_for_test();
+    let before = plain_disposal_evidence().ordinary.snapshot;
     let mut pages = Vec::new();
 
     for index in 0..9 {
@@ -1575,7 +1583,7 @@ fn test_nine_accepted_load_baselines_do_not_exhaust_transit_slots() {
             page.load_state() == EditorLoadState::Loaded
         });
         wait_until(Duration::from_secs(2), || {
-            let snapshot = lane_snapshot_for_test();
+            let snapshot = plain_disposal_evidence().ordinary.snapshot;
             snapshot.queued_jobs <= before.queued_jobs
                 && snapshot.retained_bytes <= before.retained_bytes
         });
@@ -1584,7 +1592,7 @@ fn test_nine_accepted_load_baselines_do_not_exhaust_transit_slots() {
 
     assert_eq!(pages.len(), 9);
     assert!(pages.iter().all(|page| !page.is_modified()));
-    let after = lane_snapshot_for_test();
+    let after = plain_disposal_evidence().ordinary.snapshot;
     assert_eq!(after.queued_jobs, before.queued_jobs);
     assert_eq!(after.retained_bytes, before.retained_bytes);
     eprintln!(
@@ -1615,7 +1623,7 @@ fn test_overweight_load_reservation_progresses_with_retained_baseline() {
         second.load_state() == EditorLoadState::Loaded
     });
 
-    let snapshot = lane_snapshot_for_test();
+    let snapshot = plain_disposal_evidence().ordinary.snapshot;
     assert!(snapshot.overweight_bytes_high_water >= 150_000_000);
     assert!(!snapshot.overweight_exclusive);
     assert_eq!(editor_buffer_text(&second), "second accepted body\n");
@@ -1632,8 +1640,8 @@ fn test_overweight_load_reservation_progresses_with_retained_baseline() {
 fn test_cancelled_disposal_blocked_load_disarms_capacity_wakeup() {
     ensure_gtk_init();
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let capacity_hold = hold_disposal_capacity_for_test();
     let dir = tempfile::tempdir().expect("blocked load fixture");
@@ -1644,13 +1652,11 @@ fn test_cancelled_disposal_blocked_load_disarms_capacity_wakeup() {
 
     page.load_file_async(&path);
     wait_until(Duration::from_secs(5), || {
-        page.load_evidence().queued_count == 1
-            && page.load_evidence().disposal_wakeup_armed
+        page.load_evidence().queued_count == 1 && page.load_evidence().disposal_wakeup_armed
     });
     page.cancel_load();
     wait_until(Duration::from_secs(5), || {
-        page.load_evidence().queued_count == 0
-            && !page.load_evidence().disposal_wakeup_armed
+        page.load_evidence().queued_count == 0 && !page.load_evidence().disposal_wakeup_armed
     });
 
     assert_eq!(page.load_state(), EditorLoadState::Failed);
@@ -1700,8 +1706,7 @@ fn test_chunked_load_cancellation_clears_partial_text_and_releases_admission() {
     assert!(page.load_evidence().installation_active);
     assert!(!page.source_view().is_editable());
     wait_until(Duration::from_secs(5), || {
-        !page.load_evidence().installation_active
-            && page.load_evidence().active_count == 0
+        !page.load_evidence().installation_active && page.load_evidence().active_count == 0
     });
 
     assert_eq!(editor_buffer_text(&page), "");
@@ -1893,8 +1898,7 @@ fn test_dispose_during_chunked_install_releases_admission() {
     let admission_probe = LushtextEditorPage::new();
     drop(page);
     wait_until(Duration::from_secs(5), || {
-        weak_page.upgrade().is_none()
-            && admission_probe.load_evidence().active_count == 0
+        weak_page.upgrade().is_none() && admission_probe.load_evidence().active_count == 0
     });
 }
 
@@ -1977,7 +1981,8 @@ fn test_document_sized_eviction_releases_residency_only_after_bounded_clear() {
     assert!(page.buffer_replacement_evidence().slice_count > 1);
     assert!(page.source_view().is_editable());
     let diagnostic = page
-        .buffer_replacement_evidence().last_terminal
+        .buffer_replacement_evidence()
+        .last_terminal
         .expect("eviction terminal diagnostic");
     assert_eq!(
         diagnostic.ticket.workflow,
@@ -2133,7 +2138,8 @@ fn test_document_sized_save_formatting_stays_inflight_until_bounded_install_fini
     );
     assert!(page.buffer_replacement_evidence().slice_count > 1);
     let diagnostic = page
-        .buffer_replacement_evidence().last_terminal
+        .buffer_replacement_evidence()
+        .last_terminal
         .expect("save-formatting terminal diagnostic");
     assert_eq!(
         diagnostic.ticket.workflow,
@@ -2160,7 +2166,7 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
     page.buffer().set_text(&source);
     page.make_buffer_replacement_stale_after_slices_for_test(1);
     page.reset_transient_save_admission_for_test();
-    let disposal_before = lane_snapshot_for_test();
+    let disposal_before = plain_disposal_evidence().ordinary.snapshot;
 
     let result = Rc::new(RefCell::new(None));
     let result_clone = Rc::clone(&result);
@@ -2182,7 +2188,7 @@ fn test_stale_save_formatting_never_publishes_a_partial_save() {
         expected_disk
     );
     wait_until(Duration::from_secs(10), || {
-        lane_snapshot_for_test().completed_jobs > disposal_before.completed_jobs
+        plain_disposal_evidence().ordinary.snapshot.completed_jobs > disposal_before.completed_jobs
     });
     let admission = page.save_evidence();
     assert_eq!(admission.active_count, 0);
@@ -2543,10 +2549,7 @@ fn test_chunked_buffer_snapshot_cancels_for_edits_before_and_after_progress_mark
             )],
             "{edit:?} must reject every partial chunk"
         );
-        assert_eq!(
-            buffer_snapshot_evidence(Some(&handle)).session,
-            None
-        );
+        assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, None);
     }
 }
 
@@ -2605,7 +2608,10 @@ fn test_buffer_snapshot_evidence_discharges_its_three_surface_proofs() {
     // reads; read after it, not during it.
     handle.resume_for_test();
     let resumed = buffer_snapshot_evidence(Some(&handle));
-    assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, resumed.session);
+    assert_eq!(
+        buffer_snapshot_evidence(Some(&handle)).session,
+        resumed.session
+    );
 
     // `cancel` is the other mutable-borrow operation on that state.
     handle.cancel_for_test();
@@ -2684,8 +2690,8 @@ fn test_buffer_snapshot_evidence_discharges_its_three_surface_proofs() {
     // once the lane is idle and verified still idle afterwards, any advancement
     // is attributable to the reads, which is the claim being made.
     wait_until(Duration::from_secs(10), || {
-        let lane = lane_snapshot_for_test();
-        lane.running_jobs == 0 && lane.queued_jobs == 0
+        let lane = plain_disposal_evidence().ordinary.snapshot;
+        lane.is_quiesced()
     });
 
     let before = buffer_snapshot_evidence(None).handoff;
@@ -2693,7 +2699,7 @@ fn test_buffer_snapshot_evidence_discharges_its_three_surface_proofs() {
         let _ = buffer_snapshot_evidence(None);
         let _ = buffer_snapshot_evidence(Some(&terminal_handle));
     }
-    let lane_after = lane_snapshot_for_test();
+    let lane_after = plain_disposal_evidence().ordinary.snapshot;
     assert_eq!(
         (lane_after.running_jobs, lane_after.queued_jobs),
         (0, 0),
@@ -2714,8 +2720,8 @@ fn test_buffer_snapshot_evidence_discharges_its_three_surface_proofs() {
 fn test_chunked_buffer_snapshot_waits_for_disposal_capacity_before_copying() {
     ensure_gtk_init();
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let capacity_hold = hold_disposal_capacity_for_test();
     let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
@@ -2749,18 +2755,15 @@ fn test_chunked_buffer_snapshot_waits_for_disposal_capacity_before_copying() {
         [BufferSnapshotOutcome::Captured(payload)]
             if payload.capture_metrics().captured_bytes == 200_000
     ));
-    assert_eq!(
-        buffer_snapshot_evidence(Some(&handle)).session,
-        None
-    );
+    assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, None);
 }
 
 #[test]
 fn test_chunked_buffer_snapshot_capacity_wait_is_explicitly_cancellable() {
     ensure_gtk_init();
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let capacity_hold = hold_disposal_capacity_for_test();
     let buffer = gtk4::TextBuffer::new(None::<&gtk4::TextTagTable>);
@@ -2781,10 +2784,7 @@ fn test_chunked_buffer_snapshot_capacity_wait_is_explicitly_cancellable() {
             BufferSnapshotCancelReason::Superseded
         )]
     );
-    assert_eq!(
-        buffer_snapshot_evidence(Some(&handle)).session,
-        None
-    );
+    assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, None);
     drop(capacity_hold);
 }
 
@@ -2815,10 +2815,7 @@ fn test_chunked_buffer_snapshot_rejects_final_slice_mutation_once() {
     );
     flush_after_delay(Duration::from_millis(20));
     assert_eq!(outcomes.borrow().len(), 1);
-    assert_eq!(
-        buffer_snapshot_evidence(Some(&handle)).session,
-        None
-    );
+    assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, None);
 }
 
 #[test]
@@ -2887,10 +2884,7 @@ fn test_large_ascii_and_multibyte_snapshots_use_bounded_chunks_and_worker_coales
         assert!(metrics.reserved_chunk_capacity >= metrics.chunk_count);
         assert!(metrics.max_chunk_bytes <= 256 * 1024);
         assert_eq!(metrics.captured_bytes, expected_bytes as u64);
-        assert_eq!(
-            buffer_snapshot_evidence(Some(&handle)).session,
-            None
-        );
+        assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, None);
 
         let after = buffer_snapshot_evidence(None).handoff;
         assert_eq!(after.gtk_coalesces, before.gtk_coalesces);
@@ -2936,10 +2930,7 @@ fn test_chunked_buffer_snapshot_explicit_cancel_cleans_resources_and_calls_back_
     flush_after_delay(Duration::from_millis(20));
     assert_eq!(outcomes.borrow().len(), 1);
     assert_eq!(deleted_marks.get(), 1);
-    assert_eq!(
-        buffer_snapshot_evidence(Some(&handle)).session,
-        None
-    );
+    assert_eq!(buffer_snapshot_evidence(Some(&handle)).session, None);
 }
 
 #[test]
@@ -3208,7 +3199,8 @@ fn test_minimap_native_viewport_effect_projects_inside_source_map() {
     // native effect's historical geometry, not an app-owned replacement.
     let native_slider_outset = 13.0;
     let viewport_bounds = page
-        .minimap_evidence().viewport_bounds
+        .minimap_evidence()
+        .viewport_bounds
         .expect("visible minimap should project native viewport bounds");
 
     assert!(
@@ -3249,10 +3241,12 @@ fn test_minimap_viewport_top_delta_to_first_content_row_survives_width_changes()
         wait_for_minimap_ready(&page);
 
         let viewport = page
-            .minimap_evidence().viewport_bounds
+            .minimap_evidence()
+            .viewport_bounds
             .expect("visible minimap should project viewport bounds");
         let content = page
-            .minimap_evidence().first_content_row_bounds
+            .minimap_evidence()
+            .first_content_row_bounds
             .expect("visible minimap should project first content row");
         viewport.y - content.y
     }
@@ -3282,7 +3276,8 @@ fn test_minimap_native_viewport_effect_reprojects_after_mid_file_scroll() {
     wait_for_minimap_ready(&page);
 
     let top_bounds = page
-        .minimap_evidence().viewport_bounds
+        .minimap_evidence()
+        .viewport_bounds
         .expect("top-of-file viewport should project");
     let buffer = page.buffer();
     let mid_iter = buffer
@@ -3300,14 +3295,16 @@ fn test_minimap_native_viewport_effect_reprojects_after_mid_file_scroll() {
     wait_until(std::time::Duration::from_secs(10), || {
         page.source_view().visible_rect().y() > 0
             && page
-                .minimap_evidence().viewport_bounds
+                .minimap_evidence()
+                .viewport_bounds
                 .is_some_and(|bounds| bounds.y > top_bounds.y + 1.0)
     });
 
     let source_map = minimap_source_map(&page);
     let map_height = f64::from(source_map.height());
     let scrolled_bounds = page
-        .minimap_evidence().viewport_bounds
+        .minimap_evidence()
+        .viewport_bounds
         .expect("mid-file viewport should project");
 
     assert!(
@@ -5229,8 +5226,7 @@ fn test_cancelling_a_live_installation_blocks_saving_the_emptied_buffer() {
     assert!(
         matches!(
             refused,
-            Err(EditorSaveError::LoadInProgress
-                | EditorSaveError::IncompleteLoadInstallation)
+            Err(EditorSaveError::LoadInProgress | EditorSaveError::IncompleteLoadInstallation)
         ),
         "a save queued against a cancelled installation must be refused"
     );
@@ -5390,7 +5386,10 @@ fn test_save_of_a_clean_unmodified_buffer_still_writes_the_buffer() {
     });
     wait_until(Duration::from_secs(10), || result.borrow().is_some());
 
-    assert_matches!(result.borrow_mut().take().expect("clean save result"), Ok(()));
+    assert_matches!(
+        result.borrow_mut().take().expect("clean save result"),
+        Ok(())
+    );
     assert_eq!(
         fs_read::text(&path).expect("clean save should reach disk"),
         "in buffer\n"
@@ -5444,7 +5443,10 @@ fn test_save_failing_before_rename_keeps_previous_bytes_and_leaves_the_tab_modif
         fs_read::text(&path).expect("previous bytes must survive"),
         "previous bytes\n"
     );
-    assert!(page.is_modified(), "an unwritten save must leave the tab modified");
+    assert!(
+        page.is_modified(),
+        "an unwritten save must leave the tab modified"
+    );
     assert!(!page.is_saving());
     assert!(page.source_view().is_editable());
     assert_eq!(

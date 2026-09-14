@@ -87,6 +87,7 @@ MIGRATED_STATUS = "migrated"
 # The label set documented in the matrix's `Status Labels` section. An unknown
 # label must fail loudly: a silently unrecognized status would exempt its row
 # from the migrated-role rule instead of enforcing it.
+SUPERSEDED_STATUS = "superseded"
 KNOWN_STATUS_LABELS = (
     "pending",
     MIGRATED_STATUS,
@@ -94,6 +95,14 @@ KNOWN_STATUS_LABELS = (
     "exempt",
     "deferred",
     "cross-cutting",
+    # A row that was *replaced* rather than migrated, exempted, or shared.
+    # `WFR-SHELL-LAYOUT` is the first: slot 7a resolved it was never one
+    # workflow, and slot 7b replaced it with seven rows that each own one. None
+    # of the other five labels describes that history — `exempt` and
+    # `cross-cutting` both claim the row's code is deliberately unmigrated, and
+    # `deferred` is transitional — so the vocabulary gained a terminal label
+    # rather than the row taking a label that misdescribes it.
+    SUPERSEDED_STATUS,
 )
 ROLES_SECTION_HEADING = "## Migrated Workflow Roles"
 FACADE_BUDGET_SECTION_HEADING = "### Facade size budget"
@@ -115,13 +124,23 @@ SLOT_LEDGER_RE = re.compile(
     r"^-\s+slot\s+(\S+)\s+\((complete|outstanding)\):\s*(\S.*)$", re.IGNORECASE
 )
 SLOT_ENTRY_RE = re.compile(r"(WFR-[A-Z0-9-]+)(\s*\(partial\))?", re.IGNORECASE)
+# The ledger's *shape* without its vocabulary, used only to tell a malformed
+# ledger line from ordinary prose that happens to mention a slot. A line matching
+# this but not `SLOT_LEDGER_RE` is a dropped claim rather than a sentence.
+SLOT_LEDGER_SHAPE_RE = re.compile(r"^-\s+slot\s+\S+\s*\(?[^)]*\)?\s*:", re.IGNORECASE)
 # Statuses that owe no outstanding-slot entry: the work is either done or the row
 # is deliberately never migrated.
-SETTLED_STATUSES = ("migrated", "exempt")
+SETTLED_STATUSES = ("migrated", "exempt", SUPERSEDED_STATUS)
+# Statuses that mean "this row's shape is not settled yet". The capability
+# delta landed by slot 7b states they must not survive the change that closes
+# the migration programme, and the mechanical half of that is below: once the
+# ledger declares no slot outstanding, the programme is closed, and a row still
+# carrying one of these is a finding rather than a review question.
+TRANSITIONAL_STATUSES = ("pending", "deferred", "partially-conforming")
 # Terminal statuses a row can hold that are *not* `migrated`. A slot may declare
 # its work on such a row complete; it may not claim the row became `migrated`,
 # because these labels mean it never will.
-TERMINAL_NON_MIGRATING_STATUSES = ("cross-cutting", "exempt")
+TERMINAL_NON_MIGRATING_STATUSES = ("cross-cutting", "exempt", SUPERSEDED_STATUS)
 # Both this pattern and `SLOT_LEDGER_RE` end their value group with
 # `\s*(\S.*)$` rather than `\s*(.+)$`: the sets `\s` and `.` overlap, so the
 # looser form is an ambiguous adjacent-quantifier pair a scanner reports as
@@ -411,8 +430,13 @@ def gtk_free_ui_modules(root: Path) -> list[Path]:
 # listed is a finding: the escape must be explicit somewhere a reviewer reads.
 PROSE_CLASSIFIED_UNMUTATED = {
     "crates/lushtext-core/src/ui/sidebar/width_preset.rs": (
-        "cross-cutting value owned by WFR-SHELL-LAYOUT and consumed by Preferences "
-        "and the window shell; its mutation coverage follows that row's migration"
+        "cross-cutting value owned by WFR-SHELL-GEOMETRY (WFR-SHELL-LAYOUT until "
+        "slot 7b superseded it) and consumed by Preferences and the window shell. "
+        "That row is now migrated and its own policy is mutation-covered at "
+        "ui/window/geometry/policy.rs; this value type stays a prose-classified "
+        "unmutated module because it is a named enum plus its fraction accessor, "
+        "not decision logic, and moving it into the role home would put a "
+        "Preferences-facing type behind a workflow directory"
     ),
     "crates/lushtext-core/src/ui/sidebar/workspace_section/watch_targets.rs": (
         "stateful data structure owned by WFR-WORKSPACE-TREE's `watch` role, "
@@ -496,8 +520,18 @@ def status_findings(rows: list[MatrixRow]) -> list[str]:
     return findings
 
 
-def parse_matrix_rows(text: str) -> list[MatrixRow]:
-    """Parse `Product Matrix` rows keyed by their stable row id."""
+def parse_matrix_rows(text: str) -> tuple[list[MatrixRow], bool]:
+    """Parse `Product Matrix` rows keyed by their stable row id.
+
+    Returns the rows and whether a `Slot` column was actually located. The
+    second value exists because locating that column by name is a fail-open: the
+    defence against a positional shift silently disappears when the header is
+    reworded. With no located column every row's `slot` is `None`, every
+    slot-dependent finding is skipped, and the gate exits 0 while checking
+    nothing. The caller reports that as a finding wherever the slot is consumed;
+    a matrix that carries no `Slot` column and is reconciled against no record
+    is not a fail-open, so the check belongs at the consumer rather than here.
+    """
     rows: list[MatrixRow] = []
     slot_index: int | None = None
     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -526,7 +560,8 @@ def parse_matrix_rows(text: str) -> list[MatrixRow]:
                 slot=slot,
             )
         )
-    return rows
+
+    return rows, slot_index is not None
 
 
 def parse_role_declarations(text: str) -> dict[str, RoleDeclaration]:
@@ -726,11 +761,27 @@ def parse_facade_budget(text: str) -> int | None:
 
 
 def declared_facade_path(value: str) -> str | None:
-    """Extract the single path a `facade:` role line claims, when it has one."""
+    """Extract the path a `facade:` role line claims, when it has one.
+
+    Fail-open 4 of 4. This used to require *exactly one* backticked token, to
+    avoid guessing between two candidate paths. But the established way to write
+    this line is `` `path` — **N** physical lines of 370, down from a
+    pre-convention `old_name.rs` ``, and that second token made the whole
+    facade-budget rule inert for the row: no claim, no path, no size check, and
+    the gate exits 0. Three of sixteen migrated rows were unchecked this way.
+
+    The line's shape resolves the ambiguity without guessing: the claim is the
+    **first** token, and only when it looks like a Rust source path. Prose that
+    mentions another `.rs` file after the em dash cannot displace it, and a line
+    whose first token is not a path still declines rather than inventing one.
+    """
     tokens = BACKTICKED_RE.findall(value)
-    if len(tokens) != 1:
+    if not tokens:
         return None
-    return normalize_claim(tokens[0])
+    first = tokens[0].strip()
+    if not first.endswith(".rs") or "/" not in first:
+        return None
+    return normalize_claim(first)
 
 
 def facade_size_findings(
@@ -781,9 +832,18 @@ class SlotClaim:
     entries: tuple[tuple[str, bool], ...]
 
 
-def parse_slot_ledger(text: str) -> list[SlotClaim]:
-    """Parse the programme record's slot ledger lines, ignoring fenced examples."""
+def parse_slot_ledger(text: str) -> tuple[list[SlotClaim], list[tuple[int, str]]]:
+    """Parse the programme record's slot ledger lines, ignoring fenced examples.
+
+    Returns the parsed claims and the lines that *look* like ledger entries but
+    do not parse. The second value closes a fail-open: a non-matching line used
+    to be skipped with the only guard being the all-lines-failed case, so a
+    single typo'd verb among eleven lines dropped that slot's whole claim
+    silently. A dropped `outstanding` line is exactly how a row with remaining
+    work comes to read as settled.
+    """
     claims: list[SlotClaim] = []
+    malformed: list[tuple[int, str]] = []
     in_fence = False
     for line_number, line in enumerate(text.splitlines(), start=1):
         if line.lstrip().startswith("```"):
@@ -792,8 +852,14 @@ def parse_slot_ledger(text: str) -> list[SlotClaim]:
             continue
         if in_fence:
             continue
-        match = SLOT_LEDGER_RE.match(line.strip())
+        stripped = line.strip()
+        match = SLOT_LEDGER_RE.match(stripped)
         if match is None:
+            # Narrow enough to avoid every ordinary `- slot ...` mention in
+            # prose: the line must open a list item and name a slot with a
+            # colon, which is the ledger's own shape.
+            if SLOT_LEDGER_SHAPE_RE.match(stripped):
+                malformed.append((line_number, stripped))
             continue
         entries = tuple(
             (row_id.upper(), bool(partial))
@@ -807,10 +873,54 @@ def parse_slot_ledger(text: str) -> list[SlotClaim]:
                 entries=entries,
             )
         )
-    return claims
+    return claims, malformed
 
 
-def record_findings(rows: list[MatrixRow], record_path: Path) -> list[str]:
+SUPERSEDED_REPLACEMENT_RE = re.compile(r"\*\*Superseded by:\*\*\s*(.+?)(?:\.|\Z)", re.S)
+
+
+def superseded_findings(rows: list[MatrixRow]) -> list[str]:
+    """Verify every `superseded` row names replacements the matrix carries.
+
+    The capability delta that introduced `superseded` pairs it with this
+    obligation deliberately. A terminal label on its own *exempts* its row from
+    every role requirement, so a row could be marked `superseded` and simply
+    stop being checked. Requiring it to name its replacements, and requiring
+    each named replacement to exist as a row, means the scope it gave up is
+    provably carried by rows that are themselves checked.
+    """
+    findings: list[str] = []
+    known = {row.row_id for row in rows}
+    for row in rows:
+        if row.status != SUPERSEDED_STATUS:
+            continue
+        joined = " | ".join(row.cells)
+        match = SUPERSEDED_REPLACEMENT_RE.search(joined)
+        named = (
+            {token for token in BACKTICKED_RE.findall(match.group(1)) if token.startswith("WFR-")}
+            if match
+            else set()
+        )
+        if not named:
+            findings.append(
+                f"{display_path(MATRIX_PATH)}:{row.line_number} row {row.row_id} is "
+                f"`{SUPERSEDED_STATUS}` but names no replacement row; a terminal label "
+                "that exempts its row from every role obligation must say which rows "
+                "carry the scope it gave up"
+            )
+            continue
+        for replacement in sorted(named - known):
+            findings.append(
+                f"{display_path(MATRIX_PATH)}:{row.line_number} row {row.row_id} is "
+                f"`{SUPERSEDED_STATUS}` and names replacement {replacement}, which the "
+                "matrix does not carry as a row"
+            )
+    return findings
+
+
+def record_findings(
+    rows: list[MatrixRow], record_path: Path, slot_column_located: bool
+) -> list[str]:
     """Return findings where the programme record and the matrix disagree."""
     record = display_path(record_path)
     if not record_path.is_file():
@@ -819,16 +929,44 @@ def record_findings(rows: list[MatrixRow], record_path: Path) -> list[str]:
             "the story without it"
         ]
 
+    findings: list[str] = []
+    if not slot_column_located:
+        # Fail-open 1 of 3. `parse_matrix_rows` locates the `Slot` column by
+        # name, deliberately, so a later column insertion cannot shift a
+        # positional guess. The cost is that rewording the header makes every
+        # row's slot `None`, which skips the whole outstanding-slot sweep below
+        # and exits 0. Reconciling against a record without that column is the
+        # exact state where the skip is invisible, so it is reported here rather
+        # than at the parse, where a Slot-less fixture matrix is legitimate.
+        findings.append(
+            f"{display_path(MATRIX_PATH)}: the Product Matrix `Slot` column could not "
+            f"be located, so every row parsed with no slot and the outstanding-slot "
+            f"half of the reconciliation against {record} was skipped; restore the "
+            "`Slot` header or update this check together with it"
+        )
+
     text = record_path.read_text(encoding="utf-8")
-    claims = parse_slot_ledger(text)
+    claims, malformed = parse_slot_ledger(text)
+    for line_number, line in malformed:
+        # Fail-open 2 of 3. A line that looks like a ledger line but does not
+        # parse used to be `continue`d, guarded only by the all-lines-failed
+        # case. One typo'd verb among eleven lines was invisible — and a dropped
+        # `outstanding` line is precisely how a row with remaining work reads as
+        # settled.
+        findings.append(
+            f"{record}:{line_number}: this line opens like a slot ledger entry but "
+            f"does not parse as `- slot <n> (complete|outstanding): <WFR-ID>, ...`, so "
+            f"its claim was silently dropped: {line!r}"
+        )
+
     if not claims:
-        return [
+        findings.append(
             f"{record}: no `- slot <n> (complete|outstanding): <WFR-ID>` ledger lines "
             "were parsed, so the record makes no checkable claim about remaining scope"
-        ]
+        )
+        return findings
 
     status_by_id = {row.row_id: row for row in rows}
-    findings: list[str] = []
     claimed_outstanding: set[str] = set()
     claimed_complete: set[str] = set()
 
@@ -878,10 +1016,42 @@ def record_findings(rows: list[MatrixRow], record_path: Path) -> list[str]:
                         f"`{row_id} (partial)`"
                     )
 
+    # Delta 1's mechanical half, landed by slot 7b. A ledger with no
+    # `outstanding` slot is the machine-readable statement that the programme is
+    # closed. A transitional row surviving that is exactly the drift the delta
+    # forbids, and it is invisible to every other check here: each of those only
+    # asks whether the ledger and the matrix *agree*, and they agree perfectly
+    # when a `pending` row is listed as outstanding in a slot nobody will run.
+    if all(claim.complete for claim in claims):
+        for row in rows:
+            if row.status in TRANSITIONAL_STATUSES:
+                findings.append(
+                    f"{display_path(MATRIX_PATH)}:{row.line_number} row {row.row_id} is "
+                    f"`{row.status}`, which is transitional, but {record} declares no "
+                    "outstanding slot; a transitional status must not survive the change "
+                    "that closes the migration programme"
+                )
+
     for row in rows:
         if row.status in SETTLED_STATUSES:
             continue
-        if row.slot is None or row.slot.strip().lower() in {"none", ""}:
+        slot_cell = "" if row.slot is None else row.slot.strip().lower()
+        if slot_cell == "none":
+            # Fail-open 3 of 3. `none` is a real value meaning "never migrated",
+            # which is correct for a row whose terminal status says so. It is not
+            # correct for a *transitional* row: nothing distinguished
+            # "deliberately never migrated" from "has remaining work and no slot
+            # to do it in", so the latter escaped the sweep below entirely.
+            if row.status not in TERMINAL_NON_MIGRATING_STATUSES:
+                findings.append(
+                    f"{display_path(MATRIX_PATH)}:{row.line_number} row {row.row_id} is "
+                    f"`{row.status}` with migration slot `none`; `none` means the row is "
+                    "never migrated, which only a terminal status may claim, so this row "
+                    "is exempt from the outstanding-slot rule while still carrying "
+                    "unfinished work"
+                )
+            continue
+        if not slot_cell:
             continue
         # Named on a complete line is also being accounted for. Only a row the
         # ledger mentions nowhere is a disagreement.
@@ -928,20 +1098,21 @@ def check_tree(
         return findings
 
     text = matrix_path.read_text(encoding="utf-8")
-    rows = parse_matrix_rows(text)
+    rows, slot_column_located = parse_matrix_rows(text)
     if not rows:
         findings.append(f"{display_path(matrix_path)}: no product matrix rows were parsed")
         return findings
 
     declarations = parse_role_declarations(text)
     findings.extend(status_findings(rows))
+    findings.extend(superseded_findings(rows))
     findings.extend(role_findings(rows, declarations))
     findings.extend(evidence_findings(text, root))
     findings.extend(
         facade_size_findings(rows, declarations, parse_facade_budget(text), root)
     )
     if record_path is not None:
-        findings.extend(record_findings(rows, record_path))
+        findings.extend(record_findings(rows, record_path, slot_column_located))
     return findings
 
 
@@ -1001,6 +1172,32 @@ def build_fixture(
 
 def run_self_test() -> None:
     """Prove each rule fires on a broken fixture and passes on a clean one."""
+    # Every known status must be classified by at least one of the three rule
+    # sets below, and a transitional label must not also read as terminal. This
+    # is the one invariant over the status vocabulary that no fixture can reach:
+    # a label added to `KNOWN_STATUS_LABELS` and classified nowhere passes
+    # `status_findings` as recognized, then falls through the settled, terminal,
+    # and transitional tests alike — silently exempting its rows from the
+    # outstanding-slot sweep and the programme-closed rule. That is the same
+    # fail-open shape this file closes four times elsewhere, one level up in the
+    # vocabulary rather than in the parsing.
+    classified = set(SETTLED_STATUSES) | set(TERMINAL_NON_MIGRATING_STATUSES)
+    unclassified = set(KNOWN_STATUS_LABELS) - classified - set(TRANSITIONAL_STATUSES)
+    if unclassified:
+        raise AssertionError(
+            f"status label(s) {sorted(unclassified)} are in KNOWN_STATUS_LABELS but "
+            "classified as neither settled, terminal-non-migrating, nor transitional; "
+            "rows holding them would escape the outstanding-slot and programme-closed "
+            "rules"
+        )
+    both = set(TRANSITIONAL_STATUSES) & classified
+    if both:
+        raise AssertionError(
+            f"status label(s) {sorted(both)} are classified both transitional and "
+            "terminal/settled; the programme-closed rule and the outstanding-slot "
+            "exemption would disagree about the same row"
+        )
+
     clean_row = "| WFR-EXAMPLE | Example | `model/example_policy.rs` | pending |\n"
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -1396,6 +1593,52 @@ def run_self_test() -> None:
         if findings:
             raise AssertionError(f"expected an undeclared budget to be inert, got {findings}")
 
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Fail-open 4 of 4: an annotated `facade:` line. The established way to
+        # write this line names the measured size and the pre-convention file, so
+        # it carries a second backticked token. Requiring exactly one token made
+        # the whole rule inert for such a row — three of sixteen migrated rows
+        # were unchecked this way, and the gate exited 0.
+        annotated_roles = migrated_roles.replace(
+            "- facade: `ui/search_panel/mod.rs`\n",
+            "- facade: `ui/search_panel/mod.rs` — **401** physical lines of 400, "
+            "down from a pre-convention `search_panel.rs`\n",
+        )
+        matrix, config = build_fixture(
+            root,
+            matrix_body=migrated_row,
+            budget_section=facade_budget_section(400),
+            roles=annotated_roles,
+        )
+        write_migrated_workflow(root, facade_lines=401)
+        findings = check_tree(root, matrix, config)
+        if not any(
+            "is 401 lines and exceeds the normative facade line budget of 400" in finding
+            for finding in findings
+        ):
+            raise AssertionError(
+                f"expected an annotated facade line to still be checked, got {findings}"
+            )
+
+        # A `facade:` line whose first token is not a source path still declines,
+        # rather than guessing a path out of prose.
+        matrix, config = build_fixture(
+            root,
+            matrix_body=migrated_row,
+            budget_section=facade_budget_section(400),
+            roles=migrated_roles.replace(
+                "- facade: `ui/search_panel/mod.rs`\n",
+                "- facade: `none` — this workflow owns no facade\n",
+            ),
+        )
+        write_migrated_workflow(root, facade_lines=5000)
+        findings = check_tree(root, matrix, config)
+        if any("facade line budget" in finding for finding in findings):
+            raise AssertionError(
+                f"expected a non-path facade claim to decline, got {findings}"
+            )
+
     # Rule 6 needs a matrix with a `Slot` column, because an outstanding row is
     # one that carries a migration slot and is not settled.
     slotted_header = (
@@ -1591,6 +1834,206 @@ def run_self_test() -> None:
         findings = check_tree(root, matrix, config, record)
         if not any("no `- slot" in f for f in findings):
             raise AssertionError(f"expected an empty-ledger finding, got {findings}")
+
+    # --- The three parsing-path fail-opens -----------------------------------
+    #
+    # These three arms exist because the rules above were implemented correctly
+    # while the code deciding *what they see* could fail open. Each arm is the
+    # deliberate red for one hole: before the fix, each fixture below passed
+    # with zero findings while the rule it defeats was skipped entirely.
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Fail-open 1: reword the `Slot` header. Every row then parses with no
+        # slot, so the outstanding-slot sweep is skipped and the ledger's
+        # omission of WFR-PENDING goes unreported.
+        matrix, config, record = slotted_fixture(
+            root, agreeing_body, "- slot 1 (complete): WFR-EXAMPLE\n"
+        )
+        matrix.write_text(
+            matrix.read_text(encoding="utf-8").replace(
+                "| Row id | Workflow | Risk | Slot | Status |",
+                "| Row id | Workflow | Risk | Migration slot | Status |",
+            ),
+            encoding="utf-8",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("`Slot` column could not be located" in f for f in findings):
+            raise AssertionError(
+                f"expected a renamed `Slot` header to be a finding, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Fail-open 2: a typo'd verb drops that slot's whole claim. Here the
+        # dropped line is the one that would have reported WFR-PENDING as
+        # outstanding, so without the fix the matrix and ledger disagree at
+        # exit 0.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE\n"
+            "- slot 2 (outstandng): WFR-PENDING\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("does not parse as" in f for f in findings):
+            raise AssertionError(
+                f"expected a malformed ledger line to be a finding, got {findings}"
+            )
+        # Ordinary prose that mentions a slot must stay inert, or the fix trades
+        # a fail-open for a false positive on every sentence in the record.
+        matrix, config, record = slotted_fixture(
+            root,
+            agreeing_body,
+            "- slot 1 (complete): WFR-EXAMPLE\n"
+            "- slot 2 (outstanding): WFR-PENDING\n\n"
+            "Prose: slot 2 covers the pending row, and slot 3 does not exist.\n"
+            "- slots are numbered without letters until a split occurs.\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(
+                f"expected prose mentioning slots to stay inert, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Fail-open 3: `none` is legitimate for a terminal row (WFR-SHARED in
+        # `agreeing_body` relies on it) but must not exempt a transitional one.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-ORPHAN | Orphan | tier-3 | none | pending |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any(
+            "WFR-ORPHAN" in f and "migration slot `none`" in f for f in findings
+        ):
+            raise AssertionError(
+                f"expected a `none`-slot transitional row to be a finding, got {findings}"
+            )
+        # And the legitimate case still passes: `none` on a terminal row.
+        matrix, config, record = slotted_fixture(
+            root, agreeing_body, "- slot 1 (complete): WFR-EXAMPLE\n"
+            "- slot 2 (outstanding): WFR-PENDING\n"
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(
+                f"expected `none` on a terminal row to stay legitimate, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # Delta 1's mechanical half (slot 7b): a transitional status must not
+        # survive the change that closes the programme. A ledger with no
+        # `outstanding` slot is that closing statement. Deliberate red: the
+        # same fixture with an `outstanding` slot present passes, so the arm
+        # is testing the close condition rather than the row.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-LEFTOVER | Leftover | tier-3 | 1 | pending |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any(
+            "WFR-LEFTOVER" in f and "transitional" in f and "closes the migration" in f
+            for f in findings
+        ):
+            raise AssertionError(
+                f"expected a transitional row to be a finding at programme close, got {findings}"
+            )
+        # With an outstanding slot naming it, the same row is legitimate: the
+        # programme is still open and the ledger says where the work lives.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-LEFTOVER | Leftover | tier-3 | 1 | pending |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n"
+            "- slot 2 (outstanding): WFR-LEFTOVER\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(
+                f"expected a transitional row with an outstanding slot to pass, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # `superseded`'s counterpart obligation: the label exempts its row from
+        # every role requirement, so it must name the rows that took the scope,
+        # and each must exist. Without this, `superseded` is a way to stop being
+        # checked.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-REPLACED | Replaced | tier-3 | none | superseded — **Superseded by:** `WFR-EXAMPLE`. |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(
+                f"expected a superseded row naming an existing replacement to pass, got {findings}"
+            )
+        # Names nothing -> finding.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-REPLACED | Replaced | tier-3 | none | superseded |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("names no replacement row" in f for f in findings):
+            raise AssertionError(
+                f"expected a superseded row naming no replacement to be a finding, got {findings}"
+            )
+        # Names a replacement the matrix does not carry -> finding.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-REPLACED | Replaced | tier-3 | none | superseded — **Superseded by:** `WFR-GHOST`. |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("WFR-GHOST" in f and "does not carry" in f for f in findings):
+            raise AssertionError(
+                f"expected an unknown replacement row to be a finding, got {findings}"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # `superseded` (slot 7b): a row that was *replaced* rather than migrated,
+        # exempted, or shared. It must be accepted as a label, treated as
+        # settled so the migrated-role rule does not fire on it, and treated as
+        # terminal so a `none` slot on it is legitimate. Before the label was
+        # added, the same row produced an unrecognized-label finding, which is
+        # the deliberate red this arm reproduces from the other side.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-REPLACED | Replaced | tier-3 | none | superseded — **Superseded by:** `WFR-EXAMPLE`. |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if findings:
+            raise AssertionError(
+                f"expected a `superseded` row with slot `none` to pass, got {findings}"
+            )
+        # And the label must still be *checked*: a near-miss spelling is a
+        # finding, not a silent exemption from the migrated-role rule.
+        matrix, config, record = slotted_fixture(
+            root,
+            "| WFR-EXAMPLE | Example | tier-2 | 1 | migrated |\n"
+            "| WFR-REPLACED | Replaced | tier-3 | none | supersceded — **Superseded by:** `WFR-EXAMPLE`. |\n",
+            "- slot 1 (complete): WFR-EXAMPLE\n",
+        )
+        findings = check_tree(root, matrix, config, record)
+        if not any("WFR-REPLACED" in f and "unrecognized label" in f for f in findings):
+            raise AssertionError(
+                f"expected a misspelled terminal label to be a finding, got {findings}"
+            )
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

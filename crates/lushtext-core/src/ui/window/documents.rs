@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Document lifecycle and window chrome helpers for the main window.
+//!
+//! **This module carries no workflow role**, and that is its classification
+//! rather than an omission. It is a **called presentation surface** of two
+//! migrated rows that each record it as a neighbour they call and do not own:
+//! `WFR-DOCUMENT-LOAD` (the `open_document*` family and the failed-placeholder
+//! policy) and `WFR-DOCUMENT-SAVE` (`save_current`, `discard_changes`, and the
+//! discard action's enablement). The tab-dependent refresh helpers
+//! (`update_content_stack`, `refresh_status_bar`, `refresh_header_bar`,
+//! `refresh_tab_model_projections`, `refresh_sidebar_file_row_states`) are shell
+//! projection that every structural tab operation must pair with, per
+//! `.agents/rules/widget-wiring.md`.
+//!
+//! **The close/delete half left in slot 7b.** `close_tab_for_path` now lives in
+//! `ui/window/tab_strip/close_execution.rs`, which owns `WFR-TAB-STRIP`'s close
+//! stage order and the single teardown terminal. Do not re-add a tab teardown
+//! here: `close_page` is cancellable, and running teardown before the detach
+//! terminal strands a cancelled tab's draft.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -1124,37 +1141,6 @@ impl LushtextWindow {
                 window.refresh_open_popover_rows();
             },
         );
-    }
-
-    /// Close any tab whose file path matches `path` or is inside it (for directories).
-    pub fn close_tab_for_path(&self, path: &Path) {
-        let tab_view = &self.imp().tab_view;
-        self.begin_tab_projection_refresh_batch();
-        // Closing pages from the end preserves earlier page indexes while
-        // directory deletes may remove many matching tabs in one pass.
-        for i in (0..tab_view.n_pages()).rev() {
-            let page = tab_view.nth_page(i);
-            if let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>() {
-                let Some(ep) = editor.file_path() else {
-                    continue;
-                };
-                if ep.as_path() == path || ep.starts_with(path) {
-                    // Request the close and let the detach terminal do the
-                    // teardown. `close_page` on a modified tab routes to the
-                    // save-changes dialog, which the user may cancel; tearing
-                    // the editor down here would leave a live tab whose load is
-                    // cancelled and whose file monitor is stopped, and a
-                    // cancelled in-flight load sets
-                    // `has_incomplete_load_installation`, which makes autosave
-                    // skip that tab's draft. `handle_tab_detached` performs the
-                    // same `open_paths` retirement, `untrack_editor_memory`,
-                    // `cancel_load`, and `stop_file_monitor` once the page has
-                    // actually detached.
-                    tab_view.close_page(&page);
-                }
-            }
-        }
-        self.end_tab_projection_refresh_batch();
     }
 }
 

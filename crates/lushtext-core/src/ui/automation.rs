@@ -1930,12 +1930,16 @@ fn adjustment_milli(value: f64) -> i64 {
 /// Summarize shell surface visibility and requested state after layout mediation.
 fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
     let imp = window.imp();
-    let document_properties_visible =
-        if imp.properties_layout_view.layout_name().as_deref() == Some("sheet") {
-            imp.properties_bottom_sheet.is_open()
-        } else {
-            imp.properties_split_view.shows_sidebar()
-        };
+    // The four shell-geometry fields below read `WFR-SHELL-GEOMETRY`'s own
+    // production accessors rather than re-deriving them from widgets here.
+    // That is the Completion Rule's requirement applied where the workflow's
+    // evidence surface is `test-utils`-gated and so cannot be projected from
+    // directly: the exported contract and the surface then share **one**
+    // derivation and are identical by construction. This block previously
+    // re-implemented the sheet-versus-pane test by comparing
+    // `properties_layout_view.layout_name()` against the literal `"sheet"`,
+    // a second derivation of a fact the workflow already owns.
+    let document_properties_visible = window.rendered_document_properties_visible();
     let active_editor_search =
         active_editor(window).is_some_and(|editor| editor.is_search_visible());
     let accessibility_blocker =
@@ -1944,10 +1948,10 @@ fn surface_snapshot(window: &LushtextWindow) -> AutomationSurfaceSnapshot {
     let accessibility_ready = accessibility_blocker.is_none();
 
     AutomationSurfaceSnapshot {
-        workspace_sidebar_visible: imp.workspace_split_view.shows_sidebar(),
-        workspace_sidebar_requested: imp.secondary_surfaces.workspace_requested_visible.get(),
+        workspace_sidebar_visible: window.rendered_workspace_sidebar_visible(),
+        workspace_sidebar_requested: window.workspace_sidebar_requested_visible(),
         document_properties_visible,
-        document_properties_requested: imp.secondary_surfaces.properties_requested_visible.get(),
+        document_properties_requested: window.document_properties_requested_visible(),
         compact_surface: window.compact_surface_label().map(ToOwned::to_owned),
         command_palette_visible: imp.palette_revealer.reveals_child(),
         search_panel_visible: imp.search_panel_revealer.reveals_child(),

@@ -1,7 +1,47 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! File dialogs for the main window: open file, open folder, save as,
-//! and save-changes confirmation on close.
+//! File dialogs for the main window, and the close-safety coordination behind
+//! them.
+//!
+//! **This module carries no single workflow role, and that is its recorded
+//! classification** (slot 7b, its task 0.5a). It holds **five** ordered stage
+//! orders belonging to **three** workflows, so naming it for any one of them
+//! would mis-home the other two while every gate exited 0:
+//!
+//! | Stage order | Owner | What this module is to that owner |
+//! | --- | --- | --- |
+//! | the open-file chooser | `WFR-DOCUMENT-LOAD` | called presentation surface |
+//! | the Save As chooser and `complete_save_as` | `WFR-DOCUMENT-SAVE` | called presentation surface |
+//! | the discard-changes dialog and `clear_close_discard_drafts` | `WFR-DRAFT-RECOVERY` | called presentation surface |
+//! | the save-changes dialog and `save_editors_for_close`, guarded by the close-save session identity | `WFR-DOCUMENT-SAVE` | **coordination** |
+//! | async close safety: the discarded-editor fingerprints and their freshness recheck before destruction | `WFR-DRAFT-RECOVERY` | **coordination** |
+//!
+//! # The three freshness/identity values, named
+//!
+//! The census recorded this row as owning no seam value object. It owns three,
+//! and two of them are already in the shapes the convention sanctions, so they
+//! are **recorded rather than re-reified**:
+//!
+//! * `CloseSafetyEditorFingerprint` with `close_discard_fingerprints_are_current`
+//!   is a Ticket + Facts + predicate: identity, content generation, modified
+//!   state, and path captured at confirmation, rechecked before anything is
+//!   destroyed.
+//! * The **close-save session identity** is a coordinator generation identity —
+//!   `close_save_session_is_current(identity)` — which `.agents/rules/rust.md`
+//!   says *is* the seam value object, needing no additional type.
+//! * `CloseSavePipeline` is the one genuine bundle. It is constructed once per
+//!   close and consumed by the pipeline's own steps; it crosses no second
+//!   boundary and is reconstructed nowhere, so the seam rule does not require
+//!   reifying it further than it already is.
+//!
+//! # The contract this module must keep exactly
+//!
+//! `ui/window/AGENTS.md` states it and a reassignment must not weaken it: input
+//! is rejected across the selected-save pipeline and later draft/session yields;
+//! discarded editor identity, content generation, modified state, and path are
+//! fingerprinted at confirmation; active saves and freshness are rechecked
+//! before cleanup and destruction; and retryable drafts plus sensitivity are
+//! restored on every aborted close.
 
 use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::editor_page::LushtextEditorPage;

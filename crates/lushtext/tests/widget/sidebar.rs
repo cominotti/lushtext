@@ -41,7 +41,10 @@ fn test_sidebar_workspace_filter_defaults_to_all_workspaces() {
         .expect("workspace filter should use a StringList model");
     assert_eq!(model.n_items(), 1);
     assert_eq!(
-        model.string(0).expect("All workspaces option should exist").as_str(),
+        model
+            .string(0)
+            .expect("All workspaces option should exist")
+            .as_str(),
         "All workspaces"
     );
     assert_eq!(sidebar.imp().workspace_filter_dropdown.selected(), 0);
@@ -98,7 +101,10 @@ fn test_sidebar_new_workspace_button_carries_vertical_spacing() {
         sidebar.imp().new_workspace_button.icon_name().as_deref(),
         Some("folder-new-symbolic")
     );
-    assert_eq!(sidebar.imp().new_workspace_button.valign(), gtk4::Align::Center);
+    assert_eq!(
+        sidebar.imp().new_workspace_button.valign(),
+        gtk4::Align::Center
+    );
     assert_eq!(sidebar.imp().new_workspace_button.margin_top(), 6);
     assert_eq!(sidebar.imp().new_workspace_button.margin_bottom(), 6);
 }
@@ -111,7 +117,10 @@ fn test_sidebar_workspace_list_revealer_uses_crossfade() {
         sidebar.imp().workspace_list_revealer.transition_type(),
         gtk4::RevealerTransitionType::Crossfade,
     );
-    assert_eq!(sidebar.imp().workspace_list_revealer.transition_duration(), 250);
+    assert_eq!(
+        sidebar.imp().workspace_list_revealer.transition_duration(),
+        250
+    );
     assert!(sidebar.imp().workspace_list_revealer.reveals_child());
 }
 
@@ -133,12 +142,33 @@ fn test_workspace_filter_can_show_only_one_workspace() {
         .expect("workspace filter should use a StringList model");
     assert_eq!(model.n_items(), 4);
     assert_eq!(
-        model.string(0).expect("All workspaces option should exist").as_str(),
+        model
+            .string(0)
+            .expect("All workspaces option should exist")
+            .as_str(),
         "All workspaces"
     );
-    assert_eq!(model.string(1).expect("first workspace option should exist").as_str(), "one");
-    assert_eq!(model.string(2).expect("second workspace option should exist").as_str(), "two");
-    assert_eq!(model.string(3).expect("third workspace option should exist").as_str(), "three");
+    assert_eq!(
+        model
+            .string(1)
+            .expect("first workspace option should exist")
+            .as_str(),
+        "one"
+    );
+    assert_eq!(
+        model
+            .string(2)
+            .expect("second workspace option should exist")
+            .as_str(),
+        "two"
+    );
+    assert_eq!(
+        model
+            .string(3)
+            .expect("third workspace option should exist")
+            .as_str(),
+        "three"
+    );
 
     dropdown.set_selected(2);
     flush_after_delay(Duration::from_millis(300));
@@ -162,7 +192,9 @@ fn test_workspace_filter_can_show_only_one_workspace() {
         let sections = sidebar.sections.borrow();
         revealer.reveals_child()
             && revealer.is_child_revealed()
-            && sections.iter().all(|section| section.property::<bool>("visible"))
+            && sections
+                .iter()
+                .all(|section| section.property::<bool>("visible"))
     });
 }
 
@@ -187,13 +219,24 @@ fn test_new_workspace_affordance_stays_above_sections_scroll_area() {
         .expect("workspace scroller should be the revealer child");
 
     assert!(first.is::<gtk4::Box>());
-    assert_eq!(first.as_ptr(), sidebar.imp().new_workspace_button.parent().expect("expected operation to succeed").as_ptr());
+    assert_eq!(
+        first.as_ptr(),
+        sidebar
+            .imp()
+            .new_workspace_button
+            .parent()
+            .expect("expected operation to succeed")
+            .as_ptr()
+    );
     assert!(separator_after_top.is::<gtk4::Separator>());
     assert_eq!(
         revealer.as_ptr(),
         sidebar.imp().workspace_list_revealer.as_ptr()
     );
-    assert_eq!(scroller.as_ptr(), sidebar.imp().outer_scrolled_window.as_ptr());
+    assert_eq!(
+        scroller.as_ptr(),
+        sidebar.imp().outer_scrolled_window.as_ptr()
+    );
     assert!(revealer.next_sibling().is_none());
 }
 
@@ -205,7 +248,12 @@ fn test_sidebar_outer_scroller_disables_horizontal_scrollbar() {
         sidebar.imp().outer_scrolled_window.hscrollbar_policy(),
         gtk4::PolicyType::Never
     );
-    assert!(!sidebar.imp().outer_scrolled_window.propagates_natural_width());
+    assert!(
+        !sidebar
+            .imp()
+            .outer_scrolled_window
+            .propagates_natural_width()
+    );
 }
 
 #[test]
@@ -381,7 +429,10 @@ fn test_update_tab_path_directory_prefix_rewrite() {
         .child()
         .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
         .expect("expected operation to succeed");
-    assert_eq!(editor.file_path().expect("expected operation to succeed"), new_dir.join("file.rs"));
+    assert_eq!(
+        editor.file_path().expect("expected operation to succeed"),
+        new_dir.join("file.rs")
+    );
 }
 
 #[test]
@@ -461,7 +512,12 @@ fn test_close_tab_for_path_directory_closes_children() {
         .child()
         .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
         .expect("expected operation to succeed");
-    assert_eq!(remaining.file_path().expect("expected operation to succeed"), f3);
+    assert_eq!(
+        remaining
+            .file_path()
+            .expect("expected operation to succeed"),
+        f3
+    );
 }
 
 /// A close the user has not yet confirmed must leave the tab fully live.
@@ -798,7 +854,10 @@ fn test_workspace_tree_evidence_reads_are_inert_collapsed_and_expanded() {
     // non-disturbing: the reentrancy proof's second half.
     let first = sidebar.workspace_tree_evidence();
     let second = sidebar.workspace_tree_evidence();
-    assert_eq!(evidence_without_live_mailbox(&first), evidence_without_live_mailbox(&second));
+    assert_eq!(
+        evidence_without_live_mailbox(&first),
+        evidence_without_live_mailbox(&second)
+    );
 }
 
 #[test]
@@ -1097,4 +1156,3 @@ fn test_a_workspace_created_before_the_first_load_completes_merges_instead_of_ov
 // `merging_cannot_express_a_deletion_which_is_why_it_is_gated`. Those are pure
 // functions of one bit, so they are deterministic and mutation-covered; the test above
 // is what proves the bit itself is derived from a load adoption.
-

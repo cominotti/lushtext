@@ -44,6 +44,26 @@ smoke_assert_ran() {
     fi
 }
 
+# Staleness guard for a log produced by the **custom widget harness**, which
+# does not print libtest's summary line.
+#
+# `smoke_assert_ran`'s default pattern is `test result: ok\. [1-9]`, and
+# `crates/gtk-lush/proof-harness` prints `test result: ok. all tests passed` —
+# no digit, ever. Asserting a widget log with the default pattern therefore
+# **fails on a healthy tree**, and the staleness condition it was meant to catch
+# was going unchecked in both directions.
+#
+# The real condition is in the harness's own header: a filter that matches
+# nothing yields `running 0 tests`. That is what this asserts, and it is the
+# whole claim — the caller has already failed the run on a non-zero exit, so a
+# test that ran and failed never reaches here.
+smoke_assert_widget_ran() {
+    local log_path="$1"
+    local label="$2"
+
+    smoke_assert_ran "${log_path}" "${label}" "^running [1-9][0-9]* tests"
+}
+
 smoke_require_command() {
     local command_name="$1"
     if ! command -v "$command_name" >/dev/null 2>&1; then

@@ -169,22 +169,18 @@ fn test_adoption_task_completion_returns_to_main_loop_with_freshness() {
     let accepted = Rc::new(Cell::new(false));
     let requested = FreshnessToken::new(3);
 
-    spawn_blocking_then(
-        requested,
-        || String::from("adoption payload"),
-        {
-            let completed = Rc::clone(&completed);
-            let accepted = Rc::clone(&accepted);
-            move |token, payload| {
-                accepted.set(
-                    token
-                        .accept(FreshnessToken::new(3), payload)
-                        .is_ok_and(|fresh| fresh.into_inner() == "adoption payload"),
-                );
-                completed.set(true);
-            }
-        },
-    );
+    spawn_blocking_then(requested, || String::from("adoption payload"), {
+        let completed = Rc::clone(&completed);
+        let accepted = Rc::clone(&accepted);
+        move |token, payload| {
+            accepted.set(
+                token
+                    .accept(FreshnessToken::new(3), payload)
+                    .is_ok_and(|fresh| fresh.into_inner() == "adoption payload"),
+            );
+            completed.set(true);
+        }
+    });
 
     wait_until(Duration::from_secs(2), || completed.get());
     assert!(accepted.get());

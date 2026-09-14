@@ -30,6 +30,20 @@ use crate::services::notifications::NotificationSeverity;
 use crate::services::recovery_metadata::RecoveryDiagnostic;
 use crate::services::{draft_service, json_store, session_service};
 use crate::ui::editor_page::LushtextEditorPage;
+/// The startup preload's byte reservation, named in this workflow's vocabulary.
+///
+/// A **delegating alias, not a fork**: the value is owned by
+/// `ui::plain_disposal::PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY`, which is the
+/// progress lane's whole retained-byte capacity. The contract it carries is that
+/// the startup preload reserves the entire reserved lane rather than a share of
+/// it, so no other progress-carrying payload can be admitted alongside it while
+/// a restore is in flight.
+///
+/// The alias earns its second name because this module narrates startup restore
+/// and `PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY` reads as lane plumbing here.
+/// It is documented because renaming a value as it crosses a seam is otherwise
+/// invisible to review and to every test — both names denote the same constant,
+/// so a later change that made them differ would compile and pass.
 use crate::ui::plain_disposal::PROGRESS_DISPOSAL_RETAINED_BYTE_CAPACITY as STARTUP_PRELOAD_RESERVATION_BYTES;
 
 use super::policy;

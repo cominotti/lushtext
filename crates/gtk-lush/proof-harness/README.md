@@ -45,6 +45,16 @@ values are:
 - `GDK_DEBUG=no-portals`
 - `GTK_USE_PORTAL=0`
 - `GSK_RENDERER=cairo`
+- `GTK_IM_MODULE=gtk-im-context-simple`
+
+Each one disables a desktop-session subsystem the private compositor advertises
+but cannot provide. The input-method entry is the least obvious and the most
+load-bearing: headless Mutter advertises `zwp_text_input_manager_v3`, so GTK
+enables the Wayland text-input protocol for every focused editable, and
+destroying a focused entry races the compositor's reply into a **SIGSEGV** inside
+`wl_proxy_get_version`. Measured at 9 failures in 40 isolated runs before, 0 in
+40 after. It is a statement about the environment, not a claim that the
+underlying GTK race is fixed.
 
 `apply_headless_child_environment()` applies the outer relaunch side of the
 contract before Mutter starts: `GDK_BACKEND=wayland`, the caller-owned headless

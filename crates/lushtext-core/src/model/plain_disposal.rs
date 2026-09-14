@@ -90,6 +90,27 @@ pub struct PlainDisposalSnapshot {
     pub panicked_jobs: u64,
 }
 
+impl PlainDisposalSnapshot {
+    /// Whether this lane has nothing running and nothing queued.
+    ///
+    /// **The one definition of "quiet" for this lane.** It lived open-coded as
+    /// `running_jobs == 0 && queued_jobs == 0` at a dozen call sites, and two of
+    /// them had already drifted to a *different* predicate by also requiring
+    /// `retained_bytes == 0` — which is a strictly stronger condition, not the
+    /// same one. A proof that re-derives its own definition of quiet cannot be
+    /// compared with one that re-derives a different definition.
+    ///
+    /// Note what it does **not** claim: high-water marks and cumulative counters
+    /// keep their values across a quiesce, because they are monotonic records
+    /// rather than live state. A caller needing drained bytes as well writes
+    /// `snapshot.is_quiesced() && snapshot.retained_bytes == 0`, so the extra
+    /// condition stays visible as extra.
+    #[must_use]
+    pub const fn is_quiesced(&self) -> bool {
+        self.running_jobs == 0 && self.queued_jobs == 0
+    }
+}
+
 /// Queued ownership returned by a successful policy admission.
 #[derive(Debug)]
 pub struct QueuedPlainDisposal {
@@ -194,9 +215,7 @@ impl PlainDisposalAdmission {
         weight: u64,
         replacement_credit: Option<u64>,
     ) -> Option<QueuedPlainDisposal> {
-        let empty = self.snapshot.running_jobs == 0
-            && self.snapshot.queued_jobs == 0
-            && self.snapshot.retained_bytes == 0;
+        let empty = self.snapshot.is_quiesced() && self.snapshot.retained_bytes == 0;
         let overweight = weight > self.limits.retained_byte_limit;
         let owned_jobs = self
             .snapshot

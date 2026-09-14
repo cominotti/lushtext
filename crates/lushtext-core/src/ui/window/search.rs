@@ -1,16 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Search panel wiring: toggle action, keyboard shortcut, pre-fill,
-//! result activation, workspace folder forwarding, and focus management.
+//! **Called presentation surface** for `WFR-SEARCH-REPLACE` — not a role.
 //!
-//! Extracted from `window/mod.rs` to keep the main window responsibilities
-//! split into smaller modules.
+//! The window side of the workspace search panel: the toggle action and its
+//! shortcut, selection pre-fill, result activation and F4 navigation, workspace
+//! folder forwarding, focus save and restore, and the window-side entry points
+//! that hand replace/preview/confirm/undo to the panel's own coordination roles.
+//! Every one of those projects the workflow onto widgets or resolves a
+//! window-side target; none owns an ordered stage.
+//!
+//! **The one coordination job this module used to hold has moved out.** Search
+//! progress tracking — arm a delayed visibility, publish bounded progress,
+//! heartbeat the notification alive, retire it at the terminal — is a third
+//! ordered stage sequence of this row and is now
+//! `ui/window/search_progress_execution.rs` (`execution`, stage-order-qualified).
+//!
+//! Slot 7b recorded this classification because `WFR-SEARCH-REPLACE`'s matrix
+//! cell had claimed its files were *"all under `ui/search_panel/**`"*, which was
+//! false by 928 production lines.
+//!
 //! All methods are `impl LushtextWindow` called from `new()` and `constructed()`.
 
 use crate::config::keys;
-use crate::services::notifications::{
-    NotificationOwner, NotificationSeverity, NotificationSurface, StatusMessage,
-};
+use crate::services::notifications::NotificationSeverity;
 use crate::services::{
     content_search, filesystem::metadata as fs_metadata, json_store, saved_searches, search_history,
 };
@@ -19,6 +31,7 @@ use crate::ui::editor_page::LushtextEditorPage;
 use crate::ui::search_panel::SearchProgressUpdate;
 use crate::ui::search_panel::journal::UndoRestoreClaim;
 use crate::ui::status_bar::MessageKind;
+use crate::ui::window::search_progress_execution::format_search_progress_message;
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
@@ -65,10 +78,6 @@ static RELOAD_FACTS_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-utils")]
 pub fn set_replace_reload_facts_delay_for_test(delay_ms: u64) {
     RELOAD_FACTS_DELAY_MS.store(delay_ms, Ordering::Release);
-}
-
-fn format_search_progress_message(files_searched: usize) -> String {
-    format!("Searching {files_searched} files\u{2026}")
 }
 
 fn selection_within_search_prefill_limit(start_offset: i32, end_offset: i32) -> bool {
@@ -707,116 +716,6 @@ impl LushtextWindow {
             },
         );
     }
-
-    /// Start delayed status-bar progress tracking for a new workspace search.
-    ///
-    /// Clears stale progress, arms the 500 ms visibility delay, and starts the
-    /// heartbeat timer that keeps active progress notifications alive.
-    pub(crate) fn prepare_search_progress_tracking(&self) {
-        self.finish_search_progress_tracking();
-        let imp = self.imp();
-        imp.search_progress.visible.set(false);
-        self.start_search_progress_heartbeat();
-
-        imp.search_progress.visibility_timer.arm(
-            self,
-            Duration::from_millis(500),
-            move |window, _| {
-                let imp = window.imp();
-                if !imp.search_panel.imp().runtime.searching.get()
-                    || !imp.search_panel_revealer.reveals_child()
-                {
-                    return;
-                }
-                imp.search_progress.visible.set(true);
-            },
-        );
-    }
-
-    /// Publish an informational search-progress update through the notification bus.
-    pub(crate) fn update_search_progress_message(&self, message: &str) {
-        self.update_search_progress_status_message(message, NotificationSeverity::Info);
-    }
-
-    /// Route progress updates through the visible-status pulse gate.
-    ///
-    /// The expected `StatusMessage` lets rendering pulse only when this progress
-    /// update actually occupies the status bar instead of sitting below a transient.
-    fn update_search_progress_status_message(&self, message: &str, severity: NotificationSeverity) {
-        let status_message = StatusMessage {
-            text: message.to_string(),
-            severity,
-        };
-        if self.imp().notification_bus.update_progress(
-            NotificationOwner::Search,
-            NotificationSurface::StatusBar,
-            status_message.text.clone(),
-            status_message.severity,
-        ) {
-            self.render_notifications_for_status_update(&status_message);
-        }
-    }
-
-    /// Publish a search-progress status message through the production routing path.
-    ///
-    /// Widget tests use this to exercise visible and hidden progress updates
-    /// without starting a real workspace search.
-    #[cfg(feature = "test-utils")]
-    pub fn update_search_progress_message_for_test(
-        &self,
-        message: &str,
-        severity: NotificationSeverity,
-    ) {
-        self.update_search_progress_status_message(message, severity);
-    }
-
-    pub(crate) fn finish_search_progress_tracking(&self) {
-        self.imp().search_progress.visible.set(false);
-        let _ = self.imp().search_progress.visibility_timer.invalidate();
-        self.stop_search_progress_heartbeat();
-        if self
-            .imp()
-            .notification_bus
-            .resolve(NotificationOwner::Search, NotificationSurface::StatusBar)
-        {
-            self.render_notifications();
-        }
-    }
-
-    fn start_search_progress_heartbeat(&self) {
-        self.stop_search_progress_heartbeat();
-        let window_weak = self.downgrade();
-        let source_id = glib::timeout_add_local(Duration::from_secs(1), move || {
-            let Some(window) = window_weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let imp = window.imp();
-            if !imp.search_panel.imp().runtime.searching.get() {
-                window.finish_search_progress_tracking();
-                return glib::ControlFlow::Break;
-            }
-
-            if imp.search_panel_revealer.reveals_child()
-                && imp.search_progress.visible.get()
-                && imp
-                    .notification_bus
-                    .heartbeat(NotificationOwner::Search, NotificationSurface::StatusBar)
-            {
-                window.render_notifications();
-            }
-            glib::ControlFlow::Continue
-        });
-        self.imp()
-            .search_progress
-            .heartbeat_source_id
-            .replace(Some(source_id));
-    }
-
-    fn stop_search_progress_heartbeat(&self) {
-        if let Some(source_id) = self.imp().search_progress.heartbeat_source_id.take() {
-            source_id.remove();
-        }
-    }
 }
 
 /// Open a file at a specific line number. Shared by result activation (double-click/Enter)
@@ -927,18 +826,7 @@ fn scroll_editor_to_line(editor: &LushtextEditorPage, line: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SEARCH_PANEL_PREFILL_CHAR_LIMIT, format_search_progress_message,
-        selection_within_search_prefill_limit,
-    };
-
-    #[test]
-    fn search_progress_message_does_not_use_palette_index_total() {
-        assert_eq!(
-            format_search_progress_message(14_100),
-            "Searching 14100 files\u{2026}"
-        );
-    }
+    use super::{SEARCH_PANEL_PREFILL_CHAR_LIMIT, selection_within_search_prefill_limit};
 
     #[test]
     fn search_panel_prefill_skips_large_selection_ranges() {

@@ -14,6 +14,14 @@ both withheld deltas landed and discharged, every inherited handoff item dispose
 every remaining deferral inventoried in one place with its gating condition and its
 owner, and the programme record closed out against its own baseline.
 
+**Baseline.** This change starts from a **committed** base: slot 7a landed as
+`a3b1743a` and was archived as `4c39c58a`, so its five migrations, its delta 3 sync
+into `openspec/specs/mutation-testing/spec.md`, and its matrix and record edits are all
+in the tree rather than in an uncommitted worktree. Every figure below was measured
+against that base. This matters mechanically as well as narratively: `mutants-diff` and
+the diff-aware gates now have a real base ref to diff against, which slot 5b's warning
+says they otherwise do not.
+
 Nine findings, measured at authoring rather than inherited, shape the change.
 
 ### Finding 0 — the two withheld deltas were relocated into this change at authoring
@@ -33,10 +41,17 @@ carries a one-line note recording the relocation rather than a rewritten history
 **Both were re-based against the live specs and needed no edit**, which was measured
 rather than assumed: each delta's `### Requirement:` header matches a live requirement
 title exactly, and `diff` against the live requirement body shows each delta is a
-strict superset — 46 added lines plus 61 added scenario lines for boundaries, 23 plus
-22 for evidence surfaces, with **zero** modified or removed lines. Slot 7a's delta 3
-was synced into `openspec/specs/mutation-testing/spec.md`, so no live text the two
-withheld deltas quote has moved underneath them.
+strict superset with **zero** modified and **zero** removed lines —
+`workflow-readability-boundaries` **+108 lines / +9 scenarios** and
+`workflow-evidence-surfaces` **+46 / +3**, counting each requirement block *including*
+the blank separator line that terminates it; **+107** and **+45** excluding it. The
+predicate is stated because it is the only reason two honest counts differ by one, and
+this change's whole method is to state the predicate rather than the number alone.
+
+Slot 7a's delta 3 was **committed and synced** into
+`openspec/specs/mutation-testing/spec.md` (`4c39c58a`), so the two withheld deltas were
+re-based against post-sync live text, not against a worktree. Neither quotes anything
+that sync touched.
 
 ### Finding 1 — the shell split needs seven replacement rows, and only four were candidates
 
@@ -47,11 +62,18 @@ ordered stage orders (past 19 with the contested files), criterion 2 fails on 15
 never reached. Outcome **(c), the hybrid** was selected. **The line count supports
 nothing and is not offered as support**, here or anywhere in this change.
 
-The design's candidate table is the **maximum** under consideration, and it listed
-five candidates. One of those — shell dialogs — §D1 resolved as **not a row at all**.
-So four candidate rows survive. But §D1's own four contested-file findings create
-**three further attributions the table did not anticipate**, and each is forced by the
-coverage proof rather than chosen:
+The design's candidate table is the **maximum** under consideration. It has **six
+rows** — five naming a candidate story, plus one naming the no-coordination tier; the
+word "five" appears nowhere in it and the count is this change's reading of its
+structure, not a quotation. One of the five — shell dialogs — §D1 resolved as **not a
+row at all**. So **four** candidate rows survive, and this change writes **six new
+facades** against them. That arithmetic is stated plainly because it is the departure,
+and burying it would be the same move as arguing from line count.
+
+§D1's contested-file verdicts create **three further attributions the table did not
+anticipate**, each forced by the coverage proof rather than chosen. Its record uses
+unnumbered bullets, so each is cited by the surface it names rather than by a
+finding number that does not exist:
 
 | Replacement row | Source | Why it is a row |
 | --- | --- | --- |
@@ -59,16 +81,77 @@ coverage proof rather than chosen:
 | `WFR-TAB-STRIP` | candidate table | one stage order plus three synchronous projections; owns tab close, where slot 7's confirmed data-safety defect lived |
 | `WFR-RECENT-DOCUMENTS` | candidate table | two stage orders plus one lazy projection gate; slot 3b already split it from the load row along the coordination/presentation line |
 | `WFR-FOCUS-MODE` | candidate table | one stage order: reversible chrome suppression with fullscreen ownership and preview compatibility |
-| `WFR-TRANSIENT-DISMISSAL` | **§D1 finding 4** | *"does not belong on the no-coordination-tier list. It has a strictly ordered dismissal ladder **and** a one-tick idle latch, so the list's 'no ordered stages' preamble is false for it"* |
-| `WFR-EDITOR-MEMORY-EVICTION` | **§D1 finding 2** | ~590 production lines of eviction orchestration with its own generation counter, a bounded idle continuation, 8 test seams, and two race-injector hooks, **owned by no story anywhere** |
+| `WFR-TRANSIENT-DISMISSAL` | §D1's `transient_surfaces.rs` verdict | it *"does not belong on the no-coordination-tier list"* — a strictly ordered dismissal ladder **and** a one-tick idle latch, so the list's "no ordered stages" preamble is false for it. Note it was never on the **live** tier list; the design proposed it as a tier candidate and §D1 rejected the proposal, so nothing is being removed |
+| `WFR-EDITOR-MEMORY-EVICTION` | §D1's `focus_indexing.rs` verdict | eviction orchestration with its own generation counter, a bounded idle continuation, 8 test seams, and two race-injector hooks, **owned by no story anywhere**. Size restated in Finding 1b: **~406 production lines**, not the ~590 the handoff carries |
 | `WFR-STARTUP-PREFLIGHT` | coverage proof | `startup_data.rs` is cross-cutting and owned by none (slot 5a, re-confirmed by §D1), ordering five workflows; it needs a terminal row, not a facade |
 
 Exceeding a stated maximum needs its own justification, and this is it: the maximum
 bounded **the candidates the table listed**, and three of these seven are attributions
-§D1's findings created after the table was written. Each is argued on criterion 1 or on
+§D1's verdicts created after the table was written. Each is argued on criterion 1 or on
 cross-cutting grounds in `design.md` §E1, per surface, with its evidence. **If the
 stage trace supports more than seven, that is a signal to re-read the trace rather
-than to add rows** — the design's own constraint, carried forward unchanged.
+than to add rows** — the design's own constraint, carried forward unchanged. The
+reciprocal test applies too and is easy to skip: a 202-line surface that gains a
+facade, a `policy.rs`, an `evidence.rs`, and a `test_policy.rs` may end up **larger
+after migration than before**, which is the thin-row failure the design warns about
+from the other direction.
+
+### Finding 1b — `focus_indexing.rs` holds four stories, not three, and the inherited decomposition is wrong in three ways
+
+§D1's verdict that the file is *"three stories"* is the handoff this change inherits,
+and re-derivation against the code at authoring falsifies all three of its parts. The
+file is 856 physical lines and its own module doc names *"focus restoration,
+editor-memory orchestration, and palette indexing"* — three subjects, but not three
+stage orders:
+
+| Story | Functions | Measured span | What the handoff got wrong |
+| --- | --- | --- | --- |
+| **Editor-memory eviction** | `track_editor_memory` (`:56`), `untrack_editor_memory` (`:79`), `mark_editor_memory_accessed` (`:108`), `update_editor_memory_record` (`:128`), `schedule_editor_memory_evaluation` (`:163`), `reload_if_evicted` (`:380`), `maybe_evict_background_tabs` (`:393`), `evaluate_editor_memory_budget` (`:407`) | **~406 production lines** across two discontiguous ranges (`:56`–`:190` and `:380`–`:667`) | the inherited **~590** absorbs the **~129 lines of focus restoration** that sit between them at `:255`–`:380`. Two stories were counted as one because they are adjacent |
+| **Palette overlay control** | `toggle_command_palette` (`:190`), `close_command_palette` (`:209`), `set_command_palette_actions_enabled` (`:218`), `set_command_palette_query` (`:229`), `set_command_palette_mode` (`:237`), `refresh_command_palette_sources` (`:807`), `open_file_palette_entries` (`:817`), `command_palette_workspace_group_label` (`:843`) | **~104** | "the palette story" is **two** stage orders, not one |
+| **Palette file-index build** | `start_file_index_build` (`:667`), `retry_file_index_admission` (`:746`), `finish_cancelled_file_index_admission` (`:753`), `finish_file_index_build` (`:770`), `retire_file_index_outcome` (`:852`) | **~171** | it has **its own coordinator and generation counter** — a separate ordered stage order from overlay control, and the one that actually crosses to background work |
+| **Focus restoration** | `focus_selected_editor_after_action` (`:255`), `restore_focus_after_secondary_pane_close` (`:304`), `restore_focus_after_breakpoint_collapse` (`:325`), `restore_saved_focus` (`:362`) | **~129** | the handoff calls this *"the geometry story"*. **It contains no geometry code at all.** Two of its four functions are merely geometry-*triggered* — a pane close and a breakpoint collapse call them — which is a caller relationship, not ownership. Assigning it to `WFR-SHELL-GEOMETRY` on that basis would leave a story unowned while every gate exits 0 |
+
+**Consequences this change must carry**, not treat as detail:
+
+- The eviction facade is re-projected from **~406**, not ~590.
+- The palette reassignment (0.5c) lands **two** stage orders in
+  `WFR-COMMAND-PALETTE`, and that row's cells stale accordingly — the file-index
+  build's coordinator is coordination, not presentation.
+- **Focus restoration needs an explicit owner** and currently has none. Candidates:
+  its own replacement row, a coordination role of `WFR-SHELL-GEOMETRY` argued on
+  behavior rather than on the caller relationship, or a called presentation surface of
+  whichever row owns editor focus. Task 0.4a decides; leaving it implicit is the exact
+  failure §D1 was run to prevent.
+- **A handed-on decomposition is a hypothesis in the same way a handed-on number is.**
+  Seven slots of evidence say re-derive the cell; this is the first instance where the
+  thing to re-derive was the *story boundary*, and it was wrong in three independent
+  ways.
+
+### Finding 1c — the retired `WFR-SHELL-LAYOUT` row has no lawful disposition today
+
+Retiring the row is what §D1's outcome requires, and neither available mechanism is
+legal:
+
+- **Delete it.** `record_findings` in `check-workflow-boundaries.py` fails when a
+  ledger slot names a row id with no matrix row, and
+  `docs/next/workflow-readability.md:1231` reads
+  `- slot 7b (outstanding): WFR-PLAIN-DISPOSAL, WFR-SHELL-LAYOUT, WFR-AUTOMATION-SPINE`.
+  Deleting the row fires the gate.
+- **Keep it with a terminal status.** `KNOWN_STATUS_LABELS` offers `pending`,
+  `migrated`, `partially-conforming`, `exempt`, `deferred`, `cross-cutting`. Delta 1
+  forbids the three transitional ones after the closing slot; the row is not
+  `migrated` (it was replaced, not converted), not `exempt` (it *was* forced into the
+  convention, by decomposition), and not `cross-cutting` (it was not shared
+  coordination — it was a grouping error).
+
+So the row needs a vocabulary that does not exist. Two candidate resolutions, decided
+in task 0.4b rather than discovered mid-implementation: add a terminal
+**retirement/superseded** label to the vocabulary — which is a **delta 1 text edit**,
+paid inside this change with its retroactive re-check — or retain the row with a
+documented terminal status plus a `superseded by` pointer to the seven rows, and argue
+which existing label that is. Either way the ledger line must be edited in the same
+change, because a ledger naming a deleted row and a matrix hiding a retired one are the
+same defect from two sides.
 
 Four surfaces are **reassigned to rows this change does not migrate**, which is the
 other half of the split and the half the coverage proof depends on:
@@ -83,14 +166,15 @@ other half of the split and the half the coverage proof depends on:
   than a called presentation surface: it holds two of that workflow's ordered
   coordination stages plus one coordination job of its own."* That row's cell reads
   "all under `ui/search_panel/**`", which is now false by 928 production lines.
-- **`focus_indexing.rs`'s palette story** — `WFR-COMMAND-PALETTE`'s. That row's cell
-  already says the file *"stays window code"*, which the reassignment contradicts and
-  this change must reconcile.
+- **`focus_indexing.rs`'s two palette stage orders** (Finding 1b) —
+  `WFR-COMMAND-PALETTE`'s. That row's cell already says the file *"stays window code"*,
+  which the reassignment contradicts and this change must reconcile. **Plus its focus
+  restoration story, which has no owner at all.**
 - **`mod.rs`'s `setup_theme_selector` (~100 lines)** — §D1 found *"a tenth story
   nobody had enumerated"*, in neither the row's story list nor the tier list. It needs
   a home, and which home is a decision, not an assumption.
 
-### Finding 2 — `WFR-PLAIN-DISPOSAL` has four parallel observation values, not one, and the obvious narrowing is wrong
+### Finding 2 — `WFR-PLAIN-DISPOSAL` has three parallel observation values, not one, and the obvious narrowing is wrong
 
 Measured at authoring, with the predicate stated on every figure because this row is
 the census's only user of the dual gate:
@@ -99,14 +183,26 @@ the census's only user of the dual gate:
   — **692 physical / 465 production**. **8 `*_for_test` declarations**; **17**
   `cfg(feature = "test-utils")` sites plus **13** `cfg(any(test, feature = "test-utils"))`
   sites in the `ui` half, **0** of either in the `model` half.
-- **Four parallel typed observation values**, reached through **six** accessors:
-  `PlainDisposalLimits` (`limits_for_test`, `progress_limits_for_test`),
-  `PlainDisposalSnapshot` (`lane_snapshot_for_test`, `progress_lane_snapshot_for_test`),
-  and `DisposalPressureEvidence` (`aggregate_pressure_evidence_for_test`) — plus
-  `DisposalCapacityHold` / `ProgressDisposalCapacityHold`, which are **actuation**
-  holds, not observation, and must not be swept into the surface.
+- **Three parallel typed observation values**, reached through **five** accessors.
+  Stating the predicate, because a count of "observation values" is exactly the kind of
+  figure two readers get differently: an *observation value* is a type returned by a
+  gated accessor for the purpose of being read, and the two lanes are two *instances*
+  of one type, not two types.
+
+  | Type | Accessors | Sites |
+  | --- | --- | --- |
+  | `PlainDisposalLimits` | `limits_for_test`, `progress_limits_for_test` | `:1013`, `:1020` |
+  | `PlainDisposalSnapshot` | `lane_snapshot_for_test`, `progress_lane_snapshot_for_test` | `:1027`, `:1034` |
+  | `DisposalPressureEvidence` | `aggregate_pressure_evidence_for_test` | `:1145` |
+
+  The row's remaining **three** gated declarations — `hold_disposal_capacity_for_test`,
+  `fill_disposal_capacity_for_test`, `hold_progress_disposal_capacity_for_test`,
+  returning `DisposalCapacityHold` / `ProgressDisposalCapacityHold` — are **actuation**
+  holds, not observation, and §E4 excludes them from the surface. That accounts for all
+  8 declarations: 5 observation + 3 actuation.
+
   Slot 7a's Finding 4 named three parallel types for the buffer-snapshot lane; this
-  lane has four, and the census cell named one.
+  lane also has three, and the census cell named one.
 
 **The narrowing task inherited from slot 7a is stated in a form that would be wrong to
 execute literally.** Slot 7a's task 6.8 says *"narrow `DisposalPressureEvidence` from
@@ -118,7 +214,7 @@ cross-crate reader permits. Executing the inherited instruction would break the 
 lane and call it a narrowing.
 
 The real obligation is delta 2's, and it is the consolidation: **one** typed surface
-replacing four parallel values and six accessors, at whatever visibility its measured
+replacing three parallel values and five accessors, at whatever visibility its measured
 reader set actually requires, with the visibility conclusion **recorded with its
 reader measurement** either way. Task 3.2 states the reader set before choosing.
 
@@ -165,21 +261,36 @@ Two related cells are stale and one is confirmed correct:
   projects from the evidence surface"*, so the verdict is verified here, not inherited
   twice.
 
-### Finding 5 — the two open automation reach-throughs are already retired, and the ratchet table does not know
+### Finding 5 — the automation ratchet row is stale about its *occurrence* but right about its *expression*, and it cannot be struck
 
 The matrix's `Production cross-widget reach-throughs still open, by owning row` table
 records **two** open entries at `ui/automation.rs:517`/`:518` reading
-`window.imp().tab_view`, both owned by `WFR-SHELL-LAYOUT`. Measured at authoring: both
-are **gone**. `current_readiness_failure` now iterates `window.open_editors()`, and
-slot 7a's B.5 records the retirement and its corrected attribution (the load story
-reading the tab collection, not tab-strip state).
+`window.imp().tab_view`, both owned by `WFR-SHELL-LAYOUT`. Measured at authoring, the
+answer is **not** the clean retirement the change was drafted around:
 
-The table's own instruction — *"match on the reading expression rather than the line"*
-— is what made this checkable. It is a ratchet table with a closed row still marked
-open, which is the drift its `~~RETIRED by slot N~~` convention exists to prevent, and
-it is this change's to strike. `ui/automation.rs` still holds **15** `.imp()` reads;
-task 6.4 establishes how many cross a workflow boundary under the table's own
-predicate, because the table's count and a raw grep are not the same measurement.
+- **The recorded occurrence is gone.** `current_readiness_failure` now iterates
+  `window.open_editors()`, and slot 7a's B.5 records that retirement and its corrected
+  attribution — the load story reading the tab collection, not tab-strip state.
+- **The reading expression persists at eight sites**: `:585`, `:586`, `:776`, `:777`,
+  `:836`, `:837`, `:843`, and the chained read spanning `:2003`–`:2005`. Seven match
+  `imp.tab_view` directly after a local `let imp = window.imp()`; the eighth reads
+  through a multi-line `.imp()` chain, which a single-line grep misses. The table's own
+  instruction is *"match on the reading expression rather than the line"*, and under
+  that predicate the row is **not** retired.
+
+So the row **must not be struck `~~RETIRED~~`**. The correct disposition is to record
+it as **occurrence-retired, expression persisting**, with a **new owning row** —
+`WFR-SHELL-LAYOUT` is being retired, and these eight sites read the tab collection, so
+the owner becomes whichever row task 0.5 gives tab enumeration. Task 6.4 then surfaces
+the remaining sites as ratchet entries rather than letting a fixed line number stand in
+for a fixed pattern.
+
+This is the mirror of Finding 6's lesson and worth naming as its own class: **the
+predicate a ratchet row is checked under decides whether it is closed.** A row recorded
+by line number reads as retired the moment the code moves; a row recorded by expression
+stays honest. `ui/automation.rs` holds **15** `.imp()` reads in total; how many cross a
+workflow boundary is a third, separate measurement, and task 6.4 must not conflate it
+with either of the first two.
 
 ### Finding 6 — six pieces of engineering debt from slot 7a's review pass reached no artifact
 
@@ -196,15 +307,48 @@ figures are wrong:
 | --- | --- | --- |
 | **The rustfmt gate hole** | confirmed and **larger than reported**. `crates/lushtext/tests/widget.rs` reaches its 18 test modules through `include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"))`, so `cargo fmt` cannot discover them and `cargo fmt --all --check` **passes while formatting nothing under `tests/widget/`**. The inherited figure is 171 hunks; re-derived per file with `rustfmt --edition 2024 --emit stdout \| diff`, it is **411 hunks across 18 files** (largest: `workspace_section.rs` 129, `window.rs` 75, `markdown_preview.rs` 70) | task 8.1: decide fix-or-record on the evidence, with the reformat isolated from every semantic change so review can separate them |
 | **A proof whose comment describes a step it never runs** | confirmed, `tests/widget/window.rs`. The print-disposal proof asserts `print_evidence(&window).document.is_some()` at `:14566`, then again at `:14575`–`:14578` under a comment claiming *"Verified: the surface still answered `Some` after `close()`"* — **the test never calls `close()`**. The comment reports a verification that did not happen and the second assert is a duplicate of the first | task 8.2: fix. A proof that misdescribes its own premise is the honesty class this programme keeps naming, not a comment nit |
-| **Dead tuple ladders in `tests/widget/markdown_preview.rs`** | confirmed: **8** destructuring sites bind 15 `_` placeholders out of seven-element tuple literals left behind by slot 7a's retirement of 11 tuple-returning seams into `MarkdownPreviewEvidence` (`:1208`, `:1303`, `:1322`, `:1385`, `:1415`, `:2223`, `:2413`, `:2454`) | task 8.3: re-derive the line count under a stated predicate — the inherited "~70 lines" is untraceable — then remove |
-| **`encoding/dialogs.rs` near-duplicate dialog builders** | confirmed: six `present_*` functions over one `build_dialog` plus four row builders, of which `append_action_row` (`:342`) and `append_action_row_with_sensitivity` (`:354`) are the near-duplicate pair | task 8.4: de-duplicate **only** where the grouped-row contract in `.agents/rules/ui.md` is preserved exactly; this file is a called presentation surface of a row migrated one change ago |
+| **Dead tuple ladders in `tests/widget/markdown_preview.rs`** | confirmed: **8** destructuring sites bind **20** `_` placeholders, **6** of them over seven-element tuple literals and **2** over five-element ones, left behind by slot 7a's retirement of 11 tuple-returning seams into `MarkdownPreviewEvidence` (`:1208`, `:1303`, `:1322`, `:1385`, `:1415`, `:2223`, `:2413`, `:2454`) | task 8.3: re-derive the line count under a stated predicate — the inherited "~70 lines" is untraceable to any measurement — then read the fields from the surface directly |
+| **`encoding/dialogs.rs` "near-duplicate dialog builders"** | **the named target does not exist.** `append_action_row` (`:342`) is a **one-expression default-argument wrapper** whose entire body is `append_action_row_with_sensitivity(group, title, subtitle, true, window_weak, dialog, action);` — the idiomatic way to express a default in a language without them, not duplication. And the file has **five** row builders (`dialog_row`, `static_dialog_row`, `append_action_row`, `append_action_row_with_sensitivity`, `append_choice_row`), not four | task 8.4: **re-scope or record the negative.** Look for real duplication in the six `present_*` shapes over `build_dialog`, and if none is found, **"no near-duplicate exists" is the recorded outcome.** Do not refactor a correct wrapper to satisfy an inherited claim |
 | **`git_lines` is dead** | confirmed. `scripts/accessibility_source_fingerprint.py:142`–`:143` is a one-line wrapper over `git_lines_checked` with **zero** callers | task 8.6: remove |
-| **Three residual ledger-check holes** | **not reproducible from any artifact.** The inherited label "S12" appears nowhere in the repository | task 8.5: re-derive from `check-workflow-boundaries.py`'s four documented ledger failure conditions against the states this change can produce, and fix or record what the re-derivation actually finds. A finding whose only evidence is a label is not inherited as three holes |
+| **Three residual ledger-check holes** | the inherited label "S12" appears nowhere in the repository, but **all three holes reproduce**, and two of them sit *around* the four documented conditions rather than inside them — they are **fail-opens in the parsing path**, which is why counting the documented conditions would have missed them (see Finding 6b) | task 8.5, **re-framed** as a fail-open audit of the ledger-and-slot-column parsing path, with the three reproduced holes as its starting findings rather than its conclusion |
 
 Slot 7a's appendix also contradicts itself about a seventh item: **A.6 finding 1**
 records `check-accessibility-policy`'s summary-absence fail-open as **fixed** and
 proved by deliberate red, while **A.13a** records it as *"Not fixed here"*. Both
 cannot be true. Task 8.7 resolves it against the script.
+
+### Finding 6b — the three ledger-check holes are fail-opens in the *parsing* path, not gaps in the checks
+
+The inherited item names three holes and no evidence. All three reproduce, and their
+shape changes what task 8.5 has to be: `check-workflow-boundaries.py` documents **four**
+ledger failure conditions and implements them correctly. The holes are in the code that
+decides **what the conditions see**, so an audit that enumerated the four conditions
+would have found nothing and reported the gate sound.
+
+1. **A renamed `Slot` header silently disables the slot-dependent half of the matrix
+   check.** `parse_matrix_rows` locates the column by name — deliberately, *"so the
+   `Slot` column is located by name rather than by a positional guess that a later
+   column insertion would silently shift"* — by setting `slot_index` only when a header
+   row contains both `row id` and `slot`. Rename or reword that header and `slot_index`
+   stays `None`, so **every** row's `slot` is `None`, every slot-dependent finding is
+   skipped, and the gate **exits 0**. The defence against a positional shift became a
+   fail-open against a rename.
+2. **A typo'd ledger verb silently drops that slot's claim.** `SLOT_LEDGER_RE` requires
+   the literal `complete` or `outstanding`. A line that fails the match is `continue`d,
+   and the only guard is the *all-lines-failed* case (`if not claims`). One malformed
+   line among eleven is invisible — and a dropped `outstanding` line is precisely how a
+   row with remaining work reads as settled.
+3. **A `Slot` cell of `none` exempts a `pending` row from the outstanding-slot rule.**
+   `none` is a real value meaning "never migrated", which is correct for
+   `WFR-EDITOR-MEMORY`; it is not correct for a row that is `pending`, and nothing
+   distinguishes the two.
+
+All three are the same class this programme keeps naming — **a step that quietly
+succeeds against the wrong input** — and it is the class delta 3 was written for, slot
+6 fixed twice, and slot 7a fixed twice more. Finding it in the *reconciliation gate the
+closeout depends on* is why task 8.5 is not a paperwork item: the closeout's central
+claim is that the matrix and the ledger agree, and two of these holes let them disagree
+while the gate passes.
 
 ### Finding 7 — the matrix's facade table is stale again, in the change that must replace it
 
@@ -237,12 +381,23 @@ that no test asserts, in two rows whose whole point is bounded work"* — and ne
 file had a ratchet row before, so the survivors *"were not tracked debt; they were
 invisible"*.
 
-Slot 7a also states plainly that its **160 newly-in-scope mutants are untriaged**:
-*"`make mutants-diff` was not run, and the figures reported are generation counts, not
-kill counts."* A programme cannot be closed over an untriaged scope expansion its own
-last change created. Both are this change's, and neither is inherited as a number:
-task 7.6 re-derives the ratchet rows' current survivor counts from the tool, and task
-9.5 triages the expansion to zero or to narrow documented equivalences.
+**Slot 7a contradicts itself about whether those 160 mutants were triaged, and the
+inherited half is the stale one.** Its B.6 "explicitly not claimed" list says the
+**160 newly-in-scope mutants are untriaged** — *"`make mutants-diff` was not run, and
+the figures reported are generation counts, not kill counts"* — while its **A.12**
+records an actual run: **130 caught / 13 unviable / 17 missed**, with the 17 since
+triaged to a residue of roughly 0–2. Both cannot be true, and B.6 is the section that
+was written first and not revised when A.12's run landed.
+
+This matters more than the arithmetic. A closing change that budgets for triaging 160
+untriaged mutants is budgeting for work largely already done, and would then either
+report a fictional accomplishment or quietly discover the discrepancy and have no
+record of it. Task 9.4a resolves the contradiction against the tool **before** task 9.5
+scopes anything, and 9.5 is scoped to the **actual surviving set** — which may be two
+mutants, not 160.
+
+Neither of the two ratchet rows is inherited as a number either: task 9.6 re-derives
+their current survivor counts from the tool.
 
 ### Inheritances this change is the named recipient of
 
@@ -254,7 +409,8 @@ Verified against the code at authoring rather than copied from the handoff:
 | The four contested-file verdicts | 7a B.0 item 2 | all four confirmed present at authoring; `dialogs.rs` 861, `focus_indexing.rs` 856, `window/search.rs` 955, `transient_surfaces.rs` 202 |
 | §D6's constraint, **re-proved intact** by 7a | 7a B.0 item 3 | **confirmed by count**: `actions.rs` and `imp.rs` are literal keys in three predicates in each of two implementations (`check-visual-proof-policy.py:163`/`:164`, `:190`/`:191`, `:209`/`:210`; `policy.rs:823`/`:824`, `:852`/`:853`, `:879`/`:880`), plus **six** self-test keys (`:594`, `:786`, `:808`; `:69`, `:228`, `:254`). 7a's proposal says "five" in one place and six in another; **six** is correct |
 | `ui/window/policy.rs` landed, gain from zero | 7a, delta 3's rename | present, **813 physical / ~287 production**. The gain figure disagrees between sources — the matrix says **80 mutants** with 15 survivors triaged to zero. Task 2.4 re-derives it from the tool; every copied-forward figure is suspect, *"including this change's own"* |
-| The census coverage proof is stale | 7a A.2f | **266 files, not the 198 the matrix's proof still states** — stale by 68. Re-derived here, because a split changes the attribution table and the programme claims completeness in this change |
+| The census coverage proof is stale | 7a A.2f | stale, and **by how much is not inherited**: the matrix's proof still states 198/195, slot 7a recorded 266, and a count at authoring gives 286. Three figures for one denominator is itself the finding — task 5.10 re-derives **both** numerator and denominator under a stated predicate rather than adopting any of them |
+| Remaining argument suppressions | matrix's slot-7b ledger row | **one exists**, at `model/action_catalog.rs:178` — the exempt domain catalog constructor, whose parameters each name a documented external contract field, which `.agents/rules/rust.md` places outside the seam rule. Slot 7a confirmed zero `#[allow]` of the lint anywhere. The ledger item is therefore discharged by **recording** that the single instance is the sanctioned exception, not by removing it — task 11.12 |
 | Facade budget 370, tightest repo margin **1** | 2a, re-confirmed 3a/3b/5b/6/7a | `ui/search_panel/mod.rs` still exactly **369**. Plan against 1 line. 7a's newest facades landed 105/153/155/238/270, none near the ceiling — do not read that as headroom |
 | One unspent actuation-seam budget | 5b, unspent by 6 and 7a | this change plans to spend **zero** and says so in task 4.6 |
 | `mutants-diff` proves nothing on an uncommitted worktree | 5b | task 9.5 generates the diff and passes it explicitly |
@@ -286,13 +442,20 @@ and may falsify:
 | --- | --- | --- | --- | --- |
 | `WFR-TRANSIENT-DISMISSAL` | `transient_surfaces.rs` (202/203) | **≈120** | 170 | one ordered ladder, one idle latch, one inversion |
 | `WFR-FOCUS-MODE` | `focus_mode.rs` (354/355) | **≈150** | 210 | one stage order; fullscreen ownership and preview compatibility are its only cross-surface obligations |
-| `WFR-EDITOR-MEMORY-EVICTION` | new, from `focus_indexing.rs` (~590 of 856) | **≈200** | 280 | one stage order with its own generation counter and a bounded idle continuation |
+| `WFR-EDITOR-MEMORY-EVICTION` | new, from `focus_indexing.rs` (**~406** of 856 — Finding 1b, not the inherited ~590) | **≈160** | 230 | one stage order with its own generation counter and a bounded idle continuation, over 31% fewer source lines than the handoff implied |
 | `WFR-RECENT-DOCUMENTS` | `ui/open_popover/mod.rs` (424/425) | **≈250** | **>370** | **the escalation candidate.** Two stage orders plus a lazy projection gate, and the matrix's measured stressor is stage-order count, not inversions or entry points. It also retires 26 declarations / 37 sites, more than every other shell surface combined |
 | `WFR-SHELL-GEOMETRY` | new `ui/window/geometry/mod.rs` | **≈190** | 260 | one ordered sequence, seven entry points, **the smallest external entry surface of any candidate** (§D1) |
 | `WFR-TAB-STRIP` | `tabs.rs` (634/588) + `documents.rs` close half | **≈220** | 300 | one stage order plus three synchronous projections |
 
 `WFR-PLAIN-DISPOSAL` and `WFR-STARTUP-PREFLIGHT` are projected as **no facade**: a
 lane and a cross-cutting orderer own no user-initiated operation (§D2, §E1).
+
+**Focus restoration is deliberately unprojected**, because task 0.4a has not yet given
+it an owner (Finding 1b). If it becomes its own row, its facade is projected there
+before any code moves; if it becomes a coordination role or a called presentation
+surface of an existing row, it needs no facade. Projecting a number now would prejudge
+the ownership decision, which is the mistake §D1 exists to prevent — the same reason
+slot 7 declined to project a single facade for the whole shell row.
 
 **Escalation path, declared now so it is not invented under pressure**, unchanged from
 slot 6 and 7a because step one has been sufficient six times:
@@ -378,15 +541,30 @@ this change's capacity, the split boundary is **after `WFR-SHELL-GEOMETRY`**:
 - **7c** — `WFR-AUTOMATION-SPINE`'s terminal status, both capability deltas, and the
   programme closeout with its single deferral inventory.
 
-**Taking the split moves both deltas again**, by the same rule that moved them here:
-task 0.14a forbids shipping a delta whose obligation only another change can
-discharge, and delta 1 requires *every* row terminal. A 7b that leaves the spine
-`pending` cannot carry delta 1. Taking the split therefore means relocating
-`specs/workflow-readability-boundaries/` and `specs/workflow-evidence-surfaces/` into
-7c, replacing the ledger's `slot 7b` line with `slot 7b` and `slot 7c` lines, and
-splitting the remaining-scope row. It does **not** renumber anything, and a partially
-migrated row is never an acceptable outcome. Task 0.13 records the decision point and
-its trigger.
+**Taking the split forces a delta decision, and it is finer-grained than "move them
+both."** Slot 7a's rule is that a delta must not ship in a change that cannot discharge
+its obligation — but the two deltas are not each single obligations, and their clauses
+do not all land on the same side of the boundary:
+
+| Clause | Dischargeable in 7b? | Why |
+| --- | --- | --- |
+| Delta 1(a) cross-row cell staling | **yes** | 7b performs all four reassignments and re-derives every receiving row's cells |
+| Delta 1(c) provisional grouping rows | **yes** | 7b implements the split and re-derives the coverage proof |
+| Delta 1(b) terminal status + probe evidence + matrix/ledger reconciliation | **no** | requires the spine terminal, which is 7c's |
+| Delta 1(d) closeout record | **no** | 7c's by construction |
+| Delta 2 (cross-cutting lane surface) | **yes** — but its own scenario says the obligation *"is discharged by the change that closes the migration programme"* | 7b discharges the lane; 7c would be the closing change. The scenario's wording and the work would separate |
+
+So the split has three lawful resolutions, and task 0.13 selects one rather than
+discovering the problem mid-split: **(i)** move both deltas to 7c and accept that 7b
+performs work its own spec text does not yet require; **(ii)** split delta 1 along the
+table, shipping (a) and (c) in 7b and (b) and (d) in 7c — which is more faithful and
+costs a second delta file; or **(iii)** keep delta 2 in 7b and reword its discharge
+clause from "the closing change" to "the change that discharges the lane", a
+one-sentence delta edit paid with its retroactive re-check.
+
+Taking the split also means replacing the ledger's `slot 7b` line with `slot 7b` and
+`slot 7c` lines and splitting the remaining-scope row. It does **not** renumber
+anything, and a partially migrated row is never an acceptable outcome.
 
 ## What Changes
 
@@ -402,15 +580,34 @@ its trigger.
   policy per row, and — for every row the census would have said needs no seam value
   object or evidence surface — **probe first and record the negative finding**.
 - **Reassign four surfaces to rows this change does not migrate** (`dialogs.rs`,
-  `ui/window/search.rs`, `focus_indexing.rs`'s palette story, `mod.rs`'s theme
-  selector), and **re-derive every receiving row's staled measured cells** in the same
+  `ui/window/search.rs`, `focus_indexing.rs`'s two palette stage orders and its
+  unowned focus-restoration story, `mod.rs`'s theme selector), and **re-derive every receiving row's staled measured cells** in the same
   change, which is delta 1's own cross-row staling statement applied to the change
   that authored it.
-- **Re-derive the census coverage proof** from 266 files rather than the 198 the
+- **Re-derive the census coverage proof** under a stated predicate rather than
+  adopting any of the three figures in circulation (the matrix's 198, slot 7a's 266, and
+  286 at authoring), so
   matrix still states, so no file loses attribution at the moment the programme claims
   completeness.
-- **Discharge `WFR-PLAIN-DISPOSAL`'s surface obligations**: four parallel typed
-  observation values and six accessors consolidated into one surface at its measured
+- **Give `WFR-SHELL-LAYOUT` a lawful retirement** (Finding 1c) — either a terminal
+  retirement label added to the status vocabulary as a delta 1 edit, or the row retained
+  with a documented terminal status and a `superseded by` pointer — and **rewrite the
+  nine stale `WFR-SHELL-LAYOUT` owner pointers** across seven source and doc files that
+  no gate can see.
+- **Re-derive `focus_indexing.rs`'s four stories from the code** before reassigning any
+  of them, and **give focus restoration an explicit owner**, since the inherited
+  three-story decomposition mislabels it as geometry, absorbs its 129 lines into the
+  eviction figure, and collapses two palette stage orders into one.
+- **Audit the ledger-and-slot-column parsing path for fail-opens** (Finding 6b) with
+  the three reproduced holes as the starting point — a renamed `Slot` header silently
+  disabling half the matrix check, a typo'd ledger verb silently dropping a claim, and a
+  `Slot` cell of `none` exempting a `pending` row — because the closeout's central claim
+  is that the matrix and the ledger agree, and two of these let them disagree at exit 0.
+- **Resolve slot 7a's own mutation-triage contradiction** (B.6's "160 untriaged" against
+  A.12's recorded 130 caught / 13 unviable / 17 missed) before scoping any triage, and
+  scope the run to the **actual** surviving set.
+- **Discharge `WFR-PLAIN-DISPOSAL`'s surface obligations**: three parallel typed
+  observation values and five accessors consolidated into one surface at its measured
   readers' visibility, all three mandated proofs plus the no-materialization statement
   discharged with the lane **quiesced** so a worker-thread atomic cannot make the
   reentrancy assertion unsound, the `DisposalProducer` family's 12 default-feature
@@ -420,8 +617,9 @@ its trigger.
 - **Resolve `WFR-AUTOMATION-SPINE` to a terminal status** after probing
   `ui/automation.rs` for separable pure decisions and recording the finding either
   way, reconcile all three disagreeing sources, verify rather than inherit the
-  `MinimapEvidence` non-registration verdict, and **strike the two retired
-  reach-throughs from the ratchet table** with their retiring slot named.
+  `MinimapEvidence` non-registration verdict, and **record the automation ratchet row
+  as occurrence-retired with its reading expression persisting at eight sites** under a
+  new owning row — not struck retired, which its own predicate forbids.
 - **Re-key the path-keyed gates §D1's outcome moves** — six literal `actions.rs`/
   `imp.rs` pairs across three predicates in each of two implementations, plus six
   self-test keys — to the narrowest key that still selects exactly the protected code,
@@ -461,7 +659,17 @@ deliberately because this change's own sweep *is* the re-check.
   (a) **Cross-row cell staling**: where a change resolves a census gap by *assigning*
   files to a row it does not migrate, the receiving row's measured cells become stale
   at that moment and the assigning change either re-derives them or records in the row
-  that they are stale and why. (b) **Terminal status at programme close**: when the
+  that they are stale and why. **Two notes on how this change reads its own delta**,
+  because both are easy to over-read. First, the clause grants a **disjunction** —
+  re-derive *or* record-stale — and this change's decision to always re-derive is a
+  **change-level choice**, not something the delta compels; it is taken because a
+  closeout that records four rows' cells as stale would be asserting completeness over
+  known-stale measurements. Second, the clause's trigger is a row the assigning change
+  *"does not otherwise touch"*, and 7b **does** touch `WFR-DOCUMENT-SAVE`,
+  `WFR-DRAFT-RECOVERY`, `WFR-SEARCH-REPLACE`, and `WFR-COMMAND-PALETTE` — so the clause
+  arguably does not fire at all here and the obligation is self-imposed. Recorded so a
+  later reader does not cite this change as precedent for a stricter rule than the text
+  states. (b) **Terminal status at programme close**: when the
   final slot lands, every row carries `migrated`, `exempt`, or `cross-cutting`;
   `pending`, `deferred`, and `partially-conforming` do not survive; a row resolved as
   non-migrating records the **probe evidence** for that conclusion; and where the
@@ -502,8 +710,20 @@ deliberately because this change's own sweep *is* the re-check.
   pure policy, landed by slot 7a and moving into whichever role home §E1 selects.
 - `crates/lushtext-core/src/ui/window/tabs.rs` (634/588) and `documents.rs` (1,181) —
   the tab-strip row, including the tab-pin and bulk-close neighbours.
-- `crates/lushtext-core/src/ui/window/focus_indexing.rs` (856) — three stories: the
-  eviction row (~590), the palette row's, and the geometry row's.
+- `crates/lushtext-core/src/ui/window/focus_indexing.rs` (856) — **four** stories
+  (Finding 1b): editor-memory eviction (~406), palette overlay control (~104), palette
+  file-index build (~171, with its own coordinator), and focus restoration (~129, with
+  **no owner**).
+- **Stale `WFR-SHELL-LAYOUT` pointers in production source and docs**, which the row's
+  retirement invalidates and which no gate can find because they are prose in doc
+  comments: `ui/sidebar/mod.rs:25`, `:68`, `:85`; `ui/sidebar/AGENTS.md:21`, `:43`;
+  `ui/sidebar/width_preset.rs:9`; `ui/sidebar/filter_execution.rs:20`;
+  `ui/editor_page/restore_position.rs:14`; and `docs/automation-reference.md:681`. Nine
+  sites across seven files. Each names the retired row as an **owner** — of the width
+  preset, of the sidebar show/hide animation, of the readiness blocker, of the
+  open/active file-row projection — so leaving them behind would point a reader at a
+  row that no longer exists, from files the seven replacement rows now own. Task 11.5a
+  re-derives the set and rewrites each to its new owner.
 - `crates/lushtext-core/src/ui/window/focus_mode.rs` (354),
   `transient_surfaces.rs` (202), `startup_data.rs` (435), `zoom.rs` (156),
   `workspace_scope.rs` (48), `mod.rs` (269), `recent_open.rs` (282).

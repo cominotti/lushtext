@@ -61,7 +61,11 @@ static UNDO_AFTER_METADATA_HOOKS: OnceLock<Mutex<BTreeMap<PathBuf, UndoAfterMeta
 static FAIL_REPLACE_BEFORE_RENAME_PATHS: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
 
 /// Override the Replace All undo-payload ceiling on the current test thread.
-#[cfg(any(test, feature = "test-utils"))]
+///
+/// Gated to match its only consumer, the `test-utils` re-export in
+/// `content_search/mod.rs`. Under plain `cfg(test)` this would compile with
+/// zero users — the gate mismatch that `--all-features` cannot see.
+#[cfg(feature = "test-utils")]
 pub fn set_max_replace_undo_bytes_for_test(limit: Option<u64>) {
     TEST_MAX_REPLACE_UNDO_BYTES.with(|slot| slot.set(limit));
 }
@@ -189,7 +193,10 @@ pub fn register_undo_after_metadata_hook_for_test(
 /// registration in the process (for example under nextest's process-per-test
 /// isolation). Parallel tests inside one process should use the target-scoped
 /// [`undo_after_metadata_hook_is_registered_for_test`] instead.
-#[cfg(any(test, feature = "test-utils"))]
+///
+/// Gated to match its only consumer, the `test-utils` re-export in
+/// `content_search/mod.rs`.
+#[cfg(feature = "test-utils")]
 #[must_use]
 pub fn undo_after_metadata_hook_registry_is_empty_for_test() -> bool {
     UNDO_AFTER_METADATA_HOOKS.get().is_none_or(|registry| {

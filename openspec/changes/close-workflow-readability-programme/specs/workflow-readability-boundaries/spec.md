@@ -34,7 +34,17 @@ state in the row that they are now stale and why, so the receiving row's own
 migration does not read them as measurements.
 
 **Every row SHALL carry a terminal status once the programme's final migration
-slot lands.** The terminal statuses are `migrated`, `exempt`, and `cross-cutting`.
+slot lands.** The terminal statuses are `migrated`, `exempt`, `cross-cutting`, and
+`superseded`. `superseded` is for a row that was **replaced** by other rows rather
+than migrated, exempted, or shared — a row a structural finding showed was never
+one workflow. Because that label alone would exempt its row from every
+role obligation, it carries a **counterpart obligation**: a `superseded` row SHALL
+name each of its replacement rows, and the mechanical check SHALL verify that
+every named replacement exists as a row in the matrix. A `superseded` row that
+names no replacement, or names one the matrix does not carry, SHALL be a finding,
+so the label cannot become a silent exemption for a row nobody replaced. A
+superseded row is retained rather than deleted, because the programme record's
+slot ledger names it.
 `pending`, `deferred`, and `partially-conforming` are transitional and MUST NOT
 survive the closing change, because a transitional status in a completed programme
 tells a later reader that planned work was abandoned. A row resolved to a
@@ -130,8 +140,19 @@ change could not obtain, the section states the gap and whose decision it awaits
 
 #### Scenario: No row carries a transitional status after the final slot
 - **WHEN** the programme's final migration slot lands
-- **THEN** every matrix row carries `migrated`, `exempt`, or `cross-cutting`
+- **THEN** every matrix row carries `migrated`, `exempt`, `cross-cutting`, or
+  `superseded`
 - **AND** no row carries `pending`, `deferred`, or `partially-conforming`
+
+#### Scenario: A superseded row names replacements the matrix actually carries
+- **WHEN** a change resolves a row to `superseded` because a structural finding
+  showed it was never one workflow
+- **THEN** the row names every replacement row that took its scope
+- **AND** the mechanical check verifies each named replacement exists as a matrix
+  row, so the label cannot exempt a row from its role obligations without a
+  successor carrying them
+- **AND** a `superseded` row naming no replacement, or naming one the matrix does
+  not carry, is a finding
 
 #### Scenario: Non-migrating terminal resolution records its probe
 - **WHEN** the closing change resolves a row to `exempt` or `cross-cutting` rather

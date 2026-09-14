@@ -60,6 +60,35 @@ emit Mesa/EGL GPU-probe warnings just because no render device is available.
 Override `GSK_RENDERER` explicitly only when the test run is meant to chase a
 renderer-specific GTK bug.
 
+`gtk_lush_proof_harness::recommended_pre_gtk_environment()` sets five variables,
+and the principle behind all five is the same: **the private compositor
+advertises desktop services it cannot provide, so do not start the client half
+against it.** `NO_AT_BRIDGE=1` (no accessibility bus), `GDK_DEBUG=no-portals` and
+`GTK_USE_PORTAL=0` (no portal service), `GSK_RENDERER=cairo` (no GPU), and
+`GTK_IM_MODULE=gtk-im-context-simple` (no input method).
+
+**The input-method one is the least obvious and it is a crash, not noise.**
+Headless Mutter advertises `zwp_text_input_manager_v3`, so GTK selects its
+Wayland IM backend and enables the text-input protocol for every focused
+editable. Destroying a focused `GtkEntry` — an inline rename confirming, a search
+bar closing — races the compositor's reply, and when the event lands after the
+context is gone the result is `gtk_widget_get_display: assertion 'GTK_IS_WIDGET
+(widget)' failed` followed by a **SIGSEGV** inside `wl_proxy_get_version`. It
+reproduced in 9 of 40 isolated runs and presented as a `FLAKY:` line, which is
+exactly why a `FLAKY` line is a blocker rather than noise: the flake was a
+segfault.
+
+Two lessons worth carrying:
+
+- **`entry.has_focus()` is `false` for a focused `GtkEntry`.** `GtkEntry` is
+  composite; focus lands on its internal `GtkText`. A focus guard written that
+  way compiles, reads correctly, and never fires. Ask the root's focus widget
+  instead: `window.focus()`, then `focused == entry || focused.is_ancestor(entry)`.
+- **Measure a toolkit-race "fix" before believing it.** Three application-side
+  orderings were tried against this one and each was neutral or *worse*; the
+  dangling state was in GTK's private per-display IM global, which application
+  code cannot reach. See `docs/next/persistent-format-hardening.md` S7B-6.
+
 ## Waiting for Async UI State
 
 Many widget changes land through idle callbacks, timeouts, or `spawn_blocking_then`. Use the **shared** wait helpers from `crates/lushtext/tests/widget/common.rs` — do not paste a private copy into your module:

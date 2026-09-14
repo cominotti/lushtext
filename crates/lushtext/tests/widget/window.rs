@@ -71,16 +71,17 @@ use lushtext_core::ui::editor_page::{
     MinimapAvailability, MinimapMarkerKind, buffer_snapshot_evidence,
 };
 use lushtext_core::ui::markdown_preview::{LushtextMarkdownPreview, MarkdownRenderState};
+use lushtext_core::ui::open_popover::evidence::open_popover_evidence;
 use lushtext_core::ui::plain_disposal::{
     fill_disposal_capacity_for_test, hold_disposal_capacity_for_test,
-    hold_progress_disposal_capacity_for_test,
-    lane_snapshot_for_test, progress_lane_snapshot_for_test,
+    hold_progress_disposal_capacity_for_test, plain_disposal_evidence,
 };
 use lushtext_core::ui::preferences::LushtextPreferences;
 use lushtext_core::ui::search_panel::SearchPanelTestPolicy;
+use lushtext_core::ui::window::shell_geometry_evidence;
 use lushtext_core::ui::window::{
-    DraftFlushError, LushtextWindow, PrintEvidence, PrintOutcome, print_evidence,
-    fail_next_draft_mutations_for_test, local_history_preview_install_evidence,
+    DraftFlushError, LushtextWindow, PrintEvidence, PrintOutcome, editor_memory_eviction_evidence,
+    fail_next_draft_mutations_for_test, local_history_preview_install_evidence, print_evidence,
     set_automatic_draft_limit_for_test, set_bookmark_excerpt_preview_delay_for_test,
     set_canonical_refresh_delay_for_test, set_close_safety_completion_delay_for_test,
     set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
@@ -88,10 +89,10 @@ use lushtext_core::ui::window::{
     set_lazy_draft_read_delay_for_test, set_local_history_baseline_delay_for_test,
     set_local_history_baseline_failures_for_test, set_local_history_preview_install_delay_for_test,
     set_local_history_preview_read_delay_for_test, set_lossy_encoding_analysis_delay_for_test,
-    set_next_draft_body_disposal_probe_for_test,
-    set_note_source_delay_for_test, set_notes_browser_query_delay_for_test,
-    set_notes_browser_source_entry_limit_for_test, set_orphan_cleanup_delays_for_test,
-    set_replace_reload_facts_delay_for_test, with_print_runner_for_test,
+    set_next_draft_body_disposal_probe_for_test, set_note_source_delay_for_test,
+    set_notes_browser_query_delay_for_test, set_notes_browser_source_entry_limit_for_test,
+    set_orphan_cleanup_delays_for_test, set_replace_reload_facts_delay_for_test,
+    with_print_runner_for_test,
 };
 use sourceview5::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -1827,7 +1828,8 @@ fn assert_readable_empty_status_dialog(
 fn wait_for_empty_notes_dialog(window: &LushtextWindow) -> libadwaita::Dialog {
     wait_until(Duration::from_secs(15), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.source_entries == 0)
             && visible_sheet_dialog(window).is_some_and(|dialog| {
                 dialog
@@ -2401,7 +2403,7 @@ fn wait_for_properties_surface(
 
 fn wait_for_workspace_sidebar_transition(window: &LushtextWindow) {
     wait_until(Duration::from_secs(2), || {
-        !window.workspace_sidebar_transition_pending_for_test()
+        !shell_geometry_evidence(window).workspace_sidebar_transition_pending
     });
     flush_events();
 }
@@ -2575,12 +2577,14 @@ fn minimap_setting(window: &LushtextWindow) -> bool {
 }
 
 fn minimap_source_map(editor: &LushtextEditorPage) -> sourceview5::Map {
-    editor.minimap_source_map_widget()
+    editor
+        .minimap_source_map_widget()
         .expect("source map should exist")
 }
 
 fn minimap_marker_strip(editor: &LushtextEditorPage) -> gtk4::DrawingArea {
-    editor.minimap_marker_strip_widget()
+    editor
+        .minimap_marker_strip_widget()
         .expect("marker strip should exist")
 }
 
@@ -4247,7 +4251,7 @@ fn test_target_state_actions_drive_visible_surfaces_without_toggle_parity() {
     assert!(action_enabled(&window, "set-open-popover-query"));
     activate_string_action(&window, "set-open-popover-query", "filter-target");
     wait_until(Duration::from_secs(2), || {
-        window.imp().open_popover.visible_titles_for_test()
+        open_popover_evidence(&window.imp().open_popover).visible_titles
             == vec!["lushtext-open-popover-filter-target.txt"]
     });
     window.imp().open_popover.popdown();
@@ -5942,23 +5946,23 @@ fn test_memory_budget_updates_edit_bursts_incrementally_and_keeps_protected_work
     flush_events();
 
     let editor = active_editor(&window);
-    let baseline = window.editor_memory_evaluation_count_for_test();
-    let baseline_scans = window.editor_memory_full_scan_count_for_test();
+    let baseline = editor_memory_eviction_evidence(&window).evaluation_count;
+    let baseline_scans = editor_memory_eviction_evidence(&window).full_scan_count;
     editor.buffer().set_text("a");
     editor.buffer().set_text("ab");
     editor.buffer().set_text("abc");
     flush_events();
     assert_eq!(
-        window.editor_memory_evaluation_count_for_test(),
+        editor_memory_eviction_evidence(&window).evaluation_count,
         baseline,
         "below-threshold edits must not schedule aggregate enforcement"
     );
     assert_eq!(
-        window.editor_memory_full_scan_count_for_test(),
+        editor_memory_eviction_evidence(&window).full_scan_count,
         baseline_scans,
         "below-threshold edits must not walk the tab model"
     );
-    assert!(window.editor_memory_reconciles_for_test());
+    assert!(editor_memory_eviction_evidence(&window).ledger_reconciles);
 
     editor.set_memory_estimate_for_test(Some(EDITOR_MEMORY_UPPER_BUDGET_BYTES + 1));
     flush_events();
@@ -5967,13 +5971,13 @@ fn test_memory_budget_updates_edit_bursts_incrementally_and_keeps_protected_work
         "active untitled work is always protected"
     );
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::NoProgress
     );
-    let no_progress_count = window.editor_memory_evaluation_count_for_test();
+    let no_progress_count = editor_memory_eviction_evidence(&window).evaluation_count;
     flush_events();
     assert_eq!(
-        window.editor_memory_evaluation_count_for_test(),
+        editor_memory_eviction_evidence(&window).evaluation_count,
         no_progress_count,
         "a stable protected state must not spin no-progress evaluations"
     );
@@ -5981,16 +5985,19 @@ fn test_memory_budget_updates_edit_bursts_incrementally_and_keeps_protected_work
     editor.set_memory_estimate_for_test(Some(12));
     flush_events();
     assert_eq!(
-        window.editor_memory_evaluation_count_for_test(),
+        editor_memory_eviction_evidence(&window).evaluation_count,
         no_progress_count,
         "a below-threshold delta should settle without another full scan"
     );
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::WithinBudget
     );
-    assert_eq!(window.editor_memory_incremental_total_for_test(), 12);
-    assert!(window.editor_memory_reconciles_for_test());
+    assert_eq!(
+        editor_memory_eviction_evidence(&window).incremental_total_bytes,
+        12
+    );
+    assert!(editor_memory_eviction_evidence(&window).ledger_reconciles);
 }
 
 #[test]
@@ -5998,7 +6005,7 @@ fn test_many_tab_unicode_edits_and_detach_reconcile_without_full_scans() {
     ensure_gtk_init();
     let window = test_window();
     present_window(&window);
-    let baseline_scans = window.editor_memory_full_scan_count_for_test();
+    let baseline_scans = editor_memory_eviction_evidence(&window).full_scan_count;
 
     let mut last_page = None;
     for index in 0..24 {
@@ -6013,12 +6020,12 @@ fn test_many_tab_unicode_edits_and_detach_reconcile_without_full_scans() {
     flush_events();
 
     assert_eq!(
-        window.editor_memory_full_scan_count_for_test(),
+        editor_memory_eviction_evidence(&window).full_scan_count,
         baseline_scans,
         "ordinary attach, selection, and Unicode edit deltas stay independent of tab count"
     );
-    assert!(window.editor_memory_incremental_total_for_test() > 0);
-    assert!(window.editor_memory_reconciles_for_test());
+    assert!(editor_memory_eviction_evidence(&window).incremental_total_bytes > 0);
+    assert!(editor_memory_eviction_evidence(&window).ledger_reconciles);
 
     let last_page = last_page.expect("last attached page");
     let pages_before = window.imp().tab_view.n_pages();
@@ -6026,10 +6033,10 @@ fn test_many_tab_unicode_edits_and_detach_reconcile_without_full_scans() {
     flush_events();
     assert_eq!(window.imp().tab_view.n_pages(), pages_before - 1);
     assert_eq!(
-        window.editor_memory_full_scan_count_for_test(),
+        editor_memory_eviction_evidence(&window).full_scan_count,
         baseline_scans
     );
-    assert!(window.editor_memory_reconciles_for_test());
+    assert!(editor_memory_eviction_evidence(&window).ledger_reconciles);
 }
 
 #[test]
@@ -6059,7 +6066,7 @@ fn test_unsaved_growth_alone_evicts_an_eligible_clean_background_tab() {
     assert!(!growing_editor.is_evicted());
     assert!(growing_editor.is_modified());
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::Converged
     );
 }
@@ -6097,7 +6104,7 @@ fn test_memory_budget_revalidates_an_active_tab_change_before_eviction() {
     assert_eq!(window.imp().tab_view.selected_page(), Some(first_page));
     assert!(!first_editor.is_evicted());
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::NoProgress
     );
 }
@@ -6138,7 +6145,7 @@ fn test_memory_budget_revalidates_save_start_before_eviction() {
     assert!(first_editor.save_evidence().inflight);
     assert!(!first_editor.is_evicted());
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::NoProgress
     );
     editor_io::set_save_write_delay_for_test(0);
@@ -6184,7 +6191,7 @@ fn test_memory_budget_evicts_lru_clean_tab_to_lower_watermark() {
     assert!(!editors[1].is_evicted());
     assert!(!editors[2].is_evicted(), "active tab stays protected");
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::Converged
     );
 }
@@ -6217,7 +6224,7 @@ fn test_memory_budget_applies_at_most_one_eviction_per_idle_dispatch() {
     flush_events();
     let protected_editor = active_editor(&window);
     protected_editor.buffer().set_text("protected unsaved work");
-    let dispatches_before = window.editor_memory_eviction_dispatch_count_for_test();
+    let dispatches_before = editor_memory_eviction_evidence(&window).eviction_dispatch_count;
     protected_editor.set_memory_estimate_for_test(Some(220 * 1024 * 1024));
     flush_events();
 
@@ -6230,13 +6237,13 @@ fn test_memory_budget_applies_at_most_one_eviction_per_idle_dispatch() {
         "all three clean tabs are needed to reach low water"
     );
     assert_eq!(
-        window.editor_memory_eviction_dispatch_count_for_test() - dispatches_before,
+        editor_memory_eviction_evidence(&window).eviction_dispatch_count - dispatches_before,
         u64::try_from(evicted).expect("eviction count fits u64"),
         "each idle callback may apply no more than one eviction"
     );
     assert!(!protected_editor.is_evicted());
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::Converged
     );
 }
@@ -6286,7 +6293,7 @@ fn test_memory_budget_resnapshots_instead_of_applying_stale_candidates() {
     );
     assert!(!protected_editor.is_evicted());
     assert_eq!(
-        window.editor_memory_outcome_for_test(),
+        editor_memory_eviction_evidence(&window).last_outcome,
         EditorMemoryBudgetOutcome::WithinBudget
     );
 }
@@ -6597,7 +6604,12 @@ fn test_startup_restore_progresses_while_ordinary_disposal_capacity_is_full() {
                 .is_some_and(|editor| editor.file_path().as_deref() == Some(path.as_path()))
     });
 
-    assert!(lane_snapshot_for_test().overweight_exclusive);
+    assert!(
+        plain_disposal_evidence()
+            .ordinary
+            .snapshot
+            .overweight_exclusive
+    );
     drop(capacity_hold);
 }
 
@@ -6619,7 +6631,9 @@ fn test_close_before_startup_descriptors_preserves_persisted_session() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.session_restore_evidence().startup_descriptors_pending
+            && window
+                .session_restore_evidence()
+                .startup_descriptors_pending
     });
     let completed = Rc::new(Cell::new(false));
     let completed_clone = Rc::clone(&completed);
@@ -6671,7 +6685,9 @@ fn test_close_before_startup_descriptors_merges_new_untitled_recovery() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.session_restore_evidence().startup_descriptors_pending
+            && window
+                .session_restore_evidence()
+                .startup_descriptors_pending
     });
     window.new_tab();
     let editor = active_editor(&window);
@@ -6761,7 +6777,9 @@ fn test_pre_restore_untitled_creation_cannot_overwrite_existing_draft_identity()
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.session_restore_evidence().startup_descriptors_pending
+            && window
+                .session_restore_evidence()
+                .startup_descriptors_pending
     });
     window.new_tab();
     let editor = active_editor(&window);
@@ -6836,7 +6854,9 @@ fn test_close_aborts_when_pending_session_evidence_cannot_be_preserved() {
     present_window(&window);
     wait_until(Duration::from_secs(5), || {
         window.imp().startup_data_flow.completed.get()
-            && window.session_restore_evidence().startup_descriptors_pending
+            && window
+                .session_restore_evidence()
+                .startup_descriptors_pending
     });
     window.close();
     wait_until(Duration::from_secs(10), || {
@@ -7183,10 +7203,7 @@ fn test_session_restore_editor_and_window_teardown_release_all_planning_ownershi
     window.imp().tab_view.close_page(&first_page);
     drop(first_page);
     wait_until(Duration::from_secs(5), || {
-        window
-            .session_restore_evidence()
-            .pages_created
-            >= 3
+        window.session_restore_evidence().pages_created >= 3
     });
 
     // SAFETY: this test intentionally drives the final GObject teardown path;
@@ -7813,23 +7830,21 @@ fn test_orphan_cleanup_coalesces_timers_and_serializes_workers() {
     let window = test_window();
 
     wait_until(Duration::from_secs(10), || {
-        window
-            .draft_evidence()
-            .cleanup_timer_pending
+        window.draft_evidence().cleanup_timer_pending
     });
     set_orphan_cleanup_delays_for_test(0, 1, 200);
     window.schedule_orphan_cleanup_for_test(true);
     window.schedule_orphan_cleanup_for_test(true);
 
     wait_until(Duration::from_secs(10), || {
-        window
-            .draft_evidence()
-            .cleanup_worker_active
+        window.draft_evidence().cleanup_worker_active
     });
     window.schedule_orphan_cleanup_for_test(true);
     wait_until(Duration::from_secs(10), || {
         let snapshot = window.draft_evidence();
-        snapshot.cleanup_workers_started == 2 && !snapshot.cleanup_worker_active && !snapshot.cleanup_timer_pending
+        snapshot.cleanup_workers_started == 2
+            && !snapshot.cleanup_worker_active
+            && !snapshot.cleanup_timer_pending
     });
 
     let snapshot = window.draft_evidence();
@@ -7838,11 +7853,7 @@ fn test_orphan_cleanup_coalesces_timers_and_serializes_workers() {
 
     set_orphan_cleanup_delays_for_test(100, 1, 0);
     window.schedule_orphan_cleanup_for_test(false);
-    assert!(
-        window
-            .draft_evidence()
-            .cleanup_timer_pending
-    );
+    assert!(window.draft_evidence().cleanup_timer_pending);
     window.dispose_orphan_cleanup_for_test();
     flush_after_delay(Duration::from_millis(150));
     let disposed = window.draft_evidence();
@@ -8313,12 +8324,10 @@ fn test_draft_pipeline_lazy_restore_rejects_stale_editor_and_advances_queue() {
                 original_mtime_secs: None,
                 saved_at_secs: 1,
             });
-        window
-            .imp()
-            .drafts
-            .preloaded
-            .borrow_mut()
-            .insert(draft_id.clone(), PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget));
+        window.imp().drafts.preloaded.borrow_mut().insert(
+            draft_id.clone(),
+            PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget),
+        );
     }
 
     window.check_draft_by_id(&first, &first_id);
@@ -8595,12 +8604,10 @@ fn test_draft_pipeline_lazy_read_failure_preserves_body_and_reports_diagnostic()
             original_mtime_secs: None,
             saved_at_secs: 1,
         });
-    window
-        .imp()
-        .drafts
-        .preloaded
-        .borrow_mut()
-        .insert(draft_id.clone(), PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget));
+    window.imp().drafts.preloaded.borrow_mut().insert(
+        draft_id.clone(),
+        PreloadedDraftRestore::Skip(PreloadedDraftSkip::LazyAggregateBudget),
+    );
 
     window.check_draft_by_id(&editor, &draft_id);
     wait_until(Duration::from_secs(3), || {
@@ -9339,7 +9346,7 @@ fn test_compact_sidebar_show_with_properties_visible_waits_to_close_sheet_until_
 
     assert!(workspace_sidebar_visible(&window));
     assert!(
-        window.workspace_sidebar_transition_pending_for_test(),
+        shell_geometry_evidence(&window).workspace_sidebar_transition_pending,
         "compact workspace show should keep visual-geometry readiness blocked while Adwaita animates"
     );
     assert!(
@@ -9385,7 +9392,7 @@ fn test_wide_sidebar_toggle_with_properties_visible_keeps_properties_pane_throug
 
     assert!(!workspace_sidebar_visible(&window));
     assert!(
-        window.workspace_sidebar_transition_pending_for_test(),
+        shell_geometry_evidence(&window).workspace_sidebar_transition_pending,
         "wide workspace hide should keep visual-geometry readiness blocked while Adwaita animates"
     );
     assert!(
@@ -9402,7 +9409,7 @@ fn test_wide_sidebar_toggle_with_properties_visible_keeps_properties_pane_throug
 
     assert!(workspace_sidebar_visible(&window));
     assert!(
-        window.workspace_sidebar_transition_pending_for_test(),
+        shell_geometry_evidence(&window).workspace_sidebar_transition_pending,
         "wide workspace show should keep visual-geometry readiness blocked while Adwaita animates"
     );
     assert!(
@@ -9433,7 +9440,7 @@ fn test_intermediate_sidebar_show_defers_properties_reconciliation_until_transit
 
     assert!(workspace_sidebar_visible(&window));
     assert!(
-        window.workspace_sidebar_transition_pending_for_test(),
+        shell_geometry_evidence(&window).workspace_sidebar_transition_pending,
         "workspace toggle should block final visual-geometry readiness while Adwaita animates"
     );
     assert_eq!(
@@ -9477,7 +9484,7 @@ fn test_intermediate_sidebar_hide_defers_properties_reconciliation_until_transit
 
     assert!(!workspace_sidebar_visible(&window));
     assert!(
-        window.workspace_sidebar_transition_pending_for_test(),
+        shell_geometry_evidence(&window).workspace_sidebar_transition_pending,
         "workspace hide should block final visual-geometry readiness while Adwaita animates"
     );
     assert_eq!(
@@ -10611,7 +10618,9 @@ fn test_close_before_workspace_debounce_persists_newest_state() {
     wait_until(Duration::from_secs(10), || !window.is_visible());
     let loaded = workspace_manager::load(&data_dir).expect("load close-flushed workspaces");
     assert_eq!(
-        loaded.workspace(&left_id).map(|workspace| workspace.name.as_str()),
+        loaded
+            .workspace(&left_id)
+            .map(|workspace| workspace.name.as_str()),
         Some("Newest Left")
     );
     println!(
@@ -10650,20 +10659,25 @@ fn test_workspace_close_flush_failure_aborts_and_later_close_recovers() {
                 .status_bar_view()
                 .is_some_and(|status| status.text.contains("workspace changes could not be saved"))
     });
-    assert!(window
-        .imp()
-        .sidebar
-        .imp()
-        .persistence
-        .borrow()
-        .has_pending_work());
+    assert!(
+        window
+            .imp()
+            .sidebar
+            .imp()
+            .persistence
+            .borrow()
+            .has_pending_work()
+    );
     // Other close-abort blockers (for example the draft flush) can outrank
     // workspace persistence for a few more turns; wait for the settled blocker
     // instead of sampling the first diagnostic after the status message lands.
     wait_until(Duration::from_secs(10), || {
         current_idle_blocker(&app).as_deref() == Some("workspace-persist")
     });
-    assert_eq!(current_idle_blocker(&app).as_deref(), Some("workspace-persist"));
+    assert_eq!(
+        current_idle_blocker(&app).as_deref(),
+        Some("workspace-persist")
+    );
     let still_durable = workspace_manager::load(&data_dir).expect("load prior durable workspace");
     assert_eq!(
         still_durable
@@ -10729,10 +10743,15 @@ fn test_workspace_persistence_retry_resolves_feedback_and_readiness() {
                 .status_bar_view()
                 .is_some_and(|status| status.text == "Workspace changes were saved.")
     });
-    assert_ne!(current_idle_blocker(&app).as_deref(), Some("workspace-persist"));
+    assert_ne!(
+        current_idle_blocker(&app).as_deref(),
+        Some("workspace-persist")
+    );
     let loaded = workspace_manager::load(&data_dir).expect("load retried workspace");
     assert_eq!(
-        loaded.workspace(&left_id).map(|workspace| workspace.name.as_str()),
+        loaded
+            .workspace(&left_id)
+            .map(|workspace| workspace.name.as_str()),
         Some("Retry Then Settle")
     );
     println!(
@@ -10773,7 +10792,9 @@ fn test_close_waits_for_inflight_workspace_save_then_flushes_newest_mutation() {
     wait_until(Duration::from_secs(10), || !window.is_visible());
     let loaded = workspace_manager::load(&data_dir).expect("load newest close-flushed workspace");
     assert_eq!(
-        loaded.workspace(&left_id).map(|workspace| workspace.name.as_str()),
+        loaded
+            .workspace(&left_id)
+            .map(|workspace| workspace.name.as_str()),
         Some("Newest While Closing")
     );
     println!(
@@ -12071,8 +12092,8 @@ fn test_local_history_preview_resumes_after_disposal_capacity_clears() {
     )
     .expect("seed capacity preview");
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let window = test_window();
     present_window(&window);
@@ -12295,9 +12316,7 @@ fn test_local_history_preview_supersedes_reads_and_unicode_install_slices() {
     dialog.close();
     flush_after_delay(Duration::from_millis(250));
     assert!(visible_sheet_dialog(&window).is_none());
-    assert!(
-        local_history_preview_install_evidence().cancellations > installed.cancellations
-    );
+    assert!(local_history_preview_install_evidence().cancellations > installed.cancellations);
 }
 
 #[test]
@@ -12342,7 +12361,7 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     wait_for_local_history_preview_text(&child, &restore_target);
     let restore_button = find_button_by_label(&child, "Restore").expect("restore button");
     wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
-    let progress_lane_before = progress_lane_snapshot_for_test();
+    let progress_lane_before = plain_disposal_evidence().progress.snapshot;
     let snapshot_counters_before = buffer_snapshot_evidence(None).handoff;
     let main_loop_progressed = Rc::new(Cell::new(false));
     glib::idle_add_local_once({
@@ -12382,7 +12401,8 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     assert!(editor.is_modified());
     assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let restore_diagnostic = editor
-        .buffer_replacement_evidence().last_terminal
+        .buffer_replacement_evidence()
+        .last_terminal
         .expect("history restore terminal diagnostic");
     assert_eq!(
         restore_diagnostic.ticket.workflow,
@@ -12416,7 +12436,8 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     assert!(editor.source_view().is_editable());
     assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let undo_diagnostic = editor
-        .buffer_replacement_evidence().last_terminal
+        .buffer_replacement_evidence()
+        .last_terminal
         .expect("history undo terminal diagnostic");
     assert_eq!(
         undo_diagnostic.ticket.workflow,
@@ -12425,7 +12446,8 @@ fn test_document_sized_local_history_restore_and_undo_are_bounded_and_exact() {
     assert_eq!(undo_diagnostic.metrics.peak_retained_bodies, 1);
     assert!(undo_diagnostic.source_released && undo_diagnostic.guard_released);
     wait_until(Duration::from_secs(10), || {
-        progress_lane_snapshot_for_test().completed_jobs > progress_lane_before.completed_jobs
+        plain_disposal_evidence().progress.snapshot.completed_jobs
+            > progress_lane_before.completed_jobs
     });
 }
 
@@ -12471,7 +12493,7 @@ fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() 
     wait_until(Duration::from_secs(5), || restore_button.is_sensitive());
 
     let progress_hold = hold_progress_disposal_capacity_for_test();
-    let lane_before = progress_lane_snapshot_for_test();
+    let lane_before = plain_disposal_evidence().progress.snapshot;
     restore_button.emit_clicked();
     flush_after_delay(Duration::from_millis(150));
 
@@ -12485,7 +12507,7 @@ fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() 
         "no safety write may start before snapshot ownership is admitted"
     );
     assert_eq!(
-        progress_lane_snapshot_for_test().admitted_jobs,
+        plain_disposal_evidence().progress.snapshot.admitted_jobs,
         lane_before.admitted_jobs,
         "capacity pressure retains only compact intent"
     );
@@ -12497,7 +12519,7 @@ fn test_local_history_restore_defers_compactly_until_progress_capacity_clears() 
                 == i32::try_from(restore_target.chars().count()).unwrap_or(i32::MAX)
     });
     assert_eq!(editor_text(&editor), restore_target);
-    let lane_after = progress_lane_snapshot_for_test();
+    let lane_after = plain_disposal_evidence().progress.snapshot;
     assert_eq!(lane_after.admitted_jobs, lane_before.admitted_jobs + 1);
     assert!(editor.local_history_evidence().restore_undo_available);
 }
@@ -12988,8 +13010,8 @@ fn test_encoding_dialog_rows_expose_checked_and_has_popup_metadata() {
     activate_action(&window, "show-encoding-controls");
     let dialog = visible_alert_dialog(&window).expect("encoding dialog visible");
     let extra = dialog.extra_child().expect("dialog content");
-    let save_row = find_action_row_by_title(&extra, "Save Using Encoding…")
-        .expect("save-encoding action row");
+    let save_row =
+        find_action_row_by_title(&extra, "Save Using Encoding…").expect("save-encoding action row");
     AccessibleAudit::new()
         .properties(&[gtk4::AccessibleProperty::HasPopup])
         .assert_on(&save_row);
@@ -14069,10 +14091,7 @@ fn test_overweight_save_admission_is_process_exclusive() {
 
     assert_eq!(maximum_active.get(), 1);
     assert!(saw_exclusive.get());
-    assert_eq!(
-        editors[0].save_evidence().high_water_weight,
-        weight
-    );
+    assert_eq!(editors[0].save_evidence().high_water_weight, weight);
 }
 
 #[test]
@@ -14512,7 +14531,11 @@ fn test_print_evidence_reads_stay_side_effect_free_across_window_mutation() {
     let empty = print_evidence(&window);
     assert!(!empty.action_enabled);
     assert!(empty.document.is_none());
-    assert_eq!(print_evidence(&window), empty, "repeated reads must be equal");
+    assert_eq!(
+        print_evidence(&window),
+        empty,
+        "repeated reads must be equal"
+    );
 
     // Tab creation takes a mutable borrow of `open_paths`.
     window.new_tab();
@@ -14529,7 +14552,10 @@ fn test_print_evidence_reads_stay_side_effect_free_across_window_mutation() {
     flush_events();
     let dirty = print_evidence(&window);
     assert_eq!(
-        dirty.document.as_ref().and_then(|doc| doc.content.as_deref()),
+        dirty
+            .document
+            .as_ref()
+            .and_then(|doc| doc.content.as_deref()),
         Some("reentrancy probe\n")
     );
     assert!(dirty.document.as_ref().is_some_and(|doc| doc.modified));
@@ -14541,7 +14567,10 @@ fn test_print_evidence_reads_stay_side_effect_free_across_window_mutation() {
     let two_tabs = print_evidence(&window);
     assert_eq!(print_evidence(&window), two_tabs);
 
-    window.imp().tab_view.close_page(&window.imp().tab_view.nth_page(1));
+    window
+        .imp()
+        .tab_view
+        .close_page(&window.imp().tab_view.nth_page(1));
     flush_events();
     let after_close = print_evidence(&window);
     assert!(after_close.document.is_some());
@@ -14569,8 +14598,14 @@ fn test_print_evidence_answers_honestly_after_the_window_is_disposed() {
     // defers disposal — so it cannot prove this contract. The repo's established
     // mechanism for the disposed stage is an explicit `run_dispose()`, which is
     // what makes the assertion deterministic instead of dependent on GTK's
-    // teardown timing. Verified: the surface still answered `Some` after
-    // `close()`, so a close-only test would have proved nothing.
+    // teardown timing.
+    //
+    // The close step below is what earns that claim rather than asserting it:
+    // without it this comment would be reporting a verification the test never
+    // performed, and the assertion that follows would be a duplicate of the one
+    // above it.
+    window.close();
+    flush_events();
     assert!(
         print_evidence(&window).document.is_some(),
         "sanity: closing is not disposing, so the document is still visible here"
@@ -14617,7 +14652,11 @@ fn test_print_evidence_reads_materialize_no_toolkit_state() {
     flush_events();
 
     let pages_before = window.imp().tab_view.n_pages();
-    let selected_before = window.imp().tab_view.selected_page().map(|page| page.child());
+    let selected_before = window
+        .imp()
+        .tab_view
+        .selected_page()
+        .map(|page| page.child());
 
     for _ in 0..5 {
         let _ = print_evidence(&window);
@@ -15146,16 +15185,10 @@ fn test_primary_menu_markdown_preview_pauses_large_markdown_buffer() {
         !window.imp().markdown_preview.is_showing_content(),
         "oversized Markdown should use the limited placeholder, state={:?}, description={:?}",
         window.imp().markdown_preview.evidence().render_state,
-        window
-            .imp()
-            .markdown_preview
-            .placeholder_description(),
+        window.imp().markdown_preview.placeholder_description(),
     );
     assert_eq!(
-        window
-            .imp()
-            .markdown_preview
-            .placeholder_description(),
+        window.imp().markdown_preview.placeholder_description(),
         Some("Markdown preview paused because the source exceeds 4 MiB".to_string())
     );
 }
@@ -15284,7 +15317,8 @@ fn test_preview_only_shell_renders_a_carried_table_as_one_widget() {
     activate_boolean_action(&window, "set-preview-mode", true);
 
     wait_until(Duration::from_secs(5), || {
-        window.imp().preview_mode.get() && preview_layout_name(&window).as_deref() == Some("preview")
+        window.imp().preview_mode.get()
+            && preview_layout_name(&window).as_deref() == Some("preview")
     });
     wait_for_projected_preview_shell(&window);
     assert_continuation_table_is_whole(&window);
@@ -16388,11 +16422,8 @@ fn test_failed_bookmark_write_retries_within_its_bounded_streak_and_recovers() {
 
     // Fail the first two writes; the third must succeed inside the bounded
     // streak of three.
-    let _fault = bookmark_service::fail_next_saves_for_path_for_test(
-        &json_store::data_dir(),
-        &path,
-        2,
-    );
+    let _fault =
+        bookmark_service::fail_next_saves_for_path_for_test(&json_store::data_dir(), &path, 2);
 
     activate_action(&window, "toggle-bookmark");
     flush_events();
@@ -16430,11 +16461,8 @@ fn test_failed_bookmark_write_stops_retrying_past_its_bounded_streak() {
     });
 
     // Far more failures than the bound allows.
-    let _fault = bookmark_service::fail_next_saves_for_path_for_test(
-        &json_store::data_dir(),
-        &path,
-        50,
-    );
+    let _fault =
+        bookmark_service::fail_next_saves_for_path_for_test(&json_store::data_dir(), &path, 50);
     activate_action(&window, "toggle-bookmark");
     flush_events();
 
@@ -16444,10 +16472,8 @@ fn test_failed_bookmark_write_stops_retrying_past_its_bounded_streak() {
             <= 47
     });
     flush_after_delay(Duration::from_millis(1_500));
-    let remaining = bookmark_service::pending_save_failures_for_path_for_test(
-        &json_store::data_dir(),
-        &path,
-    );
+    let remaining =
+        bookmark_service::pending_save_failures_for_path_for_test(&json_store::data_dir(), &path);
     assert_eq!(
         remaining, 47,
         "exactly three bounded attempts should have been consumed, then retrying stops"
@@ -16575,7 +16601,10 @@ fn test_notes_evidence_reads_stay_side_effect_free_across_mutation() {
     assert_eq!(idle.active_document_bookmark_count, 0);
     assert!(!idle.active_line_has_bookmark);
     assert!(!idle.document_note_available);
-    assert!(idle.folder_note_available, "two workspace folders are scoped");
+    assert!(
+        idle.folder_note_available,
+        "two workspace folders are scoped"
+    );
     let _ = window.notes_evidence();
 
     // Stage: opening a saved document makes the availability decisions flip and
@@ -16738,7 +16767,8 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.query.active == 0)
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
@@ -16750,18 +16780,21 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     search_entry.set_text("intermediate browser");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.query.active == 1)
     });
     search_entry.set_text("latest browser");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.query.pending == 1)
     });
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.query.active == 0 && snapshot.query.pending == 0)
             && sidebar.items().n_items() == 1
             && sidebar
@@ -16770,7 +16803,8 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
                 .is_some_and(|title| title.contains("latest-note.md"))
     });
     let snapshot = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("browser runtime snapshot");
     assert_eq!(snapshot.query.active_high_water, 1);
     assert_eq!(snapshot.query.pending_high_water, 1);
@@ -16779,7 +16813,8 @@ fn test_notes_browser_keeps_one_active_one_latest_query_and_disposes_work() {
     search_entry.set_text("dispose this query");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.query.active == 1)
     });
     dialog.close();
@@ -16809,7 +16844,8 @@ fn test_notes_browser_disposal_cancels_active_source_construction() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source.active == 1 && !snapshot.source_ready)
     });
     let dialog = visible_sheet_dialog(&window).expect("loading notes browser dialog");
@@ -16834,8 +16870,8 @@ fn test_notes_browser_source_progresses_while_ordinary_disposal_capacity_is_full
     )
     .expect("save capacity resume note");
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let capacity_hold = hold_disposal_capacity_for_test();
 
@@ -16844,13 +16880,16 @@ fn test_notes_browser_source_progresses_while_ordinary_disposal_capacity_is_full
     wait_for_workspace_folders(&window, 2);
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(15), || {
-        window
-            .notes_evidence().browser
-            .is_some_and(|snapshot| {
-                snapshot.source_ready && snapshot.source.active == 0 && snapshot.source_entries >= 1
-            })
+        window.notes_evidence().browser.is_some_and(|snapshot| {
+            snapshot.source_ready && snapshot.source.active == 0 && snapshot.source_entries >= 1
+        })
     });
-    assert!(lane_snapshot_for_test().overweight_exclusive);
+    assert!(
+        plain_disposal_evidence()
+            .ordinary
+            .snapshot
+            .overweight_exclusive
+    );
     drop(capacity_hold);
 }
 
@@ -16871,15 +16910,16 @@ fn test_repeated_notes_activation_reuses_one_progress_owner() {
     present_window(&window);
     wait_for_workspace_folders(&window, 2);
     wait_until(Duration::from_secs(5), || {
-        let snapshot = progress_lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0 && snapshot.retained_bytes == 0
+        let snapshot = plain_disposal_evidence().progress.snapshot;
+        snapshot.is_quiesced() && snapshot.retained_bytes == 0
     });
     let progress_hold = hold_progress_disposal_capacity_for_test();
 
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(5), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source.started == 1 && !snapshot.source_ready)
     });
     let first_dialog = visible_sheet_dialog(&window).expect("first notes browser dialog");
@@ -16890,7 +16930,8 @@ fn test_repeated_notes_activation_reuses_one_progress_owner() {
     let second_dialog = visible_sheet_dialog(&window).expect("re-presented notes browser dialog");
     assert_eq!(first_dialog, second_dialog);
     let deferred = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("deferred notes runtime");
     assert_eq!(deferred.source.started, 1);
     assert_eq!(deferred.source.pending, 0);
@@ -16899,7 +16940,8 @@ fn test_repeated_notes_activation_reuses_one_progress_owner() {
     drop(progress_hold);
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.source.active == 0)
     });
 }
@@ -16908,8 +16950,7 @@ fn test_repeated_notes_activation_reuses_one_progress_owner() {
 fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     ensure_gtk_init();
     let _reset = NotesBrowserPolicyReset;
-    let (_folders_dir, left_folder, _right_folder) =
-        seed_scoped_workspaces(WorkspaceScope::All);
+    let (_folders_dir, left_folder, _right_folder) = seed_scoped_workspaces(WorkspaceScope::All);
     let path = left_folder.join("shared-browser-mode.rs");
     fixture::write_text(&path, "one\ntwo\nthree\n");
     bookmark_service::save_for_path(
@@ -16935,7 +16976,8 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source.active == 1)
     });
     let dialog = visible_sheet_dialog(&window).expect("initial unified browser");
@@ -16948,7 +16990,8 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
         "bookmark mode must reuse the live Notes dialog"
     );
     let bookmark_pending = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("bookmark-mode runtime");
     assert_eq!(bookmark_pending.mode, NotesBrowserMode::Bookmarks);
     assert_eq!(bookmark_pending.source.active, 1);
@@ -16957,36 +17000,33 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
     activate_action(&window, "show-notes");
     flush_events();
     let latest_pending = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("latest all-notes runtime");
     assert_eq!(latest_pending.mode, NotesBrowserMode::AllNotes);
     assert_eq!(latest_pending.source.active, 1);
     assert_eq!(latest_pending.source.pending, 1);
     wait_until(Duration::from_secs(15), || {
-        window
-            .notes_evidence().browser
-            .is_some_and(|snapshot| {
-                snapshot.mode == NotesBrowserMode::AllNotes
-                    && snapshot.source_ready
-                    && snapshot.source.active == 0
-                    && snapshot.source.pending == 0
-                    && snapshot.query.active == 0
-            })
+        window.notes_evidence().browser.is_some_and(|snapshot| {
+            snapshot.mode == NotesBrowserMode::AllNotes
+                && snapshot.source_ready
+                && snapshot.source.active == 0
+                && snapshot.source.pending == 0
+                && snapshot.query.active == 0
+        })
     });
     assert_eq!(dialog.title().as_str(), "Notes");
 
     set_note_source_delay_for_test(0);
     activate_action(&window, "show-bookmarks");
     wait_until(Duration::from_secs(10), || {
-        window
-            .notes_evidence().browser
-            .is_some_and(|snapshot| {
-                snapshot.mode == NotesBrowserMode::Bookmarks
-                    && snapshot.source_ready
-                    && snapshot.source.active == 0
-                    && snapshot.query.active == 0
-                    && snapshot.source_entries == 1
-            })
+        window.notes_evidence().browser.is_some_and(|snapshot| {
+            snapshot.mode == NotesBrowserMode::Bookmarks
+                && snapshot.source_ready
+                && snapshot.source.active == 0
+                && snapshot.query.active == 0
+                && snapshot.source_entries == 1
+        })
     });
     assert_eq!(visible_sheet_dialog(&window).as_ref(), Some(&dialog));
     assert_eq!(dialog.title().as_str(), "Bookmarks");
@@ -17000,15 +17040,13 @@ fn test_notes_browser_switches_modes_on_one_live_source_owner() {
 
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
-        window
-            .notes_evidence().browser
-            .is_some_and(|snapshot| {
-                snapshot.mode == NotesBrowserMode::AllNotes
-                    && snapshot.source_ready
-                    && snapshot.source.active == 0
-                    && snapshot.query.active == 0
-                    && snapshot.source_entries == 2
-            })
+        window.notes_evidence().browser.is_some_and(|snapshot| {
+            snapshot.mode == NotesBrowserMode::AllNotes
+                && snapshot.source_ready
+                && snapshot.source.active == 0
+                && snapshot.query.active == 0
+                && snapshot.source_entries == 2
+        })
     });
     assert_eq!(visible_sheet_dialog(&window).as_ref(), Some(&dialog));
     assert_eq!(dialog.title().as_str(), "Notes");
@@ -17038,7 +17076,8 @@ fn test_notes_browser_reports_source_truncation_separately() {
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source_ready && snapshot.source_truncated)
     });
     let dialog = visible_sheet_dialog(&window).expect("notes browser dialog");
@@ -17051,7 +17090,8 @@ fn test_notes_browser_reports_source_truncation_separately() {
         .is_some()
     });
     let snapshot = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("browser runtime snapshot");
     assert_eq!(snapshot.source_entries, 1);
 }
@@ -17133,24 +17173,27 @@ fn test_notes_browser_open_editor_snapshot_caps_oversized_labels_before_admissio
     assert!(captured.truncated);
 
     wait_until(Duration::from_secs(5), || {
-        let snapshot = progress_lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0 && snapshot.retained_bytes == 0
+        let snapshot = plain_disposal_evidence().progress.snapshot;
+        snapshot.is_quiesced() && snapshot.retained_bytes == 0
     });
     let progress_hold = hold_progress_disposal_capacity_for_test();
     activate_action(&window, "show-notes");
     wait_until(Duration::from_secs(5), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source.started == 1 && !snapshot.source_ready)
     });
     drop(progress_hold);
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.source.active == 0)
     });
     let completed = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("bounded request browser remains active");
     assert!(completed.source_ready);
     assert!(completed.source_truncated);
@@ -17538,7 +17581,8 @@ fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() 
     sidebar.set_selected(2);
     sidebar.set_selected(3);
     let pressured = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("browser snapshot under preview pressure")
         .preview;
     assert_eq!(pressured.active, 1);
@@ -17564,7 +17608,8 @@ fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() 
         );
     }
     let settled = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("settled browser snapshot")
         .preview;
     assert_eq!(settled.active, 0);
@@ -17578,7 +17623,10 @@ fn test_notes_browser_rapid_selection_keeps_one_active_and_one_latest_preview() 
     assert_eq!(settled.cancellation_requests, 1);
     eprintln!(
         "notes-preview-coordinator-evidence selections=4 started={} active_high_water={} pending_high_water={} cancellation_requests={}",
-        settled.started, settled.active_high_water, settled.pending_high_water, settled.cancellation_requests
+        settled.started,
+        settled.active_high_water,
+        settled.pending_high_water,
+        settled.cancellation_requests
     );
 }
 
@@ -17623,7 +17671,8 @@ fn test_notes_browser_close_cancels_active_and_pending_preview_work() {
 
     sidebar.set_selected(1);
     let pressured = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("browser snapshot before teardown")
         .preview;
     assert_eq!(pressured.active, 1);
@@ -17679,7 +17728,8 @@ fn test_notes_browser_mode_switch_cancels_closed_file_preview_work() {
     // Replace the inventory mode while the closed-file worker is still asleep.
     activate_action(&window, "show-bookmarks");
     let switched = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("browser snapshot after mode switch")
         .preview;
     assert_eq!(
@@ -17691,7 +17741,8 @@ fn test_notes_browser_mode_switch_cancels_closed_file_preview_work() {
         notes_preview_text(&child).is_some_and(|text| text.contains("alpha target"))
     });
     let settled = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("settled browser snapshot")
         .preview;
     assert_eq!(settled.active, 0);
@@ -18340,9 +18391,7 @@ fn test_empty_notes_browser_close_button_and_escape_dismiss() {
     );
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Status)
-        .properties(&[
-            gtk4::AccessibleProperty::Label,
-        ])
+        .properties(&[gtk4::AccessibleProperty::Label])
         .assert_on(&find_label_by_text(&child, "No notes yet").expect("empty notes status label"));
     single_visible_close_button(&child).emit_clicked();
     flush_events();
@@ -18686,7 +18735,8 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     search_entry.set_text("missing performance-smoke needle");
     wait_until(Duration::from_secs(5), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.query.active == 1)
     });
     let main_loop_progressed = Rc::new(Cell::new(false));
@@ -18697,12 +18747,14 @@ fn test_notes_browser_caps_large_result_sets_with_refine_notice() {
     wait_until(Duration::from_secs(5), || main_loop_progressed.get());
     wait_until(Duration::from_secs(10), || {
         window
-            .notes_evidence().browser
+            .notes_evidence()
+            .browser
             .is_some_and(|snapshot| snapshot.query.active == 0)
             && sidebar.items().n_items() == 0
     });
     let query = window
-        .notes_evidence().browser
+        .notes_evidence()
+        .browser
         .expect("notes browser runtime")
         .query;
     eprintln!(
@@ -19627,7 +19679,8 @@ fn test_document_sized_preloaded_draft_publishes_only_after_bounded_install() {
     assert!(!editor.buffer_replacement_evidence().in_progress);
     assert!(editor.buffer_replacement_evidence().slice_count > 1);
     let diagnostic = editor
-        .buffer_replacement_evidence().last_terminal
+        .buffer_replacement_evidence()
+        .last_terminal
         .expect("draft recovery terminal diagnostic");
     assert_eq!(
         diagnostic.ticket.workflow,
@@ -19741,8 +19794,7 @@ fn test_side_by_side_preview_width_clamps_legacy_preference_without_rewriting_it
     activate_action(&window, "toggle-preview-pane");
 
     wait_until(Duration::from_secs(2), || {
-        window.imp().preview_split_view.shows_sidebar()
-            && !window.preview_transition_pending()
+        window.imp().preview_split_view.shows_sidebar() && !window.preview_transition_pending()
     });
     let split = &window.imp().preview_split_view;
     let preview_width = split.max_sidebar_width();

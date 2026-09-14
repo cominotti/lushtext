@@ -137,7 +137,7 @@ when it did not occur. Do not let reviewers spawn their own subagents.
 | Subagent | Trigger suffixes | Content hints / fallback triggers |
 |---|---|---|
 | `draft-integrity` | `services/draft_service.rs`, `ui/window/drafts.rs`, `ui/window/documents.rs`, `ui/editor_page/**` | `set_draft_dirty`, `draft_dirty`, `write_draft`, `save_manifest`, `find_by_id`, `original_path`, `is_evicted`, `autosave_inflight`, `autosave_pending` |
-| `close-flow` | `ui/window/imp.rs`, `ui/window/mod.rs`, `ui/window/dialogs.rs`, `ui/window/tabs.rs`, `ui/editor_page/mod.rs` | `close_page_finish`, `save_file_async`, `is_saving`, `SaveInProgress`, `cleanup_drafts`, `on_done(true)`, `.destroy()`, `search_panel.close()` |
+| `close-flow` | `ui/window/imp.rs`, `ui/window/mod.rs`, `ui/window/dialogs.rs`, `ui/window/tab_strip/**`, `ui/editor_page/mod.rs` | `close_page_finish`, `save_file_async`, `is_saving`, `SaveInProgress`, `cleanup_drafts`, `on_done(true)`, `.destroy()`, `search_panel.close()` |
 | `atomic-write` | `ui/**/*.rs`, `services/**/*.rs` | `std::thread::spawn`, `spawn_blocking_then`, `json_store::save`, `save_manifest`, `filesystem::write`, `write_all`, `rename`, `sync_all`, `sync_data`, `release_slot` |
 | `replace-safety` | `services/content_search/**`, `ui/search_panel/**`, `ui/window/search.rs` | `undo_backup`, `skip_paths`, `apply_replacements`, `original_line`, `content_mismatch` |
 | `restore-lifecycle` | `services/session_service.rs`, `ui/window/session_persistence.rs`, `ui/window/drafts.rs`, `ui/window/mod.rs`, `ui/editor_page/mod.rs` | `load_completed_callback`, `timeout_add_local_once`, `preloaded_drafts`, `filter_existing_tabs`, direct path-existence probes, `set_restore_position`, `apply_restore_position`, `save_ordered` |

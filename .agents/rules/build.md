@@ -9,6 +9,17 @@ globs: "{Cargo.toml,Makefile,.cargo/**,.config/**,build.rs,meson.build,meson_opt
 
 Use `make` targets for development. The Makefile auto-detects nextest for non-widget tests across the workspace; `.config/nextest.toml` excludes the `widget` binary from nextest's default filter, while full-suite widget coverage in `make test` flows through the shared headless `scripts/run-widget-tests.sh` path so local verification matches CI. Widget tests must never use the developer's live desktop session: the script has no native mode, and the Cargo-visible widget harness self-supervises into private `mutter --headless` before GTK initializes.
 
+Before GTK starts, the harness applies the **five** settings returned by
+`gtk_lush_proof_harness::recommended_pre_gtk_environment()` (including
+`NO_AT_BRIDGE=1` and `GTK_IM_MODULE=gtk-im-context-simple`). They all express one
+rule: the private compositor advertises desktop services it cannot provide, so
+the client half is not started against it. The input-method entry is a crash
+guard rather than noise suppression, and it is an environment statement rather
+than a claim that the underlying GTK race is fixed — see
+`crates/gtk-lush/proof-harness/README.md` for the contract and
+`docs/next/persistent-format-hardening.md` S7B-6 for the measurement and what
+remains unfixed.
+
 ```
 make dev-tools  # Flatpak runtime/SDK deps + GTK debug input/screenshot helpers
 make run        # build + force a fresh launch with temporary GNOME desktop staging
@@ -60,6 +71,7 @@ make end-user-smoke # run all host-supported end-user smoke lanes
 make mutants-smoke # small cargo-mutants smoke run
 make mutants-diff  # mutation test current changes against origin/main
 make mutants-full  # mutation test the configured deterministic scope
+make fmt        # apply rustfmt everywhere, including widget tests cargo fmt cannot reach
 make check      # fmt + all-feature Clippy + fast policy audits
 make pre-commit # repo pre-commit gate (fmt + all-feature Clippy + policy audits)
 make install-git-hooks
@@ -69,6 +81,18 @@ The blocking Clippy command is `cargo clippy --workspace --all-targets
 --all-features -- -D warnings`, and it must stay identical in Makefile,
 pre-commit, CI, and contributor docs unless a narrower command is explicitly
 documented as a non-blocking smoke shortcut.
+
+**`cargo fmt --all` cannot reach the widget test modules, and `make check-fmt`
+now covers them separately.** They enter `crates/lushtext/tests/widget.rs`
+through `include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"))`, a
+registry `build.rs` generates by scanning the directory, so rustfmt's module
+walk never sees them: `cargo fmt --all --check` passed while formatting
+**nothing** under `tests/widget/`, and eighteen files had accumulated
+unformatted code behind a green gate. `make check-fmt` runs
+`rustfmt --edition 2024 --check` over `crates/lushtext/tests/widget/*.rs` in
+addition to `cargo fmt --all -- --check`, and **`make fmt`** applies both. Use
+`make fmt` rather than bare `cargo fmt --all`, which still leaves those files
+untouched.
 
 **The rustdoc lint gate is not in `make check`, `make pre-commit`, or
 `make check-policy` — run it by hand.** CI's `Lint` job enforces it, so a
@@ -137,7 +161,10 @@ tree. That fingerprint digests only relevant-file *contents*
 (`scripts/accessibility_source_fingerprint.py`), so staging or committing a
 byte-identical tree does not void live proof; only a real edit to a relevant
 file requires rerunning the lanes, and the module's own bytes are part of the
-relevant set.
+relevant set. It selects those files by **prefix**
+(`crates/lushtext-core/src/ui/`, `crates/lushtext/tests/widget/`), so creating,
+renaming, or splitting directories inside them cannot silently drop a file out
+of the fingerprint.
 Screenshot-reported or geometry-sensitive UI fixes should also run
 `make visual-geometry-smoke` when the intended invariant is same-session pixel
 stability across a layout action. Pixel-visible effects that have a named
@@ -208,7 +235,12 @@ When a change relocates, renames, or splits a file such a gate names:
   its own terms rather than a side effect of a rename.
 
 Prefer a prefix or naming-convention key over a literal path when re-keying, so a
-later split inside the same directory cannot disarm the gate again.
+later split inside the same directory cannot disarm the gate again. (The contrast
+has been measured: a change that created six role-home directories and renamed
+two files needed **no edit** to the prefix-keyed accessibility fingerprint or to
+the `ui/**/policy.rs` mutation convention, while the literal-path native-minimap
+predicates needed a re-key in **both** implementations. Verifying after the move
+rather than assuming is still what turns that into evidence.)
 
 Workflow-readability changes should pass `make check-workflow-boundaries`; it is
 also part of `make check-policy`. It fails when a `policy.rs` module imports
@@ -589,7 +621,8 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   Flatpak manifest intentionally keeps host filesystem access.
 - `make accessibility-smoke` keeps the accessibility bridge enabled and uses the
   AT-SPI path. Do not rely on the widget harness for this class of coverage
-  because `scripts/run-widget-tests.sh` intentionally sets `NO_AT_BRIDGE=1`.
+  because `scripts/run-widget-tests.sh` intentionally sets `NO_AT_BRIDGE=1` —
+  one of the five headless-environment settings described under Dev Builds.
   Its warning allowlist classification lives once in
   `scripts/accessibility_warning_allowlist.py`, imported by both the final
   warning scan and the summary composer; edit the shared module instead of

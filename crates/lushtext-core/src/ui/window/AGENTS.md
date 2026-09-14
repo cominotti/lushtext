@@ -5,7 +5,7 @@ This folder owns the top-level application shell adapter.
 ## Responsibilities
 
 - Keep `mod.rs` as the small public facade for `LushtextWindow`.
-- Keep workflow-specific logic in sibling modules such as `actions`, `documents`, `drafts`, `focus_indexing`, `focus_mode`, `notes`, `notifications`, `preview`, `print`, `search`, `session_persistence`, `session_restore`, `tabs`, `transient_surfaces`, and `zoom`.
+- Keep workflow-specific logic in sibling modules and per-workflow role homes: `actions`, `dialogs`, `documents`, `drafts/`, `editor_focus`, `editor_memory_eviction/`, `encoding/`, `focus_mode/`, `geometry/`, `local_history/`, `notes/`, `notifications/`, `palette_shell`, `preview`, `print/`, `recent_documents_journal`, `recent_open`, `search`, `search_progress_execution`, `session_restore/`, `startup_data`, `tab_strip/`, `transient_dismissal/`, `workspace_scope`, and `zoom`. The list is the tree as of slot 7b; `focus_indexing`, `tabs`, and `transient_surfaces` are the names it retired.
 - Keep `imp.rs` focused on template children, state, and setup glue rather than long workflow implementations.
 
 ## Local Contracts
@@ -25,7 +25,7 @@ This folder owns the top-level application shell adapter.
   reintroduce an unrestricted production bookmark aggregate collector.
 - Keep status-bar refresh and properties-panel refresh behavior aligned when window-level document state changes.
 - Keep search-panel shell integration here, but keep search-panel internal list/history/replace/runtime mechanics in `ui/search_panel/`.
-- Keep window-level transient dismissal in `transient_surfaces.rs`: Escape closes one topmost dismissible shell surface before Focus Mode exit, and command-palette click-away routes through `close_command_palette()` so focus restoration stays centralized.
+- Keep window-level transient dismissal in the `transient_dismissal/` role home (`WFR-TRANSIENT-DISMISSAL`, migrated in slot 7b; the file was `transient_surfaces.rs`): Escape closes one topmost dismissible shell surface before Focus Mode exit, and command-palette click-away routes through `close_command_palette()` so focus restoration stays centralized.
 - Keep automation-friendly target-state actions in `actions.rs` thin and routed
   through the same production workflows as visible toggles. After adding or
   changing any externally observable action, update `services::action_catalog`
@@ -33,13 +33,27 @@ This folder owns the top-level application shell adapter.
 - When split-view geometry changes, preserve the total-window width contracts and the mirrored status-bar toggle behavior described in the root `AGENTS.md` and `.agents/rules/ui.md`.
 - Keep split-view allocation paths cheap and runtime-only. `size_allocate()` may clamp live sidebar fractions and update cached breakpoint thresholds when the actual allocated width changes, but it must not persist GSettings, rebuild/reparse `AdwBreakpoint` conditions, or rehost secondary surfaces on every animation frame.
 - Keep plain split-view width, fraction, breakpoint, and compact-surface
-  decisions in `policy.rs` (named `adaptive_shell.rs` until it took the pure
-  policy role). `imp.rs` owns the live Libadwaita objects, settings reads and
-  writes, focus restoration, signal setup, and application of those decisions.
-  The role home is flat `ui/window/` because `imp.rs` and `actions.rs` are
-  literal path keys in three visual-proof predicates in each of two
-  implementations; moving that geometry into a new directory would disarm two
-  named pixel invariants and the sidebar animation matrix.
+  decisions in `geometry/policy.rs`, the pure policy role of
+  `WFR-SHELL-GEOMETRY` (migrated in slot 7b; the module was `adaptive_shell.rs`,
+  then flat `ui/window/policy.rs`). `geometry/execution.rs` owns restore,
+  breakpoint installation, and allocation-time reconciliation;
+  `geometry/mod.rs` is the narrative facade. `imp.rs` keeps the `size_allocate`
+  vfunc — a subclass override GTK calls, which cannot move — and its
+  `constructed()` wiring, and `actions.rs` keeps the two toggle action bodies
+  that persist user intent; **both remain literal path keys in three
+  visual-proof predicates in each of two implementations**, and the role home
+  was **added** to all three as a narrow prefix rather than replacing them.
+  Moving geometry code out without adding that key disarmed two named pixel
+  invariants and the sidebar animation matrix while every gate still exited 0 —
+  observed before it was fixed.
+- Keep tab pin, reorder, and bulk close in the `tab_strip/` role home
+  (`WFR-TAB-STRIP`). The teardown for a closed tab exists **once**, in
+  `handle_tab_detached`: `close_page` is cancellable, and running teardown
+  before that terminal strands a cancelled tab's draft.
+- Keep the recent-documents journal in `recent_documents_journal.rs` (the
+  `journal` coordination role of `WFR-RECENT-DOCUMENTS`, whose canonical role
+  home is `ui/open_popover/`). `recent_open.rs` is that row's window-side
+  **called presentation surface** and owns no stage.
 
 ## Editing Rules
 

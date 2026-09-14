@@ -130,6 +130,26 @@ impl LushtextEditorPage {
         self.imp().source_view.as_ref()
     }
 
+    /// Whether this page's template children have already been cleared.
+    ///
+    /// GTK4 clears template children in `dispose()`, before Rust's `Drop`, so a
+    /// page can still be reachable from a collection while
+    /// [`source_view`](Self::source_view) — and therefore [`buffer`](Self::buffer)
+    /// and everything derived from it — would panic. Evidence surfaces that walk
+    /// a page collection use this to **skip** a disposed page rather than
+    /// panicking on it, which is the bounded-child half of the disposal rule in
+    /// `.agents/rules/widget-wiring.md`.
+    ///
+    /// Production code does not need this: it only ever reaches a live page,
+    /// which is why the gate matches its only consumer, the `test-utils`-gated
+    /// evidence surface. Gating it more widely would reproduce the dead-code
+    /// gate mismatch this change fixed in `services/content_search/replace.rs`.
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub(crate) fn is_disposed(&self) -> bool {
+        self.imp().source_view.try_get().is_none()
+    }
+
     /// Return the style-scheme ID currently applied to this editor buffer.
     ///
     /// Widget tests use this to verify that transparency swaps the buffer onto

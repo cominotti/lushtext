@@ -139,10 +139,6 @@ def is_relevant(path: str) -> bool:
     return path in RELEVANT_EXACT_PATHS or path.startswith(RELEVANT_PREFIXES)
 
 
-def git_lines(repo_root: Path, args: list[str]) -> list[str]:
-    return git_lines_checked(repo_root, args)[0]
-
-
 def git_lines_checked(repo_root: Path, args: list[str]) -> tuple[list[str], bool]:
     """Return git output lines and whether the command succeeded."""
     result = subprocess.run(

@@ -1,18 +1,24 @@
 # Workflow Readability — Programme Record
 
-Status: **Phase 0 complete, slots 1 through 6 and 7a complete, slot 7b
-outstanding.** Slot 7 **split** under the trigger its own proposal declared: §D1
-resolved that `WFR-SHELL-LAYOUT` is not one workflow, and implementing that
-outcome plus the preview facade exceeded one change's capacity. **Slot 7a**
-migrated **five** rows — the four tier-1 rows plus `WFR-MARKDOWN-PREVIEW` — and
-discharged one cross-cutting lane's surface obligations; **slot 7b** carries the
-tier-3 disposal lane, the shell-layout hybrid, the automation spine's terminal
-status, capability deltas 1 and 2, and the programme closeout. See
+Status: **Phase 0 complete; slots 1 through 7b complete. Every matrix row is
+terminal and the migration programme is closed.** Slot 7 **split** under the
+trigger its own proposal declared: §D1 resolved that `WFR-SHELL-LAYOUT` is not
+one workflow, and implementing that outcome plus the preview facade exceeded one
+change's capacity. **Slot 7a** migrated **five** rows — the four tier-1 rows plus
+`WFR-MARKDOWN-PREVIEW` — and discharged one cross-cutting lane's surface
+obligations. **Slot 7b** superseded `WFR-SHELL-LAYOUT` with **seven** rows (six
+facades plus one cross-cutting gate), discharged the tier-3 disposal lane's
+surface obligations, gave `WFR-AUTOMATION-SPINE` its terminal status, landed
+capability deltas 1 and 2, and wrote the closeout. What the programme does
+**not** claim is recorded in the completion section below; nothing is recorded as
+accepted debt except the two named oversized modules. See
 [§D1's resolution](#slot-7as-structural-finding-d1-resolved-the-shell-row-is-not-one-workflow),
 which is 7b's primary authoring input. The convention is
 normative, the census is complete, the mechanical gate is wired into
 `make check-policy`, the normative facade line budget is declared and enforced,
-and **eleven** workflows are migrated: `WFR-SEARCH-REPLACE` (**both halves** —
+and **twenty-two** workflows are migrated — the whole census, with every
+remaining row terminal as `cross-cutting`, `exempt`, or `superseded`. In slot
+order: `WFR-SEARCH-REPLACE` (**both halves** —
 search and preview in slot 1, the Replace All write path and its undo journal in
 slot 2b), `WFR-COMMAND-PALETTE` (slot 2a), `WFR-DOCUMENT-SAVE` (slot 3a, the
 first tier-3 workflow migrated on its own), `WFR-DOCUMENT-LOAD` (slot 3b, the
@@ -20,7 +26,14 @@ second), slot 4's four — `WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`,
 `WFR-LOCAL-HISTORY`, and `WFR-DRAFT-RECOVERY` — `WFR-NOTES-BOOKMARKS` (slot 5a),
 `WFR-WORKSPACE-TREE` (slot 5b, the largest row in the census), and
 `WFR-MINIMAP` (slot 6, the row the census deferred longest and the only one whose
-behavior contract is rendered pixels). **`model/minimap_analysis.rs` no longer
+behavior contract is rendered pixels), slot 7a's five — `WFR-PRINT`,
+`WFR-EDITOR-FIND`, `WFR-STATUS-NOTIFICATIONS`, `WFR-ENCODING`, and
+`WFR-MARKDOWN-PREVIEW` — and slot 7b's six, which replaced the superseded
+`WFR-SHELL-LAYOUT`: `WFR-TRANSIENT-DISMISSAL`, `WFR-FOCUS-MODE`,
+`WFR-EDITOR-MEMORY-EVICTION`, `WFR-RECENT-DOCUMENTS`, `WFR-SHELL-GEOMETRY`, and
+`WFR-TAB-STRIP`. **Neither `WFR-MINIMAP` nor `WFR-MARKDOWN-PREVIEW` is deferred
+any more**; both are migrated, and any remaining text calling them deferred is
+history. **`model/minimap_analysis.rs` no longer
 exists**: slot 6 relocated it into the minimap workflow's own `policy.rs`, the
 fifth of the census's six relocation candidates to move. **`ui/editor_page/load_save.rs` no longer exists**: slot 3a lifted
 the save half out and slot 3b dissolved the rest, so the programme's third
@@ -33,8 +46,10 @@ paths drive their bytes through it, then session restore, then local history, th
 draft recovery. It also carried one **confirmed and fixed data-safety defect** —
 the draft-autosave lane had never consulted `installation_incomplete`, so a
 cancelled load installation plus one keystroke could write a near-empty buffer over
-a draft holding real unsaved work. Slots 5 through 7 remain authorable; two items
-are deliberately deferred and may never be taken on.
+a draft holding real unsaved work. **All slots are now complete**, 7 having split into 7a and 7b. Two
+programme-level items remain deliberately deferred and may never be taken on;
+they are named with their justification bars in section 7 and carried in the
+single deferral inventory.
 
 This document answers, in one read: what problem the programme solves, how much
 is done, what is next, what is deferred and why, and what would justify taking
@@ -907,12 +922,178 @@ variable-sized child collection — the reason the no-materialization rule exist
 **still unbuilt**, and its six hazards are recorded and re-verified but not discharged.
 The cold read was not run, because there is no narration to read.
 
+### Baseline after slot 7b — the programme's measured outcome
+
+Slot 7b superseded `WFR-SHELL-LAYOUT` with **seven** rows, discharged the last
+cross-cutting lane's surface obligations, gave the automation spine its terminal
+status, and landed both capability deltas. **Every matrix row is terminal.**
+
+| Quantity | After slot 7a | After slot 7b (programme close) |
+| --- | --- | --- |
+| Workflows migrated | 16 | **22** (plus `WFR-TRANSIENT-DISMISSAL`, `WFR-FOCUS-MODE`, `WFR-EDITOR-MEMORY-EVICTION`, `WFR-RECENT-DOCUMENTS`, `WFR-SHELL-GEOMETRY`, `WFR-TAB-STRIP`). Every Completion Rule axis satisfied on each |
+| Rows terminal | **20 of 22 at HEAD** — the matrix carried 22 rows at `69f78b09`, two of them `pending` (`WFR-SHELL-LAYOUT`, `WFR-AUTOMATION-SPINE`); counting `WFR-PLAIN-DISPOSAL`'s undischarged surface obligations as non-terminal makes it **19 of 22**. Two earlier figures for this cell were wrong in different ways: "26 of 29" counted this change's own resolutions before they landed, and "22 of 29 at HEAD" used this change's row count as a HEAD denominator | **29 of 29.** `WFR-SHELL-LAYOUT` -> `superseded` (a label added for it), `WFR-STARTUP-PREFLIGHT` -> `cross-cutting` with recorded probe evidence, `WFR-PLAIN-DISPOSAL` -> `cross-cutting, surface obligations discharged`, `WFR-AUTOMATION-SPINE` -> `cross-cutting` terminal. **No `pending`, `deferred`, or `partially-conforming` row remains**, and the gate now enforces that: a ledger with no `outstanding` slot is the machine-readable statement that the programme is closed, and a transitional row surviving it is a finding |
+| Policy modules in the convention | 17 | **22.** Three new (`open_popover` 6 mutants, `tab_strip` 46, plus the three slot 7b inherited), one **relocated with 81 -> 81 parity measured from the tool on both sides**. The former 80 was stale by one |
+| Facades measured against 370 | 16 | **22, all re-measured.** Six added: transient dismissal **199**, focus mode **338**, eviction **333**, recent documents **252**, tab strip **217**, geometry **240** — the last three re-measured after the review pass, which is where they were found stale (239, 223, 164 were taken before the module docs were finished). None needed escalation past step one. **370 unchanged and never edited across the whole programme.** The two tightest margins are unchanged and both predate this slot: the exemplar at **1** and the minimap at **4** |
+| Seams retired | `WFR-STATUS-NOTIFICATIONS` 1 -> 0 | **`WFR-RECENT-DOCUMENTS` 26 declarations / 37 sites -> 11**, the largest single-row retirement of the programme and the row the census had never re-derived after slot 3b assigned it files. Also `WFR-PLAIN-DISPOSAL` 8 -> 4 and `WFR-SHELL-GEOMETRY` 1 -> 0. **Zero new actuation seams; slot 5b's budgeted one is still unspent, eight slots on** |
+| Automation projections | 7 | **7, unchanged** — every new surface is `test-utils`-gated, so there is nothing production can project from. **But the Completion Rule still bit**: `window.surface`'s four shell-geometry fields were being *re-derived* in `ui/automation.rs`, including a re-implementation of the sheet-versus-pane test against the literal `"sheet"`. All four now read the workflow's own production accessors, so the exported contract and the evidence surface share **one** derivation |
+| Path-keyed gates re-keyed | 1 disarm found retroactively | **1 disarm observed *before* the fix**, per the §E3 procedure: with the geometry code moved and no key added, both visual-proof implementations passed while requiring **zero** named invariants. The role-home prefix was then added to **both**, each with its own parity self-test, each proved by a deliberate red. A `ui/window/` prefix was rejected as a scope change: it would have swept in seven subdirectories, four of them role homes no predicate ever protected |
+| Gate fail-opens fixed | 2 (slot 6) + 2 (slot 7a) | **5 in the reconciliation gate the closeout depends on**, plus the rustfmt reach hole. One of the five had made the facade-budget rule **silently inert for 3 of 16 migrated rows**, and two of those three carried stale figures — which is exactly what an unchecked rule permits |
+| Capability deltas landed | 3 | **5.** Deltas 1 and 2 landed here, after being withheld by the split because a delta must not ship in a change that cannot discharge its obligation |
+| Pre-existing blockers fixed | 1 fail-open + 1 refinement (7a) | **4**, none introduced here: a default-feature dead-code **gate mismatch** in `services/content_search/replace.rs` that `--all-features` cannot see; a real **panic** in this change's own geometry evidence surface, caught by its own disposal proof before it shipped; a `make performance-smoke` staleness guard whose pattern the widget harness **never emits**, so four assertions could not pass and the condition they guarded went unchecked in both directions; and a **SIGSEGV** hiding behind a `FLAKY:` line — destroying a focused `GtkEntry` races GTK's Wayland input-method backend, **9 failures in 40** isolated runs. The last one is the instructive one: **three** application-side fixes were implemented and measured, and each was neutral or *worse*, because the dangling state lives in GTK's private per-display IM global. It is mitigated in the harness environment (**0 in 40** after) and recorded as `S7B-6` **without** claiming the GTK race is fixed |
+| **`*_for_test` declarations** (the programme's headline ratchet) | — | **165**, against the census's **300** externally reachable shadow-API functions, and against **188** at `69f78b09`. The **23**-declaration reduction from `69f78b09` attributes cleanly and sums exactly: `WFR-RECENT-DOCUMENTS` **-12** (`ui/open_popover/**` -13, `recent_open.rs` -2, the new journal +3), `WFR-EDITOR-MEMORY-EVICTION` **-6**, `WFR-PLAIN-DISPOSAL` **-4**, `WFR-SHELL-GEOMETRY` **-1**. Note the predicate: the matrix's per-row *"26 -> 11"* counts **gated declarations at any visibility**, while this ratchet counts `pub`/`pub(crate)` only, so the two are not the same measurement of the same set and must not be merged. Re-derived after the review pass; the 162 recorded before it predated the two journal drives the reentrancy proof needed |
+| **`cfg(feature = "test-utils")` sites** | — | **530**, against the census's **639**, and against **526** at `69f78b09` — this one **rose** across the change, because six new role homes each gate their own evidence surface. Re-derived after the review pass |
+| **`model/` files** | — | **23**, against the census's **29**: six mechanism-named modules left the domain layer for the workflow that owns them, and the ones that stayed each have a recorded reason (a GTK-free `services/` consumer, which relocating would invert) |
+| **`#[expect(clippy::too_many_arguments)]`** | 1 | **1** — the sanctioned exception at `model/action_catalog.rs:178`, with **zero** `#[allow]` of the lint anywhere. The programme added none |
+
+**Measurement Definitions, refreshed — the programme's actual ratchet.** Each is
+stated with its predicate, because the census's own lesson is that a denominator
+without one is not a measurement.
+
+| Metric | Census | Now | Predicate |
+| --- | --- | --- | --- |
+| externally reachable `*_for_test` declarations | 300 | **165** | `pub fn`/`pub(crate) fn` whose name ends `_for_test`, under `crates/lushtext-core/src`. A further 18 declarations are `pub(super)` and are outside this predicate by design |
+| `cfg(feature = "test-utils")` sites | 639 | **530** | literal attribute occurrences of exactly `cfg(feature = "test-utils")`, same tree; `cfg(any(test, feature = "test-utils"))` is a different literal and is not counted here. Not comparable to a declaration count, which is the merge the unit discipline forbids |
+| `model/` files | 29 | **23** | `*.rs` directly under `crates/lushtext-core/src/model/` |
+| production files under `crates/lushtext-core/src` | 198 (as the stale coverage proof read it) | **306** | every `*.rs`, minus files a sibling declares as `#[cfg(test)] mod <name>;` |
+| `#[expect(clippy::too_many_arguments)]` | 1 | **1** | the sanctioned domain-catalog exception; `#[allow]` of the lint: **0** |
+
+The seam and site counts are the ones to watch: they fell by **45%** and **17%**
+respectively while the file count rose by half, because the convention trades a
+shadow introspection API for typed surfaces and small role files. A future change
+that raises the first two while claiming to follow the convention is doing
+something else.
+
+**What the programme claims.** Twenty-two workflows follow the readability
+convention; every workflow in the tree has a terminal matrix row; pure decision
+logic that belongs to a workflow lives in a `policy.rs` the mutation scope
+reaches by name; every migrated workflow has one evidence surface with three
+driven proofs; and the matrix, the ledger, and the code are reconciled by a gate
+rather than by review.
+
+**What the programme does not claim** is in the deferral inventory below. In
+particular it does not claim that the convention is finished being learned: the
+last slot still found four inherited claims false, a live gate protecting
+nothing, and a real panic in its own evidence surface.
+
+### Convention and tooling friction slot 7b hit, recorded for whoever reopens this
+
+Each hit while *using* the thing rather than reading it.
+
+- **A markdown file voids three screenshot proofs.** The accessibility source
+  fingerprint and the visual-sensitive predicate key on the
+  `crates/lushtext-core/src/ui/` **directory prefix**, not on `*.rs`, so editing
+  a module-layout `AGENTS.md` under it invalidates the accessibility, visual, and
+  visual-geometry summaries. Both gates caught it; the instinct that "it is only
+  a doc" did not. Ask the predicate rather than assuming.
+- **A `FLAKY:` line can be a segfault, and the harness will not tell you.** The
+  per-test retry reports `ok (FLAKY: passed on attempt 2)` and prints nothing
+  from the failed attempt, so a crash reads exactly like a tight wait budget. The
+  real failure came from `coredumpctl`, not from the lane. Two consequences for
+  whoever meets the next one: reproduce in isolation and **count** (this one was
+  9 in 40, which no single rerun would have shown), and get the actual signal
+  before theorising about timing — the first hypothesis here was a 2-second
+  realization wait, and it was wrong.
+- **A guard can be always-false and still read as correct.** The first fix
+  attempted guarded on `entry.has_focus()`, which is `false` for a `GtkEntry`
+  whose internal `GtkText` owns focus. It compiled, it matched the rule it cited,
+  and it changed nothing. A one-line probe printing the value settled in seconds
+  what re-reading the code had not.
+- **Measure a toolkit-race fix; do not reason it.** Three application-side
+  orderings were implemented against that crash and each was measured over 25–40
+  runs. Every one was neutral or **worse** than doing nothing. The cause was in
+  GTK's private per-display state, and only the environment-level change moved
+  the number to zero.
+
+- **A path-keyed gate is disarmed by the migration that moves its file, silently
+  and greenly.** Known in the abstract since slot 6; met concretely here, and the
+  only thing that made it visible was **observing the disarm first**. Reviewing
+  the edit would not have shown it, because the gate exits 0 either way.
+- **A prefix key survives a role move; a literal key does not.** Measured on the
+  same change: `scripts/accessibility_source_fingerprint.py` keys on directory
+  **prefixes** and needed no edit across six role-home creations and two renames;
+  the two visual-proof implementations key on literals and needed a re-key each.
+  Prefer a prefix when re-keying.
+- **`rustdoc`'s `private_intra_doc_links` and the facade convention pull in
+  opposite directions.** A narrative facade naturally wants to link its own
+  coordination modules and `pub(crate)` seam values; every one of those is an
+  error. Six facades were written with the names in backticks and no links, and
+  the gate passed first time — the first slot for which that is true.
+- **An evidence surface inherits its production accessors' panics.** The
+  geometry surface was written from three of the workflow's own accessors, each
+  of which derefs a `TemplateChild`; its disposal proof caught the panic before
+  it shipped. The rule now says so explicitly in
+  `.agents/rules/widget-wiring.md`.
+- **A stopping record must be superseded in place when it is released.** This
+  change's own appendix recorded a split that the session then passed, and a
+  later session — having lost the transcript — found the artifact describing a
+  boundary that no longer existed. Re-establishing state **from the tree** is
+  what caught it, and it corrected five separate claims.
+- **A review pass whose findings reach no artifact is a worse handoff than one
+  that reaches an archived directory.** Slot 7a's six review items were
+  re-verified here and **two of their figures were wrong**. The fix is a durable
+  home, not a better memory; every finding this slot produced landed in
+  `docs/next/persistent-format-hardening.md`.
+
+### The single deferral inventory
+
+Every open item the programme hands forward, in one place, each with its gating
+condition and its owner. **Nothing here is recorded as accepted debt except the
+two named oversized modules**; the rest is either user-gated or a standing
+condition.
+
+| Item | Gating condition | Owner |
+| --- | --- | --- |
+| **The live-display walkthrough** (`make run` against restored workspaces, watching stderr for `Trying to measure GtkBox ...`, `pixman_region32_init_rect`, `Gtk-CRITICAL`, `GLib-GObject-WARNING`) | **user availability.** Eight consecutive slots have shipped without it, and this one added the geometry row that most needs it. A real Wayland launch maps a surface and takes focus regardless of `XDG_*` isolation, so no change may start one on its own authority. **This gap must be accepted by the user, not granted by a change**, and no document here writes "accepted" against it | the user |
+| **The manual Orca check** for `A11Y-SHELL-*`, `A11Y-OPEN-*`, `A11Y-PROPERTIES-*`, `A11Y-EDITOR-FOCUS-PREVIEW` | user availability, per `docs/accessibility-orca-checklist.md` | the user |
+| Where those two classes appear as `[~]` markers, plus the two items that are neither — the **8 user-gated** markers are instances of the two rows above (live-display in slots 4, 5b, 6, 7a, and 7b; manual Orca in 6, 7a, and 7b), and **2 further markers are machine-gated** rather than user-gated: slot 5b's two-tree capture and slot 4's quiet-machine bench baseline. **10 open in total**, not 8 + 10 | user availability for the eight; a baseline worktree and an idle host for the two | the user / a quiet machine |
+| `ui/sidebar/workspace_section/scan_execution.rs` at **~1,982 production lines** | **accepted refactor debt**, recorded rather than hidden. Dissolving `tree_index.rs` into it was the recorded destination, and the alternative was inventing a role name for a pre-convention topic | `WFR-WORKSPACE-TREE` |
+| `ui/plain_disposal.rs` at **1,422 production lines** | **accepted refactor debt.** The lane's contract is one admission mechanism; a split by line count would repeat the error the role convention forbids. Not split blind | `WFR-PLAIN-DISPOSAL` |
+| Slot 6's conditionally-cleared `minimap_work_pending` | a **standing condition**, not a closed item: the clearance holds only while no `mark-set` handler reads readiness. Both handlers in the tree reach only scrolling and menu-model refresh. A future `mark-set` handler that reads readiness re-opens it | `WFR-MINIMAP` |
+| Two **ratchet rows** of `delete field` survivors — 8 on `DirectoryScan`'s bounded-scan telemetry and 5 on the orphan-cleanup continuation | carried as ratchet rows rather than closed. Both are the unfilterable floor: bounded-work counters no test asserts, in two rows whose subject is bounded work. Closing either means a test that asserts the counter, which is worth doing when a defect makes one matter | `WFR-WORKSPACE-TREE` and the draft row |
+| The bounded **startup activation-open queue** | closed here, not deferred: capped at `MAX_PENDING_ACTIVATION_OPENS` (64) with the overflow **dropped and reported** rather than opened immediately, because returning "not queued" would defeat the gate. **Its coverage gap is recorded**: reaching the queued state needs a startup compatibility dialog, and spending an actuation seam for it is against the standing budget | `WFR-STARTUP-PREFLIGHT` |
+| The `ui/automation.rs` **ratchet row** | **open, and must not be struck retired.** The recorded occurrence is gone; the reading expression persists at **8** sites. Its new owning row is `WFR-TAB-STRIP` | `WFR-AUTOMATION-SPINE` |
+
+**The `[~]` reconciliation, re-grepped in slot 7b and corrected — the inherited
+numbers were wrong in every position.** The record said *23 markers, 16 of them
+slot 5a's, nine genuinely open*. Re-derived by grepping `openspec/changes/**`
+with slot 7a archived:
+
+| Count | Population |
+| --- | --- |
+| **35** | `[~]` markers across the whole programme (33 archived + 2 in this change) |
+| **18** | slot 5a's, closed by slot 5b — not 16 |
+| **7** | slot 7a's deferrals *to this slot* (its 1.1, 1.4, 2.2, 2.3, 2.5, 8.7, 9.10), **all discharged here**: both deltas landed, both mechanical halves landed, the disarm observed, the re-key made in both implementations with parity assertions and deliberate reds, slot 6's candidate recorded as a standing condition, and the completion section written |
+| **8** | genuinely open and **user-gated**: live-display proof in slots 4, 5b, 6, 7a, and 7b, and the manual Orca check in slots 6, 7a, and 7b |
+| **2** | genuinely open and **machine-gated, not user-gated** — see below |
+
+18 + 7 + 8 + 2 = **35**. The arithmetic closes, which none of the three inherited
+routes did.
+
+**Two items were misfiled as user-gated and are reclassified** (review item S5).
+Neither needs the user; both need a machine condition this change could not
+supply:
+
+- **slot 5b's 7.6** — the two-tree automation capture-and-diff. It is
+  machine-runnable: it needs a second worktree at a baseline ref plus a capture
+  run on each. This change ran the *single-tree* visual-geometry lane (80/80,
+  both invariants), which is not the same proof. Gating condition: a baseline
+  worktree and two capture runs. Not run here because its subject is the
+  workspace tree, not this change's rows.
+- **slot 4's 10.7** — the benchmark **baseline comparison**. The lane itself
+  passes (it passed again here); what is deferred is a `bench-baseline` /
+  `bench-compare` pair, which is only meaningful on a **quiet machine**. Gating
+  condition: an otherwise-idle host, not user availability.
+
+A reader who greps 35 markers and finds 25 of them already closed will otherwise
+conclude twenty-five items were abandoned.
+
+
 ## 3. Remaining scope
 
 Five changes remained at Phase 0 (3b and 4 through 7); slot 7 later split into 7a and 7b. Order is by increasing risk; every
-`tier-3` slot follows at least two completed lower-risk migrations. Three are
-complete — slot 1's exemplar, slot 2a's palette, and slot 2b's replace/undo half
-— so a slot-3 tier-3 workflow starts with one more proof than the rule requires.
+`tier-3` slot follows at least two completed lower-risk migrations. **All are
+complete**, 7 having split into 7a and 7b — so a slot-3 tier-3 workflow started
+with one more proof than the rule requires.
 The matrix's
 "Migration Order And Risk Tiers" section is the authoritative per-row mapping;
 this table is the change-level view.
@@ -928,14 +1109,39 @@ this table is the change-level view.
 | 5a | **complete** — migrated the notes and bookmarks family, retired `NoteSourceRefreshCoordinator` onto the shared single-flight coordinator, added the no-materialization and child-collection evidence-surface statements and the called-presentation-surface taxonomy scope, and fixed **seven confirmed pre-existing data-safety defects** including a rename that silently destroyed an existing file (`migrate-workspace-tree-and-notes-workflow-readability`) | `WFR-NOTES-BOOKMARKS`, continuing `WFR-AUTOMATION-SPINE` projections (`NotesEvidence`) | proposal + tasks + 2 spec deltas |
 | 5b | **complete — `WFR-WORKSPACE-TREE` migrated**, in `migrate-workspace-tree-workflow-readability`. Facade **291 of 370** by delegate-harder alone; **three dissolutions** (`tree_loading.rs`, `tree_index.rs`, `watch_targets.rs`) plus `workspaces.rs` dissolving into four `execution` roles; **twelve** stage orders and 44 resumption points re-derived against a floor of five (**8.8x**, the programme's widest); the first **nested** role home; `evidence.rs` discharging the **no-materialization** statement with a driven collapsed-and-expanded inertness proof; both `ui/automation.rs` reach-throughs retired and `window.workspace` projected from evidence; **both relocations at exact mutant-by-mutant parity** (the first relocation since 3a) with their 7 inherited survivors triaged to 0; two convention amendments with a nine-row re-check that found **eight gaps**; and **seven confirmed data-safety defects fixed** (two from pass 1, three from pass 2, two from the fix cycle), including two CRITICAL: M-4's superseded-load guard, and that guard's own fix being inert. **Seam retirement is complete**: 60 fns / 111 gate sites → 41 / 93. **Remaining follow-up, recorded rather than hidden**: `scan_execution.rs` is ~2,000 production lines, five confirmed non-tree data-safety findings are handed on with owners, task 7.6's two-tree automation capture is unrun, and the live `make run` walkthrough awaits user availability | `WFR-WORKSPACE-TREE`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + tasks + 2 spec deltas |
 | 6 | **complete — `WFR-MINIMAP` migrated**, in `migrate-minimap-workflow-readability`. The one slot the record expected to need a `design.md`, and the expectation was confirmed rather than obeyed. Facade **366 of 370** after **one escalation step**: the first honest facade measured 389, and *delegate harder* sufficed — the four widget accessors became `widgets.rs`, a called presentation surface, which is where the taxonomy already put them. The budget number was not edited and the census row was not split. **Five stage orders and six resumption points** re-derived against a recorded floor of three. **Two path-keyed gates re-keyed or retired, and the disarm observed before it was fixed** — the `.cargo/mutants.toml` `examine_globs` entry **retired** (0 mutants generated after the move, still exiting 0), and the native-minimap invariant predicate re-keyed to a directory prefix in **both** implementations, each with its own parity assertion proved by a deliberate red. The Python half's self-tests were **unreachable** before this change and now run. The retroactive re-check across ten migrated rows found **one** real disarm, inherited from slot 2a: `scripts/run-performance-smoke.sh` still filtered on `ui::search_panel::runtime::tests::…` after that module was renamed to `execution`, and libtest exits 0 on a filter that matches nothing, so a green proof had not run since 2026-08-25. **Mutation configuration retired from 14 entries / 66 method names to 4 entries / 0 method names**, with seven named methods found to have zero definitions anywhere and four entries anchored to a `line:column` that matched no generated mutant. **All 12 first-run survivors triaged to zero** — nine killed by tests, three removed by extracting a block that was duplicated verbatim between two functions, which then exposed a dead cap and deleted a fourth. Final run **412 generated / 406 caught / 0 missed**. **Two confirmed data-safety defects fixed**, one of them in the already-migrated load row: a superseded chunked install returned without restoring the suspension it captured, so a following load adopted the suspended values as its own baseline and made a read-only tab with local-history capture disabled permanent for the session | `WFR-MINIMAP`, continuing `WFR-AUTOMATION-SPINE` projections | proposal + design + tasks + 2 spec deltas |
-| 7a | **complete — five rows migrated and one cross-cutting lane discharged.** `WFR-PRINT` (facade 105/370), `WFR-EDITOR-FIND` (238/370, from a 395-line `mod.rs`), `WFR-STATUS-NOTIFICATIONS` (153/370), `WFR-ENCODING` (155/370, from a 907-line file), and **`WFR-MARKDOWN-PREVIEW` (270/370, from a 1,983-line `mod.rs`)** — facade and evidence only, with the topical decomposition two earlier changes paid for left untouched apart from import paths. Its recorded inversion count was **low by ~3.2x** (5 recorded, 16 resumption points derived), and **11 of its 13 tuple-returning inspection seams** retired into one named surface. **Four rows the census recorded as owning `none` pure policy all own a `policy.rs`**: probing found 5 decisions in editor-find, 6 in notifications, and the whole user-facing dialog vocabulary in encoding — **+82 mutants, all gain from zero**, none previously covered. **`WFR-BUFFER-SNAPSHOT`'s three parallel typed observation types consolidated** into one `BufferSnapshotEvidence` with named components, all three surface proofs discharged. **§D1 resolved** (the shell row is not one workflow). **Capability delta 3 landed** with its inclusion-side discovery check and two policy renames (parity 175→175; gain 0→78). **The teardown-before-close data-safety defect fixed** with a revert-proved regression test, and **`check-accessibility-policy`'s fail-open closed**. Slot 5b's four remaining handed-on findings **landed in `docs/next/`**. Deltas 1 and 2 deliberately withheld as 7b's | `WFR-PRINT`, `WFR-EDITOR-FIND`, `WFR-STATUS-NOTIFICATIONS`, `WFR-ENCODING`, `WFR-BUFFER-SNAPSHOT`, `WFR-MARKDOWN-PREVIEW` | proposal + design + tasks + 3 spec deltas (1 landed) |
-| 7b | Residual close-out. `WFR-PLAIN-DISPOSAL` tier-3 surface narrowing; **the `WFR-SHELL-LAYOUT` hybrid §D1 selected**, with §D1's four contested-file findings as authoring inputs; `WFR-AUTOMATION-SPINE`'s terminal status (§D3); **capability deltas 1 and 2**, which assert obligations only the closing change can discharge; and the programme closeout with its single deferral inventory. Also outstanding: triage of the **160 newly-in-scope mutants** slot 7a generated | `WFR-PLAIN-DISPOSAL`, `WFR-SHELL-LAYOUT`, `WFR-AUTOMATION-SPINE`, matrix completion | proposal + tasks + 2 spec deltas |
+| 7a | **complete — five rows migrated and one cross-cutting lane discharged.** `WFR-PRINT` (facade 105/370), `WFR-EDITOR-FIND` (238/370 as 7a measured it; **229** on 7b's re-measurement, from a 395-line `mod.rs`), `WFR-STATUS-NOTIFICATIONS` (153/370), `WFR-ENCODING` (155/370, from a 907-line file), and **`WFR-MARKDOWN-PREVIEW` (270/370 as 7a measured it; **244** on 7b's re-measurement, from a 1,983-line `mod.rs`)** — facade and evidence only, with the topical decomposition two earlier changes paid for left untouched apart from import paths. Its recorded inversion count was **low by ~3.2x** (5 recorded, 16 resumption points derived), and **11 of its 13 tuple-returning inspection seams** retired into one named surface. **Four rows the census recorded as owning `none` pure policy all own a `policy.rs`**: probing found 5 decisions in editor-find, 6 in notifications, and the whole user-facing dialog vocabulary in encoding — **+82 mutants, all gain from zero**, none previously covered. **`WFR-BUFFER-SNAPSHOT`'s three parallel typed observation types consolidated** into one `BufferSnapshotEvidence` with named components, all three surface proofs discharged. **§D1 resolved** (the shell row is not one workflow). **Capability delta 3 landed** with its inclusion-side discovery check and two policy renames (parity 175→175; gain 0→78). **The teardown-before-close data-safety defect fixed** with a revert-proved regression test, and **`check-accessibility-policy`'s fail-open closed**. Slot 5b's four remaining handed-on findings **landed in `docs/next/`**. Deltas 1 and 2 deliberately withheld as 7b's | `WFR-PRINT`, `WFR-EDITOR-FIND`, `WFR-STATUS-NOTIFICATIONS`, `WFR-ENCODING`, `WFR-BUFFER-SNAPSHOT`, `WFR-MARKDOWN-PREVIEW` | proposal + design + tasks + 3 spec deltas (1 landed) |
+| 7b | **Programme close (complete).** Seven replacement rows for the superseded `WFR-SHELL-LAYOUT`: `WFR-TRANSIENT-DISMISSAL`, `WFR-FOCUS-MODE`, `WFR-EDITOR-MEMORY-EVICTION`, `WFR-RECENT-DOCUMENTS`, `WFR-SHELL-GEOMETRY`, `WFR-TAB-STRIP` (six facades) and `WFR-STARTUP-PREFLIGHT` (cross-cutting, no facade); `WFR-PLAIN-DISPOSAL`'s lane surface; `WFR-AUTOMATION-SPINE`'s terminal status; **capability deltas 1 and 2 landed**; the §E3 visual-proof re-key for the geometry role home, proved by an observed disarm and a deliberate red in both implementations; and the programme closeout with its single deferral inventory | `WFR-SHELL-LAYOUT` -> 7 rows, `WFR-PLAIN-DISPOSAL`, `WFR-AUTOMATION-SPINE`, matrix completion | proposal + design + tasks + 2 spec deltas |
 
 ### Slot 7a's structural finding: §D1 resolved, the shell row is not one workflow
 
 Recorded here rather than only in the change directory, because a change
 directory is archived and this decision outlives it — the failure mode this
 programme has already suffered once.
+
+> **IMPLEMENTED IN SLOT 7b, and three of its own claims were falsified by the
+> implementation.** The section below is slot 7a's finding as written, kept so
+> the decision's reasoning stays readable, but it is **no longer a plan**: the
+> hybrid outcome was taken, `WFR-SHELL-LAYOUT` is `superseded` by seven rows, and
+> every consequence below is in the matrix. Read the three corrections before the
+> text they correct:
+>
+> 1. **`focus_indexing.rs` is four stories, not three** (finding 2 below), and
+>    the eviction story is **407** production lines, not ~590 — the inherited
+>    figure had absorbed the focus-restoration block that sits between its two
+>    discontiguous ranges. Its four owners are
+>    `ui/window/editor_memory_eviction/` (eviction), `ui/window/editor_focus.rs`
+>    (focus restoration, cross-cutting, no role), and
+>    `ui/window/palette_shell.rs` (both palette stage orders, a called
+>    presentation surface of `WFR-COMMAND-PALETTE`).
+> 2. **The "geometry story" in that file contains no geometry code.** It is
+>    unowned focus restoration, which is why it became `editor_focus.rs` rather
+>    than joining the geometry role home.
+> 3. **§D6's constraint was met by a prefix re-key, not by leaving the code in
+>    place.** The geometry role home *is* now a narrow prefix key in both
+>    visual-proof implementations, each with a parity self-test; the forbidden
+>    `ui/window/` prefix was not used. The disarm was observed deliberately
+>    before the key was added, because a path-keyed gate that matches nothing
+>    exits 0.
 
 **`WFR-SHELL-LAYOUT` is NOT one workflow.** The row's own stage trace called it
 *"a residual grouping of 19 shell surfaces"* and licensed a split *"if the facade
@@ -965,9 +1171,11 @@ response wearing the grouping clause as cover.
 story (which satisfies criterion 1 cleanly: seven entry points converging on one
 ordered sequence, and the smallest external entry surface of any candidate),
 replacement rows for the surfaces that are separate stories, and
-no-coordination-tier entries for the rest. **Implementing it is outstanding work.**
+no-coordination-tier entries for the rest. ~~**Implementing it is outstanding
+work.**~~ **Implemented in slot 7b**; the hybrid is what shipped.
 
-Four findings the implementing change must not re-derive or inherit blindly:
+Four findings the implementing change must not re-derive or inherit blindly —
+**all four were re-derived, and the second was wrong in three ways**:
 
 1. **`dialogs.rs` is not this row's, and not a called presentation surface.** It
    owns five stage orders and three unrecorded freshness/identity values, and its
@@ -975,12 +1183,16 @@ Four findings the implementing change must not re-derive or inherit blindly:
    `WFR-DOCUMENT-SAVE` (`close_save_session_is_current`) and
    `WFR-DRAFT-RECOVERY` (`clear_close_discard_drafts`) rows. Do not make it a row
    of its own without first deciding which migrated row owns those stages.
-2. **`focus_indexing.rs` is three stories, not two** — its own doc says so, and
-   the largest, ~590 lines of **editor-memory eviction orchestration** with its own
-   generation counter and 8 test seams, is owned by **no story anywhere**
-   (`WFR-EDITOR-MEMORY` is `exempt` and covers only `model/editor_memory.rs`). The
-   other two belong to the migrated command-palette row and to the geometry
-   candidate.
+2. ~~**`focus_indexing.rs` is three stories, not two**~~ — **four**, as slot 7b
+   re-derived it. The largest is **407** production lines (not ~590) of
+   **editor-memory eviction orchestration** with its own generation counter and 8
+   test seams, owned by **no story anywhere** before 7b
+   (`WFR-EDITOR-MEMORY` is `exempt` and covers only `model/editor_memory.rs`); it
+   is now `WFR-EDITOR-MEMORY-EVICTION`. Of the rest, **two** stage orders belong
+   to the migrated command-palette row (`ui/window/palette_shell.rs`), and the
+   fourth — which this finding called "the geometry story" — contains **no
+   geometry code at all** and is cross-cutting focus restoration
+   (`ui/window/editor_focus.rs`).
 3. **`ui/window/search.rs` (955 lines) was attributed to nothing**, and is
    `WFR-SEARCH-REPLACE`'s window-side surface — but it is *more* than a called
    presentation surface: it holds two of that workflow's ordered coordination
@@ -1116,7 +1328,11 @@ change covering the slot.
 | 3a | `migrate-document-save-workflow-readability` |
 | 3b | `migrate-document-load-workflow-readability` |
 | 4 | `migrate-user-content-restore-workflow-readability` — **complete**: all four tier-3 rows landed (`WFR-BUFFER-REPLACEMENT`, `WFR-SESSION-RESTORE`, `WFR-LOCAL-HISTORY`, `WFR-DRAFT-RECOVERY`) |
-| 5–7 | not yet authored |
+| 5a | `migrate-notes-bookmarks-workflow-readability` |
+| 5b | `migrate-workspace-tree-workflow-readability` |
+| 6 | `migrate-minimap-workflow-readability` |
+| 7a | `complete-residual-workflow-readability` |
+| 7b | `close-workflow-readability-programme` — **the closing change**: seven replacement rows, the disposal lane's surface, the spine's terminal status, capability deltas 1 and 2, and the programme closeout |
 
 **3a lands before 3b.** They share `ui/editor_page/load_save.rs`, and 3a's
 `gtk-adapter-module-boundaries` delta establishes the per-workflow subdirectory
@@ -1228,7 +1444,12 @@ in both directions, which some rows need:
 - slot 5b (complete): WFR-WORKSPACE-TREE, WFR-AUTOMATION-SPINE (partial)
 - slot 6 (complete): WFR-MINIMAP, WFR-AUTOMATION-SPINE (partial)
 - slot 7a (complete): WFR-PRINT, WFR-EDITOR-FIND, WFR-STATUS-NOTIFICATIONS, WFR-ENCODING, WFR-BUFFER-SNAPSHOT, WFR-MARKDOWN-PREVIEW
-- slot 7b (outstanding): WFR-PLAIN-DISPOSAL, WFR-SHELL-LAYOUT, WFR-AUTOMATION-SPINE
+- slot 7b (complete): WFR-SHELL-LAYOUT, WFR-TRANSIENT-DISMISSAL, WFR-FOCUS-MODE, WFR-EDITOR-MEMORY-EVICTION, WFR-RECENT-DOCUMENTS, WFR-SHELL-GEOMETRY, WFR-TAB-STRIP, WFR-STARTUP-PREFLIGHT, WFR-PLAIN-DISPOSAL, WFR-AUTOMATION-SPINE
+
+**No `outstanding` line follows.** Every matrix row is terminal, which is the
+condition the programme's completion depends on and the reason slot 7b is its
+closing change. A future slot that adds one must add a matrix row to match it in
+the same change; `make check-workflow-boundaries` fails on either half alone.
 
 ### Convention friction slot 2a hit, recorded for 2b and 3 through 7
 
@@ -1401,10 +1622,12 @@ These are **not** in any slot. Each needs its own change with its own
 justification, and neither is required for the programme to be complete.
 
 Do not confuse this section with the matrix's row status `deferred`. That status
-means "will be migrated, but later than its risk tier alone suggests", and every
-row carrying it (`WFR-MINIMAP` in slot 6, `WFR-MARKDOWN-PREVIEW` in slot 7) has a
-slot and is planned work. The two items below are **programme-level deferrals**:
-unslotted, unscoped, and possibly permanent.
+means "will be migrated, but later than its risk tier alone suggests". **No row
+carries it any more**: the two that did — `WFR-MINIMAP` and
+`WFR-MARKDOWN-PREVIEW` — were migrated in slots 6 and 7a, and at programme close
+the gate rejects any transitional status outright. The two items below are
+**programme-level deferrals**: unslotted, unscoped, and possibly permanent, and
+they are the only sense in which anything about this programme is deferred.
 
 ### Actuation test seams (~98 functions)
 

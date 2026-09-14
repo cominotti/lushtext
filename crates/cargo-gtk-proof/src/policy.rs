@@ -45,6 +45,17 @@ const VISUAL_SENSITIVE_SUFFIXES: &[&str] = &[".blp", ".css", ".ui"];
 /// `scripts/check-visual-proof-policy.py` implements the same predicate and must
 /// stay keyed identically; both sides carry a self-test asserting it.
 const NATIVE_MINIMAP_ROLE_HOME_PREFIX: &str = "crates/lushtext-core/src/ui/editor_page/minimap/";
+/// `WFR-SHELL-GEOMETRY`'s role home, added by slot 7b's §E3 re-key.
+///
+/// The geometry code that drives the workspace-sidebar and document-properties
+/// transitions used to live in `ui/window/imp.rs` and `ui/window/actions.rs`,
+/// which are still keys here because both retain protected code. This prefix is
+/// the **narrowest** key that also selects the code that moved. A
+/// `crates/lushtext-core/src/ui/window/` prefix is deliberately not used: it
+/// would demand two pixel invariants and the sidebar animation matrix of seven
+/// subdirectories, four of them migrated role homes no predicate has ever
+/// protected.
+const SHELL_GEOMETRY_ROLE_HOME_PREFIX: &str = "crates/lushtext-core/src/ui/window/geometry/";
 /// Invariant id shared with the Python visual runner and generated summaries.
 const NATIVE_MINIMAP_HIGHLIGHT_INVARIANT: &str = "native-minimap-highlight-anchors";
 /// Animation invariant id shared with existing smoke evidence.
@@ -821,6 +832,7 @@ fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
     for path in paths.iter().map(|item| item.replace('\\', "/")) {
         if (path.starts_with(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/window/actions.rs"
+            || path.starts_with(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/window/imp.rs"
             || path == "crates/lushtext-core/src/ui/automation.rs"
             || path == "crates/lushtext-core/src/model/automation.rs"
@@ -850,6 +862,7 @@ fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
             || path.starts_with(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/editor_page/overscroll.rs"
             || path == "crates/lushtext-core/src/ui/window/actions.rs"
+            || path.starts_with(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             || path == "crates/lushtext-core/src/ui/window/imp.rs"
             || path == "crates/lushtext-core/src/ui/automation.rs"
             || path == "crates/lushtext-core/src/model/automation.rs"
@@ -878,6 +891,7 @@ fn workspace_sidebar_animation_matrix_required(paths: &[String]) -> bool {
         .any(|path| {
             path == "crates/lushtext-core/src/ui/window/actions.rs"
                 || path == "crates/lushtext-core/src/ui/window/imp.rs"
+                || path.starts_with(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
                 || path == "scripts/check-visual-proof-policy.py"
                 || path == "scripts/test-visual-geometry.py"
                 || path == "scripts/visual-geometry-smoke.py"
@@ -1014,6 +1028,85 @@ fn default_repo_root() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+
+    /// Parity assertion for the §E3 re-key (slot 7b).
+    ///
+    /// `WFR-SHELL-GEOMETRY`'s role home is `ui/window/geometry/`. Before the
+    /// re-key, moving the geometry code there disarmed both named pixel
+    /// invariants and the sidebar animation matrix **while this gate still
+    /// exited 0** — a path-keyed gate that matches nothing does not fail.
+    ///
+    /// One assertion on one side is the half that passes while the other side
+    /// is wrong, so the same key is asserted in
+    /// `scripts/check-visual-proof-policy.py`'s `--self-test`.
+    #[test]
+    fn geometry_role_home_requires_the_native_minimap_invariants_and_the_sidebar_matrix() {
+        let moved = vec![
+            "crates/lushtext-core/src/ui/window/geometry/mod.rs".to_string(),
+            "crates/lushtext-core/src/ui/window/geometry/execution.rs".to_string(),
+        ];
+        assert_eq!(
+            super::required_invariants_for_changes(&moved),
+            vec![super::NATIVE_MINIMAP_HIGHLIGHT_INVARIANT.to_string()],
+            "the geometry role home must require the native minimap highlight invariant"
+        );
+        assert_eq!(
+            super::required_animation_invariants_for_changes(&moved),
+            vec![super::NATIVE_MINIMAP_ANIMATION_INVARIANT.to_string()],
+            "the geometry role home must require the native minimap animation invariant"
+        );
+        assert!(
+            super::workspace_sidebar_animation_matrix_required(&moved),
+            "the geometry role home must require the workspace-sidebar animation matrix"
+        );
+    }
+
+    /// The re-key must stay **narrow**. A `crates/lushtext-core/src/ui/window/`
+    /// prefix would demand two pixel invariants and the sidebar animation
+    /// matrix of seven subdirectories, four of them migrated role homes no
+    /// predicate has ever protected. Broadening a gate to files it did not
+    /// protect is a scope change, not a side effect of a rename.
+    #[test]
+    fn the_geometry_rekey_does_not_reach_sibling_window_role_homes() {
+        for sibling in [
+            "crates/lushtext-core/src/ui/window/focus_mode/mod.rs",
+            "crates/lushtext-core/src/ui/window/tab_strip/mod.rs",
+            "crates/lushtext-core/src/ui/window/transient_dismissal/mod.rs",
+            "crates/lushtext-core/src/ui/window/notes/browser.rs",
+        ] {
+            let paths = vec![sibling.to_string()];
+            assert!(
+                super::required_invariants_for_changes(&paths).is_empty(),
+                "{sibling} must not have been pulled into the pixel-invariant key"
+            );
+            assert!(
+                !super::workspace_sidebar_animation_matrix_required(&paths),
+                "{sibling} must not have been pulled into the animation matrix key"
+            );
+        }
+    }
+
+    /// The retained literal keys must survive the re-key. Both files keep
+    /// protected code: `actions.rs` keeps the two toggle action bodies and
+    /// `imp.rs` keeps the `size_allocate` vfunc and its template-child half.
+    #[test]
+    fn the_retained_actions_and_imp_keys_still_protect_their_files() {
+        for retained in [
+            "crates/lushtext-core/src/ui/window/actions.rs",
+            "crates/lushtext-core/src/ui/window/imp.rs",
+        ] {
+            let paths = vec![retained.to_string()];
+            assert_eq!(
+                super::required_invariants_for_changes(&paths),
+                vec![super::NATIVE_MINIMAP_HIGHLIGHT_INVARIANT.to_string()],
+                "{retained} must still require the highlight invariant"
+            );
+            assert!(
+                super::workspace_sidebar_animation_matrix_required(&paths),
+                "{retained} must still require the animation matrix"
+            );
+        }
+    }
     use super::*;
 
     #[test]

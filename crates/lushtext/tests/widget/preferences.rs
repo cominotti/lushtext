@@ -5,6 +5,7 @@
 use crate::common::{ensure_gtk_init, fixture, fs_metadata, isolated_data_dir, wait_until};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
+use libadwaita::prelude::*;
 use lushtext_core::config::{self, keys};
 use lushtext_core::services::format_upgrade::{
     FORMAT_UPGRADE_BACKUP_DIR, test_support::ConverterRegistry,
@@ -14,7 +15,6 @@ use lushtext_core::services::json_format::{
 };
 use lushtext_core::ui::accessibility::{AnnouncementLane, test_audit::AccessibleAudit};
 use lushtext_core::ui::preferences::LushtextPreferences;
-use libadwaita::prelude::*;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -451,10 +451,7 @@ fn test_data_page_refresh_keeps_verifying_state_visible_for_fast_current_scan() 
         .states(&[gtk4::AccessibleState::Busy])
         .assert_on(&*imp.data_status_row);
     AccessibleAudit::new()
-        .states(&[
-            gtk4::AccessibleState::Busy,
-            gtk4::AccessibleState::Disabled,
-        ])
+        .states(&[gtk4::AccessibleState::Busy, gtk4::AccessibleState::Disabled])
         .assert_on(&*imp.data_scan_button);
 
     while started_at.elapsed() < FAST_SCAN_VISIBLE_DWELL {
@@ -556,8 +553,7 @@ fn test_data_page_keeps_many_awkward_items_in_bounded_details_scroller() {
                 .is_some_and(|subtitle| subtitle.contains("created by a newer LushText"))
     });
 
-    let scroller =
-        find_scrolled_window(&*imp.data_details_group).expect("data details scroller");
+    let scroller = find_scrolled_window(&*imp.data_details_group).expect("data details scroller");
     assert_eq!(scroller.hscrollbar_policy(), gtk4::PolicyType::Never);
     assert_eq!(scroller.max_content_height(), 240);
     assert!(list_box_child_count(&imp.data_details_list) >= 16);
@@ -667,7 +663,10 @@ fn test_data_page_keeps_failed_convert_retryable() {
     );
     let value: serde_json::Value =
         serde_json::from_str(&fixture::read_text(&session_path)).expect("retryable session");
-    assert_eq!(value.get("version").and_then(serde_json::Value::as_u64), Some(0));
+    assert_eq!(
+        value.get("version").and_then(serde_json::Value::as_u64),
+        Some(0)
+    );
     assert!(
         fs_metadata::exists(&data_dir.path().join(FORMAT_UPGRADE_BACKUP_DIR)),
         "failed convert should still leave backup evidence before retry"

@@ -18,6 +18,46 @@ use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
 
+/// Ceiling on activation opens held while the startup gate is closed.
+///
+/// The queue is fed by desktop and command-line activations, which the user can
+/// produce in arbitrary numbers (`lushtext *` in a large directory) while a
+/// compatibility dialog is waiting for an answer. Sixty-four is well above any
+/// plausible deliberate multi-file open and far below the point where flushing
+/// the queue would open enough tabs to stall the shell.
+///
+/// The overflow is **dropped**, not opened immediately: returning "not queued"
+/// would send the path straight down the normal open path and defeat the gate
+/// this module exists to hold, which is the opposite of the safe direction.
+/// Dropped opens are counted and reported once when the gate releases, so the
+/// user is told rather than left wondering.
+const MAX_PENDING_ACTIVATION_OPENS: usize = 64;
+
+/// Whether one more activation open may join the queue.
+///
+/// Pure, so the ceiling's behaviour is testable without a startup dialog. The
+/// GTK caller owns what happens when this is false: it **drops and counts**,
+/// because reporting "not queued" would send the path down the normal open path
+/// and defeat the gate this module exists to hold.
+#[must_use]
+const fn activation_queue_has_room(queued: usize) -> bool {
+    queued < MAX_PENDING_ACTIVATION_OPENS
+}
+
+/// The status message shown when the gate had to drop queued opens.
+///
+/// Pluralized rather than `file(s)`, for the same reason
+/// `tab_strip::policy::bulk_close_message` is: a parenthesised plural is a
+/// string that is wrong in both cases rather than right in one.
+#[must_use]
+fn dropped_activation_message(dropped: usize) -> String {
+    format!(
+        "{dropped} file{} requested during startup {} not opened (limit {MAX_PENDING_ACTIVATION_OPENS})",
+        if dropped == 1 { "" } else { "s" },
+        if dropped == 1 { "was" } else { "were" }
+    )
+}
+
 /// Stable response id for the Convert action in the startup compatibility dialog.
 const RESPONSE_CONVERT: &str = "convert";
 /// Stable response id for preserving incompatible data and continuing fresh.
@@ -89,9 +129,15 @@ impl LushtextWindow {
         if flow.completed.get() {
             return false;
         }
-        flow.pending_activation_paths
-            .borrow_mut()
-            .push(path.to_path_buf());
+        {
+            let mut queued = flow.pending_activation_paths.borrow_mut();
+            if !activation_queue_has_room(queued.len()) {
+                flow.dropped_activation_opens
+                    .set(flow.dropped_activation_opens.get().saturating_add(1));
+                return true;
+            }
+            queued.push(path.to_path_buf());
+        }
         true
     }
 
@@ -99,6 +145,14 @@ impl LushtextWindow {
         let paths = self.imp().startup_data_flow.pending_activation_paths.take();
         for path in paths {
             self.open_document_from_activation(&path);
+        }
+        let dropped = self
+            .imp()
+            .startup_data_flow
+            .dropped_activation_opens
+            .replace(0);
+        if dropped > 0 {
+            self.publish_status_message(&dropped_activation_message(dropped), MessageKind::Warning);
         }
     }
 
@@ -431,5 +485,35 @@ fn quit_window_application(window: &LushtextWindow) {
         app.quit();
     } else {
         window.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_PENDING_ACTIVATION_OPENS, activation_queue_has_room, dropped_activation_message,
+    };
+
+    #[test]
+    fn the_queue_admits_up_to_the_ceiling_and_refuses_beyond_it() {
+        assert!(activation_queue_has_room(0));
+        assert!(activation_queue_has_room(MAX_PENDING_ACTIVATION_OPENS - 1));
+        assert!(
+            !activation_queue_has_room(MAX_PENDING_ACTIVATION_OPENS),
+            "the ceiling is exclusive: a full queue admits nothing more"
+        );
+        assert!(!activation_queue_has_room(MAX_PENDING_ACTIVATION_OPENS + 1));
+    }
+
+    #[test]
+    fn the_dropped_message_is_singular_for_exactly_one_file() {
+        assert_eq!(
+            dropped_activation_message(1),
+            "1 file requested during startup was not opened (limit 64)"
+        );
+        assert_eq!(
+            dropped_activation_message(3),
+            "3 files requested during startup were not opened (limit 64)"
+        );
     }
 }

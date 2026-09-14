@@ -47,12 +47,28 @@
 //! widget. So there is no panicking accessor to guard.
 //!
 //! An earlier draft of this surface carried a `disposed_sections_skipped` field and a
-//! `header_box.try_get()` predicate to feed it. Both were removed once the section's
-//! `dispose()` was actually read: it does **not** call `dispose_template()`, so its
-//! template children are never cleared and the predicate could never fire. A guard
-//! that cannot fire is worse than no guard, because it implies a hazard has been
-//! handled. If a future change makes the section clear its template children, add the
-//! guard back **together with** a test that drives the state.
+//! `header_box.try_get()` predicate to feed it. Both were removed, and the removal is
+//! **correct for the reason above** — this surface reads no template child, so no
+//! predicate over one can fire.
+//!
+//! **The reason originally recorded for the removal was wrong, and is corrected
+//! here.** It said the section's `dispose()` does not call `dispose_template()`, so
+//! its template children are *never cleared*. That inference does not hold: no imp in
+//! this tree calls `dispose_template()` explicitly, and template children are cleared
+//! on dispose regardless, by the `CompositeTemplate` teardown gtk4-rs installs. Three
+//! sibling surfaces observed exactly that as a **panic** before shipping —
+//! `ui/window/print/evidence.rs`, `ui/window/geometry/evidence.rs`, and
+//! `ui/open_popover/evidence.rs`. Slot 7b then tried to drive the state for **this**
+//! widget and got a sharper answer than it asked for: `run_dispose()` on a section
+//! panics *inside the section's own `dispose()`*, on a cleared `GtkListView`
+//! template child, before any surface read happens. The children are cleared — so
+//! decisively that the teardown path itself trips on them. Recorded as **S7B-5** in
+//! `docs/next/persistent-format-hardening.md`; it is not reachable through normal
+//! refcount-driven teardown, which every window-closing test in the tree exercises.
+//! So the guard is unnecessary because
+//! of what this surface reads, not because of what the section's `dispose()` omits. A
+//! future change that makes this surface read a template child must add the guard,
+//! and the hazard is live rather than hypothetical.
 //!
 //! # Borrow discipline
 //!

@@ -127,7 +127,11 @@ workflows follow the convention. Every workflow has a stable `WFR-*` row; update
 its row in the same change as the code, and read the row before restructuring a
 workflow so an `exempt` or `deferred` classification is not silently overridden.
 
-Migration is a multi-change programme and most workflows are still unmigrated.
+The migration programme is **complete**: every workflow has a terminal matrix row
+— **22 `migrated`**, 5 `cross-cutting`, 1 `exempt`, and 1 `superseded` — and the
+gate rejects any transitional status once the programme record's slot ledger
+declares no slot outstanding. New work adds a row and follows the convention; it
+does not re-open the programme.
 `docs/next/workflow-readability.md` is its record: the measured problem, the
 baseline of what is actually migrated, the remaining per-change scope and slot
 ledger, the sequencing rationale, the rejected alternatives (a new policy layer,

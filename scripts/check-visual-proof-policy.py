@@ -45,6 +45,17 @@ VISUAL_SENSITIVE_SUFFIXES = (
 # `crates/cargo-gtk-proof/src/policy.rs` implements the same predicate and must
 # stay keyed identically; both sides carry a self-test asserting it.
 NATIVE_MINIMAP_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/editor_page/minimap/"
+# `WFR-SHELL-GEOMETRY`'s role home, added by slot 7b's §E3 re-key.
+#
+# The geometry code that drives the workspace-sidebar and document-properties
+# transitions used to live in `ui/window/imp.rs` and `ui/window/actions.rs`,
+# which are still keys below because both retain protected code. This prefix is
+# the narrowest key that also selects the code that moved. A
+# `crates/lushtext-core/src/ui/window/` prefix is deliberately not used: it
+# would demand two pixel invariants and the sidebar animation matrix of seven
+# subdirectories, four of them migrated role homes no predicate has ever
+# protected.
+SHELL_GEOMETRY_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/window/geometry/"
 NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
 NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
 WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS = (
@@ -161,6 +172,7 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
         if (
             path.startswith(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/window/actions.rs"
+            or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/window/imp.rs"
             or path == "crates/lushtext-core/src/ui/automation.rs"
             or path == "crates/lushtext-core/src/model/automation.rs"
@@ -188,6 +200,7 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
             or path.startswith(NATIVE_MINIMAP_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/editor_page/overscroll.rs"
             or path == "crates/lushtext-core/src/ui/window/actions.rs"
+            or path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
             or path == "crates/lushtext-core/src/ui/window/imp.rs"
             or path == "crates/lushtext-core/src/ui/automation.rs"
             or path == "crates/lushtext-core/src/model/automation.rs"
@@ -205,7 +218,8 @@ def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
 
 def workspace_sidebar_animation_matrix_required(paths: list[str]) -> bool:
     return any(
-        path in {
+        path.startswith(SHELL_GEOMETRY_ROLE_HOME_PREFIX)
+        or path in {
             "crates/lushtext-core/src/ui/window/actions.rs",
             "crates/lushtext-core/src/ui/window/imp.rs",
             "scripts/check-visual-proof-policy.py",
@@ -591,6 +605,7 @@ def check_policy(artifact_dir: Path, base_ref: str | None) -> tuple[bool, str]:
 
 
 def run_self_tests() -> None:
+    _self_test_shell_geometry_role_home_rekey()
     assert is_visual_sensitive("crates/lushtext-core/src/ui/window/imp.rs")
     assert is_visual_sensitive("crates/lushtext-core/src/model/automation.rs")
     assert is_visual_sensitive("resources/ui/window.blp")
@@ -860,6 +875,62 @@ def main(argv: list[str] | None = None) -> int:
     ok, detail = check_policy(args.artifact_dir.resolve(), args.base_ref)
     print(detail)
     return 0 if ok else 1
+
+
+def _self_test_shell_geometry_role_home_rekey() -> None:
+    """Parity assertion for the slot-7b §E3 re-key.
+
+    `WFR-SHELL-GEOMETRY`'s role home is `ui/window/geometry/`. Before the
+    re-key, moving the geometry code there disarmed both named pixel invariants
+    and the sidebar animation matrix **while this gate still exited 0** — a
+    path-keyed gate that matches nothing does not fail, it passes while
+    protecting nothing.
+
+    The identical assertion lives in `crates/cargo-gtk-proof/src/policy.rs`.
+    One assertion on one side is the half that passes while the other side is
+    wrong, which is the failure mode this pair exists to prevent.
+    """
+    moved = [
+        "crates/lushtext-core/src/ui/window/geometry/mod.rs",
+        "crates/lushtext-core/src/ui/window/geometry/execution.rs",
+    ]
+    assert required_invariants_for_changes(moved) == [NATIVE_MINIMAP_HIGHLIGHT_INVARIANT], (
+        "the geometry role home must require the native minimap highlight invariant"
+    )
+    assert required_animation_invariants_for_changes(moved) == [
+        NATIVE_MINIMAP_ANIMATION_INVARIANT
+    ], "the geometry role home must require the native minimap animation invariant"
+    assert workspace_sidebar_animation_matrix_required(moved), (
+        "the geometry role home must require the workspace-sidebar animation matrix"
+    )
+
+    # The re-key must stay narrow: a `ui/window/` prefix would sweep in seven
+    # subdirectories, four of them migrated role homes no predicate has ever
+    # protected. Broadening a gate is a scope change, not a rename side effect.
+    for sibling in (
+        "crates/lushtext-core/src/ui/window/focus_mode/mod.rs",
+        "crates/lushtext-core/src/ui/window/tab_strip/mod.rs",
+        "crates/lushtext-core/src/ui/window/transient_dismissal/mod.rs",
+        "crates/lushtext-core/src/ui/window/notes/browser.rs",
+    ):
+        assert not required_invariants_for_changes([sibling]), (
+            f"{sibling} must not have been pulled into the pixel-invariant key"
+        )
+        assert not workspace_sidebar_animation_matrix_required([sibling]), (
+            f"{sibling} must not have been pulled into the animation matrix key"
+        )
+
+    # The retained literal keys must survive: both files keep protected code.
+    for retained in (
+        "crates/lushtext-core/src/ui/window/actions.rs",
+        "crates/lushtext-core/src/ui/window/imp.rs",
+    ):
+        assert required_invariants_for_changes([retained]) == [
+            NATIVE_MINIMAP_HIGHLIGHT_INVARIANT
+        ], f"{retained} must still require the highlight invariant"
+        assert workspace_sidebar_animation_matrix_required([retained]), (
+            f"{retained} must still require the animation matrix"
+        )
 
 
 if __name__ == "__main__":

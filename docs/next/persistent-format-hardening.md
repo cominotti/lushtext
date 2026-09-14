@@ -215,7 +215,7 @@ lost external-change detection; and because a cancelled in-flight load sets
 unsaved work lost its recovery record after an action the user declined.
 
 The fix was to **delete** the eager block, not move it: `handle_tab_detached`
-(`ui/window/tabs.rs`) already performs all four operations and is wired to
+(now `ui/window/tab_strip/close_execution.rs`) already performs all four operations and is wired to
 `AdwTabView::page-detached`, so it runs exactly once the page really detaches.
 Slot 5b's handoff said "move", which taken literally would have **duplicated** the
 teardown. The same deletion also removed a premature `open_paths` retirement from that
@@ -286,3 +286,145 @@ account for pending workspace persistence, as it already does for drafts and
 sessions. Owner: `WFR-WORKSPACE-TREE` (migrated). Capability:
 **`workspace-state-persistence`**. Cross-referenced from
 `docs/next/workspace-context-switching.md`.
+
+### S7B-1 — **LOW** — a startup-critical metadata file that cannot be *read* opens the gate
+
+`services/format_upgrade/plan.rs:188` maps `FormatClassification::Damaged` to
+`FormatPlanAction::ReportOnly`, and `requires_startup_decision` fires only for
+`ConvertToLatest | StartFreshOnly`. Every **error** path in
+`services/format_upgrade/inventory.rs` — status failure, facts failure, over the
+byte ceiling, read failure, JSON parse failure — produces `Damaged`. So a
+startup-critical file the preflight could not read does **not** hold the gate.
+
+**Audited and cleared for the question task 7.6 actually asks**, with the
+reasoning recorded rather than the conclusion alone: the preflight cannot admit
+an **unmigrated** format on an error path, because `UpgradeableOld` and
+`FutureVersion` are only ever produced from a *successfully parsed* envelope. An
+error yields `Damaged` and nothing else.
+
+**And the downstream defence is real**: an incompletely read draft inventory
+produces an untrusted `DraftManifestAuthority`, whose
+`DraftManifestReplacementEligibility::Ineligible` refuses destructive cleanup and
+manifest replacement. The conservative direction holds without the gate.
+
+Left open deliberately: making `Damaged` hold the gate would block startup on any
+transient I/O hiccup, which is worse than the state it prevents. Close condition:
+only if a `Damaged` startup-critical file is shown to reach a consumer that
+*rewrites* rather than refuses. Owner: `WFR-STARTUP-PREFLIGHT` (cross-cutting,
+terminal). Capability: **`persistent-format-compatibility`**.
+
+### S7B-2 — **LOW** — `load_recent_documents_async` has no re-entrancy guard
+
+`ui/window/recent_documents_journal.rs`. The function clears
+`removed_while_loading` at entry. A second concurrent call would clear the list
+while the first load is still in flight, so a removal the user made against the
+first load would be lost and the removed entry would come back.
+
+**Cleared today on the call graph, not on the code**: there is exactly **one**
+call site, `ui/window/mod.rs`'s construction path, once per window. The guard is
+**absent rather than present**, which is why this is recorded instead of closed —
+a second caller added later reintroduces the defect with nothing to stop it, and
+the neighbouring startup gate (`startup_data_flow.running.replace(true)`) shows
+the shape a guard would take. Close: add the guard when a second caller appears,
+or now if that is cheaper than remembering. Owner: `WFR-RECENT-DOCUMENTS`
+(migrated).
+
+### S7B-3 — **INFORMATIONAL** — in-session recent entries are never re-checked for existence
+
+`services/recent_documents.rs` prunes entries whose files are gone at **load**
+(`dedupe_sort_prune_existing`), but entries added during the session by
+`record_recent_open_for_editor` are not re-checked until the next start. A file
+deleted outside LushText mid-session stays in the Open popover.
+
+No data is lost: activating such a row runs the ordinary load path, which shows a
+failed-load placeholder and its inline alert. Recorded so a future reader does
+not mistake the asymmetry for an oversight. Owner: `WFR-RECENT-DOCUMENTS`.
+
+### S7B-4 — **INFORMATIONAL** — a smoke-lane staleness guard that could never pass
+
+`scripts/run-performance-smoke.sh` asserted four **widget-harness** logs through
+`smoke_assert_ran`'s default pattern `test result: ok\. [1-9]`. The custom widget
+harness (`crates/gtk-lush/proof-harness/src/lib.rs:423`) prints
+`test result: ok. all tests passed` — **no digit, ever** — so those four
+assertions failed on a healthy tree, and the staleness condition they existed
+for was unchecked in both directions.
+
+Fixed in slot 7b with a shared `smoke_assert_widget_ran` in
+`scripts/smoke-common.sh` asserting `^running [1-9][0-9]* tests`, the harness's
+own header, which is precisely the staleness condition. **Not deferred** —
+recorded here because the *class* is worth carrying: a guard whose pattern
+cannot match the output it guards is indistinguishable from a guard that is
+working, until the day the lane runs. Owner: the performance smoke lane.
+
+### S7B-5 — **INFORMATIONAL** — forcing `run_dispose()` on a workspace section panics in its own dispose path
+
+Driving the template-child clearing question for `LushtextWorkspaceSection`
+(slot 7b, review item S3) produced:
+
+```
+Failed to retrieve template child ... fields of type `GtkListView`
+panic in a function that cannot unwind
+```
+
+— raised **during** `run_dispose()`, inside the section's own `dispose()`, before
+any evidence read. So a composite-template widget's children **are** cleared on
+dispose even though no imp in this tree calls `dispose_template()`, which settles
+the contradiction the three evidence modules carried; `ui/sidebar/evidence.rs`'s
+reasoning is corrected there.
+
+**Not reachable through normal teardown**, which is why this is informational
+rather than a blocker: every window-closing path in the widget suite, the
+crash-recovery smoke lane, and the visual lanes tear sections down by refcount
+without tripping it. Only an explicit `run_dispose()` — which forces dispose
+while references remain — reaches the ordering that does. Close condition: if a
+future change disposes sections explicitly, guard the reads in `dispose()` first.
+Owner: `WFR-WORKSPACE-TREE`.
+
+### S7B-6 — **MEDIUM** — destroying a focused `GtkEntry` segfaults in GTK's Wayland input-method backend
+
+Found by slot 7b's no-retry widget lane, which reported
+`workspace_section::test_inline_rename_refuses_to_replace_an_existing_sibling` as
+`FLAKY`. The "flake" was a **SIGSEGV**, reproducible in **9 of 40** isolated runs
+across the four inline-rename tests, with this stack:
+
+```
+wl_proxy_get_version
+gtk_im_context_wayland_global_get
+gtk_im_context_wayland_get_global
+notify_im_change              <- a zwp_text_input_v3 listener callback
+wl_display_dispatch_queue_pending
+gdk_event_source_dispatch
+... wait_until -> flush_events
+```
+
+preceded by `gtk_widget_get_display: assertion 'GTK_IS_WIDGET (widget)' failed`
+and `gdk_wayland_display_get_wl_display: assertion 'GDK_IS_WAYLAND_DISPLAY
+(display)' failed`. GTK's per-display input-method global still referenced the
+destroyed inline-rename entry when the compositor's next text-input event
+arrived.
+
+**The application side was probed and exonerated by measurement, not by
+argument.** Three orderings were implemented and each measured over 30–40
+isolated runs: grabbing focus to the owning `GtkListView` before unparenting
+(**worse**: 22/30), clearing the window focus before unparenting (**worse**:
+22/30), and keeping the entry alive past removal (**no help**). A first attempt
+also showed why the probe matters — it guarded on `entry.has_focus()`, which is
+`false` for a `GtkEntry` whose internal `GtkText` owns focus, so the guard never
+fired and the "fix" was a no-op that looked correct in review. `cancel_rename`'s
+production code is therefore **unchanged**.
+
+**Mitigated in the test lane only**, by adding
+`GTK_IM_MODULE=gtk-im-context-simple` to
+`gtk_lush_proof_harness::recommended_pre_gtk_environment()` — the same family as
+the `NO_AT_BRIDGE`, `no-portals`, and `GSK_RENDERER=cairo` entries already there:
+the private compositor advertises a desktop service it cannot provide, so the
+client half is not started against it. **0 failures in 40 runs** after.
+
+**What is not fixed, and is why this entry exists:** the GTK race itself. A real
+Wayland session runs the same backend, and the same sequence — confirm an inline
+rename, entry destroyed while focused — is ordinary use. No crash has been
+reported against the installed app, and the live-display walkthrough remains
+user-gated, so this is recorded rather than claimed either way. The next owner
+should reproduce against a real session before deciding whether to file upstream
+or to carry an application-side workaround; note that the three obvious
+workarounds are already measured above and none of them helps.

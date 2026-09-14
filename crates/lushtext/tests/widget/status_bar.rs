@@ -165,13 +165,11 @@ fn test_workflow_announcements_use_status_bar_throttling_policy() {
         "File saved",
     ));
     assert!(
-        !bar.imp()
-            .status_announcement_throttler
-            .should_announce_at(
-                AnnouncementLane::StatusUpdate,
-                "workflow:document-save",
-                Instant::now()
-            ),
+        !bar.imp().status_announcement_throttler.should_announce_at(
+            AnnouncementLane::StatusUpdate,
+            "workflow:document-save",
+            Instant::now()
+        ),
         "workflow status updates should reuse the status-bar throttler"
     );
 
@@ -181,13 +179,11 @@ fn test_workflow_announcements_use_status_bar_throttling_policy() {
         "Save failed",
     ));
     assert!(
-        bar.imp()
-            .status_announcement_throttler
-            .should_announce_at(
-                AnnouncementLane::Alert,
-                "workflow:document-save-failed",
-                Instant::now()
-            ),
+        bar.imp().status_announcement_throttler.should_announce_at(
+            AnnouncementLane::Alert,
+            "workflow:document-save-failed",
+            Instant::now()
+        ),
         "alert workflow updates should bypass repeated-status throttling"
     );
 }
@@ -227,13 +223,11 @@ fn test_visible_status_rendering_does_not_announce_info_or_flood_repeated_warnin
         MessageKind::Warning,
     )));
     assert!(
-        !bar.imp()
-            .status_announcement_throttler
-            .should_announce_at(
-                AnnouncementLane::StatusUpdate,
-                "status:warning:Save is still in progress",
-                Instant::now()
-            ),
+        !bar.imp().status_announcement_throttler.should_announce_at(
+            AnnouncementLane::StatusUpdate,
+            "status:warning:Save is still in progress",
+            Instant::now()
+        ),
         "repeated visible warning status text should stay throttled"
     );
 }
@@ -334,10 +328,18 @@ fn test_info_pulse_applies_to_message_area_not_label() {
     let bar = LushtextStatusBar::new();
     bar.pulse_message_area(MessageKind::Info);
 
-    assert!(bar.imp().message_area_box.has_css_class("status-pulse-info"));
+    assert!(
+        bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-info")
+    );
     assert!(bar.imp().message_area_box.has_css_class("status-pulse-a"));
     assert!(!bar.imp().message_label.has_css_class("status-pulse-info"));
-    assert!(!bar.imp().sidebar_toggle_button.has_css_class("status-pulse-info"));
+    assert!(
+        !bar.imp()
+            .sidebar_toggle_button
+            .has_css_class("status-pulse-info")
+    );
     assert!(!bar.imp().metadata_box.has_css_class("status-pulse-info"));
     assert_eq!(bar.imp().message_area_box.margin_start(), 6);
 }
@@ -348,14 +350,38 @@ fn test_warning_and_error_pulses_choose_severity_classes() {
     let bar = LushtextStatusBar::new();
 
     bar.pulse_message_area(MessageKind::Warning);
-    assert!(bar.imp().message_area_box.has_css_class("status-pulse-warning"));
-    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-info"));
-    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-error"));
+    assert!(
+        bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-warning")
+    );
+    assert!(
+        !bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-info")
+    );
+    assert!(
+        !bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-error")
+    );
 
     bar.pulse_message_area(MessageKind::Error);
-    assert!(bar.imp().message_area_box.has_css_class("status-pulse-error"));
-    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-info"));
-    assert!(!bar.imp().message_area_box.has_css_class("status-pulse-warning"));
+    assert!(
+        bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-error")
+    );
+    assert!(
+        !bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-info")
+    );
+    assert!(
+        !bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-warning")
+    );
 }
 
 #[test]
@@ -373,7 +399,11 @@ fn test_repeated_pulse_restarts_with_alternating_class() {
 
     assert_ne!(first_used_a, second_used_a);
     assert_ne!(first_used_b, second_used_b);
-    assert!(bar.imp().message_area_box.has_css_class("status-pulse-info"));
+    assert!(
+        bar.imp()
+            .message_area_box
+            .has_css_class("status-pulse-info")
+    );
 }
 
 #[test]
@@ -479,7 +509,10 @@ fn test_metadata_control_updates_refresh_accessible_value_text() {
     bar.set_line_ending_label("CRLF");
     bar.set_encoding_label("UTF-16 LE");
 
-    assert_eq!(bar.imp().line_ending_button.label().as_deref(), Some("CRLF"));
+    assert_eq!(
+        bar.imp().line_ending_button.label().as_deref(),
+        Some("CRLF")
+    );
     AccessibleAudit::new()
         .properties(&[
             gtk4::AccessibleProperty::Label,

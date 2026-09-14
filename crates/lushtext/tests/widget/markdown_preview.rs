@@ -18,9 +18,7 @@ use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::markdown_preview::{
     LushtextMarkdownPreview, MarkdownPreviewRenderContext, MarkdownRenderState,
 };
-use lushtext_core::ui::plain_disposal::{
-    hold_disposal_capacity_for_test, lane_snapshot_for_test,
-};
+use lushtext_core::ui::plain_disposal::{hold_disposal_capacity_for_test, plain_disposal_evidence};
 use sourceview5::prelude::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -75,7 +73,11 @@ fn test_preview_evidence_reads_stay_side_effect_free_across_mutation() {
     // is that string rather than `None` — measured, not assumed. (`None` is
     // reserved for the disposed case, which proof 2 covers.)
     let initial = preview.evidence();
-    assert_eq!(preview.evidence(), initial, "repeated reads must be identical");
+    assert_eq!(
+        preview.evidence(),
+        initial,
+        "repeated reads must be identical"
+    );
     assert_eq!(
         initial.placeholder_description.as_deref(),
         Some("Open a Markdown file to see a rendered preview"),
@@ -179,8 +181,11 @@ fn test_preview_evidence_reads_materialize_no_state() {
     );
     // Spelled out for the counters most likely to drift, so a future field that
     // does advance on read fails with a specific message rather than a whole
-        // struct diff.
-    assert_eq!(after.projection.dispatch_count, before.projection.dispatch_count);
+    // struct diff.
+    assert_eq!(
+        after.projection.dispatch_count,
+        before.projection.dispatch_count
+    );
     assert_eq!(after.planning.source_copies, before.planning.source_copies);
     assert_eq!(
         after.retirement.generations_high_water,
@@ -443,8 +448,7 @@ fn test_render_nested_list_after_parent_prose_starts_on_child_row() {
     let text = preview.buffer_text();
 
     assert_eq!(
-        text,
-        "\u{2022} parent text\n\u{2022} child text\n\u{2022} next parent\n",
+        text, "\u{2022} parent text\n\u{2022} child text\n\u{2022} next parent\n",
         "Expected nested child markers to start on their own rendered row"
     );
     assert!(
@@ -461,8 +465,7 @@ fn test_render_loose_list_preserves_item_paragraph_break_only() {
     let text = preview.buffer_text();
 
     assert_eq!(
-        text,
-        "\u{2022} first paragraph\n\nsecond paragraph\n\u{2022} next item\n",
+        text, "\u{2022} first paragraph\n\nsecond paragraph\n\u{2022} next item\n",
         "Expected loose-list paragraph spacing without an extra blank row before the next item"
     );
     assert!(
@@ -832,9 +835,7 @@ fn test_render_blockquote_inserts_rail_without_raw_marker() {
 fn test_render_nested_blockquotes_from_adjacent_markers() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
-    preview.render_markdown(
-        "> parent quote\n>> child quote\n>>> grandchild quote",
-    );
+    preview.render_markdown("> parent quote\n>> child quote\n>>> grandchild quote");
     let text = preview.buffer_text();
 
     assert_rendered_text_order(&text, &["parent quote", "child quote", "grandchild quote"]);
@@ -868,9 +869,7 @@ fn test_render_nested_blockquotes_from_adjacent_markers() {
 fn test_render_nested_blockquotes_from_spaced_markers() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
-    preview.render_markdown(
-        "> parent quote\n> > child quote\n> > > grandchild quote",
-    );
+    preview.render_markdown("> parent quote\n> > child quote\n> > > grandchild quote");
     let text = preview.buffer_text();
 
     assert_rendered_text_order(&text, &["parent quote", "child quote", "grandchild quote"]);
@@ -917,7 +916,10 @@ fn test_render_gfm_callout_stays_distinct_from_generic_blockquote() {
     preview.render_markdown("> [!NOTE]\n> Pay attention.");
     let text = preview.buffer_text();
 
-    assert!(text.contains("Note"), "Expected callout title in preview text");
+    assert!(
+        text.contains("Note"),
+        "Expected callout title in preview text"
+    );
     assert!(
         !text.contains('\u{2502}'),
         "Expected typed alert callout to avoid generic blockquote rail rendering"
@@ -957,9 +959,15 @@ fn test_render_gfm_callout_inserts_title_without_raw_marker() {
     let preview = LushtextMarkdownPreview::new();
     preview.render_markdown("> [!NOTE]\n> Pay attention to `this`.");
     let text = preview.buffer_text();
-    assert!(text.contains("Note"), "Expected callout title in preview text");
+    assert!(
+        text.contains("Note"),
+        "Expected callout title in preview text"
+    );
     assert!(text.contains("Pay attention"), "Expected callout body text");
-    assert!(text.contains("this"), "Expected inline code text inside callout");
+    assert!(
+        text.contains("this"),
+        "Expected inline code text inside callout"
+    );
     assert!(
         !text.contains("[!NOTE]"),
         "Expected callout preview to hide the raw alert marker"
@@ -1066,9 +1074,7 @@ fn test_render_mixed_inline_and_reference_style_footnotes() {
 fn test_render_atx_heading_levels_apply_matching_tags_and_hide_markers() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
-    preview.render_markdown(
-        "# Alpha\n## Beta\n### Gamma\n#### Delta\n##### Epsilon\n###### Zeta",
-    );
+    preview.render_markdown("# Alpha\n## Beta\n### Gamma\n#### Delta\n##### Epsilon\n###### Zeta");
 
     for (text, tag) in [
         ("Alpha", "heading1"),
@@ -1086,8 +1092,14 @@ fn test_render_atx_heading_levels_apply_matching_tags_and_hide_markers() {
     }
 
     let rendered = preview.buffer_text();
-    for marker in ["# Alpha", "## Beta", "### Gamma", "#### Delta", "##### Epsilon", "###### Zeta"]
-    {
+    for marker in [
+        "# Alpha",
+        "## Beta",
+        "### Gamma",
+        "#### Delta",
+        "##### Epsilon",
+        "###### Zeta",
+    ] {
         assert!(
             !rendered.contains(marker),
             "Expected rendered ATX heading to hide raw marker '{marker}'"
@@ -1128,7 +1140,13 @@ fn test_render_heading_flow_preserves_source_order() {
 
     assert_rendered_text_order(
         &preview.buffer_text(),
-        &["Before", "First Heading", "Between", "Second Heading", "After"],
+        &[
+            "Before",
+            "First Heading",
+            "Between",
+            "Second Heading",
+            "After",
+        ],
     );
 }
 
@@ -1167,15 +1185,23 @@ fn test_dense_markdown_projects_over_bounded_main_loop_turns() {
         .collect::<String>();
 
     preview.render_markdown(&markdown);
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Projecting);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Projecting
+    );
     wait_until(Duration::from_secs(5), || !preview.render_pending());
 
     let projection = preview.evidence().projection;
-    let (dispatches, high_water_events) =
-        (projection.dispatch_count, projection.high_water_events);
-    assert!(dispatches > 1, "dense Markdown should yield between batches");
+    let (dispatches, high_water_events) = (projection.dispatch_count, projection.high_water_events);
+    assert!(
+        dispatches > 1,
+        "dense Markdown should yield between batches"
+    );
     assert!(high_water_events <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert!(preview.buffer_text().contains("paragraph 399"));
 }
 
@@ -1205,15 +1231,9 @@ fn test_rapid_large_markdown_renders_keep_one_planner_and_latest_request() {
     assert!(!text.contains("first paragraph"));
     assert!(!text.contains("second paragraph"));
     let retirement = preview.evidence().retirement;
-    let (_, _, _, _, plain_jobs, pending_plain_jobs, plain_high_water) = (
-        retirement.detached_generations,
-        retirement.generations_high_water,
-        usize::from(retirement.deferred_work_pending),
-        retirement.max_generations,
-        retirement.plain_jobs,
-        retirement.plain_pending,
-        retirement.plain_pending_high_water,
-    );
+    let plain_jobs = retirement.plain_jobs;
+    let pending_plain_jobs = retirement.plain_pending;
+    let plain_high_water = retirement.plain_pending_high_water;
     assert_eq!(
         plain_jobs, 0,
         "superseded queued sources should coalesce in the retained allocation"
@@ -1226,8 +1246,8 @@ fn test_rapid_large_markdown_renders_keep_one_planner_and_latest_request() {
 fn test_markdown_capacity_pressure_copies_only_after_admission() {
     ensure_gtk_init();
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let capacity_hold = hold_disposal_capacity_for_test();
     let preview = LushtextMarkdownPreview::new();
@@ -1253,21 +1273,21 @@ fn test_markdown_capacity_pressure_copies_only_after_admission() {
     preview.render_markdown(&source);
     wait_until(Duration::from_secs(10), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert!(preview.buffer_text().contains("Admitted preview"));
     assert!(preview.buffer_text().contains("bounded source text"));
-    assert_eq!(
-        preview.evidence().planning.source_copies,
-        copies_before + 1
-    );
+    assert_eq!(preview.evidence().planning.source_copies, copies_before + 1);
 }
 
 #[test]
 fn test_snapshot_markdown_capacity_and_source_limit_publish_compact_terminals() {
     ensure_gtk_init();
     wait_until(Duration::from_secs(5), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     let capacity_hold = hold_disposal_capacity_for_test();
     let preview = LushtextMarkdownPreview::new();
@@ -1279,12 +1299,11 @@ fn test_snapshot_markdown_capacity_and_source_limit_publish_compact_terminals() 
 
     preview.render_snapshot_for_test("x".repeat(MAX_MARKDOWN_SOURCE_BYTES + 1));
     wait_until(Duration::from_secs(10), || !preview.render_pending());
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Limited);
-    assert!(
-        preview
-            .buffer_text()
-            .contains("source exceeds 4 MiB")
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Limited
     );
+    assert!(preview.buffer_text().contains("source exceeds 4 MiB"));
 
     drop(capacity_hold);
 }
@@ -1300,15 +1319,10 @@ fn test_rapid_rerenders_cap_detached_generations_and_keep_latest_work() {
     preview.render_markdown("latest generation");
 
     let retirement = preview.evidence().retirement;
-    let (detached, high_water, deferred, limit, _, _, _) = (
-        retirement.detached_generations,
-        retirement.generations_high_water,
-        usize::from(retirement.deferred_work_pending),
-        retirement.max_generations,
-        retirement.plain_jobs,
-        retirement.plain_pending,
-        retirement.plain_pending_high_water,
-    );
+    let detached = retirement.detached_generations;
+    let high_water = retirement.generations_high_water;
+    let deferred = usize::from(retirement.deferred_work_pending);
+    let limit = retirement.max_generations;
     assert_eq!(detached, limit);
     assert_eq!(high_water, limit);
     assert_eq!(limit, 2);
@@ -1319,15 +1333,11 @@ fn test_rapid_rerenders_cap_detached_generations_and_keep_latest_work() {
 
     assert_eq!(preview.buffer_text().trim(), "latest generation");
     let retirement = preview.evidence().retirement;
-    let (detached, high_water, deferred, limit, _, pending_plain_jobs, _) = (
-        retirement.detached_generations,
-        retirement.generations_high_water,
-        usize::from(retirement.deferred_work_pending),
-        retirement.max_generations,
-        retirement.plain_jobs,
-        retirement.plain_pending,
-        retirement.plain_pending_high_water,
-    );
+    let detached = retirement.detached_generations;
+    let high_water = retirement.generations_high_water;
+    let deferred = usize::from(retirement.deferred_work_pending);
+    let limit = retirement.max_generations;
+    let pending_plain_jobs = retirement.plain_pending;
     assert_eq!(detached, 0);
     assert!(high_water <= limit);
     assert_eq!(deferred, 0);
@@ -1352,13 +1362,22 @@ fn test_deferred_large_source_moves_into_background_planner_after_retirement() {
         .collect::<String>();
     preview.render_markdown(&latest);
 
-    assert_eq!(usize::from(preview.evidence().retirement.deferred_work_pending), 1);
+    assert_eq!(
+        usize::from(preview.evidence().retirement.deferred_work_pending),
+        1
+    );
     wait_until(Duration::from_secs(10), || {
-        (preview.evidence().planning.worker_running, preview.evidence().planning.queued)
-            == (true, false)
+        (
+            preview.evidence().planning.worker_running,
+            preview.evidence().planning.queued,
+        ) == (true, false)
     });
     wait_until(Duration::from_secs(10), || !preview.render_pending());
-    assert!(preview.buffer_text().contains("owned deferred paragraph 4999"));
+    assert!(
+        preview
+            .buffer_text()
+            .contains("owned deferred paragraph 4999")
+    );
     let planning = preview.evidence().planning;
     assert!(!planning.worker_running && !planning.queued);
 }
@@ -1375,22 +1394,21 @@ fn test_placeholder_close_remains_terminal_under_retirement_pressure() {
     preview.show_placeholder("Preview closed under pressure");
 
     assert!(!preview.is_showing_content());
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Cancelled);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Cancelled
+    );
     wait_until(Duration::from_secs(10), || !preview.render_pending());
     assert_eq!(
         preview.placeholder_description().as_deref(),
         Some("Preview closed under pressure")
     );
     let retirement = preview.evidence().retirement;
-    let (detached, high_water, deferred, limit, _, pending_plain_jobs, _) = (
-        retirement.detached_generations,
-        retirement.generations_high_water,
-        usize::from(retirement.deferred_work_pending),
-        retirement.max_generations,
-        retirement.plain_jobs,
-        retirement.plain_pending,
-        retirement.plain_pending_high_water,
-    );
+    let detached = retirement.detached_generations;
+    let high_water = retirement.generations_high_water;
+    let deferred = usize::from(retirement.deferred_work_pending);
+    let limit = retirement.max_generations;
+    let pending_plain_jobs = retirement.plain_pending;
     assert_eq!(detached, 0);
     assert_eq!(high_water, limit + 1);
     assert_eq!(deferred, 0);
@@ -1412,15 +1430,9 @@ fn test_repeated_terminal_updates_reuse_the_single_escape_generation() {
     }
 
     let retirement = preview.evidence().retirement;
-    let (detached, high_water, _, limit, _, _, _) = (
-        retirement.detached_generations,
-        retirement.generations_high_water,
-        usize::from(retirement.deferred_work_pending),
-        retirement.max_generations,
-        retirement.plain_jobs,
-        retirement.plain_pending,
-        retirement.plain_pending_high_water,
-    );
+    let detached = retirement.detached_generations;
+    let high_water = retirement.generations_high_water;
+    let limit = retirement.max_generations;
     assert_eq!(detached, limit + 1);
     assert_eq!(high_water, limit + 1);
     assert_eq!(preview.buffer_text(), "terminal 8");
@@ -1445,8 +1457,7 @@ fn test_large_render_teardown_is_detached_and_retired_in_bounded_turns() {
     wait_until(Duration::from_secs(10), || !preview.render_pending());
 
     let retirement = preview.evidence().retirement;
-    let (retired_chars, retired_items) =
-        (retirement.chars_high_water, retirement.items_high_water);
+    let (retired_chars, retired_items) = (retirement.chars_high_water, retirement.items_high_water);
     assert!(retired_chars <= 64 * 1024);
     assert!(retired_items <= 64);
     assert_eq!(preview.buffer_text().trim(), "current generation");
@@ -1480,8 +1491,11 @@ fn test_dense_single_block_uses_accessible_simplified_terminal() {
     let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback");
     assert_eq!(fallbacks.len(), 1);
     assert!(
-        find_label_with_text(&preview, "Markdown preview omitted one block that exceeds 256 render events")
-            .is_some(),
+        find_label_with_text(
+            &preview,
+            "Markdown preview omitted one block that exceeds 256 render events"
+        )
+        .is_some(),
         "the marker must name the crossed budget"
     );
     AccessibleAudit::new()
@@ -1539,7 +1553,15 @@ fn test_footnote_numbering_continues_across_projection_batches() {
         "numbering must not restart per batch: {text}"
     );
     // Each definition keeps the number its reference showed.
-    assert_rendered_text_order(&text, &["alpha-ref[1]", "beta-ref[2]", "[1] alpha definition", "[2] beta definition"]);
+    assert_rendered_text_order(
+        &text,
+        &[
+            "alpha-ref[1]",
+            "beta-ref[2]",
+            "[1] alpha definition",
+            "[2] beta definition",
+        ],
+    );
 }
 
 /// Rows and columns of the oversized-but-renderable values table.
@@ -1611,7 +1633,10 @@ fn test_oversized_table_renders_one_widget_with_every_row() {
     preview.render_markdown(&oversized_table_fixture());
     wait_until(Duration::from_secs(15), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     let grids = widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table");
     assert_eq!(
         grids.len(),
@@ -1641,9 +1666,11 @@ fn test_oversized_table_renders_one_widget_with_every_row() {
     }
     assert!(preview.buffer_text().contains("TAIL-AFTER-TABLE"));
     let projection = preview.evidence().projection;
-    let (dispatches, high_water) =
-        (projection.dispatch_count, projection.high_water_events);
-    assert!(dispatches > 1, "the table must be projected over several turns");
+    let (dispatches, high_water) = (projection.dispatch_count, projection.high_water_events);
+    assert!(
+        dispatches > 1,
+        "the table must be projected over several turns"
+    );
     assert!(high_water <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE);
 }
 
@@ -1655,7 +1682,10 @@ fn test_oversized_ordered_list_keeps_continuous_numbering() {
     preview.render_markdown(&oversized_ordered_list_fixture());
     wait_until(Duration::from_secs(15), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     let text = preview.buffer_text();
     assert!(preview.evidence().projection.dispatch_count > 1);
     for index in 1..=100 {
@@ -1675,10 +1705,16 @@ fn test_oversized_blockquote_keeps_rail_depth_across_turns() {
     preview.render_markdown(&oversized_blockquote_fixture());
     wait_until(Duration::from_secs(15), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert!(preview.evidence().projection.dispatch_count > 1);
     let text = preview.buffer_text();
-    assert_rendered_text_order(&text, &["quoted-0", "quoted-89", "nested-quoted", "TAIL-AFTER-QUOTE"]);
+    assert_rendered_text_order(
+        &text,
+        &["quoted-0", "quoted-89", "nested-quoted", "TAIL-AFTER-QUOTE"],
+    );
     assert!(
         !text.contains("> quoted-89"),
         "the raw quote marker must stay hidden after a projection boundary: {text}"
@@ -1697,7 +1733,10 @@ fn test_oversized_definition_list_renders_every_entry() {
     preview.render_markdown(&oversized_definition_list_fixture());
     wait_until(Duration::from_secs(15), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert!(preview.evidence().projection.dispatch_count > 1);
     let text = preview.buffer_text();
     for index in 0..60 {
@@ -1721,13 +1760,19 @@ fn test_fenced_code_block_within_budget_renders_whole_in_one_slice() {
     for index in 0..400 {
         body.push_str(&format!("echo fenced-line-{index}\n"));
     }
-    assert!(body.len() < 64 * 1024, "fixture must stay inside the widget budget");
+    assert!(
+        body.len() < 64 * 1024,
+        "fixture must stay inside the widget budget"
+    );
     let markdown = format!("# Script\n\n```sh\n{body}```\n\nTAIL-AFTER-FENCE\n");
 
     preview.render_markdown(&markdown);
     wait_until(Duration::from_secs(15), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     // A fenced body is one coalesced `Text` event, so the whole block fits one
     // slice: this is a single-turn render, not a sub-sliced one.
     assert_eq!(
@@ -1754,10 +1799,12 @@ fn test_indented_code_block_over_one_slice_renders_one_continuous_surface() {
     preview.render_markdown(&indented_code_block_fixture());
     wait_until(Duration::from_secs(15), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     let projection = preview.evidence().projection;
-    let (dispatches, high_water) =
-        (projection.dispatch_count, projection.high_water_events);
+    let (dispatches, high_water) = (projection.dispatch_count, projection.high_water_events);
     assert!(
         dispatches > 1,
         "an indented block emits one text event per line, so it is sub-sliced"
@@ -1778,7 +1825,11 @@ fn test_indented_code_block_over_one_slice_renders_one_continuous_surface() {
         .text(&buffer.start_iter(), &buffer.end_iter(), true)
         .to_string();
     let lines: Vec<&str> = rendered.lines().collect();
-    assert_eq!(lines.len(), INDENTED_CODE_LINES, "every line must be present once");
+    assert_eq!(
+        lines.len(),
+        INDENTED_CODE_LINES,
+        "every line must be present once"
+    );
     for index in [0usize, INDENTED_CODE_LINES / 2, INDENTED_CODE_LINES - 1] {
         assert_eq!(lines[index], format!("indented-line-{index}"));
     }
@@ -1811,13 +1862,15 @@ fn test_code_block_past_the_widget_budget_keeps_its_single_fallback_and_complete
         widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback").is_empty(),
         "no omission marker may accompany the in-place fallback"
     );
-    let fallbacks =
-        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block-fallback");
+    let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block-fallback");
     assert_eq!(fallbacks.len(), 1, "exactly today's single fallback widget");
     assert!(source_views(&preview).is_empty(), "no partial code surface");
     assert!(
-        find_label_with_text(&preview, &format!("This code block is {} bytes", body_bytes + 1))
-            .is_some(),
+        find_label_with_text(
+            &preview,
+            &format!("This code block is {} bytes", body_bytes + 1)
+        )
+        .is_some(),
         "the fallback must report the block's true source size"
     );
     assert!(preview.buffer_text().contains("TAIL-AFTER-BIG-CODE"));
@@ -1864,9 +1917,7 @@ fn test_table_past_the_cell_budget_keeps_its_single_fallback_and_completes() {
         "a cell-ceiling crossing must not turn into a user-visible omission"
     );
     assert!(!preview.buffer_text().contains("too complex to render"));
-    assert!(
-        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback").is_empty()
-    );
+    assert!(widgets_with_css_class::<gtk4::Box>(&preview, "markdown-omission-fallback").is_empty());
     let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-table-fallback");
     assert_eq!(fallbacks.len(), 1);
     assert!(
@@ -1900,7 +1951,10 @@ fn test_table_past_the_cell_budget_inside_a_footnote_charges_an_empty_builder() 
     preview.render_markdown(&markdown);
     wait_until(Duration::from_secs(20), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     let fallbacks = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-table-fallback");
     assert_eq!(fallbacks.len(), 1, "the empty builder must still degrade");
     let total_cells = PAST_BUDGET_COLUMNS * (PAST_BUDGET_ROWS + 1);
@@ -1928,7 +1982,10 @@ fn test_large_byte_table_within_the_cell_budget_renders_every_row() {
     preview.render_markdown(&markdown);
     wait_until(Duration::from_secs(20), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert_eq!(
         widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").len(),
         1
@@ -1962,7 +2019,10 @@ fn test_wide_cell_table_renders_every_row() {
     preview.render_markdown(&markdown);
     wait_until(Duration::from_secs(20), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert_eq!(
         widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").len(),
         1
@@ -1997,13 +2057,20 @@ fn test_one_overflowing_loose_list_item_keeps_siblings_and_marks_inside_the_item
     );
     let text = preview.buffer_text();
     for index in (0..60).filter(|index| *index != 17) {
-        assert!(text.contains(&format!("item-{index}")), "sibling {index} lost");
+        assert!(
+            text.contains(&format!("item-{index}")),
+            "sibling {index} lost"
+        );
     }
     let markers: Vec<&str> = text
         .lines()
         .filter(|line| line.contains("Markdown preview omitted"))
         .collect();
-    assert_eq!(markers.len(), 1, "exactly one in-container marker: {markers:?}");
+    assert_eq!(
+        markers.len(),
+        1,
+        "exactly one in-container marker: {markers:?}"
+    );
     assert!(
         markers[0].contains("one list item"),
         "the marker must name the omitted unit: {markers:?}"
@@ -2143,7 +2210,10 @@ fn test_tiny_code_block_survives_a_content_free_turn_boundary() {
     preview.render_markdown(&code_block_start_boundary_fixture());
     wait_until(Duration::from_secs(20), || !preview.render_pending());
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert!(
         preview.evidence().projection.dispatch_count > 1,
         "the enclosing list must overflow into several turns"
@@ -2183,7 +2253,10 @@ fn test_continuation_survives_a_constrained_preview_shell() {
     wait_until(Duration::from_secs(20), || !preview.render_pending());
     flush_after_delay(Duration::from_millis(50));
 
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert_eq!(
         widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").len(),
         1,
@@ -2210,7 +2283,10 @@ fn test_rerender_mid_sub_sliced_block_drops_the_stale_continuation() {
     wait_until(Duration::from_secs(20), || !preview.render_pending());
 
     assert_eq!(preview.buffer_text().trim(), "latest generation");
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert!(
         widgets_with_css_class::<gtk4::Grid>(&preview, "markdown-table").is_empty(),
         "no stale table widget may survive the generation change"
@@ -2220,15 +2296,11 @@ fn test_rerender_mid_sub_sliced_block_drops_the_stale_continuation() {
     assert!(chars <= 64 * 1024);
     assert!(items <= 64);
     let retirement = preview.evidence().retirement;
-    let (detached, high_water, deferred, limit, _, pending_plain_jobs, _) = (
-        retirement.detached_generations,
-        retirement.generations_high_water,
-        usize::from(retirement.deferred_work_pending),
-        retirement.max_generations,
-        retirement.plain_jobs,
-        retirement.plain_pending,
-        retirement.plain_pending_high_water,
-    );
+    let detached = retirement.detached_generations;
+    let high_water = retirement.generations_high_water;
+    let deferred = usize::from(retirement.deferred_work_pending);
+    let limit = retirement.max_generations;
+    let pending_plain_jobs = retirement.plain_pending;
     assert_eq!(detached, 0);
     assert!(high_water <= limit);
     assert_eq!(deferred, 0);
@@ -2268,8 +2340,8 @@ fn test_teardown_mid_sub_sliced_block_releases_the_continuation() {
     // Dropping the preview mid-projection must let the idle projector observe a
     // dead weak reference and release the continuation with its plan.
     wait_until(Duration::from_secs(20), || {
-        let snapshot = lane_snapshot_for_test();
-        snapshot.running_jobs == 0 && snapshot.queued_jobs == 0
+        let snapshot = plain_disposal_evidence().ordinary.snapshot;
+        snapshot.is_quiesced()
     });
     flush_after_delay(Duration::from_millis(50));
 }
@@ -2289,8 +2361,7 @@ fn test_oversized_fixtures_stay_within_the_projection_slice_budget() {
         wait_until(Duration::from_secs(20), || !preview.render_pending());
 
         let projection = preview.evidence().projection;
-    let (dispatches, high_water) =
-        (projection.dispatch_count, projection.high_water_events);
+        let (dispatches, high_water) = (projection.dispatch_count, projection.high_water_events);
         assert!(dispatches > 1, "every fixture must span several turns");
         assert!(
             high_water <= MARKDOWN_EVENTS_PER_PROJECTION_SLICE,
@@ -2328,7 +2399,10 @@ fn test_new_render_generation_rejects_stale_projection_slices() {
     wait_until(Duration::from_secs(10), || !preview.render_pending());
 
     assert_eq!(preview.buffer_text().trim(), "latest generation");
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     assert!(preview.evidence().retirement.plain_jobs >= 1);
 }
 
@@ -2346,7 +2420,10 @@ fn test_placeholder_cancels_background_markdown_plan() {
     flush_after_delay(Duration::from_millis(300));
 
     assert!(!preview.is_showing_content());
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Cancelled);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Cancelled
+    );
     assert_eq!(
         preview.placeholder_description().as_deref(),
         Some("Preview closed")
@@ -2358,10 +2435,8 @@ fn test_image_flood_keeps_one_decoder_and_bounded_compact_ownership() {
     ensure_gtk_init();
     let preview = LushtextMarkdownPreview::new();
     let tempdir = tempfile::tempdir().expect("image flood tempdir");
-    let context = MarkdownPreviewRenderContext::new(
-        Some(tempdir.path().join("document.md")),
-        Vec::new(),
-    );
+    let context =
+        MarkdownPreviewRenderContext::new(Some(tempdir.path().join("document.md")), Vec::new());
     let markdown = (0..12)
         .map(|index| format!("![image {index}](missing-{index}.png)\n\n"))
         .collect::<String>();
@@ -2405,19 +2480,21 @@ fn test_stale_image_completion_cannot_mutate_new_render_generation() {
     flush_after_delay(Duration::from_millis(400));
 
     assert_eq!(preview.buffer_text().trim(), "new generation");
-    assert_eq!(preview.evidence().render_state, MarkdownRenderState::Complete);
+    assert_eq!(
+        preview.evidence().render_state,
+        MarkdownRenderState::Complete
+    );
     let images = preview.evidence().images;
     let (owned_count, owned_bytes) = (images.owned_count, images.owned_bytes);
     assert_eq!((owned_count, owned_bytes), (0, 0));
     let images = preview.evidence().images;
-    let (inspected, cancelled, decoded, _, _) = (
-        images.candidate_inspections,
-        images.cancelled_work,
-        images.decoded_results,
-        images.pixel_drops,
-        images.pixel_drops_on_gtk,
+    let inspected = images.candidate_inspections;
+    let cancelled = images.cancelled_work;
+    let decoded = images.decoded_results;
+    assert_eq!(
+        inspected, 0,
+        "superseded work must stop before candidate I/O"
     );
-    assert_eq!(inspected, 0, "superseded work must stop before candidate I/O");
     assert!(cancelled >= 1);
     assert_eq!(decoded, 0);
 }
@@ -2434,10 +2511,8 @@ fn test_superseded_decoded_image_pixels_retire_off_the_gtk_thread() {
         &tempdir.path().join("image.svg"),
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2e7d32"/></svg>"##,
     );
-    let context = MarkdownPreviewRenderContext::new(
-        Some(tempdir.path().join("document.md")),
-        Vec::new(),
-    );
+    let context =
+        MarkdownPreviewRenderContext::new(Some(tempdir.path().join("document.md")), Vec::new());
 
     preview.render_markdown_with_context("![old](image.svg)", &context);
     wait_until(Duration::from_secs(5), || {
@@ -2451,13 +2526,10 @@ fn test_superseded_decoded_image_pixels_retire_off_the_gtk_thread() {
 
     assert_eq!(preview.buffer_text().trim(), "new generation");
     let images = preview.evidence().images;
-    let (_, cancelled, decoded, pixel_drops, gtk_pixel_drops) = (
-        images.candidate_inspections,
-        images.cancelled_work,
-        images.decoded_results,
-        images.pixel_drops,
-        images.pixel_drops_on_gtk,
-    );
+    let cancelled = images.cancelled_work;
+    let decoded = images.decoded_results;
+    let pixel_drops = images.pixel_drops;
+    let gtk_pixel_drops = images.pixel_drops_on_gtk;
     assert!(cancelled >= 1);
     assert_eq!(decoded, 1);
     assert_eq!(pixel_drops, 1);
@@ -2471,27 +2543,18 @@ fn test_oversized_local_image_resolves_to_accessible_fallback() {
     let tempdir = tempfile::tempdir().expect("oversized image tempdir");
     let image_path = tempdir.path().join("oversized.png");
     let source_limit = preview.evidence().images.max_source_bytes;
-    fixture::write_repeated_bytes(
-        &image_path,
-        b"x",
-        source_limit.saturating_add(1),
-    );
-    let context = MarkdownPreviewRenderContext::new(
-        Some(tempdir.path().join("document.md")),
-        Vec::new(),
-    );
+    fixture::write_repeated_bytes(&image_path, b"x", source_limit.saturating_add(1));
+    let context =
+        MarkdownPreviewRenderContext::new(Some(tempdir.path().join("document.md")), Vec::new());
 
     preview.render_markdown_with_context("![oversized](oversized.png)", &context);
     wait_until(Duration::from_secs(5), || !preview.render_pending());
 
     assert!(find_label_with_text(&preview, "Image could not be loaded").is_some());
-    let fallback = widgets_with_css_class::<gtk4::Box>(
-        &preview,
-        "markdown-preview-image-fallback",
-    )
-    .into_iter()
-    .next()
-    .expect("oversized image fallback");
+    let fallback = widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback")
+        .into_iter()
+        .next()
+        .expect("oversized image fallback");
     AccessibleAudit::new()
         .role(gtk4::AccessibleRole::Img)
         .properties(&[
@@ -2654,7 +2717,10 @@ fn test_render_table_cell_markup_subset_uses_label_markup() {
     let strike = find_label_with_text(&preview, "strike").expect("strike label");
     let code = find_label_with_text(&preview, "code").expect("code label");
 
-    assert!(bold.uses_markup(), "Expected table cells to use label markup");
+    assert!(
+        bold.uses_markup(),
+        "Expected table cells to use label markup"
+    );
     assert_eq!(bold.label(), "<b>bold</b>");
     assert_eq!(italic.label(), "<i>italic</i>");
     assert_eq!(strike.label(), "<s>strike</s>");
@@ -2676,7 +2742,10 @@ fn test_render_table_cell_links_use_markup_and_activation() {
     });
 
     let label = find_label_with_text(&preview, "Open Guide").expect("table link label");
-    assert!(label.uses_markup(), "Expected table links to use label markup");
+    assert!(
+        label.uses_markup(),
+        "Expected table links to use label markup"
+    );
     assert!(
         label
             .label()
@@ -2684,7 +2753,10 @@ fn test_render_table_cell_links_use_markup_and_activation() {
         "Expected table cell markup to preserve a launchable link"
     );
     let handled: bool = label.emit_by_name("activate-link", &[&"https://example.com/guide"]);
-    assert!(handled, "Expected table label activation to stop further handling");
+    assert!(
+        handled,
+        "Expected table label activation to stop further handling"
+    );
     assert_eq!(
         launched.borrow().as_slice(),
         ["https://example.com/guide"],
@@ -2717,8 +2789,7 @@ fn test_render_markdown_renders_local_image_block() {
         "Expected the resolved local image to render as a preview picture"
     );
     assert!(
-        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback")
-            .is_empty(),
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback").is_empty(),
         "Expected the tracked SVG sample asset to render instead of falling back"
     );
 }
@@ -2750,8 +2821,7 @@ fn test_render_markdown_uses_first_loadable_workspace_image_candidate() {
         "Expected the first loadable workspace-relative image candidate to render as a picture"
     );
     assert!(
-        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback")
-            .is_empty(),
+        widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback").is_empty(),
         "Expected an unloadable earlier workspace candidate not to force a fallback"
     );
 }
@@ -2780,7 +2850,9 @@ fn test_render_markdown_shows_image_fallback_states() {
     let fallback_cards =
         widgets_with_css_class::<gtk4::Box>(&preview, "markdown-preview-image-fallback");
     assert!(
-        fallback_cards.iter().all(|card| card.width_request() >= 240),
+        fallback_cards
+            .iter()
+            .all(|card| card.width_request() >= 240),
         "Expected fallback cards to reserve enough width for readable path text"
     );
     AccessibleAudit::new()
@@ -2862,7 +2934,9 @@ fn test_render_code_block_with_blank_line_uses_one_embedded_block() {
     let preview = LushtextMarkdownPreview::new();
     let _window = present_preview(&preview);
 
-    preview.render_markdown("```js\nvar foo = function (bar) {\n  return bar++;\n};\n\nconsole.log(foo(5));\n```");
+    preview.render_markdown(
+        "```js\nvar foo = function (bar) {\n  return bar++;\n};\n\nconsole.log(foo(5));\n```",
+    );
     wait_until(Duration::from_secs(2), || {
         widgets_with_css_class::<gtk4::Box>(&preview, "markdown-code-block").len() == 1
             && source_views(&preview).len() == 1
@@ -2894,7 +2968,9 @@ fn test_render_supported_fenced_language_applies_source_language() {
     let source_view = source_views(&preview).pop().expect("source view");
     let source_buffer = source_view_source_buffer(&source_view);
     assert_eq!(
-        source_buffer.language().map(|language| language.id().to_string()),
+        source_buffer
+            .language()
+            .map(|language| language.id().to_string()),
         Some("lush-test".to_string()),
         "Expected the fenced language to be applied to the embedded source buffer"
     );
@@ -3101,9 +3177,9 @@ fn test_root_and_nested_code_blocks_repair_after_resize_at_constrained_width() {
     window.set_default_size(320, 420);
     wait_until(Duration::from_secs(2), || {
         preview.text_view().width() < 500
-            && code_block_containers(&preview).iter().all(|block| {
-                block.width_request() == expected_code_block_width(&preview, block)
-            })
+            && code_block_containers(&preview)
+                .iter()
+                .all(|block| block.width_request() == expected_code_block_width(&preview, block))
     });
     let blocks = code_block_containers(&preview);
     assert!(blocks.iter().any(|block| block.margin_start() == 0));
@@ -3352,11 +3428,8 @@ fn emit_preview_click_for_text(preview: &LushtextMarkdownPreview, text: &str) {
     let offset = rendered_text_char_offset(preview, text);
     let iter = text_view.buffer().iter_at_offset(offset);
     let rect = text_view.iter_location(&iter);
-    let (x, y) = text_view.buffer_to_window_coords(
-        gtk4::TextWindowType::Widget,
-        rect.x() + 1,
-        rect.y() + 1,
-    );
+    let (x, y) =
+        text_view.buffer_to_window_coords(gtk4::TextWindowType::Widget, rect.x() + 1, rect.y() + 1);
 
     let controllers = text_view.observe_controllers();
     let gesture = (0..controllers.n_items())
@@ -3475,9 +3548,9 @@ fn rendered_text_char_offset_nth(
     let mut byte_offset = None;
 
     for _ in 0..=occurrence {
-        let relative = rendered[search_start..]
-            .find(text)
-            .unwrap_or_else(|| panic!("rendered text should contain occurrence {occurrence} of '{text}'"));
+        let relative = rendered[search_start..].find(text).unwrap_or_else(|| {
+            panic!("rendered text should contain occurrence {occurrence} of '{text}'")
+        });
         byte_offset = Some(search_start + relative);
         search_start += relative + text.len();
     }

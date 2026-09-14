@@ -17,7 +17,7 @@
 //! fallback, not the main path.
 //!
 //! Do not confuse it with `workspace-sidebar-animation`, which is
-//! `WFR-SHELL-LAYOUT`'s: that blocker follows the sidebar show/hide animation, not
+//! `WFR-SHELL-GEOMETRY`'s: that blocker follows the sidebar show/hide animation, not
 //! this row.
 
 use std::time::Duration;

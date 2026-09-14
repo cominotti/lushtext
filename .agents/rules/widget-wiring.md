@@ -294,6 +294,39 @@ evidence surface replaced.
   into a crash. This is a hazard consolidation creates: scattered per-field
   getters each read one narrow thing, while one surface makes every field
   reachable from every observation point.
+- **An evidence surface must not reach a disposed child *transitively* either.**
+  The direct hazard — reading a `TemplateChild` through its panicking accessor —
+  is the one the rule above names, and it is the easy half. The harder half is
+  that a surface built out of the workflow's **own production accessors**
+  inherits their panics: production only ever calls them on a live window, so
+  they are correct, and the surface is not. The geometry surface in slot 7b was
+  written from `rendered_workspace_sidebar_visible()`,
+  `rendered_document_properties_visible()`, and
+  `document_properties_uses_bottom_sheet()`, each of which derefs a template
+  child, and its own disposal proof caught the panic — *"Failed to retrieve
+  template child"* — before it shipped. Derive the fact defensively in the
+  surface and leave the production accessor alone; do not widen a production
+  accessor to `try_get()` for the surface's benefit, because that changes
+  production behaviour to satisfy an observation.
+- **Disposing a still-parented widget is itself a `Gtk-CRITICAL`.** A disposal
+  proof that calls `run_dispose()` on a child whose parent still holds a
+  reference produces *"has a parent ... during dispose"*, which the widget lane
+  treats as unexpected warning output and fails on. Detach first (for a popover,
+  `menu_button.set_popover(None)`), then dispose, so the observation is about
+  the surface rather than about the test's teardown order.
+- **A workflow that spans two separately observable GObjects may expose one
+  accessor per object.** "One accessor reads the whole surface" is about not
+  scattering per-field getters, not about the object count: where a workflow has
+  a nested role home and one of its objects exists in tests without the other —
+  a bare `LushtextOpenPopover` with no window — a single accessor would only be
+  callable from half of them. `WFR-WORKSPACE-TREE` established the shape
+  (`workspace_tree_evidence` / `workspace_section_evidence`) and
+  `WFR-RECENT-DOCUMENTS` follows it. This is a reading of the
+  `A migrated workflow exposes one typed evidence surface` requirement in
+  `openspec/specs/workflow-evidence-surfaces/spec.md`, not an exemption from it:
+  each accessor must still read its object's **whole** surface, and the plural
+  must be stated in the module doc and the matrix row so it reads as the
+  precedent it follows rather than a relapse.
 - **Reading must not make the toolkit do work.** A GTK collection may create its
   children on demand — `GtkTreeListModel` is the one in this tree — so an
   accessor that walks such a collection to answer a question *performs* work: it

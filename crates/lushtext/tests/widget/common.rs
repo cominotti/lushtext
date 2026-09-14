@@ -17,8 +17,8 @@ pub use lushtext_core::services::filesystem::{
 };
 use std::ffi::OsString;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 static GTK_INIT: Once = Once::new();
@@ -68,7 +68,8 @@ pub fn test_application() -> libadwaita::Application {
         std::process::id(),
         APP_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let app: libadwaita::Application = lushtext_core::app::LushtextApplication::new_with_application_id(&app_id).upcast();
+    let app: libadwaita::Application =
+        lushtext_core::app::LushtextApplication::new_with_application_id(&app_id).upcast();
     app.register(gio::Cancellable::NONE)
         .expect("test application registration");
     app.emit_by_name::<()>("startup", &[]);
@@ -146,11 +147,7 @@ fn try_emit_key_pressed(widget: &gtk4::Widget, key: gtk4::gdk::Key) -> Option<gl
             .item(index)
             .and_then(|object| object.downcast::<gtk4::EventControllerKey>().ok())
         {
-            let args: [&dyn ToValue; 3] = [
-                &key,
-                &0u32,
-                &gtk4::gdk::ModifierType::empty(),
-            ];
+            let args: [&dyn ToValue; 3] = [&key, &0u32, &gtk4::gdk::ModifierType::empty()];
             let stopped: bool =
                 glib::object::ObjectExt::emit_by_name(&controller, "key-pressed", &args);
             return Some(if stopped {
