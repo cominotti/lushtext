@@ -13,10 +13,11 @@
 //! | `recent_open.rs`, on recent-row activation | `WFR-RECENT-DOCUMENTS` |
 //! | `recent_open.rs`, on keyboard dismissal | `WFR-RECENT-DOCUMENTS` |
 //!
-//! It is the same disposition `.agents/rules/rust.md` gives cross-cutting pure
-//! policy: it stays in a shared location and the matrix names the workflows
-//! that share it. Moving it beside any one of them would leave the others
-//! reaching across a role home for a helper that is not theirs.
+//! It is the same disposition `.agents/rules/workflow-convention.md` gives
+//! cross-cutting pure policy: it stays in a shared location and the matrix
+//! names the workflows that share it. Moving it beside any one of them would
+//! leave the others reaching across a role home for a helper that is not
+//! theirs.
 //!
 //! It was extracted in slot 7b from `ui/window/focus_indexing.rs`, whose
 //! inherited "geometry story" label was wrong in a way worth recording: the

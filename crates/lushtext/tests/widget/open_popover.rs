@@ -1542,8 +1542,8 @@ fn test_open_popover_awkward_labels_do_not_require_horizontal_scroll() {
 
 // --- Evidence-surface proofs (task 4.4c) ------------------------------------
 //
-// The three proofs `.agents/rules/widget-wiring.md` requires of every evidence
-// surface, driven rather than asserted.
+// The three proofs `.agents/rules/workflow-convention.md` requires of every
+// evidence surface, driven rather than asserted.
 
 #[test]
 fn test_open_popover_evidence_reads_stay_side_effect_free_across_journal_mutation() {

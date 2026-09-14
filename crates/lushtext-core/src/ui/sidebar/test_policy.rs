@@ -6,10 +6,11 @@
 //!
 //! Classified explicitly so the omission is not read as an oversight. This is neither
 //! one of the five roles nor a called presentation surface: it is the single
-//! `test-utils`-gated override store `.agents/rules/widget-wiring.md` requires a
-//! migrated workflow to own ("test-only timing and limit overrides belong in the
-//! workflow's one test policy value"). It holds no coordination, no pure decision, and
-//! no widget projection, and it compiles to nothing without the `test-utils` feature.
+//! `test-utils`-gated override store `.agents/rules/workflow-convention.md` requires
+//! a migrated workflow to own ("Test-only timing and limit overrides live in the
+//! workflow's one `test_policy.rs`, and no override storage may compile without the
+//! test feature"). It holds no coordination, no pure decision, and no widget
+//! projection, and it compiles to nothing without the `test-utils` feature.
 //! `ui/sidebar/policy.rs` remains the workflow's pure policy; this module is not a
 //! second one. The workflow's matrix row records the same classification.
 //!

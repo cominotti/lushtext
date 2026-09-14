@@ -27,8 +27,9 @@
 //!   state, and path captured at confirmation, rechecked before anything is
 //!   destroyed.
 //! * The **close-save session identity** is a coordinator generation identity —
-//!   `close_save_session_is_current(identity)` — which `.agents/rules/rust.md`
-//!   says *is* the seam value object, needing no additional type.
+//!   `close_save_session_is_current(identity)` — which
+//!   `.agents/rules/workflow-convention.md` says *is* the seam value object,
+//!   needing no additional type.
 //! * `CloseSavePipeline` is the one genuine bundle. It is constructed once per
 //!   close and consumed by the pipeline's own steps; it crosses no second
 //!   boundary and is reconstructed nowhere, so the seam rule does not require

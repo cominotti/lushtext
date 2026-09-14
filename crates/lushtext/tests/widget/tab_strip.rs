@@ -2,8 +2,8 @@
 
 //! Widget coverage for `WFR-TAB-STRIP`'s evidence surface and state extremes.
 //!
-//! The three surface proofs `.agents/rules/widget-wiring.md` requires, driven
-//! rather than asserted, plus the collection-surface state matrix. The
+//! The three surface proofs `.agents/rules/workflow-convention.md` requires,
+//! driven rather than asserted, plus the collection-surface state matrix. The
 //! workflow's behavioural coverage (pin, reorder, bulk close, cancellation)
 //! lives in `window.rs` alongside the rest of the shell's action coverage and is
 //! unchanged by the migration.

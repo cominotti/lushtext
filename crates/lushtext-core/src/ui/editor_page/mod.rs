@@ -138,7 +138,7 @@ impl LushtextEditorPage {
     /// and everything derived from it — would panic. Evidence surfaces that walk
     /// a page collection use this to **skip** a disposed page rather than
     /// panicking on it, which is the bounded-child half of the disposal rule in
-    /// `.agents/rules/widget-wiring.md`.
+    /// `.agents/rules/workflow-convention.md`.
     ///
     /// Production code does not need this: it only ever reaches a live page,
     /// which is why the gate matches its only consumer, the `test-utils`-gated
