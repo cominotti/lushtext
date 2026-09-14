@@ -477,6 +477,26 @@ that contradicts the convention MUST be amended in the same change that introduc
 or changes the convention. `make check-agent-docs` MUST pass with the revised
 guidance.
 
+The convention SHALL have **one normative home**. Where the same obligation is
+stated in several rule files and in `AGENTS.md`, a later change can amend one copy
+and leave the others contradicting it, which is the drift this requirement exists
+to prevent. The normative statement of the role taxonomy, the permitted role homes,
+seam value objects, policy purity, measured-cell re-derivation, intent-first
+naming, and the evidence-surface invariants SHALL live in one rule file scoped to
+the paths that convention governs; other rule files and `AGENTS.md` SHALL carry
+short pointers to it rather than parallel copies. Procedural material — the ordered
+checklist for performing a migration, proof recipes, and gate ordering — belongs in
+a maintained skill rather than in the normative rule, so the rule stays a statement
+of what must be true.
+
+Standing guidance SHALL also stay consistent with the **programme's state**, not
+only with its content. Once the programme record's slot ledger declares no slot
+outstanding, guidance MUST NOT instruct a reader to advance a slot, and MUST NOT
+describe workflows as awaiting migration or as keeping pre-convention test seams
+pending their slot. After closure the programme record is **frozen** except for its
+deferral inventory, which MAY be appended; a change that alters its history is
+rewriting a record later readers rely on.
+
 Consistency SHALL extend beyond prose to **mechanical gates keyed on literal file
 paths**. A gate is path-keyed when a checked-in configuration file, policy script,
 or policy implementation selects the files it protects by naming them literally —
@@ -516,6 +536,31 @@ carried as a side effect of a rename.
 - **THEN** that rule is amended in the same change
 - **AND** the amended rule distinguishes the permitted case from the case it was
   originally protecting against
+
+#### Scenario: Convention has one normative home and the rest point at it
+- **WHEN** the convention's obligations are stated in more than one guidance file
+- **THEN** one path-scoped rule file holds the normative statement
+- **AND** the other files carry pointers to it rather than parallel copies that
+  can be amended independently
+
+#### Scenario: Procedure lives in a skill, not in the normative rule
+- **WHEN** guidance describes how to perform a migration step by step, prove an
+  evidence surface, or order the gates
+- **THEN** that material lives in a maintained skill
+- **AND** the normative rule states what must be true rather than how to do it
+
+#### Scenario: Closed programme is not described as running
+- **WHEN** the programme record's slot ledger declares no slot outstanding
+- **THEN** no standing guidance instructs a reader to advance a slot or describes
+  a workflow as awaiting migration
+- **AND** guidance that told unmigrated workflows to keep per-field test getters
+  is corrected to the evidence-surface rule
+
+#### Scenario: Closed programme record is appended, not rewritten
+- **WHEN** a later change records guidance hardening or a new deferral for the
+  closed programme
+- **THEN** it appends to the record's deferral inventory
+- **AND** it does not rewrite the record's baselines, slot ledger, or history
 
 #### Scenario: Coordination vocabulary is presented beneath domain vocabulary
 - **WHEN** guidance introduces the coordination vocabulary such as admission,
@@ -562,4 +607,109 @@ carried as a side effect of a rename.
   path
 - **AND** it verifies that the naming convention now selects the code the entry
   used to select
+
+### Requirement: Every module in a migrated role home is declared by its row
+A migrated row's role home is where a reader goes to learn the workflow, so a
+module sitting in it that the row never mentions is an unclassified file in the
+one directory the convention claims to have classified. For every row whose status
+is `migrated`, each `.rs` file in that row's role home SHALL be one of:
+
+- the facade (`mod.rs`) or the GTK subclass state file (`imp.rs`);
+- a fixed role name (`policy.rs`, `evidence.rs`, `seams.rs`, `test_policy.rs`);
+- a bounded coordination role name, optionally stage-order-qualified; or
+- named by a backticked repository path in that row's own matrix text, which
+  classifies it as a called presentation surface or as a module that is neither a
+  role nor a presentation surface.
+
+A role home is the directory holding the row's declared facade, plus any
+subdirectory of it that the row itself names through a declared role path — the
+nested role home the convention already permits. Enumeration SHALL NOT recurse
+into subdirectories the row does not name, so a workflow cannot be made
+responsible for a neighbour's directory.
+
+The declaration SHALL be **machine-readable**: a backticked path the check can
+resolve. Prose that names a file by its bare stem, or by a brace expansion over
+several stems, classifies the module for a human reader but leaves the check
+unable to see it, and a check that cannot see a declaration cannot enforce one.
+
+Declaring a file is the fix. Renaming a called presentation surface into a role
+name it does not perform, or weakening the check so the file falls out of its
+scope, is a false role claim or a silent disarm respectively, and neither is an
+available answer.
+
+#### Scenario: Undeclared module in a role home is a finding
+- **WHEN** a `.rs` file sits in a migrated row's role home, carries no convention
+  role name, and is named nowhere in that row's matrix text
+- **THEN** the check fails, names the file and the row, and says to declare it as a
+  called presentation surface or a coordination role in the matrix row
+
+#### Scenario: Declared presentation surface passes
+- **WHEN** the row's matrix text names that file by a backticked repository path
+- **THEN** the check reports no finding for it
+- **AND** the module's own doc carries the matching classification
+
+#### Scenario: Enumeration does not reach an unnamed subdirectory
+- **WHEN** a role home contains a subdirectory the row's declared roles never name
+- **THEN** files in that subdirectory are outside this check for that row
+
+#### Scenario: Renaming into a role is not a permitted fix
+- **WHEN** an undeclared module is a called presentation surface
+- **THEN** the change declares it in the row rather than giving it a bounded role
+  name it does not perform
+
+### Requirement: The externally reachable test-seam count is ratcheted
+The matrix's `Measurement Definitions` section SHALL record the current count of
+externally reachable `*_for_test` declarations — `pub fn` and `pub(crate) fn` whose
+name ends `_for_test`, under `crates/lushtext-core/src` — and the mechanical check
+SHALL recompute that count with the same predicate and fail when the actual count
+**exceeds** the recorded figure.
+
+A count **below** the recorded figure SHALL pass without a finding. The ratchet
+exists to stop the shadow introspection API growing back after the convention
+retired it; forcing the recorded figure down on every reduction would make routine
+cleanups fail a gate and would invite a change to raise the figure to make the
+error go away.
+
+The failure message SHALL name both remedies and their order: extend the owning
+workflow's evidence surface and delete the getter, which is the convention's
+answer; or, deliberately, raise the recorded figure in the same change with a
+stated reason, which makes the growth a reviewed decision rather than a drift.
+
+`#[cfg(feature = "test-utils")]` attribute sites SHALL NOT be ratcheted. That
+population legitimately rises as workflows gain gated evidence surfaces, so
+ratcheting it would penalise the convention being followed. It is a different
+measurement of a different set and MUST NOT be merged with the declaration count.
+
+The self-test fixture SHALL exercise **every visibility the predicate
+distinguishes** — at least one counted `pub fn`, at least one counted
+`pub(crate) fn`, and at least one uncounted `pub(super) fn` — and SHALL assert the
+resulting count rather than assume it. A fixture built from one visibility
+produces the same verdicts under a narrowed predicate, so it proves the ratchet's
+thresholds while leaving the population it counts unproven.
+
+#### Scenario: Growth beyond the recorded figure fails
+- **WHEN** the recomputed count of externally reachable `*_for_test` declarations
+  exceeds the figure recorded in the matrix
+- **THEN** the check fails, reports both counts, and names the two remedies
+
+#### Scenario: Reduction passes without forcing the figure down
+- **WHEN** the recomputed count is below the recorded figure
+- **THEN** the check passes with no finding
+- **AND** the change is not required to lower the recorded figure
+
+#### Scenario: Deliberate growth is recorded rather than hidden
+- **WHEN** a change genuinely needs more externally reachable seams
+- **THEN** it raises the recorded figure in the same change with a stated reason
+
+#### Scenario: Gated attribute sites are outside the ratchet
+- **WHEN** a migrated workflow adds a `test-utils`-gated evidence surface
+- **THEN** the resulting rise in `cfg(feature = "test-utils")` sites produces no
+  finding
+
+#### Scenario: Narrowing the predicate fails the self-test
+- **WHEN** the counting predicate is narrowed so that `pub(crate) fn *_for_test`
+  declarations stop being counted
+- **THEN** the self-test fails on its own fixture's asserted count
+- **AND** a `pub(super) fn *_for_test` declaration in the same fixture is still
+  not counted
 
