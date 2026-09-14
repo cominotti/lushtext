@@ -1133,9 +1133,13 @@ the precedent and the reason it exists.
 - [x] 11.9 **State what is terminal, on what grounds, and what is not claimed**, per row,
   in B.6's shape — and end with whether anything is recorded as accepted debt. Nothing
   may be.
-- [ ] 11.10 **At archive time**, rewrite this change's evidence pointers from live form
+- [x] 11.10 **At archive time**, rewrite this change's evidence pointers from live form
   to archive form — the step five prior changes missed. Until then they stay in live
   form, which is the only form that passes the gate while the change is live.
+  **Discharged at archive (2026-09-14):** a repository-wide search found **zero**
+  path-formed pointers (`openspec/changes/close-workflow-readability-programme/...`)
+  outside this change's own directory; the matrix and the programme record refer to
+  the change by **name** only, which is archive-stable. Nothing to rewrite.
 - [x] 11.12 **Discharge the ledger's "remaining argument suppressions" item**, which the
   matrix's slot-7b row (`docs/workflow-readability-matrix.md:1304`) lists as this
   change's scope. Measured at authoring: **one** exists, at
