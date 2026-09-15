@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use unicase::UniCase;
 
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services::filesystem::{DirectoryScanPolicy, FileKind, tree as fs_tree};
 
 /// A single sidebar-visible filesystem entry returned by a directory scan.
@@ -185,19 +186,27 @@ pub struct DirectoryScan {
 /// Skips hidden files (starting with `.`).
 #[must_use]
 pub fn scan_directory(dir_path: &Path) -> Vec<DirectoryEntry> {
-    scan_directory_bounded(dir_path, usize::MAX, 1000, None).entries
+    scan_directory_bounded(
+        dir_path,
+        usize::MAX,
+        1000,
+        None,
+        &WorkspaceEntryVisibility::default(),
+    )
+    .entries
 }
 
-/// Peek into a directory to see if it contains any visible (non-hidden) entries.
+/// Peek into a directory to see if it contains any entry visible under `visibility`.
 #[must_use]
-pub fn is_dir_empty(path: &Path) -> bool {
+pub fn is_dir_empty(path: &Path, visibility: &WorkspaceEntryVisibility) -> bool {
     let mut has_visible_entry = false;
-    let scan = fs_tree::visit_directory(
+    let scan = fs_tree::visit_directory_with_visibility(
         path,
         DirectoryScanPolicy {
             max_entries: 1,
             include_hidden: false,
         },
+        visibility,
         |_| {
             has_visible_entry = true;
             false
@@ -219,10 +228,15 @@ pub fn scan_directory_bounded(
     max_entries: usize,
     lookahead_cap: usize,
     cancel: Option<&AtomicBool>,
+    visibility: &WorkspaceEntryVisibility,
 ) -> DirectoryScan {
-    scan_directory_bounded_with_cancel(dir_path, max_entries, lookahead_cap, || {
-        cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire))
-    })
+    scan_directory_bounded_with_cancel(
+        dir_path,
+        max_entries,
+        lookahead_cap,
+        || cancel.is_some_and(|flag| flag.load(AtomicOrdering::Acquire)),
+        visibility,
+    )
 }
 
 /// Scan a directory with a workflow-owned cooperative cancellation predicate.
@@ -231,11 +245,18 @@ pub fn scan_directory_bounded_with_cancel<F>(
     max_entries: usize,
     lookahead_cap: usize,
     is_cancelled: F,
+    visibility: &WorkspaceEntryVisibility,
 ) -> DirectoryScan
 where
     F: FnMut() -> bool,
 {
-    scan_directory_without_byte_limit(dir_path, max_entries, lookahead_cap, is_cancelled)
+    scan_directory_without_byte_limit(
+        dir_path,
+        max_entries,
+        lookahead_cap,
+        is_cancelled,
+        visibility,
+    )
 }
 
 /// Scan one directory under both row and complete retained-byte ceilings.
@@ -245,6 +266,7 @@ pub fn scan_directory_bounded_with_cancel_and_bytes<F>(
     lookahead_cap: usize,
     max_retained_bytes: u64,
     mut is_cancelled: F,
+    visibility: &WorkspaceEntryVisibility,
 ) -> DirectoryScan
 where
     F: FnMut() -> bool,
@@ -258,6 +280,7 @@ where
             max_entries,
             lookahead_cap,
             is_cancelled,
+            visibility,
         );
     }
 
@@ -269,9 +292,10 @@ where
     let mut examined_entries = 0usize;
     let mut maximum_graph_bytes = 0u64;
 
-    let scan = fs_tree::visit_directory(
+    let scan = fs_tree::visit_directory_with_visibility(
         dir_path,
         DirectoryScanPolicy::visible_workspace(),
+        visibility,
         |entry| {
             if is_cancelled() {
                 cancelled = true;
@@ -315,9 +339,10 @@ where
         maximum_graph_bytes,
     );
     let mut dirs_checked = 0usize;
-    let scan = fs_tree::visit_directory(
+    let scan = fs_tree::visit_directory_with_visibility(
         dir_path,
         DirectoryScanPolicy::visible_workspace(),
+        visibility,
         |entry| {
             if is_cancelled() {
                 cancelled = true;
@@ -331,7 +356,7 @@ where
             let mut is_empty = None;
             if is_dir && dirs_checked < lookahead_cap {
                 dirs_checked = dirs_checked.saturating_add(1);
-                is_empty = Some(is_dir_empty(&entry.path));
+                is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             selector.consider(DirectoryEntry {
                 path: entry.path,
@@ -372,6 +397,7 @@ fn scan_directory_without_byte_limit<F>(
     max_entries: usize,
     lookahead_cap: usize,
     mut is_cancelled: F,
+    visibility: &WorkspaceEntryVisibility,
 ) -> DirectoryScan
 where
     F: FnMut() -> bool,
@@ -386,9 +412,10 @@ where
     let mut peak_retained_entries = 0usize;
     let mut peak_retained_bytes = retained_shell_bytes;
 
-    let scan = fs_tree::visit_directory(
+    let scan = fs_tree::visit_directory_with_visibility(
         dir_path,
         DirectoryScanPolicy::visible_workspace(),
+        visibility,
         |entry| {
             if is_cancelled() {
                 cancelled = true;
@@ -405,7 +432,7 @@ where
             let mut is_empty = None;
             if is_dir && dirs_checked < lookahead_cap {
                 dirs_checked = dirs_checked.saturating_add(1);
-                is_empty = Some(is_dir_empty(&entry.path));
+                is_empty = Some(is_dir_empty(&entry.path, visibility));
             }
             let candidate = DirectoryEntry {
                 path: entry.path,
@@ -605,6 +632,10 @@ fn compare_entries(
 mod tests {
     use super::*;
     use crate::services::filesystem::fixture;
+
+    fn visibility() -> WorkspaceEntryVisibility {
+        WorkspaceEntryVisibility::default()
+    }
     use tempfile::TempDir;
 
     /// Helper: extract file names from scan results.
@@ -767,12 +798,18 @@ mod tests {
     fn test_is_dir_empty_ignores_hidden_entries_and_detects_visible_entries() {
         let dir = TempDir::new().expect("expected operation to succeed");
 
-        assert!(is_dir_empty(dir.path()));
+        assert!(is_dir_empty(dir.path(), &visibility()));
         fixture::write_text(&dir.path().join(".hidden"), "");
-        assert!(is_dir_empty(dir.path()), "hidden files should not count");
+        assert!(
+            is_dir_empty(dir.path(), &visibility()),
+            "hidden files should not count"
+        );
         fixture::write_text(&dir.path().join("visible.txt"), "");
-        assert!(!is_dir_empty(dir.path()), "visible files should count");
-        assert!(!is_dir_empty(&dir.path().join("missing")));
+        assert!(
+            !is_dir_empty(dir.path(), &visibility()),
+            "visible files should count"
+        );
+        assert!(!is_dir_empty(&dir.path().join("missing"), &visibility()));
     }
 
     #[test]
@@ -823,7 +860,7 @@ mod tests {
             }
         }
 
-        let scan = scan_directory_bounded(dir.path(), 3, 1000, None);
+        let scan = scan_directory_bounded(dir.path(), 3, 1000, None, &visibility());
         assert!(scan.truncated);
         assert!(!scan.cancelled);
         assert_eq!(names(&scan.entries), vec!["docs", "src", "alpha.txt"]);
@@ -836,7 +873,7 @@ mod tests {
         fixture::create_dir(&dir.path().join("beta"));
         fixture::write_text(&dir.path().join("file.txt"), "");
 
-        let scan = scan_directory_bounded(dir.path(), 10, 1, None);
+        let scan = scan_directory_bounded(dir.path(), 10, 1, None, &visibility());
         let checked_dirs = scan
             .entries
             .iter()
@@ -859,7 +896,7 @@ mod tests {
         fixture::write_text(&dir.path().join("visible.txt"), "");
         let cancel = AtomicBool::new(true);
 
-        let scan = scan_directory_bounded(dir.path(), 10, 1000, Some(&cancel));
+        let scan = scan_directory_bounded(dir.path(), 10, 1000, Some(&cancel), &visibility());
         assert!(scan.cancelled);
         assert!(scan.entries.is_empty());
     }
@@ -869,7 +906,7 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let missing = dir.path().join("missing");
 
-        let scan = scan_directory_bounded(&missing, 10, 1000, None);
+        let scan = scan_directory_bounded(&missing, 10, 1000, None, &visibility());
 
         assert!(scan.entries.is_empty());
         assert!(!scan.cancelled);
@@ -886,13 +923,25 @@ mod tests {
         let dir = TempDir::new().expect("byte-bounded directory scan tempdir");
         fixture::write_text(&dir.path().join("unicode-界-🙂.rs"), "");
 
-        let baseline =
-            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 1, 0, u64::MAX, || false);
+        let baseline = scan_directory_bounded_with_cancel_and_bytes(
+            dir.path(),
+            1,
+            0,
+            u64::MAX,
+            || false,
+            &visibility(),
+        );
         assert_eq!(baseline.entries.len(), 1);
         let exact_limit = baseline.peak_retained_bytes;
 
-        let exact =
-            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 1, 0, exact_limit, || false);
+        let exact = scan_directory_bounded_with_cancel_and_bytes(
+            dir.path(),
+            1,
+            0,
+            exact_limit,
+            || false,
+            &visibility(),
+        );
         assert_eq!(names(&exact.entries), vec!["unicode-界-🙂.rs"]);
         assert!(!exact.byte_truncated);
         assert!(exact.peak_retained_bytes <= exact_limit);
@@ -904,6 +953,7 @@ mod tests {
             0,
             exact_limit.saturating_sub(1),
             || false,
+            &visibility(),
         );
         assert!(one_under.byte_truncated);
         assert!(one_under.entries.is_empty());
@@ -1072,7 +1122,14 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         let missing = dir.path().join("missing");
 
-        let scan = scan_directory_bounded_with_cancel_and_bytes(&missing, 10, 1000, 4096, || false);
+        let scan = scan_directory_bounded_with_cancel_and_bytes(
+            &missing,
+            10,
+            1000,
+            4096,
+            || false,
+            &visibility(),
+        );
 
         assert!(
             scan.error
@@ -1099,12 +1156,18 @@ mod tests {
         }
 
         let mut checks = 0usize;
-        let scan =
-            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 10, 1000, 64 * 1024, || {
+        let scan = scan_directory_bounded_with_cancel_and_bytes(
+            dir.path(),
+            10,
+            1000,
+            64 * 1024,
+            || {
                 let seen = checks;
                 checks += 1;
                 seen >= 2
-            });
+            },
+            &visibility(),
+        );
 
         assert!(scan.cancelled, "the scan must report that it was cancelled");
         assert_eq!(
@@ -1126,11 +1189,65 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::write_text(&dir.path().join("visible.txt"), "");
 
-        let scan =
-            scan_directory_bounded_with_cancel_and_bytes(dir.path(), 10, 1000, 4096, || true);
+        let scan = scan_directory_bounded_with_cancel_and_bytes(
+            dir.path(),
+            10,
+            1000,
+            4096,
+            || true,
+            &visibility(),
+        );
 
         assert!(scan.cancelled);
         assert_eq!(scan.examined_entries, 0);
         assert!(scan.entries.is_empty());
+    }
+
+    #[test]
+    fn scan_applies_visibility_rule_to_entries_and_empty_probe() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        fixture::write_text(&dir.path().join(".env"), "");
+        fixture::write_text(&dir.path().join("main.rs"), "");
+        fixture::create_dir(&dir.path().join(".git"));
+        fixture::create_dir(&dir.path().join("dot_only"));
+        fixture::write_text(&dir.path().join("dot_only").join(".gitkeep"), "");
+        fixture::create_dir(&dir.path().join("vendor"));
+
+        let hidden_off = scan_directory_bounded(dir.path(), 100, 1000, None, &visibility());
+        assert_eq!(
+            names(&hidden_off.entries),
+            vec!["dot_only", "vendor", "main.rs"]
+        );
+        let dot_only = hidden_off
+            .entries
+            .iter()
+            .find(|entry| entry.path.ends_with("dot_only"))
+            .expect("dot_only row");
+        assert_eq!(
+            dot_only.is_empty,
+            Some(true),
+            "dot-only folder is empty with hidden off"
+        );
+
+        let hidden_on = WorkspaceEntryVisibility::new(true, [".git"]);
+        let scan = scan_directory_bounded(dir.path(), 100, 1000, None, &hidden_on);
+        assert_eq!(
+            names(&scan.entries),
+            vec!["dot_only", "vendor", ".env", "main.rs"]
+        );
+        let dot_only = scan
+            .entries
+            .iter()
+            .find(|entry| entry.path.ends_with("dot_only"))
+            .expect("dot_only row");
+        assert_eq!(
+            dot_only.is_empty,
+            Some(false),
+            "dot-only folder is not empty with hidden on"
+        );
+
+        let excluded = WorkspaceEntryVisibility::new(true, [".git", "vendor"]);
+        let scan = scan_directory_bounded(dir.path(), 100, 1000, None, &excluded);
+        assert_eq!(names(&scan.entries), vec!["dot_only", ".env", "main.rs"]);
     }
 }

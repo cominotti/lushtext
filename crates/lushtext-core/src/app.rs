@@ -14,6 +14,55 @@ use gtk4::gio;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
+/// App action name for the workspace-wide hidden-file view mode.
+pub const SHOW_HIDDEN_FILES_ACTION: &str = "show-hidden-files";
+
+/// Register a boolean-stateful toggle action whose state is one GSettings key.
+///
+/// Activation flips the key, `change-state` writes the requested value, and
+/// external key writes flow back into the action, so a menu check item, an
+/// accelerator, a Preferences switch, and D-Bus automation all observe one
+/// value. Shared by the application (`app.show-hidden-files`) and the window
+/// (`win.toggle-minimap`), which layers its own announcement on top.
+pub(crate) fn register_boolean_setting_toggle_action(
+    map: &impl IsA<gio::ActionMap>,
+    settings: &gio::Settings,
+    action_name: &'static str,
+    settings_key: &'static str,
+) -> gio::SimpleAction {
+    let initial = settings.boolean(settings_key);
+    let action = gio::SimpleAction::new_stateful(action_name, None, &initial.to_variant());
+    {
+        let settings = settings.clone();
+        action.connect_activate(move |action, _| {
+            let current = action
+                .state()
+                .and_then(|state| state.get::<bool>())
+                .unwrap_or(false);
+            action.change_state(&(!current).to_variant());
+        });
+        action.connect_change_state(move |action, state| {
+            let Some(state) = state else { return };
+            let Some(enabled) = state.get::<bool>() else {
+                tracing::error!("{action_name}: expected bool state");
+                return;
+            };
+            action.set_state(&enabled.to_variant());
+            if let Err(error) = settings.set_boolean(settings_key, enabled) {
+                tracing::error!("{action_name}: failed to persist {settings_key}: {error}");
+            }
+        });
+    }
+    let action_weak = action.downgrade();
+    settings.connect_changed(Some(settings_key), move |settings, _| {
+        if let Some(action) = action_weak.upgrade() {
+            action.set_state(&settings.boolean(settings_key).to_variant());
+        }
+    });
+    map.add_action(&action);
+    action
+}
+
 mod imp {
     use crate::model::automation::AutomationWorkflowEventLog;
     use crate::ui::automation::AutomationRegistration;
@@ -205,6 +254,21 @@ impl LushtextApplication {
 
         self.add_action_entries([action_quit, action_prefs, action_about]);
         self.set_accels_for_action("app.quit", &["<Control>q"]);
+
+        // Workspace-wide hidden-file visibility. Registered here rather than in
+        // the window accelerator table because the setting is global and every
+        // window's menu item must agree.
+        let settings = gio::Settings::new(config::APP_ID);
+        register_boolean_setting_toggle_action(
+            self,
+            &settings,
+            SHOW_HIDDEN_FILES_ACTION,
+            config::keys::WORKSPACE_SHOW_HIDDEN_FILES,
+        );
+        self.set_accels_for_action(
+            &format!("app.{SHOW_HIDDEN_FILES_ACTION}"),
+            &["<Control><Shift>h"],
+        );
     }
 
     /// Record current workflow observations and return the bounded event stream.

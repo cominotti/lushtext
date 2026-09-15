@@ -72,7 +72,15 @@ LushtextWindow (AdwApplicationWindow)
 
 - `AdwHeaderBar` (not `GtkHeaderBar`)
 - `AdwTabView` + `AdwTabBar` for document tabs
-- `AdwPreferencesDialog` with `AdwComboRow`, `AdwSwitchRow`, `AdwSpinRow`
+- `AdwPreferencesDialog` with `AdwComboRow`, `AdwSwitchRow`, `AdwSpinRow`; an
+  `AdwExpanderRow` holding dynamic `AdwActionRow`s plus one `AdwEntryRow` is the
+  accepted shape for a rarely edited, user-extensible list such as the
+  always-excluded names (a justified narrowing of the grouped-row rule below:
+  the expander's children are the grouped rows, kept collapsed so the page stays
+  scannable). `AdwExpanderRow::remove` only accepts rows appended through
+  `add_row`, so keep template `[row]` children fixed and recycle only the rows
+  the projection appends; both types need `ensure_type()` before
+  `bind_template()`.
 - `AdwStatusPage` for empty states
 - `AdwSidebar` for shallow, sectioned dialog browse rails such as Notes and
   Local History where each item activates or previews one record
@@ -205,7 +213,7 @@ add a new one before calling the work complete.
 - Do not replace the primary workspace file tree with `AdwSidebar`; it owns filesystem tree expansion, deep-folder focus, file operations, file peek, and watcher reconciliation rather than shallow navigation.
 - Never use deprecated `GtkTreeView`.
 - Sort: directories first, then alphabetical (case-insensitive).
-- Skip hidden files (starting with `.`).
+- Entry visibility is one rule, `model::workspace_visibility::WorkspaceEntryVisibility::admits`: excluded names never show, dot-names follow the `workspace-show-hidden-files` mode, configured workspace folders are always visible as roots. Pass the value built by `ui::workspace_visibility` once per refresh pass; never re-derive the dot rule in a scan or row factory.
 - **Disable TreeExpander's gesture for file rows**: `GtkTreeExpander` installs an internal `GtkGestureClick` (BUBBLE phase) that intercepts click events for ALL rows — even non-expandable files. This prevents `GtkListView`'s built-in double-click activation from firing. The fix: in `connect_bind`, use `expander.observe_controllers()` to find the `GtkGestureClick` and set `propagation_phase` to `None` for file rows (disabling it) and `Bubble` for directory rows (preserving expand/collapse). This runs on every bind (including ListItem recycling). Do NOT use `single-click-activate=true` (changes UX) or CAPTURE-phase gestures (fragile, fails for first file due to `SingleSelection::selected()` timing).
 - **Workspace folder reorder hover must be inert**: DnD reorder targets share row overlays with `GtkTreeExpander`, and GTK may ask for child models when a hovered folder auto-expands. During a workspace-folder reorder drag, the inert row-surface drop target must accept/own hover for every file-tree row while only showing or applying drops for valid top-level same-workspace reorder positions. Keep `TreeExpander` targetability stable; do not flip expander state as a hover workaround. Guard activation/focus paths, keep the no-scan child-model fallback defensive only, neutralize GTK `:drop(active)` paint on row/target surfaces, and render only a transparent target plus one fixed-height insertion-line child. Do not let hover expand folders, materialize descendants, restart watches, flicker the expander icon, or paint a filled drop rectangle.
 - **Inline row actions that survive deep nesting**: When adding a fixed interactive element (like a hover button) to a deeply nested tree row, DO NOT place it inside the `GtkTreeExpander`'s child box, as the expander's indentation will eventually push the element off-screen. Instead, wrap the `GtkTreeExpander` inside a `GtkOverlay`, and add the button as an overlay widget anchored to the right (`halign=End`). Ensure hover-only actions are also available in a right-click context menu to satisfy GNOME HIG accessibility requirements (since hover is inaccessible to keyboard-only and screen reader users).

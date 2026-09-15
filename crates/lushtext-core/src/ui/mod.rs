@@ -27,3 +27,4 @@ pub mod sidebar;
 pub mod status_bar;
 pub(crate) mod theme;
 pub mod window;
+pub(crate) mod workspace_visibility;

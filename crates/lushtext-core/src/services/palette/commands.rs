@@ -141,6 +141,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: None,
         },
         CommandDef {
+            id: "app.show-hidden-files",
+            label: "Show Hidden Files",
+            category: CommandCategory::View,
+            shortcut: Some("Ctrl+Shift+H"),
+        },
+        CommandDef {
             id: "win.toggle-properties",
             label: "Document Properties",
             category: CommandCategory::View,

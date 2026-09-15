@@ -38,6 +38,7 @@ palette, or a direct shortcut. The complete in-app list lives under
 | Command palette | `Ctrl+Shift+P` |
 | Workspace search | `Ctrl+Shift+F` |
 | Workspace search next / previous result | `F4` / `Shift+F4` |
+| Show / hide hidden files everywhere | `Ctrl+Shift+H` |
 | Toggle bookmark | `Ctrl+F2` |
 | Edit bookmark label | `Ctrl+Shift+F2` |
 | Next / previous bookmark | `F2` / `Shift+F2` |
@@ -83,6 +84,14 @@ intended to be meaningful to assistive technology users as well as useful for
 smoke tests.
 
 Expected screen-reader behavior includes:
+
+- The hidden-files view mode is one check item in the main menu, one switch in
+  `Preferences > Workspace`, and one per-search `Hidden files` toggle in the
+  workspace search panel; all report pressed/checked state. The excluded-names
+  editor exposes one row per name with a labelled remove button, an add entry
+  whose invalid state names the rejection reason, a reset control, and an
+  explicit `No excluded names` row. Toggling the mode refreshes the tree without
+  a manual-refresh announcement.
 
 - The main window exposes the tab strip, shell buttons, workspace sidebar
   toggle, document-properties toggle, status metadata, editor region, and

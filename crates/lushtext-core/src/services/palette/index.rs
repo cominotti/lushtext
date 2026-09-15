@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::model::palette::{
     IndexedFile, PaletteFileIdentity, PaletteFileIdentityFailure, ScoredResult, SearchResultItem,
 };
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services::file_tree;
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::single_flight::{
@@ -243,6 +244,8 @@ pub enum FileIndexBuildOutcome {
 pub struct FileIndexBuildRequest {
     pub workspace_folders: Arc<[PathBuf]>,
     pub capacity_hint: usize,
+    /// Visibility rule captured when the request was built.
+    pub visibility: WorkspaceEntryVisibility,
 }
 
 /// One request admitted as the sole active file-index build.
@@ -269,6 +272,8 @@ pub struct FileIndex {
     files: Vec<IndexedFile>,
     /// Deduplicated workspace folders for O(k) prefix lookups (k is usually small).
     workspace_folders: Vec<Arc<PathBuf>>,
+    /// Visibility rule this index was built under; worker-only rebuilds reuse it.
+    visibility: WorkspaceEntryVisibility,
 }
 
 impl FileIndex {
@@ -276,6 +281,24 @@ impl FileIndex {
     #[must_use]
     pub fn rebuild(workspace_folders: &[PathBuf]) -> Self {
         Self::rebuild_with_hint(workspace_folders, 10_000)
+    }
+
+    /// Build a file index under an explicit workspace visibility rule.
+    #[must_use]
+    pub fn rebuild_with_visibility(
+        workspace_folders: &[PathBuf],
+        visibility: &WorkspaceEntryVisibility,
+    ) -> Self {
+        let cancellation = PaletteSearchCancellation::default();
+        let FileIndexBuildOutcome::Complete { index, .. } = Self::rebuild_cancellable_with_hint(
+            workspace_folders,
+            10_000,
+            &cancellation,
+            visibility,
+        ) else {
+            unreachable!("a fresh index cancellation token cannot cancel");
+        };
+        index
     }
 
     /// Re-scan the folder identities already owned by this installed index.
@@ -288,16 +311,19 @@ impl FileIndex {
             .iter()
             .map(|folder| folder.as_ref().clone())
             .collect::<Vec<_>>();
-        Self::rebuild(&folders)
+        Self::rebuild_with_visibility(&folders, &self.visibility)
     }
 
     /// Like [`Self::rebuild`], but uses `capacity_hint` for the initial `Vec` allocation.
     #[must_use]
     pub fn rebuild_with_hint(workspace_folders: &[PathBuf], capacity_hint: usize) -> Self {
         let cancellation = PaletteSearchCancellation::default();
-        let FileIndexBuildOutcome::Complete { index, .. } =
-            Self::rebuild_cancellable_with_hint(workspace_folders, capacity_hint, &cancellation)
-        else {
+        let FileIndexBuildOutcome::Complete { index, .. } = Self::rebuild_cancellable_with_hint(
+            workspace_folders,
+            capacity_hint,
+            &cancellation,
+            &WorkspaceEntryVisibility::default(),
+        ) else {
             unreachable!("a fresh index cancellation token cannot cancel");
         };
         index
@@ -309,6 +335,7 @@ impl FileIndex {
         workspace_folders: &[PathBuf],
         capacity_hint: usize,
         cancellation: &PaletteSearchCancellation,
+        visibility: &WorkspaceEntryVisibility,
     ) -> FileIndexBuildOutcome {
         Self::rebuild_cancellable_with_limits(
             workspace_folders,
@@ -317,6 +344,7 @@ impl FileIndex {
             MAX_INDEXED_DIRECTORIES,
             MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
             cancellation,
+            visibility,
         )
     }
 
@@ -327,6 +355,7 @@ impl FileIndex {
         directory_limit: usize,
         build_byte_limit: u64,
         cancellation: &PaletteSearchCancellation,
+        visibility: &WorkspaceEntryVisibility,
     ) -> FileIndexBuildOutcome {
         let mut ledger = FileIndexBuildLedger::with_build_limit(build_byte_limit);
         let maximum_file_capacity = usize::try_from(MAX_FILE_INDEX_RETAINED_BYTES)
@@ -389,6 +418,7 @@ impl FileIndex {
                     ledger: &mut ledger,
                     visited_charge: &mut visited_charge,
                     canonical_files_charge: &mut canonical_files_charge,
+                    visibility,
                 };
                 collect_files_bounded(folder, &folder_arc, &mut traversal)
             };
@@ -420,6 +450,7 @@ impl FileIndex {
         let index = Self {
             files,
             workspace_folders: folder_arcs,
+            visibility: visibility.clone(),
         };
         metrics.retained_files = index.files.len();
         let retained_index_bytes = ledger.installed_bytes();
@@ -447,6 +478,7 @@ impl FileIndex {
             MAX_INDEXED_DIRECTORIES,
             MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
             cancellation,
+            &WorkspaceEntryVisibility::default(),
         )
     }
 
@@ -464,6 +496,7 @@ impl FileIndex {
             directory_limit,
             MAX_FILE_INDEX_BUILD_RETAINED_BYTES,
             cancellation,
+            &WorkspaceEntryVisibility::default(),
         )
     }
 
@@ -482,6 +515,7 @@ impl FileIndex {
             directory_limit,
             build_byte_limit,
             cancellation,
+            &WorkspaceEntryVisibility::default(),
         )
     }
 
@@ -866,6 +900,7 @@ impl From<Vec<IndexedFile>> for FileIndex {
         let mut index = Self {
             files: retained,
             workspace_folders,
+            visibility: WorkspaceEntryVisibility::default(),
         };
         index.enforce_retained_byte_limit();
         index
@@ -968,6 +1003,7 @@ struct FileIndexTraversal<'a> {
     ledger: &'a mut FileIndexBuildLedger,
     visited_charge: &'a mut u64,
     canonical_files_charge: &'a mut u64,
+    visibility: &'a WorkspaceEntryVisibility,
 }
 
 fn collect_files_bounded(
@@ -1070,6 +1106,7 @@ fn collect_pending_directories(
             0,
             traversal.ledger.remaining_build_bytes(),
             || traversal.cancellation.is_cancelled(),
+            traversal.visibility,
         );
         if !traversal
             .ledger
@@ -1381,6 +1418,7 @@ mod build_ledger_tests {
                 ledger: &mut ledger,
                 visited_charge: &mut visited_charge,
                 canonical_files_charge: &mut canonical_files_charge,
+                visibility: &WorkspaceEntryVisibility::default(),
             };
             collect_files_bounded(root, &folder_arc, &mut traversal)
         };

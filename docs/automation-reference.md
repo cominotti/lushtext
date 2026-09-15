@@ -658,8 +658,12 @@ once, by the identity's owner, not by every workflow that consumes it.*
 | `window.workspace` | `WorkspaceTreeEvidence` | `filter_animation_active` | `workspace.filter_animation_active` |
 
 Registered by slot 5b: `window.workspace` is the sixth projecting object, and **all
-ten of its fields** project from the workspace tree surface's single shared
-derivation, read once per snapshot. That derivation is also what
+ten of its evidence-derived fields** project from the workspace tree surface's
+single shared derivation, read once per snapshot. Its three remaining fields —
+`show_hidden_files`, `excluded_names`, and `excluded_names_truncated` — are
+preference state read from the two `workspace-*` visibility GSettings keys that
+every workspace surface consumes, not tree evidence, so they are deliberately not
+attributed to the surface. That derivation is also what
 `WorkspaceTreeEvidence` builds itself from, so the polled snapshot never allocates
 the surface's per-section collections and the two values still cannot drift — and
 the ten fields the drift gate attributes are the ones `WorkspaceTreeEvidence`
@@ -791,6 +795,9 @@ sidebar show/hide animation and belongs to `WFR-SHELL-GEOMETRY`, not to this row
 | <span id="snapshot-field-persistence-inflight"></span>`snapshot-field-persistence-inflight` | `workspace.persistence_inflight` | `bool` | Whether exactly one generation-owned workspace snapshot is currently being written. It becomes `false` at the matching worker terminal even when newer or retryable work remains pending. |
 | <span id="snapshot-field-persistence-dirty"></span>`snapshot-field-persistence-dirty` | `workspace.persistence_dirty` | `bool` | Whether the newest requested workspace generation is not yet durable. This remains `true` during debounce, an active or superseded write, bounded retry waiting, and a current failed generation awaiting explicit retry or a later mutation. |
 | <span id="snapshot-field-filter-animation-active"></span>`snapshot-field-filter-animation-active` | `workspace.filter_animation_active` | `bool` | Whether workspace filter animation is active. |
+| <span id="snapshot-field-show-hidden-files"></span>`snapshot-field-show-hidden-files` | `workspace.show_hidden_files` | `bool` | Whether dotfiles are visible in the sidebar, palette index, and content search default; mirrors `app.show-hidden-files` state. |
+| <span id="snapshot-field-excluded-names"></span>`snapshot-field-excluded-names` | `workspace.excluded_names` | `string[]` | Always-excluded entry basenames in stored order, capped at 64 entries; each name is bounded by the shared snapshot text cap. |
+| <span id="snapshot-field-excluded-names-truncated"></span>`snapshot-field-excluded-names-truncated` | `workspace.excluded_names_truncated` | `bool` | Whether `excluded_names` omitted entries past the 64-entry cap. |
 | <span id="snapshot-field-visible"></span>`snapshot-field-visible` | `command_palette.visible`, `content_search.visible` | `bool` | Whether the palette or workspace-search panel is currently revealed. |
 | <span id="snapshot-field-command-palette-searching"></span>`snapshot-field-command-palette-searching` | `command_palette.searching` | `bool` | Whether one current active or latest palette query still owns readiness. |
 | <span id="snapshot-field-query"></span>`snapshot-field-query` | `command_palette.query`, `content_search.query` | `string` | Current query text for the palette or workspace-search panel. |
@@ -908,6 +915,7 @@ signatures are `bool -> b`, `string -> s`, `u32 -> u`, and
 | <span id="action-app-preferences"></span>`action-app-preferences` | `app.preferences` | Preferences | `none` | `none` | `exported` | `contextual-user-command` | `app` | primary-menu, command-palette, dbus-action | Requires an active window. | unit |
 | <span id="action-app-quit"></span>`action-app-quit` | `app.quit` | Quit | `none` | `none` | `exported` | `contextual-user-command` | `app` | command-palette, dbus-action | Always registered; close flows still own save/modified safety. | unit |
 | <span id="action-app-about"></span>`action-app-about` | `app.about` | About LushText | `none` | `none` | `exported` | `contextual-user-command` | `app` | primary-menu, command-palette, dbus-action | Requires an active window. | unit |
+| <span id="action-app-show-hidden-files"></span>`action-app-show-hidden-files` | `app.show-hidden-files` | Show Hidden Files | `none` | `bool` | `exported` | `stable-user-command` | `app` | primary-menu, keyboard-shortcut, command-palette, dbus-action | Always registered; state mirrors the workspace-show-hidden-files GSettings key. | unit, widget |
 | <span id="action-win-new-tab"></span>`action-win-new-tab` | `win.new-tab` | New File | `none` | `none` | `exported` | `stable-user-command` | `window/actions` | header-button, primary-menu, keyboard-shortcut, command-palette, dbus-action | Always enabled. | unit, widget |
 | <span id="action-win-open-file"></span>`action-win-open-file` | `win.open-file` | Open File | `none` | `none` | `exported` | `contextual-user-command` | `window/actions` | keyboard-shortcut, command-palette, custom-menu-widget, dbus-action | Always enabled; opens the normal file dialog. | unit, widget |
 | <span id="action-win-open-recent"></span>`action-win-open-recent` | `win.open-recent` | Open Recent Documents | `none` | `none` | `exported` | `stable-user-command` | `window/recent_open` | header-button, keyboard-shortcut, command-palette, dbus-action | Always enabled; opens the recent-document Open popover and focuses search. | unit, widget, accessibility-smoke, visual-smoke |

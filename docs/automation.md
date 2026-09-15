@@ -437,6 +437,11 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
 - `win.set-notes-browser-query` with a string parameter while Browse Notes is visible
 - `win.select-notes-browser-row` with a zero-based unsigned visible row index
 - `win.open-notes-browser-selection` to press the visible browser's `Open` action
+- `app.show-hidden-files` toggles the workspace-wide hidden-files view mode; its
+  boolean state mirrors the `workspace-show-hidden-files` GSettings key and is
+  reported as `workspace.show_hidden_files`, beside the bounded
+  `workspace.excluded_names` list of always-excluded entry names. Set an explicit
+  state through `org.gtk.Actions.SetState` rather than toggling blindly.
 
 Use target-state actions for scenario setup whenever possible. They are easier
 to reason about than parity toggles because repeated calls converge on the same

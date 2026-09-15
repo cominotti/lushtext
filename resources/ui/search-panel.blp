@@ -110,6 +110,11 @@ template $LushtextSearchPanel: Box {
           active: true;
         }
 
+        ToggleButton hidden_toggle {
+          label: _("Hidden");
+          tooltip-text: _("Search hidden files and folders for this search");
+        }
+
         Entry glob_entry {
           hexpand: true;
           placeholder-text: _("File filter (e.g., *.rs, *.toml)");

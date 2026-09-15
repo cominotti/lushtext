@@ -20,6 +20,7 @@ use super::{SearchFileGroup, SearchMatchLocation, SearchProgressUpdate};
 use crate::model::content_search::{
     ReplacePreviewOutcome, SavedSearch, SearchHistoryEntry, SearchMatch, SearchMatchId,
 };
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::ui::accessibility;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
@@ -281,6 +282,9 @@ pub struct LushtextSearchPanel {
     /// Toggle controlling whether gitignore rules are honored.
     #[template_child]
     pub gitignore_toggle: TemplateChild<gtk4::ToggleButton>,
+    /// Per-search override for dotfile visibility, seeded from the global key.
+    #[template_child]
+    pub hidden_toggle: TemplateChild<gtk4::ToggleButton>,
     /// Glob filter entry for workspace search.
     #[template_child]
     pub glob_entry: TemplateChild<gtk4::Entry>,
@@ -356,6 +360,7 @@ impl Default for LushtextSearchPanel {
             more_toggle: TemplateChild::default(),
             options_revealer: TemplateChild::default(),
             gitignore_toggle: TemplateChild::default(),
+            hidden_toggle: TemplateChild::default(),
             glob_entry: TemplateChild::default(),
             replace_entry: TemplateChild::default(),
             replace_all_button: TemplateChild::default(),
@@ -502,7 +507,15 @@ impl LushtextSearchPanel {
         // Immediate re-search when a user flips a toggle. Connect after
         // GSettings binding and keep a restore guard so startup/history replay
         // notifications do not accidentally launch a workspace search.
-        for toggle in [&*self.case_toggle, &*self.regex_toggle, &*self.word_toggle] {
+        // `gitignore_toggle` binds to its own key in `setup_options`; `hidden_toggle`
+        // is seeded from the global mode instead. Both re-search like the rest.
+        for toggle in [
+            &*self.case_toggle,
+            &*self.regex_toggle,
+            &*self.word_toggle,
+            &*self.gitignore_toggle,
+            &*self.hidden_toggle,
+        ] {
             let panel_weak = self.obj().downgrade();
             toggle.connect_notify_local(Some("active"), move |_, _| {
                 let Some(panel) = panel_weak.upgrade() else {
@@ -523,6 +536,14 @@ impl LushtextSearchPanel {
     /// Wire the "More" button to the options revealer, bind gitignore toggle
     /// to GSettings, and set up glob entry debounce. Must be called AFTER
     /// `setup_toggles` and BEFORE `constructed_complete` is set to `true`.
+    /// Build the excluded-name rule for one search from the persisted keys.
+    ///
+    /// Only the excluded names come from settings here; the dotfile axis is the
+    /// panel's per-search toggle, carried in `ContentSearchOptions::hidden`.
+    pub(super) fn current_entry_visibility(&self) -> WorkspaceEntryVisibility {
+        crate::ui::workspace_visibility::workspace_entry_visibility(&self.settings)
+    }
+
     fn setup_options(&self) {
         use crate::config::keys;
 
@@ -547,22 +568,26 @@ impl LushtextSearchPanel {
             .sync_create()
             .build();
 
-        // 4. Immediate re-search when gitignore toggle changes (same as case/regex/word).
+        // 4. The hidden-files override is seeded from the global mode whenever the
+        // panel becomes visible, and follows the mode while it stays idle.
         let panel_weak = self.obj().downgrade();
-        self.gitignore_toggle
-            .connect_notify_local(Some("active"), move |_, _| {
-                let Some(panel) = panel_weak.upgrade() else {
-                    return;
-                };
-                let imp = panel.imp();
-                if !imp.history.constructed_complete.get() || imp.history.restoring_history.get() {
-                    return; // GSettings restore or history restore — skip.
+        self.obj().connect_map(move |_| {
+            if let Some(panel) = panel_weak.upgrade() {
+                panel.seed_hidden_toggle();
+            }
+        });
+        let panel_weak = self.obj().downgrade();
+        self.settings.connect_changed(
+            Some(crate::config::keys::WORKSPACE_SHOW_HIDDEN_FILES),
+            move |_, _| {
+                if let Some(panel) = panel_weak.upgrade()
+                    && panel.is_mapped()
+                    && !panel.is_searching()
+                {
+                    panel.seed_hidden_toggle();
                 }
-                let spec = panel.current_query_spec();
-                if !spec.query.is_empty() {
-                    panel.start_search(&spec);
-                }
-            });
+            },
+        );
 
         // 5. Replace All / Confirm Replace button.
         let panel_weak = self.obj().downgrade();
@@ -655,6 +680,7 @@ impl LushtextSearchPanel {
             (&*self.word_toggle, "Match whole words"),
             (&*self.more_toggle, "Search options"),
             (&*self.gitignore_toggle, "Respect gitignore"),
+            (&*self.hidden_toggle, "Search hidden files"),
         ] {
             accessibility::set_label(toggle, label);
             accessibility::set_pressed(toggle, toggle.is_active());

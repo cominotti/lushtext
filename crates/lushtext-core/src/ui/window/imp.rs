@@ -729,6 +729,20 @@ impl ObjectImpl for LushtextWindow {
         }
 
         {
+            // Both visibility keys invalidate the palette file index; the sidebar
+            // owns its own subscription for the tree.
+            // The window and its settings object share one lifetime, so the
+            // handler ids need no bag.
+            let window_weak = obj.downgrade();
+            let _ =
+                crate::ui::workspace_visibility::connect_visibility_changed(settings, move || {
+                    if let Some(window) = window_weak.upgrade() {
+                        window.rebuild_file_index();
+                    }
+                });
+        }
+
+        {
             let window_weak = obj.downgrade();
             settings.connect_changed(Some(keys::USE_EDITORCONFIG), move |s, _| {
                 if let Some(window) = window_weak.upgrade() {

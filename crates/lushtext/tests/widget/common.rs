@@ -196,6 +196,17 @@ pub fn realized_list_rows(list: &gtk4::ListView) -> Vec<gtk4::Widget> {
 
 /// The first widget in `root`'s subtree (including `root`) matching `pred`,
 /// walking first-child/next-sibling depth first.
+/// Wait until the window's async command-palette index rebuild reaches a size.
+pub fn wait_for_palette_index(
+    window: &lushtext_core::ui::window::LushtextWindow,
+    expected_index: usize,
+) {
+    use glib::subclass::prelude::ObjectSubclassIsExt;
+    wait_until(Duration::from_secs(10), || {
+        window.imp().command_palette.file_index_len() == expected_index
+    });
+}
+
 pub fn find_descendant(
     root: &gtk4::Widget,
     mut pred: impl FnMut(&gtk4::Widget) -> bool,

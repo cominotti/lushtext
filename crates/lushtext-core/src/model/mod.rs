@@ -28,3 +28,4 @@ pub mod session;
 pub mod sidecar_identity;
 pub mod workspace;
 pub mod workspace_search;
+pub mod workspace_visibility;

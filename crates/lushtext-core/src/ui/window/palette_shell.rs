@@ -50,11 +50,15 @@ use crate::ui::status_bar::MessageKind;
 use super::LushtextWindow;
 
 enum GuardedFileIndexBuildOutcome {
-    Complete {
-        index: crate::ui::plain_disposal::DisposalOwned<FileIndex>,
-        metrics: FileIndexBuildMetrics,
-    },
+    /// Boxed so the cancelled variant does not pay for the index guard and
+    /// metrics that only a completed build carries.
+    Complete(Box<CompletedFileIndexBuild>),
     Cancelled,
+}
+
+struct CompletedFileIndexBuild {
+    index: crate::ui::plain_disposal::DisposalOwned<FileIndex>,
+    metrics: FileIndexBuildMetrics,
 }
 
 impl LushtextWindow {
@@ -150,6 +154,9 @@ impl LushtextWindow {
                 let request = FileIndexBuildRequest {
                     workspace_folders: Arc::from(window.current_workspace_folder_paths()),
                     capacity_hint: window.imp().command_palette.file_index_len().max(64),
+                    visibility: crate::ui::workspace_visibility::workspace_entry_visibility(
+                        &window.imp().settings,
+                    ),
                 };
                 let start = window.imp().file_index_builds.borrow_mut().submit(request);
                 if let Some(start) = start {
@@ -212,6 +219,7 @@ impl LushtextWindow {
                     &request.workspace_folders,
                     request.capacity_hint,
                     &cancellation,
+                    &request.visibility,
                 );
                 match outcome {
                     FileIndexBuildOutcome::Complete { index, metrics } => {
@@ -220,10 +228,10 @@ impl LushtextWindow {
                             retained_bytes
                                 <= crate::services::palette::MAX_FILE_INDEX_RETAINED_BYTES
                         );
-                        GuardedFileIndexBuildOutcome::Complete {
+                        GuardedFileIndexBuildOutcome::Complete(Box::new(CompletedFileIndexBuild {
                             index: reservation.shrink_to_and_own(retained_bytes, index),
                             metrics,
-                        }
+                        }))
                     }
                     FileIndexBuildOutcome::Cancelled { .. } => {
                         GuardedFileIndexBuildOutcome::Cancelled
@@ -274,7 +282,8 @@ impl LushtextWindow {
 
         if accepted {
             match outcome {
-                GuardedFileIndexBuildOutcome::Complete { index, metrics } => {
+                GuardedFileIndexBuildOutcome::Complete(completed) => {
+                    let CompletedFileIndexBuild { index, metrics } = *completed;
                     let indexed_files = index.len();
                     self.imp().command_palette.set_guarded_file_index(index);
                     self.announce_workflow_update(
@@ -347,7 +356,7 @@ impl LushtextWindow {
 }
 
 fn retire_file_index_outcome(outcome: GuardedFileIndexBuildOutcome) {
-    if let GuardedFileIndexBuildOutcome::Complete { index, .. } = outcome {
-        drop(index);
+    if let GuardedFileIndexBuildOutcome::Complete(completed) = outcome {
+        drop(completed.index);
     }
 }

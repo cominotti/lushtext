@@ -1029,6 +1029,12 @@ pub struct AutomationWorkspaceSnapshot {
     pub persistence_dirty: bool,
     /// Whether the workspace filter fade sequence is active.
     pub filter_animation_active: bool,
+    /// Whether dotfiles are visible across workspace surfaces.
+    pub show_hidden_files: bool,
+    /// Always-excluded entry names, bounded to the snapshot cap in stored order.
+    pub excluded_names: Vec<String>,
+    /// Whether `excluded_names` omitted entries past the snapshot cap.
+    pub excluded_names_truncated: bool,
 }
 
 /// Command palette state that avoids exposing result row bodies.

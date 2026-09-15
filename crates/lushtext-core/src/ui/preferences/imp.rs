@@ -15,7 +15,7 @@ use glib::value::ToValue;
 use gtk4::{self, CompositeTemplate, gio, glib};
 use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 /// Private template implementation for the Preferences dialog.
 ///
@@ -93,6 +93,22 @@ pub struct LushtextPreferences {
     /// Spin row controlling bounded empty-folder lookahead.
     #[template_child]
     pub workspace_empty_folder_lookahead_cap_row: TemplateChild<libadwaita::SpinRow>,
+    /// Switch row mirroring the workspace-wide hidden-files view mode.
+    #[template_child]
+    pub workspace_show_hidden_files_row: TemplateChild<libadwaita::SwitchRow>,
+    /// Expander listing one removable row per always-excluded name.
+    #[template_child]
+    pub workspace_excluded_names_row: TemplateChild<libadwaita::ExpanderRow>,
+    /// Entry row that appends a new excluded name on apply.
+    #[template_child]
+    pub workspace_excluded_add_row: TemplateChild<libadwaita::EntryRow>,
+    /// Button restoring the default excluded names.
+    #[template_child]
+    pub workspace_excluded_reset_button: TemplateChild<gtk4::Button>,
+    /// Dynamically projected name rows, removed before every re-projection.
+    pub workspace_excluded_rows: RefCell<Vec<libadwaita::ActionRow>>,
+    /// The explicit empty-state row while no name is excluded.
+    pub workspace_excluded_empty_row: RefCell<Option<libadwaita::ActionRow>>,
     /// Status row summarizing the latest app-data format scan.
     #[template_child]
     pub data_status_row: TemplateChild<libadwaita::ActionRow>,
@@ -153,6 +169,12 @@ impl Default for LushtextPreferences {
             bookmark_gutter_row: TemplateChild::default(),
             workspace_auto_collapse_row: TemplateChild::default(),
             workspace_empty_folder_lookahead_cap_row: TemplateChild::default(),
+            workspace_show_hidden_files_row: TemplateChild::default(),
+            workspace_excluded_names_row: TemplateChild::default(),
+            workspace_excluded_add_row: TemplateChild::default(),
+            workspace_excluded_reset_button: TemplateChild::default(),
+            workspace_excluded_rows: RefCell::default(),
+            workspace_excluded_empty_row: RefCell::default(),
             data_status_row: TemplateChild::default(),
             data_current_indicator: TemplateChild::default(),
             data_scan_button: TemplateChild::default(),
@@ -178,6 +200,10 @@ impl ObjectSubclass for LushtextPreferences {
     type ParentType = libadwaita::PreferencesDialog;
 
     fn class_init(klass: &mut Self::Class) {
+        // Libadwaita-only row types new to this template must be registered
+        // before the builder parses it.
+        libadwaita::ExpanderRow::ensure_type();
+        libadwaita::EntryRow::ensure_type();
         klass.bind_template();
     }
 
@@ -243,6 +269,13 @@ impl ObjectImpl for LushtextPreferences {
             "value",
         )
         .build();
+        s.bind(
+            keys::WORKSPACE_SHOW_HIDDEN_FILES,
+            &*self.workspace_show_hidden_files_row,
+            "active",
+        )
+        .build();
+        self.obj().setup_excluded_names();
 
         s.bind(keys::USE_SYSTEM_FONT, &*self.custom_font_row, "sensitive")
             .flags(gio::SettingsBindFlags::GET | gio::SettingsBindFlags::INVERT_BOOLEAN)

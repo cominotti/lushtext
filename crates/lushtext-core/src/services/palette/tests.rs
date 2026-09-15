@@ -3,6 +3,7 @@
 //! Tests for the GTK-free command palette service: fuzzy scoring, command
 //! filtering, and file-index maintenance.
 
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -353,6 +354,79 @@ fn file_index_skips_hidden_files_and_directories() {
 }
 
 #[test]
+fn file_index_visibility_reveals_dotfiles_but_keeps_excluded_and_internal_skips() {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    fixture::write_text(&dir.path().join("visible.txt"), "");
+    fixture::write_text(&dir.path().join(".env"), "");
+    fixture::create_dir_all(&dir.path().join(".github").join("workflows"));
+    fixture::write_text(&dir.path().join(".github/workflows/ci.yml"), "");
+    fixture::create_dir_all(&dir.path().join(".git"));
+    fixture::write_text(&dir.path().join(".git/HEAD"), "");
+    fixture::create_dir_all(&dir.path().join("node_modules"));
+    fixture::write_text(&dir.path().join("node_modules/pkg.js"), "");
+    fixture::create_dir_all(&dir.path().join("vendor"));
+    fixture::write_text(&dir.path().join("vendor/lib.rs"), "");
+
+    let names = |index: &FileIndex| {
+        let mut names = index
+            .files()
+            .iter()
+            .map(|file| file.name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+
+    let hidden_off = FileIndex::rebuild(&[dir.path().to_path_buf()]);
+    assert_eq!(names(&hidden_off), vec!["visible.txt"]);
+
+    let hidden_on = FileIndex::rebuild_with_visibility(
+        &[dir.path().to_path_buf()],
+        &WorkspaceEntryVisibility::new(true, [".git"]),
+    );
+    assert_eq!(
+        names(&hidden_on),
+        vec![".env", "ci.yml", "visible.txt"],
+        "dotfiles appear, .git stays excluded, node_modules/vendor stay internally skipped"
+    );
+
+    let excluded_env = FileIndex::rebuild_with_visibility(
+        &[dir.path().to_path_buf()],
+        &WorkspaceEntryVisibility::new(true, [".git", ".env"]),
+    );
+    assert_eq!(names(&excluded_env), vec!["ci.yml", "visible.txt"]);
+}
+
+#[test]
+fn file_index_always_indexes_dot_named_and_excluded_named_workspace_folders() {
+    let dir = TempDir::new().expect("expected operation to succeed");
+    let dot_folder = dir.path().join(".config");
+    fixture::create_dir_all(&dot_folder);
+    fixture::write_text(&dot_folder.join("settings.toml"), "");
+    fixture::write_text(&dot_folder.join(".secret"), "");
+    let excluded_folder = dir.path().join("vendor");
+    fixture::create_dir_all(&excluded_folder.join("vendor"));
+    fixture::write_text(&excluded_folder.join("lib.rs"), "");
+    fixture::write_text(&excluded_folder.join("vendor/nested.rs"), "");
+
+    let index = FileIndex::rebuild_with_visibility(
+        &[dot_folder, excluded_folder],
+        &WorkspaceEntryVisibility::new(false, [".git", "vendor"]),
+    );
+    let mut names = index
+        .files()
+        .iter()
+        .map(|file| file.name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["lib.rs", "settings.toml"],
+        "folders are indexed as roots while nested excluded/dot entries follow the rule"
+    );
+}
+
+#[test]
 fn file_index_multiple_folders_collects_files_from_each_folder() {
     let dir1 = TempDir::new().expect("expected operation to succeed");
     let dir2 = TempDir::new().expect("expected operation to succeed");
@@ -665,7 +739,12 @@ fn file_index_build_metrics_bound_unicode_paths_and_complete_installed_graph() {
     let cancellation = PaletteSearchCancellation::default();
 
     let FileIndexBuildOutcome::Complete { index, metrics } =
-        FileIndex::rebuild_cancellable_with_hint(&[dir.path().to_path_buf()], 1, &cancellation)
+        FileIndex::rebuild_cancellable_with_hint(
+            &[dir.path().to_path_buf()],
+            1,
+            &cancellation,
+            &WorkspaceEntryVisibility::default(),
+        )
     else {
         panic!("fresh byte-bounded index should complete");
     };
@@ -939,6 +1018,7 @@ fn file_index_cancelled_outcome_releases_partial_inventory() {
 fn file_index_coordinator_retains_only_active_and_latest_compact_request() {
     let mut coordinator = FileIndexBuildCoordinator::default();
     let request = |name: &str| FileIndexBuildRequest {
+        visibility: WorkspaceEntryVisibility::default(),
         workspace_folders: Arc::from([PathBuf::from(name)]),
         capacity_hint: 64,
     };

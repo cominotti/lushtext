@@ -55,6 +55,8 @@ pub struct SearchPanelEvidence {
     pub whole_word_enabled: bool,
     /// Whether `.gitignore` filtering is active.
     pub gitignore_enabled: bool,
+    /// Whether dotfiles are searched for the current query.
+    pub hidden_enabled: bool,
     /// Current glob filter, when the user set one.
     pub glob_filter: Option<String>,
     /// Current replacement text, which may legitimately be empty.
@@ -226,6 +228,7 @@ impl LushtextSearchPanel {
             regex_enabled: self.regex_enabled(),
             whole_word_enabled: self.whole_word_enabled(),
             gitignore_enabled: self.gitignore_enabled(),
+            hidden_enabled: self.hidden_enabled(),
             glob_filter: self.glob_filter(),
             replace_query: self.replace_query(),
 
@@ -361,6 +364,15 @@ impl LushtextSearchPanel {
     pub fn gitignore_enabled(&self) -> bool {
         self.imp()
             .gitignore_toggle
+            .try_get()
+            .is_some_and(|toggle| toggle.is_active())
+    }
+
+    /// Return whether dotfiles are searched for the current query.
+    #[must_use]
+    pub fn hidden_enabled(&self) -> bool {
+        self.imp()
+            .hidden_toggle
             .try_get()
             .is_some_and(|toggle| toggle.is_active())
     }
@@ -501,6 +513,7 @@ impl LushtextSearchPanel {
                 regex: imp.regex_toggle.is_active(),
                 whole_word: imp.word_toggle.is_active(),
                 gitignore: imp.gitignore_toggle.is_active(),
+                hidden: imp.hidden_toggle.is_active(),
                 glob: {
                     let text = imp.glob_entry.text();
                     if text.is_empty() {

@@ -281,6 +281,25 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
     ),
     ActionCatalogEntry::new(
         ActionScope::App,
+        "show-hidden-files",
+        "Show Hidden Files",
+        ActionValueType::None,
+        ActionValueType::Bool,
+        "Always registered; state mirrors the workspace-show-hidden-files GSettings key.",
+        "app",
+        &[
+            ActionSurface::PrimaryMenu,
+            ActionSurface::KeyboardShortcut,
+            ActionSurface::CommandPalette,
+            ActionSurface::DbusAction,
+        ],
+        ExternalActivationSafety::StableUserCommand,
+        ActionExposure::Exported,
+        "action-app-show-hidden-files",
+        &[ActionCoverageLane::Unit, ActionCoverageLane::Widget],
+    ),
+    ActionCatalogEntry::new(
+        ActionScope::App,
         "about",
         "About LushText",
         ActionValueType::None,
@@ -1790,6 +1809,7 @@ const STATIC_VISIBLE_ACTION_IDS: &[&str] = &[
     "app.preferences",
     "win.show-help-overlay",
     "app.about",
+    "app.show-hidden-files",
     "win.notes-show-notes",
     "win.notes-toggle-bookmark",
     "win.notes-open-document-note",
@@ -1845,6 +1865,12 @@ pub const BASELINE_APP_ACTIONS: &[ObservedAction] = &[
         "about",
         ActionValueType::None,
         ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::App,
+        "show-hidden-files",
+        ActionValueType::None,
+        ActionValueType::Bool,
     ),
 ];
 

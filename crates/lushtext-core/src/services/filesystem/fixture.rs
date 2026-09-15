@@ -126,6 +126,24 @@ pub fn exists(path: &Path) -> bool {
     sys::path_exists(path)
 }
 
+/// Recursively remove every object member named `field` from a JSON document.
+///
+/// Persistence tests use this to simulate a file written before a
+/// serde-defaulted field existed, without hand-editing pretty JSON.
+pub fn strip_json_field(value: &mut serde_json::Value, field: &str) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove(field);
+            map.values_mut()
+                .for_each(|child| strip_json_field(child, field));
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .for_each(|child| strip_json_field(child, field)),
+        _ => {}
+    }
+}
+
 /// Return all fixture entry names, including hidden temp leftovers.
 ///
 /// # Panics

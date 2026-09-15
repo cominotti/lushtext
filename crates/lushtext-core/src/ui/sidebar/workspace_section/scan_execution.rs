@@ -34,6 +34,7 @@
 use super::LushtextWorkspaceSection;
 use super::imp::ItemLocation;
 use super::scan_admission;
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services;
 use crate::services::file_tree::{
     DirectoryReconciliationPlan, DirectoryRowState, plan_directory_reconciliation,
@@ -75,6 +76,7 @@ pub(super) struct PendingChildScan {
     path: PathBuf,
     store: glib::WeakRef<gio::ListStore>,
     lookahead_cap: usize,
+    visibility: WorkspaceEntryVisibility,
 }
 
 struct ChildReconcileProgress {
@@ -130,9 +132,10 @@ pub(super) fn populate_child_store(
         .dir_stores
         .borrow_mut()
         .insert(path.clone(), store.downgrade());
-    let lookahead_cap = gtk4::gio::Settings::new(crate::config::APP_ID)
-        .uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP)
-        as usize;
+    let settings = gtk4::gio::Settings::new(crate::config::APP_ID);
+    let lookahead_cap =
+        settings.uint(crate::config::keys::WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP) as usize;
+    let visibility = crate::ui::workspace_visibility::workspace_entry_visibility(&settings);
     let lifetime = section.imp().child_scan_lifetime.get();
     let (submission, flight_metrics) = {
         let mut flights = section.imp().child_scan_flights.borrow_mut();
@@ -163,6 +166,7 @@ pub(super) fn populate_child_store(
         path,
         store: store.downgrade(),
         lookahead_cap,
+        visibility,
     };
 
     match submission {
@@ -287,6 +291,7 @@ pub(super) fn start_child_scan(
     let path = request.path;
     let ticket = request.ticket;
     let lookahead_cap = request.lookahead_cap;
+    let visibility = request.visibility;
     #[cfg(feature = "test-utils")]
     let scan_delay = section.imp().refresh_runtime.test_scan_delay.get();
     gtk_lush_tasks::spawn_blocking_then(
@@ -301,6 +306,7 @@ pub(super) fn start_child_scan(
                 MAX_DIR_ENTRIES,
                 lookahead_cap,
                 Some(&cancel),
+                &visibility,
             );
             let plan = if scan.cancelled || scan.error.is_some() {
                 None
@@ -1222,8 +1228,30 @@ impl LushtextWorkspaceSection {
     pub(super) fn record_row_expansion_transition(&self, row: &gtk4::TreeListRow) {
         // Rows being destroyed by a splice or an ancestor collapse can still
         // emit property notifications; only rows still present in the flattened
-        // model carry user expansion intent.
-        if row.position() == gtk4::INVALID_LIST_POSITION {
+        // model carry user expansion intent. A row `GtkTreeListModel` is tearing
+        // down reports `expanded = false` while `position()` still answers with
+        // a stale index (observed: `0`, not `INVALID_LIST_POSITION`), so the
+        // position alone cannot tell a destroyed row from a live collapse. The
+        // row is live only if the model still hands it back at that position;
+        // otherwise treating the teardown as a collapse prunes intent the
+        // deferred restore was about to re-apply, and an expanded folder
+        // silently collapses whenever a refresh splices its segment.
+        let position = row.position();
+        if position == gtk4::INVALID_LIST_POSITION {
+            return;
+        }
+        // The model cell is mutably borrowed while a replacement model is being
+        // installed; a transition arriving then belongs to that install, so keep
+        // the pre-guard behaviour instead of panicking on a nested borrow.
+        let row_is_live = match self.imp().tree_model.try_borrow() {
+            Ok(model) => model
+                .as_ref()
+                .and_then(|model| model.item(position))
+                .and_downcast::<gtk4::TreeListRow>()
+                .is_some_and(|live| live == *row),
+            Err(_) => true,
+        };
+        if !row_is_live {
             return;
         }
         let Some(path) = row

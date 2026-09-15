@@ -51,7 +51,7 @@ fn seed_files(dir: &Path, count: usize) {
     }
 }
 
-/// Seed one workspace root holding `top.txt` plus the given nested
+/// Seed one workspace folder holding `top.txt` plus the given nested
 /// directories, each populated with `count` files.
 fn seed_workspace(dirs: &[(&str, usize)]) -> (tempfile::TempDir, PathBuf) {
     ensure_gtk_init();
@@ -147,7 +147,7 @@ fn wait_for_refresh_idle(section: &LushtextWorkspaceSection) {
     });
 }
 
-/// Expand every ancestor between the workspace root and `target`, then
+/// Expand every ancestor between the workspace folder and `target`, then
 /// `target` itself, waiting for readiness after each step.
 fn expand_path(section: &LushtextWorkspaceSection, root: &Path, target: &Path) {
     let relative = target.strip_prefix(root).expect("target inside root");

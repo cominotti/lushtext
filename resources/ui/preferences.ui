@@ -240,6 +240,39 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             </child>
           </object>
         </child>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Hidden and Excluded Items</property>
+            <child>
+              <object class="AdwSwitchRow" id="workspace_show_hidden_files_row">
+                <property name="title" translatable="yes">Show Hidden Files</property>
+                <property name="subtitle" translatable="yes">Show dotfiles in the sidebar, command palette, and workspace search. Also in the main menu and Ctrl+Shift+H</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwExpanderRow" id="workspace_excluded_names_row">
+                <property name="title" translatable="yes">Always Excluded Names</property>
+                <property name="subtitle" translatable="yes">Exact names never shown, even when hidden files are visible</property>
+                <child type="suffix">
+                  <object class="GtkButton" id="workspace_excluded_reset_button">
+                    <property name="icon-name">edit-undo-symbolic</property>
+                    <property name="tooltip-text" translatable="yes">Reset to Defaults</property>
+                    <property name="valign">3</property>
+                    <style>
+                      <class name="flat"/>
+                    </style>
+                  </object>
+                </child>
+                <child type="row">
+                  <object class="AdwEntryRow" id="workspace_excluded_add_row">
+                    <property name="title" translatable="yes">Add a name</property>
+                    <property name="show-apply-button">true</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
       </object>
     </child>
     <child>

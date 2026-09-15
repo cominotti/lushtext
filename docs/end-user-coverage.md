@@ -157,6 +157,9 @@ they are not default PR gates:
   user-facing behavior or release readiness. A case manifest should identify
   the matrix row ids it covers so focused runs cannot be mistaken for full
   release coverage.
+- The `scan_directory/hidden_on_dotfiles/*` Criterion cases keep a dotfile-heavy
+  workspace scan measured with the hidden-files mode on and a populated
+  excluded-name set, so the per-entry visibility rule cannot regress silently.
 - `make performance-smoke` runs a small Criterion smoke filter with coarse
   timing artifacts, including worker-side Replace preview generation and
   recovery fixtures for malformed metadata, pending migrations, duplicate

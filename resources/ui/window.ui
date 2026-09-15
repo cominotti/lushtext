@@ -395,6 +395,10 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         <attribute name="label" translatable="yes">Markdown Preview</attribute>
         <attribute name="action">win.toggle-preview-mode</attribute>
       </item>
+      <item>
+        <attribute name="label" translatable="yes">Show _Hidden Files</attribute>
+        <attribute name="action">app.show-hidden-files</attribute>
+      </item>
     </section>
     <section>
       <item>

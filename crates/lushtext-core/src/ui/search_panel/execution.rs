@@ -67,6 +67,24 @@ fn receive_search_event(
 }
 
 impl LushtextSearchPanel {
+    /// Seed the per-search hidden-files override from the global preference.
+    ///
+    /// Runs when the panel maps and when the global key changes while the panel
+    /// is idle, so the panel owns its own sync with the mode. The restore guard
+    /// keeps the seed from starting a search on its own.
+    pub fn seed_hidden_toggle(&self) {
+        let imp = self.imp();
+        let show_hidden = imp
+            .settings
+            .boolean(crate::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+        if imp.hidden_toggle.is_active() == show_hidden {
+            return;
+        }
+        let was_restoring = imp.history.restoring_history.replace(true);
+        imp.hidden_toggle.set_active(show_hidden);
+        imp.history.restoring_history.set(was_restoring);
+    }
+
     /// Start a new search from one immutable query snapshot, cancelling any
     /// active worker and retaining only the latest compact superseding request.
     pub fn start_search(&self, spec: &SearchQuerySpec) {
@@ -176,6 +194,7 @@ impl LushtextSearchPanel {
         let history_spec = spec.clone();
         let worker_spec = spec;
         let worker_folders = Arc::clone(&folders);
+        let worker_visibility = self.imp().current_entry_visibility();
         let worker_progress_counter = Arc::clone(&progress_counter);
         let worker_finished_for_search = Arc::new(AtomicBool::new(false));
         std::thread::spawn(move || {
@@ -187,9 +206,12 @@ impl LushtextSearchPanel {
             ));
             let _ = plan_tx.send(Arc::clone(&plan));
             content_search::search_with_plan(
-                &worker_spec.query,
-                &plan,
-                &worker_spec.options,
+                content_search::ContentSearchRequest {
+                    query: &worker_spec.query,
+                    plan: &plan,
+                    options: &worker_spec.options,
+                    visibility: &worker_visibility,
+                },
                 tx,
                 cancel,
                 Some(worker_progress_counter),

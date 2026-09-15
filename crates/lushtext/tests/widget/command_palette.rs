@@ -5,7 +5,7 @@
 
 use crate::common::{
     ensure_gtk_init, fixture, flush_after_delay, flush_events, isolated_data_dir, present_window,
-    wait_until,
+    wait_for_palette_index, wait_until,
 };
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -106,13 +106,6 @@ fn seed_scoped_workspaces(initial_scope: WorkspaceScope) -> (tempfile::TempDir, 
     };
     workspace_manager::save(&json_store::data_dir(), &workspaces).expect("save scoped workspaces");
     (folders_dir, left_folder, right_folder)
-}
-
-/// Wait until the window's async command-palette index rebuild reaches a size.
-fn wait_for_palette_index(window: &LushtextWindow, expected_index: usize) {
-    wait_until(Duration::from_secs(3), || {
-        window.imp().command_palette.file_index_len() == expected_index
-    });
 }
 
 /// Wait until persisted workspaces have loaded and the selected empty scope is reflected.

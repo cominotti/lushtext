@@ -927,6 +927,18 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
     // chained `evidence\n.field` across lines where that match cannot see it.
     let scope_workspace_id = evidence.scope_workspace_id;
     let scope_workspace_name = evidence.scope_workspace_name;
+    // The two visibility fields are preference state, not tree evidence: they
+    // are read from the same GSettings keys every workspace surface reads.
+    let settings = &window.imp().settings;
+    let show_hidden_files = settings.boolean(crate::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    let (excluded_names, excluded_names_truncated) =
+        crate::model::workspace_visibility::snapshot_excluded_names(
+            &crate::ui::workspace_visibility::excluded_names(settings),
+        );
+    let excluded_names = excluded_names
+        .iter()
+        .map(bounded_snapshot_text)
+        .collect::<Vec<_>>();
 
     AutomationWorkspaceSnapshot {
         scope_kind: evidence.scope_kind,
@@ -939,6 +951,9 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
         persistence_inflight: evidence.persistence_inflight,
         persistence_dirty: evidence.persistence_pending,
         filter_animation_active: evidence.filter_animation_active,
+        show_hidden_files,
+        excluded_names,
+        excluded_names_truncated,
     }
 }
 

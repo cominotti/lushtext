@@ -68,6 +68,7 @@ pub fn add_entry(entries: &mut Vec<SearchHistoryEntry>, entry: SearchHistoryEntr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::content_search::{ContentSearchOptions, SearchQuerySpec};
     use crate::services::filesystem::fixture;
     use crate::services::recovery_metadata::RecoveryProblem;
     use tempfile::TempDir;
@@ -170,5 +171,32 @@ mod tests {
             RecoveryProblem::UnsupportedFormat { .. }
         ));
         assert!(loaded.replacement_allowed());
+    }
+
+    #[test]
+    fn history_written_before_hidden_field_still_loads() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let entries = vec![SearchHistoryEntry::from_spec(SearchQuerySpec::new(
+            "needle".to_string(),
+            ContentSearchOptions::default(),
+        ))];
+        save(dir.path(), &entries).expect("save");
+        let path = dir.path().join(HISTORY_FILE);
+        let json = crate::services::filesystem::read::text(&path).expect("read history");
+        assert!(json.contains("\"hidden\""));
+        let mut document: serde_json::Value = serde_json::from_str(&json).expect("parse envelope");
+        fixture::strip_json_field(&mut document, "hidden");
+        let legacy = serde_json::to_string_pretty(&document).expect("serialize legacy fixture");
+        assert!(!legacy.contains("\"hidden\""));
+        fixture::write_text(&path, &legacy);
+
+        let load = load_recovering(dir.path());
+        assert!(
+            load.diagnostics.is_empty(),
+            "no quarantine: {:?}",
+            load.diagnostics
+        );
+        assert_eq!(load.value.len(), 1);
+        assert!(!load.value[0].spec.options.hidden);
     }
 }

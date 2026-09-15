@@ -28,4 +28,4 @@ pub use replace::{
     apply_replacements_to_text_for_property_test,
     apply_replacements_to_text_reference_for_property_test,
 };
-pub use search::{search, search_with_plan};
+pub use search::{ContentSearchRequest, search, search_with_plan};

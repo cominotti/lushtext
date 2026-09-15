@@ -12,6 +12,20 @@ use super::sys;
 use super::types::{
     DirectoryEntryInfo, DirectoryPage, DirectoryPageVisitMetrics, DirectoryScanPolicy,
 };
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
+
+/// Map the `Copy` boundary policy's hidden flag onto the shared visibility rule.
+///
+/// App-data scans only ever need the two fixed rules, so the policy stays
+/// `Copy` and workspace scans pass their preference-derived rule explicitly
+/// through the `*_with_visibility` entry points.
+fn fixed_visibility(policy: DirectoryScanPolicy) -> WorkspaceEntryVisibility {
+    if policy.include_hidden {
+        WorkspaceEntryVisibility::everything()
+    } else {
+        WorkspaceEntryVisibility::app_data()
+    }
+}
 
 /// Scan one directory according to a simple boundary policy.
 ///
@@ -23,7 +37,7 @@ pub fn scan_directory(
     policy: DirectoryScanPolicy,
 ) -> std::io::Result<Vec<DirectoryEntryInfo>> {
     let mut entries = Vec::new();
-    visit_directory(path, policy, |entry| {
+    visit_directory_with_visibility(path, policy, &fixed_visibility(policy), |entry| {
         entries.push(DirectoryEntryInfo {
             path: entry.path,
             file_name: entry.file_name,
@@ -69,6 +83,7 @@ pub fn scan_directory_page_after_with_cancel<F>(
 where
     F: FnMut() -> bool,
 {
+    let visibility = fixed_visibility(policy);
     let mut retained = BTreeMap::<String, DirectoryEntryInfo>::new();
     let mut matching_entries = 0usize;
     let mut interrupted = false;
@@ -77,7 +92,7 @@ where
             interrupted = true;
             return false;
         }
-        if !policy.include_hidden && entry.file_name.as_encoded_bytes().first() == Some(&b'.') {
+        if !visibility.admits(&entry.file_name) {
             return true;
         }
         let file_name = entry.file_name.to_string_lossy().into_owned();
@@ -137,6 +152,7 @@ where
     F: FnMut() -> bool,
     V: FnMut(&[DirectoryEntryInfo]) -> bool,
 {
+    let visibility = fixed_visibility(policy);
     let page_entries = page_entries.max(1);
     let raw_limit = policy.max_entries.saturating_add(1);
     let mut page = Vec::with_capacity(page_entries.min(policy.max_entries));
@@ -153,7 +169,7 @@ where
             metrics.stopped_by_limit = true;
             return false;
         }
-        if !policy.include_hidden && entry.file_name.as_encoded_bytes().first() == Some(&b'.') {
+        if !visibility.admits(&entry.file_name) {
             return true;
         }
         if metrics.entries_delivered >= policy.max_entries {
@@ -226,9 +242,26 @@ pub fn scan_directory_page(
 /// # Errors
 ///
 /// Returns an error when the directory cannot be read.
-pub fn visit_directory<F>(
+pub fn visit_directory<F>(path: &Path, policy: DirectoryScanPolicy, visit: F) -> std::io::Result<()>
+where
+    F: FnMut(DirectoryEntryInfo) -> bool,
+{
+    visit_directory_with_visibility(path, policy, &fixed_visibility(policy), visit)
+}
+
+/// Visit directory entries under an explicit workspace visibility rule.
+///
+/// Workspace scans (sidebar tree, empty-folder probes, palette index) pass the
+/// preference-derived rule here; `policy.include_hidden` is ignored in favour
+/// of `visibility`, which is applied once against the raw `OsStr` basename.
+///
+/// # Errors
+///
+/// Returns an error when the directory cannot be read.
+pub fn visit_directory_with_visibility<F>(
     path: &Path,
     policy: DirectoryScanPolicy,
+    visibility: &WorkspaceEntryVisibility,
     mut visit: F,
 ) -> std::io::Result<()>
 where
@@ -236,7 +269,7 @@ where
 {
     let mut retained = 0usize;
     sys::visit_directory_entries(path, |entry| {
-        if !policy.include_hidden && entry.file_name.as_encoded_bytes().first() == Some(&b'.') {
+        if !visibility.admits(&entry.file_name) {
             return true;
         }
         if retained >= policy.max_entries {

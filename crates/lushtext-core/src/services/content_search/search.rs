@@ -11,7 +11,7 @@
 //! inside the ripgrep stack, while mutation, undo backup, and persistence remain
 //! routed through `services::filesystem`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +28,7 @@ use crate::model::workspace_search::{
     WorkspaceSearchFallbackClaim, WorkspaceSearchFallbackLedger, WorkspaceSearchFallbackLimits,
     WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
 };
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services::filesystem::metadata as fs_metadata;
 
 /// Maximum number of matches before the search stops. Approximate under
@@ -110,14 +111,33 @@ pub fn search(
         fs_metadata::canonical_path,
     );
     search_with_plan(
-        query,
-        &plan,
-        options,
+        ContentSearchRequest {
+            query,
+            plan: &plan,
+            options,
+            visibility: &WorkspaceEntryVisibility::default(),
+        },
         tx,
         cancel,
         progress_counter,
         completion_flag,
     );
+}
+
+/// One workspace search as the caller means it: what to find, where, and how.
+///
+/// The seam value object every entry point receives whole, so a caller cannot
+/// pair one query's options with another's plan or visibility rule.
+#[derive(Clone, Copy)]
+pub struct ContentSearchRequest<'a> {
+    /// Literal or regex query text.
+    pub query: &'a str,
+    /// Pre-normalized traversal roots for this generation.
+    pub plan: &'a WorkspaceSearchTraversalPlan,
+    /// Toggle state, including the per-search dotfile override.
+    pub options: &'a ContentSearchOptions,
+    /// Excluded-name rule; its dotfile axis is superseded by `options.hidden`.
+    pub visibility: &'a WorkspaceEntryVisibility,
 }
 
 /// Search one pre-normalized immutable workspace traversal plan.
@@ -126,18 +146,14 @@ pub fn search(
 /// the plan on their worker before entering this service so root identity is
 /// resolved exactly once for the entire generation.
 pub fn search_with_plan(
-    query: &str,
-    plan: &WorkspaceSearchTraversalPlan,
-    options: &ContentSearchOptions,
+    request: ContentSearchRequest<'_>,
     tx: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
     progress_counter: Option<Arc<AtomicUsize>>,
     completion_flag: Option<Arc<AtomicBool>>,
 ) {
     search_with_plan_and_limits(
-        query,
-        plan,
-        options,
+        request,
         tx,
         cancel,
         SearchTelemetry {
@@ -146,6 +162,26 @@ pub fn search_with_plan(
         },
         WorkspaceSearchFallbackLimits::default(),
     );
+}
+
+/// The one per-entry exclusion decision for the ripgrep-style walker.
+///
+/// Overlapping-root partitions are excluded by exact path; every other entry
+/// follows the workspace visibility rule. The seeded root (`depth() == 0`) is
+/// always admitted, which is the "configured folders are always visible"
+/// contract.
+fn walker_admits_entry(
+    excluded_paths: &[PathBuf],
+    visibility: &WorkspaceEntryVisibility,
+    entry: &ignore::DirEntry,
+) -> bool {
+    if excluded_paths
+        .iter()
+        .any(|excluded| entry.path() == excluded)
+    {
+        return false;
+    }
+    entry.depth() == 0 || visibility.admits(entry.file_name())
 }
 
 struct SearchTelemetry {
@@ -158,9 +194,7 @@ struct SearchTelemetry {
     reason = "The sender is cloned into parallel walker closures, so taking ownership keeps the thread boundary explicit"
 )]
 fn search_with_plan_and_limits(
-    query: &str,
-    plan: &WorkspaceSearchTraversalPlan,
-    options: &ContentSearchOptions,
+    request: ContentSearchRequest<'_>,
     tx: Sender<SearchEvent>,
     cancel: Arc<AtomicBool>,
     telemetry: SearchTelemetry,
@@ -170,6 +204,12 @@ fn search_with_plan_and_limits(
         progress_counter,
         completion_flag,
     } = telemetry;
+    let ContentSearchRequest {
+        query,
+        plan,
+        options,
+        visibility,
+    } = request;
     // Empty query → Done immediately, no file traversal.
     if query.is_empty() {
         if let Some(flag) = &completion_flag {
@@ -234,15 +274,15 @@ fn search_with_plan_and_limits(
 
         let mut builder = WalkBuilder::new(folder);
         builder.threads(threads);
-        builder.hidden(true); // skip hidden files (LushText convention)
-        if !traversal_root.excluded_paths().is_empty() {
-            let excluded_paths = traversal_root.excluded_paths().to_vec();
-            builder.filter_entry(move |entry| {
-                !excluded_paths
-                    .iter()
-                    .any(|excluded| entry.path() == excluded)
-            });
-        }
+        // Dotfiles follow the per-search override; excluded names always apply.
+        // `ignore` exempts the seeded root itself from both filters, which is
+        // exactly the "configured roots are always visible" contract.
+        builder.hidden(!options.hidden);
+        // `WalkBuilder::filter_entry` REPLACES any earlier filter rather than
+        // stacking, so every per-entry exclusion lives in one named predicate.
+        let excluded_paths = traversal_root.excluded_paths().to_vec();
+        let visibility = visibility.clone();
+        builder.filter_entry(move |entry| walker_admits_entry(&excluded_paths, &visibility, entry));
 
         if !options.gitignore {
             builder
@@ -1097,9 +1137,12 @@ mod tests {
 
         let (tx, rx) = crossbeam_channel::unbounded();
         search_with_plan_and_limits(
-            "needle",
-            &plan,
-            &ContentSearchOptions::default(),
+            ContentSearchRequest {
+                query: "needle",
+                plan: &plan,
+                options: &ContentSearchOptions::default(),
+                visibility: &WorkspaceEntryVisibility::default(),
+            },
             tx,
             Arc::new(AtomicBool::new(false)),
             SearchTelemetry {
@@ -1332,5 +1375,140 @@ mod tests {
         assert!(events.len() >= 2);
         assert_matches!(events[0], SearchEvent::Error(_));
         assert_ends_with_done(&events);
+    }
+
+    fn search_collect_with_visibility(
+        query: &str,
+        workspace_folders: &[&Path],
+        options: &ContentSearchOptions,
+        visibility: &WorkspaceEntryVisibility,
+    ) -> Vec<SearchEvent> {
+        let plan = WorkspaceSearchTraversalPlan::build(
+            workspace_folders.iter().copied(),
+            fs_metadata::canonical_path,
+        );
+        let (tx, rx) = crossbeam_channel::unbounded();
+        search_with_plan(
+            ContentSearchRequest {
+                query,
+                plan: &plan,
+                options,
+                visibility,
+            },
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+            None,
+        );
+        rx.iter().collect()
+    }
+
+    fn matched_file_names(events: &[SearchEvent]) -> Vec<String> {
+        let mut names = search_matches(events)
+            .iter()
+            .map(|search_match| {
+                search_match
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn hidden_option_controls_dotfiles_and_excluded_names_always_apply() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let folder = dir.path();
+        fixture::write_text(&folder.join("plain.rs"), "needle\n");
+        fixture::write_text(&folder.join(".env"), "needle\n");
+        fixture::create_dir_all(&folder.join(".git"));
+        fixture::write_text(&folder.join(".git").join("HEAD"), "needle\n");
+        fixture::create_dir_all(&folder.join("vendor"));
+        fixture::write_text(&folder.join("vendor").join("dep.rs"), "needle\n");
+
+        let visibility = WorkspaceEntryVisibility::new(true, [".git"]);
+        let off = search_collect_with_visibility(
+            "needle",
+            &[folder],
+            &ContentSearchOptions::default(),
+            &visibility,
+        );
+        assert_ends_with_done(&off);
+        assert_eq!(matched_file_names(&off), vec!["dep.rs", "plain.rs"]);
+
+        let on = search_collect_with_visibility(
+            "needle",
+            &[folder],
+            &ContentSearchOptions::default().with_hidden(true),
+            &visibility,
+        );
+        assert_ends_with_done(&on);
+        assert_eq!(
+            matched_file_names(&on),
+            vec![".env", "dep.rs", "plain.rs"],
+            ".env is searched, .git never is"
+        );
+
+        let excluded_vendor = search_collect_with_visibility(
+            "needle",
+            &[folder],
+            &ContentSearchOptions::default().with_hidden(true),
+            &WorkspaceEntryVisibility::new(true, [".git", "vendor"]),
+        );
+        assert_eq!(
+            matched_file_names(&excluded_vendor),
+            vec![".env", "plain.rs"]
+        );
+    }
+
+    #[test]
+    fn dot_named_workspace_folder_is_searched_as_a_root() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let folder = dir.path().join(".config");
+        fixture::create_dir_all(&folder);
+        fixture::write_text(&folder.join("app.toml"), "needle\n");
+        fixture::write_text(&folder.join(".secret"), "needle\n");
+
+        let events = search_collect_with_visibility(
+            "needle",
+            &[folder.as_path()],
+            &ContentSearchOptions::default(),
+            &WorkspaceEntryVisibility::default(),
+        );
+        assert_ends_with_done(&events);
+        assert_eq!(matched_file_names(&events), vec!["app.toml"]);
+    }
+
+    #[test]
+    fn overlapping_roots_stay_deduplicated_when_excluded_names_are_present() {
+        let dir = tempdir().expect("expected operation to succeed");
+        let parent = dir.path();
+        let child = parent.join("child");
+        fixture::create_dir_all(&child);
+        fixture::write_text(&parent.join("top.rs"), "needle\n");
+        fixture::write_text(&child.join("inner.rs"), "needle\n");
+        fixture::create_dir_all(&child.join(".git"));
+        fixture::write_text(&child.join(".git").join("HEAD"), "needle\n");
+
+        // The child root is configured first so its results must be reported
+        // once, under the child, and not again through the parent walk.
+        let events = search_collect_with_visibility(
+            "needle",
+            &[child.as_path(), parent],
+            &ContentSearchOptions::default().with_hidden(true),
+            &WorkspaceEntryVisibility::new(true, [".git"]),
+        );
+        assert_ends_with_done(&events);
+        assert_eq!(
+            count_matches(&events),
+            2,
+            "one match per file, no duplicates"
+        );
+        assert_eq!(matched_file_names(&events), vec!["inner.rs", "top.rs"]);
     }
 }

@@ -177,6 +177,13 @@ pub struct ContentSearchOptions {
     pub gitignore: bool,
     /// Optional glob filter — only files matching this pattern are searched.
     pub glob: Option<String>,
+    /// When true, dotfiles are searched. Default: false.
+    ///
+    /// Serde-defaulted because these options are flattened into persisted
+    /// search history and saved searches, which load through the recovery
+    /// envelope; a missing field must not quarantine a user's saved searches.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 impl Default for ContentSearchOptions {
@@ -187,6 +194,7 @@ impl Default for ContentSearchOptions {
             whole_word: false,
             gitignore: true,
             glob: None,
+            hidden: false,
         }
     }
 }
@@ -207,7 +215,15 @@ impl ContentSearchOptions {
             whole_word,
             gitignore,
             glob,
+            hidden: false,
         }
+    }
+
+    /// Return the same options with the hidden-files axis set.
+    #[must_use]
+    pub fn with_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
     }
 
     /// Build the compact toggle summary used by history and saved-search rows.
@@ -225,6 +241,9 @@ impl ContentSearchOptions {
         }
         if !self.gitignore {
             parts.push("no .gitignore".to_string());
+        }
+        if self.hidden {
+            parts.push("hidden".to_string());
         }
         if let Some(glob) = self.glob.as_deref()
             && !glob.is_empty()

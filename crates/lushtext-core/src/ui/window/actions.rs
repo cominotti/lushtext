@@ -652,41 +652,21 @@ impl LushtextWindow {
         action_name: &'static str,
         settings_key: &'static str,
     ) {
-        let initial = self.imp().settings.boolean(settings_key);
-        let action = gio::SimpleAction::new_stateful(action_name, None, &initial.to_variant());
-
-        {
-            let settings = self.imp().settings.clone();
-            action.connect_activate(move |action, _| {
-                let current = action
-                    .state()
-                    .and_then(|state| state.get::<bool>())
-                    .unwrap_or(false);
-                action.change_state(&(!current).to_variant());
-            });
-            action.connect_change_state(move |action, state| {
-                let Some(state) = state else { return };
-                let Some(enabled) = state.get::<bool>() else {
-                    tracing::error!("{action_name}: expected bool state");
-                    return;
-                };
-                action.set_state(&enabled.to_variant());
-                let _ = settings.set_boolean(settings_key, enabled);
-            });
+        crate::app::register_boolean_setting_toggle_action(
+            self,
+            &self.imp().settings,
+            action_name,
+            settings_key,
+        );
+        if settings_key != keys::SHOW_MINIMAP {
+            return;
         }
-
-        let action_weak = action.downgrade();
         let window_weak = self.downgrade();
         self.imp()
             .settings
             .connect_changed(Some(settings_key), move |s, _| {
                 let enabled = s.boolean(settings_key);
-                if let Some(action) = action_weak.upgrade() {
-                    action.set_state(&enabled.to_variant());
-                }
-                if settings_key == keys::SHOW_MINIMAP
-                    && let Some(window) = window_weak.upgrade()
-                {
+                if let Some(window) = window_weak.upgrade() {
                     window.announce_workflow_update(
                         AnnouncementLane::StatusUpdate,
                         if enabled {
@@ -702,8 +682,6 @@ impl LushtextWindow {
                     );
                 }
             });
-
-        self.add_action(&action);
     }
 
     pub(super) fn setup_shortcuts(&self) {

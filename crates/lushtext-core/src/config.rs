@@ -45,6 +45,10 @@ pub mod keys {
     pub const WORKSPACE_SIDEBAR_VISIBLE: &str = "workspace-sidebar-visible";
     pub const WORKSPACE_SIDEBAR_WIDTH_FRACTION: &str = "workspace-sidebar-width-fraction";
     pub const WORKSPACE_AUTO_COLLAPSE: &str = "workspace-auto-collapse";
+    /// Whether dotfiles are visible across workspace surfaces.
+    pub const WORKSPACE_SHOW_HIDDEN_FILES: &str = "workspace-show-hidden-files";
+    /// Basenames never shown across workspace surfaces.
+    pub const WORKSPACE_EXCLUDED_NAMES: &str = "workspace-excluded-names";
     pub const WORKSPACE_EMPTY_FOLDER_LOOKAHEAD_CAP: &str = "workspace-empty-folder-lookahead-cap";
     pub const PROPERTIES_SIDEBAR_VISIBLE: &str = "properties-sidebar-visible";
     pub const PROPERTIES_SIDEBAR_WIDTH_FRACTION: &str = "properties-sidebar-width-fraction";

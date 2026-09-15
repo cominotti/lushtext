@@ -30,6 +30,11 @@ local history, and careful recovery behavior.
 - **Workspace sidebar** with automatic refresh for visible folders, manual
   refresh buttons, deep-folder focus, file/folder creation, rename, delete,
   and a quick `Space` file peek before opening a tab.
+- **Hidden files and excluded names** as one workspace-wide rule: `Show Hidden
+  Files` (`Ctrl+Shift+H`, main menu, or Preferences) reveals dotfiles in the
+  sidebar, the command palette, and workspace search together, while an
+  editable `Always Excluded Names` list (default `.git`) keeps chosen names out
+  of every surface regardless.
 - **Recent Open and command palette** via `Ctrl+K` and `Ctrl+Shift+P` for
   recent documents, workspace files, note records, and commands.
 - **Workspace search** with streaming results, literal or regex modes,
@@ -169,6 +174,14 @@ Preferences are stored with GSettings under `dev.cominotti.lushtext`.
   a folder.
 - **Empty Folder Lookahead Cap** controls how many subdirectories LushText peeks
   into when deciding whether a folder should be marked `(Empty)`.
+- **Show Hidden Files** reveals dotfiles in the sidebar, the command palette
+  file index, and workspace search. The same switch is the main menu's
+  `Show Hidden Files` check item and `Ctrl+Shift+H`.
+- **Always Excluded Names** lists exact file or folder names that are never
+  shown, indexed, or searched even with hidden files on. It ships with `.git`;
+  add names with the entry row, remove them per row, or reset to the default.
+  Workspace search keeps its own per-search `Hidden files` override, seeded from
+  the switch each time the panel opens.
 
 ### Data
 
@@ -281,6 +294,7 @@ Common accelerators include:
 | Command palette | `Ctrl+Shift+P` |
 | Workspace search | `Ctrl+Shift+F` |
 | Workspace search next / previous match | `F4` / `Shift+F4` |
+| Show / hide hidden files | `Ctrl+Shift+H` |
 | Local History | `Ctrl+Alt+L` |
 | Browse bookmarks / notes | `Ctrl+Alt+B` / `Ctrl+Alt+A` |
 | Toggle / edit bookmark | `Ctrl+F2` / `Ctrl+Shift+F2` |

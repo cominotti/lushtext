@@ -54,6 +54,7 @@ use lushtext_core::model::workspace::{
 use lushtext_core::model::workspace_search::{
     WorkspaceSearchFallbackMetrics, WorkspaceSearchTraversalPlan,
 };
+use lushtext_core::model::workspace_visibility::WorkspaceEntryVisibility;
 use lushtext_core::services::content_search;
 use lushtext_core::services::editor_io;
 use lushtext_core::services::file_limits::FileSizeCheck;
@@ -975,6 +976,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
         &[directory_evidence.path().to_path_buf()],
         0,
         &palette::PaletteSearchCancellation::default(),
+        &WorkspaceEntryVisibility::default(),
     );
     let palette::FileIndexBuildOutcome::Complete {
         metrics: directory_metrics,
@@ -997,6 +999,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
         &[common.path().to_path_buf()],
         10_000,
         &palette::PaletteSearchCancellation::default(),
+        &WorkspaceEntryVisibility::default(),
     );
     let palette::FileIndexBuildOutcome::Complete {
         index: common_index,
@@ -1017,6 +1020,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
         &missing_roots,
         0,
         &palette::PaletteSearchCancellation::default(),
+        &WorkspaceEntryVisibility::default(),
     );
     let palette::FileIndexBuildOutcome::Complete {
         index: missing_index,
@@ -1032,6 +1036,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
         &[near_policy.path().to_path_buf()],
         10_000,
         &palette::PaletteSearchCancellation::default(),
+        &WorkspaceEntryVisibility::default(),
     );
     let palette::FileIndexBuildOutcome::Complete {
         index: near_policy_index,
@@ -1067,6 +1072,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
                 black_box(&[common.path().to_path_buf()]),
                 10_000,
                 &palette::PaletteSearchCancellation::default(),
+                &WorkspaceEntryVisibility::default(),
             )
         });
     });
@@ -1076,6 +1082,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
                 black_box(&missing_roots),
                 0,
                 &palette::PaletteSearchCancellation::default(),
+                &WorkspaceEntryVisibility::default(),
             )
         });
     });
@@ -1085,6 +1092,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
                 black_box(&[near_policy.path().to_path_buf()]),
                 10_000,
                 &palette::PaletteSearchCancellation::default(),
+                &WorkspaceEntryVisibility::default(),
             )
         });
     });
@@ -1110,6 +1118,7 @@ fn bench_file_index_rebuild(c: &mut Criterion) {
                         black_box(&[dir.path().to_path_buf()]),
                         0,
                         &palette::PaletteSearchCancellation::default(),
+                        &WorkspaceEntryVisibility::default(),
                     );
                     let palette::FileIndexBuildOutcome::Complete { metrics, .. } = &outcome else {
                         panic!("fresh file-index evidence must complete");
@@ -1132,6 +1141,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
         &[flat.path().to_path_buf()],
         10_000,
         &cancellation,
+        &WorkspaceEntryVisibility::default(),
     );
     let palette::FileIndexBuildOutcome::Complete {
         index: file_index,
@@ -1263,6 +1273,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
     );
 
     let request = palette::FileIndexBuildRequest {
+        visibility: WorkspaceEntryVisibility::default(),
         workspace_folders: Arc::from([flat.path().to_path_buf()]),
         capacity_hint: 10_000,
     };
@@ -1385,6 +1396,7 @@ fn bench_end_to_end_boundedness(c: &mut Criterion) {
                 black_box(&[flat.path().to_path_buf()]),
                 10_000,
                 &palette::PaletteSearchCancellation::default(),
+                &WorkspaceEntryVisibility::default(),
             ))
         });
     });
@@ -1500,6 +1512,34 @@ fn bench_scan_directory(c: &mut Criterion) {
                 |dir| {
                     let result = file_tree::scan_directory(black_box(dir.path()));
                     (result, dir) // keep TempDir alive past timing
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    // A dotfile-heavy tree with the hidden-files mode on: every entry now passes
+    // the visibility rule and the excluded-name set is consulted per entry.
+    for entry_count in [1_000, 10_000] {
+        group.bench_function(BenchmarkId::new("hidden_on_dotfiles", entry_count), |b| {
+            let visibility = WorkspaceEntryVisibility::new(true, [".git", "node_modules"]);
+            b.iter_batched(
+                || {
+                    let dir = TempDir::new().expect("dotfile bench tempdir");
+                    for index in 0..entry_count {
+                        fixture::write_text(&dir.path().join(format!(".dot_{index:05}")), "");
+                    }
+                    dir
+                },
+                |dir| {
+                    let result = file_tree::scan_directory_bounded(
+                        black_box(dir.path()),
+                        usize::MAX,
+                        0,
+                        None,
+                        &visibility,
+                    );
+                    (result, dir)
                 },
                 BatchSize::SmallInput,
             );
@@ -2091,6 +2131,7 @@ fn bench_tree_population(c: &mut Criterion) {
                         max_entries,
                         BENCH_LOOKAHEAD_CAP,
                         Some(&cancel),
+                        &WorkspaceEntryVisibility::default(),
                     );
                     (dir, scan)
                 },

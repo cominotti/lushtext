@@ -202,6 +202,37 @@ template $LushtextPreferences: Adw.PreferencesDialog {
         };
       }
     }
+
+    Adw.PreferencesGroup {
+      title: _("Hidden and Excluded Items");
+
+      Adw.SwitchRow workspace_show_hidden_files_row {
+        title: _("Show Hidden Files");
+        subtitle: _("Show dotfiles in the sidebar, command palette, and workspace search. Also in the main menu and Ctrl+Shift+H");
+      }
+
+      Adw.ExpanderRow workspace_excluded_names_row {
+        title: _("Always Excluded Names");
+        subtitle: _("Exact names never shown, even when hidden files are visible");
+
+        [suffix]
+        Button workspace_excluded_reset_button {
+          icon-name: "edit-undo-symbolic";
+          tooltip-text: _("Reset to Defaults");
+          valign: center;
+
+          styles [
+            "flat",
+          ]
+        }
+
+        [row]
+        Adw.EntryRow workspace_excluded_add_row {
+          title: _("Add a name");
+          show-apply-button: true;
+        }
+      }
+    }
   }
 
   Adw.PreferencesPage {

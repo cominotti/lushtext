@@ -499,4 +499,47 @@ mod tests {
 
         assert!(metadata::link_inode(&dir.path().join("absent")).is_err());
     }
+
+    #[test]
+    fn visibility_scan_applies_excluded_names_and_hidden_mode() {
+        use crate::model::workspace_visibility::WorkspaceEntryVisibility;
+        let dir = TempDir::new().expect("temp dir");
+        fixture::write_text(&dir.path().join("visible.txt"), "");
+        fixture::write_text(&dir.path().join(".env"), "");
+        fixture::create_dir_all(&dir.path().join(".git"));
+        fixture::create_dir_all(&dir.path().join("node_modules"));
+
+        let names = |visibility: &WorkspaceEntryVisibility| {
+            let mut seen = Vec::new();
+            tree::visit_directory_with_visibility(
+                dir.path(),
+                DirectoryScanPolicy::visible_workspace(),
+                visibility,
+                |entry| {
+                    seen.push(entry.file_name);
+                    true
+                },
+            )
+            .expect("scan directory");
+            seen.sort();
+            seen
+        };
+
+        assert_eq!(
+            names(&WorkspaceEntryVisibility::default()),
+            vec!["node_modules", "visible.txt"]
+        );
+        assert_eq!(
+            names(&WorkspaceEntryVisibility::new(true, [".git"])),
+            vec![".env", "node_modules", "visible.txt"]
+        );
+        assert_eq!(
+            names(&WorkspaceEntryVisibility::new(false, ["node_modules"])),
+            vec!["visible.txt"]
+        );
+        assert_eq!(
+            names(&WorkspaceEntryVisibility::app_data()),
+            vec!["node_modules", "visible.txt"]
+        );
+    }
 }

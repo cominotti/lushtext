@@ -28,6 +28,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, glib};
 
 use crate::model::workspace::{FolderTreeEntry, WorkspaceFolder, WorkspaceFolderId};
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::services;
 use crate::ui::accessibility;
 use crate::ui::sidebar::file_tree_item::FileTreeItem;
@@ -55,6 +56,7 @@ pub(super) struct PendingFolderEmptyProbe {
     item: glib::WeakRef<FileTreeItem>,
     folder_path: PathBuf,
     initial_index: u32,
+    visibility: WorkspaceEntryVisibility,
 }
 
 impl LushtextWorkspaceSection {
@@ -94,6 +96,7 @@ impl LushtextWorkspaceSection {
         super::scan_execution::clear_all_dir_state(self);
         self.reset_item_cache();
         let top_level_store = gio::ListStore::new::<FileTreeItem>();
+        let visibility = current_entry_visibility();
         for entry in folders {
             let folder_path = entry.path().to_path_buf();
             let is_dir = entry.is_dir();
@@ -102,7 +105,14 @@ impl LushtextWorkspaceSection {
             top_level_store.append(&item);
             self.cache_top_level_item(folder_path.clone(), index as usize);
             if is_dir {
-                schedule_folder_empty_check(self, &top_level_store, &item, folder_path, index);
+                schedule_folder_empty_check(
+                    self,
+                    &top_level_store,
+                    &item,
+                    folder_path,
+                    index,
+                    visibility.clone(),
+                );
             }
         }
 
@@ -187,6 +197,7 @@ impl LushtextWorkspaceSection {
                                 &item,
                                 path.to_path_buf(),
                                 index,
+                                current_entry_visibility(),
                             );
                         }
                     }
@@ -505,12 +516,20 @@ impl LushtextWorkspaceSection {
     }
 }
 
+/// Read the visibility rule once for a batch of folder-empty probes.
+pub(super) fn current_entry_visibility() -> WorkspaceEntryVisibility {
+    crate::ui::workspace_visibility::workspace_entry_visibility(&gio::Settings::new(
+        crate::config::APP_ID,
+    ))
+}
+
 pub(super) fn schedule_folder_empty_check(
     section: &LushtextWorkspaceSection,
     top_level_store: &gio::ListStore,
     item: &FileTreeItem,
     folder_path: PathBuf,
     initial_index: u32,
+    visibility: WorkspaceEntryVisibility,
 ) {
     let key = item.workspace_folder_id().map_or_else(
         || FolderEmptyProbeKey::Path(folder_path.clone()),
@@ -547,6 +566,7 @@ pub(super) fn schedule_folder_empty_check(
         item: item.downgrade(),
         folder_path,
         initial_index,
+        visibility,
     };
 
     match submission {
@@ -626,6 +646,7 @@ fn start_folder_empty_probe(
     let path_for_check = request.folder_path.clone();
     let ticket = request.ticket;
     let initial_index = request.initial_index;
+    let visibility = request.visibility;
     #[cfg(feature = "test-utils")]
     let scan_delay = section.imp().refresh_runtime.test_scan_delay.get();
     #[cfg(feature = "test-utils")]
@@ -633,7 +654,7 @@ fn start_folder_empty_probe(
     gtk_lush_tasks::spawn_blocking_then(
         (top_level_store, item, request.folder_path, permit),
         move || {
-            let is_empty = services::file_tree::is_dir_empty(&path_for_check);
+            let is_empty = services::file_tree::is_dir_empty(&path_for_check, &visibility);
             #[cfg(feature = "test-utils")]
             {
                 empty_probe_reads.fetch_add(1, std::sync::atomic::Ordering::Release);

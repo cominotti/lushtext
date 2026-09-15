@@ -210,6 +210,7 @@ impl LushtextSearchPanel {
         imp.regex_toggle.set_active(spec.options.regex);
         imp.word_toggle.set_active(spec.options.whole_word);
         imp.gitignore_toggle.set_active(spec.options.gitignore);
+        imp.hidden_toggle.set_active(spec.options.hidden);
         imp.glob_entry
             .set_text(spec.options.glob.as_deref().unwrap_or(""));
         imp.history_popover.popdown();

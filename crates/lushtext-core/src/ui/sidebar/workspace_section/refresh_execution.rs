@@ -95,6 +95,17 @@ impl LushtextWorkspaceSection {
         self.schedule_refresh(false, changed_paths, false);
     }
 
+    /// Refresh every folder tree after the visibility preference changed.
+    ///
+    /// This is the automatic path, not the manual one: a view toggle must not
+    /// publish the "Refreshing workspace folders" message or its announcement.
+    pub(crate) fn refresh_for_visibility_change(&self) {
+        if !self.has_folders() {
+            return;
+        }
+        self.schedule_refresh(true, Vec::new(), false);
+    }
+
     /// Queue a conservative automatic refresh after mailbox overflow.
     pub(super) fn queue_auto_full_refresh(&self) {
         self.schedule_refresh(true, Vec::new(), false);
@@ -501,6 +512,7 @@ impl LushtextWorkspaceSection {
             return;
         }
 
+        let visibility = super::folder_execution::current_entry_visibility();
         for index in 0..top_level_store.n_items() {
             if let Some(item) = top_level_store.item(index).and_downcast::<FileTreeItem>()
                 && item.is_dir()
@@ -518,6 +530,7 @@ impl LushtextWorkspaceSection {
                     &item,
                     folder_path,
                     index,
+                    visibility.clone(),
                 );
             }
         }

@@ -194,6 +194,16 @@
       <summary>Search Gitignore</summary>
       <description>Whether workspace content search respects .gitignore patterns</description>
     </key>
+    <key name="workspace-show-hidden-files" type="b">
+      <default>false</default>
+      <summary>Show hidden files in workspace surfaces</summary>
+      <description>When true, files and folders whose names begin with a dot appear in the workspace sidebar, are indexed by the command palette, and are searched by workspace content search by default. Names on the always-excluded list stay hidden regardless.</description>
+    </key>
+    <key name="workspace-excluded-names" type="as">
+      <default>['.git']</default>
+      <summary>Entry names never shown in workspace surfaces</summary>
+      <description>Exact, case-sensitive file or folder basenames that are never shown in the workspace sidebar, never indexed by the command palette, and never searched, even when hidden files are visible.</description>
+    </key>
     <key name="workspace-auto-collapse" type="b">
       <default>true</default>
       <summary>Auto-Collapse Workspaces</summary>

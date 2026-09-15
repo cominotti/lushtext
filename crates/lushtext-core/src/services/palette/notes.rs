@@ -21,6 +21,7 @@ use crate::model::palette::{
     PaletteOpenTabSource,
 };
 use crate::model::workspace::{WorkspaceConfig, WorkspaceScopeSnapshot};
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
 use crate::model::{bookmark::BookmarkDocument, document_note::DocumentNoteDocument};
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::fuzzy::FuzzyQuery;
@@ -906,6 +907,7 @@ fn bounded_sidecar_entries(
         0,
         scan_byte_limit,
         || cancellation.is_cancelled(),
+        &WorkspaceEntryVisibility::app_data(),
     );
     if scan.cancelled {
         return Ok(BoundedSidecarEntries::Admitted {

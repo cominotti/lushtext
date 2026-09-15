@@ -61,6 +61,7 @@ impl LushtextSearchPanel {
             &*imp.word_toggle,
             &*imp.more_toggle,
             &*imp.gitignore_toggle,
+            &*imp.hidden_toggle,
         ] {
             accessibility::set_pressed(toggle, toggle.is_active());
         }

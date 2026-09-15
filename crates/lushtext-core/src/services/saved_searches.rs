@@ -172,4 +172,32 @@ mod tests {
             .expect("saved searches quarantine");
         assert!(fixture::read_text(quarantine_path).contains("old"));
     }
+
+    #[test]
+    fn saved_searches_written_before_hidden_field_still_load() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let entries = vec![make_saved("Legacy", "needle")];
+        save(dir.path(), &entries).expect("save");
+        let path = dir.path().join(SAVED_SEARCHES_FILE);
+        let json = crate::services::filesystem::read::text(&path).expect("read saved searches");
+        assert!(
+            json.contains("\"hidden\""),
+            "fixture must contain the new field to strip"
+        );
+        let mut document: serde_json::Value = serde_json::from_str(&json).expect("parse envelope");
+        fixture::strip_json_field(&mut document, "hidden");
+        let legacy = serde_json::to_string_pretty(&document).expect("serialize legacy fixture");
+        assert!(!legacy.contains("\"hidden\""));
+        fixture::write_text(&path, &legacy);
+
+        let load = load_recovering(dir.path());
+        assert!(
+            load.diagnostics.is_empty(),
+            "no quarantine: {:?}",
+            load.diagnostics
+        );
+        assert_eq!(load.value.len(), 1);
+        assert_eq!(load.value[0].name, "Legacy");
+        assert!(!load.value[0].spec.options.hidden);
+    }
 }

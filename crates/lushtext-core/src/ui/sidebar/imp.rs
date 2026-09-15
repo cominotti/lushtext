@@ -129,6 +129,9 @@ pub struct LushtextSidebar {
     pub(super) persistence_flush_waiters: RefCell<Vec<WorkspacePersistenceFlushCallback>>,
     /// Application settings for feature toggles.
     pub settings: gio::Settings,
+    /// Settings handlers for the visibility keys, released on dispose so a
+    /// destroyed sidebar never refreshes sections it no longer owns.
+    pub visibility_signals: gtk_lush_signals::SignalBag,
 }
 
 impl Default for LushtextSidebar {
@@ -165,6 +168,7 @@ impl Default for LushtextSidebar {
             persistence: RefCell::default(),
             persistence_flush_waiters: RefCell::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
+            visibility_signals: gtk_lush_signals::SignalBag::new(),
         }
     }
 }
@@ -188,8 +192,27 @@ impl ObjectSubclass for LushtextSidebar {
 }
 
 impl ObjectImpl for LushtextSidebar {
+    fn dispose(&self) {
+        self.visibility_signals.clear();
+    }
+
     fn constructed(&self) {
         self.parent_constructed();
+
+        // One subscription for the whole sidebar; sections come and go with
+        // workspace mutations, so they must not subscribe individually.
+        let sidebar_weak = self.obj().downgrade();
+        for handler_id in
+            crate::ui::workspace_visibility::connect_visibility_changed(&self.settings, move || {
+                if let Some(sidebar) = sidebar_weak.upgrade() {
+                    for section in sidebar.imp().sections.borrow().iter() {
+                        section.refresh_for_visibility_change();
+                    }
+                }
+            })
+        {
+            self.visibility_signals.track(&self.settings, handler_id);
+        }
 
         accessibility::set_labelled_description(
             &*self.workspace_filter_dropdown,
