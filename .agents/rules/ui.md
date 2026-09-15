@@ -37,7 +37,7 @@ LushtextWindow (AdwApplicationWindow)
 │   │       │           └── LushtextWorkspaceSection (per workspace)
 │   │       │               ├── GtkSeparator
 │   │       │               ├── GtkBox [header: label + refresh_button]
-│   │       │               └── GtkScrolledWindow (inner, propagate-natural-height=true, propagate-natural-width=false)
+│   │       │               └── GtkLushViewportSliceBin [file_tree_slice] (full height to the outer scroller, visible band to the child)
 │   │       │                   └── GtkListView + TreeListModel
 │   │       └── [content] AdwMultiLayoutView [properties_layout_view]
 │   │           ├── [slot: primary] GtkBox [content_box] (vertical)
@@ -214,7 +214,7 @@ add a new one before calling the work complete.
 
 - `LushtextSidebar` is an orchestrator: manages the fixed top `New Workspace` affordance, workspace sections, and persistence (`workspaces.json`).
 - `LushtextWorkspaceSection` encapsulates per-workspace state: file tree, file context menu, header context menu.
-- **Inner ScrolledWindow pattern**: Each section wraps its `GtkListView` in `GtkScrolledWindow(propagate-natural-height=true, propagate-natural-width=false, vscrollbar-policy=never, hscrollbar-policy=never)`. `propagate-natural-width` MUST be `false` to prevent deep tree indentation from expanding the fixed-width sidebar container indefinitely. Labels inside the tree must use `EllipsizeMode::End` so their minimum width yields to the container constraint.
+- **Viewport slice pattern (CRITICAL)**: Each section hosts its `GtkListView` in `gtk_lush_widgets::ViewportSliceBin` (`$GtkLushViewportSliceBin` in Blueprint). `GtkListView` realizes at most `GTK_LIST_VIEW_MAX_LIST_ITEMS` (200, plus two extra items per tracker; `gtk/gtklistview.c`) row widgets for one visible range, so a list view that is handed its whole content as viewport renders blank space after roughly the two-hundredth row while the model is complete. That is exactly what the retired `GtkScrolledWindow(propagate-natural-height=true, vscrollbar-policy=never)` host did. Never give a `GtkListView` its entire content as viewport when it can exceed ~200 rows; nest it in the slice bin (or a real scroller) so it stays virtualized. The bin reports the child's minimum width as its natural width, which is the former `propagate-natural-width=false` contract; labels inside the tree must still use `EllipsizeMode::End` so their minimum width yields to the container constraint. Tests for this surface must assert rendered rows after scrolling the outer scroller, not tree-model rows.
 - **Pinned top row**: The "New Workspace" affordance sits above the outer ScrolledWindow and stays fixed while the workspace list scrolls.
 - **No horizontal sidebar scrollbar**: workspace headers and file-tree labels still avoid ellipsizing, but the left sidebar must not expose a horizontal scrollbar. Overflow is clipped by the viewport instead of enabling sideways scrolling.
 - **Width presets drive the shell**: `Preferences > Workspace` exposes compact `Small`, `Comfy`, and `Large` options that keep their `20%`, `30%`, and `40%` identities while clamping the visible sidebar width to a comfortable desktop range. The window layer owns the split-view math; the sidebar does not expose a duplicate width control.

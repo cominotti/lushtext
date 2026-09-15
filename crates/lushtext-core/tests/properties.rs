@@ -45,3 +45,5 @@ mod session_draft_roundtrip;
 mod sidecar_reconciliation;
 #[path = "properties/support.rs"]
 mod support;
+#[path = "properties/viewport_slice.rs"]
+mod viewport_slice;

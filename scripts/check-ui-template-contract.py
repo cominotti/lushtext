@@ -319,6 +319,10 @@ def rust_type_to_xml_class(rust_type: str) -> str:
         return "Adw" + rust_type.rsplit("::", 1)[1]
     if rust_type == "sourceview5::View":
         return "GtkSourceView"
+    if rust_type.startswith("gtk_lush_widgets::"):
+        # GTK Lush widgets register GObject type names with a `GtkLush` prefix
+        # (for example `GtkLushViewportSliceBin`), mirroring `Gtk`/`Adw`.
+        return "GtkLush" + rust_type.rsplit("::", 1)[1]
     return rust_type.rsplit("::", 1)[-1]
 
 

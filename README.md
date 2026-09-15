@@ -444,7 +444,10 @@ Cargo workspace:
 - `crates/lushtext` - thin binary entry point plus integration tests.
 - `crates/gtk-lush/` - governed `0.0.0` GTK Lush family crates for extracting
   reusable GTK4/Libadwaita patterns. These are functional in-tree APIs, not
-  stable external dependencies.
+  stable external dependencies. `gtk-lush-widgets::ViewportSliceBin` is what
+  keeps the workspace sidebar's file tree virtualized inside the sidebar
+  scroller, so directories of any size render every row instead of stopping
+  at `GtkListView`'s 200-widget realized cap.
 - `crates/gtk-lush-adoption-lab` - maintained second-consumer GTK app for GTK
   Lush adoption validation.
 - `crates/cargo-gtk-proof` - workspace visual proof tool outside the GTK Lush

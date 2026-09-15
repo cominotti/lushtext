@@ -4,7 +4,9 @@
 
 use std::rc::Rc;
 
-use gtk_lush_widgets::{ClipBin, RenderHoldCapture, RenderHoldNotReady, RenderHoldOverlay};
+use gtk_lush_widgets::{
+    ClipBin, RenderHoldCapture, RenderHoldNotReady, RenderHoldOverlay, ViewportSliceBin,
+};
 use gtk4::prelude::*;
 
 use crate::shared_ui::{append_body, append_control_row, scroll_page, status_label, workflow_box};
@@ -21,14 +23,20 @@ impl WidgetOwners {
     }
 }
 
-/// Build the page that demonstrates ClipBin and RenderHoldOverlay behavior.
+/// Rows in the virtualized list demo; well above `GtkListView`'s 200-widget cap.
+const SLICE_DEMO_ROWS: u32 = 1_000;
+
+/// Build the page that demonstrates ClipBin, ViewportSliceBin, and
+/// RenderHoldOverlay behavior.
 pub(crate) fn build_widgets_page() -> (gtk4::Widget, WidgetOwners) {
     let content = workflow_box("Widget Geometry And Render Hold");
     append_body(
         &content,
         "ClipBin keeps flexible content from pushing fixed chrome away. \
-         RenderHoldOverlay owns a non-targetable cover and caller-directed \
-         capture, warm, reveal, and clear phases.",
+         ViewportSliceBin keeps a GtkListView virtualized inside this page's \
+         outer scroller, so all rows below render instead of stopping near \
+         row 200. RenderHoldOverlay owns a non-targetable cover and \
+         caller-directed capture, warm, reveal, and clear phases.",
     );
 
     let clipped_label = gtk4::Label::new(Some(
@@ -46,6 +54,12 @@ pub(crate) fn build_widgets_page() -> (gtk4::Widget, WidgetOwners) {
         &clip_bin,
         &status_label("Constrained width; flexible child remains clipped."),
     );
+
+    let slice_bin = ViewportSliceBin::with_child(&build_slice_demo_list());
+    let slice_status = status_label(&format!(
+        "{SLICE_DEMO_ROWS} rows; scroll the page to the last one."
+    ));
+    append_control_row(&content, "ViewportSliceBin", &slice_bin, &slice_status);
 
     let overlay = gtk4::Overlay::new();
     overlay.set_size_request(360, 180);
@@ -122,6 +136,33 @@ pub(crate) fn build_widgets_page() -> (gtk4::Widget, WidgetOwners) {
     append_control_row(&content, "RenderHoldOverlay", &button_row, &hold_status);
 
     (scroll_page(&content), WidgetOwners { render_hold })
+}
+
+/// A plain labelled `GtkListView` over `SLICE_DEMO_ROWS` string items.
+fn build_slice_demo_list() -> gtk4::ListView {
+    let strings: Vec<String> = (0..SLICE_DEMO_ROWS)
+        .map(|index| format!("slice row {index:04}"))
+        .collect();
+    let model = gtk4::StringList::new(&strings.iter().map(String::as_str).collect::<Vec<_>>());
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
+        let label = gtk4::Label::new(None);
+        label.set_xalign(0.0);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
+        let text = item
+            .item()
+            .and_downcast::<gtk4::StringObject>()
+            .map(|object| object.string().to_string())
+            .unwrap_or_default();
+        if let Some(label) = item.child().and_downcast::<gtk4::Label>() {
+            label.set_text(&text);
+        }
+    });
+    gtk4::ListView::new(Some(gtk4::NoSelection::new(Some(model))), Some(factory))
 }
 
 fn render_hold_capture_label(result: RenderHoldCapture) -> &'static str {

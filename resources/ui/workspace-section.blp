@@ -90,14 +90,11 @@ template $LushtextWorkspaceSection: Box {
     }
   }
 
-  // Inner ScrolledWindow provides a vadjustment for GtkListView and prevents
-  // deep tree indentation from expanding the outer sidebar width.
-  ScrolledWindow inner_scrolled_window {
-    propagate-natural-height: true;
-    propagate-natural-width: false;
-    vscrollbar-policy: never;
-    hscrollbar-policy: never;
-
+  // The slice bin owns the list view's adjustments: it reports the full tree
+  // height to the outer sidebar scroller but allocates only the visible band,
+  // so GtkListView stays virtualized (it realizes at most ~200 row widgets per
+  // visible range) and its width follows the sidebar, not the deepest row.
+  $GtkLushViewportSliceBin file_tree_slice {
     child: ListView file_tree_view {
       styles [
         "navigation-sidebar",

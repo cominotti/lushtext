@@ -185,6 +185,30 @@ notifications, and prove that signal actually fires in the relevant widget:
 - the derived properties breakpoint threshold is cached, and `AdwBreakpoint::set_condition()` runs only when that integer threshold changes.
 - persistence remains tied to explicit user intent, restore, or animation completion, not to every layout tick.
 
+## Adjustment Ownership Under Custom Containers
+
+When a custom container hosts a `GtkScrollable` child and owns its adjustments
+(`gtk_lush_widgets::ViewportSliceBin` is the in-tree case):
+
+- Install the container's own `GtkAdjustment` on the child through
+  `Scrollable::set_vadjustment` when the child is set, and detach it when the
+  child is replaced or the container is disposed.
+- Write the child's adjustment only inside the container's `size_allocate`,
+  behind a re-entrancy flag, and read it back **after** `child.allocate(...)`:
+  `GtkListView` applies `scroll_to` and focus scrolling inside its own
+  allocation, so the child's request appears as a divergence from the value the
+  container just wrote.
+- Forward child-originated requests to the outer scroller against the
+  **unclamped** viewport position (the slice offset is clamped at the content
+  edges and undershoots by whatever sits above the child), and apply them from
+  an idle: moving an outer adjustment from inside a layout pass does not
+  reliably schedule another layout.
+- Never re-queue an allocation when the outer adjustment refused to move
+  (`set_value` clamps and emits nothing); that is the loop guard.
+- Report the child's full content as the container's natural height, and as its
+  minimum too while an outer scroller is present, because `GtkViewport`
+  allocates non-scrollable children their minimum in the scroll direction.
+
 ## GtkPaned Position Constraints
 
 Any code that sets a `GtkPaned` position must ensure it's valid for the current allocation width. GTK4's `measure()` phase runs BEFORE `size_allocate()` — if a paned position is stale from a previous frame, GTK warns "Trying to measure ... for width of X, but needs at least Y."

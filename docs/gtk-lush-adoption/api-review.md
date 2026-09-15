@@ -20,6 +20,9 @@ spikes for `gtk4-rs` and Kooha.
   Consumers still own reactions to page-size and lower-edge changes.
 - `gtk-lush-widgets`: keep `RenderHoldCapture::NotReady` as normal output.
   Capture needing mapped/drawable geometry is a GTK contract, not an API bug.
+  Keep `ViewportSliceBin` discovering its outer `GtkScrolledWindow` by ancestry
+  with an explicit `outer-scrolled-window` override, and keep `viewport_slice`
+  a public pure function: consumers and property tests share one geometry.
 - `gtk-lush-proof-harness`: keep caller-owned environment mutation and test
   registry. The harness should not mutate process environment for consumers.
 - `gtk-lush-proof-spine`: keep GTK-free provider traits and bounded value

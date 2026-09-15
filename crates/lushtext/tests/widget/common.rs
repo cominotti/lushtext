@@ -178,3 +178,38 @@ pub fn emit_key_pressed_on_focus(
     }
     panic!("focused widget ancestry had no EventControllerKey");
 }
+
+/// Realized row widgets of a `GtkListView`: the visible, non-zero-height
+/// children GTK currently keeps for the model. This is the rendered surface,
+/// not the model, which is the distinction virtualization bugs hide behind.
+pub fn realized_list_rows(list: &gtk4::ListView) -> Vec<gtk4::Widget> {
+    let mut rows = Vec::new();
+    let mut child = list.first_child();
+    while let Some(widget) = child {
+        if widget.is_visible() && widget.height() > 0 {
+            rows.push(widget.clone());
+        }
+        child = widget.next_sibling();
+    }
+    rows
+}
+
+/// The first widget in `root`'s subtree (including `root`) matching `pred`,
+/// walking first-child/next-sibling depth first.
+pub fn find_descendant(
+    root: &gtk4::Widget,
+    mut pred: impl FnMut(&gtk4::Widget) -> bool,
+) -> Option<gtk4::Widget> {
+    let mut stack = vec![root.clone()];
+    while let Some(current) = stack.pop() {
+        if pred(&current) {
+            return Some(current);
+        }
+        let mut child = current.first_child();
+        while let Some(next) = child {
+            stack.push(next.clone());
+            child = next.next_sibling();
+        }
+    }
+    None
+}

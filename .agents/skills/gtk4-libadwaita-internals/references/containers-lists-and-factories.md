@@ -20,6 +20,33 @@ That means:
 - per-item signal connections cannot live forever on the row
 - the data model and the row widget lifetime are intentionally decoupled
 
+### The realized-widget cap
+
+`GtkListView` realizes at most `GTK_LIST_VIEW_MAX_LIST_ITEMS` (200, plus two extra items per tracker; `gtk/gtklistview.c`) row widgets for one visible range. "Visible" is decided by the list view's own vertical adjustment, so
+whatever provides that adjustment defines the viewport. A `GtkScrolledWindow`
+with `vscrollbar-policy: never` and `propagate-natural-height: true` gives the
+list view its **entire content** as viewport: GTK allocates the full height but
+populates only the first ~205 rows, and the rest is blank space that an outer
+scroller happily scrolls through. The model is complete, the presentation is not.
+
+Symptom signature: `tree_model.n_items()` is right, the list view's allocated
+height equals `rows × row height`, and realized row widgets stop at ~205 with
+the last rendered label far from the last model item.
+
+Fix pattern: keep the list virtualized. Either let a real scroller own the list,
+or, when the list must sit inside an outer scroller next to other content, host
+it in `gtk_lush_widgets::ViewportSliceBin`, which advertises the full content
+height to the outer scroller but allocates the child only the visible band and
+owns its adjustments. Two GTK facts shape that bin: a `GtkListView` outside a
+scroller reports its whole content as **minimum** height (so the host must own
+that decision, as `GtkScrolledWindow` does), and `GtkViewport` allocates a
+non-scrollable child its **minimum** in the scroll direction (so the host must
+advertise the full content as minimum while inside the outer scroller, or the
+outer range collapses to one page). The list applies `scroll_to` inside its own
+allocation, so a host that owns the adjustment must read it back **after**
+allocating the child and forward the request to the outer scroller against the
+unclamped viewport position, from an idle rather than inside the layout pass.
+
 The list view also carries presentation-level CSS classes such as `.rich-list`, `.navigation-sidebar`, and `.data-table`. Those are style decisions, not model decisions.
 
 ## `GtkSignalListItemFactory` Lifecycle

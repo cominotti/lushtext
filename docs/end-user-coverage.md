@@ -21,7 +21,7 @@ a user-facing workflow unverified.
 | Deep property tests | `make test-prop-deep` | Higher case counts for the same property surface | No, manual or scheduled |
 | Fuzz corpus replay | `make fuzz-corpus-replay` | Committed fuzz seeds replayed on stable Rust without cargo-fuzz or sanitizer setup | Yes, separate CI job |
 | Fuzz smoke | `make fuzz-smoke` | Coverage-guided discovery for hostile byte and operation-script surfaces | No, scheduled or manual |
-| Widget tests | `make test-widget-headless` | Real GTK widget state, signal wiring, focus, action, and allocation contracts under Mutter | Yes |
+| Widget tests | `make test-widget-headless` | Real GTK widget state, signal wiring, focus, action, and allocation contracts under Mutter, including rendered-row completeness of the virtualized workspace tree against the real window and outer scroller (`workspace_tree_virtualization`) | Yes |
 | Automation docs drift | `make check-automation-docs` | User/developer reference drift for exported actions, D-Bus members, snapshot JSON, readiness predicates/blockers, helper flags, and stable AT-SPI anchors | Yes, through `make check-policy` |
 | Visual proof policy | `make check-visual-proof-policy` | Rust-backed local worktree guard that requires a passed, unfiltered visual geometry summary matching the current visual-sensitive diff and required invariant IDs | Yes, through `make check-policy` |
 | Automation client self-test | `make automation-client-self-test` | Reusable D-Bus client parser, typed action-parameter rendering, result envelope, exit statuses, and smoke artifact summary reader without a live app | Yes, through `make check-policy` |

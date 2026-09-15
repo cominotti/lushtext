@@ -7429,14 +7429,14 @@
           "path": "0:template:LushtextWorkspaceSection/3:child/0:object:GtkBox#drilldown_header_box/7:child/0:object:GtkLabel#drilldown_path_label"
         },
         {
-          "class": "GtkScrolledWindow",
-          "id": "inner_scrolled_window",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window"
+          "class": "GtkLushViewportSliceBin",
+          "id": "file_tree_slice",
+          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkLushViewportSliceBin#file_tree_slice"
         },
         {
           "class": "GtkListView",
           "id": "file_tree_view",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/4:property/0:object:GtkListView#file_tree_view"
+          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkLushViewportSliceBin#file_tree_slice/0:property/0:object:GtkListView#file_tree_view"
         },
         {
           "class": "GtkLabel",
@@ -7678,34 +7678,6 @@
         },
         {
           "context": "",
-          "name": "propagate-natural-height",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/0:property",
-          "translatable": "",
-          "value": "true"
-        },
-        {
-          "context": "",
-          "name": "propagate-natural-width",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/1:property",
-          "translatable": "",
-          "value": "false"
-        },
-        {
-          "context": "",
-          "name": "vscrollbar-policy",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/2:property",
-          "translatable": "",
-          "value": "2"
-        },
-        {
-          "context": "",
-          "name": "hscrollbar-policy",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/3:property",
-          "translatable": "",
-          "value": "2"
-        },
-        {
-          "context": "",
           "name": "label",
           "path": "0:template:LushtextWorkspaceSection/5:child/0:object:GtkLabel#empty_folder_set_label/0:property",
           "translatable": "yes",
@@ -7800,7 +7772,7 @@
         },
         {
           "name": "navigation-sidebar",
-          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkScrolledWindow#inner_scrolled_window/4:property/0:object:GtkListView#file_tree_view/0:style/0:class"
+          "path": "0:template:LushtextWorkspaceSection/4:child/0:object:GtkLushViewportSliceBin#file_tree_slice/0:property/0:object:GtkListView#file_tree_view/0:style/0:class"
         },
         {
           "name": "dim-label",

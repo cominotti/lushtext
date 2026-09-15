@@ -14,6 +14,8 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{glib, graphene};
 
+use crate::single_child::replace_child;
+
 /// Private widget state for `GtkLushClipBin`.
 #[derive(Default)]
 pub struct ClipBin {
@@ -132,25 +134,6 @@ impl WidgetImpl for ClipBin {
 
 impl ClipBin {
     pub(super) fn set_child(&self, child: Option<&gtk4::Widget>) {
-        {
-            let current = self.child.borrow();
-            match (current.as_ref(), child) {
-                (Some(current), Some(new_child)) if current.as_ptr() == new_child.as_ptr() => {
-                    return;
-                }
-                (None, None) => return,
-                _ => {}
-            }
-        }
-
-        if let Some(old_child) = self.child.borrow_mut().take() {
-            old_child.unparent();
-        }
-        if let Some(child) = child {
-            child.set_parent(&*self.obj());
-            self.child.replace(Some(child.clone()));
-        }
-        self.obj().queue_resize();
-        self.obj().notify("child");
+        replace_child(&self.child, self.obj().upcast_ref(), child, |_| {}, |_| {});
     }
 }

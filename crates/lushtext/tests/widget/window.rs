@@ -10167,7 +10167,7 @@ fn test_restored_empty_folder_set_workspace_keeps_real_section() {
         "empty folder-set workspaces should keep an explicit empty state"
     );
     assert!(
-        !section.imp().inner_scrolled_window.is_visible(),
+        !section.imp().file_tree_slice.is_visible(),
         "empty folder-set workspaces should not show an empty tree shell"
     );
     assert!(

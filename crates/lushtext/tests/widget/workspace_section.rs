@@ -4,7 +4,7 @@
 
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    present_window, wait_until,
+    present_window, realized_list_rows, wait_until,
 };
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -1080,15 +1080,17 @@ fn test_workspace_section_header_label_does_not_ellipsize() {
 }
 
 #[test]
-fn test_workspace_section_inner_scroller_does_not_propagate_natural_width() {
+fn test_workspace_section_tree_slice_width_follows_the_host_not_the_widest_row() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
-    assert!(
-        !section
-            .imp()
-            .inner_scrolled_window
-            .propagates_natural_width()
-    );
+    // The slice bin replaces `propagate-natural-width = false`: horizontally it
+    // reports its child's minimum as natural so deep indentation cannot widen
+    // the sidebar.
+    let (minimum, natural, _, _) = section
+        .imp()
+        .file_tree_slice
+        .measure(gtk4::Orientation::Horizontal, -1);
+    assert_eq!(natural, minimum);
 }
 
 #[test]
@@ -1163,17 +1165,18 @@ fn test_long_workspace_folder_label_ellipsizes_and_keeps_controls_visible() {
     assert_eq!(label.ellipsize(), gtk4::pango::EllipsizeMode::End);
     assert!(!label.wraps());
     assert_eq!(
-        section.imp().inner_scrolled_window.hscrollbar_policy(),
-        gtk4::PolicyType::Never
+        section.imp().file_tree_slice.width(),
+        section.imp().file_tree_view.width(),
+        "the tree slice must never let the list view grow wider than the host"
     );
 
     let row_bounds = row_widget
-        .compute_bounds(&*section.imp().inner_scrolled_window)
+        .compute_bounds(&*section.imp().file_tree_slice)
         .expect("folder row should have scroller-relative bounds");
     let label_bounds = label
         .compute_bounds(&row_widget)
         .expect("folder label should have row-relative bounds");
-    let scroller_width = section.imp().inner_scrolled_window.width() as f32;
+    let scroller_width = section.imp().file_tree_slice.width() as f32;
     let row_height_before_drag = row_widget.height();
     let label_width_before_drag = label_bounds.width();
     assert!(
@@ -1193,8 +1196,9 @@ fn test_long_workspace_folder_label_ellipsizes_and_keeps_controls_visible() {
     );
     assert!(section.imp().header_box.property::<bool>("visible"));
     assert_eq!(
-        section.imp().inner_scrolled_window.hscrollbar_policy(),
-        gtk4::PolicyType::Never
+        section.imp().file_tree_slice.width(),
+        section.imp().file_tree_view.width(),
+        "the tree slice must never let the list view grow wider than the host"
     );
 
     section.with_active_workspace_folder_reorder_drag_for_test(
@@ -1217,7 +1221,7 @@ fn test_long_workspace_folder_label_ellipsizes_and_keeps_controls_visible() {
             flush_events();
 
             let row_bounds_during_drag = row_widget
-                .compute_bounds(&*section.imp().inner_scrolled_window)
+                .compute_bounds(&*section.imp().file_tree_slice)
                 .expect("folder row should keep scroller-relative bounds during drag");
             let label_bounds_during_drag = label
                 .compute_bounds(&row_widget)
@@ -1391,10 +1395,7 @@ fn test_workspace_folder_reorder_handles_update_on_live_membership_changes() {
         "removing every folder should leave the workspace header reachable"
     );
     assert!(
-        !section
-            .imp()
-            .inner_scrolled_window
-            .property::<bool>("visible"),
+        !section.imp().file_tree_slice.property::<bool>("visible"),
         "empty workspace state should not leave a fake tree body visible"
     );
 
@@ -2067,7 +2068,7 @@ fn test_workspace_folder_reorder_shield_path_does_not_mutate_filesystem() {
 fn test_workspace_section_header_button_carries_vertical_spacing() {
     ensure_gtk_init();
     let section = LushtextWorkspaceSection::new(WorkspaceId::default());
-    assert_eq!(section.imp().inner_scrolled_window.margin_top(), 0);
+    assert_eq!(section.imp().file_tree_slice.margin_top(), 0);
     assert_eq!(section.imp().collapse_button.valign(), gtk4::Align::Center);
     assert_eq!(section.imp().collapse_button.margin_top(), 6);
     assert_eq!(section.imp().collapse_button.margin_bottom(), 6);
@@ -5023,7 +5024,7 @@ fn test_load_empty_folders_shows_empty_folder_set_state() {
         "empty workspaces should show an explicit empty folder-set state"
     );
     assert!(
-        !section.imp().inner_scrolled_window.is_visible(),
+        !section.imp().file_tree_slice.is_visible(),
         "empty folder sets should not show an empty file tree"
     );
     let top_level_store = section.imp().top_level_store.borrow();
@@ -5060,21 +5061,13 @@ fn test_workspace_body_collapse_hides_folder_tree_without_clearing_folders() {
     )]);
 
     assert!(section.has_folders());
-    assert!(
-        section
-            .imp()
-            .inner_scrolled_window
-            .property::<bool>("visible")
-    );
+    assert!(section.imp().file_tree_slice.property::<bool>("visible"));
 
     section.set_section_body_collapsed(true);
 
     assert!(section.is_section_body_collapsed());
     assert!(
-        !section
-            .imp()
-            .inner_scrolled_window
-            .property::<bool>("visible"),
+        !section.imp().file_tree_slice.property::<bool>("visible"),
         "workspace collapse should hide the folder tree body"
     );
     assert!(
@@ -5095,12 +5088,7 @@ fn test_workspace_body_collapse_hides_folder_tree_without_clearing_folders() {
     section.set_section_body_collapsed(false);
 
     assert!(!section.is_section_body_collapsed());
-    assert!(
-        section
-            .imp()
-            .inner_scrolled_window
-            .property::<bool>("visible")
-    );
+    assert!(section.imp().file_tree_slice.property::<bool>("visible"));
     assert_eq!(
         section.imp().collapse_button.tooltip_text().as_deref(),
         Some("Collapse Workspace")
@@ -5129,12 +5117,7 @@ fn test_workspace_body_collapse_hides_and_restores_empty_state() {
             .empty_folder_set_label
             .property::<bool>("visible")
     );
-    assert!(
-        !section
-            .imp()
-            .inner_scrolled_window
-            .property::<bool>("visible")
-    );
+    assert!(!section.imp().file_tree_slice.property::<bool>("visible"));
 
     section.toggle_section_body_collapsed();
 
@@ -5169,10 +5152,7 @@ fn test_workspace_body_collapse_survives_section_model_reload() {
 
     assert!(section.is_section_body_collapsed());
     assert!(
-        !section
-            .imp()
-            .inner_scrolled_window
-            .property::<bool>("visible"),
+        !section.imp().file_tree_slice.property::<bool>("visible"),
         "ordinary section reloads should preserve the workspace body collapse state"
     );
     assert!(section.has_folders());
@@ -5401,7 +5381,7 @@ fn test_refresh_button_becomes_enabled_after_load_folders() {
         "loaded folder sets should hide the empty state"
     );
     assert!(
-        section.imp().inner_scrolled_window.is_visible(),
+        section.imp().file_tree_slice.is_visible(),
         "loaded folder sets should show the file tree"
     );
 }
@@ -5963,16 +5943,8 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
         path: dir.path().to_path_buf(),
     }]);
     let window = present_section_window(&section);
-    // Bound only this lifecycle fixture's rendered height; production geometry
-    // retains the propagate-natural-height contract and has dedicated proof lanes.
-    section
-        .imp()
-        .inner_scrolled_window
-        .set_propagate_natural_height(false);
-    section
-        .imp()
-        .inner_scrolled_window
-        .set_max_content_height(400);
+    // Without an outer scroller the slice bin allocates the list only the
+    // window height, which already bounds this lifecycle fixture's rendering.
     section.expand_folders();
     wait_until(Duration::from_secs(10), || {
         tree_contains_path(&section, &nested)
@@ -5986,6 +5958,13 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
                 .workspace_section_evidence()
                 .refresh_blocks_readiness
     });
+    // Model completeness above is not rendering: the list stays virtualized,
+    // realizing only the rows the window can show rather than all 500.
+    let realized_rows = realized_list_rows(&section.imp().file_tree_view).len();
+    assert!(
+        (1..200).contains(&realized_rows),
+        "a 500-row directory must realize only visible rows, got {realized_rows}"
+    );
     section.stop_workspace_watch_for_test();
     section.set_reconciliation_batch_delay_for_test(Duration::from_millis(20));
     select_path(&section, &selected);

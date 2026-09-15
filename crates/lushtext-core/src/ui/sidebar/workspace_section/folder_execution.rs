@@ -339,8 +339,7 @@ impl LushtextWorkspaceSection {
 
         imp.drilldown_header_box
             .set_visible(show_body && in_drilldown);
-        imp.inner_scrolled_window
-            .set_visible(show_body && has_tree_rows);
+        imp.file_tree_slice.set_visible(show_body && has_tree_rows);
         imp.empty_folder_set_label
             .set_visible(show_body && !has_tree_rows && !in_drilldown);
         imp.collapse_button.set_icon_name(if collapsed {

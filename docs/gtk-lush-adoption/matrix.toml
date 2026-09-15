@@ -44,11 +44,11 @@ follow_up = "None for this phase."
 
 [[crates]]
 package = "gtk-lush-widgets"
-lab_workflow = "Widgets page: ClipBin constrained geometry and RenderHoldOverlay capture, not-ready, warm, reveal, early clear, non-targetable cover."
-standalone_example = "crates/gtk-lush/widgets/examples/clip_bin.rs and crates/gtk-lush/widgets/examples/render_hold.rs"
+lab_workflow = "Widgets page: ClipBin constrained geometry, ViewportSliceBin virtualized 1,000-row GtkListView inside the page scroller, and RenderHoldOverlay capture, not-ready, warm, reveal, early clear, non-targetable cover."
+standalone_example = "crates/gtk-lush/widgets/examples/clip_bin.rs, crates/gtk-lush/widgets/examples/viewport_slice_bin.rs, and crates/gtk-lush/widgets/examples/render_hold.rs"
 stock_fixture_status = "Not selected for timed stock fixture; rendered behavior belongs in lab/widget/visual proof."
-tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; cargo test -p lushtext --test widget gtk_lush_adoption; make test-widget-headless."
-friction_status = "Accepted limitation: capture needs mapped drawable geometry; NotReady variants make this explicit."
+tests_proof_evidence = "cargo test -p gtk-lush-adoption-lab --all-targets; make gtk-lush-examples; cargo test -p lushtext --test widget gtk_lush_adoption; make test-widget-headless; widget lane workspace_tree_virtualization proves rendered rows past the GtkListView cap; property lane viewport_slice proves the slice geometry."
+friction_status = "Accepted limitation: capture needs mapped drawable geometry; NotReady variants make this explicit. ViewportSliceBin needs an outer GtkScrolledWindow ancestor (or the outer-scrolled-window property) to virtualize; standalone it behaves as a plain host."
 api_decision = "Keep current API and document NotReady as normal consumer state."
 follow_up = "Run visual proof if RenderHoldOverlay internals change."
 

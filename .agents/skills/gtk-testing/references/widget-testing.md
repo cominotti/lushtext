@@ -203,6 +203,30 @@ When testing list or tree widgets:
 - assert on model or selection state, not on assumptions about fresh row instances
 - remember rows are recycled
 - keep factory lifecycle questions separate from app-level expectations
+- for "rows are missing" bugs, assert **rendered** rows, not model rows: walk the
+  list view's realized children (visible, non-zero height) and read their bound
+  labels after scrolling the real outer scroller to the position under test. The
+  workspace-tree defect that motivated this had every entry in the
+  `GtkTreeListModel` and only ~205 realized rows; a model-count assertion passed.
+  `crates/lushtext/tests/widget/workspace_tree_virtualization.rs` has the helpers
+  (`rendered_rows`, `scroll_outer_to_bottom`, `inside_outer_viewport`).
+- GTK keeps more realized rows than the viewport shows (roughly one to two extra
+  pages around the visible range, and up to its 200-widget anchor window after a
+  fast drag). Bound realized counts against the viewport, not against exact row
+  counts.
+- reproduce against the real window and sidebar when the bug involves an outer
+  scroller: a standalone section window has no outer scroller, so the slice bin
+  simply hands the list the window height and the bug cannot appear.
+- after `sidebar.load_workspaces()` the sidebar rebuilds its sections; a section
+  handle taken from the first `sections` entry can point at a detached widget
+  whose geometry reads as 0 px or a stale 48 px. Wait for `is_mapped()` on the
+  sections (see `mapped_sections` in the module above) before measuring.
+- keyboard-focus traversal in `GtkListView` calls the same `scroll_to(FOCUS |
+  SELECT)` primitive as the Down-arrow binding; drive it directly rather than
+  synthesizing key events under the headless harness.
+- opening a popover from a test while the window has no focus widget trips a
+  `Gtk-CRITICAL` inside `gtk_popover_activate_default` (`gtk_widget_is_ancestor`
+  on a null focus). Give the list focus first, as the real keyboard flow does.
 
 If the confusing part is `connect_setup`, `connect_bind`, `connect_unbind`, row reuse, or `GtkTreeListModel` behavior, read:
 

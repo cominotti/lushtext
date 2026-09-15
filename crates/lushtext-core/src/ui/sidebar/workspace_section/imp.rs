@@ -250,9 +250,10 @@ pub struct LushtextWorkspaceSection {
     /// Label showing the focused folder path in drill-down mode.
     #[template_child]
     pub drilldown_path_label: TemplateChild<gtk4::Label>,
-    /// Inner scroller that lets ListView rows yield to the sidebar width.
+    /// Viewport slice that keeps the list view virtualized inside the sidebar's
+    /// outer scroller while its width follows the sidebar, not the deepest row.
     #[template_child]
-    pub inner_scrolled_window: TemplateChild<gtk4::ScrolledWindow>,
+    pub file_tree_slice: TemplateChild<gtk_lush_widgets::ViewportSliceBin>,
     /// Virtualized tree view rendering the current workspace folder model.
     #[template_child]
     pub file_tree_view: TemplateChild<gtk4::ListView>,
@@ -402,6 +403,7 @@ impl ObjectSubclass for LushtextWorkspaceSection {
     type ParentType = gtk4::Box;
 
     fn class_init(klass: &mut Self::Class) {
+        gtk_lush_widgets::ViewportSliceBin::ensure_type();
         klass.bind_template();
     }
 

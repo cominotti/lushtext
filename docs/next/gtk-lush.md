@@ -172,6 +172,15 @@ Small widget and overlay-owner primitives that exist to keep geometry honest.
 
 - **`ClipBin`** (from the former `LushtextShrinkableBin`): zero-minimum clipping bin so a
   flexible region can never push fixed chrome out of the window.
+- **`ViewportSliceBin`** (from the workspace sidebar's file tree, 2026-09-14):
+  host a `GtkScrollable` child inside an outer scroller without giving up
+  virtualization. Advertises the child's full content height to the outer
+  scroller, allocates only the visible band, owns the child's adjustments, and
+  forwards `scroll_to`/focus scrolling outward. Exists because `GtkListView`
+  realizes at most 200 (+2) row widgets per visible range, which left the
+  sidebar blank after ~205 rows under the old natural-height scrolled window.
+  Pure slice geometry (`viewport_slice`) is property-tested in the workspace
+  property lane.
 - **`RenderHoldOverlay`** (from the minimap reflow freeze): capture a child's
   last rendered pixels synchronously (`snapshot_child` + renderer texture),
   hold them over the live child (opacity-managed) across a caller-declared

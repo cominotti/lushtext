@@ -97,11 +97,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
       </object>
     </child>
     <child>
-      <object class="GtkScrolledWindow" id="inner_scrolled_window">
-        <property name="propagate-natural-height">true</property>
-        <property name="propagate-natural-width">false</property>
-        <property name="vscrollbar-policy">2</property>
-        <property name="hscrollbar-policy">2</property>
+      <object class="GtkLushViewportSliceBin" id="file_tree_slice">
         <property name="child">
           <object class="GtkListView" id="file_tree_view">
             <style>
