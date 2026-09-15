@@ -65,6 +65,68 @@
   </screenshots>
 
   <releases>
+    <release version="0.7.1" date="2026-09-15">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Wikisource, "Sensation" from Rimbaud's *Poésies* (written March 1870), complete first quatrain of two.</p>
+        <p>Selection: Complete original quatrain and complete English quatrain.</p>
+        <p>Original (complete stanza):</p>
+        <p>&gt; Par les soirs bleus d'été, j'irai dans les sentiers,</p>
+        <p>&gt; Picoté par les blés, fouler l'herbe menue :</p>
+        <p>&gt; Rêveur, j'en sentirai la fraîcheur à mes pieds.</p>
+        <p>&gt; Je laisserai le vent baigner ma tête nue.</p>
+        <p>English (complete stanza, working translation):</p>
+        <p>&gt; On blue summer evenings I will walk the footpaths,</p>
+        <p>&gt; pricked by the wheat, treading the fine grass:</p>
+        <p>&gt; dreaming, I will feel its coolness at my feet.</p>
+        <p>&gt; I will let the wind bathe my bare head.</p>
+        <p>Arthur Rimbaud, "Sensation"</p>
+        <p>## What's Changed</p>
+        <p>This is a small, focused patch. It repairs a workspace sidebar regression that</p>
+        <p>v0.7.0 introduced, and it does nothing else.</p>
+        <p>- **Your workspace bar is back.** The sidebar row carrying the workspace name,</p>
+        <p>  the collapse arrow, and the add-folder and refresh buttons stays where it</p>
+        <p>  belongs, at the top of the workspace list.</p>
+        <p>- **The sidebar scrolls where you send it.** It no longer pulls itself back</p>
+        <p>  down a moment after you scroll up, and with more than one workspace it no</p>
+        <p>  longer jitters between two positions.</p>
+        <p>- **Scrolling near the workspace bar feels right.** The file tree now treats</p>
+        <p>  the strip behind that bar as off screen, which is what it always should have</p>
+        <p>  done. Revealing a row with the keyboard, or jumping to a file, lands it where</p>
+        <p>  you can actually see it rather than just under the bar.</p>
+        <p>Nothing else in the editor changed. No new settings, no new shortcuts, no</p>
+        <p>changes to how your files, drafts, sessions, notes, or workspaces are stored.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for this release. Your workspaces, open tabs,</p>
+        <p>settings, notes, and history carry over untouched. If v0.7.0 left your sidebar</p>
+        <p>scrolled oddly, simply opening v0.7.1 puts it right.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>No deprecations, and nothing is being removed. This release adds no new</p>
+        <p>warnings; it removes a defect that had been quietly hiding a second one.</p>
+        <p>## Bug Fixes</p>
+        <p>- **The workspace bar could be scrolled out of reach.** In v0.7.0 the sidebar</p>
+        <p>  scrolled itself down by the exact height of the workspace bar as soon as a</p>
+        <p>  workspace was shown, leaving that bar hidden above the visible area. Trying</p>
+        <p>  to scroll back up snapped the list straight to the tree's first row. The</p>
+        <p>  cause was inside the container that keeps the file tree fast on very large</p>
+        <p>  folders: it mistook its own resting position for a request from the tree to</p>
+        <p>  scroll somewhere else, and then honoured that request on every layout pass.</p>
+        <p>- **Two or more workspaces made the sidebar oscillate.** The same mistake made</p>
+        <p>  each workspace section pull the sidebar in the opposite direction from its</p>
+        <p>  neighbour, so the view bounced between two positions indefinitely and the end</p>
+        <p>  of the list could never be reached. Both symptoms share one fix.</p>
+        <p>- **Revealed rows could land behind the workspace bar.** Correcting the above</p>
+        <p>  exposed a second defect it had been masking: the file tree was told it had</p>
+        <p>  more visible space than it really did, by the height of the bar above it, so</p>
+        <p>  a row revealed by keyboard navigation or by jumping to a file could come to</p>
+        <p>  rest just under that bar. The tree is now given the space it genuinely has.</p>
+        <p>This fix lives in the reusable GTK Lush widget layer rather than in LushText's</p>
+        <p>own sidebar code, so anything else built on that container gets the same</p>
+        <p>repair. The behaviour is now covered at four levels, from pure unit and</p>
+        <p>property tests through widget-level and full sidebar journeys, with each new</p>
+        <p>check verified to fail against the original defect.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-09-15">
       <description>
         <p>## Poetic Opening</p>
