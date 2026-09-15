@@ -70,6 +70,7 @@ make check-accessibility-policy # accessibility helper/proof guardrail for new U
 make check-visual-proof-policy # require visual geometry proof for local visual-sensitive changes
 make check-workflow-boundaries # workflow readability convention and matrix conformance
 make check-gtk-lush-policy # validate GTK Lush family scaffolding/dependency direction
+make check-terminology # workspace folder-set terminology guard over code, resources, and docs
 make check-gtk-lush-adoption # run GTK Lush adoption lab, stock fixture, and matrix checks
 make gtk-lush-adoption-lab # build/test the maintained GTK Lush adoption lab
 make gtk-lush-stock-fixtures # check stock one-crate GTK Lush adoption fixtures
@@ -283,6 +284,20 @@ the evidence surfaces retired; or when the programme record's slot ledger in
 workflows are migrated. The programme is closed, so that record is frozen except
 its deferral inventory, which may be appended; the matrix row is what a change
 updates, in the same change as the code.
+
+`make check-terminology` is part of `make check-policy`. It runs the
+`workspace_terminology` integration test, which scans `AGENTS.md`, `README.md`,
+`data/`, `docs/`, `openspec/specs/`, `resources/ui/`, and the crate sources for
+the retired `workspace root` / `workspace note` vocabulary, allowing it only
+inside the named sidecar compatibility constants and fixtures. It lives in the
+local gate as well as the CI test lane because it is the only gate that reads
+`data/dev.cominotti.lushtext.metainfo.xml.in`, where `scripts/release.sh`
+inserts AppStream release notes: `make release` runs no tests, so a forbidden
+phrase in release prose would otherwise fail CI only **after** the public tag
+was already pushed. That is not hypothetical - it is how the v0.7.0 release
+found `openspec/specs/workspace-entry-visibility/spec.md:34`, committed on
+`main` in `08a11823` because the guard ran nowhere local. The test costs under
+a second once the test binary is built.
 
 `docs/workflow-readability-matrix.md` is the completion source of truth for that
 convention, and the convention itself is normative in

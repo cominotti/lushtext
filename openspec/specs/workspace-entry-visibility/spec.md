@@ -31,7 +31,7 @@ The application SHALL decide whether a workspace directory entry is visible usin
 ### Requirement: Configured workspace folders are always visible as roots
 A configured workspace folder SHALL always be visible as a root row and SHALL always be indexed and searched as a root, regardless of its own basename or the excluded list. The visibility rule SHALL govern only entries discovered inside it.
 
-#### Scenario: Dot-named workspace root stays visible
+#### Scenario: Dot-named workspace folder stays visible
 - **WHEN** the user adds `~/.config` as a workspace folder while the hidden-files mode is off
 - **THEN** the folder row appears in the sidebar, its non-dot children are visible, and its files are indexed and searchable
 
