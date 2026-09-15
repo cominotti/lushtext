@@ -6,8 +6,15 @@
 //! child's content the `ViewportSliceBin` allocates. The band must stay inside
 //! the content, must contain everything the outer viewport can show, and must
 //! not depend on anything but its inputs.
+//!
+//! `gtk_lush_widgets::outer_scroll_request` decides whether the child asked to
+//! see a different band and how far the outer scroller must travel to show it.
+//! Its critical invariant is negative: a bin resting where it put itself must
+//! never move the outer scroller, at **any** viewport position. Violating that
+//! made a sidebar scroll its own section header out of view and made two
+//! sections oscillate against each other forever.
 
-use gtk_lush_widgets::{ViewportSlice, viewport_slice};
+use gtk_lush_widgets::{ADJUSTMENT_EPSILON, ViewportSlice, outer_scroll_request, viewport_slice};
 use proptest::prelude::*;
 
 use crate::support;
@@ -94,6 +101,75 @@ proptest! {
             if unclamped {
                 prop_assert!(covers, "slice {slice:?} does not cover moved viewport {start}..{end}");
             }
+        }
+    }
+
+    #[test]
+    fn a_resting_bin_never_scrolls_the_outer_window(
+        published_offset in 0.0..MAX_CONTENT,
+        viewport_top in -MAX_CONTENT..MAX_CONTENT,
+        drift in -0.49..0.49f64,
+    ) {
+        // The bin wrote `published_offset` and the child left it there (modulo
+        // sub-pixel noise). No viewport position may turn that into a request.
+        prop_assert_eq!(
+            outer_scroll_request(published_offset, published_offset + drift, viewport_top),
+            None
+        );
+    }
+
+    #[test]
+    fn a_request_lands_the_asked_for_offset_at_the_viewport_top(
+        published_offset in 0.0..MAX_CONTENT,
+        child_value in 0.0..MAX_CONTENT,
+        viewport_top in -MAX_CONTENT..MAX_CONTENT,
+    ) {
+        let Some(delta) = outer_scroll_request(published_offset, child_value, viewport_top) else {
+            return Ok(());
+        };
+        // Scrolling the outer window by `delta` moves its top edge to exactly
+        // the content offset the child asked for.
+        prop_assert!(
+            (viewport_top + delta - child_value).abs() < 1e-6,
+            "delta {delta} from viewport_top {viewport_top} lands at {} not {child_value}",
+            viewport_top + delta
+        );
+    }
+
+    #[test]
+    fn honouring_a_request_settles_instead_of_asking_again(
+        published_offset in 0.0..MAX_CONTENT,
+        child_value in 0.0..MAX_CONTENT,
+        viewport_top in -MAX_CONTENT..MAX_CONTENT,
+    ) {
+        let Some(delta) = outer_scroll_request(published_offset, child_value, viewport_top) else {
+            return Ok(());
+        };
+        // After the outer scroller moves, the next allocation republishes the
+        // slice offset the child now rests at. That must be the end of it:
+        // a request that re-asks on every allocation is the oscillation bug.
+        let settled_viewport_top = viewport_top + delta;
+        prop_assert_eq!(
+            outer_scroll_request(child_value, child_value, settled_viewport_top),
+            None
+        );
+    }
+
+    #[test]
+    fn only_movements_past_the_epsilon_are_requests(
+        published_offset in 0.0..MAX_CONTENT,
+        step in -MAX_CONTENT..MAX_CONTENT,
+        viewport_top in -MAX_CONTENT..MAX_CONTENT,
+    ) {
+        let child_value = published_offset + step;
+        let request = outer_scroll_request(published_offset, child_value, viewport_top);
+        if step.abs() < ADJUSTMENT_EPSILON {
+            prop_assert_eq!(request, None);
+        }
+        // A reported request is never smaller than the epsilon either, so the
+        // caller can apply it without re-checking for noise.
+        if let Some(delta) = request {
+            prop_assert!(delta.abs() >= ADJUSTMENT_EPSILON);
         }
     }
 }

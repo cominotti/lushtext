@@ -271,15 +271,32 @@ fn test_large_directory_renders_last_row_after_scroll() {
     expand_path(&tree.section, &tree.root, &tree.root.join("nested"));
     assert_last_row_rendered(&tree.section, &tree.sidebar, 300);
     // No band of the section's allocated height is left without a row: the
-    // rendered rows tile the outer viewport from top to bottom.
-    let max_bottom = rendered_rows(&tree.section)
+    // rendered rows tile the outer viewport from top to bottom. A virtualized
+    // list can only tile at row boundaries, so the last row may stop up to one
+    // row short of the fold — but it must not be drawn *past* it. Rows below
+    // the fold mean the list was handed a taller band than the viewport shows,
+    // which is how a revealed row ends up behind the workspace header.
+    let bottoms: Vec<f64> = rendered_rows(&tree.section)
         .iter()
         .filter_map(|(widget, _)| bottom_in_outer(&tree.sidebar, widget))
-        .fold(0.0, f64::max);
+        .collect();
+    let max_bottom = bottoms.iter().copied().fold(0.0, f64::max);
+    let row_height = rendered_rows(&tree.section)
+        .iter()
+        .filter_map(|(widget, _)| widget.compute_bounds(&*tree.sidebar.imp().outer_scrolled_window))
+        .map(|bounds| f64::from(bounds.height()))
+        .fold(0.0, f64::max)
+        .max(1.0);
     let viewport_height = f64::from(tree.sidebar.imp().outer_scrolled_window.height());
     assert!(
-        max_bottom >= viewport_height - 1.0,
-        "rendered rows must reach the bottom of the viewport (max bottom {max_bottom}, viewport {viewport_height})"
+        max_bottom >= viewport_height - row_height,
+        "rendered rows must reach the bottom of the viewport within one row \
+         (max bottom {max_bottom}, row height {row_height}, viewport {viewport_height})"
+    );
+    assert!(
+        max_bottom <= viewport_height + 1.0,
+        "rendered rows must not be drawn below the fold \
+         (max bottom {max_bottom}, viewport {viewport_height})"
     );
     drop(tree.window);
 }
@@ -771,4 +788,274 @@ fn test_late_rows_expose_the_same_accessibility_metadata_as_early_rows() {
         "scrolling must not change readiness"
     );
     drop(tree.window);
+}
+
+// --- The workspace header belongs to the user, not to the slice bin ----------
+//
+// Each section stacks a separator and its header box above the slice bin, all
+// inside the one sidebar scroller. A bin that scrolls the outer window while
+// merely resting therefore scrolls its own header out of view and pins the
+// tree's first row to the top, and the user cannot scroll back: the next
+// allocation undoes it. v0.7.0 shipped exactly that. These checks assert the
+// sidebar's side of `gtk_lush_adoption`'s widget-level contract, over the
+// content-height changes a real sidebar goes through.
+//
+// Every resting assertion first proves the sidebar *can* scroll. Without that
+// guard these checks pass against the defect itself, because a workspace whose
+// tree fits the viewport has no scroll range to be stolen — which is how four
+// of them were written the first time.
+
+/// Files seeded directly in a workspace folder, enough that the tree overflows
+/// any test viewport without a nested expansion step.
+const TALL_WORKSPACE_ROWS: usize = 400;
+
+/// One workspace whose folder directly holds `TALL_WORKSPACE_ROWS` files.
+fn tall_workspace(height: i32) -> LargeTree {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("tall workspace tempdir");
+    let root = dir.path().join("root");
+    seed_files(&root, TALL_WORKSPACE_ROWS);
+    save_workspaces(vec![WorkspaceConfig::with_one_folder(
+        WorkspaceId::new("tall"),
+        "tall",
+        root.clone(),
+    )]);
+    let (window, sidebar) = present_sidebar_window(height);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    section.expand_folders();
+    wait_for_refresh_idle(&section);
+    flush_after_delay(Duration::from_millis(400));
+    LargeTree {
+        _dir: dir,
+        root,
+        window,
+        sidebar,
+        section,
+    }
+}
+
+/// Two workspaces whose folders each directly hold `count` files.
+fn two_tall_workspaces(
+    count: usize,
+    height: i32,
+) -> (
+    tempfile::TempDir,
+    LushtextWindow,
+    LushtextSidebar,
+    Vec<LushtextWorkspaceSection>,
+) {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("two tall workspaces tempdir");
+    let mut configs = Vec::new();
+    for name in ["left", "right"] {
+        let root = dir.path().join(name);
+        seed_files(&root, count);
+        configs.push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new(name),
+            name,
+            root,
+        ));
+    }
+    save_workspaces(configs);
+    let (window, sidebar) = present_sidebar_window(height);
+    let sections = mapped_sections(&sidebar, 2);
+    for section in &sections {
+        section.expand_folders();
+        wait_for_refresh_idle(section);
+    }
+    flush_after_delay(Duration::from_millis(600));
+    (dir, window, sidebar, sections)
+}
+
+/// Poll the sidebar's scroll position so a value that happens to look right at
+/// one instant cannot pass for a settled one.
+fn settled_outer_values(sidebar: &LushtextSidebar, samples: usize) -> Vec<f64> {
+    (0..samples)
+        .map(|_| {
+            flush_after_delay(Duration::from_millis(120));
+            outer_adjustment(sidebar).value()
+        })
+        .collect()
+}
+
+/// Scroll positions within this many logical pixels count as the same place.
+const SCROLL_TOLERANCE: f64 = 1.0;
+
+fn header_of(section: &LushtextWorkspaceSection) -> gtk4::Widget {
+    section.imp().header_box.clone().upcast()
+}
+
+#[track_caller]
+fn assert_sidebar_can_scroll(sidebar: &LushtextSidebar, when: &str) {
+    let adjustment = outer_adjustment(sidebar);
+    assert!(
+        adjustment.upper() > adjustment.page_size() + 1.0,
+        "this check is vacuous unless the sidebar has scroll range {when}:          content is {} tall in a {} viewport",
+        adjustment.upper(),
+        adjustment.page_size(),
+    );
+}
+
+#[track_caller]
+fn assert_header_visible(
+    sidebar: &LushtextSidebar,
+    section: &LushtextWorkspaceSection,
+    when: &str,
+) {
+    let header = header_of(section);
+    let bounds = header
+        .compute_bounds(&*sidebar.imp().outer_scrolled_window)
+        .expect("the workspace header must be allocated");
+    assert!(
+        inside_outer_viewport(sidebar, &header),
+        "the workspace header must stay visible {when}: it sits at y={} height={} in a {}px          viewport, with the sidebar scrolled to {}",
+        bounds.y(),
+        bounds.height(),
+        sidebar.imp().outer_scrolled_window.height(),
+        outer_adjustment(sidebar).value(),
+    );
+}
+
+#[track_caller]
+fn assert_sidebar_rests_at_top(sidebar: &LushtextSidebar, when: &str) {
+    assert_sidebar_can_scroll(sidebar, when);
+    let values = settled_outer_values(sidebar, 12);
+    assert!(
+        values.iter().all(|value| *value < SCROLL_TOLERANCE),
+        "the sidebar must stay where the user left it {when}; scroll positions were {values:?}"
+    );
+}
+
+#[test]
+fn test_workspace_header_is_visible_when_the_sidebar_is_at_rest() {
+    let tree = tall_workspace(800);
+    assert_sidebar_rests_at_top(&tree.sidebar, "after the workspace loads");
+    assert_header_visible(&tree.sidebar, &tree.section, "after the workspace loads");
+    drop(tree.window);
+}
+
+#[test]
+fn test_scrolling_the_sidebar_back_to_the_top_reveals_the_workspace_header() {
+    let tree = tall_workspace(800);
+    scroll_outer_to_bottom(&tree.sidebar);
+    assert!(
+        outer_adjustment(&tree.sidebar).value() > 0.0,
+        "the sidebar must scroll away from the top before the return trip is meaningful"
+    );
+
+    scroll_outer_to(&tree.sidebar, 0.0);
+    assert_sidebar_rests_at_top(&tree.sidebar, "after scrolling back to the top");
+    assert_header_visible(
+        &tree.sidebar,
+        &tree.section,
+        "after scrolling back to the top",
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_workspace_header_survives_expanding_a_large_directory() {
+    let tree = large_tree(&[("nested", 600)], 800);
+    // Expanding multiplies the content height, which re-slices every frame.
+    expand_path(&tree.section, &tree.root, &tree.root.join("nested"));
+    scroll_outer_to(&tree.sidebar, 0.0);
+    assert_sidebar_rests_at_top(&tree.sidebar, "after expanding a large directory");
+    assert_header_visible(
+        &tree.sidebar,
+        &tree.section,
+        "after expanding a large directory",
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_workspace_header_survives_a_manual_refresh() {
+    let tree = tall_workspace(800);
+    tree.section.imp().refresh_button.emit_clicked();
+    wait_for_refresh_idle(&tree.section);
+    assert_sidebar_rests_at_top(&tree.sidebar, "after a manual refresh");
+    assert_header_visible(&tree.sidebar, &tree.section, "after a manual refresh");
+    drop(tree.window);
+}
+
+#[test]
+fn test_workspace_header_survives_collapsing_and_expanding_the_section() {
+    let tree = tall_workspace(800);
+    tree.section.set_section_body_collapsed(true);
+    flush_after_delay(Duration::from_millis(400));
+    // Collapsed, the tree leaves the scroller entirely; only the header's own
+    // visibility is meaningful here, so this half makes no resting claim.
+    assert_header_visible(
+        &tree.sidebar,
+        &tree.section,
+        "while the section body is collapsed",
+    );
+
+    tree.section.set_section_body_collapsed(false);
+    wait_for_refresh_idle(&tree.section);
+    scroll_outer_to(&tree.sidebar, 0.0);
+    assert_sidebar_rests_at_top(&tree.sidebar, "after re-expanding the section body");
+    assert_header_visible(
+        &tree.sidebar,
+        &tree.section,
+        "after re-expanding the section body",
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_workspace_header_survives_toggling_hidden_files() {
+    // v0.7.0's other sidebar feature changes the tree's height from a settings
+    // key, through the automatic refresh path rather than a user scroll.
+    let tree = tall_workspace(800);
+    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    for show_hidden in [true, false] {
+        settings
+            .set_boolean(
+                lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES,
+                show_hidden,
+            )
+            .expect("set show-hidden key");
+        wait_for_refresh_idle(&tree.section);
+        scroll_outer_to(&tree.sidebar, 0.0);
+        assert_sidebar_rests_at_top(&tree.sidebar, "after toggling hidden files");
+        assert_header_visible(&tree.sidebar, &tree.section, "after toggling hidden files");
+    }
+    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    flush_events();
+    drop(tree.window);
+}
+
+#[test]
+fn test_workspace_header_is_visible_in_a_short_sidebar() {
+    // A viewport barely taller than the chrome above the tree is the position
+    // where a forced scroll hides the header most completely.
+    let tree = tall_workspace(320);
+    assert_sidebar_rests_at_top(&tree.sidebar, "in a short window");
+    assert_header_visible(&tree.sidebar, &tree.section, "in a short window");
+    drop(tree.window);
+}
+
+#[test]
+fn test_two_workspace_sections_reach_both_ends_without_oscillating() {
+    let (_dir, window, sidebar, sections) = two_tall_workspaces(300, 800);
+    assert_sidebar_can_scroll(&sidebar, "with two workspace sections");
+
+    let adjustment = outer_adjustment(&sidebar);
+    let bottom = adjustment.upper() - adjustment.page_size();
+    scroll_outer_to_bottom(&sidebar);
+    let at_bottom = settled_outer_values(&sidebar, 15);
+    assert!(
+        at_bottom
+            .iter()
+            .all(|value| (value - bottom).abs() < SCROLL_TOLERANCE),
+        "two workspace sections must not pull the sidebar back and forth at the bottom; \
+         wanted {bottom}, saw {at_bottom:?}"
+    );
+
+    scroll_outer_to(&sidebar, 0.0);
+    assert_sidebar_rests_at_top(&sidebar, "with two workspace sections");
+    assert_header_visible(&sidebar, &sections[0], "with two workspace sections");
+    drop(window);
 }

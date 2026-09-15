@@ -23,6 +23,9 @@ spikes for `gtk4-rs` and Kooha.
   Keep `ViewportSliceBin` discovering its outer `GtkScrolledWindow` by ancestry
   with an explicit `outer-scrolled-window` override, and keep `viewport_slice`
   a public pure function: consumers and property tests share one geometry.
+  `outer_scroll_request` joins it for the same reason, after the inline version
+  of that decision shipped a defect the whole suite missed: both of the bin's
+  decisions are now pure, public, and property-tested.
 - `gtk-lush-proof-harness`: keep caller-owned environment mutation and test
   registry. The harness should not mutate process environment for consumers.
 - `gtk-lush-proof-spine`: keep GTK-free provider traits and bounded value

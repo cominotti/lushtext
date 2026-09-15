@@ -27,9 +27,19 @@ overscan), owns the child's adjustments, and forwards the child's own
 because `GtkListView` realizes at most `GTK_LIST_VIEW_MAX_LIST_ITEMS` (200,
 plus two extra) row widgets for one visible range: a list view handed its
 whole content as viewport renders blank space after roughly the two-hundredth
-row. The pure slice geometry is `viewport_slice` / `ViewportSlice`. Without an
-outer scroller ancestor (or the `outer-scrolled-window` property) the bin is a
-plain host and the child receives the whole allocation.
+row. Without an outer scroller ancestor (or the `outer-scrolled-window`
+property) the bin is a plain host and the child receives the whole allocation.
+
+Two pure functions carry its decisions, so both are unit- and property-testable
+without GTK. `viewport_slice` / `ViewportSlice` picks the band, deducting
+whatever chrome the host draws above the content from it: the child judges row
+visibility from its own allocation, so a band taller than the visible area makes
+it place revealed rows behind that chrome. `outer_scroll_request` decides
+whether the child asked to scroll, by comparing the child's adjustment against
+the offset the bin published rather than against the outer viewport's unclamped
+top edge — those agree only when the bin starts exactly at that edge, and
+comparing against the wrong one makes a bin below other content scroll that
+content away and pin itself to the top.
 
 `RenderHoldOverlay` captures already-rendered child pixels into a non-targetable
 cover picture, hides the live child, lets callers warm the live child beneath

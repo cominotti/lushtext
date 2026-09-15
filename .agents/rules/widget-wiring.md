@@ -198,11 +198,23 @@ When a custom container hosts a `GtkScrollable` child and owns its adjustments
   `GtkListView` applies `scroll_to` and focus scrolling inside its own
   allocation, so the child's request appears as a divergence from the value the
   container just wrote.
-- Forward child-originated requests to the outer scroller against the
-  **unclamped** viewport position (the slice offset is clamped at the content
-  edges and undershoots by whatever sits above the child), and apply them from
+- Tell a child-originated request apart from the container's own write by
+  comparing against **the offset the container published**, never against the
+  unclamped viewport position. The two agree only when the container starts
+  exactly at the viewport's top edge; everywhere else the difference is read as
+  a standing request and the container scrolls the outer window to satisfy it.
+  Shipping that comparison is what made a sidebar scroll its own section header
+  out of view and made two sections oscillate. Measure the resulting travel
+  against the unclamped viewport top — that part was right — and apply it from
   an idle: moving an outer adjustment from inside a layout pass does not
   reliably schedule another layout.
+- Deduct chrome drawn above the child from the band you allocate it. A child
+  decides for itself whether a row is on screen, from its own allocation, so a
+  band taller than the visible area makes it place revealed rows behind that
+  chrome. Do not deduct at the bottom edge as well: the band then collapses to
+  nothing once the content scrolls past, and a zero-height allocation makes
+  `GtkListView` rewrite the adjustment the container owns, which reads as a
+  request and restarts the fight.
 - Never re-queue an allocation when the outer adjustment refused to move
   (`set_value` clamps and emits nothing); that is the loop guard.
 - Report the child's full content as the container's natural height, and as its

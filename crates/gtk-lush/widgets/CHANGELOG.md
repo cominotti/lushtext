@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Fixed `ViewportSliceBin` moving the outer scroller while at rest. It compared
+  the child's adjustment against the unclamped viewport top rather than against
+  the offset it had itself published, so any container placed below other
+  content in the same scroller read a standing scroll request: one scrolled that
+  content out of view and pinned itself to the top, and two in one scroller
+  oscillated against each other and made the end of the content unreachable.
+  The decision is now the pure, unit- and property-tested
+  `outer_scroll_request`.
+- `viewport_slice` now deducts chrome above the content from the band it
+  returns, so the child's own `scroll_to` and keyboard-focus visibility
+  decisions match what is on screen instead of running past the fold by the
+  height of that chrome. The band is never shrunk at the bottom edge: a
+  zero-height allocation makes `GtkListView` rewrite the container's adjustment,
+  which would read as a scroll request.
+
 ## 0.0.0
 
 - Added `ViewportSliceBin`, a single-child container that keeps a

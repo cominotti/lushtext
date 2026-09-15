@@ -15,11 +15,9 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{glib, graphene, gsk};
 
+use crate::scroll_request::outer_scroll_request;
 use crate::single_child::replace_child;
 use crate::slice_geometry::viewport_slice;
-
-/// Adjustment deltas below this many logical pixels are treated as noise.
-const ADJUSTMENT_EPSILON: f64 = 0.5;
 
 /// Private widget state for `GtkLushViewportSliceBin`.
 pub struct ViewportSliceBin {
@@ -42,6 +40,10 @@ pub struct ViewportSliceBin {
     /// Unclamped top of the outer viewport relative to this bin's content at
     /// the last allocation; negative when the bin starts below the viewport.
     viewport_top: Cell<f64>,
+    /// The adjustment value this bin last wrote for the child. Anything else
+    /// the adjustment holds is a request the child made, and only that is
+    /// forwarded to the outer scroller.
+    published_offset: Cell<f64>,
     /// Outer scroll delta requested by the child and not yet applied.
     pending_outer_delta: Cell<f64>,
     /// True while an idle to apply `pending_outer_delta` is scheduled.
@@ -65,6 +67,7 @@ impl ObjectSubclass for ViewportSliceBin {
             overscan: Cell::new(0.0),
             allocating: Cell::new(false),
             viewport_top: Cell::new(0.0),
+            published_offset: Cell::new(0.0),
             pending_outer_delta: Cell::new(0.0),
             outer_request_scheduled: Cell::new(false),
         }
@@ -226,12 +229,9 @@ impl WidgetImpl for ViewportSliceBin {
         let slice_top = whole_pixels(slice.top).clamp(0, height.max(0) - slice_height);
 
         self.allocating.set(true);
-        self.vadjustment.configure(
+        self.publish_slice_offset(
             f64::from(slice_top),
-            0.0,
             content_height,
-            self.vadjustment.step_increment(),
-            f64::from(slice_height),
             f64::from(slice_height),
         );
         let transform = gsk::Transform::new()
@@ -240,11 +240,10 @@ impl WidgetImpl for ViewportSliceBin {
         self.allocating.set(false);
 
         // A `GtkListView` applies `scroll_to` and keyboard-focus scrolling
-        // inside its own allocation, which runs right here. If the child moved
-        // its adjustment away from the slice offset, that is a request to show
-        // a different band: forward it to the outer scroller.
-        let requested = self.vadjustment.value();
-        self.follow_child_request(requested - viewport_top);
+        // inside its own allocation, which runs right here. Only a value that
+        // differs from the one just published is a request to show a different
+        // band; the published offset itself is this bin's own resting state.
+        self.follow_child_request_if_diverged(self.vadjustment.value(), viewport_top);
     }
 }
 
@@ -357,13 +356,43 @@ impl ViewportSliceBin {
         Some((viewport_top, viewport_height))
     }
 
+    /// Write the slice offset the child should rest at and remember it as the
+    /// baseline that tells this bin's own writes apart from the child's.
+    fn publish_slice_offset(&self, offset: f64, content_height: f64, slice_height: f64) {
+        self.vadjustment.configure(
+            offset,
+            0.0,
+            content_height,
+            self.vadjustment.step_increment(),
+            slice_height,
+            slice_height,
+        );
+        // Read back rather than storing `offset`: `configure` clamps to
+        // `[lower, upper - page_size]`, and a baseline that disagrees with the
+        // adjustment by even a pixel is read as a child request forever after.
+        self.published_offset.set(self.vadjustment.value());
+    }
+
     /// The child moved its own adjustment outside an allocation (for example a
-    /// deferred `scroll_to`): forward the delta like an in-allocation request.
+    /// deferred `scroll_to`): treat it like an in-allocation request.
     fn child_adjustment_moved(&self, value: f64) {
         if self.allocating.get() {
             return;
         }
-        self.follow_child_request(value - self.viewport_top.get());
+        self.follow_child_request_if_diverged(value, self.viewport_top.get());
+    }
+
+    /// Forward `requested` only when the child actually moved the adjustment.
+    ///
+    /// The decision itself is pure and lives in `crate::scroll_request`, which
+    /// documents why the resting comparison must be against the offset this bin
+    /// published rather than against the unclamped viewport top.
+    fn follow_child_request_if_diverged(&self, requested: f64, viewport_top: f64) {
+        if let Some(delta) =
+            outer_scroll_request(self.published_offset.get(), requested, viewport_top)
+        {
+            self.follow_child_request(delta);
+        }
     }
 
     /// Translate a child-originated scroll request into an outer scroll so the
@@ -384,7 +413,7 @@ impl ViewportSliceBin {
     /// unchanged value, so a request the outer scroller cannot honour ends
     /// there instead of re-queuing an allocation.
     fn follow_child_request(&self, delta: f64) {
-        if delta.abs() < ADJUSTMENT_EPSILON || self.outer.borrow().is_none() {
+        if self.outer.borrow().is_none() {
             return;
         }
         self.pending_outer_delta

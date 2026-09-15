@@ -9,8 +9,10 @@
 //! that is handed its whole content as viewport renders blank space after
 //! roughly the two-hundredth row. This module decides which band of the
 //! content the child is actually allocated, so its own viewport stays the size
-//! of the real one. It has no GTK dependency so it can be unit- and
-//! property-tested directly.
+//! of the real one — including the part of it that chrome above the content
+//! has already taken, because the child decides for itself whether a row is
+//! on screen and it can only be right if its band is. It has no GTK dependency
+//! so it can be unit- and property-tested directly.
 
 /// The band of content, in logical pixels, that the child should be allocated.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,7 +27,9 @@ pub struct ViewportSlice {
 ///
 /// * `viewport_top` is the outer viewport's top edge relative to the top of the
 ///   content; it may be negative when the content starts below the viewport.
-/// * `viewport_height` is the outer viewport's visible height.
+/// * `viewport_height` is the outer viewport's visible height. The band gets
+///   what is left of it after whatever the host draws above this content, so a
+///   child that places a row at its own bottom edge places it at the fold.
 /// * `content_height` is the child's full natural height.
 /// * `overscan` is extra content allocated above and below the viewport. Zero
 ///   keeps the child's own viewport identical to the visible one, which lets a
@@ -59,8 +63,21 @@ pub fn viewport_slice(
         };
     }
 
-    let height = (viewport_height + 2.0 * overscan).min(content_height);
-    let top = (viewport_top - overscan).clamp(0.0, content_height - height);
+    // Chrome the host draws *above* this content eats into the viewport, so the
+    // content has less of it than `viewport_height` to occupy. The child sizes
+    // its own `scroll_to` and keyboard-focus decisions from the allocation it is
+    // given, so a band wider than what shows makes it believe rows are on
+    // screen while they sit below the fold.
+    //
+    // Only the top side is deducted. Shrinking the band at the bottom edge too
+    // would be symmetric but wrong in practice: it collapses to nothing once
+    // the content has scrolled past, and a zero-height allocation makes
+    // `GtkListView` rewrite the adjustment this container owns, which reads as
+    // a scroll request and starts the very fight this module exists to avoid.
+    let visible_top = viewport_top.max(0.0);
+    let visible_height = (viewport_height + viewport_top.min(0.0)).max(0.0);
+    let height = (visible_height + 2.0 * overscan).min(content_height);
+    let top = (visible_top - overscan).clamp(0.0, content_height - height);
     ViewportSlice { top, height }
 }
 
@@ -119,10 +136,13 @@ mod tests {
     }
 
     #[test]
-    fn slice_clamps_at_the_top_of_the_content() {
+    fn a_content_start_below_the_viewport_only_gets_the_visible_remainder() {
+        // 40px of the viewport are spent on whatever the host draws above this
+        // content, so 625px of it show; the overscan adds 100 on each side and
+        // the top one is clamped away at the content edge.
         let slice = viewport_slice(-40.0, 665.0, 11_486.0, 100.0);
         assert_eq!(slice.top, 0.0);
-        assert_eq!(slice.height, 865.0);
+        assert_eq!(slice.height, 825.0);
     }
 
     #[test]
@@ -130,6 +150,18 @@ mod tests {
         let slice = viewport_slice(11_400.0, 665.0, 11_486.0, 0.0);
         assert_eq!(slice.top, 11_486.0 - 665.0);
         assert_eq!(slice.height, 665.0);
+    }
+
+    #[test]
+    fn content_scrolled_past_the_viewport_still_gets_a_full_band() {
+        // Never zero: a zero-height allocation makes the child rewrite the
+        // adjustment this container owns, which would read as a scroll request.
+        let above = viewport_slice(20_000.0, 665.0, 11_486.0, 0.0);
+        assert_eq!(above.height, 665.0);
+        assert_eq!(above.top, 11_486.0 - 665.0);
+        let below = viewport_slice(-20_000.0, 665.0, 11_486.0, 0.0);
+        assert_eq!(below.height, 0.0);
+        assert_eq!(below.top, 0.0);
     }
 
     #[test]
