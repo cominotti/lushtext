@@ -65,6 +65,52 @@
   </screenshots>
 
   <releases>
+    <release version="0.7.0" date="2026-09-15">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Wikisource, "Correspondances" from Les Fleurs du mal (1861 edition), complete first quatrain.</p>
+        <p>Selection: Complete original quatrain and complete English quatrain.</p>
+        <p>Original (complete stanza):</p>
+        <p>&gt; La Nature est un temple où de vivants piliers</p>
+        <p>&gt; Laissent parfois sortir de confuses paroles;</p>
+        <p>&gt; L'homme y passe à travers des forêts de symboles</p>
+        <p>&gt; Qui l'observent avec des regards familiers.</p>
+        <p>English (complete stanza, working translation):</p>
+        <p>&gt; Nature is a temple where living pillars</p>
+        <p>&gt; Sometimes let slip confused words;</p>
+        <p>&gt; There man passes through forests of symbols</p>
+        <p>&gt; That watch him with familiar eyes.</p>
+        <p>Charles Baudelaire, "Correspondances"</p>
+        <p>## What's Changed</p>
+        <p>This release is about seeing your files clearly. LushText now lets you decide what stays hidden, draws large folders completely instead of stopping partway, and finishes rendering long Markdown documents that it used to cut short. Alongside that, a long run of internal restructuring uncovered and fixed a group of real data-safety defects, including one that could destroy a file without warning.</p>
+        <p>You can now show hidden files across your whole workspace with a single switch. Turning it on reveals dotfiles everywhere at once: in the sidebar tree, in the command palette file index, and in workspace content search. Reach it however suits you, with Ctrl+Shift+H, the new Show Hidden Files item in the main menu, or the new Hidden and Excluded Items group in Preferences under Workspace. The switch is off by default, so LushText behaves exactly as it did before until you ask for more.</p>
+        <p>Some names should stay out of the way even when hidden files are shown, so this release adds an editable Always Excluded Names list. Names on that list are never listed, never indexed, and never searched. It ships with .git, you can add and remove entries one row at a time, and a reset button restores the default. Folders you have deliberately added to a workspace always remain visible, no matter what the list says.</p>
+        <p>Workspace search gained a per-search Hidden toggle beside the existing case, regular expression, whole word, and gitignore controls. It starts from your global setting each time the panel opens, so you can look inside hidden files once without changing how the rest of the app behaves. The toggle is remembered with your saved searches and shown in the search history summary.</p>
+        <p>The workspace sidebar now draws large folders completely. Previously a folder with more than roughly two hundred entries rendered its first rows and then left blank space below, even though every entry was really there. The file tree is now properly virtualized, so long directories scroll smoothly and show every file.</p>
+        <p>Markdown preview no longer gives up at the first oversized block. A single very large table, list, code block, or quotation used to discard the entire rest of the document. Large blocks now render completely across multiple passes, and when one indivisible piece genuinely cannot fit, only that piece is replaced by a marker in place while everything around it still renders. The preview tells you when it has simplified something and how many pieces were affected. The whole-document limits still apply and still say so plainly.</p>
+        <p>Workspace search now finishes honestly when it hits its ten thousand match ceiling. It previously dropped the last buffered matches and never mentioned the truncation; it now delivers them and tells you the result set was cut short so you can narrow the query.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed after upgrading. Both new settings default to LushText's previous behavior, so nothing is reconfigured, reset, or rebuilt for you.</p>
+        <p>No on-disk format changed in this release. Your workspaces, sessions, drafts, notes, bookmarks, local history, search history, and saved searches all load unchanged.</p>
+        <p>Downstream packagers can build from the release commit as usual. The Rust dependency set is unchanged since 0.6.0, so the vendored Cargo sources used for offline Flatpak builds are still valid.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>Nothing is deprecated and no feature was removed in this release.</p>
+        <p>Saved searches and search history now record whether hidden files were included. Older files load fine in this version, but if you downgrade to 0.6.0 after saving searches here, that behavior has not been tested; keeping a copy of those files before downgrading is the cautious choice.</p>
+        <p>One known limitation is worth stating plainly, because it is easy to run into and is not fixed here. If you rename or move a file outside LushText, using mv, git mv, or a file manager, the notes and bookmarks attached to that file are left behind and will not follow it. Renaming from inside the LushText sidebar does migrate them correctly. This is tracked for a future release.</p>
+        <p>Search result ordering and the sidebar's scrolling behavior both changed internally this cycle. Results and rows should be correct and complete, but they may not appear in exactly the same order or scroll position as in 0.6.0.</p>
+        <p>## Bug Fixes</p>
+        <p>Renaming a file onto the name of a file that already exists no longer destroys the other file. This was reachable in a few keystrokes and was silent, permanent, and impossible to undo. LushText now refuses the rename and tells you that a file with that name already exists in the folder.</p>
+        <p>Saving a document while renaming or deleting the same file in the sidebar no longer corrupts the result. The save could previously recreate the old filename with your text while the open tab quietly pointed at a stale file, and report success anyway.</p>
+        <p>Creating a workspace while LushText was still starting up could overwrite every other stored workspace. Startup and new workspaces are now merged instead of racing.</p>
+        <p>Cancelling a new file or a rename no longer risks deleting a different, real file that had been moved onto that path in the meantime, and deleting a broken symbolic link now actually deletes it instead of silently doing nothing.</p>
+        <p>Folders you had expanded no longer collapse on their own when the sidebar refreshes, and renaming a clean file no longer disables that tab's fast first-keystroke autosave.</p>
+        <p>Notes and bookmarks received a group of fixes. A single unresolvable note conflict used to abandon every note sorted after it; conflicts are now isolated. Two overlapping renames could strand a note permanently while reporting success. A rename still in progress during session restore could show a restored tab with no bookmarks, and your next bookmark change would then write that empty state back over the real one. A note that failed to save used to throw away the text you had just typed, and now reopens with your words intact. Bookmark saves now retry on failure and are flushed when LushText closes, and warn you if they could not be saved.</p>
+        <p>Several editor and document fixes landed as well. A tab could get stuck permanently read-only with undo disabled after an interrupted file load. Cancelling the save changes dialog when closing a tab left that tab's autosave silently switched off, leaving unsaved work unprotected. A cancelled load could let the next autosave overwrite a good draft with nearly empty content. Session restore could stall partway through, and a save could begin against a document that had not finished loading. A failure inside session saving no longer cascades into every later save.</p>
+        <p>The encoding, line ending, and file health dialogs had an accessibility gap that is now closed.</p>
+        <p>Replace All is safer under interruption. Its rollback path now checks each target before writing rather than restoring unconditionally; this closes a hazard rather than a defect you were likely to have hit in practice.</p>
+        <p>For contributors, the development helper that clears LushText's application data no longer deletes drafts, history, configuration, and cache when given any argument at all, including --help. It now asks for confirmation and understands --help, --dry-run, and --yes.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-07-23">
       <description>
         <p>## Poetic Opening</p>
