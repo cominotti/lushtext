@@ -90,9 +90,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.name }}
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "LushText $TAG" --generate-notes
-          fi
+          # This workflow must NOT create the release. It and the publication
+          # workflow are both triggered by the `v*` tag and sit in different
+          # concurrency groups, so when both ran the same check-then-create the
+          # two POSTs crossed before either was visible and GitHub accepted
+          # *two* releases on one tag. That is not cosmetic: the REST API then
+          # refuses to update either one ("tag_name already exists"), so the
+          # authored release notes could not be published at all. It happened on
+          # v0.8.0; v0.7.1 escaped by timing alone.
+          #
+          # Creation now belongs to the publication role, which is what its name
+          # says. This role only attaches, and waits a bounded time for the
+          # release to appear rather than racing to make one.
+          for attempt in $(seq 1 60); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" -eq 60 ]]; then
+              echo "Error: release $TAG did not appear within 10 minutes;" >&2
+              echo "the publication workflow owns creation - check it first." >&2
+              exit 1
+            fi
+            sleep 10
+          done
           REPORT=$(find bench-output -name '*.md' | head -1)
           if [[ -z "$REPORT" ]]; then
             echo "Error: no report found" >&2
