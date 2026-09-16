@@ -1,7 +1,30 @@
 # flathub-publication Specification
 
+> ## Status: Flathub publication is not planned
+>
+> **Decided 2026-09-16. There is no plan and no intention to publish LushText
+> to Flathub.** The Cominotti-owned remote at `https://flatpak.cominotti.dev/`
+> is the Flatpak channel, and it is the only one.
+>
+> This is a standing decision, not a deferral waiting on credentials or review
+> capacity. Do not report a missing Flathub PR as an outstanding release action,
+> do not treat absent `FLATHUB_TOKEN` / `FLATHUB_REPOSITORY` configuration as a
+> gap, and do not propose work to close it. A release whose only unfinished item
+> would have been a Flathub handoff is complete.
+>
+> The requirements below are retained as a record of what was built, and the
+> generator, verifier, and domain-check tooling still exist and still pass their
+> tests. Reviving any of it requires an explicit new decision that reverses this
+> one. **Nothing here applies to the Flathub remote as a source of the GNOME
+> runtime and SDK** — `make flatpak` and `make flatpak-install` still need it,
+> and that use is unaffected.
+
 ## Purpose
-Define LushText's release automation, version metadata synchronization, validation gates, and Flathub publication handoff requirements.
+Record LushText's Flathub publication handoff requirements as built, for a
+publication path that is no longer intended to be used. Release automation,
+version metadata synchronization, and validation gates that are *not*
+Flathub-specific are owned by `cominotti-flatpak-repository` and the release
+lane, which remain active.
 
 ## Requirements
 

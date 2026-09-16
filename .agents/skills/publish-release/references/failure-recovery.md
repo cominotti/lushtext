@@ -7,10 +7,10 @@
 - [GitHub Actions Problems](#github-actions-problems)
 - [GitHub Release Problems](#github-release-problems)
 - [Cominotti Flatpak Problems](#cominotti-flatpak-problems)
-- [Optional Flathub Problems](#optional-flathub-problems)
+- [Flathub Is Not Planned](#flathub-is-not-planned)
 - [Transport and Signing](#transport-and-signing)
 
-When something fails, first identify which public surfaces already changed: local files, local commit, local tag, pushed `main`, pushed tag, GitHub Release, Cominotti Flatpak repository artifact/deploy, Flathub PR, or merged Flathub update.
+When something fails, first identify which public surfaces already changed: local files, local commit, local tag, pushed `main`, pushed tag, GitHub Release, or Cominotti Flatpak repository artifact/deploy.
 
 ## Before Public Push
 
@@ -104,33 +104,28 @@ If Cloudflare Pages limit verification fails:
 
 If a deployed Cominotti repository is broken, prefer publishing a new fixed release and repository summary rather than rewriting the public release tag. If the bad repository must be withdrawn, publish an explicit user-facing warning in the GitHub Release notes and preserve enough artifact context to recover the previous state.
 
-## Optional Flathub Problems
+## Flathub Is Not Planned
 
-If the workflow skipped the optional Flathub PR, check whether `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured. Then either rerun the workflow or create/update the PR manually from the generated artifact.
+**Decided 2026-09-16: LushText is not published to Flathub, and there is no
+plan or intention to start.** The Cominotti remote is the only Flatpak channel.
 
-If generated manifest verification fails:
+The release workflow still carries a Flathub PR step. It always skips, and that
+skip is the expected result of this decision rather than a failure to recover
+from. There is nothing to diagnose here: do not check whether `FLATHUB_TOKEN`
+and `FLATHUB_REPOSITORY` are configured, do not rerun a workflow to produce a
+PR, do not create one manually from the artifact, and do not report the skip as
+an outstanding action. The manifest generator, verifier, and domain check are
+retained and still tested so the tooling does not rot, but they are dormant.
 
-- regenerate with the intended tag and commit;
-- verify the manifest has a public Git source, no `type: "dir"` source, `cargo-sources.json`, and `CARGO_NET_OFFLINE=true`;
-- rerun `make verify-flathub-manifest`.
+Reviving Flathub publication requires an explicit decision reversing this one,
+at which point the removed recovery guidance can be restored from this file's
+history. See `openspec/specs/flathub-publication/spec.md`.
 
-If the Flathub PR branch is wrong:
+Note the distinction: none of this concerns the Flathub **remote** as the source
+of the GNOME runtime and SDK. A Flatpak build that fails to fetch
+`org.gnome.Platform` from Flathub is an ordinary build failure, handled like any
+other.
 
-- update only the Flathub PR branch;
-- use `--force-with-lease` only for that PR branch, never for `main`;
-- leave a clear PR comment explaining the correction.
-
-If the Flathub PR was merged and the release is broken:
-
-- submit a new fixed release PR when a code fix exists;
-- submit a revert PR to the previous known-good manifest only if the current release should be withdrawn from Flathub;
-- update the GitHub Release notes with a warning and the replacement path.
-
-If domain verification fails for `dev.cominotti.lushtext`:
-
-- publish the exact Flathub token at `https://cominotti.dev/.well-known/org.flathub.VerifiedApps.txt`;
-- verify TLS and caching;
-- rerun `make verify-flathub-domain FLATHUB_VERIFICATION_TOKEN=<token>`.
 
 ## Transport And Signing
 

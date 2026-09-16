@@ -127,7 +127,7 @@ Look for:
 
 `What's Changed` should cover features and meaningful behavior changes. Group related changes by user workflow when that reads better than a raw list.
 
-`Manual Actions Needed` should say whether users or maintainers need to do anything after upgrading. Include Flathub/store actions only if they affect publication or users.
+`Manual Actions Needed` should say whether users or maintainers need to do anything after upgrading. Include store actions only if they affect publication or users; the dormant Flathub step is never a manual action, because Flathub publication is not planned.
 
 `Warnings and Deprecations` should include compatibility notes, known issues, removed behavior, risky migrations, or changed expectations.
 

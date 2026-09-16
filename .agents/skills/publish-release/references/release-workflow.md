@@ -11,7 +11,7 @@
 - [Monitor All Remote Workflows](#monitor-all-remote-workflows)
 - [GitHub Release Notes](#github-release-notes)
 - [Cominotti Flatpak Publication](#cominotti-flatpak-publication)
-- [Optional Flathub Handoff](#optional-flathub-handoff)
+- [Flathub Is Not Planned](#flathub-is-not-planned)
 - [Final Verification](#final-verification)
 
 Use this as the release runbook. Prefer dry runs and read-only inspection until the version, notes, and release scope are clear.
@@ -75,7 +75,7 @@ Then do semantic analysis:
 - Check AppStream, Flatpak, desktop, GSettings, migrations, file I/O, draft/session persistence, and user data paths for manual actions or warnings.
 - Use subagents when available:
   - Semantic diff pass: ask for user-visible changes, behavior changes, risks, manual actions, and bug fixes since the previous tag.
-  - Release packaging pass: ask for LushText-specific release blockers, Cominotti Flatpak repository/GitHub failure modes, optional Flathub handoff risks, and rollback concerns.
+  - Release packaging pass: ask for LushText-specific release blockers, Cominotti Flatpak repository/GitHub failure modes, and rollback concerns.
 
 ## Draft Notes
 
@@ -220,18 +220,19 @@ make verify-cominotti-pages-limits
 
 If the Pages-limit check fails, use Cloudflare R2 behind `flatpak.cominotti.dev` before falling back to GitHub Pages or Netlify.
 
-## Optional Flathub Handoff
+## Flathub Is Not Planned
 
-The release workflow opens a Flathub PR only when `FLATHUB_TOKEN` and `FLATHUB_REPOSITORY` are configured. If it skips optional Flathub publication, use the uploaded `flathub-update` artifact or regenerate locally:
+**Decided 2026-09-16: there is no plan or intention to publish LushText to
+Flathub.** The Cominotti remote at `https://flatpak.cominotti.dev/` is the only
+Flatpak channel.
 
-```bash
-make flathub-manifest VERSION=vX.Y.Z
-make verify-flathub-manifest
-```
+The release workflow's Flathub PR step always skips. Treat that skip as expected
+output: no report, no manual action, no configuration to chase. Do not run
+`make flathub-manifest` or `make verify-flathub-manifest` as part of a release;
+they are retained and still tested only so the dormant tooling does not rot.
 
-The Flathub manifest must use the public Git tag and commit, include `cargo-sources.json`, avoid local `type: "dir"` sources, and set `CARGO_NET_OFFLINE=true`.
-
-Flathub publication is intentionally reviewable by default. Do not enable `flathub.json` automerge unless the user explicitly changes that policy.
+Reversing this needs an explicit decision. See
+`openspec/specs/flathub-publication/spec.md`.
 
 ## Final Verification
 
@@ -242,6 +243,5 @@ Report:
 - every GitHub Actions workflow run checked by exact release SHA, tag branch, and recovery SHA if applicable, with run ID and conclusion;
 - any failed, cancelled, timed-out, skipped-required, or missing release workflow responsibility, plus the successful replacement run ID that superseded it when recovery succeeded;
 - Cominotti Flatpak repository artifact/deploy result or exact skipped/manual action;
-- optional Flathub PR URL or exact skipped/manual action;
 - any AppStream, Flatpak, or packaging caveats;
 - any user-facing manual actions, warnings, deprecations, or rollback notes.

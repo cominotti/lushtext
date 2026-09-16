@@ -117,8 +117,7 @@ the vendored Cargo sources with:
 make cargo-sources
 ```
 
-Release, Cominotti repository, Cloudflare Pages hosting, and optional Flathub
-handoff details live in
+Release, Cominotti repository, and Cloudflare Pages hosting details live in
 [`docs/next/flatpak-packaging.md`](docs/next/flatpak-packaging.md) and
 [`docs/next/cominotti-flatpak-hosting.md`](docs/next/cominotti-flatpak-hosting.md).
 
