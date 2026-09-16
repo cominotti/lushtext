@@ -92,28 +92,40 @@ revisiting it are recorded in `design.md`.
 
 ## Impact
 
-- Modified: `crates/lushtext-core/src/ui/window/imp.rs` (the `notify::is-active`
-  hookup, beside the existing visibility hookup),
-  `crates/lushtext-core/src/ui/command_palette/policy.rs` (the interval and
-  suppression decisions, as pure policy in the workflow's policy role),
-  `crates/lushtext-core/src/ui/command_palette/index_admission.rs` (the
-  coordination that owns the interval state),
-  `crates/lushtext-core/src/ui/window/palette_shell.rs` (trigger on open),
-  `crates/lushtext-core/src/ui/sidebar/policy.rs` and
-  `crates/lushtext-core/src/ui/sidebar/` coordination (the sidebar's half),
-  `crates/lushtext-core/src/ui/window/documents.rs` and
-  `crates/lushtext-core/src/ui/window/dialogs.rs` (the save/Save As index
-  mutation — **not** `ui/editor_page/save/`, which has no palette reach-through
-  and must not gain one).
-- Evidence surfaces: `ui/command_palette/evidence.rs` and the sidebar's
-  observable state gain the refresh's observable fields, since the existing
-  readiness blockers project from them.
+> **Corrected after implementation.** The list below was written as a plan and
+> named three destinations the code did not take. What shipped, per the
+> `design.md` decisions and both matrix rows: the throttle turned out to have
+> **two** owning workflows, which the workflow convention makes cross-cutting,
+> so the pure policy went to a new `model/attention_refresh.rs` rather than to
+> `ui/command_palette/policy.rs`, and its coordination to a new roleless
+> `ui/window/attention_refresh.rs` rather than to `index_admission.rs` and
+> `ui/sidebar/policy.rs`. **No evidence surface gained fields**: the observable
+> fact is a decision about one event rather than retained state, so
+> `refresh_workspace_surfaces_on_attention` returns it to its caller
+> (Decision 6 records that reversal). The modal-surface suppression also grew
+> past "a file chooser" to cover the sidebar's Add Folder chooser and the native
+> print dialog, which review found unguarded.
+
+- New: `crates/lushtext-core/src/model/attention_refresh.rs` (cross-cutting pure
+  throttle policy) and `crates/lushtext-core/src/ui/window/attention_refresh.rs`
+  (cross-cutting coordination, no role).
+- Modified: `ui/window/imp.rs` (the `notify::is-active` hookup, beside the
+  existing visibility hookup), `ui/window/palette_shell.rs` (trigger on open and
+  the settle hook in the build terminal), `ui/window/dialogs.rs` (the Save As
+  index mutation plus two modal guards — **not** `ui/editor_page/save/`, which
+  has no palette reach-through and must not gain one), `ui/sidebar/mod.rs` and
+  `ui/sidebar/workspace_section/refresh_execution.rs` (one silent refresh entry
+  point instead of a copied one), `ui/sidebar/dialogs.rs` and
+  `ui/window/print/execution.rs` (the two further modal guards),
+  `ui/window/mod.rs` (re-exports).
 - No new service, no new dependency, no new filesystem-boundary API, no new
-  persisted format, no new GSettings key, no new action, no new D-Bus surface.
+  persisted format, no new GSettings key, no new action, no new D-Bus surface,
+  and no new readiness predicate.
 - Docs: `AGENTS.md` (key design decisions), `docs/workflow-readability-matrix.md`
-  (re-derived measured cells for `WFR-COMMAND-PALETTE` and the workspace-tree
-  row), `docs/accessibility.md` and `docs/accessibility-matrix.md` (the sidebar
-  row's expander and `Focus Folder` affordances change under a user who may be
-  focused on the row), `docs/end-user-coverage.md`, `README.md` (a new
-  user-visible behavior), and `.agents/rules/` where a durable convention
-  emerges.
+  (both `WFR-COMMAND-PALETTE` and the workspace-tree row record the shared
+  cross-cutting policy and the roleless GTK half), `docs/accessibility.md` and
+  `docs/accessibility-matrix.md` (the sidebar row's expander and `Focus Folder`
+  affordances change under a user who may be focused on the row, silently),
+  `docs/end-user-coverage.md`, and `README.md` (a new user-visible behavior).
+  No `.agents/rules/` change: the work applied existing conventions rather than
+  establishing one.

@@ -285,6 +285,12 @@ on. Both are recorded so a later change does not have to rediscover them.
   terminal, which already resolves the canonical target and knows whether a file
   was created or replaced.
 
+- **The symlinked-save scenario has no test.** The spec asserts that a save
+  through a symbolic link is indexed as its resolved target. That holds by
+  construction — the mutation worker's `indexed_file_from_path` canonicalizes
+  the admitted path, which resolves the link — but the widget suite covers only
+  the plain case. A fixture creating a real symlink would close it.
+
 ## Open Questions
 
 None outstanding. The first revision's four questions are resolved: the interval
