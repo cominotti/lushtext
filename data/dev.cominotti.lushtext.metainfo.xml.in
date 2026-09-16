@@ -65,6 +65,55 @@
   </screenshots>
 
   <releases>
+    <release version="0.8.0" date="2026-09-16">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Portuguese Wikisource and escritas.org transcriptions of the sonnet, which agree on the wording and on the Petrarchan structure of two quatrains followed by two tercets, rhyming ABBA ABBA CDC EDE. The quatrain below is complete and closes its own ABBA rhyme on maior, beija, seja, Dor.</p>
+        <p>Selection: Complete original first quatrain and complete English quatrain.</p>
+        <p>Original (complete stanza):</p>
+        <p>&gt; Ser poeta é ser mais alto, é ser maior</p>
+        <p>&gt; Do que os homens! Morder como quem beija!</p>
+        <p>&gt; É ser mendigo e dar como quem seja</p>
+        <p>&gt; Rei do Reino de Aquém e de Além Dor!</p>
+        <p>English (complete stanza, working translation):</p>
+        <p>&gt; To be a poet is to stand higher, to be greater</p>
+        <p>&gt; than other men! To bite as one who kisses!</p>
+        <p>&gt; To be a beggar and to give as one who is</p>
+        <p>&gt; King of the Realm of This Side and Beyond Pain!</p>
+        <p>Florbela Espanca, "Ser Poeta" ("To Be a Poet")</p>
+        <p>To stand higher is to see further than your own window, which is what this release is about.</p>
+        <p>## What's Changed</p>
+        <p>**LushText now notices what changed while you were away.**</p>
+        <p>Until now the command palette kept a snapshot of your workspace and had no way to learn that the world had moved. Switch a git branch, run a build, or create a file from a terminal, and `Ctrl+Shift+P` simply did not know the file existed — not after a second, not after an hour. The only ways to correct it were changing workspace scope, toggling hidden files, or restarting the app.</p>
+        <p>- **The command palette refreshes when your attention returns.** Coming back to the window, or opening the palette, brings the file list up to date. Files that appeared are searchable; files that were deleted stop being offered.</p>
+        <p>- **Collapsed folders stop claiming to be empty.** A folder marked `(Empty)` with no expander arrow and a greyed-out `Focus Folder` was reporting what its parent saw the last time it looked. If something was created inside it since, returning to the window corrects the label, the arrow, and the action — and the reverse, for a folder emptied on disk.</p>
+        <p>- **Saving a new file makes it searchable at once.** Saving an untitled document, or using Save As, previously produced a file that LushText itself could not find in its own palette. It is indexed the moment it is written, with no waiting.</p>
+        <p>**The refresh tries hard not to be in your way.**</p>
+        <p>- It is silent. No status message, no screen-reader announcement, and your selection, keyboard focus, scroll position, and which folders are open are all preserved.</p>
+        <p>- It is throttled, and the throttle adapts. The gap before the next refresh is derived from how long the last one actually took, so a small project stays snappy while a very large or network-mounted workspace slows itself down on its own rather than hammering the disk.</p>
+        <p>- It yields to your work. While a save, a window close, a draft autosave, or a file chooser is in flight, a refresh is refused outright rather than queued in front of the operation that is protecting your bytes.</p>
+        <p>- It shares. Several windows open on the same workspace refresh it once between them, not once each.</p>
+        <p>Verified against a real 87,624-file workspace: a file created from a terminal in a folder that had never been expanded became searchable 3.4 seconds after returning to the window.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for this release. There is no data migration, no change to any file LushText stores, no setting to reset, and no cache to clear. Update and carry on.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>Nothing is removed or deprecated. A few honest limits are worth knowing, because they are places you might reasonably expect the new behaviour and not get it:</p>
+        <p>- **Refreshing happens when your attention returns, and at no other time.** There is deliberately no background timer. If you stay in the LushText window while a build runs elsewhere on screen, nothing refreshes until you leave and come back, or open the palette.</p>
+        <p>- **The sidebar tree updates on window focus, not on palette open.** Opening the palette refreshes only the file list, because the palette does not read the tree and re-scanning it would be work for nobody.</p>
+        <p>- **A refused moment is not saved for later.** If you return while a save or autosave is running, or return twice in quick succession, that moment does nothing and is not replayed. The next return starts the refresh.</p>
+        <p>- **A slow workspace will let itself fall behind.** The adaptive interval can stretch to a minute on a very large tree or a network mount. That is the trade being made on purpose: freshness lags rather than the disk being pounded.</p>
+        <p>- **Expect a little more disk activity than before.** Refreshing re-reads the workspace. On an ordinary project this is unnoticeable; on a workspace folder pointed at something enormous, such as your whole home directory, it is real work happening more often than it used to.</p>
+        <p>- **Hidden and excluded entries stay invisible.** `Show Hidden Files` and `Always Excluded Names` still apply, so external changes inside `.git` — or inside build directories the palette skips, such as `node_modules` and `target` — remain out of sight by design.</p>
+        <p>- **The folder-state correction is not announced.** If a screen reader user is focused on a collapsed folder row when its state is corrected, the expander and `Focus Folder` change without a spoken notification. Interrupting someone for a change they did not ask for was judged worse than the stale affordance it replaces.</p>
+        <p>- **Files outside every configured workspace folder are never indexed**, including a Save As to a location outside your workspace. That is unchanged behaviour, restated because the new freshness might suggest otherwise.</p>
+        <p>## Bug Fixes</p>
+        <p>- Files created, renamed, or removed outside LushText no longer stay invisible to the command palette until a workspace change or a restart.</p>
+        <p>- The palette no longer offers you the working tree from before your last branch switch.</p>
+        <p>- A collapsed folder that has gained content no longer keeps its empty label, its missing expander arrow, and its disabled `Focus Folder` action.</p>
+        <p>- Saving an untitled document, or saving under a new name, no longer creates a file that LushText cannot find in its own search.</p>
+        <p>- Deleted files stop appearing as palette results instead of lingering until the next restart.</p>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-09-15">
       <description>
         <p>## Poetic Opening</p>
