@@ -69,8 +69,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y appstream desktop-file-utils flatpak flatpak-builder jq python3-pip
-          python3 -m pip install --user --break-system-packages aiohttp PyYAML tomlkit || \
-            python3 -m pip install --user aiohttp PyYAML tomlkit
+          # --only-binary :all: refuses source distributions, so a compromised
+          # or typo-squatted sdist cannot run setup code on the release runner.
+          # aiohttp, PyYAML and tomlkit all publish linux-x64 wheels.
+          python3 -m pip install --user --break-system-packages --only-binary :all: \
+            aiohttp PyYAML tomlkit || \
+            python3 -m pip install --user --only-binary :all: aiohttp PyYAML tomlkit
           curl -fsSL \
             https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py \
             -o "$RUNNER_TEMP/flatpak-cargo-generator.py"
