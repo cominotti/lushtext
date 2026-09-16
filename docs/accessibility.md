@@ -92,6 +92,15 @@ Expected screen-reader behavior includes:
   whose invalid state names the rejection reason, a reset control, and an
   explicit `No excluded names` row. Toggling the mode refreshes the tree without
   a manual-refresh announcement.
+- Returning to the window refreshes the workspace sidebar and the command-palette
+  file index so externally created files become reachable. This refresh is
+  **silent**: it emits no announcement, and it preserves focus, selection, scroll
+  position, and expansion state. A collapsed directory that gained content on
+  disk stops reporting its empty state, and its expander and `Focus Folder`
+  affordances become available, but that correction is not announced — the user
+  did not initiate it, and interrupting them for it would be worse than the
+  stale affordance it replaces. The same is true in reverse for a directory
+  emptied on disk.
 
 - The main window exposes the tab strip, shell buttons, workspace sidebar
   toggle, document-properties toggle, status metadata, editor region, and

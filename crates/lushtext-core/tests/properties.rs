@@ -7,6 +7,8 @@
 //! generated inputs and leaves GTK widgets, compositor behavior, and live
 //! session flows to the existing widget harness.
 
+#[path = "properties/attention_refresh.rs"]
+mod attention_refresh;
 #[path = "properties/draft_orphan_cleanup.rs"]
 mod draft_orphan_cleanup;
 #[path = "properties/durable_write_metadata.rs"]

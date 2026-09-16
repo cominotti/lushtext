@@ -46,6 +46,27 @@ The default PR lane should not require installed Flatpak/Snap artifacts, live
 portal services, AT-SPI, screenshot capture, or full benchmark timing unless a
 future change proves a narrow check is cheap and stable enough.
 
+**Attention-moment workspace refresh** is fully covered by the bounded PR lanes
+and needs no smoke lane, because the trigger is a GTK property notification and
+the work it starts is the surfaces' pre-existing refresh:
+
+| Question | Lane |
+| --- | --- |
+| Does the throttle admit and refuse correctly? | unit, `model::attention_refresh` |
+| Can any trigger sequence beat the floor, or override user work? | property, `properties::attention_refresh` |
+| Does an externally created, removed, or excluded file reach the palette? | widget, `attention_refresh` |
+| Does a collapsed directory stop claiming to be empty? | widget, `attention_refresh` |
+| Does a save yield, and does Save As index its destination? | widget, `attention_refresh` |
+
+Deliberately **not** given a lane: a delayed-filesystem timing budget. An earlier
+revision of the change specified a directory-mtime staleness sweep, whose cost
+would have been new and would have been hidden by a warm-cache Criterion run.
+That design was rejected, so the work started at an attention moment is the
+existing `rebuild_file_index()`, already benchmarked, already bounded, already
+cancellable. What is genuinely new is the throttle, and the property lane covers
+its behaviour under an arbitrarily slow pass without needing a slow filesystem
+to produce one.
+
 ## Scheduled Or Manual Expectations
 
 Host-sensitive lanes should be available through stable Make targets even when

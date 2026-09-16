@@ -37,6 +37,10 @@ local history, and careful recovery behavior.
   of every surface regardless.
 - **Recent Open and command palette** via `Ctrl+K` and `Ctrl+Shift+P` for
   recent documents, workspace files, note records, and commands.
+- **Stays current with the outside world**: switch a git branch, run a build, or
+  create a file from a terminal, and both the command palette and the workspace
+  sidebar pick it up when you come back to the window — no restart, no manual
+  refresh.
 - **Workspace search** with streaming results, literal or regex modes,
   whole-word matching, `.gitignore` support, glob filters, saved searches,
   search history, match navigation, and previewable multi-file Replace All

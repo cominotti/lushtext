@@ -73,6 +73,17 @@ impl LushtextWindow {
             }
             imp.saved_focus.replace(Some(weak));
 
+            // Covers the case window activation cannot: a build or checkout
+            // that completed while the user never left the application. The
+            // palette opens against the installed index immediately; results
+            // update in place if the rebuild finds anything.
+            //
+            // `IndexOnly`: the palette does not read the sidebar tree, and a
+            // full materialized-tree rescan per `Ctrl+Shift+P` is real
+            // filesystem work competing for the same worker slots as the
+            // rebuild the palette actually needs.
+            let _admission =
+                self.refresh_workspace_surfaces_on_attention(super::AttentionSurfaces::IndexOnly);
             self.refresh_command_palette_sources();
             imp.palette_revealer.set_reveal_child(true);
             imp.command_palette.open();
@@ -273,6 +284,10 @@ impl LushtextWindow {
     }
 
     fn finish_file_index_build(&self, generation: u64, outcome: GuardedFileIndexBuildOutcome) {
+        // Timed here rather than at the caller because this is the one terminal
+        // every build reaches, accepted or superseded; the adaptive interval
+        // must learn from a slow pass even when its result was discarded.
+        super::attention_refresh::note_attention_refresh_settled();
         let (accepted, next) = {
             let mut builds = self.imp().file_index_builds.borrow_mut();
             let accepted = builds.is_current(generation);

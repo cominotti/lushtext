@@ -40,6 +40,10 @@ pub(super) fn run_native_print_operation(
         compositor.draw_page(context, page_nr);
     });
 
+    // The print dialog is app-owned, modal, and followed by I/O, so it owes the
+    // same suppression a file chooser does. `run` is synchronous, so the guard's
+    // scope is the call itself.
+    let _modal = crate::ui::window::ModalSurfaceGuard::acquire();
     classify_operation_result(op.run(gtk4::PrintOperationAction::PrintDialog, Some(window)))
 }
 

@@ -92,7 +92,11 @@ impl LushtextSidebar {
 
         let sidebar_weak = self.downgrade();
         let workspace_id = workspace_id.clone();
+        // Same contract as the window's choosers: while this is up, the window
+        // deactivating and reactivating is not evidence that the user was away.
+        let modal = crate::ui::window::ModalSurfaceGuard::acquire();
         dialog.select_folder(Some(window), gtk4::gio::Cancellable::NONE, move |result| {
+            let _modal = modal;
             if let Ok(file) = result
                 && let Some(path) = file.path()
                 && let Some(sidebar) = sidebar_weak.upgrade()

@@ -95,11 +95,13 @@ impl LushtextWorkspaceSection {
         self.schedule_refresh(false, changed_paths, false);
     }
 
-    /// Refresh every folder tree after the visibility preference changed.
+    /// Reload every folder tree without announcing a manual refresh.
     ///
-    /// This is the automatic path, not the manual one: a view toggle must not
-    /// publish the "Refreshing workspace folders" message or its announcement.
-    pub(crate) fn refresh_for_visibility_change(&self) {
+    /// The automatic path, not the manual one: neither a visibility toggle nor
+    /// the user's attention returning may publish the "Refreshing workspace
+    /// folders" message or its announcement. Named for what it does rather than
+    /// for one of its callers, after a second caller arrived and copied it.
+    pub(crate) fn refresh_folder_trees_silently(&self) {
         if !self.has_folders() {
             return;
         }

@@ -81,7 +81,9 @@ impl super::LushtextWindow {
             .build();
 
         let window = self.clone();
+        let modal = super::attention_refresh::ModalSurfaceGuard::acquire();
         dialog.open(Some(self), gio::Cancellable::NONE, move |result| {
+            let _modal = modal;
             if let Ok(file) = result {
                 window.handle_open_file_selection(&file);
             }
@@ -104,7 +106,13 @@ impl super::LushtextWindow {
         }
 
         let window = self.clone();
+        let modal = super::attention_refresh::ModalSurfaceGuard::acquire();
         dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
+            // Held for the whole callback, so the window reactivating as the
+            // chooser closes cannot admit a refresh into the shared worker pool
+            // ahead of the save this is about to queue. Released by drop, which
+            // also covers the cancelled path and any early return.
+            let _modal = modal;
             if let Ok(file) = result {
                 window.handle_save_as_selection(&editor, &file);
             }
@@ -255,6 +263,17 @@ impl super::LushtextWindow {
                     }
                 }
                 self.publish_status_message(&format!("Saved as {path_display}"), MessageKind::Info);
+                // Save As is the only path by which the application itself
+                // creates a file the index has never seen: an untitled tab's
+                // first save and a save under a new name both land here. The
+                // three other mutation call sites are sidebar-driven, so
+                // without this the new path stayed unsearchable until a
+                // rebuild. The requested path is admitted, not a canonical one:
+                // membership is a prefix test against the raw configured
+                // folders, and the worker's `indexed_file_from_path` resolves
+                // the canonical identity itself, which is what keeps a
+                // symlink-backed save pointing at the bytes that were written.
+                self.imp().command_palette.update_index_file_created(path);
                 self.refresh_command_palette_sources();
                 self.refresh_status_bar();
             }

@@ -19,6 +19,7 @@
 //! workflow.
 
 mod actions;
+mod attention_refresh;
 mod dialogs;
 mod documents;
 mod drafts;
@@ -53,6 +54,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::gio;
 use gtk4::prelude::*;
 
+pub use attention_refresh::{AttentionSurfaces, ModalSurfaceGuard};
 pub use drafts::DraftFlushError;
 
 #[cfg(feature = "test-utils")]

@@ -7,6 +7,7 @@
 //! them fully unit-testable and usable from background threads.
 
 pub mod action_catalog;
+pub mod attention_refresh;
 pub mod automation;
 pub mod bookmark;
 pub mod buffer_replacement;

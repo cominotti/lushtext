@@ -729,6 +729,21 @@ impl ObjectImpl for LushtextWindow {
         }
 
         {
+            // Returning to the window is the attention moment that matters:
+            // external changes happen while the application is *not* focused,
+            // by construction, so this trigger is correlated with the cause
+            // rather than merely with elapsed time. The throttle and the
+            // yield-to-user-work guard live in `window/attention_refresh.rs`.
+            obj.connect_notify_local(Some("is-active"), |window, _| {
+                if gtk4::prelude::GtkWindowExt::is_active(window) {
+                    let _admission = window.refresh_workspace_surfaces_on_attention(
+                        crate::ui::window::AttentionSurfaces::IndexAndTree,
+                    );
+                }
+            });
+        }
+
+        {
             // Both visibility keys invalidate the palette file index; the sidebar
             // owns its own subscription for the tree.
             // The window and its settings object share one lifetime, so the

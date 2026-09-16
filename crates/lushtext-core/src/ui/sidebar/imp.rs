@@ -205,9 +205,7 @@ impl ObjectImpl for LushtextSidebar {
         for handler_id in
             crate::ui::workspace_visibility::connect_visibility_changed(&self.settings, move || {
                 if let Some(sidebar) = sidebar_weak.upgrade() {
-                    for section in sidebar.imp().sections.borrow().iter() {
-                        section.refresh_for_visibility_change();
-                    }
+                    sidebar.refresh_folder_trees_silently();
                 }
             })
         {

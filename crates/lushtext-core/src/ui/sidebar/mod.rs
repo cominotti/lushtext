@@ -186,6 +186,21 @@ impl LushtextSidebar {
         }
     }
 
+    /// Reload every section's folder trees without announcing a manual refresh.
+    ///
+    /// The one sidebar-level fan-out for the silent path, used both by the
+    /// visibility-key subscription and by the attention-moment refresh. The
+    /// latter needs it because a collapsed directory's empty-or-not hint is
+    /// computed by its *parent's* lookahead scan and then frozen, while the
+    /// parent's watch is non-recursive and cannot see an entry created inside
+    /// that collapsed child. Expansion already re-scans, so everything the user
+    /// actually opens is correct without this.
+    pub(crate) fn refresh_folder_trees_silently(&self) {
+        for section in self.imp().sections.borrow().iter() {
+            section.refresh_folder_trees_silently();
+        }
+    }
+
     /// Replace the open/active file projection and resync realized section rows.
     pub(crate) fn set_file_row_state_snapshot(&self, snapshot: SidebarFileRowStateSnapshot) {
         let imp = self.imp();

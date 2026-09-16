@@ -197,6 +197,43 @@ pub fn realized_list_rows(list: &gtk4::ListView) -> Vec<gtk4::Widget> {
 /// The first widget in `root`'s subtree (including `root`) matching `pred`,
 /// walking first-child/next-sibling depth first.
 /// Wait until the window's async command-palette index rebuild reaches a size.
+/// Poll until `predicate` holds, returning whether it did within `budget`.
+///
+/// `wait_until` panics on timeout, which makes it an assertion rather than a
+/// question; a test asserting that something is **not** reachable needs the
+/// question. This wraps the shared helper rather than hand-rolling a poll loop,
+/// because `wait_until`'s mechanism is load-bearing and is the opposite of the
+/// obvious one: it sleeps briefly and *then* drains every ready main-loop
+/// source, which is what dispatches `spawn_blocking_then`'s low-priority
+/// `idle_add_once` completion. A loop that drains first and sleeps after
+/// starves exactly the terminal it is waiting for.
+pub fn wait_until_or_false(budget: Duration, predicate: impl FnMut() -> bool) -> bool {
+    let mut predicate = predicate;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_until(budget, &mut predicate);
+    }))
+    .is_ok()
+}
+
+/// The editor page of the currently selected tab.
+///
+/// Promoted here after a fifth copy appeared; `window.rs`, `app.rs`,
+/// `command_palette.rs`, and `open_popover.rs` each grew their own.
+pub fn active_editor(
+    window: &lushtext_core::ui::window::LushtextWindow,
+) -> lushtext_core::ui::editor_page::LushtextEditorPage {
+    use glib::subclass::prelude::ObjectSubclassIsExt;
+    use gtk4::prelude::Cast;
+    window
+        .imp()
+        .tab_view
+        .selected_page()
+        .expect("selected tab page")
+        .child()
+        .downcast::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .expect("editor page child")
+}
+
 pub fn wait_for_palette_index(
     window: &lushtext_core::ui::window::LushtextWindow,
     expected_index: usize,
