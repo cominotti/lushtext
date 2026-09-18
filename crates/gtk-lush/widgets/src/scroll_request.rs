@@ -32,6 +32,49 @@ pub const ADJUSTMENT_EPSILON: f64 = 0.5;
 /// signed distance the outer scroller must travel so that `child_value` becomes
 /// the content offset at the top of the viewport.
 ///
+/// # Why a child's own geometry correction bounds its settle
+///
+/// `reconfigure_shift` is how far the child moved the adjustment's `upper` or
+/// `page_size` while it was being allocated, and zero when it left them alone.
+/// A `GtkListView` rewrites both constantly, replacing the content height this
+/// bin configured with its own realized estimate. The value it then settles on
+/// is its rendering of the band the bin asked for, re-anchored against the
+/// geometry it just corrected -- not a request for a different band.
+///
+/// Forwarding that settle creates a loop with no fixed point. Measured on an
+/// 800-row sidebar: the bin publishes 3604, the child reconfigures
+/// (`upper` 15248 -> 15238, `page_size` 665 -> 655) and settles on 3605, the bin
+/// forwards +1, the outer scroller moves down one pixel, the next frame
+/// publishes one pixel lower, and round it goes. Each wheel tick adds one to
+/// seven pixels of unrequested downward travel; about fourteen ticks accumulate
+/// the 55 pixels that hide a workspace header behind the viewport edge. That is
+/// the same symptom as the earlier resting-comparison defect reached by a
+/// different route, which is why every test written for that one passes against
+/// this.
+///
+/// # Why the discriminator is the shift and not the reconfigure, the magnitude, or the cause
+///
+/// Three simpler rules were tried against the suite and each broke something,
+/// so they are recorded rather than re-attempted:
+///
+/// * *Suppress any reconfigured divergence.* A genuine request usually **causes**
+///   a reconfigure -- moving focus to the last row realizes rows the list had
+///   only estimated -- so this silenced focus traversal entirely.
+/// * *Suppress divergence below the page.* The settle measured 1 to 7 pixels and
+///   a focus request measured 274, but 274 is well under a 655-pixel page, so the
+///   request was swallowed too. Any constant between the two is a number chosen
+///   to fit one fixture.
+/// * *Suppress while the outer scroller is driving.* Correct during a wheel
+///   turn, but the tick where scrolling stops leaves the viewport still and the
+///   residual divergence is forwarded once, which is enough to shift the header.
+///
+/// What bounds a settle is the correction that produced it. The child re-anchors
+/// its value against geometry it moved by some amount; it cannot legitimately
+/// travel further than that correction as a consequence of it. Measured: the
+/// geometry moved 10 and the value settled 1 to 7. A request is not bounded that
+/// way -- the focus case moved 274 against a far smaller correction. The rule
+/// needs no constant, no row height, and no fixture-sized threshold.
+///
 /// # Why the resting comparison is against `published_offset`
 ///
 /// `published_offset` and `viewport_top` are different quantities, and they
@@ -47,8 +90,16 @@ pub fn outer_scroll_request(
     published_offset: f64,
     child_value: f64,
     viewport_top: f64,
+    reconfigure_shift: f64,
 ) -> Option<f64> {
     if !published_offset.is_finite() || !child_value.is_finite() || !viewport_top.is_finite() {
+        return None;
+    }
+    let divergence = child_value - published_offset;
+    if reconfigure_shift.is_finite()
+        && reconfigure_shift > 0.0
+        && divergence.abs() <= reconfigure_shift + ADJUSTMENT_EPSILON
+    {
         return None;
     }
     if (child_value - published_offset).abs() < ADJUSTMENT_EPSILON {
@@ -69,43 +120,68 @@ mod tests {
         // ones a real scroller produces.
         for viewport_top in [-600.0, -55.0, -1.0, 0.0, 1.0, 55.0, 8_000.0] {
             assert_eq!(
-                outer_scroll_request(0.0, 0.0, viewport_top),
+                outer_scroll_request(0.0, 0.0, viewport_top, 0.0),
                 None,
                 "a bin clamped to its content top must not scroll the outer window \
                  when the viewport top is {viewport_top}"
             );
         }
-        assert_eq!(outer_scroll_request(7_335.0, 7_335.0, 14_000.0), None);
-        assert_eq!(outer_scroll_request(120.0, 120.0, 120.0), None);
+        assert_eq!(outer_scroll_request(7_335.0, 7_335.0, 14_000.0, 0.0), None);
+        assert_eq!(outer_scroll_request(120.0, 120.0, 120.0, 0.0), None);
     }
 
     #[test]
     fn sub_pixel_child_drift_is_noise_rather_than_a_request() {
-        assert_eq!(outer_scroll_request(100.0, 100.4, 100.0), None);
-        assert_eq!(outer_scroll_request(100.0, 99.6, 100.0), None);
+        assert_eq!(outer_scroll_request(100.0, 100.4, 100.0, 0.0), None);
+        assert_eq!(outer_scroll_request(100.0, 99.6, 100.0, 0.0), None);
     }
 
     #[test]
     fn a_moved_child_asks_for_its_band_at_the_viewport_top() {
         // Child wants content offset 900 shown; the bin's content starts 55px
         // below the viewport top, so the outer scroller travels 955.
-        assert_eq!(outer_scroll_request(0.0, 900.0, -55.0), Some(955.0));
+        assert_eq!(outer_scroll_request(0.0, 900.0, -55.0, 0.0), Some(955.0));
         // Same request once the bin is aligned with the viewport.
-        assert_eq!(outer_scroll_request(0.0, 900.0, 0.0), Some(900.0));
+        assert_eq!(outer_scroll_request(0.0, 900.0, 0.0, 0.0), Some(900.0));
         // Scrolling back up is a negative delta.
-        assert_eq!(outer_scroll_request(900.0, 0.0, 900.0), Some(-900.0));
+        assert_eq!(outer_scroll_request(900.0, 0.0, 900.0, 0.0), Some(-900.0));
     }
 
     #[test]
     fn a_request_already_at_the_viewport_top_needs_no_outer_travel() {
         // The child moved the adjustment, but to exactly the band already shown.
-        assert_eq!(outer_scroll_request(0.0, 640.0, 640.0), None);
+        assert_eq!(outer_scroll_request(0.0, 640.0, 640.0, 0.0), None);
+    }
+
+    #[test]
+    fn a_settle_within_the_childs_own_geometry_correction_is_not_a_request() {
+        // The measured regression: the child rewrote `upper`/`page_size` during
+        // its own allocation and settled one pixel off the published offset.
+        // Forwarding that is what accumulated 55px of unrequested travel.
+        assert_eq!(outer_scroll_request(3604.0, 3605.0, 3604.0, 10.0), None);
+        assert_eq!(outer_scroll_request(13383.0, 13388.0, 13383.0, 10.0), None);
+        // Even a large divergence is deferred when the geometry moved; the next
+        // allocation re-decides with a stable baseline.
+        // Measured focus-traversal request: 274px while the viewport stood
+        // still. Suppressing this is what broke the traversal test.
+        assert_eq!(outer_scroll_request(0.0, 274.0, 0.0, 0.0), Some(274.0));
+    }
+
+    #[test]
+    fn a_divergence_beyond_the_geometry_correction_is_a_request() {
+        // The discriminator is the reconfigure flag and nothing else, so the
+        // identical values forward when the child did not move the goalposts.
+        assert_eq!(outer_scroll_request(3604.0, 3605.0, 3604.0, 0.0), Some(1.0));
+        assert_eq!(outer_scroll_request(0.0, 9000.0, 0.0, 0.0), Some(9000.0));
     }
 
     #[test]
     fn non_finite_inputs_are_ignored_instead_of_propagating() {
-        assert_eq!(outer_scroll_request(f64::NAN, 10.0, 0.0), None);
-        assert_eq!(outer_scroll_request(0.0, f64::INFINITY, 0.0), None);
-        assert_eq!(outer_scroll_request(0.0, 10.0, f64::NEG_INFINITY), None);
+        assert_eq!(outer_scroll_request(f64::NAN, 10.0, 0.0, 0.0), None);
+        assert_eq!(outer_scroll_request(0.0, f64::INFINITY, 0.0, 0.0), None);
+        assert_eq!(
+            outer_scroll_request(0.0, 10.0, f64::NEG_INFINITY, 0.0),
+            None
+        );
     }
 }

@@ -113,7 +113,7 @@ proptest! {
         // The bin wrote `published_offset` and the child left it there (modulo
         // sub-pixel noise). No viewport position may turn that into a request.
         prop_assert_eq!(
-            outer_scroll_request(published_offset, published_offset + drift, viewport_top),
+            outer_scroll_request(published_offset, published_offset + drift, viewport_top, 0.0),
             None
         );
     }
@@ -124,7 +124,7 @@ proptest! {
         child_value in 0.0..MAX_CONTENT,
         viewport_top in -MAX_CONTENT..MAX_CONTENT,
     ) {
-        let Some(delta) = outer_scroll_request(published_offset, child_value, viewport_top) else {
+        let Some(delta) = outer_scroll_request(published_offset, child_value, viewport_top, 0.0) else {
             return Ok(());
         };
         // Scrolling the outer window by `delta` moves its top edge to exactly
@@ -142,7 +142,7 @@ proptest! {
         child_value in 0.0..MAX_CONTENT,
         viewport_top in -MAX_CONTENT..MAX_CONTENT,
     ) {
-        let Some(delta) = outer_scroll_request(published_offset, child_value, viewport_top) else {
+        let Some(delta) = outer_scroll_request(published_offset, child_value, viewport_top, 0.0) else {
             return Ok(());
         };
         // After the outer scroller moves, the next allocation republishes the
@@ -150,7 +150,7 @@ proptest! {
         // a request that re-asks on every allocation is the oscillation bug.
         let settled_viewport_top = viewport_top + delta;
         prop_assert_eq!(
-            outer_scroll_request(child_value, child_value, settled_viewport_top),
+            outer_scroll_request(child_value, child_value, settled_viewport_top, 0.0),
             None
         );
     }
@@ -162,7 +162,7 @@ proptest! {
         viewport_top in -MAX_CONTENT..MAX_CONTENT,
     ) {
         let child_value = published_offset + step;
-        let request = outer_scroll_request(published_offset, child_value, viewport_top);
+        let request = outer_scroll_request(published_offset, child_value, viewport_top, 0.0);
         if step.abs() < ADJUSTMENT_EPSILON {
             prop_assert_eq!(request, None);
         }
@@ -170,6 +170,68 @@ proptest! {
         // caller can apply it without re-checking for noise.
         if let Some(delta) = request {
             prop_assert!(delta.abs() >= ADJUSTMENT_EPSILON);
+        }
+    }
+}
+
+proptest! {
+    /// The invariant the wheel-scroll regression violated: a child settling
+    /// inside the geometry correction it just made is never forwarded, so the
+    /// publish/settle cycle has a fixed point and cannot creep.
+    #[test]
+    fn prop_a_settle_within_the_geometry_correction_is_never_forwarded(
+        published_offset in -50_000.0f64..50_000.0,
+        viewport_top in -50_000.0f64..50_000.0,
+        shift in 0.1f64..500.0,
+        settle_fraction in -1.0f64..1.0,
+    ) {
+        // Any value the child lands on within its own correction is a settle.
+        let child_value = published_offset + shift * settle_fraction;
+        prop_assert_eq!(
+            outer_scroll_request(published_offset, child_value, viewport_top, shift),
+            None,
+            "a settle of {} within a correction of {} must not scroll the outer window",
+            child_value - published_offset,
+            shift
+        );
+    }
+
+    /// The converse, so the suppression cannot silently swallow real requests:
+    /// past the correction, the decision is unchanged from the no-reconfigure
+    /// case. This is what the focus-traversal regression would have caught.
+    #[test]
+    fn prop_beyond_the_correction_the_decision_is_unchanged(
+        published_offset in -50_000.0f64..50_000.0,
+        viewport_top in -50_000.0f64..50_000.0,
+        shift in 0.1f64..500.0,
+        overshoot in 1.0f64..10_000.0,
+        negative in proptest::bool::ANY,
+    ) {
+        let beyond = shift + ADJUSTMENT_EPSILON + overshoot;
+        let child_value = published_offset + if negative { -beyond } else { beyond };
+        prop_assert_eq!(
+            outer_scroll_request(published_offset, child_value, viewport_top, shift),
+            outer_scroll_request(published_offset, child_value, viewport_top, 0.0),
+            "a request beyond the correction must decide exactly as it would \
+             without one"
+        );
+    }
+
+    /// A child that did not touch the geometry keeps the pre-existing contract
+    /// exactly, so the new parameter cannot change behaviour where it is zero.
+    #[test]
+    fn prop_zero_correction_preserves_the_previous_contract(
+        published_offset in -50_000.0f64..50_000.0,
+        child_value in -50_000.0f64..50_000.0,
+        viewport_top in -50_000.0f64..50_000.0,
+    ) {
+        let decided = outer_scroll_request(published_offset, child_value, viewport_top, 0.0);
+        if (child_value - published_offset).abs() < ADJUSTMENT_EPSILON {
+            prop_assert_eq!(decided, None, "a resting bin never asks to scroll");
+        } else {
+            let delta = child_value - viewport_top;
+            let expected = (delta.abs() >= ADJUSTMENT_EPSILON).then_some(delta);
+            prop_assert_eq!(decided, expected);
         }
     }
 }

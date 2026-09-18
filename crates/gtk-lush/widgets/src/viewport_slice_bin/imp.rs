@@ -15,7 +15,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{glib, graphene, gsk};
 
-use crate::scroll_request::outer_scroll_request;
+use crate::scroll_request::{ADJUSTMENT_EPSILON, outer_scroll_request};
 use crate::single_child::replace_child;
 use crate::slice_geometry::viewport_slice;
 
@@ -236,14 +236,51 @@ impl WidgetImpl for ViewportSliceBin {
         );
         let transform = gsk::Transform::new()
             .translate(&graphene::Point::new(0.0, pixel_coordinate(slice_top)));
+        // A `GtkScrollable` child may replace the content height and page this
+        // bin just configured: a `GtkListView` substitutes its own realized
+        // estimate. Capture them so the value it settles on can be told apart
+        // from a value it deliberately moved.
+        let upper_before = self.vadjustment.upper();
+        let page_before = self.vadjustment.page_size();
         child.allocate(width, slice_height, -1, Some(transform));
         self.allocating.set(false);
+        let child_reconfigured = (self.vadjustment.upper() - upper_before).abs()
+            >= ADJUSTMENT_EPSILON
+            || (self.vadjustment.page_size() - page_before).abs() >= ADJUSTMENT_EPSILON;
+        // How far the child corrected the geometry bounds how far it may have
+        // re-anchored its value as a consequence; see `scroll_request`.
+        let reconfigure_shift = if child_reconfigured {
+            (self.vadjustment.upper() - upper_before)
+                .abs()
+                .max((self.vadjustment.page_size() - page_before).abs())
+        } else {
+            0.0
+        };
 
         // A `GtkListView` applies `scroll_to` and keyboard-focus scrolling
         // inside its own allocation, which runs right here. Only a value that
         // differs from the one just published is a request to show a different
         // band; the published offset itself is this bin's own resting state.
-        self.follow_child_request_if_diverged(self.vadjustment.value(), viewport_top);
+        //
+        // When the child reconfigured the adjustment, the value it settled on
+        // is its rendering of the band this bin asked for, so that value
+        // becomes the new baseline instead of being forwarded. Re-baselining is
+        // what gives the publish/settle cycle a fixed point: without it the
+        // bin forwards its own publish back to the outer scroller, which
+        // publishes one pixel lower, forever.
+        // A settle becomes the new baseline, which is what gives the
+        // publish/settle cycle a fixed point.
+        if reconfigure_shift > 0.0
+            && (self.vadjustment.value() - self.published_offset.get()).abs()
+                <= reconfigure_shift + ADJUSTMENT_EPSILON
+        {
+            self.published_offset.set(self.vadjustment.value());
+        }
+        self.follow_child_request_if_diverged(
+            self.vadjustment.value(),
+            viewport_top,
+            reconfigure_shift,
+        );
     }
 }
 
@@ -379,7 +416,9 @@ impl ViewportSliceBin {
         if self.allocating.get() {
             return;
         }
-        self.follow_child_request_if_diverged(value, self.viewport_top.get());
+        // Outside an allocation there is no reconfigure in flight: the child
+        // moved the value on its own, which is the deferred `scroll_to` case.
+        self.follow_child_request_if_diverged(value, self.viewport_top.get(), 0.0);
     }
 
     /// Forward `requested` only when the child actually moved the adjustment.
@@ -387,10 +426,18 @@ impl ViewportSliceBin {
     /// The decision itself is pure and lives in `crate::scroll_request`, which
     /// documents why the resting comparison must be against the offset this bin
     /// published rather than against the unclamped viewport top.
-    fn follow_child_request_if_diverged(&self, requested: f64, viewport_top: f64) {
-        if let Some(delta) =
-            outer_scroll_request(self.published_offset.get(), requested, viewport_top)
-        {
+    fn follow_child_request_if_diverged(
+        &self,
+        requested: f64,
+        viewport_top: f64,
+        reconfigure_shift: f64,
+    ) {
+        if let Some(delta) = outer_scroll_request(
+            self.published_offset.get(),
+            requested,
+            viewport_top,
+            reconfigure_shift,
+        ) {
             self.follow_child_request(delta);
         }
     }
