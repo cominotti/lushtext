@@ -58,6 +58,14 @@ const DEFAULT_ANIMATION_MAX_SAMPLE_SKEW_MS: u64 = 80;
 const ANIMATION_RECORDING_ATTACH_DELAY: Duration = Duration::from_millis(30);
 /// Stop timeout for the recorder process so stalled capture cleanup cannot hang the proof run.
 const ANIMATION_RECORDING_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Longest wait for the recorder's first frame before triggering the animation.
+/// pipewiresrc first-buffer negotiation is the slow part; a bounded miss falls
+/// through to the existing proof rather than hanging.
+const ANIMATION_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
+/// Headroom added to `stream_timeout` as the geometry-sampling safety cap, so
+/// sampling normally ends when the recorder exits and only this bound stops a
+/// hung recorder from sampling without end.
+const ANIMATION_SAMPLING_SAFETY_MARGIN: Duration = Duration::from_secs(2);
 
 /// Result of a top-level per-case Rust session launch.
 #[derive(Debug)]
@@ -838,6 +846,33 @@ struct AnimationActionResult {
     failure_reason: Option<String>,
 }
 
+/// Whether the recorder has written at least one stream frame yet.
+fn first_stream_frame_present(frames_dir: &Path) -> bool {
+    fs::read_dir(frames_dir).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("stream-frame-")
+        })
+    })
+}
+
+/// Poll until the first stream frame exists or `timeout` elapses.
+///
+/// Returns whether a frame appeared; a bounded miss is not fatal, so the caller
+/// proceeds and the proof reports the missing capture as it always has.
+fn wait_for_first_stream_frame(frames_dir: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if first_stream_frame_present(frames_dir) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    first_stream_frame_present(frames_dir)
+}
+
 fn capture_animation_stream(
     client: &automation::AutomationClient,
     case: &Value,
@@ -863,19 +898,39 @@ fn capture_animation_stream(
         &animation_dir.join("stream-gst.log"),
     )?;
 
+    // Wait until the recorder has actually written its first frame before
+    // triggering the animation, instead of assuming the pipeline is live after
+    // a fixed delay. pipewiresrc negotiation can take hundreds of milliseconds
+    // to deliver its first buffer; when it did, the whole sidebar animation ran
+    // and settled inside that startup stall (observed as one 700ms gap before
+    // the stream reached its steady ~33ms cadence), so not one frame captured
+    // the motion and no frame could map to an intermediate geometry sample.
+    // This is a capture precondition -- an animation triggered before the
+    // camera is rolling cannot be recorded -- not a timing estimate, so it
+    // cannot make a wrong frame pass; it only stops the recorder from missing
+    // the event. A bounded miss still falls through to the existing proof,
+    // which reports the absent intermediate frame as before.
+    wait_for_first_stream_frame(&frames_dir, ANIMATION_FIRST_FRAME_TIMEOUT);
     thread::sleep(ANIMATION_RECORDING_ATTACH_DELAY);
     let action_started_ms = duration_millis(started.elapsed());
     let action = activate_primary_case_action(client, case)?;
 
+    // Sample geometry for as long as the recorder is capturing, so every
+    // captured frame has a geometry sample near it. Stopping at a fixed
+    // `stream_timeout` shorter than the capture left the trailing frames
+    // (captured after sampling stopped) with no sample to pair against, and the
+    // proof correctly failed them as stale. The recorder exiting is the true
+    // end of capture; `stream_timeout` stays only as a generous safety cap so a
+    // hung recorder cannot sample forever.
     let mut samples = Vec::new();
-    let deadline = started + config.stream_timeout;
-    while Instant::now() < deadline {
+    let safety_deadline = started + config.stream_timeout + ANIMATION_SAMPLING_SAFETY_MARGIN;
+    loop {
         let snapshot = client.snapshot()?;
         samples.push(animation_geometry_sample(
             &snapshot,
             duration_millis(started.elapsed()),
         ));
-        if recording.has_exited()? {
+        if recording.has_exited()? || Instant::now() >= safety_deadline {
             break;
         }
         thread::sleep(config.sample_interval);
