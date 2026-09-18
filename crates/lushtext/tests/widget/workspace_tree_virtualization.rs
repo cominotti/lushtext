@@ -1059,3 +1059,77 @@ fn test_two_workspace_sections_reach_both_ends_without_oscillating() {
     assert_header_visible(&sidebar, &sections[0], "with two workspace sections");
     drop(window);
 }
+
+/// Scroll the outer adjustment the way a wheel does: many small deltas, each
+/// given a chance to allocate, instead of one jump to a target value.
+///
+/// This distinction is the whole point of the tests below. `scroll_outer_to`
+/// proves a *settled end state*: set the value once, wait for everything to
+/// quiesce, assert. A wheel produces a sequence of deltas interleaved with
+/// allocation passes, and `GtkListView` revises its total-height estimate as
+/// rows realize, so `upper` can move underneath a trip that is already in
+/// progress. A single `set_value` can never reproduce that interleaving.
+fn wheel_scroll_by(sidebar: &LushtextSidebar, delta: f64, steps: usize) {
+    let adjustment = outer_adjustment(sidebar);
+    for _ in 0..steps {
+        let target = (adjustment.value() + delta)
+            .clamp(0.0, (adjustment.upper() - adjustment.page_size()).max(0.0));
+        adjustment.set_value(target);
+        // One short settle per delta: enough for an allocation pass to run,
+        // far too short to let a revised height estimate quiesce.
+        flush_after_delay(Duration::from_millis(16));
+    }
+}
+
+#[test]
+fn test_wheel_scrolling_back_to_the_top_reveals_the_workspace_header() {
+    let tree = tall_workspace(800);
+    let adjustment = outer_adjustment(&tree.sidebar);
+    let span = (adjustment.upper() - adjustment.page_size()).max(0.0);
+    assert!(
+        span > 0.0,
+        "the fixture must be scrollable for the round trip to mean anything"
+    );
+
+    // Down in wheel-sized increments, which is what realizes new rows and lets
+    // the list revise the content height the bin is slicing against.
+    wheel_scroll_by(&tree.sidebar, span / 12.0, 14);
+    assert!(
+        outer_adjustment(&tree.sidebar).value() > 0.0,
+        "the sidebar must leave the top before the return trip is meaningful"
+    );
+
+    // Back up the same way. The user's gesture, not a jump.
+    wheel_scroll_by(&tree.sidebar, -span / 12.0, 14);
+
+    assert_sidebar_rests_at_top(&tree.sidebar, "after wheel-scrolling back to the top");
+    assert_header_visible(
+        &tree.sidebar,
+        &tree.section,
+        "after wheel-scrolling back to the top",
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_repeated_wheel_round_trips_keep_the_workspace_header_reachable() {
+    // The reported symptom was intermittent: the first return trip worked and
+    // later ones mostly did not. A single round trip can therefore pass while
+    // the defect is present, so this repeats the gesture.
+    let tree = tall_workspace(800);
+    let adjustment = outer_adjustment(&tree.sidebar);
+    let span = (adjustment.upper() - adjustment.page_size()).max(0.0);
+    assert!(span > 0.0, "the fixture must be scrollable");
+
+    for trip in 1..=4 {
+        wheel_scroll_by(&tree.sidebar, span / 10.0, 12);
+        wheel_scroll_by(&tree.sidebar, -span / 10.0, 12);
+        assert_sidebar_rests_at_top(&tree.sidebar, &format!("after wheel round trip {trip}"));
+        assert_header_visible(
+            &tree.sidebar,
+            &tree.section,
+            &format!("after wheel round trip {trip}"),
+        );
+    }
+    drop(tree.window);
+}
