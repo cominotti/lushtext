@@ -65,6 +65,33 @@
   </screenshots>
 
   <releases>
+    <release version="0.8.1" date="2026-09-18">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: the 1609 Quarto text as transcribed on Wikisource and in the Folger Shakespeare edition, which agree on the wording and on the sonnet's three quatrains plus couplet. The quatrain below is the complete third quatrain, closing its own ABAB rhyme on despising, state, arising, gate.</p>
+        <p>Selection: Complete stanza.</p>
+        <p>Complete stanza:</p>
+        <p>&gt; Yet in these thoughts myself almost despising,</p>
+        <p>&gt; Haply I think on thee, and then my state,</p>
+        <p>&gt; Like to the lark at break of day arising</p>
+        <p>&gt; From sullen earth, sings hymns at heaven's gate;</p>
+        <p>William Shakespeare, "Sonnet 29"</p>
+        <p>A small release about arising: scrolling back up, and finding the top where you left it.</p>
+        <p>## What's Changed</p>
+        <p>This is a focused patch release. Its one user-facing change is a fix, described under Bug Fixes, and the rest of the work happened behind the scenes:</p>
+        <p>- **The visual proof lane that guards LushText's rendering now measures animations correctly.** Two timing defects in the tool that records real sidebar animations frame by frame made it report failures that were not real: it triggered the animation before the screen recorder had produced its first frame, and it stopped checking geometry before the recorder stopped capturing. Both are fixed, and the lane was run repeatedly to confirm it stays green rather than passing once by luck. This does not change anything you see in the app, but it is what let this fix be verified to the standard the project holds itself to.</p>
+        <p>- **Two GitHub release workflows no longer race to create the same release.** In v0.8.0 they did, and the duplicate had to be removed by hand before the authored notes could be published. Creation now belongs to one workflow and the other waits.</p>
+        <p>- **Release tooling installs only prebuilt Python packages**, closing a supply-chain finding in the release lane's dependency installation.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for this release. There is no data migration, no change to any file LushText stores, no setting to reset, and no cache to clear. Update and carry on.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>Nothing is removed or deprecated. One note for the record:</p>
+        <p>- **Flathub publication is not planned.** This was decided during the v0.8.0 cycle and is now written into the project specifications. The Cominotti Flatpak repository at flatpak.cominotti.dev remains the one supported channel, and nothing changes for anyone already installed from it.</p>
+        <p>## Bug Fixes</p>
+        <p>- **Scrolling the workspace sidebar back to the top shows the workspace header again.** After scrolling down with the mouse wheel or touchpad, scrolling back up would stop about 55 pixels short, leaving the workspace name and its buttons hidden just above the visible area, and it would refuse to go further. It did not happen every time, and switching to another window and back would often clear it, which made it feel random. The cause was not random: the file list settles its own geometry by a few pixels during each layout pass, and the sidebar was misreading that settle as a request to scroll, one or two pixels at a time, until the header was gone. The sidebar now recognises a settle for what it is and only follows the list when it genuinely asks to move, such as when keyboard focus lands on a row out of view.</p>
+        <p>- This is the same visible symptom v0.7.1 repaired, reached by a different route. That earlier fix is intact; this one closes the second route, and the tests now drive the sidebar with wheel-sized steps instead of a single jump, so this path is covered as well.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-09-16">
       <description>
         <p>## Poetic Opening</p>
