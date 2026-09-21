@@ -37,17 +37,28 @@ pub struct ViewportSliceBin {
     pub overscan: Cell<f64>,
     /// True while this bin writes its own adjustment during allocation.
     allocating: Cell<bool>,
-    /// Unclamped top of the outer viewport relative to this bin's content at
-    /// the last allocation; negative when the bin starts below the viewport.
-    viewport_top: Cell<f64>,
     /// The adjustment value this bin last wrote for the child. Anything else
     /// the adjustment holds is a request the child made, and only that is
     /// forwarded to the outer scroller.
     published_offset: Cell<f64>,
+    /// Unclamped top of the outer viewport relative to this bin's content at
+    /// the last allocation; negative when the bin starts below the viewport.
+    viewport_top: Cell<f64>,
     /// Outer scroll delta requested by the child and not yet applied.
     pending_outer_delta: Cell<f64>,
     /// True while an idle to apply `pending_outer_delta` is scheduled.
     outer_request_scheduled: Cell<bool>,
+    /// Vertical CSS inset (padding plus border) of the child's content box,
+    /// learned from the page size the child reports after an allocation. A
+    /// `GtkScrollable` works in its content box, so the geometry this bin
+    /// publishes must be expressed there or the child overwrites it every
+    /// frame and re-derives its value against a different page.
+    content_inset: Cell<f64>,
+    /// Allocations this bin has run with a child; test evidence.
+    allocation_count: Cell<u64>,
+    /// Times this bin has written its published offset back over a value the
+    /// child settled on; test evidence.
+    correction_count: Cell<u64>,
 }
 
 #[glib::object_subclass]
@@ -66,10 +77,13 @@ impl ObjectSubclass for ViewportSliceBin {
             outer_handlers: RefCell::new(None),
             overscan: Cell::new(0.0),
             allocating: Cell::new(false),
-            viewport_top: Cell::new(0.0),
             published_offset: Cell::new(0.0),
+            viewport_top: Cell::new(0.0),
             pending_outer_delta: Cell::new(0.0),
             outer_request_scheduled: Cell::new(false),
+            content_inset: Cell::new(0.0),
+            allocation_count: Cell::new(0),
+            correction_count: Cell::new(0),
         }
     }
 
@@ -163,6 +177,8 @@ impl WidgetImpl for ViewportSliceBin {
     fn unroot(&self) {
         self.disconnect_outer();
         self.outer.replace(None);
+        // The theme may differ under the next root; relearn the inset there.
+        self.content_inset.set(0.0);
         self.obj().queue_resize();
         self.parent_unroot();
     }
@@ -228,6 +244,8 @@ impl WidgetImpl for ViewportSliceBin {
         let slice_height = whole_pixels(slice.height).min(height.max(0));
         let slice_top = whole_pixels(slice.top).clamp(0, height.max(0) - slice_height);
 
+        self.allocation_count
+            .set(self.allocation_count.get().wrapping_add(1));
         self.allocating.set(true);
         self.publish_slice_offset(
             f64::from(slice_top),
@@ -237,50 +255,58 @@ impl WidgetImpl for ViewportSliceBin {
         let transform = gsk::Transform::new()
             .translate(&graphene::Point::new(0.0, pixel_coordinate(slice_top)));
         // A `GtkScrollable` child may replace the content height and page this
-        // bin just configured: a `GtkListView` substitutes its own realized
-        // estimate. Capture them so the value it settles on can be told apart
+        // bin just configured: a `GtkListView` substitutes its own content-box
+        // numbers. Capture them so the value it settles on can be told apart
         // from a value it deliberately moved.
         let upper_before = self.vadjustment.upper();
         let page_before = self.vadjustment.page_size();
         child.allocate(width, slice_height, -1, Some(transform));
-        self.allocating.set(false);
-        let child_reconfigured = (self.vadjustment.upper() - upper_before).abs()
-            >= ADJUSTMENT_EPSILON
-            || (self.vadjustment.page_size() - page_before).abs() >= ADJUSTMENT_EPSILON;
-        // How far the child corrected the geometry bounds how far it may have
-        // re-anchored its value as a consequence; see `scroll_request`.
-        let reconfigure_shift = if child_reconfigured {
-            (self.vadjustment.upper() - upper_before)
-                .abs()
-                .max((self.vadjustment.page_size() - page_before).abs())
-        } else {
-            0.0
-        };
+        let upper_after = self.vadjustment.upper();
+        let page_after = self.vadjustment.page_size();
+        let reconfigure_shift = (upper_after - upper_before)
+            .abs()
+            .max((page_after - page_before).abs());
+
+        // A page the child shortened is its content box: the difference is the
+        // vertical inset this bin must deduct from what it publishes, so the
+        // next allocation hands the child geometry it has no reason to
+        // correct. Learned once per child and theme, and re-laid out at once
+        // so the corrected geometry lands this frame rather than the next
+        // time something else moves.
+        if (page_after - page_before).abs() >= ADJUSTMENT_EPSILON {
+            let learned = (f64::from(slice_height) - page_after).max(0.0);
+            if (learned - self.content_inset.get()).abs() >= ADJUSTMENT_EPSILON {
+                self.content_inset.set(learned);
+                self.obj().queue_allocate();
+            }
+        }
 
         // A `GtkListView` applies `scroll_to` and keyboard-focus scrolling
         // inside its own allocation, which runs right here. Only a value that
         // differs from the one just published is a request to show a different
         // band; the published offset itself is this bin's own resting state.
         //
-        // When the child reconfigured the adjustment, the value it settled on
-        // is its rendering of the band this bin asked for, so that value
-        // becomes the new baseline instead of being forwarded. Re-baselining is
-        // what gives the publish/settle cycle a fixed point: without it the
-        // bin forwards its own publish back to the outer scroller, which
-        // publishes one pixel lower, forever.
-        // A settle becomes the new baseline, which is what gives the
-        // publish/settle cycle a fixed point.
-        if reconfigure_shift > 0.0
-            && (self.vadjustment.value() - self.published_offset.get()).abs()
-                <= reconfigure_shift + ADJUSTMENT_EPSILON
-        {
-            self.published_offset.set(self.vadjustment.value());
+        // A value that is neither the published offset nor a request is a
+        // settle: the child re-derived its value from its scroll anchor and
+        // landed a pixel or two away. The child renders against that value
+        // while this bin placed it at the published offset, so left standing
+        // it draws every row that far off. It is written back to the published
+        // offset here, while `allocating` still holds so the bin's own
+        // handler ignores the emission. v0.8.1 adopted the settle as the new
+        // baseline instead, which gave the outer scroller a fixed point and
+        // left the rendering with none.
+        let settled = self.vadjustment.value();
+        let published = self.published_offset.get();
+        match outer_scroll_request(published, settled, viewport_top, reconfigure_shift) {
+            Some(delta) => self.follow_child_request(delta),
+            None if (settled - published).abs() >= ADJUSTMENT_EPSILON => {
+                self.correction_count
+                    .set(self.correction_count.get().wrapping_add(1));
+                self.vadjustment.set_value(published);
+            }
+            None => {}
         }
-        self.follow_child_request_if_diverged(
-            self.vadjustment.value(),
-            viewport_top,
-            reconfigure_shift,
-        );
+        self.allocating.set(false);
     }
 }
 
@@ -313,6 +339,7 @@ impl ViewportSliceBin {
                     scrollable.set_vadjustment(None::<&gtk4::Adjustment>);
                     scrollable.set_hadjustment(None::<&gtk4::Adjustment>);
                 }
+                self.content_inset.set(0.0);
             },
             |new_child| {
                 if let Some(scrollable) = new_child.dynamic_cast_ref::<gtk4::Scrollable>() {
@@ -321,6 +348,14 @@ impl ViewportSliceBin {
                 }
             },
         );
+    }
+
+    pub(super) fn allocation_count(&self) -> u64 {
+        self.allocation_count.get()
+    }
+
+    pub(super) fn correction_count(&self) -> u64 {
+        self.correction_count.get()
     }
 
     pub(super) fn outer_scrolled_window(&self) -> Option<gtk4::ScrolledWindow> {
@@ -396,13 +431,18 @@ impl ViewportSliceBin {
     /// Write the slice offset the child should rest at and remember it as the
     /// baseline that tells this bin's own writes apart from the child's.
     fn publish_slice_offset(&self, offset: f64, content_height: f64, slice_height: f64) {
+        // Upper and page are the child's content box; the value is not offset,
+        // because a row at child content `y` is drawn at `offset + inset_top +
+        // (y - value)` and the bin's own frame already contains the inset.
+        let inset = self.content_inset.get();
+        let page = (slice_height - inset).max(0.0);
         self.vadjustment.configure(
             offset,
             0.0,
-            content_height,
+            (content_height - inset).max(page),
             self.vadjustment.step_increment(),
-            slice_height,
-            slice_height,
+            page,
+            page,
         );
         // Read back rather than storing `offset`: `configure` clamps to
         // `[lower, upper - page_size]`, and a baseline that disagrees with the
@@ -418,25 +458,11 @@ impl ViewportSliceBin {
         }
         // Outside an allocation there is no reconfigure in flight: the child
         // moved the value on its own, which is the deferred `scroll_to` case.
-        self.follow_child_request_if_diverged(value, self.viewport_top.get(), 0.0);
-    }
-
-    /// Forward `requested` only when the child actually moved the adjustment.
-    ///
-    /// The decision itself is pure and lives in `crate::scroll_request`, which
-    /// documents why the resting comparison must be against the offset this bin
-    /// published rather than against the unclamped viewport top.
-    fn follow_child_request_if_diverged(
-        &self,
-        requested: f64,
-        viewport_top: f64,
-        reconfigure_shift: f64,
-    ) {
         if let Some(delta) = outer_scroll_request(
             self.published_offset.get(),
-            requested,
-            viewport_top,
-            reconfigure_shift,
+            value,
+            self.viewport_top.get(),
+            0.0,
         ) {
             self.follow_child_request(delta);
         }
@@ -449,7 +475,10 @@ impl ViewportSliceBin {
     /// `delta` is measured against the unclamped viewport top, not the clamped
     /// slice offset: at the top of the content the slice starts at zero while
     /// the viewport may start above the bin (a section header, say), and that
-    /// gap is part of the distance the outer scroller has to travel.
+    /// gap is part of the distance the outer scroller has to travel so that the
+    /// re-slice republishes exactly the value the child chose (see
+    /// `scroll_request` for why anything less wipes the child's pending
+    /// requests).
     ///
     /// The request usually arrives from inside a layout pass (the child applies
     /// `scroll_to` in its own allocation). Moving the outer adjustment there

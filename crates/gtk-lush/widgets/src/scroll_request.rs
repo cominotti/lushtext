@@ -75,6 +75,24 @@ pub const ADJUSTMENT_EPSILON: f64 = 0.5;
 /// way -- the focus case moved 274 against a far smaller correction. The rule
 /// needs no constant, no row height, and no fixture-sized threshold.
 ///
+/// # Why the delta is measured from the viewport top and not the published offset
+///
+/// The distance `child_value - published_offset` -- move the outer by exactly
+/// what the child moved -- looks like the gentler answer: a row clipped by 5px
+/// would cost 7px of travel instead of the 52 the chrome above the bin adds
+/// here. It was tried and it breaks keyboard traversal. `GtkListBase` treats
+/// every `value-changed` on its adjustment as a user scroll: it re-anchors on
+/// the value and drops any pending `scroll_to`. After the outer moves by the
+/// child's own delta the bin re-slices at `child_value - chrome`, publishes
+/// that, and the emission wipes the child's anchor -- including a request the
+/// child issued between the outer move and the re-slice. Measured: a focus
+/// traversal that reached row 21 then asked for row 30 published 219 over the
+/// child's 274, and row 30 was never requested again. Landing the outer where
+/// the slice offset *equals* the child's value means the re-slice republishes
+/// the value the child already holds, nothing is emitted, and the anchor
+/// survives. That is what `child_value - viewport_top` buys, at the price of
+/// scrolling chrome above the bin away on every honoured request.
+///
 /// # Why the resting comparison is against `published_offset`
 ///
 /// `published_offset` and `viewport_top` are different quantities, and they
@@ -145,6 +163,14 @@ mod tests {
         assert_eq!(outer_scroll_request(0.0, 900.0, 0.0, 0.0), Some(900.0));
         // Scrolling back up is a negative delta.
         assert_eq!(outer_scroll_request(900.0, 0.0, 900.0, 0.0), Some(-900.0));
+    }
+
+    #[test]
+    fn a_small_reveal_below_chrome_still_lands_the_band_at_the_viewport_top() {
+        // Measured: a row clipped by 5px made the child ask for 7 with the
+        // viewport top 45px above the bin. The answer is 52, not 7; see the
+        // module doc for why the gentler answer wipes pending requests.
+        assert_eq!(outer_scroll_request(0.0, 7.0, -45.0, 0.0), Some(52.0));
     }
 
     #[test]

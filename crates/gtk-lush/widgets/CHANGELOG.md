@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `ViewportSliceBin` now publishes the child adjustment's `upper` and
+  `page_size` in the child's CSS content box, learning the vertical inset from
+  the page the child reports after its first allocation. A `GtkListView` works
+  in its content box, so a padded list (Libadwaita's `navigation-sidebar` gives
+  10px) overwrote the border-box geometry on every allocation and re-derived
+  its value from its scroll anchor a few pixels off, and the rows rendered that
+  far from where the bin had placed them on every focus change. Any value the
+  child still settles on that is neither the published offset nor a request is
+  written back to the published offset inside the allocation, and the new
+  `allocation_count()` / `correction_count()` accessors expose both as test
+  evidence. The v0.8.1 behaviour of adopting the settled value as the new
+  baseline is gone: it gave the outer scroller a fixed point and left the
+  rendering with none.
 - Fixed `ViewportSliceBin` moving the outer scroller while at rest. It compared
   the child's adjustment against the unclamped viewport top rather than against
   the offset it had itself published, so any container placed below other

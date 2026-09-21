@@ -593,11 +593,14 @@ fn test_adoption_padded_slice_bin_keeps_rows_still_across_selection_mid_content(
 }
 
 #[test]
-fn test_adoption_padded_slice_bin_still_honours_a_small_request() {
+fn test_adoption_padded_slice_bin_still_reveals_a_clipped_row_and_then_rests() {
     // The positive control for the stillness checks: a row clipped by a few
-    // pixels at the slice edge is a genuine request, and it must move the
-    // outer scroller by about that overflow -- not by nothing, and not by the
-    // chrome height above the bin.
+    // pixels at the slice edge is a genuine request. It must be honoured --
+    // the row ends up fully visible -- and honoured once, so the outer rests.
+    // How far the outer travels is the list's decision: `GtkListView` drops a
+    // pending request whenever its adjustment value changes under it, so the
+    // bin lands the outer where the re-slice republishes exactly the value the
+    // list chose, which with chrome above the bin scrolls that chrome away.
     let fixture = SliceAdoptionFixture::present_with(1, true);
     let outer = fixture.adjustment();
     // Nudge so no row boundary coincides with the viewport bottom.
@@ -607,6 +610,7 @@ fn test_adoption_padded_slice_bin_still_honours_a_small_request() {
     let viewport_bottom = f64::from(fixture.scroller.height());
     let clipped = realized_list_rows(&fixture.lists[0])
         .into_iter()
+        .filter(WidgetExt::is_mapped)
         .find_map(|row| {
             let bounds = row.compute_bounds(&fixture.scroller)?;
             let overflow = f64::from(bounds.y() + bounds.height()) - viewport_bottom;
@@ -626,12 +630,69 @@ fn test_adoption_padded_slice_bin_still_honours_a_small_request() {
     wait_until(Duration::from_secs(5), || {
         (outer.value() - resting).abs() > 0.5
     });
-    flush_after_delay(Duration::from_millis(400));
-    let moved = outer.value() - resting;
+    let values = fixture.settled_values(6);
+    let moved = values[0] - resting;
     assert!(
-        (moved - overflow).abs() <= 2.0,
-        "revealing {label}, clipped by {overflow:.1}px, must scroll the outer by about that \
-         much; it moved {moved:.1}px"
+        moved >= overflow - 0.5,
+        "revealing {label}, clipped by {overflow:.1}px, must scroll the outer at least that \
+         far; it moved {moved:.1}px"
+    );
+    assert!(
+        values
+            .iter()
+            .all(|value| (value - values[0]).abs() < SCROLL_TOLERANCE),
+        "an honoured request must settle instead of re-asking; saw {values:?}"
+    );
+    let row = fixture
+        .row_widget(0, &label)
+        .expect("the revealed row stays rendered");
+    assert!(
+        fixture.fully_visible(&row),
+        "{label} must be fully inside the viewport after the request"
+    );
+    drop(fixture.window);
+}
+
+#[test]
+fn test_adoption_padded_slice_bin_stops_allocating_and_correcting_at_rest() {
+    // The bin learns the child's content-box inset from its first allocation
+    // and republishes geometry in the child's frame. From then on an ordinary
+    // allocation leaves the child nothing to correct, so at rest the bin must
+    // neither keep allocating nor keep writing its offset back: a count that
+    // grows across idle passes is a layout loop, and a correction that keeps
+    // firing means the child still disagrees with what it is handed.
+    let fixture = SliceAdoptionFixture::present_with(1, true);
+    let outer = fixture.adjustment();
+    outer.set_value((outer.upper() - outer.page_size()) / 2.0);
+    flush_after_delay(Duration::from_millis(400));
+    let bin = &fixture.bins[0];
+    let corrections_after_settling = bin.correction_count();
+    let allocations: Vec<u64> = (0..6)
+        .map(|_| {
+            flush_after_delay(Duration::from_millis(120));
+            bin.allocation_count()
+        })
+        .collect();
+    assert!(
+        allocations.iter().all(|count| *count == allocations[0]),
+        "a resting bin must not keep allocating; saw {allocations:?}"
+    );
+    assert_eq!(
+        bin.correction_count(),
+        corrections_after_settling,
+        "a resting bin must not keep correcting the child's value"
+    );
+    // A selection change on an already visible row is an ordinary allocation
+    // too: it may allocate, but it must not need a correction.
+    let visible = fixture.fully_visible_labels(0);
+    fixture
+        .selection(0)
+        .set_selected(SliceAdoptionFixture::row_index(&visible[2]));
+    fixture.force_layout();
+    assert_eq!(
+        bin.correction_count(),
+        corrections_after_settling,
+        "an ordinary allocation must not need a correction once the inset is known"
     );
     drop(fixture.window);
 }

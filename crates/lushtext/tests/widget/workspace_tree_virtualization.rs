@@ -1369,9 +1369,14 @@ fn test_rendered_rows_settle_after_model_changes() {
 }
 
 #[test]
-fn test_a_row_clipped_at_the_slice_edge_still_pulls_the_sidebar_by_its_overflow() {
-    // Positive control: a genuine few-pixel request must still be honoured,
-    // and honoured by about its overflow rather than by the header height.
+fn test_a_row_clipped_at_the_slice_edge_is_still_revealed_and_the_sidebar_then_rests() {
+    // Positive control for the stillness checks: a genuine request for a row
+    // clipped at the slice edge must still be honoured -- the row ends up
+    // fully inside the viewport -- and honoured once, so the sidebar rests
+    // afterwards instead of re-asking. How far the outer travels is the
+    // list's decision, not the bin's: `GtkListView` drops a pending request
+    // whenever its adjustment value changes under it, so the bin must land the
+    // outer where the re-slice republishes exactly the value the list chose.
     let tree = tall_workspace(800);
     // Nudge so no row boundary coincides with the viewport bottom.
     scroll_outer_to(&tree.sidebar, 7.0);
@@ -1398,12 +1403,23 @@ fn test_a_row_clipped_at_the_slice_edge_still_pulls_the_sidebar_by_its_overflow(
     wait_until(Duration::from_secs(5), || {
         (outer.value() - resting).abs() > 0.5
     });
-    flush_after_delay(Duration::from_millis(400));
-    let moved = outer.value() - resting;
+    let values = settled_outer_values(&tree.sidebar, 6);
+    let moved = values[0] - resting;
     assert!(
-        (moved - overflow).abs() <= 2.0,
-        "revealing {label}, clipped by {overflow:.1}px, must scroll the sidebar by about that \
-         much; it moved {moved:.1}px"
+        moved >= overflow - 0.5,
+        "revealing {label}, clipped by {overflow:.1}px, must scroll the sidebar at least that \
+         far; it moved {moved:.1}px"
+    );
+    assert!(
+        values
+            .iter()
+            .all(|value| (value - values[0]).abs() < SCROLL_TOLERANCE),
+        "an honoured request must settle instead of re-asking; saw {values:?}"
+    );
+    let row = rendered_row_widget(&tree.section, &label).expect("the revealed row stays rendered");
+    assert!(
+        inside_outer_viewport(&tree.sidebar, &row),
+        "{label} must be fully inside the viewport after the request"
     );
     drop(tree.window);
 }

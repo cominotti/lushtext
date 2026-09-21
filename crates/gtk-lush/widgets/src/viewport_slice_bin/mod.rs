@@ -88,6 +88,26 @@ impl ViewportSliceBin {
         self.set_property("overscan", overscan);
     }
 
+    /// How many times this bin has allocated its child.
+    ///
+    /// Evidence for tests: a bin at rest must stop allocating. A child that
+    /// keeps rewriting its adjustment, or a correction that never converges,
+    /// shows up here as a count that grows across idle layout passes.
+    #[must_use]
+    pub fn allocation_count(&self) -> u64 {
+        self.imp().allocation_count()
+    }
+
+    /// How many times this bin wrote its published offset back over a value
+    /// the child had settled on after re-deriving it from its scroll anchor.
+    ///
+    /// Evidence for tests: once the child is handed geometry in its own
+    /// content box this should stay near zero at rest.
+    #[must_use]
+    pub fn correction_count(&self) -> u64 {
+        self.imp().correction_count()
+    }
+
     /// Return the outer scroller the bin currently slices against.
     #[must_use]
     pub fn outer_scrolled_window(&self) -> Option<gtk4::ScrolledWindow> {

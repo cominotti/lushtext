@@ -41,6 +41,19 @@ top edge — those agree only when the bin starts exactly at that edge, and
 comparing against the wrong one makes a bin below other content scroll that
 content away and pin itself to the top.
 
+The geometry the bin publishes is expressed in the child's CSS content box. A
+`GtkScrollable` such as `GtkListView` measures its page and content there, so a
+padded child handed border-box numbers rewrites them on every allocation and
+re-derives its value from its scroll anchor against a different page, a few
+pixels from where the bin placed it — rows then render that far off. The bin
+learns the vertical inset from the page the child reports after its first
+allocation and deducts it from `upper` and `page_size`; the value itself is not
+offset, because a row at child content `y` is drawn at `offset + inset + (y −
+value)` and the bin's own frame already contains the inset. A settle that still
+survives is written back to the published offset inside the allocation. The
+`allocation_count()` and `correction_count()` accessors let tests prove a bin
+at rest stops allocating and needs no corrections.
+
 `RenderHoldOverlay` captures already-rendered child pixels into a non-targetable
 cover picture, hides the live child, lets callers warm the live child beneath
 the cover, and clears the cover with paired opacity restoration.
