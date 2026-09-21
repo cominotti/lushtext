@@ -48,11 +48,11 @@ re-derives its value from its scroll anchor against a different page, a few
 pixels from where the bin placed it — rows then render that far off. The bin
 learns the vertical inset from the page the child reports after its first
 allocation and deducts it from `upper` and `page_size`; the value itself is not
-offset, because a row at child content `y` is drawn at `offset + inset + (y −
-value)` and the bin's own frame already contains the inset. A settle that still
-survives is written back to the published offset inside the allocation. The
-`allocation_count()` and `correction_count()` accessors let tests prove a bin
-at rest stops allocating and needs no corrections.
+offset (see `publish_slice_offset`). A settle that still survives is written
+back to the published offset inside the allocation. `allocation_count()` and
+`correction_count()` are layout diagnostics: a bin at rest stops allocating and
+needs no corrections, and either count growing across idle frames names which
+side of the contract is broken.
 
 `RenderHoldOverlay` captures already-rendered child pixels into a non-targetable
 cover picture, hides the live child, lets callers warm the live child beneath

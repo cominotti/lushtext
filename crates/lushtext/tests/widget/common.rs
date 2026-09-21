@@ -7,10 +7,11 @@
 //! Both operations are one-time setup via `std::sync::Once`.
 
 use gio::prelude::{ApplicationExt, Cast, ListModelExt, ObjectExt};
+use glib::object::CastNone;
 use glib::prelude::IsA;
 use glib::prelude::ToValue;
 pub use gtk_lush_proof_harness::{flush_after_delay, flush_events, wait_until};
-use gtk4::prelude::{GtkWindowExt, WidgetExt};
+use gtk4::prelude::{AdjustmentExt, GtkWindowExt, WidgetExt};
 use lushtext_core::config::APP_ID;
 pub use lushtext_core::services::filesystem::{
     fixture, metadata as fs_metadata, mutate as fs_mutate, read as fs_read,
@@ -260,4 +261,163 @@ pub fn find_descendant(
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Rendered-row geometry: where a row is drawn, not what an adjustment says.
+//
+// Adjustment-value assertions cannot see a child that renders against a value
+// other than the one its host placed it at. These probes pin a named row's
+// on-screen placement across forced layout passes; the sidebar suite and the
+// GTK Lush adoption suite share them and differ only in how a label resolves
+// to a model index and which chrome the placement is measured against.
+// ---------------------------------------------------------------------------
+
+/// Realized rows that are actually drawn. `GtkListView` keeps rows around the
+/// selection and focus realized but child-invisible; they have bounds and no
+/// pixels, so any placement probe must skip them.
+pub fn mapped_list_rows(list: &gtk4::ListView) -> impl Iterator<Item = gtk4::Widget> {
+    realized_list_rows(list)
+        .into_iter()
+        .filter(WidgetExt::is_mapped)
+}
+
+/// The first `GtkLabel` in a row's subtree.
+pub fn first_label(row: &gtk4::Widget) -> Option<gtk4::Label> {
+    find_descendant(row, glib::object::ObjectExt::is::<gtk4::Label>).and_downcast::<gtk4::Label>()
+}
+
+/// The mapped row whose first label reads `label`, resolved fresh each call
+/// because list rows are recycled and a held handle can be rebound.
+pub fn mapped_row_with_label(list: &gtk4::ListView, label: &str) -> Option<gtk4::Widget> {
+    mapped_list_rows(list).find(|row| first_label(row).is_some_and(|found| found.text() == label))
+}
+
+/// Top and height of a row relative to a fixed reference widget above it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RowPlacement {
+    pub top: f32,
+    pub height: f32,
+}
+
+/// Where `row` is drawn relative to `reference`. Relative to chrome above the
+/// host rather than to the scroller, so a genuine outer move cannot pass for
+/// row stability nor the reverse.
+pub fn placement_relative_to(
+    row: &gtk4::Widget,
+    reference: &impl IsA<gtk4::Widget>,
+) -> Option<RowPlacement> {
+    row.compute_bounds(reference).map(|bounds| RowPlacement {
+        top: bounds.y(),
+        height: bounds.height(),
+    })
+}
+
+/// Run a layout pass now rather than waiting for the compositor to deliver a
+/// frame: `flush_after_delay` alone only pumps the main loop, and the queued
+/// allocation runs on the next headless frame tick.
+pub fn force_layout<'a>(widgets: impl IntoIterator<Item = &'a gtk4::Widget>) {
+    for widget in widgets {
+        widget.queue_allocate();
+    }
+    flush_after_delay(Duration::from_millis(16));
+}
+
+/// Sample a placement across `samples` forced layout passes, so a row that
+/// moves and comes back inside one interval is still caught.
+pub fn sample_placements(
+    samples: usize,
+    mut force: impl FnMut(),
+    mut placement: impl FnMut() -> Option<RowPlacement>,
+) -> Vec<RowPlacement> {
+    (0..samples)
+        .map(|_| {
+            force();
+            placement().expect("the sampled row must stay rendered")
+        })
+        .collect()
+}
+
+/// A rendered list the stillness assertion can drive without knowing the
+/// fixture: how to list the fully visible labels, select and focus a row by
+/// label, and sample where the anchor row is drawn.
+pub struct RowStillnessProbe<'a> {
+    pub outer: &'a gtk4::Adjustment,
+    pub visible_labels: &'a dyn Fn() -> Vec<String>,
+    pub select: &'a dyn Fn(&str),
+    pub focus: &'a dyn Fn(&str),
+    pub sample: &'a dyn Fn(&str, usize) -> Vec<RowPlacement>,
+}
+
+/// Select, then focus, up to seven already-visible rows, and require the first
+/// visible row to be drawn at exactly the same place throughout while the
+/// outer scroller has not moved.
+#[track_caller]
+pub fn assert_rows_still_across_selection(probe: &RowStillnessProbe<'_>, when: &str) {
+    let resting = probe.outer.value();
+    let visible = (probe.visible_labels)();
+    assert!(
+        visible.len() >= 5,
+        "this check needs at least five fully visible rows {when}; saw {}",
+        visible.len()
+    );
+    let anchor = &visible[0];
+    let baseline = (probe.sample)(anchor, 3);
+    let expected = baseline[0];
+    assert!(
+        baseline.iter().all(|placement| *placement == expected),
+        "the anchor row must rest before selection starts {when}; saw {baseline:?}"
+    );
+    for target in visible.iter().skip(1).take(7) {
+        (probe.select)(target);
+        let selected = (probe.sample)(anchor, 3);
+        (probe.focus)(target);
+        let focused = (probe.sample)(anchor, 3);
+        assert!(
+            (probe.outer.value() - resting).abs() < gtk_lush_widgets::ADJUSTMENT_EPSILON,
+            "selecting an already visible row must not move the outer scroller {when}: {target} \
+             moved it from {resting} to {}",
+            probe.outer.value()
+        );
+        for (how, samples) in [("selecting", &selected), ("focusing", &focused)] {
+            assert!(
+                samples.iter().all(|placement| *placement == expected),
+                "{how} {target} must not move the rendered rows {when}: {anchor} rested at \
+                 {expected:?} and was drawn at {samples:?}"
+            );
+        }
+    }
+}
+
+/// The first mapped row that straddles the bottom edge of `viewport`, with how
+/// far it overflows; the fixture for a genuine few-pixel reveal request.
+pub fn row_straddling_bottom(
+    list: &gtk4::ListView,
+    viewport: &impl IsA<gtk4::Widget>,
+) -> Option<(gtk4::Widget, f64)> {
+    let viewport_bottom = f64::from(viewport.as_ref().height());
+    mapped_list_rows(list).find_map(|row| {
+        let bounds = row.compute_bounds(viewport)?;
+        let overflow = f64::from(bounds.y() + bounds.height()) - viewport_bottom;
+        (f64::from(bounds.y()) < viewport_bottom && overflow > gtk_lush_widgets::ADJUSTMENT_EPSILON)
+            .then_some((row, overflow))
+    })
+}
+
+/// The positive control for the stillness checks: an honoured reveal must move
+/// the outer at least by the row's overflow and then rest. How far it travels
+/// is the list's decision, not the host's; see
+/// `gtk_lush_widgets::outer_scroll_request` for why.
+#[track_caller]
+pub fn assert_reveal_then_rest(resting: f64, overflow: f64, settled: &[f64], label: &str) {
+    let moved = settled[0] - resting;
+    assert!(
+        moved >= overflow - gtk_lush_widgets::ADJUSTMENT_EPSILON,
+        "revealing {label}, clipped by {overflow:.1}px, must scroll the outer at least that far; \
+         it moved {moved:.1}px"
+    );
+    assert!(
+        settled.iter().all(|value| (value - settled[0]).abs() < 1.0),
+        "an honoured request must settle instead of re-asking; saw {settled:?}"
+    );
 }

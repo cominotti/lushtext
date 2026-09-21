@@ -54,11 +54,13 @@ pub struct ViewportSliceBin {
     /// publishes must be expressed there or the child overwrites it every
     /// frame and re-derives its value against a different page.
     content_inset: Cell<f64>,
-    /// Allocations this bin has run with a child; test evidence.
-    allocation_count: Cell<u64>,
+    /// Allocations this bin has run with a child. A count that grows while
+    /// nothing moves is a layout loop.
+    pub(super) allocation_count: Cell<u64>,
     /// Times this bin has written its published offset back over a value the
-    /// child settled on; test evidence.
-    correction_count: Cell<u64>,
+    /// child settled on. A count that grows at rest means the child still
+    /// disagrees with the geometry it is handed.
+    pub(super) correction_count: Cell<u64>,
 }
 
 #[glib::object_subclass]
@@ -244,8 +246,7 @@ impl WidgetImpl for ViewportSliceBin {
         let slice_height = whole_pixels(slice.height).min(height.max(0));
         let slice_top = whole_pixels(slice.top).clamp(0, height.max(0) - slice_height);
 
-        self.allocation_count
-            .set(self.allocation_count.get().wrapping_add(1));
+        self.allocation_count.set(self.allocation_count.get() + 1);
         self.allocating.set(true);
         self.publish_slice_offset(
             f64::from(slice_top),
@@ -254,57 +255,45 @@ impl WidgetImpl for ViewportSliceBin {
         );
         let transform = gsk::Transform::new()
             .translate(&graphene::Point::new(0.0, pixel_coordinate(slice_top)));
-        // A `GtkScrollable` child may replace the content height and page this
-        // bin just configured: a `GtkListView` substitutes its own content-box
-        // numbers. Capture them so the value it settles on can be told apart
-        // from a value it deliberately moved.
+        // A `GtkScrollable` child may rewrite the geometry this bin just
+        // configured -- a `GtkListView` substitutes its own content-box numbers
+        // -- so capture it first: how far the geometry moved bounds how far the
+        // value may have settled as a consequence (see `scroll_request`).
         let upper_before = self.vadjustment.upper();
         let page_before = self.vadjustment.page_size();
         child.allocate(width, slice_height, -1, Some(transform));
-        let upper_after = self.vadjustment.upper();
-        let page_after = self.vadjustment.page_size();
-        let reconfigure_shift = (upper_after - upper_before)
+        let page_shift = (self.vadjustment.page_size() - page_before).abs();
+        let reconfigure_shift = (self.vadjustment.upper() - upper_before)
             .abs()
-            .max((page_after - page_before).abs());
+            .max(page_shift);
 
-        // A page the child shortened is its content box: the difference is the
-        // vertical inset this bin must deduct from what it publishes, so the
-        // next allocation hands the child geometry it has no reason to
-        // correct. Learned once per child and theme, and re-laid out at once
-        // so the corrected geometry lands this frame rather than the next
-        // time something else moves.
-        if (page_after - page_before).abs() >= ADJUSTMENT_EPSILON {
-            let learned = (f64::from(slice_height) - page_after).max(0.0);
-            if (learned - self.content_inset.get()).abs() >= ADJUSTMENT_EPSILON {
-                self.content_inset.set(learned);
-                self.obj().queue_allocate();
-            }
+        // A shortened page is the child's content box: learn the inset and lay
+        // out again at once so geometry the child does not correct lands this
+        // frame. The `page_shift` guard keeps a zero-height slice, where the
+        // page collapses for a different reason, from unlearning it.
+        let learned = (f64::from(slice_height) - self.vadjustment.page_size()).max(0.0);
+        let inset_changed = page_shift >= ADJUSTMENT_EPSILON
+            && (learned - self.content_inset.get()).abs() >= ADJUSTMENT_EPSILON;
+        if inset_changed {
+            self.content_inset.set(learned);
+            self.obj().queue_allocate();
         }
 
-        // A `GtkListView` applies `scroll_to` and keyboard-focus scrolling
-        // inside its own allocation, which runs right here. Only a value that
-        // differs from the one just published is a request to show a different
-        // band; the published offset itself is this bin's own resting state.
-        //
-        // A value that is neither the published offset nor a request is a
-        // settle: the child re-derived its value from its scroll anchor and
-        // landed a pixel or two away. The child renders against that value
-        // while this bin placed it at the published offset, so left standing
-        // it draws every row that far off. It is written back to the published
-        // offset here, while `allocating` still holds so the bin's own
-        // handler ignores the emission. v0.8.1 adopted the settle as the new
-        // baseline instead, which gave the outer scroller a fixed point and
-        // left the rendering with none.
+        // Only a value that differs from the one just published is a request
+        // to show a different band. A value that is neither is a settle: the
+        // child renders against it while this bin placed it at the published
+        // offset, so it is written back here, while `allocating` still holds
+        // and the bin's own handler ignores the emission. The learning frame
+        // skips the write-back: its requeued pass republishes anyway.
         let settled = self.vadjustment.value();
         let published = self.published_offset.get();
-        match outer_scroll_request(published, settled, viewport_top, reconfigure_shift) {
-            Some(delta) => self.follow_child_request(delta),
-            None if (settled - published).abs() >= ADJUSTMENT_EPSILON => {
-                self.correction_count
-                    .set(self.correction_count.get().wrapping_add(1));
-                self.vadjustment.set_value(published);
-            }
-            None => {}
+        if let Some(delta) =
+            outer_scroll_request(published, settled, viewport_top, reconfigure_shift)
+        {
+            self.follow_child_request(delta);
+        } else if !inset_changed && (settled - published).abs() >= ADJUSTMENT_EPSILON {
+            self.correction_count.set(self.correction_count.get() + 1);
+            self.vadjustment.set_value(published);
         }
         self.allocating.set(false);
     }
@@ -339,6 +328,7 @@ impl ViewportSliceBin {
                     scrollable.set_vadjustment(None::<&gtk4::Adjustment>);
                     scrollable.set_hadjustment(None::<&gtk4::Adjustment>);
                 }
+                // A new child has its own inset; relearn from its first page.
                 self.content_inset.set(0.0);
             },
             |new_child| {
@@ -348,14 +338,6 @@ impl ViewportSliceBin {
                 }
             },
         );
-    }
-
-    pub(super) fn allocation_count(&self) -> u64 {
-        self.allocation_count.get()
-    }
-
-    pub(super) fn correction_count(&self) -> u64 {
-        self.correction_count.get()
     }
 
     pub(super) fn outer_scrolled_window(&self) -> Option<gtk4::ScrolledWindow> {
@@ -431,9 +413,10 @@ impl ViewportSliceBin {
     /// Write the slice offset the child should rest at and remember it as the
     /// baseline that tells this bin's own writes apart from the child's.
     fn publish_slice_offset(&self, offset: f64, content_height: f64, slice_height: f64) {
-        // Upper and page are the child's content box; the value is not offset,
-        // because a row at child content `y` is drawn at `offset + inset_top +
-        // (y - value)` and the bin's own frame already contains the inset.
+        // Upper and page are expressed in the child's content box; the value
+        // is not offset, because a row at child content `y` is drawn at
+        // `offset + inset_top + (y - value)` and this bin's own frame (its
+        // measured natural height) already contains the inset.
         let inset = self.content_inset.get();
         let page = (slice_height - inset).max(0.0);
         self.vadjustment.configure(

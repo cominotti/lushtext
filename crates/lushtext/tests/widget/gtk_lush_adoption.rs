@@ -7,8 +7,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::common::{
-    ensure_gtk_init, find_descendant, flush_after_delay, flush_events, present_window,
-    realized_list_rows, test_application, wait_until,
+    RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
+    ensure_gtk_init, first_label, flush_after_delay, flush_events, force_layout, mapped_list_rows,
+    mapped_row_with_label, placement_relative_to, present_window, row_straddling_bottom,
+    sample_placements, test_application, wait_until,
 };
 use gtk_lush_tasks::{FreshnessToken, spawn_blocking_then};
 use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
@@ -223,6 +225,14 @@ const SCROLL_TOLERANCE: f64 = 1.0;
 const SLICE_ADOPTION_PADDED_CLASS: &str = "slice-adoption-padded";
 
 fn install_padded_list_css() {
+    // One provider per process: the selector is inert on every other widget,
+    // and the harness runs the whole suite in one display.
+    thread_local! {
+        static INSTALLED: Cell<bool> = const { Cell::new(false) };
+    }
+    if INSTALLED.replace(true) {
+        return;
+    }
     let provider = gtk4::CssProvider::new();
     provider.load_from_string(&format!(
         "listview.{SLICE_ADOPTION_PADDED_CLASS} {{ padding-top: 6px; padding-bottom: 4px; }}"
@@ -442,38 +452,12 @@ fn test_adoption_slice_bin_still_forwards_a_child_scroll_request() {
     drop(fixture.window);
 }
 
-/// Where a row is drawn, as its top and height relative to the chrome above
-/// its bin. Relative to the header rather than the scroller so a genuine outer
-/// move cannot pass for row stability, nor the reverse.
-type RowPlacement = (f32, f32);
-
 impl SliceAdoptionFixture {
     fn selection(&self, section: usize) -> gtk4::SingleSelection {
         self.lists[section]
             .model()
             .and_downcast::<gtk4::SingleSelection>()
             .expect("the adoption list uses a SingleSelection")
-    }
-
-    /// The realized row carrying `label`, resolved fresh each time: list rows
-    /// are recycled, so a held handle can be rebound to another row.
-    fn row_widget(&self, section: usize, label: &str) -> Option<gtk4::Widget> {
-        realized_list_rows(&self.lists[section])
-            .into_iter()
-            // `GtkListView` keeps rows around the selection and focus realized
-            // but child-invisible; they have bounds and are not drawn.
-            .filter(WidgetExt::is_mapped)
-            .find(|row| {
-                find_descendant(row, glib::object::ObjectExt::is::<gtk4::Label>)
-                    .and_downcast::<gtk4::Label>()
-                    .is_some_and(|found| found.text() == label)
-            })
-    }
-
-    fn row_label(row: &gtk4::Widget) -> Option<String> {
-        find_descendant(row, glib::object::ObjectExt::is::<gtk4::Label>)
-            .and_downcast::<gtk4::Label>()
-            .map(|label| label.text().to_string())
     }
 
     fn row_index(label: &str) -> u32 {
@@ -483,86 +467,52 @@ impl SliceAdoptionFixture {
             .expect("adoption rows are labelled `row NNNN`")
     }
 
+    /// Where the row labelled `label` is drawn relative to its section header.
     fn placement(&self, section: usize, label: &str) -> Option<RowPlacement> {
-        self.row_widget(section, label)?
-            .compute_bounds(&self.headers[section])
-            .map(|bounds| (bounds.y(), bounds.height()))
+        let row = mapped_row_with_label(&self.lists[section], label)?;
+        placement_relative_to(&row, &self.headers[section])
     }
 
-    /// Run a layout pass now rather than waiting for the compositor to
-    /// deliver a frame: `flush_after_delay` alone only pumps the main loop.
     fn force_layout(&self) {
-        for bin in &self.bins {
-            bin.queue_allocate();
-        }
-        flush_events();
-        flush_after_delay(Duration::from_millis(16));
+        force_layout(self.bins.iter().map(Cast::upcast_ref::<gtk4::Widget>));
     }
 
-    /// Sample where `label` is drawn across several forced layout passes, so a
-    /// row that moves and comes back inside one interval is still caught.
     fn sampled_placements(&self, section: usize, label: &str, samples: usize) -> Vec<RowPlacement> {
-        (0..samples)
-            .map(|_| {
-                self.force_layout();
-                self.placement(section, label)
-                    .unwrap_or_else(|| panic!("row {label} must stay rendered while sampled"))
-            })
-            .collect()
+        sample_placements(
+            samples,
+            || self.force_layout(),
+            || self.placement(section, label),
+        )
     }
 
     /// Labels of the rows currently drawn wholly inside the outer viewport.
     fn fully_visible_labels(&self, section: usize) -> Vec<String> {
-        realized_list_rows(&self.lists[section])
-            .into_iter()
-            .filter(WidgetExt::is_mapped)
+        mapped_list_rows(&self.lists[section])
             .filter(|row| self.fully_visible(row))
-            .filter_map(|row| Self::row_label(&row))
+            .filter_map(|row| first_label(&row).map(|label| label.text().to_string()))
             .collect()
     }
-}
 
-/// Select, then focus, each of several already-visible rows, and require the
-/// first visible row to be drawn at exactly the same place throughout while
-/// the outer scroller has not moved.
-fn assert_rows_still_across_selection(fixture: &SliceAdoptionFixture, when: &str) {
-    let outer = fixture.adjustment();
-    let resting = outer.value();
-    let visible = fixture.fully_visible_labels(0);
-    assert!(
-        visible.len() >= 5,
-        "this check needs at least five fully visible rows {when}; saw {}",
-        visible.len()
-    );
-    let anchor = visible[0].clone();
-    let baseline = fixture.sampled_placements(0, &anchor, 3);
-    assert!(
-        baseline.iter().all(|placement| *placement == baseline[0]),
-        "the anchor row must rest before selection starts {when}; saw {baseline:?}"
-    );
-    let expected = baseline[0];
-
-    for target in &visible[1..visible.len().min(8)] {
-        let index = SliceAdoptionFixture::row_index(target);
-        fixture.selection(0).set_selected(index);
-        let placements = fixture.sampled_placements(0, &anchor, 3);
-        if let Some(row) = fixture.row_widget(0, target) {
-            row.grab_focus();
-        }
-        let focused = fixture.sampled_placements(0, &anchor, 3);
-        assert!(
-            (outer.value() - resting).abs() < 0.5,
-            "selecting an already visible row must not move the outer scroller {when}: \
-             {target} moved it from {resting} to {}",
-            outer.value()
+    fn assert_rows_still_across_selection(&self, when: &str) {
+        let outer = self.adjustment();
+        let visible_labels = || self.fully_visible_labels(0);
+        let select = |label: &str| self.selection(0).set_selected(Self::row_index(label));
+        let focus = |label: &str| {
+            if let Some(row) = mapped_row_with_label(&self.lists[0], label) {
+                row.grab_focus();
+            }
+        };
+        let sample = |label: &str, samples: usize| self.sampled_placements(0, label, samples);
+        assert_rows_still_across_selection(
+            &RowStillnessProbe {
+                outer: &outer,
+                visible_labels: &visible_labels,
+                select: &select,
+                focus: &focus,
+                sample: &sample,
+            },
+            when,
         );
-        for (how, samples) in [("selecting", &placements), ("focusing", &focused)] {
-            assert!(
-                samples.iter().all(|placement| *placement == expected),
-                "{how} {target} must not move the rendered rows {when}: {anchor} rested at \
-                 (top, height) = {expected:?} and was drawn at {samples:?}"
-            );
-        }
     }
 }
 
@@ -574,7 +524,7 @@ fn test_adoption_padded_slice_bin_keeps_rows_still_across_selection_at_the_top()
     // every anchor change and draws its rows there.
     let fixture = SliceAdoptionFixture::present_with(1, true);
     assert!(fixture.adjustment().value() < SCROLL_TOLERANCE);
-    assert_rows_still_across_selection(&fixture, "at the top");
+    fixture.assert_rows_still_across_selection("at the top");
     drop(fixture.window);
 }
 
@@ -588,40 +538,26 @@ fn test_adoption_padded_slice_bin_keeps_rows_still_across_selection_mid_content(
         outer.value() > SCROLL_TOLERANCE,
         "the fixture must have scrolled"
     );
-    assert_rows_still_across_selection(&fixture, "mid-content");
+    fixture.assert_rows_still_across_selection("mid-content");
     drop(fixture.window);
 }
 
 #[test]
 fn test_adoption_padded_slice_bin_still_reveals_a_clipped_row_and_then_rests() {
-    // The positive control for the stillness checks: a row clipped by a few
-    // pixels at the slice edge is a genuine request. It must be honoured --
-    // the row ends up fully visible -- and honoured once, so the outer rests.
-    // How far the outer travels is the list's decision: `GtkListView` drops a
-    // pending request whenever its adjustment value changes under it, so the
-    // bin lands the outer where the re-slice republishes exactly the value the
-    // list chose, which with chrome above the bin scrolls that chrome away.
+    // Positive control for the stillness checks; the travel is the list's
+    // decision (see `gtk_lush_widgets::outer_scroll_request`).
     let fixture = SliceAdoptionFixture::present_with(1, true);
     let outer = fixture.adjustment();
     // Nudge so no row boundary coincides with the viewport bottom.
     outer.set_value(7.0);
     flush_after_delay(Duration::from_millis(300));
     let resting = outer.value();
-    let viewport_bottom = f64::from(fixture.scroller.height());
-    let clipped = realized_list_rows(&fixture.lists[0])
-        .into_iter()
-        .filter(WidgetExt::is_mapped)
-        .find_map(|row| {
-            let bounds = row.compute_bounds(&fixture.scroller)?;
-            let overflow = f64::from(bounds.y() + bounds.height()) - viewport_bottom;
-            if f64::from(bounds.y()) < viewport_bottom && overflow > 0.5 {
-                Some((SliceAdoptionFixture::row_label(&row)?, overflow))
-            } else {
-                None
-            }
-        })
+    let (row, overflow) = row_straddling_bottom(&fixture.lists[0], &fixture.scroller)
         .expect("a row straddling the viewport bottom");
-    let (label, overflow) = clipped;
+    let label = first_label(&row)
+        .expect("a labelled row")
+        .text()
+        .to_string();
     fixture.lists[0].scroll_to(
         SliceAdoptionFixture::row_index(&label),
         gtk4::ListScrollFlags::FOCUS,
@@ -630,22 +566,9 @@ fn test_adoption_padded_slice_bin_still_reveals_a_clipped_row_and_then_rests() {
     wait_until(Duration::from_secs(5), || {
         (outer.value() - resting).abs() > 0.5
     });
-    let values = fixture.settled_values(6);
-    let moved = values[0] - resting;
-    assert!(
-        moved >= overflow - 0.5,
-        "revealing {label}, clipped by {overflow:.1}px, must scroll the outer at least that \
-         far; it moved {moved:.1}px"
-    );
-    assert!(
-        values
-            .iter()
-            .all(|value| (value - values[0]).abs() < SCROLL_TOLERANCE),
-        "an honoured request must settle instead of re-asking; saw {values:?}"
-    );
-    let row = fixture
-        .row_widget(0, &label)
-        .expect("the revealed row stays rendered");
+    assert_reveal_then_rest(resting, overflow, &fixture.settled_values(6), &label);
+    let row =
+        mapped_row_with_label(&fixture.lists[0], &label).expect("the revealed row stays rendered");
     assert!(
         fixture.fully_visible(&row),
         "{label} must be fully inside the viewport after the request"

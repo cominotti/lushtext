@@ -11,8 +11,10 @@
 //! scroller is part of the picture.
 
 use crate::common::{
-    ensure_gtk_init, find_descendant, fixture, flush_after_delay, flush_events, present_window,
-    realized_list_rows, test_window, wait_until,
+    RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
+    ensure_gtk_init, find_descendant, first_label, fixture, flush_after_delay, flush_events,
+    force_layout, mapped_list_rows, mapped_row_with_label, placement_relative_to, present_window,
+    realized_list_rows, row_straddling_bottom, sample_placements, test_window, wait_until,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -1140,28 +1142,22 @@ fn test_repeated_wheel_round_trips_keep_the_workspace_header_reachable() {
 // Every earlier check in this file reads adjustment values, or accepts a row
 // anywhere inside the viewport with a pixel of slack. None pins a row's exact
 // bounds across an event, which is how a few-pixel jitter on every click
-// passed the whole suite. These sample a named row's placement relative to its
-// workspace header across forced layout passes and require it not to move.
+// passed the whole suite. The probes live in `common`; this suite supplies the
+// sidebar's way of resolving a label and the workspace header as reference.
 // ---------------------------------------------------------------------------
 
-/// Top and height of a row relative to its section header.
-type RowPlacement = (f32, f32);
-
-/// Run a layout pass now instead of waiting for the compositor to deliver a
-/// frame: `flush_after_delay` alone only pumps the main loop.
-fn force_section_layout(section: &LushtextWorkspaceSection) {
-    section.imp().file_tree_slice.queue_allocate();
-    flush_events();
-    flush_after_delay(Duration::from_millis(16));
+fn file_tree_view(section: &LushtextWorkspaceSection) -> gtk4::ListView {
+    section.imp().file_tree_view.clone()
 }
 
-/// Where the row labelled `label` is drawn, resolved by label each time
-/// because the list recycles row widgets.
+fn force_section_layout(section: &LushtextWorkspaceSection) {
+    force_layout([section.imp().file_tree_slice.upcast_ref::<gtk4::Widget>()]);
+}
+
+/// Where the row labelled `label` is drawn relative to its workspace header.
 fn row_placement(section: &LushtextWorkspaceSection, label: &str) -> Option<RowPlacement> {
-    rendered_row_widget(section, label)
-        .filter(WidgetExt::is_mapped)?
-        .compute_bounds(&header_of(section))
-        .map(|bounds| (bounds.y(), bounds.height()))
+    let row = mapped_row_with_label(&file_tree_view(section), label)?;
+    placement_relative_to(&row, &header_of(section))
 }
 
 fn sampled_row_placements(
@@ -1169,13 +1165,11 @@ fn sampled_row_placements(
     label: &str,
     samples: usize,
 ) -> Vec<RowPlacement> {
-    (0..samples)
-        .map(|_| {
-            force_section_layout(section);
-            row_placement(section, label)
-                .unwrap_or_else(|| panic!("row {label} must stay rendered while sampled"))
-        })
-        .collect()
+    sample_placements(
+        samples,
+        || force_section_layout(section),
+        || row_placement(section, label),
+    )
 }
 
 /// Labels of the section's rows currently drawn wholly inside the viewport.
@@ -1183,66 +1177,42 @@ fn fully_visible_labels(
     sidebar: &LushtextSidebar,
     section: &LushtextWorkspaceSection,
 ) -> Vec<String> {
-    rendered_rows(section)
-        .into_iter()
-        // `GtkListView` keeps rows around the selection and focus realized
-        // but child-invisible; they have bounds and are not drawn.
-        .filter(|(widget, _)| widget.is_mapped())
-        .filter(|(widget, _)| inside_outer_viewport(sidebar, widget))
-        .map(|(_, label)| label)
-        .filter(|label| !label.is_empty())
+    mapped_list_rows(&file_tree_view(section))
+        .filter(|row| inside_outer_viewport(sidebar, row))
+        .filter_map(|row| first_label(&row).map(|label| label.text().to_string()))
         .collect()
 }
 
-/// Select, then focus, several already-visible rows and require the first
-/// visible row to be drawn at exactly the same place throughout, with the
-/// outer scroller unmoved.
 #[track_caller]
-fn assert_rows_still_across_selection(
+fn assert_sidebar_rows_still_across_selection(
     sidebar: &LushtextSidebar,
     section: &LushtextWorkspaceSection,
     root: &Path,
     when: &str,
 ) {
     let outer = outer_adjustment(sidebar);
-    let resting = outer.value();
-    let visible = fully_visible_labels(sidebar, section);
-    assert!(
-        visible.len() >= 5,
-        "this check needs at least five fully visible rows {when}; saw {}",
-        visible.len()
-    );
-    let anchor = visible[0].clone();
-    let baseline = sampled_row_placements(section, &anchor, 3);
-    assert!(
-        baseline.iter().all(|placement| *placement == baseline[0]),
-        "the anchor row must rest before selection starts {when}; saw {baseline:?}"
-    );
-    let expected = baseline[0];
-
-    for target in &visible[1..visible.len().min(8)] {
-        let index = tree_index_for_path(section, &root.join(target))
-            .unwrap_or_else(|| panic!("tree index for {target}"));
+    let visible_labels = || fully_visible_labels(sidebar, section);
+    let select = |label: &str| {
+        let index = tree_index_for_path(section, &root.join(label))
+            .unwrap_or_else(|| panic!("tree index for {label}"));
         selection(section).set_selected(index);
-        let selected = sampled_row_placements(section, &anchor, 3);
-        if let Some(row) = rendered_row_widget(section, target) {
+    };
+    let focus = |label: &str| {
+        if let Some(row) = mapped_row_with_label(&file_tree_view(section), label) {
             row.grab_focus();
         }
-        let focused = sampled_row_placements(section, &anchor, 3);
-        assert!(
-            (outer.value() - resting).abs() < 0.5,
-            "selecting an already visible row must not move the sidebar {when}: {target} moved \
-             it from {resting} to {}",
-            outer.value()
-        );
-        for (how, samples) in [("selecting", &selected), ("focusing", &focused)] {
-            assert!(
-                samples.iter().all(|placement| *placement == expected),
-                "{how} {target} must not move the rendered rows {when}: {anchor} rested at \
-                 (top, height) = {expected:?} relative to the header and was drawn at {samples:?}"
-            );
-        }
-    }
+    };
+    let sample = |label: &str, samples: usize| sampled_row_placements(section, label, samples);
+    assert_rows_still_across_selection(
+        &RowStillnessProbe {
+            outer: &outer,
+            visible_labels: &visible_labels,
+            select: &select,
+            focus: &focus,
+            sample: &sample,
+        },
+        when,
+    );
 }
 
 /// After an event that may change the model or content height, the rows must
@@ -1252,10 +1222,8 @@ fn assert_rows_still_across_selection(
 fn assert_rows_settle(section: &LushtextWorkspaceSection, when: &str) {
     wait_for_refresh_idle(section);
     flush_after_delay(Duration::from_millis(200));
-    let anchor = rendered_rows(section)
-        .into_iter()
-        .map(|(_, label)| label)
-        .find(|label| !label.is_empty())
+    let anchor = mapped_list_rows(&file_tree_view(section))
+        .find_map(|row| first_label(&row).map(|label| label.text().to_string()))
         .expect("a rendered row to anchor on");
     let samples = sampled_row_placements(section, &anchor, 6);
     assert!(
@@ -1268,7 +1236,12 @@ fn assert_rows_settle(section: &LushtextWorkspaceSection, when: &str) {
 fn test_selecting_rows_at_the_top_keeps_rendered_rows_still() {
     let tree = tall_workspace(800);
     scroll_outer_to(&tree.sidebar, 0.0);
-    assert_rows_still_across_selection(&tree.sidebar, &tree.section, &tree.root, "at the top");
+    assert_sidebar_rows_still_across_selection(
+        &tree.sidebar,
+        &tree.section,
+        &tree.root,
+        "at the top",
+    );
     drop(tree.window);
 }
 
@@ -1282,7 +1255,12 @@ fn test_selecting_rows_mid_content_keeps_rendered_rows_still() {
     );
     flush_after_delay(Duration::from_millis(300));
     assert!(adjustment.value() > 1.0, "the fixture must have scrolled");
-    assert_rows_still_across_selection(&tree.sidebar, &tree.section, &tree.root, "mid-content");
+    assert_sidebar_rows_still_across_selection(
+        &tree.sidebar,
+        &tree.section,
+        &tree.root,
+        "mid-content",
+    );
     drop(tree.window);
 }
 
@@ -1290,7 +1268,7 @@ fn test_selecting_rows_mid_content_keeps_rendered_rows_still() {
 fn test_selecting_rows_in_a_short_sidebar_keeps_rendered_rows_still() {
     let tree = tall_workspace(420);
     scroll_outer_to(&tree.sidebar, 0.0);
-    assert_rows_still_across_selection(
+    assert_sidebar_rows_still_across_selection(
         &tree.sidebar,
         &tree.section,
         &tree.root,
@@ -1303,7 +1281,7 @@ fn test_selecting_rows_in_a_short_sidebar_keeps_rendered_rows_still() {
 fn test_selecting_rows_with_two_sections_keeps_rendered_rows_still() {
     let (dir, window, sidebar, sections) = two_tall_workspaces(300, 800);
     scroll_outer_to(&sidebar, 0.0);
-    assert_rows_still_across_selection(
+    assert_sidebar_rows_still_across_selection(
         &sidebar,
         &sections[0],
         &dir.path().join("left"),
@@ -1370,53 +1348,32 @@ fn test_rendered_rows_settle_after_model_changes() {
 
 #[test]
 fn test_a_row_clipped_at_the_slice_edge_is_still_revealed_and_the_sidebar_then_rests() {
-    // Positive control for the stillness checks: a genuine request for a row
-    // clipped at the slice edge must still be honoured -- the row ends up
-    // fully inside the viewport -- and honoured once, so the sidebar rests
-    // afterwards instead of re-asking. How far the outer travels is the
-    // list's decision, not the bin's: `GtkListView` drops a pending request
-    // whenever its adjustment value changes under it, so the bin must land the
-    // outer where the re-slice republishes exactly the value the list chose.
+    // Positive control for the stillness checks; the travel is the list's
+    // decision (see `gtk_lush_widgets::outer_scroll_request`).
     let tree = tall_workspace(800);
     // Nudge so no row boundary coincides with the viewport bottom.
     scroll_outer_to(&tree.sidebar, 7.0);
     let outer = outer_adjustment(&tree.sidebar);
     let resting = outer.value();
-    let viewport_bottom = f64::from(tree.sidebar.imp().outer_scrolled_window.height());
-    let (label, overflow) = rendered_rows(&tree.section)
-        .into_iter()
-        .find_map(|(widget, label)| {
-            let bottom = bottom_in_outer(&tree.sidebar, &widget)?;
-            let top = widget
-                .compute_bounds(&*tree.sidebar.imp().outer_scrolled_window)
-                .map(|bounds| f64::from(bounds.y()))?;
-            let overflow = bottom - viewport_bottom;
-            (top < viewport_bottom && overflow > 0.5 && !label.is_empty())
-                .then_some((label, overflow))
-        })
+    let list = file_tree_view(&tree.section);
+    let (row, overflow) = row_straddling_bottom(&list, &*tree.sidebar.imp().outer_scrolled_window)
         .expect("a row straddling the viewport bottom");
+    let label = first_label(&row)
+        .expect("a labelled row")
+        .text()
+        .to_string();
     let index = tree_index_for_path(&tree.section, &tree.root.join(&label)).expect("row index");
-    tree.section
-        .imp()
-        .file_tree_view
-        .scroll_to(index, gtk4::ListScrollFlags::FOCUS, None);
+    list.scroll_to(index, gtk4::ListScrollFlags::FOCUS, None);
     wait_until(Duration::from_secs(5), || {
         (outer.value() - resting).abs() > 0.5
     });
-    let values = settled_outer_values(&tree.sidebar, 6);
-    let moved = values[0] - resting;
-    assert!(
-        moved >= overflow - 0.5,
-        "revealing {label}, clipped by {overflow:.1}px, must scroll the sidebar at least that \
-         far; it moved {moved:.1}px"
+    assert_reveal_then_rest(
+        resting,
+        overflow,
+        &settled_outer_values(&tree.sidebar, 6),
+        &label,
     );
-    assert!(
-        values
-            .iter()
-            .all(|value| (value - values[0]).abs() < SCROLL_TOLERANCE),
-        "an honoured request must settle instead of re-asking; saw {values:?}"
-    );
-    let row = rendered_row_widget(&tree.section, &label).expect("the revealed row stays rendered");
+    let row = mapped_row_with_label(&list, &label).expect("the revealed row stays rendered");
     assert!(
         inside_outer_viewport(&tree.sidebar, &row),
         "{label} must be fully inside the viewport after the request"

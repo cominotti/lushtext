@@ -11,8 +11,7 @@
   far from where the bin had placed them on every focus change. Any value the
   child still settles on that is neither the published offset nor a request is
   written back to the published offset inside the allocation, and the new
-  `allocation_count()` / `correction_count()` accessors expose both as test
-  evidence. The v0.8.1 behaviour of adopting the settled value as the new
+  `allocation_count()` / `correction_count()` layout diagnostics expose both. The v0.8.1 behaviour of adopting the settled value as the new
   baseline is gone: it gave the outer scroller a fixed point and left the
   rendering with none.
 - Fixed `ViewportSliceBin` moving the outer scroller while at rest. It compared

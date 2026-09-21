@@ -167,9 +167,8 @@ mod tests {
 
     #[test]
     fn a_small_reveal_below_chrome_still_lands_the_band_at_the_viewport_top() {
-        // Measured: a row clipped by 5px made the child ask for 7 with the
-        // viewport top 45px above the bin. The answer is 52, not 7; see the
-        // module doc for why the gentler answer wipes pending requests.
+        // Measured: a row clipped by 5px asked for 7 with the viewport top
+        // 45px above the bin; the answer is 52 (see the module doc).
         assert_eq!(outer_scroll_request(0.0, 7.0, -45.0, 0.0), Some(52.0));
     }
 
@@ -191,6 +190,16 @@ mod tests {
         // Measured focus-traversal request: 274px while the viewport stood
         // still. Suppressing this is what broke the traversal test.
         assert_eq!(outer_scroll_request(0.0, 274.0, 0.0, 0.0), Some(274.0));
+    }
+
+    #[test]
+    fn the_learning_frame_settle_is_routed_to_correction_not_forwarding() {
+        // The bin learns a padded child's content-box inset from the first
+        // allocation, and on that frame the child still rewrites the page by
+        // the inset and settles a few pixels off. Classified as a request this
+        // would forward `child - viewport_top`, ~55px at the top: the header
+        // scrolled away on first show. The bound routes it to the write-back.
+        assert_eq!(outer_scroll_request(0.0, 3.0, -55.0, 10.0), None);
     }
 
     #[test]

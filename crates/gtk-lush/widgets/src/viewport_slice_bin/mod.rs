@@ -90,22 +90,23 @@ impl ViewportSliceBin {
 
     /// How many times this bin has allocated its child.
     ///
-    /// Evidence for tests: a bin at rest must stop allocating. A child that
-    /// keeps rewriting its adjustment, or a correction that never converges,
-    /// shows up here as a count that grows across idle layout passes.
+    /// A layout diagnostic: a bin at rest stops allocating, so a count that
+    /// grows across idle frames is a layout loop between the bin, its child,
+    /// and the outer scroller.
     #[must_use]
     pub fn allocation_count(&self) -> u64 {
-        self.imp().allocation_count()
+        self.imp().allocation_count.get()
     }
 
     /// How many times this bin wrote its published offset back over a value
     /// the child had settled on after re-deriving it from its scroll anchor.
     ///
-    /// Evidence for tests: once the child is handed geometry in its own
-    /// content box this should stay near zero at rest.
+    /// A layout diagnostic: once the child is handed geometry in its own
+    /// content box this stays flat at rest; a count that grows means the child
+    /// still disagrees with what it is given.
     #[must_use]
     pub fn correction_count(&self) -> u64 {
-        self.imp().correction_count()
+        self.imp().correction_count.get()
     }
 
     /// Return the outer scroller the bin currently slices against.
