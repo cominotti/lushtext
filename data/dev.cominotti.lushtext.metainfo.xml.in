@@ -65,6 +65,30 @@
   </screenshots>
 
   <releases>
+    <release version="0.8.2" date="2026-09-21">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: the 1609 Quarto text as transcribed on Wikisource and in the Folger Shakespeare edition, which agree on the wording and on the sonnet's three quatrains plus couplet. The quatrain below is the complete first quatrain, closing its own ABAB rhyme on behold, hang, cold, sang.</p>
+        <p>Selection: Complete stanza.</p>
+        <p>Complete stanza:</p>
+        <p>&gt; That time of year thou mayst in me behold</p>
+        <p>&gt; When yellow leaves, or none, or few, do hang</p>
+        <p>&gt; Upon those boughs which shake against the cold,</p>
+        <p>&gt; Bare ruined choirs, where late the sweet birds sang.</p>
+        <p>William Shakespeare, "Sonnet 73"</p>
+        <p>A release about boughs that should not shake: the rows of a tree, when you click among them.</p>
+        <p>## What's Changed</p>
+        <p>This is a focused patch release with one user-facing fix, described under Bug Fixes. Behind it, the way the sidebar's file tree is hosted was corrected at its root rather than patched, and the tests that guard it now measure the screen rather than the numbers:</p>
+        <p>- **The tree's geometry is now handed to it in the frame it actually uses.** The file list has a small amount of padding from the GNOME sidebar style, and it measures itself inside that padding. LushText was handing it measurements that ignored the padding, so the list corrected them on every layout pass and, while doing so, re-derived its scroll position a pixel or two away from where it had been placed. That correction is gone at the source.</p>
+        <p>- **Tests now check where rows are drawn.** Every earlier test of this area read the scroll position and accepted a row anywhere inside the visible area with a pixel of slack. New tests pin a named row's exact position across a sequence of layout passes while other rows are selected and focused, in the sidebar and in the reusable widget's own suite, so a shift of one pixel fails loudly instead of trembling on screen.</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for this release. There is no data migration, no change to any file LushText stores, no setting to reset, and no cache to clear. Update and carry on.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>Nothing is removed or deprecated. One behaviour is worth stating plainly because it is unchanged on purpose: when you move keyboard focus to a row that is partly cut off at the bottom of the sidebar, the sidebar scrolls to reveal it, and if the workspace header is above the list it scrolls that header out of view to do so. A gentler scroll that moved only by the cut-off amount was built and tested, and it lost keyboard requests made in the frame between the scroll and the relayout, so it was not shipped. Scrolling back up brings the header back, as it has since v0.7.1.</p>
+        <p>## Bug Fixes</p>
+        <p>- **Clicking or focusing rows in the sidebar no longer shifts the file tree by a few pixels.** With the sidebar scrolled to the top, moving between rows would sometimes nudge the whole tree one to three pixels up or down; sometimes it stayed there, sometimes it snapped back on the next click. The list was re-deriving its scroll position against measurements that disagreed with its own by exactly the padding of the sidebar style, and rendering against the result. It is now handed measurements it has no reason to correct, and any residual disagreement is written back within the same layout pass, so rows are drawn where they were placed.</p>
+      </description>
+    </release>
     <release version="0.8.1" date="2026-09-18">
       <description>
         <p>## Poetic Opening</p>
