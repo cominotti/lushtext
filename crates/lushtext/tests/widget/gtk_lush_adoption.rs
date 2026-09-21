@@ -7,7 +7,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::common::{
-    ensure_gtk_init, flush_after_delay, flush_events, present_window, test_application, wait_until,
+    ensure_gtk_init, find_descendant, flush_after_delay, flush_events, present_window,
+    realized_list_rows, test_application, wait_until,
 };
 use gtk_lush_tasks::{FreshnessToken, spawn_blocking_then};
 use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
@@ -214,6 +215,25 @@ const SLICE_ADOPTION_ROWS: u32 = 400;
 const SLICE_ADOPTION_HEADER_HEIGHT: i32 = 54;
 /// Scroll positions within this many logical pixels count as the same place.
 const SCROLL_TOLERANCE: f64 = 1.0;
+/// CSS class giving the padded fixture list the same asymmetric vertical
+/// padding Libadwaita's `navigation-sidebar` rule gives LushText's tree
+/// (`padding-top: 6px; padding-bottom: 4px`). A `GtkListView` works in its CSS
+/// content box, so this is what makes it disagree with a host that hands it
+/// border-box geometry; an unpadded list cannot see that defect.
+const SLICE_ADOPTION_PADDED_CLASS: &str = "slice-adoption-padded";
+
+fn install_padded_list_css() {
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_string(&format!(
+        "listview.{SLICE_ADOPTION_PADDED_CLASS} {{ padding-top: 6px; padding-bottom: 4px; }}"
+    ));
+    let display = gtk4::gdk::Display::default().expect("a display for the padded list css");
+    gtk4::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
 
 fn adoption_list(rows: u32) -> gtk4::ListView {
     let strings: Vec<String> = (0..rows).map(|index| format!("row {index:04}")).collect();
@@ -236,7 +256,7 @@ fn adoption_list(rows: u32) -> gtk4::ListView {
             label.set_text(&text);
         }
     });
-    gtk4::ListView::new(Some(gtk4::NoSelection::new(Some(model))), Some(factory))
+    gtk4::ListView::new(Some(gtk4::SingleSelection::new(Some(model))), Some(factory))
 }
 
 /// A scroller whose content is `sections` copies of "header then slice bin".
@@ -245,24 +265,39 @@ struct SliceAdoptionFixture {
     scroller: gtk4::ScrolledWindow,
     headers: Vec<gtk4::Label>,
     lists: Vec<gtk4::ListView>,
+    bins: Vec<ViewportSliceBin>,
 }
 
 impl SliceAdoptionFixture {
     fn present(sections: usize) -> Self {
+        Self::present_with(sections, false)
+    }
+
+    /// `padded` gives every list the `navigation-sidebar`-like vertical padding.
+    fn present_with(sections: usize, padded: bool) -> Self {
         ensure_gtk_init();
+        if padded {
+            install_padded_list_css();
+        }
         let app = test_application();
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         let mut headers = Vec::new();
         let mut lists = Vec::new();
+        let mut bins = Vec::new();
         for index in 0..sections {
             let header = gtk4::Label::new(Some(&format!("section {index}")));
             header.set_height_request(SLICE_ADOPTION_HEADER_HEIGHT);
             header.set_xalign(0.0);
             content.append(&header);
             let list = adoption_list(SLICE_ADOPTION_ROWS);
-            content.append(&ViewportSliceBin::with_child(&list));
+            if padded {
+                list.add_css_class(SLICE_ADOPTION_PADDED_CLASS);
+            }
+            let bin = ViewportSliceBin::with_child(&list);
+            content.append(&bin);
             headers.push(header);
             lists.push(list);
+            bins.push(bin);
         }
         let scroller = gtk4::ScrolledWindow::builder()
             .vexpand(true)
@@ -281,6 +316,7 @@ impl SliceAdoptionFixture {
             scroller,
             headers,
             lists,
+            bins,
         };
         wait_until(Duration::from_secs(10), || {
             fixture.adjustment().upper() > f64::from(fixture.scroller.height())
@@ -402,6 +438,200 @@ fn test_adoption_slice_bin_still_forwards_a_child_scroll_request() {
             .iter()
             .all(|value| (value - first).abs() < SCROLL_TOLERANCE),
         "an honoured request must settle instead of re-asking; saw {values:?}"
+    );
+    drop(fixture.window);
+}
+
+/// Where a row is drawn, as its top and height relative to the chrome above
+/// its bin. Relative to the header rather than the scroller so a genuine outer
+/// move cannot pass for row stability, nor the reverse.
+type RowPlacement = (f32, f32);
+
+impl SliceAdoptionFixture {
+    fn selection(&self, section: usize) -> gtk4::SingleSelection {
+        self.lists[section]
+            .model()
+            .and_downcast::<gtk4::SingleSelection>()
+            .expect("the adoption list uses a SingleSelection")
+    }
+
+    /// The realized row carrying `label`, resolved fresh each time: list rows
+    /// are recycled, so a held handle can be rebound to another row.
+    fn row_widget(&self, section: usize, label: &str) -> Option<gtk4::Widget> {
+        realized_list_rows(&self.lists[section])
+            .into_iter()
+            // `GtkListView` keeps rows around the selection and focus realized
+            // but child-invisible; they have bounds and are not drawn.
+            .filter(WidgetExt::is_mapped)
+            .find(|row| {
+                find_descendant(row, glib::object::ObjectExt::is::<gtk4::Label>)
+                    .and_downcast::<gtk4::Label>()
+                    .is_some_and(|found| found.text() == label)
+            })
+    }
+
+    fn row_label(row: &gtk4::Widget) -> Option<String> {
+        find_descendant(row, glib::object::ObjectExt::is::<gtk4::Label>)
+            .and_downcast::<gtk4::Label>()
+            .map(|label| label.text().to_string())
+    }
+
+    fn row_index(label: &str) -> u32 {
+        label
+            .strip_prefix("row ")
+            .and_then(|digits| digits.parse().ok())
+            .expect("adoption rows are labelled `row NNNN`")
+    }
+
+    fn placement(&self, section: usize, label: &str) -> Option<RowPlacement> {
+        self.row_widget(section, label)?
+            .compute_bounds(&self.headers[section])
+            .map(|bounds| (bounds.y(), bounds.height()))
+    }
+
+    /// Run a layout pass now rather than waiting for the compositor to
+    /// deliver a frame: `flush_after_delay` alone only pumps the main loop.
+    fn force_layout(&self) {
+        for bin in &self.bins {
+            bin.queue_allocate();
+        }
+        flush_events();
+        flush_after_delay(Duration::from_millis(16));
+    }
+
+    /// Sample where `label` is drawn across several forced layout passes, so a
+    /// row that moves and comes back inside one interval is still caught.
+    fn sampled_placements(&self, section: usize, label: &str, samples: usize) -> Vec<RowPlacement> {
+        (0..samples)
+            .map(|_| {
+                self.force_layout();
+                self.placement(section, label)
+                    .unwrap_or_else(|| panic!("row {label} must stay rendered while sampled"))
+            })
+            .collect()
+    }
+
+    /// Labels of the rows currently drawn wholly inside the outer viewport.
+    fn fully_visible_labels(&self, section: usize) -> Vec<String> {
+        realized_list_rows(&self.lists[section])
+            .into_iter()
+            .filter(WidgetExt::is_mapped)
+            .filter(|row| self.fully_visible(row))
+            .filter_map(|row| Self::row_label(&row))
+            .collect()
+    }
+}
+
+/// Select, then focus, each of several already-visible rows, and require the
+/// first visible row to be drawn at exactly the same place throughout while
+/// the outer scroller has not moved.
+fn assert_rows_still_across_selection(fixture: &SliceAdoptionFixture, when: &str) {
+    let outer = fixture.adjustment();
+    let resting = outer.value();
+    let visible = fixture.fully_visible_labels(0);
+    assert!(
+        visible.len() >= 5,
+        "this check needs at least five fully visible rows {when}; saw {}",
+        visible.len()
+    );
+    let anchor = visible[0].clone();
+    let baseline = fixture.sampled_placements(0, &anchor, 3);
+    assert!(
+        baseline.iter().all(|placement| *placement == baseline[0]),
+        "the anchor row must rest before selection starts {when}; saw {baseline:?}"
+    );
+    let expected = baseline[0];
+
+    for target in &visible[1..visible.len().min(8)] {
+        let index = SliceAdoptionFixture::row_index(target);
+        fixture.selection(0).set_selected(index);
+        let placements = fixture.sampled_placements(0, &anchor, 3);
+        if let Some(row) = fixture.row_widget(0, target) {
+            row.grab_focus();
+        }
+        let focused = fixture.sampled_placements(0, &anchor, 3);
+        assert!(
+            (outer.value() - resting).abs() < 0.5,
+            "selecting an already visible row must not move the outer scroller {when}: \
+             {target} moved it from {resting} to {}",
+            outer.value()
+        );
+        for (how, samples) in [("selecting", &placements), ("focusing", &focused)] {
+            assert!(
+                samples.iter().all(|placement| *placement == expected),
+                "{how} {target} must not move the rendered rows {when}: {anchor} rested at \
+                 (top, height) = {expected:?} and was drawn at {samples:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_adoption_padded_slice_bin_keeps_rows_still_across_selection_at_the_top() {
+    // The list's CSS padding makes it work in a content box 10px shorter than
+    // the border box the bin measures; the bin must publish geometry the list
+    // does not correct, or the list re-derives its value a few pixels off on
+    // every anchor change and draws its rows there.
+    let fixture = SliceAdoptionFixture::present_with(1, true);
+    assert!(fixture.adjustment().value() < SCROLL_TOLERANCE);
+    assert_rows_still_across_selection(&fixture, "at the top");
+    drop(fixture.window);
+}
+
+#[test]
+fn test_adoption_padded_slice_bin_keeps_rows_still_across_selection_mid_content() {
+    let fixture = SliceAdoptionFixture::present_with(1, true);
+    let outer = fixture.adjustment();
+    outer.set_value((outer.upper() - outer.page_size()) / 2.0);
+    flush_after_delay(Duration::from_millis(400));
+    assert!(
+        outer.value() > SCROLL_TOLERANCE,
+        "the fixture must have scrolled"
+    );
+    assert_rows_still_across_selection(&fixture, "mid-content");
+    drop(fixture.window);
+}
+
+#[test]
+fn test_adoption_padded_slice_bin_still_honours_a_small_request() {
+    // The positive control for the stillness checks: a row clipped by a few
+    // pixels at the slice edge is a genuine request, and it must move the
+    // outer scroller by about that overflow -- not by nothing, and not by the
+    // chrome height above the bin.
+    let fixture = SliceAdoptionFixture::present_with(1, true);
+    let outer = fixture.adjustment();
+    // Nudge so no row boundary coincides with the viewport bottom.
+    outer.set_value(7.0);
+    flush_after_delay(Duration::from_millis(300));
+    let resting = outer.value();
+    let viewport_bottom = f64::from(fixture.scroller.height());
+    let clipped = realized_list_rows(&fixture.lists[0])
+        .into_iter()
+        .find_map(|row| {
+            let bounds = row.compute_bounds(&fixture.scroller)?;
+            let overflow = f64::from(bounds.y() + bounds.height()) - viewport_bottom;
+            if f64::from(bounds.y()) < viewport_bottom && overflow > 0.5 {
+                Some((SliceAdoptionFixture::row_label(&row)?, overflow))
+            } else {
+                None
+            }
+        })
+        .expect("a row straddling the viewport bottom");
+    let (label, overflow) = clipped;
+    fixture.lists[0].scroll_to(
+        SliceAdoptionFixture::row_index(&label),
+        gtk4::ListScrollFlags::FOCUS,
+        None,
+    );
+    wait_until(Duration::from_secs(5), || {
+        (outer.value() - resting).abs() > 0.5
+    });
+    flush_after_delay(Duration::from_millis(400));
+    let moved = outer.value() - resting;
+    assert!(
+        (moved - overflow).abs() <= 2.0,
+        "revealing {label}, clipped by {overflow:.1}px, must scroll the outer by about that \
+         much; it moved {moved:.1}px"
     );
     drop(fixture.window);
 }
