@@ -242,6 +242,16 @@ add a new one before calling the work complete.
   this rule also named `restore_materialized_state`, which has never existed in
   the codebase; the nearest real name, `refresh_materialized_view`, is
   synchronous and does not touch `expanded_paths`.)
+- **A splice collapses the row it replaces**: splicing an item into a store,
+  even the same `FileTreeItem` in place, gives it a fresh, collapsed
+  `TreeListRow`, and the expansion recorder correctly ignores the teardown.
+  So any completion that splices a row the user may have expanded in the
+  meantime must re-check expansion on the live row
+  (`TreeListModel::child_row` for top-level items, not the `dir_rows` cache)
+  and then either skip the splice or queue a restore. The top-level folder
+  emptiness probe skips: once a folder is expanded, its own child scan owns
+  what it shows. Without that check, an expanded folder silently collapsed
+  while `expanded_paths` still recorded it as open.
 - **Callback forwarding**: Sections emit file callbacks (activated, renamed, deleted, created) and workspace callbacks (add-folder request, rename, unlist). The sidebar forwards file callbacks to the window and handles workspace callbacks itself.
 - **Persistence**: Sidebar owns `WorkspacesFile` in a `RefCell`. Every mutation saves to disk via `workspace_manager::save()`.
 

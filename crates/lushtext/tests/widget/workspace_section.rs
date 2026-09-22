@@ -5612,10 +5612,24 @@ fn test_live_expansion_state_matches_full_oracle_across_tree_mutations() {
     assert_matches_oracle("ancestor collapse");
 
     // Broad manual reload still resynchronizes through the full derivation.
+    // The old model already shows `beta`, so wait for the refresh itself: the
+    // click queues a pending full reload synchronously, and readiness stays
+    // blocked through its debounce, its emptiness probes, and every child scan
+    // and reconciliation it dispatches.
     section.imp().refresh_button.emit_clicked();
+    assert!(
+        section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness,
+        "the manual refresh must be pending as soon as the button is clicked"
+    );
     wait_until(Duration::from_secs(10), || {
-        tree_contains_path(&section, &beta)
+        !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
     });
+    flush_events();
+    assert!(tree_contains_path(&section, &beta));
     assert_matches_oracle("manual full refresh");
 
     // A generated toggle sequence (deterministic LCG) must keep the live set
@@ -5641,6 +5655,77 @@ fn test_live_expansion_state_matches_full_oracle_across_tree_mutations() {
             "live expansion state diverged from the oracle at generated step {step}"
         );
     }
+}
+
+#[test]
+fn test_folder_empty_probe_landing_after_expansion_keeps_folder_expanded() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("empty-probe race tempdir");
+    let alpha = dir.path().join("alpha");
+    fixture::create_dir(&alpha);
+    fixture::write_text(&alpha.join("one.txt"), "one");
+
+    let section = LushtextWorkspaceSection::new(WorkspaceId::new("ws-empty-probe-race"));
+    section.load_folders(&[FolderTreeEntry::Directory {
+        path: dir.path().to_path_buf(),
+    }]);
+    section.stop_workspace_watch_for_test();
+    let _window = present_section_window(&section);
+    wait_until(Duration::from_secs(10), || {
+        !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+    });
+    let rejections_before = section
+        .workspace_section_evidence()
+        .scan_pressure
+        .empty_probe_stale_rejections;
+
+    // A manual refresh probes the still-collapsed workspace folder for
+    // emptiness. Hold that probe in its worker, then expand the folder before
+    // it lands: the expansion's own child scan runs undelayed and settles
+    // first, so nothing but the probe completion touches the row afterwards.
+    section.set_child_scan_delay_for_test(Duration::from_millis(400));
+    section.imp().refresh_button.emit_clicked();
+    wait_until(Duration::from_secs(10), || {
+        section
+            .workspace_section_evidence()
+            .scan_pressure
+            .active_empty_probes
+            == 1
+    });
+    section.set_child_scan_delay_for_test(Duration::ZERO);
+    row_for_path(&section, dir.path())
+        .expect("workspace folder row")
+        .set_expanded(true);
+    wait_until(Duration::from_secs(10), || {
+        !section
+            .workspace_section_evidence()
+            .refresh_blocks_readiness
+    });
+    flush_events();
+
+    let evidence = section.workspace_section_evidence();
+    assert!(
+        row_for_path(&section, dir.path()).is_some_and(|row| row.is_expanded()),
+        "an emptiness probe that lands after the user expanded the folder must not collapse it"
+    );
+    assert!(
+        tree_contains_path(&section, &alpha),
+        "the expanded folder's children must stay visible"
+    );
+    assert_eq!(
+        evidence.expanded_paths,
+        section
+            .derived_expanded_paths_for_test()
+            .expect("tree model should be present"),
+        "settled expansion intent must match the model"
+    );
+    assert_eq!(
+        evidence.scan_pressure.empty_probe_stale_rejections,
+        rejections_before + 1,
+        "the superseded probe must reach a stale terminal instead of publishing"
+    );
 }
 
 #[test]

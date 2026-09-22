@@ -694,19 +694,7 @@ fn start_folder_empty_probe(
                 || !section.imp().drilldown_stack.borrow().is_empty()
                 || item.path().as_deref() != Some(folder_path.as_path())
             {
-                section
-                    .imp()
-                    .refresh_runtime
-                    .empty_probe_stale_rejections
-                    .set(
-                        section
-                            .imp()
-                            .refresh_runtime
-                            .empty_probe_stale_rejections
-                            .get()
-                            .saturating_add(1),
-                    );
-                finish_folder_empty_probe(&section, key, ticket);
+                reject_stale_folder_empty_probe(&section, key, ticket);
                 return;
             }
 
@@ -735,6 +723,18 @@ fn start_folder_empty_probe(
                 return;
             };
 
+            // Publishing splices the folder's top-level item, and a splice
+            // gives it a fresh, collapsed `TreeListRow`. The probe was only
+            // scheduled for a collapsed folder; if the user expanded it while
+            // the worker ran, the expansion's own child scan now owns what the
+            // folder shows, and splicing would silently collapse it while
+            // `expanded_paths` still records it as open — with no deferred
+            // restore queued to put it back. Treat the probe as superseded.
+            if top_level_folder_row_is_expanded(&section, current_index) {
+                reject_stale_folder_empty_probe(&section, key, ticket);
+                return;
+            }
+
             item.set_is_empty(Some(is_empty));
             top_level_store.splice(current_index, 1, &[item]);
             let refresh = &section.imp().refresh_runtime;
@@ -747,6 +747,35 @@ fn start_folder_empty_probe(
             finish_folder_empty_probe(&section, key, ticket);
         },
     );
+}
+
+/// Whether the live row for one top-level store item is currently expanded.
+///
+/// Reads the row straight from the flattened model rather than through the
+/// `dir_rows` cache, which can hand back a row a splice has already replaced.
+pub(super) fn top_level_folder_row_is_expanded(
+    section: &LushtextWorkspaceSection,
+    top_level_index: u32,
+) -> bool {
+    section
+        .imp()
+        .tree_model
+        .borrow()
+        .as_ref()
+        .and_then(|model| model.child_row(top_level_index))
+        .is_some_and(|row| row.is_expanded())
+}
+
+fn reject_stale_folder_empty_probe(
+    section: &LushtextWorkspaceSection,
+    key: FolderEmptyProbeKey,
+    ticket: ChildScanTicket,
+) {
+    let refresh = &section.imp().refresh_runtime;
+    refresh
+        .empty_probe_stale_rejections
+        .set(refresh.empty_probe_stale_rejections.get().saturating_add(1));
+    finish_folder_empty_probe(section, key, ticket);
 }
 
 pub(super) fn retry_one_folder_empty_admission(section: &LushtextWorkspaceSection) -> bool {

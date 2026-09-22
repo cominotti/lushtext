@@ -520,10 +520,7 @@ impl LushtextWorkspaceSection {
                 && item.is_dir()
                 && let Some(folder_path) = item.path()
             {
-                if self
-                    .find_dir_row(&folder_path)
-                    .is_some_and(|row| row.is_expanded())
-                {
+                if super::folder_execution::top_level_folder_row_is_expanded(self, index) {
                     continue;
                 }
                 super::folder_execution::schedule_folder_empty_check(
