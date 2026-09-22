@@ -263,6 +263,22 @@ This applies to load-amplified flakes too: heavy local load exposing a 2s async 
   generated scenario with `scripts/visual-geometry-smoke.py --scenario-dir ...`.
   Do not substitute nearby 720p, 1080p, 1440p, or generic maximized-like passes
   for the captured threshold class.
+- For "the rows/rendering must not move" contracts inside a scroller, assert
+  **where a row is drawn**, not what an adjustment holds. A `GtkScrollable`
+  renders against its own adjustment value while the host positions it by a
+  transform; adjustment-value tests pass while the two disagree by a few pixels
+  (v0.8.1 shipped that). Use `common::RowStillnessProbe` /
+  `assert_rows_still_across_selection`: `compute_bounds` relative to a fixed
+  sibling above the host (the section header), resolved **by label each
+  sample** (list rows are recycled), over **mapped rows only** (rows around
+  the selection are realized but unmapped), across a *sequence* of forced
+  layouts (`queue_allocate` + `flush_after_delay(16ms)`; `flush_after_delay`
+  alone does not pump the frame clock), with the outer value unchanged as a
+  precondition. Drive selection with `set_selected` and focus with
+  `grab_focus` on already-visible rows; `select_and_scroll_to`/`scroll_to`
+  always issue a genuine request and belong in the positive control. Events
+  that change the model assert post-settle stability only, not across the
+  event.
 - Test behavior, not GTK implementation details. Avoid pixel assertions, CSS rendering expectations, or proving that GTK's own containers work.
 - Keep widget tests narrowly scoped. A real window is fine; an enormous end-to-end script is usually not.
 - If a failure only reproduces in a live desktop session with compositor or portal behavior, switch to `gtk-agentic-debugging`.

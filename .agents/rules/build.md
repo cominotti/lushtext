@@ -204,6 +204,17 @@ Visual geometry runners must start from a clean artifact root; stale case
 directories from a previous run can make the root summary report failures or
 evidence that the current binary did not produce.
 
+**Widget tests are both visual-sensitive and accessibility-sensitive**, so a
+commit that touches `crates/lushtext/tests/widget/*.rs` needs all three lanes
+current: `make visual-geometry-smoke`, `make accessibility-smoke`, and
+`make visual-smoke`. The visual-proof digest hashes the *contents* of the
+visual-sensitive files in `git status`, not a commit range: landing the first
+commit of a series shrinks that set, which voids the proof for the rest and
+the hook refuses the next commit. Plan a series so visual-sensitive files
+change in as few commits as possible, rerun the lane once per distinct
+visual-sensitive set, and expect roughly ten minutes of lane time per such
+commit.
+
 **Untracked files are invisible to every diff-aware gate, so `git add -N` new
 files before running one.** Gates that compare the worktree against a base ref —
 `make check-visual-proof-policy`, `make check-accessibility-policy`'s diff-aware

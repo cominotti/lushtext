@@ -47,6 +47,35 @@ allocation, so a host that owns the adjustment must read it back **after**
 allocating the child and forward the request to the outer scroller against the
 unclamped viewport position, from an idle rather than inside the layout pass.
 
+Three more facts, each learned by shipping a regression (v0.8.1 → v0.8.2):
+
+- **A `GtkScrollable` works in its CSS content box.** `GtkListView` measures
+  its page and content *inside* its padding and border, so a host that hands it
+  border-box `upper`/`page_size` sees both rewritten every allocation (the
+  Libadwaita `navigation-sidebar` style pads 6px top and 4px bottom, hence a
+  "mysterious 10px" reconfigure). The list then re-derives its value from its
+  scroll anchor against a page the host's value was not chosen for and lands a
+  few pixels off on every anchor change — a focus move is one — and renders
+  there while the host's transform stays put. Publish `upper`/`page_size` in
+  the child's frame; learn the inset from the page the child reports after its
+  first allocation (`allocated_height − page_size`; `StyleContext::padding` is
+  deprecated). Do **not** offset the value: a row at child content `y` draws at
+  `transform + inset_top + (y − value)`, and the host's own measured frame
+  already contains the inset, so `value = slice_offset` is right as it is.
+- **`GtkListBase` drops a pending `scroll_to` on any `value-changed`.** It
+  treats every value change as a user scroll and re-anchors on it. So a host
+  honouring a child request must land the outer scroller where its own re-slice
+  republishes *exactly* the value the child chose (`child_value −
+  viewport_top`); configuring a different value emits, the anchor is wiped, and
+  a request issued between the outer move and the re-slice is never made. The
+  gentler "move only by what the child asked" (`child_value − published`) was
+  implemented and lost keyboard-traversal requests. The cost is that an honoured
+  request below chrome scrolls that chrome away.
+- **Rows around the selection and focus stay realized but unmapped.** They are
+  real children with `compute_bounds`, no pixels, and `child_visible = false`;
+  any probe of what is drawn must filter `is_mapped()`, or it will read the
+  bounds of a row that is not on screen.
+
 The list view also carries presentation-level CSS classes such as `.rich-list`, `.navigation-sidebar`, and `.data-table`. Those are style decisions, not model decisions.
 
 ## `GtkSignalListItemFactory` Lifecycle
