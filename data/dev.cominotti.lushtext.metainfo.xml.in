@@ -65,6 +65,36 @@
   </screenshots>
 
   <releases>
+    <release version="0.8.3" date="2026-09-22">
+      <description>
+        <p>## Poetic Opening</p>
+        <p>Source checked: Edgar Allan Poe, "Eldorado" (1849), as printed in The Complete Poems of Edgar Allan Poe; four six-line stanzas, this is the first.</p>
+        <p>Selection: Complete stanza.</p>
+        <p>Complete stanza:</p>
+        <p>&gt; Gaily bedight,</p>
+        <p>&gt; A gallant knight,</p>
+        <p>&gt; In sunshine and in shadow,</p>
+        <p>&gt; Had journeyed long,</p>
+        <p>&gt; Singing a song,</p>
+        <p>&gt; In search of Eldorado.</p>
+        <p>Edgar Allan Poe, "Eldorado"</p>
+        <p>## What's Changed</p>
+        <p>This is a small patch release. It makes the Markdown preview keep up with the document you are actually looking at.</p>
+        <p>- **The preview follows you into new files.** If you are reading in preview-only mode (Alt+P) or with the side-by-side preview open, opening another Markdown file now shows its rendered content right away. You stay in the preview mode you were in.</p>
+        <p>- **A clear "Preparing Markdown preview…" message** now appears while a Markdown file is still loading. Before, you briefly saw an empty page.</p>
+        <p>- **The preview also refreshes after other whole-document updates.** This covers reloading a file that changed on disk, restoring a draft or a local-history snapshot, and saving with formatting applied.</p>
+        <p>- **Save As and rename update the preview too.** Saving an untitled document as `notes.md` renders it as Markdown. Renaming a `.md` file to `.txt` shows "Not a Markdown file".</p>
+        <p>## Manual Actions Needed</p>
+        <p>No manual action is needed for this release. Update through your usual Flatpak remote.</p>
+        <p>## Warnings and Deprecations</p>
+        <p>There are no warnings or deprecations in this release. Creating a new untitled document still leaves preview-only mode, as before, so you can start typing straight away.</p>
+        <p>## Bug Fixes</p>
+        <p>- Opening a Markdown file while the preview was active no longer shows an empty preview until you toggle the preview off and on again.</p>
+        <p>- Renaming a Markdown file to an extension with no known language no longer keeps its Markdown syntax highlighting and preview.</p>
+        <p>- Opening the side-by-side preview right after the first document appears no longer prints a GTK size-allocation warning.</p>
+        <p>- A folder you expanded in the workspace sidebar no longer collapses again by itself when a background check of whether that folder is empty finishes late.</p>
+      </description>
+    </release>
     <release version="0.8.2" date="2026-09-21">
       <description>
         <p>## Poetic Opening</p>

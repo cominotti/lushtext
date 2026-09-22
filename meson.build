@@ -1,5 +1,5 @@
 project('lushtext',
-  version: '0.8.2',
+  version: '0.8.3',
   meson_version: '>= 0.62.0',
   license: 'GPL-3.0-or-later',
 )
