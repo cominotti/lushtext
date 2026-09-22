@@ -8,6 +8,7 @@
 //! lazy-restore freshness, generation acceptance, and close safety.
 
 use crate::common::{
+    EditorLoadDelayReset, action_state_bool, activate_action, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
     fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, test_application,
     wait_until,
@@ -112,17 +113,6 @@ struct CanonicalRefreshDelayReset;
 impl Drop for CanonicalRefreshDelayReset {
     fn drop(&mut self) {
         set_canonical_refresh_delay_for_test(0);
-    }
-}
-
-/// Restore the process-wide editor-load delay when a test exits or unwinds.
-struct EditorLoadDelayReset;
-
-impl Drop for EditorLoadDelayReset {
-    fn drop(&mut self) {
-        editor_io::set_load_delay_for_test(0);
-        editor_io::set_payload_load_delay_for_test(0);
-        editor_io::set_transient_weight_override_for_test(None);
     }
 }
 
@@ -578,21 +568,6 @@ fn action_enabled(window: &LushtextWindow, name: &str) -> bool {
         .lookup_action(name)
         .unwrap_or_else(|| panic!("action '{name}' not found"));
     action.is_enabled()
-}
-
-fn action_state_bool(window: &LushtextWindow, name: &str) -> bool {
-    window
-        .lookup_action(name)
-        .unwrap_or_else(|| panic!("action '{name}' not found"))
-        .state()
-        .unwrap_or_else(|| panic!("action '{name}' should be stateful"))
-        .get::<bool>()
-        .unwrap_or_else(|| panic!("action '{name}' should use bool state"))
-}
-
-fn activate_action(window: &LushtextWindow, name: &str) {
-    ActionGroupExt::activate_action(window, name, None);
-    flush_events();
 }
 
 // GActions carry parameters as GLib Variants, so these helpers convert typed
@@ -1147,13 +1122,6 @@ fn active_editor_has_focus(window: &LushtextWindow) -> bool {
 
 fn wait_for_active_editor_focus(window: &LushtextWindow) {
     wait_until(Duration::from_secs(2), || active_editor_has_focus(window));
-}
-
-fn editor_text(editor: &LushtextEditorPage) -> String {
-    let buffer = editor.buffer();
-    buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), true)
-        .to_string()
 }
 
 fn assert_tab_count(window: &LushtextWindow, expected: i32) {

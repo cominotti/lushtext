@@ -218,6 +218,7 @@ impl LushtextWindow {
         let page = tab_view.append(&editor_page);
         page.set_title(&editor_page.title());
         self.wire_modified_indicator(&page, &editor_page);
+        self.wire_preview_projection(&page, &editor_page);
         self.configure_tab_page(&page);
         self.track_editor_memory(&editor_page);
 
@@ -534,6 +535,7 @@ impl LushtextWindow {
         let page = self.imp().tab_view.append(&editor_page);
         page.set_title("Untitled");
         self.wire_modified_indicator(&page, &editor_page);
+        self.wire_preview_projection(&page, &editor_page);
         self.wire_info_bar(&editor_page);
         self.configure_tab_page(&page);
         self.track_editor_memory(&editor_page);
@@ -618,6 +620,30 @@ impl LushtextWindow {
             .imp()
             .document_buffer_signals
             .track(&buffer, changed_handler_id);
+    }
+
+    /// Refresh the Markdown preview when this tab republishes its content.
+    ///
+    /// The buffer `changed` handler above stands down while an installation
+    /// suspends projections, so the preview would otherwise keep whatever it
+    /// rendered at tab-selection time. For when the hook fires, see
+    /// [`LushtextEditorPage::connect_content_republished`]. Only the selected
+    /// tab re-renders, and a deferred tab-projection batch is left to its own
+    /// terminal rebuild, which refreshes the preview once.
+    fn wire_preview_projection(&self, page: &libadwaita::TabPage, editor: &LushtextEditorPage) {
+        let window_weak = self.downgrade();
+        let page_weak = page.downgrade();
+        editor.connect_content_republished(move || {
+            let (Some(window), Some(page)) = (window_weak.upgrade(), page_weak.upgrade()) else {
+                return;
+            };
+            if window.imp().tab_view.selected_page().as_ref() != Some(&page)
+                || window.tab_projection_refresh_deferred()
+            {
+                return;
+            }
+            window.refresh_preview();
+        });
     }
 
     /// Wire inline alert button callbacks for a newly created editor page.
@@ -1011,6 +1037,10 @@ impl LushtextWindow {
         if let Some(editor) = self.active_editor() {
             self.mark_editor_memory_accessed(&editor);
         }
+        // `reload_if_evicted` must run before `refresh_preview`: its load
+        // request sets `Loading` synchronously, which is what sends a
+        // re-selected evicted tab to the preview's preparing placeholder
+        // instead of an empty render.
         self.reload_if_evicted();
         self.maybe_evict_background_tabs();
         self.save_session_debounced();

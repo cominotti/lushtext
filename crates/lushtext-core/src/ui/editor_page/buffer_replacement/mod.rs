@@ -55,7 +55,8 @@
 //!    bounded turns first** — this is the whole reason the workflow has a fourth
 //!    phase.
 //! 7. **Reach the terminal, exactly once.** The irreversible action closes, the
-//!    guard is restored unless the page is being disposed, the caller's callback
+//!    guard is restored unless the page is being disposed (and the
+//!    content-republished listeners fire, unless a parked request will), the caller's callback
 //!    fires with `Complete` or `Cancelled` and its metrics, the terminal
 //!    diagnostic is recorded for observers, and ownership passes to any parked
 //!    request.

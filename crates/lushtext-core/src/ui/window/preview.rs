@@ -23,6 +23,13 @@ use super::imp::{
     PREVIEW_MAX_WIDTH_FRACTION, PREVIEW_MIN_WIDTH_SP, PREVIEW_SETTLE_DELAY_MS,
 };
 
+/// Content placeholder shown while the preview waits for installed text.
+const PREPARING_MARKDOWN_PREVIEW: &str = "Preparing Markdown preview…";
+
+/// Frames the deferred side-by-side show waits for a sidebar allocation
+/// before showing the sidebar regardless.
+const PREVIEW_SIDEBAR_ALLOCATION_MAX_FRAMES: u32 = 8;
+
 /// Register the preview-related actions on the window.
 ///
 /// Stateful toggles back the visible UI, while parameterized target-state
@@ -183,7 +190,11 @@ impl LushtextWindow {
                     .set_layout_name(PREVIEW_LAYOUT_EDITOR);
             }
             if imp.preview_split_view.shows_sidebar() != side_by_side {
-                imp.preview_split_view.set_show_sidebar(side_by_side);
+                if side_by_side && !preview_sidebar_has_allocation(&imp.preview_split_view) {
+                    self.show_preview_sidebar_once_allocated();
+                } else {
+                    imp.preview_split_view.set_show_sidebar(side_by_side);
+                }
             }
         }
         accessibility::set_hidden(&*imp.markdown_preview, !preview_active);
@@ -196,6 +207,55 @@ impl LushtextWindow {
             editor.set_preview_only_accessibility(preview_only);
         }
         self.queue_preview_layout_settle();
+    }
+
+    /// Show the side-by-side sidebar on the first frame after it has a width.
+    ///
+    /// `AdwOverlaySplitView` animates `show-sidebar` with an initial spring
+    /// velocity of `velocity / sidebar_width`. When the split view is mapped but
+    /// has never been allocated — the `tabs` stack page was hidden while no tab
+    /// was open, and the pane is requested before the first layout pass — that
+    /// is `0 / 0`, the spring yields NaN progress, and the content pane is
+    /// allocated a width near `i32::MIN` (a `gtk_widget_size_allocate` warning on
+    /// every animation frame). Waiting one frame for the allocation gives the
+    /// spring a real distance. The request is re-read on the frame, so a pane
+    /// hidden again in the meantime is never shown. The wait is capped at
+    /// [`PREVIEW_SIDEBAR_ALLOCATION_MAX_FRAMES`] so a split view that never
+    /// gains a width cannot keep a tick callback alive forever; past the cap
+    /// the sidebar is shown anyway.
+    fn show_preview_sidebar_once_allocated(&self) {
+        let imp = self.imp();
+        if imp.preview_sidebar_show_deferred.replace(true) {
+            return;
+        }
+        let window_weak = self.downgrade();
+        let frames_waited = std::cell::Cell::new(0u32);
+        imp.preview_split_view
+            .add_tick_callback(move |split_view, _clock| {
+                let Some(window) = window_weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let imp = window.imp();
+                let wanted = imp.preview_visible.get() && !imp.preview_mode.get();
+                let waited = frames_waited.get();
+                if wanted
+                    && !preview_sidebar_has_allocation(split_view)
+                    && waited < PREVIEW_SIDEBAR_ALLOCATION_MAX_FRAMES
+                {
+                    frames_waited.set(waited + 1);
+                    return glib::ControlFlow::Continue;
+                }
+                imp.preview_sidebar_show_deferred.set(false);
+                if wanted && !split_view.shows_sidebar() {
+                    split_view.set_show_sidebar(true);
+                    // Showing the sidebar marks the preview accessibly hidden;
+                    // the direct path clears that afterwards in the same pass,
+                    // so the deferred path re-applies the shell state too. It
+                    // is idempotent now that `show-sidebar` matches the request.
+                    window.apply_preview_shell_state();
+                }
+                glib::ControlFlow::Break
+            });
     }
 
     /// Clamp and apply the side-by-side preview width as split-view constraints.
@@ -388,6 +448,8 @@ impl LushtextWindow {
     /// Otherwise shows a placeholder message.
     pub(super) fn refresh_preview(&self) {
         let imp = self.imp();
+        // This render supersedes any debounced one still waiting to fire.
+        let _ = imp.preview_render_debounce.invalidate();
 
         // Only refresh if some form of preview is visible.
         if !imp.preview_visible.get() && !imp.preview_mode.get() {
@@ -399,6 +461,13 @@ impl LushtextWindow {
 
         match editor {
             Some(editor) if is_markdown(&editor) => {
+                // The language is known from the path before content arrives,
+                // so only this arm waits; the install terminal republishes.
+                if editor.content_is_installing() {
+                    preview.clear_source_snapshot();
+                    preview.show_content_placeholder(PREPARING_MARKDOWN_PREVIEW);
+                    return;
+                }
                 let buffer = editor.buffer();
                 let char_count = usize::try_from(buffer.char_count()).unwrap_or(usize::MAX);
                 if char_count > MAX_MARKDOWN_SOURCE_BYTES {
@@ -420,7 +489,7 @@ impl LushtextWindow {
                     let expected_dirty_generation = editor.draft_dirty_generation();
                     let expected_load_generation = editor.load_generation();
                     let expected_path = editor.file_path();
-                    preview.show_content_placeholder("Preparing Markdown preview…");
+                    preview.show_content_placeholder(PREPARING_MARKDOWN_PREVIEW);
                     let snapshot = buffer_snapshot::snapshot_buffer_text_async_budgeted(
                         buffer,
                         u64::try_from(MAX_MARKDOWN_SOURCE_BYTES)
@@ -557,6 +626,24 @@ fn set_preview_split_fixed_width(
     }
 
     changed
+}
+
+/// Whether showing the split view's sidebar can animate from a real width.
+///
+/// An unmapped split view skips its animation entirely, so only a mapped one
+/// whose sidebar has never been allocated is unsafe; see
+/// `LushtextWindow::show_preview_sidebar_once_allocated`.
+///
+/// The width measured is the sidebar slot's **parent**, Libadwaita's internal
+/// sidebar bin, because that is the distance the spring divides by. The slot
+/// itself reports zero whenever the preview inside it is hidden, which is the
+/// normal state before the pane is first shown, so it cannot answer this.
+fn preview_sidebar_has_allocation(split_view: &libadwaita::OverlaySplitView) -> bool {
+    !split_view.is_mapped()
+        || split_view
+            .sidebar()
+            .map(|slot| slot.parent().unwrap_or(slot))
+            .is_some_and(|bin| bin.width() > 0)
 }
 
 /// Check whether an editor page contains a Markdown file by querying

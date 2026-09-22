@@ -802,6 +802,14 @@ fn finish_session(
         && let Some(guard) = guard
     {
         restore_guard(&editor, guard);
+        // The buffer is renderable again. A cancelled session with a parked
+        // superseding request stays quiet: that request fires at its own
+        // terminal, so rendering the cleared buffer now would be wasted.
+        let superseded =
+            cancellation.is_some() && editor.imp().replacement.pending.borrow().is_some();
+        if !superseded {
+            editor.fire_content_republished();
+        }
     }
     if let Some(callback) = callback {
         callback(outcome);

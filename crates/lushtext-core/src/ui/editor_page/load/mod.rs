@@ -64,7 +64,8 @@
 //!    contract with a user-visible failure mode rather than refactorable detail.
 //! 7. **Publish.** Size, size class, canonical identity, encoding, BOM, health
 //!    findings, and mtime are adopted; the cursor is restored; the file monitor
-//!    starts; local history is seeded; and the tab reports `Loaded`.
+//!    starts; local history is seeded; the tab reports `Loaded`; and the
+//!    content-republished listeners fire, as they also do on a failed load.
 //! 8. **Retire, when asked to stop.** `retirement` gives back the payload, the
 //!    admission charge, the partially installed buffer, and the load identity.
 //!    Cancellation is user-visible and clears the buffer; disposal is silent.
@@ -134,7 +135,7 @@ use std::path::Path;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 use crate::model::encoding::DocumentEncoding;
-use crate::ui::editor_page::LushtextEditorPage;
+use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage};
 
 use super::save;
 
@@ -216,6 +217,34 @@ impl LushtextEditorPage {
             .push(Box::new(f));
     }
 
+    /// Register a callback fired whenever this tab's content or identity is
+    /// republished after projections were suspended or the document changed.
+    ///
+    /// It fires from four sites: the load publish stage on success, the load
+    /// failure publish, every buffer-replacement terminal that restores the
+    /// projection guard (every reason except `Disposed`), and every
+    /// document-identity change (`set_file_path*`, so Save As, rename, and a
+    /// pending load's provisional path). The projection guard is already
+    /// restored when it fires, so a listener may read the buffer.
+    ///
+    /// Unlike [`connect_file_loaded`](Self::connect_file_loaded) this covers
+    /// failure, replacement, and identity terminals too, which is what the
+    /// window's Markdown preview needs to stay fresh. Listeners must hold only
+    /// `WeakRef`s: like `connect_file_loaded`, the list is not cleared on
+    /// dispose.
+    pub fn connect_content_republished<F: Fn() + 'static>(&self, f: F) {
+        self.imp()
+            .load
+            .content_republished_callbacks
+            .borrow_mut()
+            .push(Box::new(f));
+    }
+
+    /// Invoke every content-republished listener; re-entrant registration is safe.
+    pub(in crate::ui::editor_page) fn fire_content_republished(&self) {
+        execution::invoke_reentrant_callbacks(&self.imp().load.content_republished_callbacks);
+    }
+
     /// Register the one-shot terminal for the load request the window is about
     /// to start.
     ///
@@ -249,6 +278,17 @@ impl LushtextEditorPage {
     #[must_use]
     pub(crate) fn load_projection_suspended(&self) -> bool {
         self.imp().load.projection_suspended.get() || self.buffer_replacement_projection_suspended()
+    }
+
+    /// Whether the buffer does not yet hold one trustworthy document: a load is
+    /// in flight, an installation or whole-buffer replacement is suspending
+    /// projections, or an aborted installation left a partial buffer behind.
+    /// Publishing projections (the Markdown preview) wait out this interval.
+    #[must_use]
+    pub(crate) fn content_is_installing(&self) -> bool {
+        self.load_state() == EditorLoadState::Loading
+            || self.load_projection_suspended()
+            || self.has_incomplete_load_installation()
     }
 
     /// Whether this buffer holds a partially installed or cleared load.

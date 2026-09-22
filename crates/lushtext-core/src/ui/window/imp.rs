@@ -469,6 +469,10 @@ pub struct LushtextWindow {
     pub preview_mode: Cell<bool>,
     /// Legacy preferred side-by-side preview width from `preview-pane-position`.
     pub preferred_preview_width: Cell<i32>,
+    /// Whether showing the side-by-side sidebar waits for its first allocation.
+    ///
+    /// See `LushtextWindow::show_preview_sidebar_once_allocated`.
+    pub preview_sidebar_show_deferred: Cell<bool>,
     /// Settle burst while preview layout switching or embedded widget repair is pending.
     pub preview_transition_settle: SettleBurst,
     /// Settle burst while Adwaita's workspace sidebar transition is in flight.
@@ -590,6 +594,7 @@ impl Default for LushtextWindow {
             preview_visible: Cell::new(false),
             preview_mode: Cell::new(false),
             preferred_preview_width: Cell::new(PREVIEW_DEFAULT_WIDTH_SP),
+            preview_sidebar_show_deferred: Cell::new(false),
             preview_transition_settle: SettleBurst::default(),
             workspace_sidebar_transition_settle: SettleBurst::default(),
             preview_render_debounce: Debounce::default(),

@@ -3,7 +3,8 @@
 //! Tests for LushtextApplication.
 
 use crate::common::{
-    ensure_gtk_init, fixture, flush_events, fs_metadata, fs_read, present_window, wait_until,
+    EditorLoadDelayReset, editor_text, ensure_gtk_init, fixture, flush_events, fs_metadata,
+    fs_read, present_window, wait_until,
 };
 use gio::prelude::*;
 use glib::prelude::ObjectExt;
@@ -126,13 +127,6 @@ fn active_editor(window: &LushtextWindow) -> LushtextEditorPage {
         .expect("selected page should be an editor")
 }
 
-fn editor_text(editor: &LushtextEditorPage) -> String {
-    let buffer = editor.buffer();
-    buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), true)
-        .to_string()
-}
-
 fn tab_paths(window: &LushtextWindow) -> Vec<PathBuf> {
     (0..window.imp().tab_view.n_pages())
         .filter_map(|index| {
@@ -171,14 +165,6 @@ fn open_recent_surface<'a>(
 fn clear_session() {
     session_service::save(&json_store::data_dir(), &SessionData::default())
         .expect("clear test session");
-}
-
-struct EditorLoadDelayReset;
-
-impl Drop for EditorLoadDelayReset {
-    fn drop(&mut self) {
-        editor_io::set_load_delay_for_test(0);
-    }
 }
 
 fn delay_editor_loads_for_test(delay: Duration) -> EditorLoadDelayReset {

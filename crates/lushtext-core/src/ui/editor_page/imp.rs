@@ -42,7 +42,8 @@ type MemoryChangedCallback = Box<dyn Fn()>;
 type NotificationCallback = Box<dyn Fn(InlineActionNotification)>;
 type LoadCompletedCallback = Box<dyn FnOnce()>;
 type LoadFailedCallback = Box<dyn FnOnce(String)>;
-type FileLoadedCallback = Box<dyn Fn()>;
+/// Recurring editor-lifecycle listener; see `load::execution::invoke_reentrant_callbacks`.
+pub(in crate::ui::editor_page) type EditorCallback = Box<dyn Fn()>;
 type LoadPlanningTerminalCallback = Box<dyn FnOnce()>;
 type NotesChangedCallback = Box<dyn Fn()>;
 type BookmarkActivatedCallback = Box<dyn Fn(BookmarkRecord)>;
@@ -198,7 +199,10 @@ pub struct LoadState {
     ///
     /// Notes, local history, and future tab-local workflows all need the same
     /// "a real file just finished loading" hook, so this stays fan-out friendly.
-    pub file_loaded_callbacks: RefCell<Vec<FileLoadedCallback>>,
+    pub file_loaded_callbacks: RefCell<Vec<EditorCallback>>,
+    /// Recurring content-republished listeners; the fire sites are listed on
+    /// `LushtextEditorPage::connect_content_republished`.
+    pub content_republished_callbacks: RefCell<Vec<EditorCallback>>,
     /// Whether load installation is suppressing document-amplifying projections.
     pub projection_suspended: Cell<bool>,
     /// Current generation-bound chunked install session, if any.

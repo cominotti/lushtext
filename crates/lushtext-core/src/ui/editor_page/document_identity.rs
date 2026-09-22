@@ -70,7 +70,9 @@ impl LushtextEditorPage {
     /// Shared by every operation above so a new one cannot forget a projection:
     /// language detection depends on the path, and the minimap, memory policy,
     /// and accessible metadata all describe the document the tab now claims to
-    /// be.
+    /// be. The content-republished listeners fire last, so the window's Markdown
+    /// preview follows a language flip (Save As to `notes.md`, a rename to
+    /// `.txt`); during `open_document` no listener is registered yet.
     fn republish_document_identity(&self) {
         if self.imp().size_check.get().syntax_enabled() {
             self.reapply_language();
@@ -78,6 +80,7 @@ impl LushtextEditorPage {
         self.schedule_minimap_refresh();
         self.notify_memory_policy_changed();
         self.refresh_accessibility_metadata();
+        self.fire_content_republished();
     }
 
     /// The size classification from the last file load.
@@ -90,12 +93,18 @@ impl LushtextEditorPage {
     }
 
     /// Detect and apply syntax language from the current file path.
+    ///
+    /// The language is a projection of the path, so a path GtkSourceView cannot
+    /// classify clears it: renaming `notes.md` to `notes.txt` must stop the tab
+    /// claiming to be Markdown. An untitled tab has no path and keeps whatever
+    /// language it has.
     pub(crate) fn reapply_language(&self) {
         let buffer = self.buffer();
         if let Some(ref file_path) = *self.imp().file_path.borrow() {
             let lang_manager = sourceview5::LanguageManager::default();
-            if let Some(language) = lang_manager.guess_language(file_path.to_str(), None::<&str>) {
-                buffer.set_language(Some(&language));
+            let language = lang_manager.guess_language(file_path.to_str(), None::<&str>);
+            if buffer.language() != language {
+                buffer.set_language(language.as_ref());
             }
         }
     }

@@ -46,6 +46,7 @@ use crate::model::encoding::FileHealthFindingKind;
 use crate::model::file_load::next_install_boundary;
 use crate::services::editor_io::{self, EditorLoadError};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
+use crate::ui::editor_page::imp::EditorCallback;
 use crate::ui::editor_page::{EditorLoadState, LushtextEditorPage, PendingWarningAction};
 
 use super::admission::{self, GuardedLoadResult, TransientLoadPermit};
@@ -445,6 +446,9 @@ fn publish_load_error(
     if error_state == EditorLoadState::Loaded {
         editor.start_file_monitor();
     }
+    // No installation began before a worker error, so no guard is held here
+    // and a listener sees the buffer and language as they now stand.
+    editor.fire_content_republished();
     if let Some(callback) = editor.imp().load.load_failed_callback.take() {
         callback(error_text);
     }
@@ -606,20 +610,28 @@ fn complete_loaded_installation(
     }
     editor.refresh_minimap();
     editor.refresh_accessibility_metadata();
+    // The guard was restored above and the state is `Loaded`, so projections
+    // that stood down during installation (the Markdown preview) re-render now.
+    editor.fire_content_republished();
     editor.imp().load.load_failed_callback.borrow_mut().take();
     if let Some(callback) = editor.imp().load.load_completed_callback.take() {
         callback();
     }
-    // Snapshot the callbacks and drop the borrow before invoking, so a
-    // file-loaded callback that re-enters `connect_file_loaded` (a
-    // `borrow_mut`) cannot panic the GTK thread. Callbacks registered during
-    // invocation land in the temporarily-empty live vec and are appended
-    // after the originals, preserving invocation order.
-    let callbacks = std::mem::take(&mut *editor.imp().load.file_loaded_callbacks.borrow_mut());
+    invoke_reentrant_callbacks(&editor.imp().load.file_loaded_callbacks);
+}
+
+/// Invoke every listener in `slot`, tolerating re-entrant registration.
+///
+/// Snapshots the list and drops the borrow before invoking, so a listener that
+/// re-enters its `connect_*` registration (a `borrow_mut`) cannot panic the GTK
+/// thread. Listeners registered during invocation land in the temporarily-empty
+/// live vec and are appended after the originals, preserving invocation order.
+pub(super) fn invoke_reentrant_callbacks(slot: &RefCell<Vec<EditorCallback>>) {
+    let callbacks = std::mem::take(&mut *slot.borrow_mut());
     for callback in &callbacks {
         callback();
     }
-    let mut slot = editor.imp().load.file_loaded_callbacks.borrow_mut();
+    let mut slot = slot.borrow_mut();
     let newly_registered = std::mem::replace(&mut *slot, callbacks);
     slot.extend(newly_registered);
 }

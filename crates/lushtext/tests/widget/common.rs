@@ -421,3 +421,45 @@ pub fn assert_reveal_then_rest(resting: f64, overflow: f64, settled: &[f64], lab
         "an honoured request must settle instead of re-asking; saw {settled:?}"
     );
 }
+
+/// Restore every process-wide editor-load override when a test exits or unwinds.
+///
+/// Resets the load delay, the payload-load delay, and the transient weight
+/// override together, so a test that sets any of them cannot leak it.
+pub struct EditorLoadDelayReset;
+
+impl Drop for EditorLoadDelayReset {
+    fn drop(&mut self) {
+        use lushtext_core::services::editor_io;
+        editor_io::set_load_delay_for_test(0);
+        editor_io::set_payload_load_delay_for_test(0);
+        editor_io::set_transient_weight_override_for_test(None);
+    }
+}
+
+/// The boolean state of a stateful window action.
+pub fn action_state_bool(window: &lushtext_core::ui::window::LushtextWindow, name: &str) -> bool {
+    use gio::prelude::{ActionExt, ActionMapExt};
+    window
+        .lookup_action(name)
+        .unwrap_or_else(|| panic!("action '{name}' not found"))
+        .state()
+        .unwrap_or_else(|| panic!("action '{name}' should be stateful"))
+        .get::<bool>()
+        .unwrap_or_else(|| panic!("action '{name}' should use bool state"))
+}
+
+/// Activate a parameterless window action and drain the resulting events.
+pub fn activate_action(window: &lushtext_core::ui::window::LushtextWindow, name: &str) {
+    gio::prelude::ActionGroupExt::activate_action(window, name, None);
+    flush_events();
+}
+
+/// The full text of an editor's buffer, hidden characters included.
+pub fn editor_text(editor: &lushtext_core::ui::editor_page::LushtextEditorPage) -> String {
+    use gtk4::prelude::TextBufferExt;
+    let buffer = editor.buffer();
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
+}
