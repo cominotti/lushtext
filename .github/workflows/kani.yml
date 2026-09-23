@@ -76,13 +76,47 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: fedora-44-kani
+          # Only the registry is worth caching here: nothing in this job builds
+          # with the stable toolchain, the Kani binaries have their own cache
+          # below, and Kani's target directory is evaluated separately.
+          cache-targets: false
+          cache-bin: false
+
+      - name: Restore the Kani install
+        id: kani-install
+        uses: actions/cache@v4
+        with:
+          # `cargo kani setup` unpacks its bundle into ~/.kani and installs the
+          # nightly it pins through rustup, then links the bundle to it; all
+          # three are needed for a restored install to run.
+          path: |
+            ~/.cargo/bin/cargo-kani
+            ~/.cargo/bin/kani
+            ~/.kani
+            ~/.rustup/toolchains/nightly-*
+          key: kani-${{ env.KANI_VERSION }}-fedora-44
 
       - name: Install Kani
         # The official Kani action assumes an Ubuntu runner; this lane runs in
         # the same Fedora container as every other job, so install directly.
+        # A restored install is used only if it runs.
         run: |
-          cargo install --locked kani-verifier --version "${KANI_VERSION}"
-          cargo kani setup
+          if [ "${{ steps.kani-install.outputs.cache-hit }}" = "true" ] && cargo kani --version; then
+            echo "Using the cached Kani ${KANI_VERSION} install"
+          else
+            cargo install --locked --force kani-verifier --version "${KANI_VERSION}"
+            cargo kani setup
+          fi
 
       - name: Run Kani harnesses
-        run: make kani KANI_VERSION="${KANI_VERSION}" KANI_SHARD="${{ matrix.shard }}"
+        run: >-
+          make kani KANI_VERSION="${KANI_VERSION}" KANI_SHARD="${{ matrix.shard }}"
+          KANI_MEASURE="kani-measure-${{ matrix.shard }}.json"
+
+      - name: Upload the shard measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kani-measure-${{ matrix.shard }}
+          path: kani-measure-${{ matrix.shard }}.json
+          if-no-files-found: warn

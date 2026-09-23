@@ -141,6 +141,9 @@ KANI_VERSION ?= 0.68.0
 # `all`, or one shard of scripts/kani-shards.py (`scripts/kani-shards.py list`).
 KANI_SHARD ?= all
 KANI_TARGET_DIR ?= target/kani
+# Measurement mode: a JSON path makes `make kani` record each shard's wall time,
+# peak memory, and per-harness verification time (`kani-shards.py run --measure`).
+KANI_MEASURE ?=
 
 # Local cargo-mutants parallelism. cargo-mutants defaults to serial (one mutant
 # at a time), which leaves a multi-core box mostly idle on the slowest workload.
@@ -286,7 +289,7 @@ kani:
 		echo "Install it with: cargo install --locked kani-verifier --version $(KANI_VERSION) && cargo kani setup" >&2; \
 		exit 1; \
 	fi; \
-	./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)"
+	./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
 
 # Every Kani harness belongs to exactly one shard of the table the lane runs;
 # no Kani install needed.
