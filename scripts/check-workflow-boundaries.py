@@ -62,6 +62,11 @@ Four mechanical guarantees, all derived from
    finding when the caller requires one -- which the real-tree entry point does --
    because a rule that checked nothing would otherwise retire the programme's
    headline ratchet while exiting 0.
+9. Kani harness modules: a file named `kani_proofs.rs` is verification code,
+   not decision logic (rule 3's discovery) or an undeclared role-home module
+   (rule 7), but only when its parent module declares it
+   `#[cfg(kani)] mod kani_proofs;`. Any `kani_proofs.rs` under `crates/` whose
+   parent does not gate it, or that has no parent module file, is a finding.
 """
 
 from __future__ import annotations
@@ -424,6 +429,69 @@ ROLE_DECLARATION_RE = re.compile(
 )
 UI_SUBTREE = "ui"
 
+# Kani harness modules are verification code, not workflow modules: a harness
+# over a `ui/**/policy.rs` holds functions (so it would read as unclassified
+# decision logic) and may sit in a role home (so it would read as an undeclared
+# module). The name is mandatory for harness modules, and the mutation scope
+# excludes it by the same name (`crates/**/kani_proofs.rs`). Both rules skip
+# such a file only when its parent module declares it under `#[cfg(kani)]`,
+# because that gate is what keeps it out of every ordinary build; an ungated or
+# orphaned `kani_proofs.rs` is a finding.
+KANI_HARNESS_MODULE_NAME = "kani_proofs.rs"
+KANI_HARNESS_GATE_RE = re.compile(
+    r"#\[cfg\(kani\)\]\s*\n\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+kani_proofs\s*;"
+)
+
+
+def harness_parent_module(path: Path) -> Path | None:
+    """Return the module file that declares `path`, if one exists.
+
+    `policy/kani_proofs.rs` is declared by `policy.rs`; `x/kani_proofs.rs` by
+    `x/mod.rs` or `x.rs`; a crate-root `src/kani_proofs.rs` by `src/lib.rs` or
+    `src/main.rs`.
+    """
+    directory = path.parent
+    if directory.name == "src":
+        candidates = [directory / "lib.rs", directory / "main.rs"]
+    else:
+        candidates = [directory / "mod.rs", directory.parent / f"{directory.name}.rs"]
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def is_gated_kani_harness(path: Path) -> bool:
+    """Return whether `path` is a `kani_proofs.rs` its parent gates on `cfg(kani)`."""
+    if path.name != KANI_HARNESS_MODULE_NAME:
+        return False
+    parent = harness_parent_module(path)
+    if parent is None:
+        return False
+    return KANI_HARNESS_GATE_RE.search(parent.read_text(encoding="utf-8")) is not None
+
+
+def kani_harness_findings(root: Path) -> list[str]:
+    """Return findings for `kani_proofs.rs` files no parent gates on `cfg(kani)`."""
+    findings: list[str] = []
+    crates = root / "crates"
+    if not crates.is_dir():
+        return findings
+    for path in sorted(crates.rglob(KANI_HARNESS_MODULE_NAME)):
+        if is_gated_kani_harness(path):
+            continue
+        relative_path = (
+            display_path(path) if root == REPO_ROOT else str(path.relative_to(root))
+        )
+        parent = harness_parent_module(path)
+        where = (
+            "has no parent module file"
+            if parent is None
+            else "is not declared `#[cfg(kani)] mod kani_proofs;` by its parent"
+        )
+        findings.append(
+            f"{relative_path} is a Kani harness module but {where}, so ordinary "
+            "builds would compile it as production code"
+        )
+    return findings
+
 
 def module_doc(text: str) -> str:
     """Return the file's leading `//!` module documentation block."""
@@ -507,7 +575,7 @@ def unclassified_pure_module_findings(root: Path) -> list[str]:
     """Return findings for pure `ui/` modules that carry no declared role."""
     findings: list[str] = []
     for path in gtk_free_ui_modules(root):
-        if has_convention_role_name(path.name):
+        if has_convention_role_name(path.name) or is_gated_kani_harness(path):
             continue
         text = path.read_text(encoding="utf-8")
         if not holds_decision_logic(code_lines(text)):
@@ -1088,7 +1156,11 @@ def role_home_findings(
         for home in role_home_directories(declaration, facade):
             for path in sorted((root / home).glob("*.rs")):
                 stem = path.stem
-                if stem in ROLE_HOME_EXEMPT_STEMS or has_convention_role_name(path.name):
+                if (
+                    stem in ROLE_HOME_EXEMPT_STEMS
+                    or has_convention_role_name(path.name)
+                    or is_gated_kani_harness(path)
+                ):
                     continue
                 relative = f"{home}/{path.name}"
                 if relative in declared:
@@ -1353,6 +1425,7 @@ def check_tree(
     # Check 3 needs no matrix data, so it runs before the matrix early return:
     # a missing matrix must not silently disarm the discovery half.
     findings.extend(unclassified_pure_module_findings(root))
+    findings.extend(kani_harness_findings(root))
 
     if not matrix_path.is_file():
         findings.append(f"missing workflow readability matrix: {display_path(matrix_path)}")
@@ -2612,6 +2685,59 @@ def run_self_test() -> None:
                 f"expected a declaration outside the ceiling's own subsection to be "
                 f"unparsed and reported, got {findings}"
             )
+
+    # --- Kani harness modules ----------------------------------------------
+    #
+    # A `kani_proofs.rs` is verification code: its parent declares it
+    # `#[cfg(kani)] mod kani_proofs;`, so no ordinary build compiles it. Both the
+    # discovery check and the role-home check recognise it, but only when that
+    # gate is really there; an ungated or orphaned harness file, and a
+    # same-content file under any other name, stay findings.
+    harness = (
+        "//! Kani harnesses over the example policy.\n"
+        "use super::*;\n#[kani::proof]\nfn decision_holds() { assert!(decide()); }\n"
+    )
+
+    def harness_findings(parent: str | None, name: str = "kani_proofs.rs") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            matrix, config = build_fixture(root, matrix_body=clean_row)
+            write(root / CORE_SRC / "model/example_policy.rs", "pub fn ok() {}\n")
+            policy = root / CORE_SRC / "ui/example/policy.rs"
+            if parent is not None:
+                write(policy, "//! Pure.\npub fn decide() -> bool { true }\n" + parent)
+            write(root / CORE_SRC / "ui/example/policy" / name, harness)
+            return [f for f in check_tree(root, matrix, config) if name in f]
+
+    gated = harness_findings("#[cfg(kani)]\nmod kani_proofs;\n")
+    if gated:
+        raise AssertionError(f"expected a cfg(kani)-gated harness to pass, got {gated}")
+    if not harness_findings("mod kani_proofs;\n"):
+        raise AssertionError("expected an ungated kani_proofs.rs to be a finding")
+    if not harness_findings(None):
+        raise AssertionError("expected a kani_proofs.rs with no parent module to be a finding")
+    if not harness_findings("#[cfg(kani)]\nmod proofs;\n", name="proofs.rs"):
+        raise AssertionError("expected harness content under another name to stay a finding")
+
+    def home_harness_findings(facade: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            matrix, config = build_fixture(root, matrix_body=home_row, roles=home_roles())
+            write_home(root)
+            panel = root / CORE_SRC / "ui/search_panel"
+            write(panel / "mod.rs", "//! Facade.\n" + facade)
+            write(panel / "kani_proofs.rs", harness)
+            return [
+                f
+                for f in check_tree(root, matrix, config)
+                if "kani_proofs.rs" in f
+            ]
+
+    home_gated = home_harness_findings("#[cfg(kani)]\nmod kani_proofs;\n")
+    if home_gated:
+        raise AssertionError(f"expected a gated harness in a role home to pass, got {home_gated}")
+    if not home_harness_findings("mod kani_proofs;\n"):
+        raise AssertionError("expected an ungated harness in a role home to be a finding")
 
 
 def main() -> int:

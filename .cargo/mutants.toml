@@ -87,6 +87,17 @@ exclude_globs = [
     # Shared fixture helpers live under services so production tests use the
     # filesystem boundary, but they are not production behavior themselves.
     "crates/lushtext-core/src/services/filesystem/fixture.rs",
+    # Its draft-body sibling is fixture code for the same reason (1 mutant).
+    "crates/lushtext-core/src/services/draft_service/fixture.rs",
+    # Kani harness modules are verification code. Each is declared
+    # `#[cfg(kani)] mod kani_proofs;`, so no build cargo-mutants runs compiles
+    # it and no test can kill a mutant inside it: before this entry the scope
+    # listed 171 such mutants (138 in draft_service/kani_proofs.rs, 33 in
+    # filesystem/write_protocol/kani_proofs.rs), pure noise hiding real
+    # survivors. The name is mandatory for harness modules (see
+    # `.agents/rules/build.md`, Formal Verification), so this glob cannot drift
+    # when a new harness is added.
+    "crates/**/kani_proofs.rs",
 ]
 
 exclude_re = [
