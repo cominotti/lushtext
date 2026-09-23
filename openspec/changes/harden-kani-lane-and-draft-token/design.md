@@ -340,3 +340,18 @@ leaves the measurement machinery in place.
 - **D9, harness gate scope.** Besides the two exemptions, the boundaries gate
   reports every `kani_proofs.rs` under `crates/` whose parent does not declare
   it `#[cfg(kani)] mod kani_proofs;`, not only those in `ui/`.
+- **Pre-existing blocker: SonarQube verifier on pull requests.** Pull request
+  #41 was the first since the `Verify SonarQube Cloud results` step landed
+  (2026-06-24), and that step could never pass on a pull request: it compared
+  `main`'s analysis against `github.sha`, the merge ref, which SonarQube Cloud
+  never records. `scripts/sonar-local.sh` gained `SONAR_PULL_REQUEST`, and the
+  workflow now passes the PR number and head SHA. Main's own quality gate was
+  also red (`code_smells=3`: two redundant `'static` lifetimes in widget-test
+  subclasses and an IP-address false alarm on a `"a::b"` literal in
+  `kani-shards.py`'s self-test); all three are fixed here, as is the one
+  super-linear regex this change introduced. Touching the widget-test files
+  required fresh `accessibility-smoke`, `visual-smoke`, and
+  `visual-geometry-smoke` runs, which passed headless.
+- **Budgets from five runs.** The final dispatched run (E, 35930757261) ran
+  slower than A–D on the two slice-loop shards, so the table records the
+  largest figure across all five runs rather than A and B only.

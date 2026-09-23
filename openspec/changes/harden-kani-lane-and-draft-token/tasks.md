@@ -11,7 +11,7 @@
 - [x] 2.3 Dispatch a second run (warm install cache) and fetch its artifacts. For each shard record the larger of the two runs' wall time and peak memory, plus both run ids
 - [x] 2.4 Evaluate the `target/kani` cache (design D5): add it on the branch, dispatch twice more, and adopt it only if the warm `widgets-geometry` job saves at least 3 minutes and the cache stays under 5 GB in total. Otherwise remove it, and record the rejection with its figures
 - [x] 2.5 If any shard exceeds 25 minutes or 12 GiB, apply design D3 in order: split first, re-measure, and only then tune the solver or reduce bounds. Record every step taken, and any bound change, in the programme record and the harness doc comment. For `core-second-writer`, confirm through Kani's failure output that the recorded counterexample is still found
-- [ ] 2.6 Every job of the final dispatched run passes, and each one finishes within `timeout-minutes: 30`
+- [x] 2.6 Every job of the final dispatched run passes, and each one finishes within `timeout-minutes: 30`
 
 ## 3. Budgets and gate in the shard table
 
@@ -23,7 +23,7 @@
 
 - [x] 4.1 Add `pull_request:` and `push: branches: [main]` triggers to `kani.yml`, and select `pr-shards` for those events and `shards` for schedule and dispatch (design D4). Rewrite the header comment so it no longer says the lane is outside the pull-request gate
 - [x] 4.2 `make check-workflow-timeouts` passes, and every Kani job keeps `timeout-minutes: 30`
-- [ ] 4.3 Open (or update) the change's pull request. Confirm through `gh pr checks` that only `Kani Proof Harnesses (widgets-geometry)` ran, that it passed, and that its measured wall time is at most 15 minutes. Confirm with a dispatch that all shards still run on `workflow_dispatch`
+- [x] 4.3 Open (or update) the change's pull request. Confirm through `gh pr checks` that only `Kani Proof Harnesses (widgets-geometry)` ran, that it passed, and that its measured wall time is at most 15 minutes. Confirm with a dispatch that all shards still run on `workflow_dispatch`
 - [x] 4.4 Failing first: on a scratch commit that is never merged, break `viewport_slice` containment by one pixel. Confirm that the pull-request Kani check fails with a counterexample, then drop the commit
 
 ## 5. Gate the fixture writers behind `test-utils`
@@ -54,6 +54,6 @@
 
 ## 8. Final verification
 
-- [ ] 8.1 `make check`, `make check-policy`, and `make test` pass locally
-- [ ] 8.2 `make kani` passes locally, all shards, with the pinned Kani
+- [x] 8.1 `make check`, `make check-policy`, and `make test` pass locally
+- [x] 8.2 `make kani` passes locally, all shards, with the pinned Kani
 - [ ] 8.3 The change's final pull-request CI is green, including the Kani pull-request job, and one final `workflow_dispatch` of `kani.yml` passes every shard within budget

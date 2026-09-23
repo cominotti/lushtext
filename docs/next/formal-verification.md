@@ -247,24 +247,26 @@ remain open candidates.
 time, the peak resident memory of its largest descendant (per-child `wait4`
 rusage), and every harness's `Verification Time:`; `kani.yml` always runs in
 that mode, writes a job-summary table, and uploads one `kani-measure-<shard>`
-artifact. Four `workflow_dispatch` runs on `ubuntu-latest` (4 vCPU, 16 GB,
+artifact. Five `workflow_dispatch` runs on `ubuntu-latest` (4 vCPU, 16 GB,
 Fedora 44 container), Kani 0.68.0:
 
 - A `35920992670`: cold Kani install cache;
 - B `35923346671`: warm install cache;
 - C `35925626107`: warm install, `target/kani` cache added (cold);
-- D `35927734943`: warm install, warm `target/kani` cache.
+- D `35927734943`: warm install, warm `target/kani` cache;
+- E `35930757261`: the final run, warm install cache, `target/kani` cache
+  removed (the shipped configuration).
 
-| Shard | Gate | Wall A / B / C / D (min) | Peak A / B / C / D (GiB) | Job, longest (min) | Recorded budget |
+| Shard | Gate | Wall A / B / C / D / E (min) | Peak A / B / C / D / E (GiB) | Job, longest (min) | Recorded budget |
 |---|---|---|---|---|---|
-| `widgets-geometry` | pull-request | 8.16 / 7.62 / 6.45 / 7.41 | 1.74 / 1.69 / 1.70 / 0.11 | 9.96 | 8.2 min, 1.8 GiB |
-| `widgets-slice-loop-rest` | scheduled | 14.60 / 13.01 / 14.69 / 9.86 | 1.73 / 1.69 / 1.69 / 1.26 | 16.21 | 14.7 min, 1.8 GiB |
-| `widgets-slice-loop-requests` | scheduled | 14.82 / 15.10 / 16.02 / 14.22 | 1.73 / 1.69 / 1.69 / 1.21 | 17.51 | 16.1 min, 1.8 GiB |
-| `core-journal-and-write` | scheduled | 19.40 / 20.81 / 19.67 / 14.47 | 8.27 / 8.26 / 8.27 / 8.26 | 22.20 | 20.9 min, 8.3 GiB |
-| `core-second-writer` | scheduled | 16.53 / 16.30 / 17.28 / 13.90 | 8.81 / 8.81 / 8.80 / 8.78 | 18.78 | 17.3 min, 8.9 GiB |
+| `widgets-geometry` | pull-request | 8.16 / 7.62 / 6.45 / 7.41 / 7.70 | 1.74 / 1.69 / 1.70 / 0.11 / 1.70 | 9.96 | 8.2 min, 1.8 GiB |
+| `widgets-slice-loop-rest` | scheduled | 14.60 / 13.01 / 14.69 / 9.86 / 16.14 | 1.73 / 1.69 / 1.69 / 1.26 / 1.69 | 17.53 | 16.2 min, 1.8 GiB |
+| `widgets-slice-loop-requests` | scheduled | 14.82 / 15.10 / 16.02 / 14.22 / 16.71 | 1.73 / 1.69 / 1.69 / 1.21 / 1.70 | 17.96 | 16.8 min, 1.8 GiB |
+| `core-journal-and-write` | scheduled | 19.40 / 20.81 / 19.67 / 14.47 / 13.17 | 8.27 / 8.26 / 8.27 / 8.26 / 8.27 | 22.20 | 20.9 min, 8.3 GiB |
+| `core-second-writer` | scheduled | 16.53 / 16.30 / 17.28 / 13.90 / 13.05 | 8.81 / 8.81 / 8.80 / 8.78 / 8.80 | 18.78 | 17.3 min, 8.9 GiB |
 
-- The recorded budget in the shard table is the largest figure across the four
-  runs, rounded up. The task asked for the larger of A and B; C and D only
+- The recorded budget in the shard table is the largest figure across the five
+  runs, rounded up. The task asked for the larger of A and B; C and E only
   raise it (`widgets-slice-loop-rest`, `widgets-slice-loop-requests`,
   `core-second-writer`), so the table is at least that conservative.
 - Every shard fits the margins that `make check-kani-shards` now enforces:
@@ -298,6 +300,8 @@ Fedora 44 container), Kani 0.68.0:
 - **Pull-request gate.** `kani.yml` now also runs on `pull_request` and on
   pushes to `main`, and those events run only the `pull-request` shards
   (`github-outputs` emits them as `pr-shards`): `widgets-geometry`, 9 harnesses.
+  On pull request #41 only that job ran (run `35930740981`: 7.66-minute shard,
+  9.18-minute job), while the dispatched run E still ran all five shards.
   The recommendation for the maintainer (a repository setting, not code) is to
   mark `Kani Proof Harnesses (widgets-geometry)` as a required check. Failing
   first: on pull request #41, a scratch commit (never merged, then dropped from
