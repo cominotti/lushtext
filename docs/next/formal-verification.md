@@ -299,7 +299,12 @@ Fedora 44 container), Kani 0.68.0:
   pushes to `main`, and those events run only the `pull-request` shards
   (`github-outputs` emits them as `pr-shards`): `widgets-geometry`, 9 harnesses.
   The recommendation for the maintainer (a repository setting, not code) is to
-  mark `Kani Proof Harnesses (widgets-geometry)` as a required check.
+  mark `Kani Proof Harnesses (widgets-geometry)` as a required check. Failing
+  first: on pull request #41, a scratch commit (never merged, then dropped from
+  the branch) widened `viewport_slice`'s clamp by one pixel, and the
+  pull-request run `35929586005` ran only `widgets-geometry` and failed it,
+  with `slice_lies_inside_content_on_whole_pixels` reporting the counterexample
+  `slice.top + slice.height <= content.max(0.0)`.
 - **Harness modules are verification code.** A harness module must be named
   `kani_proofs.rs` and declared `#[cfg(kani)] mod kani_proofs;`.
   `.cargo/mutants.toml` excludes `crates/**/kani_proofs.rs`: `make mutants-list`

@@ -24,7 +24,7 @@
 - [x] 4.1 Add `pull_request:` and `push: branches: [main]` triggers to `kani.yml`, and select `pr-shards` for those events and `shards` for schedule and dispatch (design D4). Rewrite the header comment so it no longer says the lane is outside the pull-request gate
 - [x] 4.2 `make check-workflow-timeouts` passes, and every Kani job keeps `timeout-minutes: 30`
 - [ ] 4.3 Open (or update) the change's pull request. Confirm through `gh pr checks` that only `Kani Proof Harnesses (widgets-geometry)` ran, that it passed, and that its measured wall time is at most 15 minutes. Confirm with a dispatch that all shards still run on `workflow_dispatch`
-- [ ] 4.4 Failing first: on a scratch commit that is never merged, break `viewport_slice` containment by one pixel. Confirm that the pull-request Kani check fails with a counterexample, then drop the commit
+- [x] 4.4 Failing first: on a scratch commit that is never merged, break `viewport_slice` containment by one pixel. Confirm that the pull-request Kani check fails with a counterexample, then drop the commit
 
 ## 5. Gate the fixture writers behind `test-utils`
 
