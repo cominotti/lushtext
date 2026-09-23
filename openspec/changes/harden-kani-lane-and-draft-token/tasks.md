@@ -51,9 +51,10 @@
 - [x] 7.4 `AGENTS.md`: update the CI bullet (`kani.yml` also runs on pull requests, limited to pull-request-gated shards), the `make kani` line in Build Commands, and the `RegisteredDraft` sentence in Draft persistence ("unrepresentable in production builds; fixtures are test-only"). `.claude/CLAUDE.md` is a symlink to `AGENTS.md`, so it needs no separate edit
 - [x] 7.5 `README.md`: update the formal-verification paragraph (pull-request gate) and any benchmark command that now needs `--features test-utils`
 - [ ] 7.6 Merge this change's delta specs into `openspec/specs/formal-verification-kani/spec.md` and `openspec/specs/draft-session-recovery/spec.md` at archive time, and run `openspec validate harden-kani-lane-and-draft-token --strict`
+  - Not merged yet, by the task's own wording: the delta specs merge into `openspec/specs/` when the change is archived (`openspec archive`), which applies them; merging them now would make the archive re-add requirements that already exist. `openspec validate harden-kani-lane-and-draft-token --strict` passes.
 
 ## 8. Final verification
 
 - [x] 8.1 `make check`, `make check-policy`, and `make test` pass locally
 - [x] 8.2 `make kani` passes locally, all shards, with the pinned Kani
-- [ ] 8.3 The change's final pull-request CI is green, including the Kani pull-request job, and one final `workflow_dispatch` of `kani.yml` passes every shard within budget
+- [x] 8.3 The change's final pull-request CI is green, including the Kani pull-request job, and one final `workflow_dispatch` of `kani.yml` passes every shard within budget
