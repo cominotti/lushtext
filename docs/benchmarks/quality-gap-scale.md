@@ -60,7 +60,7 @@ boundary on every host.
 Run the GTK-free scale group with:
 
 ```sh
-cargo bench -p lushtext-core --bench benchmarks quality_gap_scale -- --noplot
+cargo bench -p lushtext-core --features test-utils --bench benchmarks quality_gap_scale -- --noplot
 ```
 
 The `quality-gap-scale-evidence` line records admitted Notes rows/searchable

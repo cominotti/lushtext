@@ -7,6 +7,7 @@
 //! The private backend keeps low-level descriptor and metadata details in one
 //! place while call sites stay readable and application-oriented.
 
+#[cfg(any(test, feature = "test-utils"))]
 pub mod fixture;
 pub mod leftovers;
 pub mod metadata;

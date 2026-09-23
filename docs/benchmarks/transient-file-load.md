@@ -9,7 +9,7 @@ host, not release thresholds or RSS guarantees.
 Measured on 2026-07-13 with Rust 1.96.0 in the optimized Criterion profile:
 
 ```sh
-cargo bench -p lushtext-core --bench benchmarks -- \
+cargo bench -p lushtext-core --features test-utils --bench benchmarks -- \
   'editor_file_io/load_text_file/' \
   --sample-size 10 --warm-up-time 1 --measurement-time 1
 ```
@@ -28,7 +28,7 @@ than treating worker-side decoding as the only latency risk.
 The dedicated policy benchmark is:
 
 ```sh
-cargo bench -p lushtext-core --bench benchmarks -- transient_file_load \
+cargo bench -p lushtext-core --features test-utils --bench benchmarks -- transient_file_load \
   --sample-size 10 --warm-up-time 1 --measurement-time 1
 ```
 

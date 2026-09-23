@@ -158,7 +158,7 @@ for filter in $FILTERS; do
     safe_filter="$(printf '%s' "$filter" | tr -c '[:alnum:]_.-' '_')"
     log_path="$ARTIFACT_DIR/criterion-$safe_filter.log"
     echo "Running performance smoke filter '$filter'..."
-    if ! cargo bench -p lushtext-core --bench benchmarks -- "$filter" \
+    if ! cargo bench -p lushtext-core --features test-utils --bench benchmarks -- "$filter" \
         --sample-size "$SAMPLE_SIZE" \
         --warm-up-time "$WARM_UP_TIME" \
         --measurement-time "$MEASUREMENT_TIME" \

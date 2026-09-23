@@ -431,7 +431,7 @@ documented exclusion last.
 - `make test-prop` runs bounded property tests for pure deterministic invariants.
 - `scripts/run-widget-tests.sh --headless --retries 1` remains the GTK behavior
   gate for display-server-sensitive code.
-- `cargo bench -p lushtext-core --no-run` still compile-checks performance
+- `cargo bench -p lushtext-core --features test-utils --no-run` still compile-checks performance
   harnesses without requiring a full benchmark run.
 - `cargo fmt`, Clippy, rustdoc lints, and `cargo deny` keep their existing roles.
 

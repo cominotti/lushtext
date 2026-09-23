@@ -47,7 +47,7 @@ Run the focused coverage with:
 ```sh
 cargo test -p lushtext-core workspace_watch --lib
 scripts/run-widget-tests.sh --headless -- workspace_watch_
-cargo bench -p lushtext-core --bench benchmarks workspace_watch_pressure
+cargo bench -p lushtext-core --features test-utils --bench benchmarks workspace_watch_pressure
 ```
 
 ## Calibration snapshot

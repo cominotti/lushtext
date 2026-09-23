@@ -186,4 +186,143 @@ for crate in "${controlled_backend_crates[@]}"; do
   done
 done
 
+# Fixture gating. `write_draft` takes a `RegisteredDraft`, so a draft body can
+# only be written for a registered id; the two fixture modules can write one
+# without it (`draft_service::fixture::write_body`, and any
+# `filesystem::fixture` writer aimed at `drafts/<id>.draft`). They must
+# therefore exist only in test and `test-utils` builds, `test-utils` must not
+# be a default feature, and no shipping build (release `[dependencies]`, Meson
+# through build-aux/cargo.sh, Flatpak, Snap) may enable it, directly or through
+# `manual-format-upgrade-fixtures`. The all-features Clippy gate enables
+# `test-utils`, so it cannot see a production caller; CI's default-feature
+# `cargo check -p lushtext --bins` is the build that would.
+check_fixture_gating() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+root = Path(sys.argv[1])
+GATE = '#[cfg(any(test, feature = "test-utils"))]'
+FIXTURE_PARENTS = (
+    "crates/lushtext-core/src/services/draft_service.rs",
+    "crates/lushtext-core/src/services/filesystem/mod.rs",
+)
+ENABLERS = re.compile(r"\b(test-utils|manual-format-upgrade-fixtures)\b")
+SHIPPING_FILES = (
+    "build-aux/cargo.sh",
+    "build-aux/dev.cominotti.lushtext.Flatpak.json",
+    "snap/snapcraft.yaml",
+    "meson.build",
+    "meson_options.txt",
+    "meson.options",
+)
+problems = []
+
+for relative in FIXTURE_PARENTS:
+    path = root / relative
+    if not path.is_file():
+        problems.append(f"{relative}: missing (fixture parent module)")
+        continue
+    lines = path.read_text(encoding="utf-8").splitlines()
+    declarations = [i for i, line in enumerate(lines) if re.match(r"\s*pub mod fixture;", line)]
+    if not declarations:
+        problems.append(f"{relative}: no `pub mod fixture;` declaration found")
+    for index in declarations:
+        previous = lines[index - 1].strip() if index > 0 else ""
+        if previous != GATE:
+            problems.append(f"{relative}:{index + 1}: `pub mod fixture;` is not gated by {GATE}")
+
+for manifest in sorted([root / "Cargo.toml", *root.glob("crates/**/Cargo.toml")]):
+    if not manifest.is_file():
+        continue
+    relative = manifest.relative_to(root)
+    data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    default = data.get("features", {}).get("default", [])
+    if any(ENABLERS.search(feature) for feature in default):
+        problems.append(f"{relative}: `default` features enable test-utils: {default}")
+    if relative.as_posix() == "crates/lushtext/Cargo.toml":
+        for name, spec in data.get("dependencies", {}).items():
+            features = spec.get("features", []) if isinstance(spec, dict) else []
+            if any(ENABLERS.search(feature) for feature in features):
+                problems.append(f"{relative}: [dependencies] {name} enables {features} in the shipped binary")
+
+for relative in SHIPPING_FILES:
+    path = root / relative
+    if not path.is_file():
+        continue
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if ENABLERS.search(line):
+            problems.append(f"{relative}:{number}: a shipping build enables test-utils: {line.strip()}")
+
+for problem in problems:
+    print(f"fixture gating: {problem}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+}
+
+fixture_gating_self_test() {
+  local scratch
+  scratch="$(mktemp -d)"
+  make_tree() {
+    local tree="$1"
+    mkdir -p "$tree/crates/lushtext-core/src/services/filesystem" "$tree/crates/lushtext" "$tree/build-aux" "$tree/snap"
+    printf '#[cfg(any(test, feature = "test-utils"))]\npub mod fixture;\n' \
+      > "$tree/crates/lushtext-core/src/services/draft_service.rs"
+    printf 'pub mod read;\n#[cfg(any(test, feature = "test-utils"))]\npub mod fixture;\n' \
+      > "$tree/crates/lushtext-core/src/services/filesystem/mod.rs"
+    printf '[features]\ntest-utils = []\n' > "$tree/crates/lushtext-core/Cargo.toml"
+    printf '[features]\nmanual-format-upgrade-fixtures = ["lushtext-core/test-utils"]\n[dependencies]\nlushtext-core = { workspace = true }\n[dev-dependencies]\nlushtext-core = { workspace = true, features = ["test-utils"] }\n' \
+      > "$tree/crates/lushtext/Cargo.toml"
+    printf 'cargo build -p lushtext\n' > "$tree/build-aux/cargo.sh"
+    printf 'parts: {}\n' > "$tree/snap/snapcraft.yaml"
+  }
+  expect() {
+    local want="$1" name="$2" tree="$3"
+    if check_fixture_gating "$tree" 2>/dev/null; then got=pass; else got=fail; fi
+    if [[ "$got" != "$want" ]]; then
+      printf 'fixture gating self-test %s: expected %s, got %s\n' "$name" "$want" "$got" >&2
+      exit 1
+    fi
+  }
+  make_tree "$scratch/good"
+  expect pass good "$scratch/good"
+
+  make_tree "$scratch/ungated-draft"
+  printf 'pub mod fixture;\n' > "$scratch/ungated-draft/crates/lushtext-core/src/services/draft_service.rs"
+  expect fail ungated-draft-fixture "$scratch/ungated-draft"
+
+  make_tree "$scratch/ungated-fs"
+  printf '#[cfg(test)]\npub mod fixture;\n' > "$scratch/ungated-fs/crates/lushtext-core/src/services/filesystem/mod.rs"
+  expect fail wrongly-gated-filesystem-fixture "$scratch/ungated-fs"
+
+  make_tree "$scratch/default"
+  printf '[features]\ndefault = ["test-utils"]\ntest-utils = []\n' > "$scratch/default/crates/lushtext-core/Cargo.toml"
+  expect fail default-feature "$scratch/default"
+
+  make_tree "$scratch/shipped-dep"
+  printf '[dependencies]\nlushtext-core = { workspace = true, features = ["test-utils"] }\n' > "$scratch/shipped-dep/crates/lushtext/Cargo.toml"
+  expect fail shipped-dependency "$scratch/shipped-dep"
+
+  make_tree "$scratch/meson"
+  printf 'cargo build -p lushtext --features manual-format-upgrade-fixtures\n' > "$scratch/meson/build-aux/cargo.sh"
+  expect fail meson-cargo-sh "$scratch/meson"
+
+  make_tree "$scratch/snap"
+  printf 'cargo build --features lushtext-core/test-utils\n' > "$scratch/snap/snap/snapcraft.yaml"
+  expect fail snap "$scratch/snap"
+  rm -rf "$scratch"
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  fixture_gating_self_test
+  printf 'Fixture gating self-test passed.\n'
+fi
+
+if ! check_fixture_gating "$repo_root"; then
+  printf '\nGate both fixture modules with #[cfg(any(test, feature = "test-utils"))] and keep test-utils out of every shipping build.\n' >&2
+  exit 1
+fi
+
 printf 'Filesystem boundary audit passed.\n'

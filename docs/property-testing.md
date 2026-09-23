@@ -87,7 +87,7 @@ tighten the generator and remove the false regression seed.
   lane.
 - `scripts/run-widget-tests.sh --headless --retries 1` remains the display and
   GTK behavior lane.
-- `cargo bench -p lushtext-core --no-run` still compile-checks benchmark code.
+- `cargo bench -p lushtext-core --features test-utils --no-run` still compile-checks benchmark code.
 - Mutation testing stays separate by default so generated property cases are
   not multiplied by every mutant.
 

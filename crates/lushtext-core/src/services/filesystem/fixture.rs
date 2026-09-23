@@ -4,7 +4,9 @@
 //!
 //! Tests should use this module instead of direct `std::fs` calls so fixture
 //! code remains readable without teaching future production code to bypass the
-//! filesystem boundary.
+//! filesystem boundary. The module is compiled only under `cfg(test)` or the
+//! `test-utils` feature: its writers skip the durable-write path and could put
+//! a draft body in place without a `RegisteredDraft`.
 
 use std::path::Path;
 

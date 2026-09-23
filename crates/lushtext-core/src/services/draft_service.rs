@@ -77,6 +77,7 @@ const MANIFEST_REPAIR_AUXILIARY_ENTRY_ALLOWANCE: usize = 1;
 pub const MAX_ORPHAN_CLEANUP_DRAFT_SCAN: usize = 2048;
 
 mod cleanup_types;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod fixture;
 pub mod journal_core;
 #[cfg(kani)]
@@ -416,13 +417,16 @@ where
 /// Proof that a draft id may receive a body write.
 ///
 /// [`write_draft`] takes one, which is what makes "a body without a manifest
-/// entry that explains it" unrepresentable in production: the token is only
+/// entry that explains it" unrepresentable in production builds: the token is only
 /// minted by a write-ahead registration that committed ([`register_draft_entries`])
 /// or by [`RegisteredDraft::without_registration`] when the journal core says no
 /// registration is needed (an untitled id, or a file-backed id the caller's
 /// trusted manifest already describes). It is deliberately neither `Clone` nor
-/// constructible from a bare id; test and benchmark fixtures that need an
-/// unregistered body use [`fixture::write_body`].
+/// constructible from a bare id. Test and benchmark fixtures that need an
+/// unregistered body use `fixture::write_body`, which, like the generic
+/// `services::filesystem::fixture` writers, exists only in `cfg(test)` and
+/// `test-utils` builds; `scripts/check-filesystem-boundary.sh` keeps both
+/// modules gated and `test-utils` out of every shipping build.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RegisteredDraft {
     draft_id: String,

@@ -5,7 +5,8 @@
 //! Production body writes take a [`super::RegisteredDraft`], so a body is never
 //! written for an id the journal cannot explain. Fixtures deliberately need the
 //! opposite — orphan bodies, crash leftovers, bodies seeded before their
-//! manifest — so they write through here, which production code must not call.
+//! manifest — so they write through here. The module is compiled only under
+//! `cfg(test)` or the `test-utils` feature, so production code cannot call it.
 
 use std::path::Path;
 

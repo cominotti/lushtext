@@ -118,8 +118,8 @@ Local benchmark runs on 2026-04-15 support keeping the current design for now.
 Command used:
 
 ```bash
-cargo bench -p lushtext-core --bench benchmarks -- search_all
-cargo bench -p lushtext-core --bench benchmarks -- file_index_search
+cargo bench -p lushtext-core --features test-utils --bench benchmarks -- search_all
+cargo bench -p lushtext-core --features test-utils --bench benchmarks -- file_index_search
 ```
 
 Representative results on this machine:

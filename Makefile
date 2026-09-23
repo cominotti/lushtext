@@ -434,7 +434,7 @@ mutants-list:
 # Run benchmarks (quick, default Criterion sample size)
 bench:
 	@echo "Running benchmarks..."
-	cargo bench -p lushtext-core
+	cargo bench -p lushtext-core --features test-utils
 
 # Run benchmarks and generate markdown report (short sampling)
 bench-report:
@@ -449,12 +449,12 @@ bench-report-full:
 # Save current benchmarks as baseline for comparison
 bench-baseline:
 	@echo "Saving benchmark baseline..."
-	cargo bench -p lushtext-core --bench benchmarks -- --save-baseline main
+	cargo bench -p lushtext-core --features test-utils --bench benchmarks -- --save-baseline main
 
 # Compare current performance against saved baseline while admitting new benchmark IDs
 bench-compare:
 	@echo "Comparing against baseline..."
-	cargo bench -p lushtext-core --bench benchmarks -- --baseline-lenient main
+	cargo bench -p lushtext-core --features test-utils --bench benchmarks -- --baseline-lenient main
 
 # Formatting check
 #
@@ -496,7 +496,7 @@ check-clippy:
 # Fast path-aware policy audit for lint-adjacent architecture drift.
 check-filesystem-boundary:
 	@echo "Checking filesystem boundary policy..."
-	./scripts/check-filesystem-boundary.sh
+	./scripts/check-filesystem-boundary.sh --self-test
 
 # Regenerate generated GtkBuilder resources from Blueprint sources.
 blueprint-generate:

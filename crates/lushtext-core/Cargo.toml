@@ -17,7 +17,9 @@ release-model-roots = ["src/model"]
 # `services::kill_point`. Never enabled in release, Meson, Flatpak, or Snap.
 crash-kill-points = []
 fuzzing = []
-property-tests = []
+# The property suite seeds unregistered fixture bodies, which only exist
+# with `test-utils`.
+property-tests = ["test-utils"]
 test-utils = []
 
 [dependencies]

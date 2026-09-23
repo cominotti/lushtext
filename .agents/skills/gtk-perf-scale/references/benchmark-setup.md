@@ -21,7 +21,7 @@ Useful discovery commands:
 
 ```bash
 rg -n 'fn bench_|criterion_group!|criterion_main!' crates/lushtext-core/benches/benchmarks.rs
-cargo bench --package lushtext-core --no-run
+cargo bench --package lushtext-core --features test-utils --no-run
 ```
 
 The benchmark file evolves. Do not paste a static “current coverage” table into a finding.

@@ -29,7 +29,7 @@ continuation, and broad workspace-tree reconciliation.
 Run the GTK-free Criterion group with:
 
 ```sh
-cargo bench -p lushtext-core --bench benchmarks end_to_end_boundedness -- --noplot
+cargo bench -p lushtext-core --features test-utils --bench benchmarks end_to_end_boundedness -- --noplot
 ```
 
 The group emits `end-to-end-boundedness-evidence` with retained file/note

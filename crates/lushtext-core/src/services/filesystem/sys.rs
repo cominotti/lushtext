@@ -7,9 +7,13 @@
 //! public boundary stay readable while this module owns low-level descriptor
 //! handling and platform details.
 
+// Operations gated `#[cfg(any(test, feature = "test-utils"))]` below serve only
+// `filesystem::fixture`, which is itself test-only, so shipping builds carry
+// no raw writer that bypasses the durable-write path.
+
 use std::ffi::{CString, OsString};
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use super::types::FileKind;
@@ -40,6 +44,7 @@ pub(in crate::services) fn read_to_string(path: &Path) -> io::Result<String> {
     fs::read_to_string(path)
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
     fs::write(path, contents)
 }
@@ -202,13 +207,17 @@ pub(in crate::services) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Re
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn create_sparse_file(path: &Path, len: u64) -> io::Result<()> {
     let file = fs::File::create(path)?;
     file.set_len(len)
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn write_at_start(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).open(path)?;
+    use std::io::{Seek, SeekFrom, Write};
+
+    let mut file = fs::OpenOptions::new().write(true).open(path)?;
     file.seek(SeekFrom::Start(0))?;
     file.write_all(bytes)
 }
@@ -444,6 +453,7 @@ where
 
 /// Set a path's access and modification times without following a final symlink.
 #[cfg(unix)]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn set_times_no_follow(
     path: &Path,
     time: std::time::SystemTime,
@@ -469,6 +479,7 @@ pub(in crate::services) fn set_times_no_follow(
 }
 
 #[cfg(not(unix))]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn set_times_no_follow(
     path: &Path,
     time: std::time::SystemTime,
@@ -480,11 +491,13 @@ pub(in crate::services) fn set_times_no_follow(
 }
 
 #[cfg(unix)]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     rustix::fs::symlinkat(target, rustix::fs::CWD, link).map_err(io::Error::from)
 }
 
 #[cfg(not(unix))]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -493,6 +506,7 @@ pub(in crate::services) fn symlink(_target: &Path, _link: &Path) -> io::Result<(
 }
 
 #[cfg(unix)]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn set_permissions_mode(path: &Path, mode: u32) -> io::Result<()> {
     rustix::fs::chmodat(
         rustix::fs::CWD,
@@ -504,6 +518,7 @@ pub(in crate::services) fn set_permissions_mode(path: &Path, mode: u32) -> io::R
 }
 
 #[cfg(not(unix))]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn set_permissions_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -606,7 +621,10 @@ pub(in crate::services) fn create_temp_file(path: &Path, mode: Option<u32>) -> i
 #[cfg(not(unix))]
 /// Create a new temp file on non-Unix platforms using the closest standard API.
 pub(in crate::services) fn create_temp_file(path: &Path, _mode: Option<u32>) -> io::Result<File> {
-    OpenOptions::new().write(true).create_new(true).open(path)
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 #[cfg(unix)]
@@ -677,12 +695,14 @@ pub(in crate::services) fn copy_xattrs_best_effort(source: &Path, dest: &File) {
 pub(in crate::services) fn copy_xattrs_best_effort(_source: &Path, _dest: &File) {}
 
 #[cfg(target_os = "linux")]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
     rustix::fs::setxattr(path, name, value, rustix::fs::XattrFlags::empty())
         .map_err(io::Error::from)
 }
 
 #[cfg(not(target_os = "linux"))]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn set_xattr(_path: &Path, _name: &str, _value: &[u8]) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -691,11 +711,13 @@ pub(in crate::services) fn set_xattr(_path: &Path, _name: &str, _value: &[u8]) -
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn get_xattr(path: &Path, name: &str) -> io::Result<Vec<u8>> {
     get_xattr_with_name(path, name)
 }
 
 #[cfg(not(target_os = "linux"))]
+#[cfg(any(test, feature = "test-utils"))]
 pub(in crate::services) fn get_xattr(_path: &Path, _name: &str) -> io::Result<Vec<u8>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

@@ -44,7 +44,7 @@ hardening work and explains the accompanying Criterion evidence.
 Run the focused benchmark with:
 
 ```sh
-cargo bench -p lushtext-core --bench benchmarks palette_pipeline_hardening_100000 -- --noplot
+cargo bench -p lushtext-core --features test-utils --bench benchmarks palette_pipeline_hardening_100000 -- --noplot
 ```
 
 The generated corpus contains 100,000 files, Unicode names, and repeated

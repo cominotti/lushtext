@@ -63,6 +63,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # The all-features Clippy gate enables `test-utils`, so it cannot see a
+      # production caller of the test-only fixture modules. The shipped binary
+      # with its default features is the build that fails if one exists.
+      - name: Default-feature build of the shipped binary
+        run: cargo check -p lushtext --bins --locked
+
       - name: Filesystem boundary policy
         run: make check-filesystem-boundary
 
@@ -345,7 +351,7 @@ jobs:
           shared-key: fedora-44
 
       - name: Compile-check benchmarks
-        run: cargo bench -p lushtext-core --no-run
+        run: cargo bench -p lushtext-core --features test-utils --no-run
 
   dependency-policy:
     name: Dependency Policy

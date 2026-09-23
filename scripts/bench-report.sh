@@ -137,7 +137,7 @@ fi
 
 echo "Running Criterion benchmarks (mode: $MODE, scope: $SCOPE, filters: $filters_display)..."
 
-bench_args=(-p lushtext-core --bench benchmarks)
+bench_args=(-p lushtext-core --features test-utils --bench benchmarks)
 criterion_args=()
 
 if [[ "$MODE" == "short" ]]; then
