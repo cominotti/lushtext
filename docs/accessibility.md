@@ -158,6 +158,12 @@ Expected screen-reader behavior includes:
 - Alerts, durability warnings, failed loads, destructive confirmations, Replace
   All completion, undo availability, recovery warnings, and user-initiated
   long-running operations use bounded announcements or alert semantics.
+- The stale-draft recovery alert ("Draft Not Restored") announces where the
+  unsaved edits were kept — Local History, or the drafts set-aside folder —
+  without reading any draft text. When they went to Local History, its
+  primary button is named "Show in Local History" and is reachable with Tab
+  like every inline-alert action; activating it opens the Local History
+  browser for that file.
 
 The current proof stack uses AT-SPI and Orca-oriented GNOME behavior as the
 reference path. The AT-SPI smoke helper records tree, focus, and text-interface

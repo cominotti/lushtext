@@ -1559,7 +1559,7 @@ fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), EditorSaveError>
         })?;
     let write_path = identity.as_path().to_path_buf();
     let _path_lock = fs_write::TargetWriteGuard::from_identity(identity);
-    fs_write::atomic_replace(&write_path, WriteLabel::SAVE, bytes)
+    fs_write::atomic_replace_workspace_file(&write_path, WriteLabel::SAVE, bytes)
         .map_err(|error| save_error_from_durable(error, path))?;
     #[cfg(feature = "test-utils")]
     if injected_failure == Some(SaveFailureForTest::AfterRename) {
@@ -2755,6 +2755,39 @@ mod tests {
             "mtime should be populated after write"
         );
         assert_eq!(fixture::read_text(&path), "saved\r\ntext");
+    }
+
+    #[test]
+    fn saving_a_document_clears_its_own_stale_leftovers() {
+        let dir = tempfile::tempdir().expect("leftover sweep tempdir");
+        let path = dir.path().join("notes.md");
+        let foreign_pid = std::process::id().wrapping_add(1);
+        let own_leftover = dir
+            .path()
+            .join(format!(".notes.md.save.{foreign_pid}.9.tmp"));
+        let other_target = dir
+            .path()
+            .join(format!(".todo.md.save.{foreign_pid}.9.tmp"));
+        let user_file = dir
+            .path()
+            .join(format!(".notes.md.mine.{foreign_pid}.9.tmp"));
+        let stale = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_hours(48))
+            .expect("wall clock is far past the epoch");
+        for leftover in [&own_leftover, &other_target, &user_file] {
+            fixture::write_text(leftover, "partial");
+            fixture::set_modified(leftover, stale);
+        }
+
+        write_snapshot_to_path(&path, "saved\n").expect("save succeeds");
+
+        assert!(
+            !fs_metadata::exists(&own_leftover),
+            "the saved target's stale leftover is swept after the save"
+        );
+        assert!(fs_metadata::exists(&other_target));
+        assert!(fs_metadata::exists(&user_file));
+        assert_eq!(fixture::read_text(&path), "saved\n");
     }
 
     #[cfg(unix)]

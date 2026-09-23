@@ -10,7 +10,7 @@ use crate::common::{
     RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
     ensure_gtk_init, first_label, flush_after_delay, flush_events, force_layout, mapped_list_rows,
     mapped_row_with_label, placement_relative_to, present_window, row_straddling_bottom,
-    sample_placements, test_application, wait_until,
+    sample_placements, test_application, wait_until, wait_until_or_false,
 };
 use gtk_lush_tasks::{FreshnessToken, spawn_blocking_then};
 use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
@@ -618,4 +618,344 @@ fn test_adoption_padded_slice_bin_stops_allocating_and_correcting_at_rest() {
         "an ordinary allocation must not need a correction once the inset is known"
     );
     drop(fixture.window);
+}
+
+// --- ViewportSliceBin: a request made while the child's geometry moves ------
+//
+// A `GtkListView` realizes rows during its own allocation, and when their real
+// heights differ from the estimate it measured them at, it rewrites the
+// adjustment's `upper` in the same allocation in which it applies a pending
+// `scroll_to`. The bin reads a divergence no larger than that correction as a
+// possible settle, which it cannot tell from a small request in that frame. It
+// must not erase it: the requested row has to end up inside the viewport all
+// the same.
+//
+// Neither real consumer reaches this case on demand: a `GtkListView` realizes
+// the rows around a new anchor when `scroll_to` sets it, before the next
+// measure, so the upper it writes back in allocation matches what the bin was
+// measured at (probed with variable-height rows, mid-content, focus and
+// non-focus requests: the correction was zero every time). So this fixture is
+// a synthetic `GtkScrollable` that does exactly the two things the case needs,
+// in the order `GtkListBase` does them: it discovers more content during an
+// allocation and applies a pending reveal against the value it holds there,
+// and it re-anchors on any value-changed it did not emit itself.
+
+mod synthetic_scrollable {
+    use std::cell::{Cell, RefCell};
+    use std::sync::LazyLock;
+
+    use gtk4::prelude::*;
+    use gtk4::subclass::prelude::*;
+    use gtk4::{glib, graphene, gsk};
+
+    /// Height of every synthetic row, in logical pixels.
+    pub const ROW_HEIGHT: i32 = 40;
+
+    fn row_top(index: u32) -> f64 {
+        f64::from(index) * f64::from(ROW_HEIGHT)
+    }
+
+    mod imp {
+        use super::{Cell, LazyLock, ROW_HEIGHT, RefCell, glib, graphene, gsk, row_top};
+        use gtk4::prelude::*;
+        use gtk4::subclass::prelude::*;
+
+        #[derive(Default)]
+        pub struct SyntheticScrollable {
+            pub rows: RefCell<Vec<gtk4::Label>>,
+            /// Rows the widget has discovered; only these are measured.
+            pub known_rows: Cell<u32>,
+            pub vadjustment: RefCell<Option<(gtk4::Adjustment, glib::SignalHandlerId)>>,
+            pub hadjustment: RefCell<Option<gtk4::Adjustment>>,
+            /// The value the widget renders at, like `GtkListBase`'s anchor.
+            pub anchor: Cell<f64>,
+            /// A reveal applied in the next allocation, with how many more
+            /// rows that same allocation discovers.
+            pub pending: Cell<Option<(u32, u32)>>,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for SyntheticScrollable {
+            const NAME: &'static str = "LushtextTestSyntheticScrollable";
+            type Type = super::SyntheticScrollable;
+            type ParentType = gtk4::Widget;
+            type Interfaces = (gtk4::Scrollable,);
+        }
+
+        impl ObjectImpl for SyntheticScrollable {
+            fn properties() -> &'static [glib::ParamSpec] {
+                static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+                    [
+                        "hadjustment",
+                        "vadjustment",
+                        "hscroll-policy",
+                        "vscroll-policy",
+                    ]
+                    .into_iter()
+                    .map(glib::ParamSpecOverride::for_interface::<gtk4::Scrollable>)
+                    .collect()
+                });
+                PROPERTIES.as_ref()
+            }
+
+            fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+                match pspec.name() {
+                    "vadjustment" => self.set_vadjustment(value.get().expect("an adjustment")),
+                    "hadjustment" => {
+                        self.hadjustment
+                            .replace(value.get().expect("an adjustment"));
+                    }
+                    _ => {}
+                }
+            }
+
+            fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+                match pspec.name() {
+                    "vadjustment" => self
+                        .vadjustment
+                        .borrow()
+                        .as_ref()
+                        .map(|(adjustment, _)| adjustment.clone())
+                        .to_value(),
+                    "hadjustment" => self.hadjustment.borrow().to_value(),
+                    _ => gtk4::ScrollablePolicy::Minimum.to_value(),
+                }
+            }
+
+            fn dispose(&self) {
+                for row in self.rows.take() {
+                    row.unparent();
+                }
+            }
+        }
+
+        impl WidgetImpl for SyntheticScrollable {
+            fn measure(
+                &self,
+                orientation: gtk4::Orientation,
+                _for_size: i32,
+            ) -> (i32, i32, i32, i32) {
+                match orientation {
+                    gtk4::Orientation::Vertical => {
+                        let height = self.content_height();
+                        (height, height, -1, -1)
+                    }
+                    _ => (0, 0, -1, -1),
+                }
+            }
+
+            fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
+                let page = f64::from(height);
+                let mut value = self.anchor.get();
+                if let Some((row, discovered)) = self.pending.take() {
+                    let total = u32::try_from(self.rows.borrow().len()).expect("few rows");
+                    self.known_rows
+                        .set((self.known_rows.get() + discovered).min(total));
+                    let top = row_top(row);
+                    let bottom = top + f64::from(ROW_HEIGHT);
+                    if bottom > value + page {
+                        value = bottom - page;
+                    } else if top < value {
+                        value = top;
+                    }
+                    // The measured height follows the discovery one frame
+                    // later, as it does for a list that realized new rows.
+                    let widget = self.obj().downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(widget) = widget.upgrade() {
+                            widget.queue_resize();
+                        }
+                    });
+                }
+                let upper = f64::from(self.content_height()).max(page);
+                value = value.clamp(0.0, upper - page);
+                self.anchor.set(value);
+                if let Some((adjustment, handler)) = self.vadjustment.borrow().as_ref() {
+                    adjustment.block_signal(handler);
+                    adjustment.configure(value, 0.0, upper, f64::from(ROW_HEIGHT), page, page);
+                    adjustment.unblock_signal(handler);
+                }
+                let known = self.known_rows.get();
+                for (index, row) in (0u32..).zip(self.rows.borrow().iter()) {
+                    row.set_child_visible(index < known);
+                    if index < known {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "synthetic row offsets stay far inside f32 range"
+                        )]
+                        let y = (row_top(index) - value) as f32;
+                        let transform =
+                            gsk::Transform::new().translate(&graphene::Point::new(0.0, y));
+                        row.allocate(width, ROW_HEIGHT, -1, Some(transform));
+                    }
+                }
+            }
+        }
+
+        impl ScrollableImpl for SyntheticScrollable {}
+
+        impl SyntheticScrollable {
+            fn content_height(&self) -> i32 {
+                i32::try_from(self.known_rows.get()).expect("few rows") * ROW_HEIGHT
+            }
+
+            fn set_vadjustment(&self, adjustment: Option<gtk4::Adjustment>) {
+                if let Some((old, handler)) = self.vadjustment.take() {
+                    old.disconnect(handler);
+                }
+                let Some(adjustment) = adjustment else {
+                    return;
+                };
+                // Any value-changed this widget did not emit itself is a
+                // scroll it follows, exactly as `GtkListBase` re-anchors on
+                // the value and drops a pending request.
+                let widget = self.obj().downgrade();
+                let handler = adjustment.connect_value_changed(move |adjustment| {
+                    if let Some(widget) = widget.upgrade() {
+                        widget.imp().anchor.set(adjustment.value());
+                        widget.queue_allocate();
+                    }
+                });
+                self.vadjustment.replace(Some((adjustment, handler)));
+            }
+        }
+    }
+
+    glib::wrapper! {
+        pub struct SyntheticScrollable(ObjectSubclass<imp::SyntheticScrollable>)
+            @extends gtk4::Widget,
+            @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget,
+                gtk4::Scrollable;
+    }
+
+    impl SyntheticScrollable {
+        /// `total_rows` labelled rows, of which the first `known_rows` are
+        /// discovered up front.
+        pub fn new(total_rows: u32, known_rows: u32) -> Self {
+            let widget: Self = glib::Object::new();
+            let rows: Vec<gtk4::Label> = (0..total_rows)
+                .map(|index| {
+                    let label = gtk4::Label::new(Some(&format!("row {index:04}")));
+                    label.set_parent(&widget);
+                    label
+                })
+                .collect();
+            widget.imp().rows.replace(rows);
+            widget.imp().known_rows.set(known_rows.min(total_rows));
+            widget
+        }
+
+        /// Reveal `row` in the next allocation, which also discovers
+        /// `discovered` more rows below the known content.
+        ///
+        /// A resize rather than an allocate is queued, as a `GtkListView`
+        /// effectively does by parenting the rows its new anchor realizes:
+        /// the pass then allocates the whole bin, so the child reconfigures
+        /// inside the bin's own allocation instead of in an isolated
+        /// re-allocation of the child alone.
+        pub fn scroll_to_discovering(&self, row: u32, discovered: u32) {
+            self.imp().pending.set(Some((row, discovered)));
+            self.queue_resize();
+        }
+
+        pub fn known_rows(&self) -> u32 {
+            self.imp().known_rows.get()
+        }
+
+        pub fn row(&self, index: u32) -> gtk4::Label {
+            self.imp().rows.borrow()[usize::try_from(index).expect("few rows")].clone()
+        }
+    }
+}
+
+#[test]
+fn test_adoption_slice_bin_honours_a_request_made_while_the_child_reconfigures() {
+    use synthetic_scrollable::{ROW_HEIGHT, SyntheticScrollable};
+
+    ensure_gtk_init();
+    let app = test_application();
+    let header = gtk4::Label::new(Some("section"));
+    header.set_height_request(SLICE_ADOPTION_HEADER_HEIGHT);
+    let child = SyntheticScrollable::new(400, 200);
+    let bin = ViewportSliceBin::with_child(&child);
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&bin);
+    let scroller = gtk4::ScrolledWindow::builder()
+        .vexpand(true)
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .child(&content)
+        .build();
+    let window = libadwaita::ApplicationWindow::builder()
+        .application(&app)
+        .default_width(420)
+        .default_height(600)
+        .content(&scroller)
+        .build();
+    present_window(&window);
+    let outer = scroller.vadjustment();
+    wait_until(Duration::from_secs(10), || {
+        outer.upper() > f64::from(scroller.height())
+    });
+    // Mid-content, nudged so no row boundary meets the viewport bottom.
+    outer.set_value(2_007.0);
+    flush_after_delay(Duration::from_millis(400));
+
+    let viewport = f64::from(scroller.height());
+    let bounds = |index: u32| {
+        child.row(index).compute_bounds(&scroller).map(|bounds| {
+            (
+                f64::from(bounds.y()),
+                f64::from(bounds.y() + bounds.height()),
+            )
+        })
+    };
+    let (target, overflow) = (0..child.known_rows())
+        .find_map(|index| {
+            let (top, bottom) = bounds(index)?;
+            (top < viewport && bottom - viewport > gtk_lush_widgets::ADJUSTMENT_EPSILON)
+                .then_some((index, bottom - viewport))
+        })
+        .expect("a row straddling the viewport bottom");
+    // Ten rows discovered in the same allocation: a 400px correction, ten
+    // times the at most one-row reveal, so the correction bounds the request.
+    let discovered = 10;
+    assert!(overflow < f64::from(discovered) * f64::from(ROW_HEIGHT));
+    let resting = outer.value();
+    child.scroll_to_discovering(target, discovered);
+
+    let fully_visible =
+        || bounds(target).is_some_and(|(top, bottom)| top >= -0.5 && bottom <= viewport + 0.5);
+    let revealed = wait_until_or_false(Duration::from_secs(5), fully_visible);
+    let settled: Vec<f64> = (0..8)
+        .map(|_| {
+            flush_after_delay(Duration::from_millis(120));
+            outer.value()
+        })
+        .collect();
+    assert!(
+        revealed && fully_visible(),
+        "row {target}, clipped by {overflow:.1}px and requested in the allocation that also \
+         discovered {discovered} rows, must end fully inside the {viewport}px viewport; it is \
+         drawn at {:?} with the outer at {settled:?} (from {resting})",
+        bounds(target)
+    );
+    assert!(
+        settled
+            .iter()
+            .all(|value| (value - settled[0]).abs() < SCROLL_TOLERANCE),
+        "an honoured request must settle instead of re-asking; saw {settled:?}"
+    );
+    let counts: Vec<(u64, u64)> = (0..6)
+        .map(|_| {
+            flush_after_delay(Duration::from_millis(120));
+            (bin.allocation_count(), bin.correction_count())
+        })
+        .collect();
+    assert!(
+        counts.iter().all(|sample| *sample == counts[0]),
+        "the bin must come to rest once the request is honoured; saw \
+         (allocations, corrections) {counts:?}"
+    );
+    drop(window);
 }

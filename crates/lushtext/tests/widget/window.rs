@@ -149,6 +149,14 @@ impl Drop for FirstDirtyAutosaveDelayReset {
     }
 }
 
+struct RestoreDelayReset;
+
+impl Drop for RestoreDelayReset {
+    fn drop(&mut self) {
+        set_draft_restore_delay_for_test(0);
+    }
+}
+
 struct CloseSafetyCompletionDelayReset;
 
 impl Drop for CloseSafetyCompletionDelayReset {
@@ -8423,6 +8431,154 @@ fn test_ordinary_restore_blocks_readiness_and_empty_candidate_close() {
     assert_eq!(editor_buffer_text(&editor), "recovery in flight");
 }
 
+/// While a recovery body is still being read for restore, autosave must not
+/// overwrite it; if the user edits before it can be applied, the unrestored
+/// body is kept (set aside) before autosave lets the new edits replace it.
+#[test]
+fn test_edits_during_a_pending_restore_never_overwrite_the_recovery_body() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    let _restore_reset = RestoreDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    set_draft_restore_delay_for_test(600);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1_700_000_777,
+    };
+    draft_service::write_draft(&data_dir, &draft_id, "recovery not yet restored")
+        .expect("write recovery body");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+        .expect("persist recovery manifest");
+
+    window.check_draft_by_id(&editor, &draft_id);
+    editor.buffer().set_text("typed before the restore landed");
+    editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    flush_after_delay(Duration::from_millis(100));
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read body"),
+        Some("recovery not yet restored".to_string()),
+        "autosave must not overwrite a body whose restore is pending"
+    );
+
+    assert_eq!(window.draft_evidence().restore_held_draft_ids, 1);
+    let set_aside =
+        draft_service::set_aside_dir(&data_dir).join(format!("{draft_id}.1700000777.draft"));
+    wait_until(Duration::from_secs(10), || fixture::exists(&set_aside));
+    assert_eq!(window.draft_evidence().restore_held_draft_ids, 0);
+    fixture::assert_text(&set_aside, "recovery not yet restored");
+    assert_eq!(
+        editor_buffer_text(&editor),
+        "typed before the restore landed"
+    );
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_evidence().mutation_inflight
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read body")
+                .as_deref()
+                == Some("typed before the restore landed")
+    });
+}
+
+/// Saving a tab whose recovery draft is still waiting to be restored deletes
+/// that draft only after keeping a copy of it.
+#[test]
+fn test_saving_during_a_pending_restore_keeps_the_unshown_draft() {
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    let _restore_reset = RestoreDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let (window, _dir, path) = open_temp_document("on disk\n");
+    let editor = active_editor(&window);
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&path);
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: Some(path.clone()),
+        original_mtime_secs: editor_io::mtime_secs(&path),
+        saved_at_secs: 1_700_000_888,
+    };
+    draft_service::update_manifest(
+        &data_dir,
+        &SessionData::default(),
+        window.draft_evidence().manifest_authority,
+        |manifest| manifest.upsert(entry.clone()),
+    )
+    .expect("register recovery entry");
+    draft_service::write_draft(&data_dir, &draft_id, "earlier unsaved edits").expect("body");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+
+    set_draft_restore_delay_for_test(800);
+    window.check_draft_on_open(&editor, &path);
+    editor.buffer().set_text("new edits saved right away\n");
+    editor.buffer().set_modified(true);
+    activate_action(&window, "save");
+
+    let set_aside =
+        draft_service::set_aside_dir(&data_dir).join(format!("{draft_id}.1700000888.draft"));
+    wait_until(Duration::from_secs(10), || {
+        fixture::exists(&set_aside) && !window.draft_evidence().mutation_inflight
+    });
+    fixture::assert_text(&set_aside, "earlier unsaved edits");
+    fixture::assert_text(&path, "new edits saved right away\n");
+}
+
+/// A recovery body too large to restore automatically is moved to the
+/// set-aside area once it is skipped, so a later autosave cannot overwrite it.
+#[test]
+fn test_oversized_lazy_draft_is_kept_before_autosave_can_overwrite_it() {
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    ensure_gtk_init();
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let body = draft_service::drafts_dir(&data_dir).join(format!("{draft_id}.draft"));
+    fixture::create_dir_all(&draft_service::drafts_dir(&data_dir));
+    fixture::create_sparse_file(&body, draft_service::MAX_AUTOMATIC_DRAFT_BYTES + 1);
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1_700_000_999,
+    };
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+
+    window.check_draft_by_id(&editor, &draft_id);
+    let set_aside =
+        draft_service::set_aside_dir(&data_dir).join(format!("{draft_id}.1700000999.draft"));
+    wait_until(Duration::from_secs(10), || {
+        fixture::exists(&set_aside) && window.draft_evidence().restore_held_draft_ids == 0
+    });
+    assert!(!fixture::exists(&body));
+
+    editor.buffer().set_text("new work");
+    editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_evidence().autosave_inflight
+    });
+    assert!(
+        fixture::exists(&set_aside),
+        "the oversized body survives autosave"
+    );
+}
+
 #[test]
 fn test_file_restore_rejects_reload_and_path_change() {
     ensure_gtk_init();
@@ -8928,6 +9084,130 @@ fn test_edit_after_delayed_delete_creates_newer_recovery() {
                 .find_by_id(&draft_id)
                 .is_some()
     });
+}
+
+/// A pass with two new file-backed drafts that "crashes" after both body
+/// writes and before its batch commit must still leave both bodies registered,
+/// so the next startup offers them through the normal file-backed path.
+#[test]
+fn test_new_file_backed_drafts_are_registered_before_their_first_body_write() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let dir = tempfile::tempdir().expect("crash-window tempdir");
+    let data_dir = json_store::data_dir();
+    let window = test_window();
+    present_window(&window);
+    let mut editors = Vec::new();
+    for name in ["first.md", "second.md"] {
+        let path = dir.path().join(name);
+        fixture::write_text(&path, "on disk\n");
+        window.open_document(&path);
+        wait_until(Duration::from_secs(5), || {
+            let editor = active_editor(&window);
+            editor.file_path().as_deref() == Some(path.as_path()) && editor.file_size().is_some()
+        });
+        let editor = active_editor(&window);
+        editor
+            .buffer()
+            .set_text(&format!("unsaved edits in {name}"));
+        editor.buffer().set_modified(true);
+        editors.push((path, editor));
+    }
+
+    // The batch commit fails, as a crash between the body writes and the
+    // commit would leave it.
+    fail_next_draft_mutations_for_test(false, true, false);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        !window.draft_evidence().autosave_inflight
+    });
+
+    let manifest = draft_service::load_manifest(&data_dir).expect("load manifest");
+    for (path, editor) in &editors {
+        assert!(editor.draft_dirty(), "an unconfirmed pass stays retryable");
+        let draft_id = draft_service::draft_id_for_path(path);
+        let entry = manifest
+            .find_by_id(&draft_id)
+            .unwrap_or_else(|| panic!("{} was written without a registered entry", path.display()));
+        assert_eq!(entry.original_path.as_deref(), Some(path.as_path()));
+        assert!(entry.original_mtime_secs.is_some());
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("name");
+        assert_eq!(
+            draft_service::resolve_file_draft_restore(&data_dir, entry).expect("resolve"),
+            lushtext_core::model::draft::FileDraftRestoreResolution::Restore {
+                content: format!("unsaved edits in {name}"),
+            }
+        );
+    }
+}
+
+/// Between write-ahead registration and the body write of the same pass the
+/// persisted entry has no body. Orphan cleanup must not run inside that window,
+/// so it can never retire the entry the pass is about to back with a body.
+#[test]
+fn test_orphan_cleanup_never_retires_a_registered_entry_before_its_body_write() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _cleanup_reset = OrphanCleanupPolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let (window, _dir, path) = open_temp_document("on disk\n");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&path);
+    let editor = active_editor(&window);
+    editor.buffer().set_text("unsaved edits");
+    editor.buffer().set_modified(true);
+    let workers_before = window.draft_evidence().cleanup_workers_started;
+
+    set_draft_mutation_delays_for_test(600, 0, 0);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(5), || {
+        draft_service::load_manifest(&data_dir)
+            .expect("load manifest")
+            .find_by_id(&draft_id)
+            .is_some()
+    });
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read body"),
+        None,
+        "the pass is between registration and its body write"
+    );
+    set_orphan_cleanup_delays_for_test(0, 1, 0);
+    window.schedule_orphan_cleanup_for_test(true);
+    while window.draft_evidence().autosave_inflight {
+        assert!(
+            draft_service::load_manifest(&data_dir)
+                .expect("load manifest")
+                .find_by_id(&draft_id)
+                .is_some(),
+            "a registered entry must survive until its body is written"
+        );
+        assert_eq!(
+            window.draft_evidence().cleanup_workers_started,
+            workers_before,
+            "cleanup must not start while the pass owns the journal"
+        );
+        flush_after_delay(Duration::from_millis(20));
+    }
+    wait_until(Duration::from_secs(10), || {
+        let evidence = window.draft_evidence();
+        !evidence.cleanup_worker_active && !evidence.cleanup_timer_pending && !editor.draft_dirty()
+    });
+    assert!(
+        draft_service::load_manifest(&data_dir)
+            .expect("load manifest")
+            .find_by_id(&draft_id)
+            .is_some()
+    );
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read body"),
+        Some("unsaved edits".to_string())
+    );
 }
 
 #[test]
@@ -19540,6 +19820,7 @@ fn test_startup_restore_skips_stale_file_backed_draft_once() {
         .editor_info_bar_view(editor.notification_owner_id())
         .expect("stale draft warning");
     assert_eq!(notification.title, "Draft Not Restored");
+    assert!(notification.body.contains("kept in Local History"));
     assert!(
         window
             .imp()
@@ -19549,6 +19830,114 @@ fn test_startup_restore_skips_stale_file_backed_draft_once() {
             .find_by_id(&draft_id)
             .is_none()
     );
+    assert_show_in_local_history_opens_preserved_snapshot(&window, &editor, "stale draft");
+}
+
+/// Click the stale-draft alert's "Show in Local History" action and confirm the
+/// browser opens on the preserved while-editing snapshot.
+fn assert_show_in_local_history_opens_preserved_snapshot(
+    window: &LushtextWindow,
+    editor: &LushtextEditorPage,
+    preserved_body: &str,
+) {
+    let info_bar = editor.info_bar();
+    let button = &info_bar.imp().discard_button;
+    wait_until(Duration::from_secs(2), || {
+        button.is_visible() && button.label().as_deref() == Some("Show in _Local History")
+    });
+    button.emit_clicked();
+    wait_until(Duration::from_secs(4), || {
+        visible_sheet_dialog(window).is_some()
+    });
+    let dialog = visible_sheet_dialog(window).expect("local-history dialog visible");
+    let child = dialog.child().expect("dialog child");
+    let preserved_label = format!("While editing · {} B", preserved_body.len());
+    wait_until(Duration::from_secs(4), || {
+        find_label_by_text(&child, &preserved_label).is_some()
+    });
+    dialog.close();
+    flush_events();
+}
+
+/// The lazy restore path (a file opened later, not preloaded at startup)
+/// preserves the stale body through the journal before retiring it.
+#[test]
+fn test_lazily_opened_stale_draft_is_kept_in_local_history_before_retirement() {
+    ensure_gtk_init();
+    let _policy_reset = DraftPipelinePolicyReset;
+    let _cleanup_reset = OrphanCleanupPolicyReset;
+    // Keep startup orphan cleanup out of the fixture's way.
+    set_orphan_cleanup_delays_for_test(60_000, 60_000, 0);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("lazy-stale.txt");
+    fixture::write_text(&file_path, "current disk content");
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    let body = "lazy stale draft";
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    let window = test_window();
+    window.set_default_size(1400, 900);
+    present_window(&window);
+    wait_for_startup_data_flow(&window);
+    // Register the stale entry, then its body, the way a previous session
+    // would have left them.
+    let stale_entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: Some(file_path.clone()),
+        original_mtime_secs: Some(current_mtime.saturating_sub(1)),
+        saved_at_secs: 1_700_000_030,
+    };
+    draft_service::update_manifest(
+        &data_dir,
+        &SessionData::default(),
+        window.draft_evidence().manifest_authority,
+        |manifest| manifest.upsert(stale_entry.clone()),
+    )
+    .expect("seed stale manifest entry");
+    draft_service::write_draft(&data_dir, &draft_id, body).expect("seed draft");
+    window
+        .imp()
+        .drafts
+        .manifest
+        .borrow_mut()
+        .upsert(stale_entry);
+
+    window.open_document(&file_path);
+    wait_until(Duration::from_secs(5), || {
+        let editor = active_editor(&window);
+        editor.file_path().as_deref() == Some(file_path.as_path())
+            && window
+                .imp()
+                .notification_bus
+                .editor_info_bar_view(editor.notification_owner_id())
+                .is_some_and(|notification| notification.title == "Draft Not Restored")
+    });
+    wait_until(Duration::from_secs(5), || {
+        let evidence = window.draft_evidence();
+        !evidence.mutation_inflight
+            && evidence.stale_preservations_pending == 0
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read draft")
+                .is_none()
+    });
+    let editor = active_editor(&window);
+    assert_eq!(editor_text(&editor), "current disk content");
+    let snapshots = local_history_service::list_snapshots_for_path(&data_dir, &file_path)
+        .expect("list local history");
+    let preserved = snapshots
+        .iter()
+        .find(|meta| {
+            meta.origin == lushtext_core::model::local_history::LocalHistorySnapshotOrigin::Periodic
+        })
+        .expect("stale edits kept as a while-editing snapshot");
+    assert_eq!(preserved.captured_at_millis, 1_700_000_030_000);
+    assert!(
+        draft_service::load_manifest(&data_dir)
+            .expect("load manifest")
+            .find_by_id(&draft_id)
+            .is_none()
+    );
+    assert_show_in_local_history_opens_preserved_snapshot(&window, &editor, body);
 }
 
 #[test]

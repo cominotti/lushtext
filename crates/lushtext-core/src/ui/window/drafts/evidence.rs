@@ -62,6 +62,13 @@ pub struct DraftEvidence {
     pub delete_tombstone_count: usize,
     /// Draft IDs explicitly discarded during an in-progress close flow.
     pub close_discard_count: usize,
+    /// Stale drafts whose queued delete must first preserve the body.
+    ///
+    /// Non-zero only between a stale restore and its preserve-then-retire
+    /// command; a preservation failure clears it while keeping the draft.
+    pub stale_preservations_pending: usize,
+    /// Draft ids autosave is holding off because their restore is pending.
+    pub restore_held_draft_ids: usize,
 
     // --- autosave ---
     /// Whether an autosave batch is currently snapshotting or writing.
@@ -134,6 +141,8 @@ impl LushtextWindow {
         let pending_delete_count = drafts.pending_deletes.borrow().len();
         let delete_tombstone_count = drafts.delete_tombstones.borrow().len();
         let close_discard_count = drafts.close_discard_ids.borrow().len();
+        let stale_preservations_pending = drafts.stale_preservations.borrow().len();
+        let restore_held_draft_ids = drafts.restore_pending_ids.borrow().len();
         let (preloaded_entries, preloaded_reservation_weight) = {
             let preloaded = drafts.preloaded.borrow();
             (preloaded.len(), preloaded.reservation_weight())
@@ -155,6 +164,8 @@ impl LushtextWindow {
             pending_delete_count,
             delete_tombstone_count,
             close_discard_count,
+            stale_preservations_pending,
+            restore_held_draft_ids,
             autosave_inflight,
             autosave_pending: drafts.autosave_pending.get(),
             first_dirty_timer_pending: drafts.first_dirty_autosave_pending.get(),

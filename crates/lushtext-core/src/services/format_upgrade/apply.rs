@@ -247,7 +247,7 @@ fn apply_convert_with_options(
             Ok(bytes) => {
                 fs_write::atomic_replace(
                     &item.absolute_path,
-                    WriteLabel::from("format-upgrade-convert"),
+                    WriteLabel::FORMAT_UPGRADE_CONVERT,
                     &bytes,
                 )
                 .map_err(fs_write::DurableWriteError::into_io_error)

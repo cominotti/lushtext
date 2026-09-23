@@ -116,6 +116,16 @@ impl LushtextWindow {
         }
     }
 
+    /// The session a draft-manifest reconciliation attributes bodies against.
+    ///
+    /// Mounted pages plus descriptors progressive restore has not admitted
+    /// yet, so the recovery body of a tab still waiting to be restored is never
+    /// mistaken for an unattributable leftover and moved aside before its
+    /// restore reads it.
+    pub(crate) fn collect_session_for_draft_reconciliation(&self) -> SessionData {
+        self.collect_session_for_close()
+    }
+
     /// Snapshot mounted pages plus descriptors not yet admitted by progressive restore.
     fn collect_session_for_close(&self) -> SessionData {
         let mut session = self.collect_session();

@@ -143,6 +143,25 @@ pub(in crate::services) fn rename(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
+/// Whether an I/O error is `EXDEV`: a rename whose source and target live on
+/// different filesystems, so only a copy can move the bytes.
+///
+/// std decodes `EXDEV` (and its Windows counterpart) as `CrossesDevices`.
+pub(in crate::services) fn is_cross_device(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::CrossesDevices
+}
+
+/// The error a kernel returns for a rename across filesystems, for fault injection.
+#[cfg(all(test, unix))]
+pub(in crate::services) fn cross_device_error_for_test() -> io::Error {
+    io::Error::from(rustix::io::Errno::XDEV)
+}
+
+#[cfg(all(test, not(unix)))]
+pub(in crate::services) fn cross_device_error_for_test() -> io::Error {
+    io::Error::from(io::ErrorKind::CrossesDevices)
+}
+
 /// Rename only when the destination does not exist, atomically.
 ///
 /// `rename(2)` silently replaces a regular destination, so a caller that must not
@@ -375,6 +394,89 @@ where
         }
     }
     Ok(())
+}
+
+/// Visit the entry names of one directory without stat-ing any entry.
+///
+/// Name-only callers such as the leftover sweep filter by name first and pay a
+/// metadata call only for the few names that match. Returning `false` from the
+/// visitor stops traversal early.
+#[cfg(unix)]
+pub(in crate::services) fn visit_directory_names<F>(path: &Path, mut visit: F) -> io::Result<()>
+where
+    F: FnMut(&std::ffi::OsStr) -> bool,
+{
+    use std::os::unix::ffi::OsStrExt;
+
+    let fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        path,
+        directory_traversal_open_flags(),
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let mut dir = rustix::fs::Dir::new(fd).map_err(io::Error::from)?;
+    while let Some(entry) = dir.read() {
+        let entry = entry.map_err(io::Error::from)?;
+        let name_bytes = entry.file_name().to_bytes();
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
+        }
+        if !visit(std::ffi::OsStr::from_bytes(name_bytes)) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(in crate::services) fn visit_directory_names<F>(path: &Path, mut visit: F) -> io::Result<()>
+where
+    F: FnMut(&std::ffi::OsStr) -> bool,
+{
+    for entry in fs::read_dir(path)? {
+        if !visit(&entry?.file_name()) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Set a path's access and modification times without following a final symlink.
+#[cfg(unix)]
+pub(in crate::services) fn set_times_no_follow(
+    path: &Path,
+    time: std::time::SystemTime,
+) -> io::Result<()> {
+    let since_epoch = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let timespec = rustix::fs::Timespec {
+        tv_sec: i64::try_from(since_epoch.as_secs())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+        tv_nsec: since_epoch.subsec_nanos().into(),
+    };
+    rustix::fs::utimensat(
+        rustix::fs::CWD,
+        path,
+        &rustix::fs::Timestamps {
+            last_access: timespec,
+            last_modification: timespec,
+        },
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .map_err(io::Error::from)
+}
+
+#[cfg(not(unix))]
+pub(in crate::services) fn set_times_no_follow(
+    path: &Path,
+    time: std::time::SystemTime,
+) -> io::Result<()> {
+    fs::File::options()
+        .write(true)
+        .open(path)?
+        .set_modified(time)
 }
 
 #[cfg(unix)]

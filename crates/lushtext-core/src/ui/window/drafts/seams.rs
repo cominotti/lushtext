@@ -206,6 +206,19 @@ pub(super) struct OrphanCleanupUiResult {
     pub(super) committed_by_id: HashMap<String, draft_service::DraftEntryFingerprint>,
 }
 
+/// A queued delete whose worker must first preserve the body.
+///
+/// `announce_as_stale` selects the inline "file changed on disk" warning; any
+/// other preserve-first delete (a save or discard while the restore was still
+/// pending) reports where the earlier edits went in the status bar instead.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingPreservation {
+    /// The persisted entry whose body is preserved before deletion.
+    pub(crate) entry: crate::model::draft::DraftEntry,
+    /// Whether the outcome is announced as a stale-draft inline warning.
+    pub(crate) announce_as_stale: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

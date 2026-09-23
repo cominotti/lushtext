@@ -39,7 +39,9 @@ use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use crate::model::draft::{DraftEntry, DraftManifestAuthority, PreloadedDraftRestore};
+use crate::model::draft::{
+    DraftEntry, DraftManifestAuthority, PreloadedDraftRestore, StaleDraftPreservation,
+};
 use crate::services::notifications::NotificationSeverity;
 use crate::services::{draft_service, editor_io, json_store};
 use crate::ui::buffer_snapshot;
@@ -49,7 +51,7 @@ use super::policy;
 use super::policy::{
     OrphanCleanupFollowUp, grouped_orphan_cleanup_failure_message, orphan_cleanup_follow_up,
 };
-use super::seams::{DraftManifestFailure, OrphanCleanupUiResult};
+use super::seams::{DraftManifestFailure, OrphanCleanupUiResult, PendingPreservation};
 use super::{
     automatic_draft_limit, delay_draft_delete_for_test, delay_draft_manifest_for_test,
     delay_orphan_cleanup_worker_for_test, fail_next_draft_delete_for_test,
@@ -89,6 +91,89 @@ impl LushtextWindow {
         self.imp().drafts.orphan_cleanup_pending_offset.set(None);
         self.imp().drafts.orphan_cleanup_timer_pending.set(false);
         let _ = self.imp().drafts.orphan_cleanup_timer.invalidate();
+    }
+
+    /// Adopt the outcome of one write-ahead registration.
+    ///
+    /// Both pipelines share this: a trusted commit is accepted whole, while an
+    /// additive registration mirrors exactly what the service persisted (absent
+    /// ids only) and leaves the journal untrusted. Returns whether the bodies of
+    /// `registered` may now be written; on failure the caller must not write
+    /// them.
+    pub(super) fn apply_draft_registration(
+        &self,
+        result: std::result::Result<draft_service::DraftRegistration, DraftManifestFailure>,
+        registered: Vec<DraftEntry>,
+    ) -> std::result::Result<(), String> {
+        match result {
+            Ok(draft_service::DraftRegistration::Committed(commit)) => {
+                self.accept_draft_manifest_commit(commit);
+                Ok(())
+            }
+            Ok(draft_service::DraftRegistration::Additive { authority }) => {
+                self.reject_draft_manifest_authority(authority);
+                let mut manifest = self.imp().drafts.manifest.borrow_mut();
+                for entry in registered {
+                    manifest.insert_if_absent(entry);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.reject_draft_manifest_authority(error.authority);
+                Err(error.detail)
+            }
+        }
+    }
+
+    /// The window's current manifest entry for `draft_id`, if any.
+    pub(super) fn draft_manifest_entry(&self, draft_id: &str) -> Option<DraftEntry> {
+        self.imp()
+            .drafts
+            .manifest
+            .borrow()
+            .find_by_id(draft_id)
+            .cloned()
+    }
+
+    /// Whether `entry` is still exactly the manifest's entry for its id.
+    pub(super) fn draft_manifest_entry_is_current(&self, entry: &DraftEntry) -> bool {
+        self.imp()
+            .drafts
+            .manifest
+            .borrow()
+            .find_by_id(&entry.draft_id)
+            == Some(entry)
+    }
+
+    /// Hold autosave of `draft_id` while one more restore ticket for it is outstanding.
+    pub(super) fn hold_draft_restore(&self, draft_id: &str) {
+        *self
+            .imp()
+            .drafts
+            .restore_pending_ids
+            .borrow_mut()
+            .entry(draft_id.to_owned())
+            .or_insert(0) += 1;
+    }
+
+    /// Release one [`Self::hold_draft_restore`] hold; the last release lifts it.
+    pub(super) fn release_draft_restore(&self, draft_id: &str) {
+        let mut pending = self.imp().drafts.restore_pending_ids.borrow_mut();
+        if let Some(count) = pending.get_mut(draft_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                pending.remove(draft_id);
+            }
+        }
+    }
+
+    /// Whether a restore of `draft_id` is still queued or reading its body.
+    pub(super) fn draft_restore_is_pending(&self, draft_id: &str) -> bool {
+        self.imp()
+            .drafts
+            .restore_pending_ids
+            .borrow()
+            .contains_key(draft_id)
     }
 
     /// Adopt the draft records one startup journal read produced.
@@ -137,6 +222,7 @@ impl LushtextWindow {
         let now = editor_io::now_epoch_secs();
         let mut manifest_updates = Vec::new();
         let mut write_errors = Vec::new();
+        let mut registration_errors = Vec::new();
         let discarded_draft_ids = self.imp().drafts.close_discard_ids.borrow().clone();
 
         for i in 0..tab_view.n_pages() {
@@ -168,6 +254,12 @@ impl LushtextWindow {
             if discarded_draft_ids.contains(&draft_id) {
                 continue;
             }
+            // As in the asynchronous collectors: a body whose restore is still
+            // pending must not be overwritten.
+            if self.draft_restore_is_pending(&draft_id) {
+                write_errors.push(format!("{draft_id}: its draft restore is still pending"));
+                continue;
+            }
             let buffer = editor.buffer();
             let text = match buffer_snapshot::snapshot_buffer_text_direct_budgeted(
                 &buffer,
@@ -186,12 +278,46 @@ impl LushtextWindow {
                     continue;
                 }
             };
+            let original_path = editor.file_path();
+            // Write-ahead registration, as in the asynchronous pipelines: a
+            // body is never written for an id the persisted manifest lacks.
+            let authority = self.imp().drafts.manifest_authority.get();
+            let registered = self
+                .imp()
+                .drafts
+                .manifest
+                .borrow()
+                .find_by_id(&draft_id)
+                .is_some();
+            if policy::draft_requires_registration(
+                original_path.is_some(),
+                registered,
+                authority.is_trusted(),
+            ) {
+                let session = self.collect_session_for_draft_reconciliation();
+                let entry = DraftEntry {
+                    draft_id: draft_id.clone(),
+                    original_path: original_path.clone(),
+                    original_mtime_secs: original_path.as_deref().and_then(editor_io::mtime_secs),
+                    saved_at_secs: now,
+                };
+                let result = draft_service::register_draft_entries(
+                    &data_dir,
+                    &session,
+                    authority,
+                    std::slice::from_ref(&entry),
+                )
+                .map_err(DraftManifestFailure::from);
+                if let Err(detail) = self.apply_draft_registration(result, vec![entry]) {
+                    registration_errors.push(format!("{draft_id}: {detail}"));
+                    continue;
+                }
+            }
             if let Err(e) = draft_service::write_draft(&data_dir, &draft_id, &text) {
                 tracing::error!("Failed to write draft on close: {e}");
                 write_errors.push(format!("{draft_id}: {e}"));
                 continue;
             }
-            let original_path = editor.file_path();
             let mtime = original_path
                 .as_ref()
                 .and_then(|path| editor_io::mtime_secs(path));
@@ -204,7 +330,7 @@ impl LushtextWindow {
         }
         let had_manifest_updates = !manifest_updates.is_empty();
         if had_manifest_updates {
-            let session = self.collect_session();
+            let session = self.collect_session_for_draft_reconciliation();
             let authority = self.imp().drafts.manifest_authority.get();
             let commit =
                 match draft_service::update_manifest(&data_dir, &session, authority, |manifest| {
@@ -221,6 +347,12 @@ impl LushtextWindow {
                     }
                 };
             self.accept_draft_manifest_commit(commit);
+        }
+        if !registration_errors.is_empty() {
+            return Err(anyhow::anyhow!(
+                "failed to save draft manifest on close: {}",
+                registration_errors.join("; ")
+            ));
         }
         if !write_errors.is_empty() {
             return Err(anyhow::anyhow!(
@@ -425,8 +557,113 @@ impl LushtextWindow {
         }
     }
 
+    /// Retire a stale file-backed draft, preserving its body first.
+    ///
+    /// The ordinary serialized delete runs, but its worker first preserves the
+    /// body (`draft_service::preserve_stale_draft_body`) and deletes nothing
+    /// when that fails. The warning is published once the destination is known.
+    pub(super) fn retire_stale_draft(&self, entry: DraftEntry) {
+        let draft_id = entry.draft_id.clone();
+        self.imp().drafts.stale_preservations.borrow_mut().insert(
+            draft_id.clone(),
+            PendingPreservation {
+                entry,
+                announce_as_stale: true,
+            },
+        );
+        self.delete_draft_by_id(&draft_id);
+    }
+
+    /// Keep a copy of a recovery body the user edited over before it could be
+    /// restored, then let autosave replace it.
+    ///
+    /// The body stays in the journal; only a preserved copy is added (local
+    /// history for a file, and the set-aside area). Autosave of the id stays
+    /// held until the copy has been attempted, so the copy always reads the
+    /// unrestored body.
+    pub(super) fn preserve_unrestored_draft(&self, entry: DraftEntry) {
+        let draft_id = entry.draft_id.clone();
+        self.hold_draft_restore(&draft_id);
+        let data_dir = json_store::data_dir();
+        let window_weak = self.downgrade();
+        spawn_blocking_then(
+            (),
+            move || draft_service::preserve_stale_draft_body(&data_dir, &entry),
+            move |(), outcome| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                window.release_draft_restore(&draft_id);
+                let preservation = match outcome {
+                    Ok(Some(preservation)) => preservation,
+                    Ok(None) => return,
+                    Err(error) => {
+                        tracing::warn!("Could not preserve unrestored draft {draft_id}: {error}");
+                        StaleDraftPreservation::Kept
+                    }
+                };
+                window.publish_preservation_outcome(&draft_id, preservation, false);
+            },
+        );
+    }
+
+    /// Show the stale-draft warning on every unmodified open editor of that
+    /// draft; when the user is already editing it, say where the earlier
+    /// edits went in the status bar instead of interrupting the tab.
+    fn publish_preservation_outcome(
+        &self,
+        draft_id: &str,
+        preservation: StaleDraftPreservation,
+        announce_as_stale: bool,
+    ) {
+        let tab_view = &self.imp().tab_view;
+        let mut alerted = false;
+        if announce_as_stale {
+            for index in 0..tab_view.n_pages() {
+                let child = tab_view.nth_page(index).child();
+                if let Some(editor) = child.downcast_ref::<LushtextEditorPage>()
+                    && editor.draft_id().as_deref() == Some(draft_id)
+                    && !editor.is_modified()
+                {
+                    Self::show_stale_draft_skipped(editor, preservation);
+                    alerted = true;
+                }
+            }
+        }
+        if !alerted {
+            self.publish_status_message(
+                &policy::stale_draft_status_message(
+                    preservation,
+                    &draft_service::set_aside_dir(&json_store::data_dir()),
+                ),
+                NotificationSeverity::Warning,
+            );
+        }
+    }
+
     /// Delete a draft by its ID and persist the manifest update.
+    ///
+    /// A draft whose restore is still pending was never shown to the user; a
+    /// save or discard of its tab then deletes it only after preserving it.
     pub fn delete_draft_by_id(&self, draft_id: &str) {
+        let preservation_queued = self
+            .imp()
+            .drafts
+            .stale_preservations
+            .borrow()
+            .contains_key(draft_id);
+        if self.draft_restore_is_pending(draft_id)
+            && !preservation_queued
+            && let Some(entry) = self.draft_manifest_entry(draft_id)
+        {
+            self.imp().drafts.stale_preservations.borrow_mut().insert(
+                draft_id.to_string(),
+                PendingPreservation {
+                    entry,
+                    announce_as_stale: false,
+                },
+            );
+        }
         // Intent is assigned on GTK before an older body worker can finish and
         // before this compact delete waits behind the single-flight mutation.
         let intent = self
@@ -489,12 +726,33 @@ impl LushtextWindow {
 
         let data_dir = json_store::data_dir();
         let draft_id = intent.draft_id.clone();
-        let session = self.collect_session();
+        let stale_entry = self
+            .imp()
+            .drafts
+            .stale_preservations
+            .borrow_mut()
+            .remove(&draft_id);
+        let session = self.collect_session_for_draft_reconciliation();
         let authority = self.imp().drafts.manifest_authority.get();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
             move || {
+                // A stale draft is preserved before anything is deleted; when
+                // preservation fails, the body and its entry both stay.
+                let preservation = stale_entry.map(|pending| {
+                    let outcome =
+                        draft_service::preserve_stale_draft_body(&data_dir, &pending.entry)
+                            .map_err(|error| error.to_string());
+                    (pending, outcome)
+                });
+                if let Some((_, Err(error))) = &preservation {
+                    return (
+                        Some(format!("stale draft body could not be preserved: {error}")),
+                        None,
+                        preservation,
+                    );
+                }
                 // Keep the persisted manifest as the durable retry marker until
                 // the body is gone. A failed body deletion therefore leaves a
                 // fully recoverable pre-delete state across unrelated manifest
@@ -516,10 +774,36 @@ impl LushtextWindow {
                 } else {
                     None
                 };
-                (body_error, manifest_result)
+                (body_error, manifest_result, preservation)
             },
-            move |(), (body_error, manifest_result)| {
+            move |(), (body_error, manifest_result, preservation)| {
                 if let Some(window) = window_weak.upgrade() {
+                    match preservation {
+                        Some((pending, Ok(Some(preserved)))) => {
+                            window.publish_preservation_outcome(
+                                &intent.draft_id,
+                                preserved,
+                                pending.announce_as_stale,
+                            );
+                        }
+                        Some((pending, Err(_))) => {
+                            // Nothing was deleted; any later delete of this id
+                            // must still preserve the body first.
+                            let announce = pending.announce_as_stale;
+                            window
+                                .imp()
+                                .drafts
+                                .stale_preservations
+                                .borrow_mut()
+                                .insert(pending.entry.draft_id.clone(), pending);
+                            window.publish_preservation_outcome(
+                                &intent.draft_id,
+                                StaleDraftPreservation::Kept,
+                                announce,
+                            );
+                        }
+                        Some((_, Ok(None))) | None => {}
+                    }
                     let deletion_terminal =
                         body_error.is_none() && manifest_result.as_ref().is_some_and(Result::is_ok);
                     if let Some(error) = body_error.as_deref() {

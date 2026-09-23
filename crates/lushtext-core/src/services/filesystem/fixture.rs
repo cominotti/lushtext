@@ -183,6 +183,15 @@ pub fn is_symlink(path: &Path) -> bool {
     metadata::is_symlink(path).expect("inspect fixture symlink")
 }
 
+/// Set a fixture path's modification time, without following a final symlink.
+///
+/// # Panics
+///
+/// Panics when the times cannot be changed.
+pub fn set_modified(path: &Path, time: std::time::SystemTime) {
+    sys::set_times_no_follow(path, time).expect("set fixture modification time");
+}
+
 /// Set Unix mode bits for a fixture path.
 ///
 /// # Panics

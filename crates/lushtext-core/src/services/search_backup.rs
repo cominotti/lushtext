@@ -140,6 +140,12 @@ pub fn load(data_dir: &Path) -> Result<ReplaceUndoBackup> {
     Ok(load_recovering(data_dir).active_backup())
 }
 
+/// The directory holding the Replace All undo journal under `data_dir`.
+#[must_use]
+pub(crate) fn journal_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(JOURNAL_DIR)
+}
+
 /// Load Replace All undo state with recovery diagnostics.
 ///
 /// Callers must only expose the returned backup when `active` is true. Stale,

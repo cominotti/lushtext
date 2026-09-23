@@ -154,6 +154,8 @@ pub enum PendingWarningAction {
     NormalizeLineEndings,
     /// Restore the buffer state that existed before a local-history restore.
     UndoLocalHistoryRestore,
+    /// Open the local-history browser, where a stale draft's edits were kept.
+    ShowLocalHistory,
 }
 
 /// Encoding, line-ending, health, and save-confirmation state for one tab.

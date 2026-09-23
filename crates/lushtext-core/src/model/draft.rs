@@ -76,6 +76,17 @@ impl Default for DraftManifestAuthority {
     }
 }
 
+/// Backing-file mtime recorded for an entry rebuilt from an unregistered
+/// crash-leftover body.
+///
+/// Reconciliation knows such a body's file (a session tab's path hashes to its
+/// id) but not the mtime its edits were based on. No real file carries this
+/// mtime, so freshness validation can never pass: the body is preserved as an
+/// alternative version of the file instead of being applied over it. `None`
+/// keeps its older meaning, "not known when the draft was written" (for
+/// example, the file was unavailable), which still restores.
+pub const UNPROVEN_BACKING_MTIME_SECS: u64 = u64::MAX;
+
 /// One draft entry in the manifest. Maps a draft file on disk to the
 /// original source file and tracks metadata for conflict detection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,8 +159,9 @@ pub enum PreloadedDraftRestore {
 /// cannot represent a body by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreloadedDraftSkip {
-    /// A file-backed draft was discarded because the backing file changed.
-    StaleFile,
+    /// A file-backed draft was not restored because the backing file changed;
+    /// the payload says where its unsaved edits were kept.
+    StaleFile(StaleDraftPreservation),
     /// The draft remains on disk but is too large to apply automatically.
     Oversized,
     /// The draft is individually eligible but did not fit the eager startup budget.
@@ -157,6 +169,26 @@ pub enum PreloadedDraftSkip {
     /// The window recreates the tab first, then admits this body through its
     /// serialized lazy-read queue so several large recovery bodies cannot pile up.
     LazyAggregateBudget,
+}
+
+/// Where the body of a stale file-backed draft was kept once the backing file
+/// changed on disk.
+///
+/// A stale draft is never deleted before its content is durably preserved.
+/// The body is always copied into the drafts set-aside area first, because
+/// that copy is never pruned; local history, which owns "versions of this file
+/// that are not its current on-disk content", additionally receives it as a
+/// snapshot whenever it can, and that is where the user is pointed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleDraftPreservation {
+    /// Kept in the set-aside area and also as a while-editing (`Periodic`)
+    /// local-history snapshot of the file.
+    LocalHistory,
+    /// Kept byte-identically in the drafts set-aside area only.
+    SetAside,
+    /// Preservation failed or was not attempted; the draft body and its
+    /// journal entry stay where they were, and nothing was restored.
+    Kept,
 }
 
 /// Result of validating a file-backed draft against its current backing file.
@@ -178,7 +210,8 @@ pub enum FileDraftRestoreResolution {
 /// cannot represent a body by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileDraftRestoreSkip {
-    /// The backing file's mtime changed, so restoring would overwrite newer data.
+    /// The backing file's mtime changed, or could never be proven (see
+    /// [`UNPROVEN_BACKING_MTIME_SECS`]), so restoring could overwrite newer data.
     Stale,
     /// The draft is too large to read into a GTK buffer automatically.
     Oversized,
@@ -216,6 +249,16 @@ impl DraftManifest {
         self.drafts
             .retain(|d| d.original_path.as_deref() != Some(path));
         self.drafts.len() < before
+    }
+
+    /// Insert `entry` only when no entry has its draft ID; an existing entry
+    /// already describes its body and wins. Returns `true` if inserted.
+    pub fn insert_if_absent(&mut self, entry: DraftEntry) -> bool {
+        if self.find_by_id(&entry.draft_id).is_some() {
+            return false;
+        }
+        self.drafts.push(entry);
+        true
     }
 
     /// Add or update a draft entry. If an entry with the same draft_id exists,
@@ -326,6 +369,14 @@ mod tests {
             manifest.drafts,
             vec![entry("abc", Some("/a.rs")), entry("untitled-1", None)]
         );
+    }
+
+    #[test]
+    fn insert_if_absent_keeps_the_existing_entry() {
+        let mut manifest = DraftManifest::default();
+        assert!(manifest.insert_if_absent(entry("abc", Some("/a.rs"))));
+        assert!(!manifest.insert_if_absent(entry("abc", Some("/b.rs"))));
+        assert_eq!(manifest.drafts, vec![entry("abc", Some("/a.rs"))]);
     }
 
     #[test]

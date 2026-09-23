@@ -10,8 +10,9 @@
 use crate::model::draft::{
     DraftCleanupContinuation, DraftEntry, DraftManifest, DraftManifestAuthority,
     DraftManifestCompleteness, FileDraftRestoreResolution, FileDraftRestoreSkip,
-    PreloadedDraftRestore, PreloadedDraftSkip,
+    PreloadedDraftRestore, PreloadedDraftSkip, StaleDraftPreservation,
 };
+use crate::model::local_history::LocalHistorySnapshotOrigin;
 use crate::model::session::SessionData;
 use crate::model::sidecar_identity::stable_path_hash;
 use crate::services::json_format::KIND_DRAFT_MANIFEST;
@@ -22,12 +23,13 @@ use crate::services::recovery_metadata::{
 };
 use crate::services::{
     editor_io,
+    file_limits::FileSizeCheck,
     filesystem::{
         DirectoryScanPolicy, FileKind, MutationOutcome, PathStatus, WriteLabel,
         metadata as fs_metadata, mutate as fs_mutate, read as fs_read, tree as fs_tree,
         write as fs_write,
     },
-    session_service,
+    local_history_service, session_service,
 };
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -42,6 +44,14 @@ use std::sync::{
 const DRAFTS_DIR: &str = "drafts";
 /// Envelope-backed manifest filename stored beside draft bodies.
 const MANIFEST_FILE: &str = "manifest.json";
+/// Subdirectory of `drafts/` holding preserved bodies that left the journal.
+///
+/// It sits outside the manifest and outside the non-recursive `*.draft`
+/// inventory, so neither reconciliation nor orphan cleanup (in this build or an
+/// older one) ever classifies, restores, or deletes what it holds.
+const SET_ASIDE_DIR: &str = "set-aside";
+/// Largest number of set-aside names probed for one body before giving up.
+const MAX_SET_ASIDE_NAME_ATTEMPTS: u32 = 64;
 /// Largest UTF-8 draft body that LushText can automatically write and restore.
 ///
 /// Sixty-four MiB keeps one recovery body bounded on ordinary desktop systems.
@@ -136,6 +146,11 @@ pub struct DraftManifestRepairMetrics {
     pub diagnostics_emitted: usize,
     /// Whether traversal reached a stable terminal inventory.
     pub reached_terminal_inventory: bool,
+    /// File-backed entries reconstructed from a session tab whose path hashes
+    /// to an unregistered body's id.
+    pub session_attributed_entries: usize,
+    /// Unattributable bodies moved, never deleted, into the set-aside area.
+    pub bodies_set_aside: usize,
 }
 
 /// Successful manifest commit returned only after trusted reconciliation.
@@ -216,6 +231,116 @@ pub fn drafts_dir(data_dir: &Path) -> PathBuf {
 
 fn manifest_path(data_dir: &Path) -> PathBuf {
     drafts_dir(data_dir).join(MANIFEST_FILE)
+}
+
+/// Returns the drafts set-aside area: `{data_dir}/drafts/set-aside/`.
+///
+/// Draft bodies that can no longer live in the journal — an unattributable
+/// crash leftover, or a stale draft local history could not accept — are kept
+/// here byte-identically. Nothing in LushText deletes from this directory.
+#[must_use]
+pub fn set_aside_dir(data_dir: &Path) -> PathBuf {
+    drafts_dir(data_dir).join(SET_ASIDE_DIR)
+}
+
+/// How a draft body enters the set-aside area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SetAsideTransfer {
+    /// Rename out of `drafts/`, so the journal no longer sees the body.
+    Move,
+    /// Byte-identical durable copy that leaves the original in place; the
+    /// journal retires the original through its own ordering.
+    Copy,
+}
+
+/// The first set-aside name for one body, `{id}.{stamp}.draft`.
+///
+/// Later collisions take a `-{n}` suffix, so this name existing means a copy
+/// for exactly this draft id and stamp was already kept.
+fn set_aside_primary_path(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> PathBuf {
+    set_aside_dir(data_dir).join(format!("{draft_id}.{stamp_secs}.draft"))
+}
+
+/// Keep one draft body in the set-aside area under a name that never replaces
+/// an earlier set-aside body.
+///
+/// A `Copy` of a body too large to read under the automatic-draft bound moves
+/// it instead: the body still leaves nothing behind unpreserved, and the
+/// journal's later deletion of the original becomes a no-op. When the
+/// transfer's own durability step fails after the body is already in place,
+/// the body counts as placed (with a warning) rather than as lost.
+fn set_aside_body(
+    data_dir: &Path,
+    draft_id: &str,
+    stamp_secs: u64,
+    transfer: SetAsideTransfer,
+) -> Result<PathBuf> {
+    let source = draft_body_path(data_dir, draft_id);
+    let dir = set_aside_dir(data_dir);
+    fs_write::create_dir_all_durable(&dir)
+        .with_context(|| format!("failed to create {}", dir.display()))?;
+    let copy_bytes = match transfer {
+        SetAsideTransfer::Move => None,
+        SetAsideTransfer::Copy => {
+            let limit = usize::try_from(MAX_AUTOMATIC_DRAFT_BYTES)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1);
+            let bytes = fs_read::prefix_bytes(&source, limit)
+                .with_context(|| format!("failed to read {}", source.display()))?;
+            (u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_AUTOMATIC_DRAFT_BYTES)
+                .then_some(bytes)
+        }
+    };
+    for attempt in 0..MAX_SET_ASIDE_NAME_ATTEMPTS {
+        let target = if attempt == 0 {
+            set_aside_primary_path(data_dir, draft_id, stamp_secs)
+        } else {
+            dir.join(format!("{draft_id}.{stamp_secs}-{attempt}.draft"))
+        };
+        if fs_metadata::exists(&target) {
+            continue;
+        }
+        let placed = match copy_bytes.as_deref() {
+            Some(bytes) => fs_write::atomic_replace(&target, WriteLabel::DRAFT, bytes)
+                .map_err(std::io::Error::other),
+            None => match fs_write::rename_durable_no_replace(&source, &target) {
+                Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                    fs_write::rename_durable(&source, &target)
+                }
+                other => other,
+            },
+        };
+        match placed {
+            Ok(()) => return Ok(target),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) if set_aside_took_effect(&source, &target, copy_bytes.is_some()) => {
+                tracing::warn!(
+                    "Set aside draft {} as {}, but its durability is unconfirmed: {error}",
+                    source.display(),
+                    target.display(),
+                );
+                return Ok(target);
+            }
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "failed to set aside draft {} as {}: {error}",
+                    source.display(),
+                    target.display(),
+                ));
+            }
+        }
+    }
+    anyhow::bail!(
+        "no free set-aside name for draft {draft_id} after {MAX_SET_ASIDE_NAME_ATTEMPTS} attempts"
+    )
+}
+
+/// Whether a failed set-aside transfer nevertheless placed the body.
+///
+/// A durable rename or replace can fail in its final directory sync after the
+/// new entry exists; the bytes are then in the set-aside area.
+fn set_aside_took_effect(source: &Path, target: &Path, copied: bool) -> bool {
+    fs_metadata::exists(target) && (copied || !fs_metadata::exists(source))
 }
 
 /// Generate a stable draft ID from an absolute file path.
@@ -331,6 +456,99 @@ where
         &HashSet::new(),
         update,
     )
+}
+
+/// How [`register_draft_entries`] durably registered new draft ids.
+#[derive(Debug)]
+pub enum DraftRegistration {
+    /// A complete reconciliation committed; the manifest is trusted.
+    Committed(DraftManifestCommit),
+    /// Reconciliation could not prove completeness, so the entries were added
+    /// to the persisted manifest without granting authority.
+    ///
+    /// Adding entries never drops anything the persisted manifest recorded,
+    /// so it is safe while the journal is untrusted; it keeps new unsaved
+    /// work protected instead of refusing every first body write.
+    Additive {
+        /// Authority callers must retain: still untrusted.
+        authority: DraftManifestAuthority,
+    },
+}
+
+/// Durably register draft ids before their first body write.
+///
+/// Only entries whose id the persisted manifest lacks are inserted; an
+/// existing entry already describes its body. A trusted reconciliation is
+/// attempted first; when the inventory is not complete the entries are added
+/// to the persisted manifest as-is, provided its recovery evidence permits
+/// replacement.
+///
+/// **Threading:** blocking I/O, call from a background thread.
+///
+/// # Errors
+///
+/// Returns the reconciliation error when the additive write is not permitted
+/// or fails too; the caller must then not write those bodies.
+///
+/// # Panics
+///
+/// Panics if the process-wide manifest write lock is poisoned.
+pub fn register_draft_entries(
+    data_dir: &Path,
+    session: &SessionData,
+    known_authority: DraftManifestAuthority,
+    entries: &[DraftEntry],
+) -> std::result::Result<DraftRegistration, DraftManifestUpdateError> {
+    let insert_absent = |manifest: &mut DraftManifest, entries: &[DraftEntry]| {
+        for entry in entries {
+            manifest.insert_if_absent(entry.clone());
+        }
+    };
+    // A persisted entry for the same id but another backing mtime describes an
+    // older, possibly stale body that the body write about to follow would
+    // overwrite. Keep a copy first; refusing is safer than overwriting.
+    let persisted = load_manifest_recovering(data_dir).value;
+    for entry in entries {
+        if let Some(existing) = persisted.find_by_id(&entry.draft_id)
+            && existing.original_mtime_secs != entry.original_mtime_secs
+            && fs_metadata::exists(&draft_body_path(data_dir, &entry.draft_id))
+            && let Err(error) =
+                keep_set_aside_copy(data_dir, &entry.draft_id, existing.saved_at_secs)
+        {
+            return Err(DraftManifestUpdateError {
+                authority: known_authority,
+                detail: format!(
+                    "could not keep the earlier draft {} before it is overwritten: {error}",
+                    entry.draft_id
+                ),
+            });
+        }
+    }
+    let reconciled = update_manifest(data_dir, session, known_authority, |manifest| {
+        insert_absent(manifest, entries);
+    });
+    let error = match reconciled {
+        Ok(commit) => return Ok(DraftRegistration::Committed(commit)),
+        Err(error) => error,
+    };
+    let _guard = manifest_write_lock()
+        .lock()
+        .expect("draft manifest write lock poisoned");
+    let current = load_manifest_recovering(data_dir);
+    if !current.replacement_allowed() {
+        return Err(error);
+    }
+    let mut manifest = current.value;
+    insert_absent(&mut manifest, entries);
+    match save_manifest_locked(data_dir, &manifest) {
+        Ok(()) => Ok(DraftRegistration::Additive {
+            authority: error.authority(),
+        }),
+        Err(save_error) => Err(DraftManifestUpdateError {
+            authority: error.authority(),
+            detail: format!("{error}; additive registration also failed: {save_error}"),
+        }),
+    }
 }
 
 /// Remove one manifest entry while preserving its deletion intent across retries.
@@ -482,7 +700,7 @@ fn load_restore_state_with_eager_limit_and_cancel(
     diagnostics.extend(manifest_load.load.diagnostics);
 
     let mut preloaded = HashMap::new();
-    let mut stale_draft_ids = Vec::new();
+    let mut stale_entries: Vec<DraftEntry> = Vec::new();
     let mut preloaded_bytes = 0u64;
     for tab in &session.tabs {
         if cancel.load(Ordering::Acquire) {
@@ -523,12 +741,10 @@ fn load_restore_state_with_eager_limit_and_cancel(
                     preloaded.insert(draft_id, PreloadedDraftRestore::Content(content));
                 }
                 Ok(FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Stale)) => {
-                    preloaded.insert(
-                        draft_id.clone(),
-                        PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile),
-                    );
-                    if !stale_draft_ids.contains(&draft_id) {
-                        stale_draft_ids.push(draft_id);
+                    // The warning marker is published after preservation, so it
+                    // can name where the edits went.
+                    if !stale_entries.iter().any(|stale| stale.draft_id == draft_id) {
+                        stale_entries.push(entry);
                     }
                 }
                 Ok(FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Oversized)) => {
@@ -577,14 +793,32 @@ fn load_restore_state_with_eager_limit_and_cancel(
         }
     }
 
-    if manifest_authority.is_trusted() {
-        manifest_authority = cleanup_stale_restore_entries(
+    let stale_outcomes = if manifest_authority.is_trusted() {
+        let (authority, outcomes) = cleanup_stale_restore_entries(
             data_dir,
             &session,
             manifest_authority,
             &mut manifest,
-            &stale_draft_ids,
+            &stale_entries,
         );
+        manifest_authority = authority;
+        outcomes
+    } else {
+        // Without a trusted manifest startup neither preserves nor retires;
+        // opening the tab retries both through the journal.
+        stale_entries
+            .iter()
+            .map(|entry| (entry.draft_id.clone(), Some(StaleDraftPreservation::Kept)))
+            .collect()
+    };
+    for (draft_id, outcome) in stale_outcomes {
+        // `None` means the body was already gone: there is nothing to warn about.
+        if let Some(preservation) = outcome {
+            preloaded.insert(
+                draft_id,
+                PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile(preservation)),
+            );
+        }
     }
     RestoreState {
         manifest,
@@ -696,8 +930,11 @@ where
         );
         attempted_completeness = Some(inventory.completeness);
         repair_metrics = inventory.metrics;
+        // A no-op when nothing was set aside, which the unchanged arm requires.
+        push_set_aside_diagnostic(&mut load.diagnostics, &path, repair_metrics);
         match inventory.completeness {
-            DraftManifestCompleteness::Complete if inventory.manifest == persisted => {}
+            DraftManifestCompleteness::Complete
+                if inventory.manifest == persisted && repair_metrics.bodies_set_aside == 0 => {}
             DraftManifestCompleteness::Complete => {
                 load.value = inventory.manifest;
                 load.outcome = RecoveryLoadOutcome::Partial;
@@ -762,7 +999,8 @@ where
     let complete_missing_empty = load.outcome == RecoveryLoadOutcome::MissingDefault
         && load.diagnostics.is_empty()
         && completeness == DraftManifestCompleteness::Complete
-        && repair_metrics.draft_bodies_seen == 0
+        // Bodies moved into the set-aside area left the inventory empty.
+        && repair_metrics.draft_bodies_seen == repair_metrics.bodies_set_aside
         && repair_metrics.reached_terminal_inventory;
 
     let mut authority = if direct_trust || complete_missing_empty {
@@ -820,6 +1058,7 @@ fn repair_manifest_from_draft_files(
 ) -> DraftManifestRepairAttempt {
     let inventory = recoverable_draft_inventory(data_dir, session, cancel, policy);
     let mut diagnostics = Vec::new();
+    push_set_aside_diagnostic(&mut diagnostics, context.path, inventory.metrics);
     match inventory.completeness {
         DraftManifestCompleteness::Complete => {
             if !inventory.manifest.drafts.is_empty() || !missing_manifest {
@@ -960,6 +1199,9 @@ fn recoverable_draft_inventory_with_candidate(
         }
     };
     let session_untitled_ids = session_untitled_draft_ids(session);
+    let session_file_paths = session_file_paths_by_draft_id(session);
+    let mut set_aside_candidates = Vec::new();
+    let mut attributed_copies = Vec::new();
     let mut manifest = candidate;
     let mut metrics = DraftManifestRepairMetrics::default();
     if manifest.drafts.len() > policy.max_entries {
@@ -1060,11 +1302,23 @@ fn recoverable_draft_inventory_with_candidate(
                 {
                     continue;
                 }
-                if !(session_untitled_ids.contains(&draft_id) || draft_id.starts_with("untitled-"))
+                // An unregistered body with a stable-path-hash id is a crash
+                // leftover from before write-ahead registration existed. A
+                // session tab whose path hashes to the id proves which file it
+                // belongs to; the entry is rebuilt with an unprovable mtime, so
+                // restore preserves it instead of applying it over the file.
+                // A body nothing attributes is moved aside after traversal, so
+                // it is preserved without keeping every later commit partial.
+                let attributed_path = if session_untitled_ids.contains(&draft_id)
+                    || draft_id.starts_with("untitled-")
                 {
-                    ambiguous_bodies = ambiguous_bodies.saturating_add(1);
+                    None
+                } else if let Some(path) = session_file_paths.get(draft_id.as_str()) {
+                    Some((*path).clone())
+                } else {
+                    set_aside_candidates.push(draft_id);
                     continue;
-                }
+                };
                 if manifest.drafts.len() >= policy.max_entries {
                     ambiguous_bodies = ambiguous_bodies.saturating_add(1);
                     classification_stop = Some(format!(
@@ -1073,8 +1327,13 @@ fn recoverable_draft_inventory_with_candidate(
                     ));
                     return false;
                 }
-                let retained_bytes =
-                    MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES.saturating_add(draft_id.len());
+                let retained_bytes = MANIFEST_REPAIR_ENTRY_OVERHEAD_BYTES
+                    .saturating_add(draft_id.len())
+                    .saturating_add(
+                        attributed_path
+                            .as_ref()
+                            .map_or(0, |path| path.as_os_str().as_encoded_bytes().len()),
+                    );
                 if metrics
                     .retained_metadata_bytes
                     .saturating_add(retained_bytes)
@@ -1090,11 +1349,27 @@ fn recoverable_draft_inventory_with_candidate(
                 metrics.retained_metadata_bytes = metrics
                     .retained_metadata_bytes
                     .saturating_add(retained_bytes);
+                let saved_at_secs = if attributed_path.is_some() {
+                    metrics.session_attributed_entries =
+                        metrics.session_attributed_entries.saturating_add(1);
+                    // The body's own mtime is when the edits were last saved.
+                    let saved_at = fs_metadata::file_facts(&entry.path)
+                        .ok()
+                        .and_then(|facts| facts.modified_at_secs)
+                        .unwrap_or_else(editor_io::now_epoch_secs);
+                    attributed_copies.push((draft_id.clone(), saved_at));
+                    saved_at
+                } else {
+                    editor_io::now_epoch_secs()
+                };
+                let original_mtime_secs = attributed_path
+                    .is_some()
+                    .then_some(crate::model::draft::UNPROVEN_BACKING_MTIME_SECS);
                 manifest.upsert(DraftEntry {
                     draft_id: draft_id.clone(),
-                    original_path: None,
-                    original_mtime_secs: None,
-                    saved_at_secs: editor_io::now_epoch_secs(),
+                    original_path: attributed_path,
+                    original_mtime_secs,
+                    saved_at_secs,
                 });
                 represented_ids.insert(draft_id);
                 metrics.manifest_entries_retained = manifest.drafts.len();
@@ -1169,6 +1444,48 @@ fn recoverable_draft_inventory_with_candidate(
         );
     }
     metrics.reached_terminal_inventory = true;
+    // Moving happens only after the traversal proved a stable directory, so the
+    // identity check above still describes the inventory that was classified.
+    let mut set_aside_bodies = 0usize;
+    for draft_id in set_aside_candidates {
+        match set_aside_body(
+            data_dir,
+            &draft_id,
+            editor_io::now_epoch_secs(),
+            SetAsideTransfer::Move,
+        ) {
+            Ok(target) => {
+                set_aside_bodies = set_aside_bodies.saturating_add(1);
+                if set_aside_bodies <= MAX_MANIFEST_REPAIR_DIAGNOSTICS {
+                    tracing::warn!(
+                        "Set aside draft body {draft_id} with no manifest entry or session tab as {}",
+                        target.display(),
+                    );
+                }
+            }
+            Err(error) => {
+                ambiguous_bodies = ambiguous_bodies.saturating_add(1);
+                tracing::warn!("Preserved unattributable draft body {draft_id} in place: {error}");
+            }
+        }
+    }
+    if set_aside_bodies > MAX_MANIFEST_REPAIR_DIAGNOSTICS {
+        let dir = set_aside_dir(data_dir);
+        tracing::warn!(
+            "Set aside {set_aside_bodies} unattributable draft bodies in {}",
+            dir.display(),
+        );
+    }
+    metrics.bodies_set_aside = set_aside_bodies;
+    // A rebuilt entry records an mtime no file has, which an older build would
+    // read as stale and delete; keep a set-aside copy before it can.
+    for (draft_id, saved_at) in attributed_copies {
+        if let Err(error) = keep_set_aside_copy(data_dir, &draft_id, saved_at) {
+            tracing::warn!(
+                "Could not keep a set-aside copy of attributed draft {draft_id}: {error}"
+            );
+        }
+    }
     let completeness = if ambiguous_bodies == 0 {
         DraftManifestCompleteness::Complete
     } else {
@@ -1219,12 +1536,43 @@ fn push_repair_diagnostic(
     }
 }
 
+/// Report bodies an inventory moved into the set-aside area, once per pass.
+fn push_set_aside_diagnostic(
+    diagnostics: &mut Vec<RecoveryDiagnostic>,
+    manifest_path: &Path,
+    metrics: DraftManifestRepairMetrics,
+) {
+    if metrics.bodies_set_aside > 0 {
+        push_repair_diagnostic(
+            diagnostics,
+            RecoveryDiagnostic::repaired(
+                RecoveryMetadataClass::DraftManifest,
+                manifest_path,
+                format!(
+                    "set aside {} draft bodies that had no manifest entry or session tab",
+                    metrics.bodies_set_aside,
+                ),
+            ),
+        );
+    }
+}
+
 fn session_untitled_draft_ids(session: &SessionData) -> HashSet<String> {
     session
         .tabs
         .iter()
         .filter(|tab| tab.path.is_none())
         .filter_map(|tab| tab.draft_id.clone())
+        .collect()
+}
+
+/// Map each file-backed session tab's stable path hash to its path.
+fn session_file_paths_by_draft_id(session: &SessionData) -> HashMap<String, &PathBuf> {
+    session
+        .tabs
+        .iter()
+        .filter_map(|tab| tab.path.as_ref())
+        .map(|path| (draft_id_for_path(path), path))
         .collect()
 }
 
@@ -1376,32 +1724,57 @@ pub fn resolve_draft_restore(
     }
 }
 
-/// Delete stale draft files and remove their manifest entries after a confirmed
+/// Preserve, then retire, stale file-backed drafts after a confirmed
 /// backing-file mismatch.
+///
+/// Each body is first kept durably (see [`preserve_stale_draft_body`]); only
+/// a preserved body is deleted and its entry removed. A body whose
+/// preservation fails keeps both its file and its entry. The returned map
+/// gives each id's outcome, `None` meaning the body was already absent.
 fn cleanup_stale_restore_entries(
     data_dir: &Path,
     session: &SessionData,
     authority: DraftManifestAuthority,
     manifest: &mut DraftManifest,
-    stale_draft_ids: &[String],
-) -> DraftManifestAuthority {
-    if stale_draft_ids.is_empty() {
-        return authority;
+    stale_entries: &[DraftEntry],
+) -> (
+    DraftManifestAuthority,
+    Vec<(String, Option<StaleDraftPreservation>)>,
+) {
+    let mut outcomes = Vec::with_capacity(stale_entries.len());
+    let mut retired_ids = Vec::new();
+    for entry in stale_entries {
+        let outcome = match preserve_stale_draft_body(data_dir, entry) {
+            Ok(Some(preservation)) => {
+                match delete_draft_file(data_dir, &entry.draft_id) {
+                    Ok(()) => retired_ids.push(entry.draft_id.clone()),
+                    Err(error) => tracing::warn!(
+                        "Kept preserved stale draft {} in the journal: {error}",
+                        entry.draft_id
+                    ),
+                }
+                Some(preservation)
+            }
+            Ok(None) => {
+                retired_ids.push(entry.draft_id.clone());
+                None
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "Could not preserve stale draft {}; it stays in the journal and was not restored: {error}",
+                    entry.draft_id
+                );
+                Some(StaleDraftPreservation::Kept)
+            }
+        };
+        outcomes.push((entry.draft_id.clone(), outcome));
+    }
+    if retired_ids.is_empty() {
+        return (authority, outcomes);
     }
 
-    let mut deleted_ids = Vec::new();
-    for draft_id in stale_draft_ids {
-        match delete_draft_file(data_dir, draft_id) {
-            Ok(()) => deleted_ids.push(draft_id.clone()),
-            Err(error) => tracing::warn!("Failed to delete stale draft {draft_id}: {error}"),
-        }
-    }
-    if deleted_ids.is_empty() {
-        return authority;
-    }
-
-    match update_manifest(data_dir, session, authority, |manifest| {
-        for draft_id in &deleted_ids {
+    let authority = match update_manifest(data_dir, session, authority, |manifest| {
+        for draft_id in &retired_ids {
             manifest.remove_by_id(draft_id);
         }
     }) {
@@ -1413,7 +1786,83 @@ fn cleanup_stale_restore_entries(
             tracing::warn!("Failed to persist stale draft cleanup: {e}");
             e.authority()
         }
+    };
+    (authority, outcomes)
+}
+
+/// Durably keep a stale file-backed draft's body before its journal record
+/// retires.
+///
+/// The body is always copied byte-identically into the set-aside area first,
+/// because local history prunes its oldest snapshots and a back-dated one can
+/// go at the next capture; the set-aside copy is never pruned. The body then
+/// also becomes a while-editing (`Periodic`) local-history snapshot of its
+/// file, stamped with the draft's save time, whenever local history accepts it
+/// byte-identically — that is where the user is pointed. The draft body itself
+/// is left in place: retiring it stays the journal's job, so the body/manifest
+/// deletion ordering is unchanged. `Ok(None)` means the body was already
+/// absent and there is nothing to keep.
+///
+/// **Threading:** blocking I/O, call from a background thread.
+///
+/// # Errors
+///
+/// Returns an error when neither destination could durably accept the body;
+/// the caller must then keep the draft and its entry.
+pub fn preserve_stale_draft_body(
+    data_dir: &Path,
+    entry: &DraftEntry,
+) -> Result<Option<StaleDraftPreservation>> {
+    let body_path = draft_body_path(data_dir, &entry.draft_id);
+    if !fs_metadata::path_status(&body_path)
+        .with_context(|| format!("failed to inspect {}", body_path.display()))?
+        .is_present()
+    {
+        return Ok(None);
     }
+    // The set-aside copy is the durable half; a local-history snapshot alone
+    // can be pruned, so without the copy nothing counts as preserved.
+    keep_set_aside_copy(data_dir, &entry.draft_id, entry.saved_at_secs)?;
+    // An unreadable or oversized body is still covered by the set-aside copy.
+    let text = read_draft(data_dir, &entry.draft_id).ok().flatten();
+    if let (Some(text), Some(path)) = (text.as_deref(), entry.original_path.as_deref())
+        && local_history_accepts_stale_body(path, text)
+    {
+        match local_history_service::preserve_snapshot_for_path(
+            data_dir,
+            path,
+            text,
+            LocalHistorySnapshotOrigin::Periodic,
+            entry.saved_at_secs.saturating_mul(1000),
+        ) {
+            Ok(true) => return Ok(Some(StaleDraftPreservation::LocalHistory)),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                "Local history could not keep stale draft {}: {error}",
+                entry.draft_id
+            ),
+        }
+    }
+    Ok(Some(StaleDraftPreservation::SetAside))
+}
+
+/// Copy a body into the set-aside area unless a copy for this id and stamp
+/// was already kept.
+fn keep_set_aside_copy(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<PathBuf> {
+    let primary = set_aside_primary_path(data_dir, draft_id, stamp_secs);
+    if fs_metadata::exists(&primary) {
+        return Ok(primary);
+    }
+    set_aside_body(data_dir, draft_id, stamp_secs, SetAsideTransfer::Copy)
+}
+
+/// Whether local-history size policy covers both the file and the stale body.
+fn local_history_accepts_stale_body(path: &Path, text: &str) -> bool {
+    let file_policy = fs_metadata::file_facts(path).map(|facts| {
+        local_history_service::availability_for_size_check(FileSizeCheck::classify(facts.byte_size))
+    });
+    matches!(file_policy, Ok(availability) if availability.allows_browsing())
+        && local_history_service::availability_for_utf8_bytes(text.len()).allows_browsing()
 }
 
 /// Write a single draft file atomically (temp + rename). The draft
@@ -2563,8 +3012,9 @@ mod tests {
     #[test]
     fn manifest_repair_ambiguity_preserves_body_without_writing_subset() {
         let dir = TempDir::new().expect("ambiguous repair tempdir");
-        write_draft(dir.path(), "abcdef0123456789", "ambiguous body")
-            .expect("write ambiguous body");
+        // A non-regular `*.draft` entry is still ambiguous: it can be neither
+        // attributed nor moved aside as a body.
+        fixture::create_dir_all(&draft_path(dir.path(), "abcdef0123456789"));
         let cancel = AtomicBool::new(false);
 
         let load = load_manifest_for_restore(dir.path(), &SessionData::default(), &cancel);
@@ -2644,8 +3094,7 @@ mod tests {
     #[test]
     fn manifest_update_cannot_publish_subset_while_ambiguous_body_survives() {
         let dir = TempDir::new().expect("untrusted update tempdir");
-        write_draft(dir.path(), "abcdef0123456789", "ambiguous body")
-            .expect("write ambiguous body");
+        fixture::create_dir_all(&draft_path(dir.path(), "abcdef0123456789"));
         write_draft(dir.path(), "untitled-new", "new body").expect("write new body");
         let new_entry = DraftEntry {
             draft_id: "untitled-new".to_string(),
@@ -2667,7 +3116,7 @@ mod tests {
         assert!(fixture::exists(&draft_path(dir.path(), "abcdef0123456789")));
         assert!(fixture::exists(&draft_path(dir.path(), "untitled-new")));
 
-        delete_draft_file(dir.path(), "abcdef0123456789").expect("remove ambiguity");
+        fixture::remove_dir_all(&draft_path(dir.path(), "abcdef0123456789"));
         let commit = update_manifest(
             dir.path(),
             &SessionData::default(),
@@ -2740,7 +3189,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_looking_subset_stays_untrusted_across_repeated_startup() {
+    fn unattributable_body_outside_a_loaded_manifest_is_set_aside_not_wedging_startup() {
         let dir = TempDir::new().expect("legacy subset tempdir");
         save_manifest(dir.path(), &DraftManifest::default()).expect("seed legacy subset");
         write_draft(dir.path(), "abcdef0123456789", "omitted body")
@@ -2748,19 +3197,187 @@ mod tests {
 
         for _ in 0..2 {
             let restored = load_restore_state(dir.path());
-            assert_eq!(
-                restored.manifest_authority.completeness,
-                DraftManifestCompleteness::Partial
-            );
-            assert!(!restored.manifest_authority.is_trusted());
-            assert!(fixture::exists(&draft_path(dir.path(), "abcdef0123456789")));
+            assert!(restored.manifest_authority.is_trusted());
+            assert!(!fixture::exists(&draft_path(
+                dir.path(),
+                "abcdef0123456789"
+            )));
             assert!(
                 load_manifest(dir.path())
-                    .expect("legacy manifest remains readable")
+                    .expect("manifest remains readable")
                     .drafts
                     .is_empty()
             );
         }
+        let set_aside = fixture::entry_names(&set_aside_dir(dir.path()));
+        assert_eq!(set_aside.len(), 1, "the body is preserved exactly once");
+        fixture::assert_text(
+            &set_aside_dir(dir.path()).join(&set_aside[0]),
+            "omitted body",
+        );
+    }
+
+    /// Rollback safety: the set-aside area is a subdirectory with no `.draft`
+    /// extension, so this build's inventory (and an older build's, which shares
+    /// this classification) neither counts it as a body nor treats it as
+    /// ambiguous, and orphan cleanup only ever retains it.
+    #[test]
+    fn set_aside_area_is_invisible_to_inventory_and_orphan_cleanup() {
+        let dir = TempDir::new().expect("set-aside tempdir");
+        save_manifest(dir.path(), &DraftManifest::default()).expect("seed manifest");
+        fixture::create_dir_all(&set_aside_dir(dir.path()));
+        fixture::write_text(
+            &set_aside_dir(dir.path()).join("abcdef0123456789.1.draft"),
+            "kept aside",
+        );
+        assert_eq!(draft_id_from_draft_file_name(SET_ASIDE_DIR), None);
+
+        let restored = load_restore_state(dir.path());
+        assert!(restored.manifest_authority.is_trusted());
+        assert_eq!(restored.manifest_repair_metrics.draft_bodies_seen, 0);
+
+        let plan = inspect_orphan_cleanup(dir.path(), &restored.manifest).expect("inspect");
+        assert!(plan.orphan_bodies.is_empty());
+        let outcome = execute_orphan_cleanup(dir.path(), plan);
+        assert!(outcome.deleted_files.is_empty());
+        fixture::assert_text(
+            &set_aside_dir(dir.path()).join("abcdef0123456789.1.draft"),
+            "kept aside",
+        );
+    }
+
+    #[test]
+    fn registration_is_trusted_when_complete_and_additive_while_the_journal_is_untrusted() {
+        let dir = TempDir::new().expect("registration tempdir");
+        let first = DraftEntry {
+            draft_id: "untitled-first".to_string(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1,
+        };
+        let registration = register_draft_entries(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::TRUSTED,
+            std::slice::from_ref(&first),
+        )
+        .expect("register in a clean journal");
+        assert!(matches!(
+            registration,
+            DraftRegistration::Committed(ref commit) if commit.authority.is_trusted()
+        ));
+
+        // A non-regular `*.draft` entry keeps the inventory partial; the new id
+        // is still registered before its body, without granting trust, and the
+        // existing entry is not overwritten.
+        fixture::create_dir_all(&draft_path(dir.path(), "abcdef0123456789"));
+        let second = DraftEntry {
+            draft_id: "untitled-second".to_string(),
+            ..first.clone()
+        };
+        let overwrite = DraftEntry {
+            saved_at_secs: 99,
+            ..first.clone()
+        };
+        let registration = register_draft_entries(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::TRUSTED,
+            &[second.clone(), overwrite],
+        )
+        .expect("additive registration");
+        assert!(matches!(
+            registration,
+            DraftRegistration::Additive { authority } if !authority.is_trusted()
+        ));
+        let persisted = load_manifest(dir.path()).expect("load manifest");
+        assert_eq!(persisted.find_by_id("untitled-second"), Some(&second));
+        assert_eq!(persisted.find_by_id("untitled-first"), Some(&first));
+    }
+
+    #[test]
+    fn set_aside_copy_keeps_the_journal_body_in_place() {
+        let dir = TempDir::new().expect("set-aside copy tempdir");
+        write_draft(dir.path(), "abcdef0123456789", "kept twice").expect("write body");
+
+        let target = set_aside_body(dir.path(), "abcdef0123456789", 7, SetAsideTransfer::Copy)
+            .expect("copy aside");
+
+        fixture::assert_text(&target, "kept twice");
+        assert_eq!(
+            read_draft(dir.path(), "abcdef0123456789").expect("read body"),
+            Some("kept twice".to_string()),
+            "retiring the journal body stays the journal's job"
+        );
+        // A second copy for the same id and stamp is not duplicated.
+        assert_eq!(
+            keep_set_aside_copy(dir.path(), "abcdef0123456789", 7).expect("dedupe"),
+            target
+        );
+        assert_eq!(fixture::entry_names(&set_aside_dir(dir.path())).len(), 1);
+    }
+
+    #[test]
+    fn registration_keeps_an_older_body_before_its_id_is_overwritten() {
+        let dir = TempDir::new().expect("registration preserve tempdir");
+        let path = dir.path().join("notes.md");
+        fixture::write_text(&path, "disk");
+        let draft_id = draft_id_for_path(&path);
+        write_draft(dir.path(), &draft_id, "edits from an earlier session").expect("write body");
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![file_entry(&draft_id, &path, Some(1))],
+                cleanup_continuation: None,
+            },
+        )
+        .expect("seed stale entry");
+        let fresh = DraftEntry {
+            original_mtime_secs: crate::services::editor_io::mtime_secs(&path),
+            saved_at_secs: 9,
+            ..file_entry(&draft_id, &path, None)
+        };
+
+        register_draft_entries(
+            dir.path(),
+            &SessionData::default(),
+            DraftManifestAuthority::TRUSTED,
+            std::slice::from_ref(&fresh),
+        )
+        .expect("register");
+
+        let names = fixture::entry_names(&set_aside_dir(dir.path()));
+        assert_eq!(
+            names.len(),
+            1,
+            "the older body is kept before any overwrite"
+        );
+        fixture::assert_text(
+            &set_aside_dir(dir.path()).join(&names[0]),
+            "edits from an earlier session",
+        );
+    }
+
+    #[test]
+    fn stale_body_is_not_reported_preserved_by_prunable_local_history_alone() {
+        let dir = TempDir::new().expect("backstop tempdir");
+        let path = dir.path().join("notes.md");
+        fixture::write_text(&path, "disk");
+        let draft_id = draft_id_for_path(&path);
+        write_draft(dir.path(), &draft_id, "stale edits").expect("write body");
+        // A file where the set-aside directory belongs makes the copy fail.
+        fixture::write_text(&set_aside_dir(dir.path()), "not a directory");
+
+        let outcome = preserve_stale_draft_body(dir.path(), &file_entry(&draft_id, &path, Some(1)));
+
+        assert!(
+            outcome.is_err(),
+            "without the unprunable copy nothing is preserved"
+        );
+        assert_eq!(
+            read_draft(dir.path(), &draft_id).expect("read body"),
+            Some("stale edits".to_string())
+        );
     }
 
     #[test]
@@ -2949,6 +3566,31 @@ mod tests {
     }
 
     #[test]
+    fn resolve_file_draft_restore_never_applies_a_reconstructed_entry() {
+        // An entry rebuilt from a crash leftover records an mtime no file can
+        // have, so it is preserved rather than applied over the file.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("file.txt");
+        fixture::write_text(&path, "disk content");
+        write_draft(dir.path(), "draft", "orphaned content").expect("write draft");
+
+        let resolution = resolve_file_draft_restore(
+            dir.path(),
+            &file_entry(
+                "draft",
+                &path,
+                Some(crate::model::draft::UNPROVEN_BACKING_MTIME_SECS),
+            ),
+        )
+        .expect("expected operation to succeed");
+
+        assert_eq!(
+            resolution,
+            FileDraftRestoreResolution::Skip(FileDraftRestoreSkip::Stale)
+        );
+    }
+
+    #[test]
     fn resolve_file_draft_restore_skips_when_metadata_cannot_be_read() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let missing_path = dir.path().join("missing.txt");
@@ -3120,7 +3762,7 @@ mod tests {
     }
 
     #[test]
-    fn load_restore_state_removes_stale_file_draft_from_manifest_and_disk() {
+    fn load_restore_state_preserves_then_removes_stale_file_draft_from_manifest_and_disk() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let path = dir.path().join("file.txt");
         fixture::write_text(&path, "disk content");
@@ -3152,7 +3794,9 @@ mod tests {
 
         assert_eq!(
             restore.preloaded_drafts.get(&draft_id),
-            Some(&PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile))
+            Some(&PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile(
+                StaleDraftPreservation::LocalHistory
+            )))
         );
         assert!(restore.manifest.find_by_id(&draft_id).is_none());
         assert!(
@@ -3196,7 +3840,7 @@ mod tests {
     }
 
     #[test]
-    fn load_restore_state_disables_orphan_cleanup_when_missing_repair_skips_drafts() {
+    fn load_restore_state_sets_aside_unattributable_drafts_when_manifest_is_missing() {
         let dir = TempDir::new().expect("expected operation to succeed");
         write_draft(dir.path(), "ambiguous-file-backed-id", "ambiguous")
             .expect("write ambiguous draft");
@@ -3204,16 +3848,17 @@ mod tests {
         let restore = load_restore_state(dir.path());
 
         assert!(
-            !restore.manifest_authority.is_trusted(),
-            "missing manifests with ambiguous surviving drafts must preserve evidence"
+            restore.manifest_authority.is_trusted(),
+            "a body preserved in the set-aside area no longer blocks the journal"
         );
         assert!(restore.manifest.drafts.is_empty());
-        assert!(restore.diagnostics.iter().any(|diagnostic| {
-            matches!(
-                diagnostic.problem,
-                crate::services::recovery_metadata::RecoveryProblem::RepairSkipped { .. }
-            )
-        }));
+        assert!(!fixture::exists(&draft_path(
+            dir.path(),
+            "ambiguous-file-backed-id"
+        )));
+        let set_aside = fixture::entry_names(&set_aside_dir(dir.path()));
+        assert_eq!(set_aside.len(), 1);
+        fixture::assert_text(&set_aside_dir(dir.path()).join(&set_aside[0]), "ambiguous");
     }
 
     #[test]
@@ -3369,7 +4014,7 @@ mod tests {
     }
 
     #[test]
-    fn load_restore_state_preserves_ambiguous_draft_after_corrupt_manifest() {
+    fn load_restore_state_sets_aside_unattributable_draft_after_corrupt_manifest() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let draft_id = "abcdef0123456789";
         write_draft(dir.path(), draft_id, "ambiguous file-backed draft")
@@ -3388,19 +4033,23 @@ mod tests {
 
         assert!(restore.manifest.drafts.is_empty());
         assert!(
-            !restore.manifest_authority.is_trusted(),
-            "orphan cleanup must not delete ambiguous surviving drafts"
+            restore.manifest_authority.is_trusted(),
+            "a body preserved in the set-aside area no longer blocks the journal"
         );
         assert_eq!(
-            read_draft(dir.path(), draft_id).expect("draft should still be readable"),
-            Some("ambiguous file-backed draft".to_string())
+            read_draft(dir.path(), draft_id).expect("read draft"),
+            None,
+            "orphan cleanup can no longer reach the body"
+        );
+        let set_aside = fixture::entry_names(&set_aside_dir(dir.path()));
+        assert_eq!(set_aside.len(), 1);
+        fixture::assert_text(
+            &set_aside_dir(dir.path()).join(&set_aside[0]),
+            "ambiguous file-backed draft",
         );
         assert!(restore.diagnostics.iter().any(|diagnostic| {
             diagnostic.class == RecoveryMetadataClass::DraftManifest
-                && matches!(
-                    diagnostic.problem,
-                    crate::services::recovery_metadata::RecoveryProblem::RepairSkipped { .. }
-                )
+                && format!("{:?}", diagnostic.problem).contains("set aside 1 draft bodies")
         }));
     }
 
@@ -3457,29 +4106,34 @@ mod tests {
             original_mtime_secs: None,
             saved_at_secs: 2,
         };
+        let stale = DraftEntry {
+            draft_id: "stale".into(),
+            original_path: Some(PathBuf::from("/stale.rs")),
+            original_mtime_secs: None,
+            saved_at_secs: 1,
+        };
         let mut manifest = DraftManifest {
-            drafts: vec![
-                DraftEntry {
-                    draft_id: "stale".into(),
-                    original_path: Some(PathBuf::from("/stale.rs")),
-                    original_mtime_secs: None,
-                    saved_at_secs: 1,
-                },
-                keep.clone(),
-            ],
+            drafts: vec![stale.clone(), keep.clone()],
             cleanup_continuation: None,
         };
         fixture::create_dir_all(&drafts_dir(dir.path()).join(MANIFEST_FILE));
 
-        let authority = cleanup_stale_restore_entries(
+        let (authority, outcomes) = cleanup_stale_restore_entries(
             dir.path(),
             &SessionData::default(),
             DraftManifestAuthority::TRUSTED,
             &mut manifest,
-            &[String::from("stale")],
+            &[stale],
         );
 
         assert!(!authority.is_trusted());
+        // `/stale.rs` has no local-history lineage, so the body was set aside
+        // before the body was deleted.
+        assert_eq!(
+            outcomes,
+            vec![("stale".to_string(), Some(StaleDraftPreservation::SetAside))]
+        );
+        assert_eq!(fixture::entry_names(&set_aside_dir(dir.path())).len(), 1);
         assert_eq!(manifest.drafts.len(), 2);
         assert_eq!(manifest.find_by_id("keep"), Some(&keep));
         assert!(manifest.find_by_id("stale").is_some());

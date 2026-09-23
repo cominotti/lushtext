@@ -152,6 +152,86 @@ pub(super) const fn draft_workflow_blocks_readiness(
         || lazy_queue_non_empty
 }
 
+// --- write-ahead registration ----------------------------------------------
+
+/// Whether a candidate's draft id must be registered in the persisted manifest
+/// before its body may be written.
+///
+/// A file-backed body written for an id the persisted manifest does not know is
+/// exactly the crash leftover that used to wedge the journal: until the pass's
+/// single commit lands, nothing on disk says which file the body belongs to. So
+/// such an id is registered first, in one batched commit per pass. An untitled
+/// id needs no registration: its `untitled-…` id already makes its body
+/// recoverable. When the window's authority is not trusted its copy may not
+/// match disk, so every file-backed candidate is registered; registration only
+/// ever inserts an absent entry, so doing it for a known id is harmless.
+#[must_use]
+pub(super) const fn draft_requires_registration(
+    file_backed: bool,
+    registered_in_window_manifest: bool,
+    manifest_authority_trusted: bool,
+) -> bool {
+    file_backed && (!registered_in_window_manifest || !manifest_authority_trusted)
+}
+
+/// Whether a candidate may proceed to its body write after the pass's
+/// registration step.
+///
+/// A candidate that needed registration may write only when that commit
+/// succeeded; otherwise it stays dirty and retryable, and no unregistered body
+/// is ever created.
+#[must_use]
+pub(super) const fn candidate_may_write_after_registration(
+    required_registration: bool,
+    registration_committed: bool,
+) -> bool {
+    !required_registration || registration_committed
+}
+
+// --- stale-draft warning ------------------------------------------------------
+
+/// Label of the stale-draft warning's action that opens local history.
+pub(super) const SHOW_IN_LOCAL_HISTORY_LABEL: &str = "Show in _Local History";
+
+/// Body text of the stale-draft warning, naming where the edits were kept.
+#[must_use]
+pub(super) fn stale_draft_alert_body(
+    preservation: crate::model::draft::StaleDraftPreservation,
+    set_aside_dir: &std::path::Path,
+) -> String {
+    use crate::model::draft::StaleDraftPreservation;
+    match preservation {
+        StaleDraftPreservation::LocalHistory => "The file changed on disk, so unsaved changes from a previous session were kept in Local History instead of being restored.".to_string(),
+        StaleDraftPreservation::SetAside => format!(
+            "The file changed on disk, so unsaved changes from a previous session were kept in {} instead of being restored.",
+            set_aside_dir.display()
+        ),
+        StaleDraftPreservation::Kept => "The file changed on disk, so unsaved changes from a previous session were not restored. They remain in the recovery drafts.".to_string(),
+    }
+}
+
+/// Status-bar text for a preserved earlier draft when its tab is already being
+/// edited, so no inline alert is shown.
+#[must_use]
+pub(super) fn stale_draft_status_message(
+    preservation: crate::model::draft::StaleDraftPreservation,
+    set_aside_dir: &std::path::Path,
+) -> String {
+    use crate::model::draft::StaleDraftPreservation;
+    match preservation {
+        StaleDraftPreservation::LocalHistory => {
+            "Unsaved changes from a previous session were kept in Local History.".to_string()
+        }
+        StaleDraftPreservation::SetAside => format!(
+            "Unsaved changes from a previous session were kept in {}.",
+            set_aside_dir.display()
+        ),
+        StaleDraftPreservation::Kept => {
+            "Unsaved changes from a previous session remain in the recovery drafts.".to_string()
+        }
+    }
+}
+
 // --- pipeline failure reporting --------------------------------------------
 
 /// Failures accumulated without retaining any completed draft bodies.
@@ -342,6 +422,61 @@ impl DraftMutationOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_is_required_only_for_unknown_ids_or_untrusted_state() {
+        assert!(!draft_requires_registration(true, true, true));
+        assert!(draft_requires_registration(true, false, true));
+        assert!(draft_requires_registration(true, true, false));
+        assert!(draft_requires_registration(true, false, false));
+        // An untitled id is recoverable from its body alone.
+        assert!(!draft_requires_registration(false, false, false));
+        assert!(!draft_requires_registration(false, true, false));
+    }
+
+    #[test]
+    fn a_body_is_written_only_after_its_required_registration_committed() {
+        assert!(candidate_may_write_after_registration(false, false));
+        assert!(candidate_may_write_after_registration(false, true));
+        assert!(candidate_may_write_after_registration(true, true));
+        assert!(!candidate_may_write_after_registration(true, false));
+    }
+
+    #[test]
+    fn stale_draft_status_message_names_each_destination() {
+        use crate::model::draft::StaleDraftPreservation;
+        let dir = std::path::Path::new("/data/drafts/set-aside");
+        assert!(
+            stale_draft_status_message(StaleDraftPreservation::LocalHistory, dir)
+                .contains("Local History")
+        );
+        assert!(
+            stale_draft_status_message(StaleDraftPreservation::SetAside, dir)
+                .contains("/data/drafts/set-aside")
+        );
+        assert!(
+            stale_draft_status_message(StaleDraftPreservation::Kept, dir)
+                .contains("recovery drafts")
+        );
+    }
+
+    #[test]
+    fn stale_draft_alert_names_each_destination() {
+        use crate::model::draft::StaleDraftPreservation;
+        let dir = std::path::Path::new("/data/lushtext/drafts/set-aside");
+        assert!(
+            stale_draft_alert_body(StaleDraftPreservation::LocalHistory, dir)
+                .contains("kept in Local History")
+        );
+        assert!(
+            stale_draft_alert_body(StaleDraftPreservation::SetAside, dir)
+                .contains("kept in /data/lushtext/drafts/set-aside")
+        );
+        assert!(
+            stale_draft_alert_body(StaleDraftPreservation::Kept, dir)
+                .contains("remain in the recovery drafts")
+        );
+    }
 
     /// The enum-to-count mapping is pinned against **real** service variants,
     /// one category at a time, with an exact expected string.

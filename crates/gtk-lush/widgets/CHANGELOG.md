@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Fixed `ViewportSliceBin` erasing a child `scroll_to` made in the same
+  allocation in which the child also moved the adjustment's `upper` or
+  `page_size`, when the requested value lay within that correction of the
+  published offset: the bin read it as a settle and wrote the published offset
+  back, the child re-anchored on it, and the requested row stayed clipped. Such
+  a divergence is now deferred -- the bin skips the write-back, hands the
+  child's value back on one more allocation, and classifies it there with
+  stable geometry, so it is honoured as a request or written back as a settle
+  one allocation later. The decision is the new pure, unit- and
+  property-tested `classify_child_scroll` / `ChildScrollDecision`;
+  `outer_scroll_request` keeps its signature as the request-only projection.
 - `ViewportSliceBin` now publishes the child adjustment's `upper` and
   `page_size` in the child's CSS content box, learning the vertical inset from
   the page the child reports after its first allocation. A `GtkListView` works

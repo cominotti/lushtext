@@ -11,12 +11,15 @@
 //!
 //! Deciding *whether the child asked at all* is the whole difficulty, and it
 //! has no GTK dependency, so it lives here beside
-//! [`crate::viewport_slice`] and is unit- and property-tested directly.
+//! [`crate::viewport_slice`] and is unit- and property-tested directly:
+//! [`classify_child_scroll`] is the whole decision, and
+//! [`outer_scroll_request`] is its request-only projection.
 
 /// Adjustment differences below this many logical pixels are treated as noise.
 pub const ADJUSTMENT_EPSILON: f64 = 0.5;
 
-/// Decide how far the outer scroller must move for a child scroll request.
+/// Classify the value a `GtkScrollable` child left in the bin-owned adjustment
+/// after an allocation.
 ///
 /// * `published_offset` is the value the bin itself last wrote into the child's
 ///   adjustment: the slice offset, already clamped into
@@ -26,11 +29,15 @@ pub const ADJUSTMENT_EPSILON: f64 = 0.5;
 ///   coordinates. It is **negative** while other content in the same scroller
 ///   (a section header, say) sits above the bin, and it runs past the content
 ///   once the bin has scrolled by.
+/// * `reconfigure_shift` is how far the child moved the adjustment's `upper` or
+///   `page_size` during the allocation being classified, and zero when it left
+///   them alone (see below).
 ///
-/// Returns `None` when the child did not move the adjustment, or when the band
-/// it asked for is already at the viewport's top edge. Otherwise returns the
-/// signed distance the outer scroller must travel so that `child_value` becomes
-/// the content offset at the top of the viewport.
+/// The answer is a [`ChildScrollDecision`]: the child is at rest, asked for a
+/// band ([`ChildScrollDecision::Request`] carries the signed distance the outer
+/// scroller must travel so that `child_value` becomes the content offset at the
+/// top of the viewport), settled on a value that must be written back, or made
+/// a divergence this allocation cannot classify, which must be deferred.
 ///
 /// # Why a child's own geometry correction bounds its settle
 ///
@@ -51,6 +58,21 @@ pub const ADJUSTMENT_EPSILON: f64 = 0.5;
 /// the same symptom as the earlier resting-comparison defect reached by a
 /// different route, which is why every test written for that one passes against
 /// this.
+///
+/// # Why a divergence within the correction is deferred rather than written back
+///
+/// The bound says a settle cannot exceed the correction. It does not say
+/// everything within the correction is a settle: a child can apply a genuine
+/// `scroll_to` in the very allocation in which it also corrects the geometry
+/// (a list that realizes rows whose real heights differ from its estimate
+/// while it moves its anchor), and a small request -- revealing a row clipped
+/// by a few pixels -- then falls inside the bound too. Writing the published
+/// offset back over it erases the request for good, because a `GtkListBase`
+/// re-anchors on the value it is handed and drops what it had asked for. So a
+/// divergence within the correction is [`ChildScrollDecision::Defer`]: the bin
+/// leaves the child's value in place and allocates once more, and there, with
+/// the geometry no longer moving, the ordinary rule tells a request from a
+/// settle. A deferred settle is still written back, one allocation later.
 ///
 /// # Why the discriminator is the shift and not the reconfigure, the magnitude, or the cause
 ///
@@ -104,27 +126,77 @@ pub const ADJUSTMENT_EPSILON: f64 = 0.5;
 /// pull in opposite directions on every allocation and oscillate forever.
 /// Only a divergence from what the bin itself published is a request.
 #[must_use]
+pub fn classify_child_scroll(
+    published_offset: f64,
+    child_value: f64,
+    viewport_top: f64,
+    reconfigure_shift: f64,
+) -> ChildScrollDecision {
+    if !published_offset.is_finite() || !child_value.is_finite() || !viewport_top.is_finite() {
+        return ChildScrollDecision::Rest;
+    }
+    let divergence = child_value - published_offset;
+    if divergence.abs() < ADJUSTMENT_EPSILON {
+        return ChildScrollDecision::Rest;
+    }
+    if reconfigure_shift.is_finite()
+        && reconfigure_shift > 0.0
+        && divergence.abs() <= reconfigure_shift + ADJUSTMENT_EPSILON
+    {
+        return ChildScrollDecision::Defer;
+    }
+    let delta = child_value - viewport_top;
+    if delta.abs() >= ADJUSTMENT_EPSILON {
+        ChildScrollDecision::Request(delta)
+    } else {
+        ChildScrollDecision::Settle
+    }
+}
+
+/// What [`crate::ViewportSliceBin`] does with the value its child left in the
+/// bin-owned adjustment after an allocation; see [`classify_child_scroll`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChildScrollDecision {
+    /// The child is where the bin put it, within [`ADJUSTMENT_EPSILON`], or
+    /// the inputs were not finite. Nothing to do.
+    Rest,
+    /// The child asked for a different band: move the outer scroller by this
+    /// signed distance, which is never smaller than [`ADJUSTMENT_EPSILON`].
+    Request(f64),
+    /// The child settled on a value that is neither the published offset nor
+    /// a request: write the published offset back.
+    Settle,
+    /// The divergence lies within the geometry correction the child made in
+    /// this same allocation, so it may be a settle or a request. Leave the
+    /// child's value alone and classify it again in an allocation whose
+    /// geometry is stable.
+    Defer,
+}
+
+/// Decide how far the outer scroller must move for a child scroll request.
+///
+/// Returns the distance of a [`ChildScrollDecision::Request`] and `None` for
+/// every other decision, so `None` does not mean the value may be overwritten:
+/// a deferred divergence must be left in place (see [`classify_child_scroll`],
+/// which carries the arguments' full contract).
+#[must_use]
 pub fn outer_scroll_request(
     published_offset: f64,
     child_value: f64,
     viewport_top: f64,
     reconfigure_shift: f64,
 ) -> Option<f64> {
-    if !published_offset.is_finite() || !child_value.is_finite() || !viewport_top.is_finite() {
-        return None;
+    match classify_child_scroll(
+        published_offset,
+        child_value,
+        viewport_top,
+        reconfigure_shift,
+    ) {
+        ChildScrollDecision::Request(delta) => Some(delta),
+        ChildScrollDecision::Rest | ChildScrollDecision::Settle | ChildScrollDecision::Defer => {
+            None
+        }
     }
-    let divergence = child_value - published_offset;
-    if reconfigure_shift.is_finite()
-        && reconfigure_shift > 0.0
-        && divergence.abs() <= reconfigure_shift + ADJUSTMENT_EPSILON
-    {
-        return None;
-    }
-    if (child_value - published_offset).abs() < ADJUSTMENT_EPSILON {
-        return None;
-    }
-    let delta = child_value - viewport_top;
-    (delta.abs() >= ADJUSTMENT_EPSILON).then_some(delta)
 }
 
 #[cfg(test)]
@@ -185,11 +257,71 @@ mod tests {
         // Forwarding that is what accumulated 55px of unrequested travel.
         assert_eq!(outer_scroll_request(3604.0, 3605.0, 3604.0, 10.0), None);
         assert_eq!(outer_scroll_request(13383.0, 13388.0, 13383.0, 10.0), None);
-        // Even a large divergence is deferred when the geometry moved; the next
-        // allocation re-decides with a stable baseline.
-        // Measured focus-traversal request: 274px while the viewport stood
+        // Measured focus-traversal request: 274px while the geometry stood
         // still. Suppressing this is what broke the traversal test.
         assert_eq!(outer_scroll_request(0.0, 274.0, 0.0, 0.0), Some(274.0));
+    }
+
+    #[test]
+    fn a_divergence_within_the_correction_is_deferred_not_written_back() {
+        // The same measured settles are not overwritten in the reconfiguring
+        // allocation: they are left for one that can tell them apart.
+        assert_eq!(
+            classify_child_scroll(3604.0, 3605.0, 3604.0, 10.0),
+            ChildScrollDecision::Defer
+        );
+        assert_eq!(
+            classify_child_scroll(13383.0, 13388.0, 13383.0, 10.0),
+            ChildScrollDecision::Defer
+        );
+        // The case the deferral exists for: a row clipped by 7px is revealed
+        // by a `scroll_to` applied in the allocation that also discovered
+        // 400px of content. Writing the published offset back erased it.
+        assert_eq!(
+            classify_child_scroll(1953.0, 1960.0, 1953.0, 400.0),
+            ChildScrollDecision::Defer
+        );
+    }
+
+    #[test]
+    fn a_deferred_divergence_is_decided_by_the_ordinary_rule_once_geometry_is_stable() {
+        // The request survives the deferral and is honoured one allocation
+        // later, from the same published offset.
+        assert_eq!(
+            classify_child_scroll(1953.0, 1960.0, 1953.0, 0.0),
+            ChildScrollDecision::Request(7.0)
+        );
+        // A deferred value that is already at the viewport top asks for no
+        // travel, so it is a settle after all and is written back then.
+        assert_eq!(
+            classify_child_scroll(0.0, 640.0, 640.0, 0.0),
+            ChildScrollDecision::Settle
+        );
+    }
+
+    #[test]
+    fn rest_request_and_settle_keep_their_meaning_without_a_correction() {
+        assert_eq!(
+            classify_child_scroll(120.0, 120.3, 55.0, 0.0),
+            ChildScrollDecision::Rest
+        );
+        assert_eq!(
+            classify_child_scroll(0.0, 900.0, -55.0, 0.0),
+            ChildScrollDecision::Request(955.0)
+        );
+        assert_eq!(
+            classify_child_scroll(0.0, 640.0, 640.0, 0.0),
+            ChildScrollDecision::Settle
+        );
+        // A correction does not turn a resting child into a deferral.
+        assert_eq!(
+            classify_child_scroll(120.0, 120.3, 55.0, 10.0),
+            ChildScrollDecision::Rest
+        );
+        assert_eq!(
+            classify_child_scroll(f64::NAN, 10.0, 0.0, 10.0),
+            ChildScrollDecision::Rest
+        );
     }
 
     #[test]
@@ -198,7 +330,8 @@ mod tests {
         // allocation, and on that frame the child still rewrites the page by
         // the inset and settles a few pixels off. Classified as a request this
         // would forward `child - viewport_top`, ~55px at the top: the header
-        // scrolled away on first show. The bound routes it to the write-back.
+        // scrolled away on first show. The bound keeps it from forwarding; the
+        // bin's learning frame then republishes the offset in any case.
         assert_eq!(outer_scroll_request(0.0, 3.0, -55.0, 10.0), None);
     }
 

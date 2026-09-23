@@ -7,13 +7,14 @@
 //! user chooses a safe upgrade action.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, PreferencesGroupExt};
 
-use crate::services::{format_upgrade, json_store};
+use crate::services::{app_data_leftovers, format_upgrade, json_store};
 use crate::ui::status_bar::MessageKind;
 
 use super::LushtextWindow;
@@ -56,6 +57,33 @@ fn dropped_activation_message(dropped: usize) -> String {
         if dropped == 1 { "" } else { "s" },
         if dropped == 1 { "was" } else { "were" }
     )
+}
+
+/// Remove stale durable-write crash leftovers from app data, once per process.
+///
+/// Runs after the startup gate releases, so it never races a format upgrade,
+/// and is queued behind session and draft loading so recovery work starts
+/// first. Several windows share one app-data home, hence the process-wide
+/// guard rather than per-window flow state.
+fn sweep_app_data_leftovers_once() {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    spawn_blocking_then(
+        (),
+        || app_data_leftovers::sweep_startup_leftovers(&json_store::data_dir()),
+        |(), report| {
+            if report.removed > 0 || report.failures > 0 || report.truncated {
+                tracing::info!(
+                    "App-data leftover sweep: removed {}, failures {}, truncated {}",
+                    report.removed,
+                    report.failures,
+                    report.truncated
+                );
+            }
+        },
+    );
 }
 
 /// Stable response id for the Convert action in the startup compatibility dialog.
@@ -121,6 +149,7 @@ impl LushtextWindow {
         self.flush_pending_activation_opens();
         self.load_session_and_drafts();
         self.start_autosave_timer();
+        sweep_app_data_leftovers_once();
     }
 
     /// Queue explicit desktop/CLI opens until the startup gate is resolved.

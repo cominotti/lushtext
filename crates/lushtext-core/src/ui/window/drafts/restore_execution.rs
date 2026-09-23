@@ -22,7 +22,7 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-use crate::model::draft::{FileDraftRestoreSkip, PreloadedDraftSkip};
+use crate::model::draft::{FileDraftRestoreSkip, PreloadedDraftSkip, StaleDraftPreservation};
 use crate::services::draft_service;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::{
@@ -30,6 +30,7 @@ use crate::ui::editor_page::{
     BufferReplacementWorkflow, LushtextEditorPage,
 };
 
+use super::policy;
 use super::seams::{
     DraftRestoreTicket, DraftRestoreTracking, GuardedDraftRestoreResolution,
     GuardedPreloadedDraftRestore,
@@ -39,13 +40,7 @@ use crate::ui::window::LushtextWindow;
 impl LushtextWindow {
     /// Load draft content for an untitled tab by draft ID.
     pub fn check_draft_by_id(&self, editor: &LushtextEditorPage, draft_id: &str) {
-        let entry = self
-            .imp()
-            .drafts
-            .manifest
-            .borrow()
-            .find_by_id(draft_id)
-            .cloned();
+        let entry = self.draft_manifest_entry(draft_id);
 
         let Some(entry) = entry else {
             return;
@@ -61,13 +56,15 @@ impl LushtextWindow {
                         DraftRestoreTracking::Ordinary,
                     );
                 }
-                GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::StaleFile) => {
+                GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::StaleFile(_)) => {
                     tracing::warn!(
                         "Untitled draft {draft_id} unexpectedly carried a stale file warning"
                     );
                 }
                 GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::Oversized) => {
                     Self::show_oversized_draft_skipped(editor);
+                    // Never applied, so the next autosave would overwrite it.
+                    self.preserve_unrestored_draft(entry);
                 }
                 GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::LazyAggregateBudget) => {
                     self.queue_lazy_draft_restore(editor, entry);
@@ -115,14 +112,7 @@ impl LushtextWindow {
         };
         match preloaded {
             GuardedPreloadedDraftRestore::Content(draft_content) => {
-                let Some(entry) = self
-                    .imp()
-                    .drafts
-                    .manifest
-                    .borrow()
-                    .find_by_id(&draft_id)
-                    .cloned()
-                else {
+                let Some(entry) = self.draft_manifest_entry(&draft_id) else {
                     return false;
                 };
                 self.note_draft_restore_started();
@@ -132,21 +122,32 @@ impl LushtextWindow {
                     DraftRestoreTracking::Ordinary,
                 );
             }
-            GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::StaleFile) => {
-                Self::show_stale_draft_skipped(editor);
+            GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::StaleFile(
+                StaleDraftPreservation::Kept,
+            )) => {
+                // Startup could not preserve (or was not trusted to retire) the
+                // stale body; retry through the journal before any autosave of
+                // this id can overwrite it. The warning follows its outcome.
+                editor.set_draft_restored(false);
+                let entry = self.draft_manifest_entry(&draft_id);
+                match entry {
+                    Some(entry) => self.retire_stale_draft(entry),
+                    None => Self::show_stale_draft_skipped(editor, StaleDraftPreservation::Kept),
+                }
+            }
+            GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::StaleFile(preservation)) => {
+                Self::show_stale_draft_skipped(editor, preservation);
             }
             GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::Oversized) => {
                 Self::show_oversized_draft_skipped(editor);
+                // Never applied, so the next autosave would overwrite it.
+                let entry = self.draft_manifest_entry(&draft_id);
+                if let Some(entry) = entry {
+                    self.preserve_unrestored_draft(entry);
+                }
             }
             GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::LazyAggregateBudget) => {
-                let Some(entry) = self
-                    .imp()
-                    .drafts
-                    .manifest
-                    .borrow()
-                    .find_by_id(&draft_id)
-                    .cloned()
-                else {
+                let Some(entry) = self.draft_manifest_entry(&draft_id) else {
                     return false;
                 };
                 self.queue_lazy_draft_restore(editor, entry);
@@ -162,7 +163,24 @@ impl LushtextWindow {
         result: Result<GuardedDraftRestoreResolution>,
         tracking: DraftRestoreTracking,
     ) {
+        self.release_draft_restore(&ticket.entry.draft_id);
         let Some(editor) = ticket.current_editor(self) else {
+            // The tab was edited before its recovery body could be applied.
+            // Autosave held off while the restore was pending, so the body is
+            // still on disk: keep a preserved copy before the next autosave
+            // replaces it, instead of silently dropping it.
+            if let Some(editor) = ticket.editor.upgrade()
+                && editor.draft_id().as_deref() == Some(ticket.entry.draft_id.as_str())
+                && self.draft_manifest_entry_is_current(&ticket.entry)
+                && !matches!(
+                    result,
+                    Ok(GuardedDraftRestoreResolution::Compact(
+                        FileDraftRestoreSkip::MissingDraft | FileDraftRestoreSkip::Unavailable
+                    ))
+                )
+            {
+                self.preserve_unrestored_draft(ticket.entry.clone());
+            }
             self.finish_draft_restore_tracking(tracking);
             return;
         };
@@ -173,11 +191,15 @@ impl LushtextWindow {
                 return;
             }
             Ok(GuardedDraftRestoreResolution::Compact(FileDraftRestoreSkip::Stale)) => {
-                Self::show_stale_draft_skipped(&editor);
-                self.delete_draft_by_id(&draft_id);
+                // Preserve first, then retire, through the journal's serialized
+                // delete; the warning is published once the destination is known.
+                editor.set_draft_restored(false);
+                self.retire_stale_draft(ticket.entry.clone());
             }
             Ok(GuardedDraftRestoreResolution::Compact(FileDraftRestoreSkip::Oversized)) => {
                 Self::show_oversized_draft_skipped(&editor);
+                // Never applied, so the next autosave would overwrite it.
+                self.preserve_unrestored_draft(ticket.entry.clone());
             }
             Ok(GuardedDraftRestoreResolution::Compact(
                 FileDraftRestoreSkip::Unavailable | FileDraftRestoreSkip::MissingDraft,
@@ -191,6 +213,8 @@ impl LushtextWindow {
                     primary_button: None,
                     secondary_button: None,
                 });
+                // Keep the promise above before the next autosave overwrites it.
+                self.preserve_unrestored_draft(ticket.entry.clone());
             }
         }
         self.finish_draft_restore_tracking(tracking);
@@ -242,6 +266,12 @@ impl LushtextWindow {
                     && let Some(body) = accepted_body_for_terminal.borrow_mut().take()
                 {
                     Self::finish_applied_draft(&editor, body);
+                } else if matches!(outcome, BufferReplacementOutcome::Cancelled { .. })
+                    && window.draft_manifest_entry_is_current(&terminal_ticket.entry)
+                {
+                    // The install was superseded or went stale, so the body was
+                    // never applied; keep it before an autosave replaces it.
+                    window.preserve_unrestored_draft(terminal_ticket.entry.clone());
                 }
                 window.finish_draft_restore_tracking(tracking);
             },
@@ -288,16 +318,32 @@ impl LushtextWindow {
         });
     }
 
-    /// Warn that a file-backed draft was skipped because the file changed on disk.
-    pub(super) fn show_stale_draft_skipped(editor: &LushtextEditorPage) {
+    /// Warn that a file-backed draft was skipped because the file changed on
+    /// disk, naming where its unsaved edits were kept.
+    pub(super) fn show_stale_draft_skipped(
+        editor: &LushtextEditorPage,
+        preservation: StaleDraftPreservation,
+    ) {
         editor.set_draft_restored(false);
-        editor.emit_inline_notification(InlineActionNotification {
+        let notification = InlineActionNotification {
             style: InlineNotificationStyle::Warning,
             title: "Draft Not Restored".to_string(),
-            body: "Unsaved changes from a previous session were not restored because the file changed on disk.".to_string(),
-            primary_button: None,
+            body: policy::stale_draft_alert_body(
+                preservation,
+                &draft_service::set_aside_dir(&crate::services::json_store::data_dir()),
+            ),
+            primary_button: (preservation == StaleDraftPreservation::LocalHistory)
+                .then(|| policy::SHOW_IN_LOCAL_HISTORY_LABEL.to_string()),
             secondary_button: None,
-        });
+        };
+        if preservation == StaleDraftPreservation::LocalHistory {
+            editor.emit_inline_notification_with_warning_action(
+                notification,
+                crate::ui::editor_page::PendingWarningAction::ShowLocalHistory,
+            );
+        } else {
+            editor.emit_inline_notification(notification);
+        }
     }
 
     /// Warn that a draft was preserved on disk but skipped because it is too large.

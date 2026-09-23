@@ -172,6 +172,38 @@ impl WriteLabel {
     pub const RECOVERY_QUARANTINE: Self = Self("recovery-quarantine");
     /// Local-history snapshot migration copy label.
     pub const LOCAL_HISTORY_COPY: Self = Self("local-history-copy");
+    /// Format-upgrade backup copy label.
+    pub const FORMAT_UPGRADE_BACKUP: Self = Self("format-upgrade-backup");
+    /// Format-upgrade backup manifest label.
+    pub const FORMAT_UPGRADE_MANIFEST: Self = Self("format-upgrade-manifest");
+    /// Format-upgrade converted-file label.
+    pub const FORMAT_UPGRADE_CONVERT: Self = Self("format-upgrade-convert");
+    /// Custom GtkSourceView style-scheme label.
+    pub const STYLE_SCHEME: Self = Self("style-scheme");
+
+    /// Every label production code writes with.
+    ///
+    /// The crash-leftover sweep removes a temp file only when its name carries
+    /// one of these tags, so a label used in production but missing here only
+    /// means its leftovers are kept, never that a user file is removed.
+    pub const KNOWN: [Self; 10] = [
+        Self::SAVE,
+        Self::JSON,
+        Self::DRAFT,
+        Self::REPLACE,
+        Self::RECOVERY_QUARANTINE,
+        Self::LOCAL_HISTORY_COPY,
+        Self::FORMAT_UPGRADE_BACKUP,
+        Self::FORMAT_UPGRADE_MANIFEST,
+        Self::FORMAT_UPGRADE_CONVERT,
+        Self::STYLE_SCHEME,
+    ];
+
+    /// Whether `tag` is one of the [`Self::KNOWN`] labels.
+    #[must_use]
+    pub fn is_known(tag: &str) -> bool {
+        Self::KNOWN.iter().any(|label| label.0 == tag)
+    }
 
     /// Return the stable label string used by durable write helpers.
     #[must_use]

@@ -4,7 +4,7 @@
 
 use crate::common::TestContext;
 use lushtext_core::model::draft::{
-    DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip,
+    DraftEntry, DraftManifest, PreloadedDraftRestore, PreloadedDraftSkip, StaleDraftPreservation,
 };
 use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::services::filesystem::fixture;
@@ -341,13 +341,15 @@ fn test_startup_restore_load_marks_stale_file_backed_drafts_and_removes_them() {
     assert_eq!(restore.session.tabs[0].path, Some(file_path));
     assert_eq!(
         restore.preloaded_drafts.get(&draft_id),
-        Some(&PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile))
+        Some(&PreloadedDraftRestore::Skip(PreloadedDraftSkip::StaleFile(
+            StaleDraftPreservation::LocalHistory
+        )))
     );
     assert!(restore.manifest.find_by_id(&draft_id).is_none());
     assert_eq!(
         draft_service::read_draft(ctx.data_dir(), &draft_id).expect("read stale draft"),
         None,
-        "confirmed-stale draft files should be deleted during preload cleanup",
+        "confirmed-stale draft files should be retired once preserved in local history",
     );
 }
 

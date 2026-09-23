@@ -38,14 +38,71 @@ use crate::services::filesystem::sys;
 /// crash leftovers.
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The current directory, as the parent of a destination with no directory part.
+const CURRENT_DIR: &str = ".";
+
+/// Map the empty path, which `Path::ancestors` and `Path::parent` yield for a
+/// bare relative name, to the current directory it denotes.
+fn current_if_empty(path: &Path) -> &Path {
+    if path.as_os_str().is_empty() {
+        Path::new(CURRENT_DIR)
+    } else {
+        path
+    }
+}
+
+/// The directory that holds `path`'s entry.
+///
+/// `Path::parent` returns `Some("")` for a bare name such as `notes.md` and
+/// `None` for a root or empty path; both mean the current directory here.
+/// Opening `""` fails with `ENOENT`, so without this a successful write to a
+/// bare relative name would report an after-rename durability failure.
+pub(crate) fn parent_or_current(path: &Path) -> &Path {
+    path.parent()
+        .map_or_else(|| Path::new(CURRENT_DIR), current_if_empty)
+}
+
+/// This launch's nonce, carried in the high 32 bits of every temp name's
+/// sequence field.
+///
+/// A process id alone does not identify a launch: inside a Flatpak pid
+/// namespace every launch tends to get the same small pid, and host pids are
+/// reused. With only the pid, a crash leftover from an earlier launch would
+/// look like this process's own in-flight temp file forever (never swept),
+/// and a restarted counter could collide with it (`EEXIST`). The pair (pid,
+/// nonce) tells this launch's temps from every earlier one while keeping the
+/// name shape `.{file}.{tag}.{pid}.{seq}.tmp`.
+pub(crate) fn temp_name_launch_nonce() -> u32 {
+    static NONCE: OnceLock<u32> = OnceLock::new();
+    *NONCE.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        // Fold the whole timestamp so launches a few seconds apart differ;
+        // keeping only the low 32 bits of the fold is the point.
+        let folded = nanos ^ (nanos >> 32) ^ (nanos >> 64);
+        u32::try_from(folded & u128::from(u32::MAX)).map_or(1, |nonce| nonce.max(1))
+    })
+}
+
+/// The launch nonce a temp name's sequence field carries.
+#[must_use]
+pub(crate) fn temp_sequence_launch_nonce(sequence: u64) -> u32 {
+    u32::try_from(sequence >> 32).unwrap_or(u32::MAX)
+}
+
+/// Bounded fresh names tried when a temp name already exists.
+const MAX_TEMP_NAME_ATTEMPTS: usize = 8;
+
 /// Build a unique hidden temp path next to the final destination.
 #[must_use]
 pub fn unique_temp_path(path: &Path, tmp_tag: &str) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = parent_or_current(path);
     let file_name = path
         .file_name()
         .map_or_else(|| "untitled".into(), OsStr::to_string_lossy);
-    let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX);
+    let sequence = (u64::from(temp_name_launch_nonce()) << 32) | counter;
     parent.join(format!(
         ".{file_name}.{tmp_tag}.{}.{}.tmp",
         std::process::id(),
@@ -227,10 +284,21 @@ where
         Ok(plan) => plan,
         Err(error) => return Err(DurableWriteError::BeforeRename(error)),
     };
-    let tmp_path = unique_temp_path(path, tmp_tag);
-    let file = match sys::create_temp_file(&tmp_path, metadata_plan.create_mode()) {
-        Ok(file) => file,
-        Err(error) => return Err(DurableWriteError::BeforeRename(error)),
+    let mut tmp_path = unique_temp_path(path, tmp_tag);
+    let mut attempts = 1;
+    let file = loop {
+        match sys::create_temp_file(&tmp_path, metadata_plan.create_mode()) {
+            Ok(file) => break file,
+            // Never reuse an existing name: it may be another writer's temp.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    && attempts < MAX_TEMP_NAME_ATTEMPTS =>
+            {
+                attempts += 1;
+                tmp_path = unique_temp_path(path, tmp_tag);
+            }
+            Err(error) => return Err(DurableWriteError::BeforeRename(error)),
+        }
     };
 
     let write_result = {
@@ -294,7 +362,7 @@ pub fn resolve_write_target_identity(path: &Path) -> std::io::Result<WriteTarget
                     format!("symlink target is unavailable: {}", path.display()),
                 ));
             }
-            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let parent = parent_or_current(path);
             let canonical_parent = sys::canonicalize(parent)?;
             let Some(file_name) = path.file_name() else {
                 return Err(std::io::Error::new(
@@ -390,6 +458,10 @@ fn write_target_locks() -> &'static TargetWriteLocks {
 /// Returns an error if the rename fails or either affected parent directory
 /// cannot be synced.
 pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_NEXT_RENAME_CROSS_DEVICE.with(|fail| fail.replace(false)) {
+        return Err(sys::cross_device_error_for_test());
+    }
     sys::rename(from, to)?;
     sync_rename_parents(from, to)
 }
@@ -416,7 +488,7 @@ pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> 
 /// Sync whichever parent directories a completed rename mutated.
 fn sync_rename_parents(from: &Path, to: &Path) -> std::io::Result<()> {
     sync_parent_dir(from)?;
-    if from.parent() != to.parent() {
+    if parent_or_current(from) != parent_or_current(to) {
         sync_parent_dir(to)?;
     }
     Ok(())
@@ -590,6 +662,14 @@ thread_local! {
     static FAIL_FINAL_TEMP_SYNC_AFTER_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Test hook for the post-rename parent-directory sync failure path.
     static FAIL_NEXT_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook for a rename refused because source and target are on different filesystems.
+    static FAIL_NEXT_RENAME_CROSS_DEVICE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make the next durable rename on this test thread fail with `EXDEV`, before it runs.
+#[cfg(test)]
+pub(in crate::services) fn fail_next_rename_cross_device_for_test() {
+    FAIL_NEXT_RENAME_CROSS_DEVICE.with(|fail| fail.set(true));
 }
 
 /// Make the next parent-directory sync on this test thread fail after rename.
@@ -636,8 +716,7 @@ pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
         ));
     }
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    sync_dir(parent)
+    sync_dir(parent_or_current(path))
 }
 
 /// Sync a directory handle on Unix, where LushText's GTK target platforms live.
@@ -653,9 +732,12 @@ fn sync_dir(_path: &Path) -> std::io::Result<()> {
 }
 
 /// Collect ancestors that do not exist yet, starting at `path`.
+///
+/// A relative path's last ancestor is `""`, the current directory, which
+/// always exists; probing it as `""` would report it missing.
 fn missing_ancestors(path: &Path) -> Vec<PathBuf> {
     path.ancestors()
-        .take_while(|ancestor| !sys::path_exists(ancestor))
+        .take_while(|ancestor| !sys::path_exists(current_if_empty(ancestor)))
         .map(Path::to_path_buf)
         .collect()
 }
@@ -950,6 +1032,87 @@ mod tests {
         let missing = missing_ancestors(&nested);
 
         assert_eq!(missing, vec![nested, dir.path().join("a/b")]);
+    }
+
+    #[test]
+    fn parent_or_current_maps_bare_and_empty_parents_to_current_dir() {
+        assert_eq!(parent_or_current(Path::new("notes.md")), Path::new("."));
+        assert_eq!(parent_or_current(Path::new("./notes.md")), Path::new("."));
+        assert_eq!(parent_or_current(Path::new("")), Path::new("."));
+        assert_eq!(parent_or_current(Path::new("/")), Path::new("."));
+        assert_eq!(
+            parent_or_current(Path::new("dir/notes.md")),
+            Path::new("dir")
+        );
+        assert_eq!(
+            parent_or_current(Path::new("/tmp/notes.md")),
+            Path::new("/tmp")
+        );
+    }
+
+    #[test]
+    fn missing_ancestors_of_a_relative_path_stop_before_the_empty_prefix() {
+        let relative = Path::new("lushtext-missing-ancestor-probe/child");
+        assert!(!sys::path_exists(Path::new(
+            "lushtext-missing-ancestor-probe"
+        )));
+
+        let missing = missing_ancestors(relative);
+
+        assert_eq!(
+            missing,
+            vec![
+                relative.to_path_buf(),
+                PathBuf::from("lushtext-missing-ancestor-probe")
+            ],
+            "the empty ancestor of a relative path is the current directory, which exists"
+        );
+    }
+
+    /// Environment marker that turns the bare-name test into its own child.
+    const BARE_NAME_CHILD_ENV: &str = "LUSHTEXT_DURABLE_WRITE_BARE_NAME_CHILD";
+
+    /// A durable write to a bare file name must sync `.`, not fail on `""`.
+    ///
+    /// The working directory is process-global and unit tests share a process
+    /// under `cargo test`, so the test re-runs itself as a child process whose
+    /// working directory is a fresh temp dir instead of calling
+    /// `set_current_dir` under its siblings.
+    #[test]
+    fn atomic_write_to_bare_relative_name_syncs_current_directory() {
+        if std::env::var_os(BARE_NAME_CHILD_ENV).is_some() {
+            atomic_write_bytes_classified(Path::new("bare.txt"), "test", b"bare")
+                .expect("a bare relative destination must write durably");
+            create_dir_all_durable(Path::new("fresh/nested"))
+                .expect("a relative directory tree must be created durably");
+            return;
+        }
+
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "services::durable_write::tests::atomic_write_to_bare_relative_name_syncs_current_directory",
+                "--nocapture",
+            ])
+            .env(BARE_NAME_CHILD_ENV, "1")
+            .current_dir(dir.path())
+            .output()
+            .expect("spawn child test");
+
+        assert!(
+            output.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "the child must actually run the test body:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(fixture::read_bytes(&dir.path().join("bare.txt")), b"bare");
+        assert!(dir.path().join("fresh/nested").is_dir());
     }
 
     #[test]

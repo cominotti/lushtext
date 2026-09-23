@@ -16,7 +16,11 @@ local history, and careful recovery behavior.
   monospace font support.
 - **Tabs and sessions** with restored open tabs, pinned state, cursor
   positions, scroll offsets, workspace state, search state, and recoverable
-  drafts after restart or crash.
+  drafts after restart or crash. When a file changed on disk since its draft
+  was written, the draft is not applied over it: its unsaved edits are kept as
+  a "While editing" Local History snapshot of that file (or in
+  `drafts/set-aside/` when Local History cannot hold them), and the inline
+  alert offers **Show in Local History**.
 - **Safe file handling** with external-change detection, graceful large-file
   degradation, atomic saves, symlink-aware writes, and explicit durability
   warnings when the system cannot confirm a write fully reached storage.
@@ -223,6 +227,7 @@ Stored state can include document text:
 | `workspaces.json` | Saved workspace names and ordered folder sets |
 | `recent-documents.json` | App-owned recent-document paths and timestamps |
 | `drafts/` | Plain-text autosaved drafts for unsaved changes |
+| `drafts/set-aside/` | Draft bodies kept byte-identically after leaving the draft journal (never deleted by LushText) |
 | `style-schemes/` | Generated opacity-aware GtkSourceView style schemes |
 | `bookmarks/` | Saved-file bookmark metadata |
 | `document-notes/` | Per-file document notes |
@@ -575,6 +580,10 @@ in a migrated role home is declared by its row and that the externally reachable
 `*_for_test` count stays within the recorded ceiling. The migration programme is
 closed; its rationale, measured baseline, and deferred work are recorded in
 [`docs/next/workflow-readability.md`](docs/next/workflow-readability.md).
+
+The formal-verification programme — its phases, GTK and POSIX axiom ledgers,
+draft-journal invariants, and deferral inventory — is recorded in
+[`docs/next/formal-verification.md`](docs/next/formal-verification.md).
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
 and [`docs/automation-reference.md`](docs/automation-reference.md). The

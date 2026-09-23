@@ -1444,18 +1444,19 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<(), ReplaceWriteError> {
             ))
         })?
         .into_path_buf();
-    fs_write::atomic_replace(&write_path, WriteLabel::REPLACE, content).map_err(|error| match error
-    {
-        fs_write::DurableWriteError::BeforeRename(source) => ReplaceWriteError::BeforeRename(
-            anyhow::anyhow!("Failed to write {}: {source}", path.display()),
-        ),
-        fs_write::DurableWriteError::AfterRename(source) => {
-            ReplaceWriteError::AfterRename(anyhow::anyhow!(
-                "Failed to sync parent directory for {}: {source}",
-                path.display()
-            ))
-        }
-    })
+    fs_write::atomic_replace_workspace_file(&write_path, WriteLabel::REPLACE, content).map_err(
+        |error| match error {
+            fs_write::DurableWriteError::BeforeRename(source) => ReplaceWriteError::BeforeRename(
+                anyhow::anyhow!("Failed to write {}: {source}", path.display()),
+            ),
+            fs_write::DurableWriteError::AfterRename(source) => {
+                ReplaceWriteError::AfterRename(anyhow::anyhow!(
+                    "Failed to sync parent directory for {}: {source}",
+                    path.display()
+                ))
+            }
+        },
+    )
 }
 
 /// Persist the current undo backup snapshot or delete the journal when empty.

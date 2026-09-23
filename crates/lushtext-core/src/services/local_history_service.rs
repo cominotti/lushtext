@@ -490,6 +490,54 @@ pub fn capture_snapshot_for_path(
     )
 }
 
+/// Durably keep `text` as one snapshot of `path` stamped at `captured_at_millis`.
+///
+/// This is how a stale draft body becomes an alternative version of its file.
+/// It returns `Ok(false)`, having written nothing that survives, when the text
+/// would not be stored byte-identically (snapshot normalization rewrites
+/// carriage returns) or when retention would prune the back-dated snapshot
+/// immediately; the caller then keeps the body elsewhere. `Ok(true)` means the
+/// snapshot body and index were durably written and the snapshot survived
+/// retention.
+///
+/// # Errors
+///
+/// Returns an error if the document identity cannot be resolved or the snapshot
+/// metadata/text cannot be written.
+pub fn preserve_snapshot_for_path(
+    data_dir: &Path,
+    path: &Path,
+    text: &str,
+    origin: LocalHistorySnapshotOrigin,
+    captured_at_millis: u64,
+) -> Result<bool> {
+    // Normalization rewrites exactly the carriage returns.
+    if text.contains('\r') {
+        return Ok(false);
+    }
+    let _guard = local_history_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("local-history lock poisoned"))?;
+    let identity = resolve_document_identity(path)?;
+    let outcome = capture_snapshot_for_identity_at_locked(
+        data_dir,
+        identity.clone(),
+        text,
+        origin,
+        LocalHistoryCapturePolicy::PreserveDuplicate,
+        DEFAULT_RETENTION_POLICY,
+        Some(captured_at_millis),
+    )?;
+    let LocalHistoryCaptureOutcome::Stored(meta) = outcome else {
+        return Ok(false);
+    };
+    let document = load_document_for_identity(data_dir, identity)?;
+    Ok(document
+        .snapshots
+        .iter()
+        .any(|stored| stored.snapshot_id == meta.snapshot_id))
+}
+
 /// List snapshot metadata for the saved document, newest first.
 ///
 /// # Errors
@@ -682,6 +730,26 @@ fn capture_snapshot_for_identity_locked(
     capture_policy: LocalHistoryCapturePolicy,
     retention: RetentionPolicy,
 ) -> Result<LocalHistoryCaptureOutcome> {
+    capture_snapshot_for_identity_at_locked(
+        data_dir,
+        identity,
+        text,
+        origin,
+        capture_policy,
+        retention,
+        None,
+    )
+}
+
+fn capture_snapshot_for_identity_at_locked(
+    data_dir: &Path,
+    identity: DocumentSidecarIdentity,
+    text: &str,
+    origin: LocalHistorySnapshotOrigin,
+    capture_policy: LocalHistoryCapturePolicy,
+    retention: RetentionPolicy,
+    captured_at_millis: Option<u64>,
+) -> Result<LocalHistoryCaptureOutcome> {
     let normalized = normalize_snapshot_text(text);
     let content_hash = stable_bytes_hash(normalized.as_bytes());
     let mut document = load_document_for_identity(data_dir, identity.clone())?;
@@ -695,7 +763,10 @@ fn capture_snapshot_for_identity_locked(
         return Ok(LocalHistoryCaptureOutcome::SkippedDuplicate);
     }
 
-    let meta = LocalHistorySnapshotMeta::new(origin, normalized.len() as u64, content_hash);
+    let mut meta = LocalHistorySnapshotMeta::new(origin, normalized.len() as u64, content_hash);
+    if let Some(captured_at_millis) = captured_at_millis {
+        meta.captured_at_millis = captured_at_millis;
+    }
     let doc_dir = document_dir(data_dir, &identity);
     fs_write::create_dir_all_durable(&doc_dir)
         .with_context(|| format!("failed to create {}", doc_dir.display()))?;
@@ -1269,12 +1340,20 @@ fn migrate_loaded_document(
             continue;
         }
         if source_present && !target_present {
-            // Prefer rename to preserve metadata. Copy fallback is safe because
-            // the source lineage is deleted only after the target index has been
-            // rewritten, leaving retryable evidence if cleanup later fails.
+            // Prefer rename to preserve metadata. Copy only when the rename
+            // failed because the lineages are on different filesystems: any
+            // other failure, including a parent sync after the rename took
+            // effect, propagates so a retry resumes from the source-absent,
+            // target-present branch above. The source lineage is deleted only
+            // after the target index has been rewritten, leaving retryable
+            // evidence if cleanup later fails.
             fs_write::rename_durable(&from, &to)
-                .or_else(|_| {
-                    fs_write::copy_file_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
+                .or_else(|error| {
+                    if fs_write::is_cross_device(&error) {
+                        fs_write::copy_file_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
+                    } else {
+                        Err(error)
+                    }
                 })
                 .with_context(|| {
                     format!(
@@ -2708,6 +2787,102 @@ mod tests {
                 .any(|meta| meta.snapshot_id == moved_meta.snapshot_id),
             "target index should already contain the moved snapshot before cleanup"
         );
+    }
+
+    #[test]
+    fn move_path_tree_parent_sync_failure_after_rename_fails_retryably_without_copy() {
+        let dir = TempDir::new().expect("tempdir");
+        let old_path = seed_file(&dir, "workspace/old.txt", "old\n");
+        let new_path = seed_file(&dir, "workspace/new.txt", "new\n");
+        let moved_meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &old_path,
+                "moved body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture source"),
+        );
+        capture_snapshot_for_path(
+            dir.path(),
+            &new_path,
+            "target body\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("capture target");
+        let old_doc_dir = history_dir_for_path(dir.path(), &old_path);
+        let new_doc_dir = history_dir_for_path(dir.path(), &new_path);
+        let moved_source = snapshot_path(&old_doc_dir, &moved_meta.snapshot_id);
+        let moved_target = snapshot_path(&new_doc_dir, &moved_meta.snapshot_id);
+
+        // The target lineage already exists, so the merge path moves each
+        // snapshot body; the first parent sync on this thread is that rename's.
+        crate::services::filesystem::write::fail_next_parent_sync_for_test();
+        let error = move_path_tree(dir.path(), &old_path, &new_path)
+            .expect_err("an unconfirmed rename must fail the migration");
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("injected parent directory sync failure"),
+            "the rename's own sync failure must propagate instead of a copy \
+             fallback reading the already-moved source: {chain}"
+        );
+        assert!(
+            !fs_metadata::exists(&moved_source) && fs_metadata::exists(&moved_target),
+            "the rename took effect: source absent, target present"
+        );
+        assert!(
+            fs_metadata::exists(&old_doc_dir),
+            "the source lineage stays for retry"
+        );
+
+        let migrated = move_path_tree(dir.path(), &old_path, &new_path).expect("retry completes");
+
+        assert_eq!(migrated, 1);
+        assert!(!fs_metadata::exists(&old_doc_dir));
+        let loaded = load_snapshot_for_path(dir.path(), &new_path, &moved_meta.snapshot_id)
+            .expect("load moved snapshot")
+            .expect("moved snapshot should survive the retry");
+        assert_eq!(loaded.text, "moved body\n");
+    }
+
+    #[test]
+    fn move_path_tree_cross_device_rename_uses_copy_fallback() {
+        let dir = TempDir::new().expect("tempdir");
+        let old_path = seed_file(&dir, "workspace/old.txt", "old\n");
+        let new_path = seed_file(&dir, "workspace/new.txt", "new\n");
+        let moved_meta = stored_meta(
+            capture_snapshot_for_path(
+                dir.path(),
+                &old_path,
+                "moved body\n",
+                LocalHistorySnapshotOrigin::Save,
+                LocalHistoryCapturePolicy::DeduplicateLatest,
+            )
+            .expect("capture source"),
+        );
+        capture_snapshot_for_path(
+            dir.path(),
+            &new_path,
+            "target body\n",
+            LocalHistorySnapshotOrigin::Save,
+            LocalHistoryCapturePolicy::DeduplicateLatest,
+        )
+        .expect("capture target");
+        let old_doc_dir = history_dir_for_path(dir.path(), &old_path);
+
+        crate::services::filesystem::write::fail_next_rename_cross_device_for_test();
+        let migrated = move_path_tree(dir.path(), &old_path, &new_path)
+            .expect("a cross-device rename is answered by the durable copy");
+
+        assert_eq!(migrated, 1);
+        assert!(!fs_metadata::exists(&old_doc_dir));
+        let loaded = load_snapshot_for_path(dir.path(), &new_path, &moved_meta.snapshot_id)
+            .expect("load copied snapshot")
+            .expect("copied snapshot should exist");
+        assert_eq!(loaded.text, "moved body\n");
     }
 
     #[test]

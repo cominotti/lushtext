@@ -9,6 +9,7 @@
 //! search, and the background task concurrency guard.
 
 pub mod action_catalog;
+pub mod app_data_leftovers;
 pub mod bookmark_excerpt;
 pub mod bookmark_service;
 pub mod content_search;

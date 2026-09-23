@@ -8,6 +8,7 @@
 //! place while call sites stay readable and application-oriented.
 
 pub mod fixture;
+pub mod leftovers;
 pub mod metadata;
 pub mod mutate;
 pub mod read;
@@ -448,6 +449,21 @@ mod tests {
 
         assert!(!metadata::exists(&from));
         fixture::assert_text(&to, "copy me\n");
+    }
+
+    #[test]
+    fn is_cross_device_matches_only_exdev() {
+        assert!(write::is_cross_device(&sys::cross_device_error_for_test()));
+        assert!(!write::is_cross_device(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
+        assert!(!write::is_cross_device(&std::io::Error::other(
+            "injected parent directory sync failure"
+        )));
+        let dir = TempDir::new().expect("temp dir");
+        let missing = write::rename_durable(&dir.path().join("absent"), &dir.path().join("to"))
+            .expect_err("renaming a missing source fails");
+        assert!(!write::is_cross_device(&missing));
     }
 
     #[test]

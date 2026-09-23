@@ -688,6 +688,15 @@ impl LushtextWindow {
                         }
                         return;
                     }
+                    Some(crate::ui::editor_page::PendingWarningAction::ShowLocalHistory) => {
+                        if let Some(window) = window_weak.upgrade() {
+                            window.dismiss_editor_notifications(&editor);
+                            if let Some(path) = editor.file_path() {
+                                window.show_local_history_for_path(&path);
+                            }
+                        }
+                        return;
+                    }
                     None => {}
                 }
                 if editor.is_draft_restored() {

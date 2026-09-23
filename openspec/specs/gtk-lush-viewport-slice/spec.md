@@ -34,7 +34,7 @@ The slice decision SHALL be a GTK-free pure function in `gtk-lush-widgets` that 
 - **THEN** the same slice is returned, and a viewport move smaller than the overscan margin returns a slice that still covers the new intersection
 
 ### Requirement: Adjustment synchronization is bidirectional and loop-free
-The container SHALL re-slice when the outer vertical adjustment changes value or page size, and SHALL translate child-originated adjustment changes (keyboard focus moves, `scroll_to`) into outer adjustment changes so the focused row enters the outer viewport. Changes the container itself makes to the child adjustment MUST NOT be re-translated to the outer adjustment. The container SHALL recognise its own changes by comparing against the offset it published, not against the outer viewport's unclamped top edge, so that a container resting anywhere other than the viewport's top edge reports no request. A value the child settles on within a geometry correction the container's own publish provoked SHALL NOT be treated as a request. The decisions SHALL be GTK-free pure functions covered by unit and property tests.
+The container SHALL re-slice when the outer vertical adjustment changes value or page size, and SHALL translate child-originated adjustment changes (keyboard focus moves, `scroll_to`) into outer adjustment changes so the focused row enters the outer viewport. Changes the container itself makes to the child adjustment MUST NOT be re-translated to the outer adjustment. The container SHALL recognise its own changes by comparing against the offset it published, not against the outer viewport's unclamped top edge, so that a container resting anywhere other than the viewport's top edge reports no request. A value the child settles on within a geometry correction the container's own publish provoked SHALL NOT be treated as a request in that allocation. When the container cannot tell a settle from a request because both fall within that correction, it SHALL NOT erase the divergence. It SHALL re-decide in a following allocation with stable geometry, so that a genuine child request is eventually honoured or proven to be a settle, and is never silently dropped. The decisions SHALL be GTK-free pure functions covered by unit and property tests.
 
 #### Scenario: Outer scroll moves the slice
 - **WHEN** the outer adjustment value changes
@@ -55,6 +55,11 @@ The container SHALL re-slice when the outer vertical adjustment changes value or
 #### Scenario: A geometry settle is not a request
 - **WHEN** the child reconfigures the adjustment's upper or page size during its allocation and its value settles within that correction of the published offset
 - **THEN** the outer adjustment is not moved
+
+#### Scenario: A request made while the geometry reconfigures is not dropped
+- **WHEN** the child requests a row through `scroll_to` in the same allocation in which it reconfigures the adjustment's upper or page size, and the requested value lies within that correction of the published offset
+- **THEN** the requested row ends fully inside the outer viewport once allocations stop
+- **AND** the container still reaches rest with its allocation and correction counts no longer growing
 
 ### Requirement: Viewport slice container is governed like other GTK Lush widgets
 The widget SHALL ship with a doc comment, a README section, a CHANGELOG entry, a public-API snapshot update, a proof-harness example under `crates/gtk-lush/widgets/examples`, and adoption-lab evidence, and `make check-gtk-lush-policy`, `make check-gtk-lush-adoption`, `make gtk-lush-doctests`, and `make gtk-lush-examples` MUST pass.
@@ -81,4 +86,3 @@ The container SHALL publish the child adjustment's upper and page size in the ch
 #### Scenario: Corrections terminate
 - **WHEN** the container is at rest after the inset is known, or an already visible row is selected
 - **THEN** the container's allocation count does not grow across idle passes and its correction count does not grow
-

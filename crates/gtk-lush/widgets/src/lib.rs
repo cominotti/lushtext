@@ -28,6 +28,8 @@ mod viewport_slice_bin;
 
 pub use clip_bin::ClipBin;
 pub use render_hold::{RenderHoldCapture, RenderHoldNotReady, RenderHoldOverlay};
-pub use scroll_request::{ADJUSTMENT_EPSILON, outer_scroll_request};
+pub use scroll_request::{
+    ADJUSTMENT_EPSILON, ChildScrollDecision, classify_child_scroll, outer_scroll_request,
+};
 pub use slice_geometry::{ViewportSlice, viewport_slice};
 pub use viewport_slice_bin::ViewportSliceBin;

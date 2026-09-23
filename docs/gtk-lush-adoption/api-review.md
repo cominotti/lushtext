@@ -25,7 +25,10 @@ spikes for `gtk4-rs` and Kooha.
   a public pure function: consumers and property tests share one geometry.
   `outer_scroll_request` joins it for the same reason, after the inline version
   of that decision shipped a defect the whole suite missed: both of the bin's
-  decisions are now pure, public, and property-tested.
+  decisions are now pure, public, and property-tested. `classify_child_scroll`
+  / `ChildScrollDecision` widen the second to its full outcome (rest, request,
+  settle, defer) once the bin had to defer a divergence rather than overwrite
+  it; `outer_scroll_request` stays as its request-only projection.
 - `gtk-lush-proof-harness`: keep caller-owned environment mutation and test
   registry. The harness should not mutate process environment for consumers.
 - `gtk-lush-proof-spine`: keep GTK-free provider traits and bounded value

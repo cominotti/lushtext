@@ -1,6 +1,16 @@
 # Draft Restore: mtime Conflict Detection
 
-## Status: Deferred
+## Status: Superseded
+
+The freshness check proposed below has shipped: file-backed draft restore now
+compares the recorded backing-file mtime before applying a draft (see the
+`draft-restore-validation` spec, `openspec/specs/draft-restore-validation/spec.md`).
+The original "delete the stale draft" behaviour was then replaced by OpenSpec
+change `formal-verification-phase-0`: a stale draft body is preserved as a
+local-history snapshot of the file (or in `drafts/set-aside/` when local history
+cannot accept it) before its journal entry is retired. The programme record is
+[`formal-verification.md`](./formal-verification.md). This record is kept for
+history only.
 
 ## Problem
 

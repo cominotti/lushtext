@@ -39,7 +39,9 @@ whether the child asked to scroll, by comparing the child's adjustment against
 the offset the bin published rather than against the outer viewport's unclamped
 top edge — those agree only when the bin starts exactly at that edge, and
 comparing against the wrong one makes a bin below other content scroll that
-content away and pin itself to the top.
+content away and pin itself to the top. `outer_scroll_request` is the
+request-only projection of `classify_child_scroll`, which returns the whole
+`ChildScrollDecision`: rest, request, settle, or defer.
 
 The geometry the bin publishes is expressed in the child's CSS content box. A
 `GtkScrollable` such as `GtkListView` measures its page and content there, so a
@@ -49,7 +51,14 @@ pixels from where the bin placed it — rows then render that far off. The bin
 learns the vertical inset from the page the child reports after its first
 allocation and deducts it from `upper` and `page_size`; the value itself is not
 offset (see `publish_slice_offset`). A settle that still survives is written
-back to the published offset inside the allocation. `allocation_count()` and
+back to the published offset inside the allocation. A divergence that falls
+within a geometry correction the child made in that same allocation may be a
+settle or a genuine `scroll_to` (a list that realizes rows of unexpected height
+while it moves its anchor), so it is deferred instead: the bin leaves the
+child's value in place, hands it back on one more allocation, and classifies it
+there by the ordinary rule once the geometry is stable. Writing it back would
+erase the request, because a `GtkListBase` re-anchors on any value it is handed.
+`allocation_count()` and
 `correction_count()` are layout diagnostics: a bin at rest stops allocating and
 needs no corrections, and either count growing across idle frames names which
 side of the contract is broken.

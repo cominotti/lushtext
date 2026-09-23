@@ -54,6 +54,11 @@
 //!    write it over a draft holding real work. Each candidate is assigned a
 //!    `DraftMutationIntent` **before** any document-sized work, so a later delete
 //!    can invalidate it.
+//!    **Register new ids first.** One batched manifest commit registers every
+//!    file-backed candidate id the persisted manifest lacks (`policy::draft_requires_registration`)
+//!    **before** any body is written, so no crash point leaves a body that no
+//!    entry describes — the leftover that used to wedge every later commit. A
+//!    candidate whose registration failed is not written; it stays dirty.
 //! 4. **Snapshot and write one at a time.** The next candidate is admitted from
 //!    inside the previous one's completion, which is what bounds the lane to one
 //!    complete body however many tabs are dirty.
@@ -69,12 +74,23 @@
 //!    it under a *replacement* disposal reservation out of the aggregate permit;
 //!    with no headroom, **every** eager body is demoted to a compact marker before
 //!    returning, so GTK never owns an unguarded recovery body.
-//! 8. **Admit one lazy body at a time**, or arm a capacity wakeup.
+//! 8. **Admit one lazy body at a time**, or arm a capacity wakeup. While a
+//!    body is queued or being read, autosave **holds off** that id
+//!    (`restore_pending_ids`), and a save or discard deletes it only after
+//!    preserving it: the user has not seen it yet.
 //! 9. **Validate, then install.** `draft_restore_is_current(ticket, facts)` is
 //!    checked when the worker returns **and again** inside the replacement's
 //!    terminal, because the bounded install spans turns.
 //! 10. **Publish.** The baseline is seeded, the buffer marked modified, and the
-//!     restored-draft inline alert offers Discard and Save.
+//!     restored-draft inline alert offers Discard and Save. A **stale** draft
+//!     (the file changed on disk, or its mtime was never recorded) is never
+//!     applied: it is preserved — always in `drafts/set-aside/`, and also in
+//!     local history when it accepts the body — and only then retired,
+//!     through the journal's serialized delete. The alert names where the
+//!     edits went and may offer Show in Local History.
+//!     A body that is never applied for any other reason — edited over first,
+//!     oversized, unreadable, or a cancelled install — gets the same preserved
+//!     copy (`preserve_unrestored_draft`) before autosave may replace it.
 //!
 //! ## Stage order C: orphan cleanup
 //!
@@ -92,12 +108,17 @@
 //!
 //! ## Where control leaves, and where it comes back
 //!
-//! Seventeen deferred inversions, where the census recorded seven worker
+//! Twenty deferred inversions, where the census recorded seven worker
 //! handoffs. The ten it missed are timers, polls, capacity wakeups, chunked
-//! snapshots, and the replacement terminal:
+//! snapshots, and the replacement terminal; three more arrived in
+//! formal-verification phase 0 (registration, preserve-first delete, and the
+//! unrestored-body preservation worker):
 //!
 //! - **A1/A2, two timers.** The first-dirty `SupersedingTimer` and the 5 s
 //!   repeating tick both resume in `autosave_execution`'s `autosave_tick`.
+//! - **A3½, registration worker (autosave and close)**, resuming in
+//!   `register_new_draft_ids_then`'s completion, which partitions candidates by
+//!   `policy::candidate_may_write_after_registration`.
 //! - **A4, chunked snapshot**, resuming in the capture's `finish_snapshot`
 //!   closure, which re-validates with `policy::captured_snapshot_is_current`.
 //! - **A4, body worker**, resuming in a completion that admits the next candidate.
@@ -107,11 +128,14 @@
 //!   worker**, a **manifest worker**, and a final **`wait_for_draft_mutations_then`
 //!   poll** before the caller's `on_done` — five more.
 //! - **B8, capacity wakeup**, resuming in `drive_lazy_draft_restore_queue`.
+//! - **B9½, unrestored-body preservation worker**, resuming in a completion
+//!   that releases the autosave hold and reports where the copy went.
 //! - **B9, body-resolve worker**, resuming in `finish_draft_restore`.
 //! - **B9, the bounded buffer-replacement terminal**, resuming in the closure that
 //!   calls `finish_applied_draft`.
 //! - **Delete worker**, resuming in a completion that retires the tombstone only
-//!   if its intent is still current.
+//!   if its intent is still current. For a stale draft the same worker preserves
+//!   the body first and publishes the destination warning on completion.
 //! - **C11/C14, two cleanup timers** and **C12, the cleanup worker** — three more.
 //!
 //! ## State this workflow shares with others
@@ -127,7 +151,7 @@
 //! | `imp().local_history.*` | owned by `WFR-LOCAL-HISTORY`. A restored draft seeds its baseline through that workflow's named operation |
 //! | `ui/buffer_snapshot` and its chunked threshold | cross-cutting (slot 7). This workflow supplies its own byte budget and never duplicates the threshold |
 //! | `ui/plain_disposal` | cross-cutting (10 workflows). Every recovery body this workflow owns is `DisposalOwned` |
-//! | `services/draft_service.rs`, `services/recovery_metadata.rs` | services, behaviorally unchanged. The six load-side `test-utils` overrides in `services/editor_io.rs` are shared with save and load and **stay in the service** |
+//! | `services/draft_service.rs`, `services/recovery_metadata.rs` | services. Since formal-verification phase 0 reconciliation attributes unregistered path-hash bodies to session tabs, moves unattributable ones into `drafts/set-aside/`, and `preserve_stale_draft_body` keeps a stale body in local history or the set-aside area. The six load-side `test-utils` overrides in `services/editor_io.rs` are shared with save and load and **stay in the service** |
 
 mod admission;
 mod autosave_execution;
@@ -286,4 +310,4 @@ pub(super) fn attach_draft_body_disposal_probe(
 
 /// Re-export for the window imp's state group.
 pub(super) use policy::{DraftMutationIntent, DraftMutationOrder};
-pub(crate) use seams::DraftRestoreTicket;
+pub(crate) use seams::{DraftRestoreTicket, PendingPreservation};

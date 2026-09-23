@@ -13,8 +13,18 @@
 //! never move the outer scroller, at **any** viewport position. Violating that
 //! made a sidebar scroll its own section header out of view and made two
 //! sections oscillate against each other forever.
+//!
+//! `gtk_lush_widgets::classify_child_scroll` is the whole decision
+//! `outer_scroll_request` projects. Its critical invariant is the other
+//! negative one: a divergence the bin cannot classify in the allocation that
+//! produced it is deferred, never written back, and a deferral always ends in
+//! an ordinary decision once the geometry stops moving, so a genuine request
+//! made while the child reconfigured is not silently dropped.
 
-use gtk_lush_widgets::{ADJUSTMENT_EPSILON, ViewportSlice, outer_scroll_request, viewport_slice};
+use gtk_lush_widgets::{
+    ADJUSTMENT_EPSILON, ChildScrollDecision, ViewportSlice, classify_child_scroll,
+    outer_scroll_request, viewport_slice,
+};
 use proptest::prelude::*;
 
 use crate::support;
@@ -233,5 +243,94 @@ proptest! {
             let expected = (delta.abs() >= ADJUSTMENT_EPSILON).then_some(delta);
             prop_assert_eq!(decided, expected);
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(support::property_config())]
+
+    /// `outer_scroll_request` is exactly the request arm of the full decision,
+    /// so the two can never disagree about whether to move the outer scroller.
+    #[test]
+    fn prop_the_request_projection_matches_the_full_decision(
+        published_offset in -50_000.0f64..50_000.0,
+        child_value in -50_000.0f64..50_000.0,
+        viewport_top in -50_000.0f64..50_000.0,
+        shift in prop_oneof![Just(0.0f64), 0.0f64..500.0],
+    ) {
+        let decision = classify_child_scroll(published_offset, child_value, viewport_top, shift);
+        let request = outer_scroll_request(published_offset, child_value, viewport_top, shift);
+        match decision {
+            ChildScrollDecision::Request(delta) => prop_assert_eq!(request, Some(delta)),
+            ChildScrollDecision::Rest
+            | ChildScrollDecision::Settle
+            | ChildScrollDecision::Defer => prop_assert_eq!(request, None),
+        }
+    }
+
+    /// The swallowed-request defect: inside the correction the child just made,
+    /// a divergence is neither forwarded nor overwritten. It is deferred.
+    #[test]
+    fn prop_a_divergence_within_the_correction_is_deferred_not_overwritten(
+        published_offset in -50_000.0f64..50_000.0,
+        viewport_top in -50_000.0f64..50_000.0,
+        shift in 1.0f64..500.0,
+        fraction in 0.0f64..1.0,
+        negative in proptest::bool::ANY,
+    ) {
+        // Anywhere from the noise floor up to the correction's own bound.
+        let magnitude = ADJUSTMENT_EPSILON + (shift - ADJUSTMENT_EPSILON) * fraction;
+        let child_value = published_offset + if negative { -magnitude } else { magnitude };
+        prop_assert_eq!(
+            classify_child_scroll(published_offset, child_value, viewport_top, shift),
+            ChildScrollDecision::Defer
+        );
+    }
+
+    /// A deferral terminates: re-classified in an allocation with stable
+    /// geometry, the held divergence is a request or a settle, decided by the
+    /// ordinary rule, and never deferred again.
+    #[test]
+    fn prop_a_deferred_divergence_is_decided_once_geometry_is_stable(
+        published_offset in -50_000.0f64..50_000.0,
+        child_value in -50_000.0f64..50_000.0,
+        viewport_top in -50_000.0f64..50_000.0,
+        shift in 0.1f64..500.0,
+    ) {
+        if classify_child_scroll(published_offset, child_value, viewport_top, shift)
+            != ChildScrollDecision::Defer
+        {
+            return Ok(());
+        }
+        let delta = child_value - viewport_top;
+        let expected = if delta.abs() >= ADJUSTMENT_EPSILON {
+            ChildScrollDecision::Request(delta)
+        } else {
+            ChildScrollDecision::Settle
+        };
+        prop_assert_eq!(
+            classify_child_scroll(published_offset, child_value, viewport_top, 0.0),
+            expected
+        );
+    }
+
+    /// Without a correction there is nothing to defer against, and a resting
+    /// child is at rest whatever the correction.
+    #[test]
+    fn prop_only_a_correction_defers_and_never_a_resting_child(
+        published_offset in -50_000.0f64..50_000.0,
+        child_value in -50_000.0f64..50_000.0,
+        viewport_top in -50_000.0f64..50_000.0,
+        shift in 0.0f64..500.0,
+        drift in -0.49f64..0.49,
+    ) {
+        prop_assert_ne!(
+            classify_child_scroll(published_offset, child_value, viewport_top, 0.0),
+            ChildScrollDecision::Defer
+        );
+        prop_assert_eq!(
+            classify_child_scroll(published_offset, published_offset + drift, viewport_top, shift),
+            ChildScrollDecision::Rest
+        );
     }
 }

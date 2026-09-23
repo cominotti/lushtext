@@ -6,8 +6,8 @@
 //! split-view persistence, and the callback glue that binds the sidebar,
 //! command palette, session restore, and notifications into one shell.
 
-use super::drafts::DraftRestoreTicket;
 use super::drafts::{DraftMutationIntent, DraftMutationOrder};
+use super::drafts::{DraftRestoreTicket, PendingPreservation};
 use super::geometry::execution::{
     configure_split_views, current_window_width, effective_properties_fraction,
     effective_workspace_sidebar_fraction, install_split_view_breakpoints,
@@ -244,6 +244,16 @@ pub struct DraftState {
     /// Current deletion intents whose durable manifest removal may outlive a
     /// failed body deletion and must remain explicit on a later retry.
     pub(super) delete_tombstones: RefCell<HashMap<String, DraftMutationIntent>>,
+    /// Stale file-backed drafts whose queued delete must first preserve the
+    /// body (set-aside copy, plus local history when it accepts it). A failed
+    /// preservation leaves the body and its persisted entry in place.
+    pub(super) stale_preservations: RefCell<HashMap<String, PendingPreservation>>,
+    /// Draft ids whose recovery body is queued or being read for restore,
+    /// with how many restore tickets for each are still outstanding.
+    ///
+    /// Autosave must not write a body for such an id: the new buffer would
+    /// overwrite the recovery body before restore could apply or preserve it.
+    pub(super) restore_pending_ids: RefCell<HashMap<String, usize>>,
     /// Cancellation token for the current autosave buffer copy, if any.
     pub(crate) autosave_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Cancellation token for the current close-time buffer copy, if any.

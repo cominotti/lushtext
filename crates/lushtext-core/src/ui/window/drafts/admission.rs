@@ -87,6 +87,7 @@ impl LushtextWindow {
     /// Startup aggregate-budget skips and later on-demand fallbacks share this
     /// gate so completed 64 MiB reads cannot accumulate behind GTK installers.
     pub(super) fn queue_lazy_draft_restore(&self, editor: &LushtextEditorPage, entry: DraftEntry) {
+        self.hold_draft_restore(&entry.draft_id);
         self.imp()
             .drafts
             .lazy_restore_queue

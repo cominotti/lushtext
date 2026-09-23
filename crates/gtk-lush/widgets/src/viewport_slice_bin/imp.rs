@@ -15,7 +15,9 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{glib, graphene, gsk};
 
-use crate::scroll_request::{ADJUSTMENT_EPSILON, outer_scroll_request};
+use crate::scroll_request::{
+    ADJUSTMENT_EPSILON, ChildScrollDecision, classify_child_scroll, outer_scroll_request,
+};
 use crate::single_child::replace_child;
 use crate::slice_geometry::viewport_slice;
 
@@ -48,6 +50,11 @@ pub struct ViewportSliceBin {
     pending_outer_delta: Cell<f64>,
     /// True while an idle to apply `pending_outer_delta` is scheduled.
     outer_request_scheduled: Cell<bool>,
+    /// A divergence the last allocation could not classify, as the offset the
+    /// bin had published then and the value the child chose. The next
+    /// allocation hands the child its own value back instead of the offset,
+    /// so a request is not erased before it can be told from a settle.
+    deferred: Cell<Option<DeferredDivergence>>,
     /// Vertical CSS inset (padding plus border) of the child's content box,
     /// learned from the page size the child reports after an allocation. A
     /// `GtkScrollable` works in its content box, so the geometry this bin
@@ -83,6 +90,7 @@ impl ObjectSubclass for ViewportSliceBin {
             viewport_top: Cell::new(0.0),
             pending_outer_delta: Cell::new(0.0),
             outer_request_scheduled: Cell::new(false),
+            deferred: Cell::new(None),
             content_inset: Cell::new(0.0),
             allocation_count: Cell::new(0),
             correction_count: Cell::new(0),
@@ -248,10 +256,18 @@ impl WidgetImpl for ViewportSliceBin {
 
         self.allocation_count.set(self.allocation_count.get() + 1);
         self.allocating.set(true);
+        // A deferred divergence survives only while the bin publishes the same
+        // offset it was measured against; once the outer scroller has moved,
+        // the band re-derives from it like any other scroll.
+        let deferred = self.deferred.take();
+        let held_value = deferred
+            .filter(|held| (held.published - f64::from(slice_top)).abs() < ADJUSTMENT_EPSILON)
+            .map(|held| held.child_value);
         self.publish_slice_offset(
             f64::from(slice_top),
             content_height,
             f64::from(slice_height),
+            held_value,
         );
         let transform = gsk::Transform::new()
             .translate(&graphene::Point::new(0.0, pixel_coordinate(slice_top)));
@@ -283,20 +299,47 @@ impl WidgetImpl for ViewportSliceBin {
         // to show a different band. A value that is neither is a settle: the
         // child renders against it while this bin placed it at the published
         // offset, so it is written back here, while `allocating` still holds
-        // and the bin's own handler ignores the emission. The learning frame
-        // skips the write-back: its requeued pass republishes anyway.
+        // and the bin's own handler ignores the emission. A divergence within
+        // the correction the child just made could be either, so it is left
+        // in place and classified by one more allocation (see
+        // `scroll_request`). The learning frame skips both: its requeued pass
+        // republishes anyway.
         let settled = self.vadjustment.value();
         let published = self.published_offset.get();
-        if let Some(delta) =
-            outer_scroll_request(published, settled, viewport_top, reconfigure_shift)
-        {
-            self.follow_child_request(delta);
-        } else if !inset_changed && (settled - published).abs() >= ADJUSTMENT_EPSILON {
-            self.correction_count.set(self.correction_count.get() + 1);
-            self.vadjustment.set_value(published);
+        match classify_child_scroll(published, settled, viewport_top, reconfigure_shift) {
+            ChildScrollDecision::Request(delta) => self.follow_child_request(delta),
+            ChildScrollDecision::Settle if !inset_changed => {
+                self.correction_count.set(self.correction_count.get() + 1);
+                self.vadjustment.set_value(published);
+            }
+            ChildScrollDecision::Defer if !inset_changed => {
+                self.deferred.set(Some(DeferredDivergence {
+                    published,
+                    child_value: settled,
+                }));
+                // One re-allocation per divergence: a child whose geometry
+                // never stops moving keeps its value until the next
+                // allocation that happens anyway, instead of looping here.
+                if held_value.is_none() {
+                    self.obj().queue_allocate();
+                }
+            }
+            ChildScrollDecision::Rest
+            | ChildScrollDecision::Settle
+            | ChildScrollDecision::Defer => {}
         }
         self.allocating.set(false);
     }
+}
+
+/// A child value the bin left in place because the allocation that produced
+/// it also moved the child's geometry; see `ViewportSliceBin::deferred`.
+#[derive(Clone, Copy)]
+struct DeferredDivergence {
+    /// The offset the bin had published in that allocation.
+    published: f64,
+    /// The value the child chose in it.
+    child_value: f64,
 }
 
 /// Round a logical-pixel length to whole pixels for GTK allocation.
@@ -412,17 +455,29 @@ impl ViewportSliceBin {
 
     /// Write the slice offset the child should rest at and remember it as the
     /// baseline that tells this bin's own writes apart from the child's.
-    fn publish_slice_offset(&self, offset: f64, content_height: f64, slice_height: f64) {
+    ///
+    /// With `held_value`, the adjustment keeps that value instead: a deferred
+    /// divergence the child must still hold when it is allocated again, since
+    /// a `GtkListBase` re-anchors on any value it is handed and would drop the
+    /// request being deferred. The baseline is the offset all the same.
+    fn publish_slice_offset(
+        &self,
+        offset: f64,
+        content_height: f64,
+        slice_height: f64,
+        held_value: Option<f64>,
+    ) {
         // Upper and page are expressed in the child's content box; the value
         // is not offset, because a row at child content `y` is drawn at
         // `offset + inset_top + (y - value)` and this bin's own frame (its
         // measured natural height) already contains the inset.
         let inset = self.content_inset.get();
         let page = (slice_height - inset).max(0.0);
+        let upper = (content_height - inset).max(page);
         self.vadjustment.configure(
-            offset,
+            held_value.unwrap_or(offset),
             0.0,
-            (content_height - inset).max(page),
+            upper,
             self.vadjustment.step_increment(),
             page,
             page,
@@ -430,7 +485,12 @@ impl ViewportSliceBin {
         // Read back rather than storing `offset`: `configure` clamps to
         // `[lower, upper - page_size]`, and a baseline that disagrees with the
         // adjustment by even a pixel is read as a child request forever after.
-        self.published_offset.set(self.vadjustment.value());
+        // A held value is not the baseline, so clamp the offset the same way.
+        let published = match held_value {
+            Some(_) => offset.clamp(0.0, upper - page),
+            None => self.vadjustment.value(),
+        };
+        self.published_offset.set(published);
     }
 
     /// The child moved its own adjustment outside an allocation (for example a
@@ -441,6 +501,8 @@ impl ViewportSliceBin {
         }
         // Outside an allocation there is no reconfigure in flight: the child
         // moved the value on its own, which is the deferred `scroll_to` case.
+        // Its newer value supersedes any divergence still held for it.
+        self.deferred.set(None);
         if let Some(delta) = outer_scroll_request(
             self.published_offset.get(),
             value,

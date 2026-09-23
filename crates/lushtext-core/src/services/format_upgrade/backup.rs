@@ -135,13 +135,9 @@ impl BackupSession {
     pub(crate) fn copy_item(&mut self, data_dir: &Path, item: &FormatInventoryItem) -> Result<()> {
         let backup_path = self.backup_path_for(item);
         let bytes = read_preservable_file(item)?;
-        fs_write::atomic_replace(
-            &backup_path,
-            WriteLabel::from("format-upgrade-backup"),
-            &bytes,
-        )
-        .map_err(fs_write::DurableWriteError::into_io_error)
-        .with_context(|| format!("failed to back up {}", item.absolute_path.display()))?;
+        fs_write::atomic_replace(&backup_path, WriteLabel::FORMAT_UPGRADE_BACKUP, &bytes)
+            .map_err(fs_write::DurableWriteError::into_io_error)
+            .with_context(|| format!("failed to back up {}", item.absolute_path.display()))?;
         self.records.push(success_record(
             data_dir,
             item,
@@ -180,7 +176,7 @@ impl BackupSession {
         let envelope = JsonEnvelopeRef::new(KIND_FORMAT_UPGRADE_BACKUP_MANIFEST, &manifest);
         fs_write::atomic_replace_stream(
             &manifest_path,
-            WriteLabel::from("format-upgrade-manifest"),
+            WriteLabel::FORMAT_UPGRADE_MANIFEST,
             |writer| serde_json::to_writer_pretty(writer, &envelope).map_err(io::Error::other),
         )
         .map_err(fs_write::DurableWriteError::into_io_error)

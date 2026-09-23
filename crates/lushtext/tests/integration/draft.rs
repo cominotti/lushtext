@@ -6,10 +6,14 @@
 //! and orphan cleanup through `draft_service` and `DraftManifest`.
 
 use super::common::TestContext;
-use lushtext_core::model::draft::{DraftEntry, DraftManifest};
-use lushtext_core::services::draft_service;
+use lushtext_core::model::draft::{
+    DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
+};
+use lushtext_core::model::local_history::LocalHistorySnapshotOrigin;
+use lushtext_core::model::session::{SessionData, SessionTab};
 use lushtext_core::services::filesystem::fixture;
-use std::path::PathBuf;
+use lushtext_core::services::{draft_service, editor_io, local_history_service, session_service};
+use std::path::{Path, PathBuf};
 
 // --- Draft ID generation ---
 
@@ -701,5 +705,250 @@ fn multi_start_manifest_repair_preserves_every_body_through_all_cleanup_pages() 
         first.manifest_repair_metrics.reached_terminal_inventory,
         pages,
         manifest.drafts.len(),
+    );
+}
+
+// --- Crash-window recovery and stale-draft preservation (formal-verification phase 0) ---
+
+fn file_session(paths: &[&Path]) -> SessionData {
+    SessionData {
+        tabs: paths
+            .iter()
+            .map(|path| SessionTab {
+                path: Some(path.to_path_buf()),
+                draft_id: None,
+                cursor_line: 0,
+                cursor_col: 0,
+                scroll_line: 0,
+                pinned: false,
+            })
+            .collect(),
+        active_tab_index: Some(0),
+    }
+}
+
+fn set_aside_names(data_dir: &Path) -> Vec<String> {
+    let dir = draft_service::set_aside_dir(data_dir);
+    if fixture::exists(&dir) {
+        fixture::entry_names(&dir)
+    } else {
+        Vec::new()
+    }
+}
+
+/// A crash between a first file-backed body write and the batch commit leaves
+/// an unregistered stable-path-hash body. It must not wedge the journal, and
+/// its content must stay recoverable.
+#[test]
+fn unregistered_path_hash_body_is_attributed_from_session_and_journal_stays_trusted() {
+    let ctx = TestContext::new();
+    let file_path = ctx.write_file("project/notes.md", "on disk");
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    draft_service::save_manifest(ctx.data_dir(), &DraftManifest::default())
+        .expect("seed a trusted empty manifest");
+    draft_service::write_draft(ctx.data_dir(), &draft_id, "orphaned unsaved edits")
+        .expect("write the crash-window body");
+    let session = file_session(&[&file_path]);
+    session_service::save(ctx.data_dir(), &session).expect("save session");
+
+    let commit = draft_service::update_manifest(
+        ctx.data_dir(),
+        &session,
+        DraftManifestAuthority::TRUSTED,
+        |_| {},
+    )
+    .expect("an unregistered path-hash body must not wedge the manifest");
+    assert!(commit.authority.is_trusted());
+    let entry = commit
+        .manifest
+        .find_by_id(&draft_id)
+        .expect("reconciliation attributes the body to the session tab");
+    assert_eq!(entry.original_path.as_deref(), Some(file_path.as_path()));
+    assert_eq!(
+        entry.original_mtime_secs,
+        Some(lushtext_core::model::draft::UNPROVEN_BACKING_MTIME_SECS)
+    );
+
+    // Unprovable freshness never restores over the file; the edits are kept in
+    // the file's local history instead.
+    let restore = draft_service::load_restore_state(ctx.data_dir());
+    assert!(restore.manifest_authority.is_trusted());
+    assert!(!matches!(
+        restore.preloaded_drafts.get(&draft_id),
+        Some(PreloadedDraftRestore::Content(_))
+    ));
+    let snapshots = local_history_service::list_snapshots_for_path(ctx.data_dir(), &file_path)
+        .expect("list local history");
+    let preserved = snapshots
+        .iter()
+        .find(|meta| meta.origin == LocalHistorySnapshotOrigin::Periodic)
+        .expect("the orphaned edits are preserved as a while-editing snapshot");
+    let snapshot = local_history_service::load_snapshot_for_path(
+        ctx.data_dir(),
+        &file_path,
+        &preserved.snapshot_id,
+    )
+    .expect("load snapshot")
+    .expect("snapshot exists");
+    assert_eq!(snapshot.text, "orphaned unsaved edits");
+    // A rebuilt entry is also copied aside at reconstruction, and local
+    // history retention can never prune that copy.
+    let names = set_aside_names(ctx.data_dir());
+    assert!(!names.is_empty());
+    for name in &names {
+        fixture::assert_text(
+            &draft_service::set_aside_dir(ctx.data_dir()).join(name),
+            "orphaned unsaved edits",
+        );
+    }
+}
+
+/// A body nothing can attribute is moved aside, never deleted, and stops
+/// blocking later manifest commits and orphan cleanup.
+#[test]
+fn unattributable_path_hash_body_is_set_aside_and_journal_stays_trusted() {
+    let ctx = TestContext::new();
+    let unknown = draft_service::draft_id_for_path(Path::new("/nowhere/lost.md"));
+    draft_service::save_manifest(ctx.data_dir(), &DraftManifest::default())
+        .expect("seed a trusted empty manifest");
+    draft_service::write_draft(ctx.data_dir(), &unknown, "edits with no owner")
+        .expect("write the crash-window body");
+
+    let commit = draft_service::update_manifest(
+        ctx.data_dir(),
+        &SessionData::default(),
+        DraftManifestAuthority::TRUSTED,
+        |_| {},
+    )
+    .expect("an unattributable body must not wedge the manifest");
+    assert!(commit.authority.is_trusted());
+    assert!(commit.manifest.find_by_id(&unknown).is_none());
+    assert_eq!(
+        draft_service::read_draft(ctx.data_dir(), &unknown).expect("read"),
+        None
+    );
+    let names = set_aside_names(ctx.data_dir());
+    assert_eq!(
+        names.len(),
+        1,
+        "the body is preserved in the set-aside area"
+    );
+    let set_aside = draft_service::set_aside_dir(ctx.data_dir()).join(&names[0]);
+    fixture::assert_text(&set_aside, "edits with no owner");
+
+    // Orphan cleanup never touches the set-aside area.
+    let manifest = draft_service::load_manifest(ctx.data_dir()).expect("load manifest");
+    let plan =
+        draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest).expect("inspect cleanup");
+    let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
+    assert!(outcome.deleted_files.is_empty());
+    fixture::assert_text(&set_aside, "edits with no owner");
+}
+
+/// A stale file-backed draft is preserved as a `Periodic` local-history
+/// snapshot, byte-identical and timestamped with the draft's save time,
+/// before its journal record is retired.
+#[test]
+fn stale_file_draft_is_preserved_as_periodic_local_history_snapshot() {
+    let ctx = TestContext::new();
+    let file_path = ctx.write_file("stale.txt", "current disk content");
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    let body = "stale draft content\nwith two lines";
+    draft_service::write_draft(ctx.data_dir(), &draft_id, body).expect("write draft");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    let saved_at_secs = 1_700_000_030;
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(current_mtime.saturating_sub(1)),
+                saved_at_secs,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("save manifest");
+    session_service::save(ctx.data_dir(), &file_session(&[&file_path])).expect("save session");
+
+    let restore = draft_service::load_restore_state(ctx.data_dir());
+
+    assert!(restore.manifest.find_by_id(&draft_id).is_none());
+    assert_eq!(
+        draft_service::read_draft(ctx.data_dir(), &draft_id).expect("read draft"),
+        None
+    );
+    let snapshots = local_history_service::list_snapshots_for_path(ctx.data_dir(), &file_path)
+        .expect("list local history");
+    let preserved = snapshots
+        .iter()
+        .find(|meta| meta.origin == LocalHistorySnapshotOrigin::Periodic)
+        .expect("stale edits are kept in local history");
+    assert_eq!(preserved.captured_at_millis, saved_at_secs * 1000);
+    let snapshot = local_history_service::load_snapshot_for_path(
+        ctx.data_dir(),
+        &file_path,
+        &preserved.snapshot_id,
+    )
+    .expect("load snapshot")
+    .expect("snapshot exists");
+    assert_eq!(snapshot.text.as_bytes(), body.as_bytes());
+    // Local history prunes oldest-first, so a byte-identical copy is also kept
+    // in the set-aside area, which nothing prunes.
+    let names = set_aside_names(ctx.data_dir());
+    assert_eq!(names.len(), 1);
+    fixture::assert_text(
+        &draft_service::set_aside_dir(ctx.data_dir()).join(&names[0]),
+        body,
+    );
+}
+
+/// A stale draft for a file local history does not accept (> 50 MB) is kept
+/// byte-identically in the drafts set-aside area instead.
+#[test]
+fn stale_draft_for_file_outside_local_history_policy_is_set_aside() {
+    let ctx = TestContext::new();
+    let file_path = ctx.path().join("huge.log");
+    fixture::create_sparse_file(
+        &file_path,
+        lushtext_core::services::file_limits::DISABLE_UNDO_HISTORY + 1,
+    );
+    let draft_id = draft_service::draft_id_for_path(&file_path);
+    let body = "edits to a very large file";
+    draft_service::write_draft(ctx.data_dir(), &draft_id, body).expect("write draft");
+    let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
+    draft_service::save_manifest(
+        ctx.data_dir(),
+        &DraftManifest {
+            drafts: vec![DraftEntry {
+                draft_id: draft_id.clone(),
+                original_path: Some(file_path.clone()),
+                original_mtime_secs: Some(current_mtime.saturating_sub(1)),
+                saved_at_secs: 1_700_000_030,
+            }],
+            cleanup_continuation: None,
+        },
+    )
+    .expect("save manifest");
+    session_service::save(ctx.data_dir(), &file_session(&[&file_path])).expect("save session");
+
+    let restore = draft_service::load_restore_state(ctx.data_dir());
+
+    assert!(restore.manifest.find_by_id(&draft_id).is_none());
+    assert_eq!(
+        draft_service::read_draft(ctx.data_dir(), &draft_id).expect("read draft"),
+        None
+    );
+    let names = set_aside_names(ctx.data_dir());
+    assert_eq!(names.len(), 1, "the stale body is set aside");
+    fixture::assert_text(
+        &draft_service::set_aside_dir(ctx.data_dir()).join(&names[0]),
+        body,
+    );
+    assert!(
+        local_history_service::list_snapshots_for_path(ctx.data_dir(), &file_path)
+            .expect("list local history")
+            .is_empty()
     );
 }

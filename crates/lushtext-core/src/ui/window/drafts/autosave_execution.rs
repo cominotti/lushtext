@@ -90,7 +90,99 @@ impl LushtextWindow {
 
         self.imp().drafts.autosave_inflight.set(true);
         self.imp().drafts.mutation_inflight.set(true);
-        self.drive_dirty_draft_pipeline(dirty_tabs, Vec::new(), DraftPipelineFailures::default());
+        self.register_new_draft_ids_then(dirty_tabs, |window, candidates, refused| {
+            window.drive_dirty_draft_pipeline(
+                candidates,
+                Vec::new(),
+                DraftPipelineFailures {
+                    body_write: refused,
+                    ..DraftPipelineFailures::default()
+                },
+            );
+        });
+    }
+
+    /// Register every file-backed candidate id the persisted manifest lacks,
+    /// in one batched commit, before any of their bodies is written.
+    ///
+    /// Stage 3½ of both pipelines. Without it a crash between a first body
+    /// write and the pass's single commit left a body no manifest entry
+    /// described — the leftover that used to wedge the journal. A candidate
+    /// whose registration did not commit is not written at all; it stays
+    /// dirty and retryable. Ids already registered skip the step, so a
+    /// steady-state pass costs nothing extra.
+    fn register_new_draft_ids_then<F>(&self, candidates: Vec<DirtyDraftCandidate>, then: F)
+    where
+        F: FnOnce(&Self, Vec<DirtyDraftCandidate>, Vec<String>) + 'static,
+    {
+        let trusted = self.imp().drafts.manifest_authority.get().is_trusted();
+        let registrations: Vec<(String, Option<std::path::PathBuf>)> = {
+            let manifest = self.imp().drafts.manifest.borrow();
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    policy::draft_requires_registration(
+                        candidate.original_path.is_some(),
+                        manifest.find_by_id(&candidate.draft_id).is_some(),
+                        trusted,
+                    )
+                })
+                .map(|candidate| (candidate.draft_id.clone(), candidate.original_path.clone()))
+                .collect()
+        };
+        if registrations.is_empty() {
+            then(self, candidates, Vec::new());
+            return;
+        }
+        let required: HashSet<String> = registrations.iter().map(|(id, _)| id.clone()).collect();
+        let data_dir = json_store::data_dir();
+        let session = self.collect_session_for_draft_reconciliation();
+        let authority = self.imp().drafts.manifest_authority.get();
+        let window_weak = self.downgrade();
+        spawn_blocking_then(
+            (),
+            move || {
+                let entries = registrations
+                    .into_iter()
+                    .map(|(draft_id, original_path)| DraftEntry {
+                        draft_id,
+                        original_mtime_secs: original_path
+                            .as_deref()
+                            .and_then(editor_io::mtime_secs),
+                        original_path,
+                        saved_at_secs: editor_io::now_epoch_secs(),
+                    })
+                    .collect::<Vec<_>>();
+                let result =
+                    draft_service::register_draft_entries(&data_dir, &session, authority, &entries)
+                        .map_err(DraftManifestFailure::from);
+                (result, entries)
+            },
+            move |(), (result, registered)| {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let committed = match window.apply_draft_registration(result, registered) {
+                    Ok(()) => true,
+                    Err(detail) => {
+                        tracing::warn!("Failed to register new draft ids: {detail}");
+                        false
+                    }
+                };
+                let (writable, refused): (Vec<_>, Vec<_>) =
+                    candidates.into_iter().partition(|candidate| {
+                        policy::candidate_may_write_after_registration(
+                            required.contains(&candidate.draft_id),
+                            committed,
+                        )
+                    });
+                let refused = refused
+                    .into_iter()
+                    .map(|candidate| candidate.draft_id)
+                    .collect();
+                then(&window, writable, refused);
+            },
+        );
     }
 
     /// Drive one autosave pass without waiting for the production timer.
@@ -140,11 +232,19 @@ impl LushtextWindow {
     /// clears the flag, and the next edit re-arms the first-dirty autosave
     /// through the ordinary path.
     pub(super) fn collect_dirty_draft_candidates(&self) -> Vec<DirtyDraftCandidate> {
-        self.collect_draft_candidates(true, &HashSet::new())
+        let (candidates, restore_blocked) = self.collect_draft_candidates(true, &HashSet::new());
+        if restore_blocked > 0 {
+            // Retried by a later tick once the pending restore has resolved.
+            self.imp().drafts.autosave_pending.set(true);
+        }
+        candidates
     }
 
     /// Capture every modified close candidate except explicit discards.
-    pub(super) fn collect_close_draft_candidates(&self) -> Vec<DirtyDraftCandidate> {
+    ///
+    /// Also returns how many tabs were held back by a pending draft restore;
+    /// the close reports them as unconfirmed so it stays retryable.
+    pub(super) fn collect_close_draft_candidates(&self) -> (Vec<DirtyDraftCandidate>, usize) {
         let discarded_draft_ids = self.imp().drafts.close_discard_ids.borrow().clone();
         self.collect_draft_candidates(false, &discarded_draft_ids)
     }
@@ -165,9 +265,10 @@ impl LushtextWindow {
         &self,
         require_draft_dirty: bool,
         discarded_draft_ids: &HashSet<String>,
-    ) -> Vec<DirtyDraftCandidate> {
+    ) -> (Vec<DirtyDraftCandidate>, usize) {
         let tab_view = &self.imp().tab_view;
         let mut dirty_tabs = Vec::new();
+        let mut restore_blocked = 0usize;
         for i in 0..tab_view.n_pages() {
             let page = tab_view.nth_page(i);
             let child = page.child();
@@ -189,6 +290,12 @@ impl LushtextWindow {
             if discarded_draft_ids.contains(&draft_id) {
                 continue;
             }
+            // The recovery body for this id has not been restored or
+            // preserved yet; writing the buffer now would destroy it.
+            if self.draft_restore_is_pending(&draft_id) {
+                restore_blocked += 1;
+                continue;
+            }
             let intent = self
                 .imp()
                 .drafts
@@ -204,7 +311,7 @@ impl LushtextWindow {
                 intent,
             });
         }
-        dirty_tabs
+        (dirty_tabs, restore_blocked)
     }
 
     /// Snapshot and write one close candidate before admitting the next body.
@@ -363,7 +470,7 @@ impl LushtextWindow {
             }
         }
         let data_dir = json_store::data_dir();
-        let session = self.collect_session();
+        let session = self.collect_session_for_draft_reconciliation();
         let authority = self.imp().drafts.manifest_authority.get();
         let window_weak = self.downgrade();
 
@@ -602,7 +709,7 @@ impl LushtextWindow {
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
         let entries: Vec<DraftEntry> = accepted.iter().map(|item| item.entry.clone()).collect();
-        let session = self.collect_session();
+        let session = self.collect_session_for_draft_reconciliation();
         let authority = self.imp().drafts.manifest_authority.get();
 
         spawn_blocking_then(
@@ -723,18 +830,32 @@ impl LushtextWindow {
             });
             return;
         }
-        let candidates = self.collect_close_draft_candidates();
+        let (candidates, restore_blocked) = self.collect_close_draft_candidates();
+        if restore_blocked > 0 {
+            on_done(Err(anyhow::anyhow!(
+                "{restore_blocked} draft restores are still pending; close remains retryable"
+            )));
+            return;
+        }
         if candidates.is_empty() {
             self.clear_close_discard_drafts();
             on_done(Ok(()));
             return;
         }
         self.imp().drafts.mutation_inflight.set(true);
-        self.drive_close_draft_pipeline(
-            candidates,
-            Vec::new(),
-            DraftPipelineFailures::default(),
-            on_done,
-        );
+        self.register_new_draft_ids_then(candidates, move |window, candidates, refused| {
+            window.drive_close_draft_pipeline(
+                candidates,
+                Vec::new(),
+                DraftPipelineFailures {
+                    body_write: refused
+                        .into_iter()
+                        .map(|draft_id| format!("{draft_id}: recovery metadata was not registered"))
+                        .collect(),
+                    ..DraftPipelineFailures::default()
+                },
+                on_done,
+            );
+        });
     }
 }

@@ -256,12 +256,8 @@ fn write_transparency_style_scheme_if_needed(
     }
 
     fs_write::create_dir_all_durable(scheme_dir)?;
-    fs_write::atomic_replace(file_path, WriteLabel::from("style-scheme"), xml.as_bytes()).map_err(
-        |error| match error {
-            fs_write::DurableWriteError::BeforeRename(source)
-            | fs_write::DurableWriteError::AfterRename(source) => source,
-        },
-    )
+    fs_write::atomic_replace(file_path, WriteLabel::STYLE_SCHEME, xml.as_bytes())
+        .map_err(fs_write::DurableWriteError::into_io_error)
 }
 
 #[cfg(test)]
