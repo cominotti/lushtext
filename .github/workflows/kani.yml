@@ -117,6 +117,17 @@ jobs:
             cargo kani setup
           fi
 
+      - name: Restore the Kani target directory
+        # EVALUATION (harden-kani-lane-and-draft-token task 2.4): kept only if
+        # a warm widgets-geometry job saves at least 3 minutes and the caches
+        # stay under 5 GB in total.
+        uses: actions/cache@v4
+        with:
+          path: target/kani
+          key: kani-target-${{ matrix.shard }}-${{ env.KANI_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            kani-target-${{ matrix.shard }}-${{ env.KANI_VERSION }}-
+
       - name: Run Kani harnesses
         run: >-
           make kani KANI_VERSION="${KANI_VERSION}" KANI_SHARD="${{ matrix.shard }}"
