@@ -593,7 +593,10 @@ tool is [Kani](https://github.com/model-checking/kani): `#[cfg(kani)]` harnesses
 beside the code they check prove the slice-bin geometry and feedback loop, the
 draft journal's decision core under crashes and restarts, and the durable-write
 protocol's crash atomicity. `make kani` runs them with the pinned Kani version;
-ordinary builds and tests need no Kani install.
+ordinary builds and tests need no Kani install. CI runs every shard of the lane
+weekly and on dispatch, and the fast `widgets-geometry` shard on every pull
+request, within per-shard wall-time and memory budgets measured on the CI
+runner and recorded in `scripts/kani-shards.py`.
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
 and [`docs/automation-reference.md`](docs/automation-reference.md). The
@@ -642,6 +645,9 @@ and the cross-pipeline resource evidence lives in
 make bench
 make bench-report
 ```
+
+Benchmarks seed their data through test-only fixture helpers, so a direct
+Cargo invocation needs the feature: `cargo bench -p lushtext-core --features test-utils`.
 
 ## Tech Stack
 

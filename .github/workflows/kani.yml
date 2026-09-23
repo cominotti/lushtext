@@ -4,17 +4,23 @@ name: Kani
 # one shard of scripts/kani-shards.py per matrix job, because the whole lane
 # takes longer than the 30-minute job cap. The shard table and the Makefile's
 # pinned KANI_VERSION are the only sources of truth: the `shards` job checks the
-# table and hands both to the matrix. Scheduled and manual only, outside the
-# pull-request gate, until its run time has been measured stable (the same
-# promotion path the fuzz smoke follows).
+# table (membership and each shard's measured runner budget) and hands both to
+# the matrix. Pull requests and pushes to main run only the shards the table
+# gates `pull-request` (measured at most 15 minutes on this runner); the weekly
+# schedule and manual dispatch run every shard. Every job runs in measurement
+# mode, so its summary and its `kani-measure-<shard>` artifact carry the wall
+# time, peak memory, and per-harness times the table's budgets come from.
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   schedule:
     - cron: "37 5 * * 3"
   workflow_dispatch:
 
 concurrency:
-  group: kani-${{ github.ref }}
+  group: kani-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -30,6 +36,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.table.outputs.shards }}
+      pr-shards: ${{ steps.table.outputs.pr-shards }}
       kani-version: ${{ steps.table.outputs.kani-version }}
     steps:
       - uses: actions/checkout@v6
@@ -50,7 +57,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.shards.outputs.shards) }}
+        # Pull requests and pushes to main run the pull-request-gated shards;
+        # schedule and dispatch run every shard.
+        shard: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'push') && needs.shards.outputs.pr-shards || needs.shards.outputs.shards) }}
     container:
       image: registry.fedoraproject.org/fedora:44
 

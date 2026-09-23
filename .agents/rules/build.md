@@ -63,8 +63,8 @@ make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with ar
 make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
-make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard)
-make check-kani-shards # every Kani harness in exactly one CI shard (no Kani needed)
+make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode)
+make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
@@ -450,7 +450,23 @@ that crate.
 - Regression file location: `crates/lushtext-core/proptest-regressions/properties.txt`
 
 The property target is guarded by `required-features = ["property-tests"]` and
-must stay outside default non-widget nextest and default mutation runs. Use it
+must stay outside default non-widget nextest and default mutation runs.
+`property-tests` implies `test-utils`, because the suite seeds bodies through
+the test-only fixture modules.
+
+Both fixture modules, `services::filesystem::fixture` and
+`services::draft_service::fixture`, are compiled only under
+`#[cfg(any(test, feature = "test-utils"))]`: their writers skip the durable
+write and the `RegisteredDraft` token, so production must not be able to name
+them. `test-utils` is never a default feature and no shipping build (the
+`lushtext` `[dependencies]`, `build-aux/cargo.sh`, the Flatpak manifest, Snap)
+enables it; `make check-filesystem-boundary` enforces all of that, and CI's lint
+job runs `cargo check -p lushtext --bins --locked` with default features, the
+build that fails if production names a fixture (the all-features Clippy gate
+cannot see one). Unit tests get the fixtures from `cfg(test)`, the `lushtext`
+tests from their dev-dependency feature, and every benchmark command passes
+`--features test-utils` (`cargo bench -p lushtext-core --features test-utils`),
+so a missing flag is a loud compile error, not a silently skipped target. Use it
 for pure deterministic invariants over bounded generated strings, paths,
 vectors, Markdown fragments, replacement lists, encodings, sidecar hashes, and
 tiny deterministic tempdir-backed service fixtures. Do not put GTK widget
@@ -489,6 +505,15 @@ invariant; tighten the generator or use the deep lane.
   that ships, or a pure core production drives. Never a copy of the code.
   `cfg(kani)` is a declared expected cfg in the workspace lints, so ordinary
   builds, Clippy, and tests compile none of it and need no Kani install.
+  The module name is mandatory: a harness module is a file named
+  `kani_proofs.rs`, declared by its parent as `#[cfg(kani)] mod kani_proofs;`
+  (`policy/kani_proofs.rs` by `policy.rs`, `x/kani_proofs.rs` by `x/mod.rs` or
+  `x.rs`, a crate-root one by `lib.rs`). That name is how the rest of the
+  tooling treats it as verification code: `.cargo/mutants.toml` excludes
+  `crates/**/kani_proofs.rs` (no build cargo-mutants runs compiles it, so no
+  test could kill its mutants), and `make check-workflow-boundaries` skips it in
+  the unclassified-decision-logic and role-home rules, but only when the parent
+  gates it on `cfg(kani)`; an ungated or orphaned `kani_proofs.rs` is a finding.
 - Harness style: only `kani::any`, `kani::assume`, `#[kani::unwind]`, and
   `#[kani::should_panic]`. Function and loop contracts are experimental and not
   used. A harness proving a property on a restricted domain states that domain
@@ -505,12 +530,29 @@ invariant; tighten the generator or use the deep lane.
   `crates/` matches no shard or several, so a harness cannot silently drop out
   of CI. The shard table and the Makefile's `KANI_VERSION` are the only copies:
   the workflow's `shards` job builds its matrix from
-  `scripts/kani-shards.py github-outputs`. CI runs one shard per matrix job, weekly and by
-  `workflow_dispatch`, in `.github/workflows/kani.yml` (Fedora 44 container,
-  `timeout-minutes: 30`), because the whole lane is longer than one job's cap;
-  a harness whose own run approaches the cap gets its own shard rather than a
-  longer timeout. The lane stays outside the pull-request gate until its run
-  time is measured stable. A counterexample is triaged like a failing test:
+  `scripts/kani-shards.py github-outputs`. CI runs one shard per matrix job in
+  `.github/workflows/kani.yml` (Fedora 44 container, `timeout-minutes: 30`),
+  because the whole lane is longer than one job's cap.
+- Shard gates and budgets: each `SHARDS` record in `scripts/kani-shards.py`
+  carries a `gate` (`pull-request` or `scheduled`) and its measured CI runner
+  budget (`ci_minutes`, `ci_peak_gib`, and `measured_in`, the run ids it came
+  from; developer-machine timing does not count). Pull requests and pushes to
+  `main` run only the `pull-request` shards (`github-outputs` emits them as
+  `pr-shards`); the weekly schedule and `workflow_dispatch` run every shard.
+  `make check-kani-shards` fails when a shard is unmeasured, over 25 minutes,
+  over 12 GiB, or gated `pull-request` while over 15 minutes. Measurement mode,
+  `make kani KANI_MEASURE=<json>` (`kani-shards.py run --measure`), records each
+  shard's wall time, the peak resident memory of its largest descendant (CBMC),
+  and every harness's `Verification Time:`; the workflow always runs in it and
+  uploads one `kani-measure-<shard>` artifact plus a job-summary table. Record a
+  new or changed shard's budget from a dispatched run, the larger of two. When a
+  shard breaks a margin, fit it in this order: split the shard, then try another
+  solver (`#[kani::solver(...)]`) only if the verdict is unchanged, and only as
+  a last resort reduce a bound, recording it in the programme record and the
+  harness's doc comment together with the property statement it weakens. Never
+  raise `timeout-minutes` instead. The Kani install (binaries, `~/.kani`, and the
+  nightly `cargo kani setup` installs) is cached on `KANI_VERSION`. A
+  counterexample is triaged like a failing test:
   decide whether the code, the stated domain, or the envelope is wrong, and
   record the outcome in the programme record. Kani cannot run two jobs on one
   target directory; use a second `--target-dir` for a parallel local run.
@@ -807,6 +849,10 @@ Meson wraps Cargo for installed and Flatpak builds:
 - Framework: Criterion.rs (`criterion = "0.8"` with `html_reports` feature)
 - Benchmark file: `crates/lushtext-core/benches/benchmarks.rs` (single file, all groups)
 - All benchmarked code is GTK-free — no display server needed for `cargo bench`
+- Benchmarks seed fixtures through the test-only fixture modules, so every
+  command passes `--features test-utils`: `cargo bench -p lushtext-core --features test-utils`
+  (the Makefile `bench*` targets, `scripts/bench-report.sh`,
+  `scripts/run-performance-smoke.sh`, and CI's bench compile already do)
 - `[profile.bench]` in workspace `Cargo.toml`: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1` (no strip — criterion needs symbols)
 - `FileIndex::from(Vec<IndexedFile>)` enables synthetic index construction for benchmarks
 - Report script: `scripts/bench-report.sh` — clears stale Criterion `new/` results before each run, fails closed if `cargo bench` fails, then parses fresh JSON into markdown. Requires `jq`. `--scope release` is a bounded release-safe short report; `--scope diagnostic` is for deeper scheduled/manual analysis and can be split with repeated `--filter` values.
@@ -831,7 +877,7 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 - `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, workflow-timeout policy, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
 - `Widget Tests` job budget: `timeout-minutes: 30`, which is the hard ceiling `scripts/check-workflow-timeouts.py` enforces; do not raise that ceiling. After slot 7b (1,203 widget tests) the job measured about 25 minutes on the shared runner and was cancelled once at the previous 25-minute budget, so the remaining headroom is small. The durable next step when 30 minutes is approached again is sharding the widget binary across matrix jobs, not a longer timeout. `scripts/run-widget-tests.sh` streams the sanitized harness output through `tee` while it runs, so a cancelled job still shows how far the suite got.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
-- `.github/workflows/kani.yml` — scheduled/manual `make kani` lane, one `scripts/kani-shards.py` shard per matrix job, matrix and pinned `KANI_VERSION` derived from the script and Makefile by a `shards` job (Fedora 44 container, `timeout-minutes: 30`). It stays outside required PR checks until its run time is measured stable, following the fuzz-smoke precedent.
+- `.github/workflows/kani.yml` — `make kani` lane in measurement mode, one `scripts/kani-shards.py` shard per matrix job, matrix and pinned `KANI_VERSION` derived from the script and Makefile by a `shards` job (Fedora 44 container, `timeout-minutes: 30`). Pull requests and pushes to `main` run only the shards the table gates `pull-request` (initially `widgets-geometry`); schedule and dispatch run every shard.
 - `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual-geometry, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a split benchmark-report matrix. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.

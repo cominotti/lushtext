@@ -15,7 +15,7 @@ This table is the one source of truth for the shards, and the Makefile's
 
 Usage:
   scripts/kani-shards.py list
-  scripts/kani-shards.py check
+  scripts/kani-shards.py check [--self-test]
   scripts/kani-shards.py github-outputs
   scripts/kani-shards.py run all|<shard> [--target-dir DIR] [--measure JSON] [--self-test]
 
@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -49,11 +50,45 @@ PACKAGES = {
     "lushtext-core": REPO_ROOT / "crates/lushtext-core/src",
 }
 
-# shard name -> (package, harness filters, which Kani matches as substrings
-# of the fully qualified harness name, as `check` does). Local measured CBMC times
-# (Kani 0.68.0, this toolbox) are in docs/next/formal-verification.md.
-SHARDS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "widgets-geometry": (
+# Budget margins, enforced by `check` against each shard's recorded runner
+# measurement. The job cap is 30 minutes and a public `ubuntu-latest` runner has
+# 16 GB: 25 minutes leaves room for runner variance and a cold Kani install,
+# 12 GiB for the runner agent, the container, and kernel memory, and a
+# pull-request shard must stay under 15 minutes so it never becomes the slowest
+# required check. A shard over a margin is split first (design D3 of
+# openspec/changes/harden-kani-lane-and-draft-token): split, then tune the
+# solver, and only as a last resort reduce a proof bound.
+MAX_SHARD_MINUTES = 25.0
+MAX_SHARD_PEAK_GIB = 12.0
+MAX_PULL_REQUEST_SHARD_MINUTES = 15.0
+GATES = ("pull-request", "scheduled")
+
+
+@dataclass(frozen=True)
+class Shard:
+    """One CI job's worth of harnesses.
+
+    `filters` are matched by Kani as substrings of the fully qualified harness
+    name, as `check` does. `gate` is `pull-request` (runs on pull requests and
+    pushes to main as well as on schedule and dispatch) or `scheduled` (schedule
+    and dispatch only). `ci_minutes` and `ci_peak_gib` are the shard's measured
+    wall time and peak resident memory on the CI runner, the larger of the
+    measured runs, and `measured_in` names the runs they came from. Timing from
+    a developer machine does not count as a measurement.
+    """
+
+    package: str
+    filters: tuple[str, ...]
+    gate: str
+    ci_minutes: float | None
+    ci_peak_gib: float | None
+    measured_in: str
+
+
+# Local CBMC times (Kani 0.68.0, one toolbox) and the runner measurements
+# behind each budget are in docs/next/formal-verification.md.
+SHARDS: dict[str, Shard] = {
+    "widgets-geometry": Shard(
         "gtk-lush-widgets",
         (
             "kani_proofs::no_input_panics",
@@ -66,12 +101,20 @@ SHARDS: dict[str, tuple[str, tuple[str, ...]]] = {
             "kani_proofs::request_lands_",
             "kani_proofs::request_landing_",
         ),
+        gate="pull-request",
+        ci_minutes=8.2,
+        ci_peak_gib=1.8,
+        measured_in="runs 35920992670",
     ),
-    "widgets-slice-loop-rest": (
+    "widgets-slice-loop-rest": Shard(
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_rests_",),
+        gate="scheduled",
+        ci_minutes=14.6,
+        ci_peak_gib=1.8,
+        measured_in="runs 35920992670",
     ),
-    "widgets-slice-loop-requests": (
+    "widgets-slice-loop-requests": Shard(
         "gtk-lush-widgets",
         (
             "kani_proofs::slice_loop_honours_",
@@ -79,18 +122,30 @@ SHARDS: dict[str, tuple[str, tuple[str, ...]]] = {
             "kani_proofs::slice_loop_one_reconfiguring_",
             "kani_proofs::slice_loop_two_reconfiguring_",
         ),
+        gate="scheduled",
+        ci_minutes=14.9,
+        ci_peak_gib=1.8,
+        measured_in="runs 35920992670",
     ),
-    "core-journal-and-write": (
+    "core-journal-and-write": Shard(
         "lushtext-core",
         (
             "services::draft_service::kani_proofs::journal_",
             "services::draft_service::kani_proofs::a_dirty_editor_",
             "services::filesystem::write_protocol::kani_proofs::",
         ),
+        gate="scheduled",
+        ci_minutes=19.4,
+        ci_peak_gib=8.3,
+        measured_in="runs 35920992670",
     ),
-    "core-second-writer": (
+    "core-second-writer": Shard(
         "lushtext-core",
         ("services::draft_service::kani_proofs::a_second_writer_",),
+        gate="scheduled",
+        ci_minutes=16.6,
+        ci_peak_gib=8.9,
+        measured_in="runs 35920992670",
     ),
 }
 
@@ -149,16 +204,46 @@ def check(found: dict[str, list[str]], unowned: list[Path]) -> list[str]:
     for package, names in found.items():
         for name in names:
             owners = [
-                shard
-                for shard, (shard_package, prefixes) in SHARDS.items()
-                if shard_package == package and any(p in name for p in prefixes)
+                name_
+                for name_, shard in SHARDS.items()
+                if shard.package == package and any(p in name for p in shard.filters)
             ]
             if len(owners) != 1:
                 problems.append(f"{package} harness {name} matches shards {owners or 'none'}")
-    for shard, (package, prefixes) in SHARDS.items():
-        for prefix in prefixes:
-            if not any(prefix in name for name in found.get(package, [])):
+    for shard, record in SHARDS.items():
+        for prefix in record.filters:
+            if not any(prefix in name for name in found.get(record.package, [])):
                 problems.append(f"shard {shard} prefix {prefix} matches no harness")
+    return problems
+
+
+def budget_problems(shards: dict[str, Shard]) -> list[str]:
+    """Every shard has a runner measurement inside the margins for its gate."""
+    problems = []
+    for name, shard in shards.items():
+        if shard.gate not in GATES:
+            problems.append(f"shard {name} gate {shard.gate!r} is not one of {GATES}")
+        if shard.ci_minutes is None or shard.ci_peak_gib is None or not shard.measured_in:
+            problems.append(
+                f"shard {name} has no recorded CI runner measurement "
+                "(ci_minutes, ci_peak_gib, measured_in); dispatch kani.yml and record it"
+            )
+            continue
+        if shard.ci_minutes > MAX_SHARD_MINUTES:
+            problems.append(
+                f"shard {name} takes {shard.ci_minutes} min on the runner, over the "
+                f"{MAX_SHARD_MINUTES:g}-minute margin; split it"
+            )
+        if shard.ci_peak_gib > MAX_SHARD_PEAK_GIB:
+            problems.append(
+                f"shard {name} peaks at {shard.ci_peak_gib} GiB on the runner, over the "
+                f"{MAX_SHARD_PEAK_GIB:g} GiB margin; split it"
+            )
+        if shard.gate == "pull-request" and shard.ci_minutes > MAX_PULL_REQUEST_SHARD_MINUTES:
+            problems.append(
+                f"shard {name} is gated pull-request but takes {shard.ci_minutes} min, over "
+                f"the {MAX_PULL_REQUEST_SHARD_MINUTES:g}-minute pull-request margin; gate it scheduled"
+            )
     return problems
 
 
@@ -205,7 +290,7 @@ def run_measured(command: list[str]) -> tuple[int, float, int, HarnessLog]:
 def shard_record(shard: str, status: int, seconds: float, peak_kib: int, log: HarnessLog) -> dict[str, object]:
     return {
         "shard": shard,
-        "package": SHARDS[shard][0],
+        "package": SHARDS[shard].package,
         "status": status,
         "wall_seconds": round(seconds, 1),
         "wall_minutes": round(seconds / 60, 2),
@@ -236,9 +321,8 @@ def run(shard_names: list[str], target_dir: str, measure: str | None = None) -> 
     records: list[dict[str, object]] = []
     result = 0
     for shard in shard_names:
-        package, prefixes = SHARDS[shard]
-        command = ["cargo", "kani", "-p", package, "--target-dir", target_dir]
-        for prefix in prefixes:
+        command = ["cargo", "kani", "-p", SHARDS[shard].package, "--target-dir", target_dir]
+        for prefix in SHARDS[shard].filters:
             command += ["--harness", prefix]
         print(f"Running Kani shard {shard}: {' '.join(command)}", flush=True)
         if measure is None:
@@ -305,6 +389,22 @@ def self_test() -> None:
         "harnesses": log.harnesses,
     }
     table = summary_markdown([record])
+    # Budget rules: an unmeasured shard, one over 25 minutes, one over 12 GiB,
+    # and a pull-request shard over 15 minutes each fail; a measured shard
+    # inside every margin passes.
+    good = Shard("p", ("f",), "pull-request", 14.0, 11.5, "run 1")
+    assert budget_problems({"ok": good}) == [], budget_problems({"ok": good})
+    assert budget_problems({"s": replace(good, gate="scheduled", ci_minutes=24.9)}) == []
+    cases = {
+        "unmeasured": replace(good, ci_minutes=None, ci_peak_gib=None, measured_in=""),
+        "no-run-id": replace(good, measured_in=""),
+        "slow": replace(good, gate="scheduled", ci_minutes=25.5),
+        "memory": replace(good, ci_peak_gib=12.5),
+        "slow-pull-request": replace(good, ci_minutes=15.5),
+        "unknown-gate": replace(good, gate="nightly"),
+    }
+    for label, shard in cases.items():
+        assert budget_problems({label: shard}), f"budget self-test {label} should fail"
     assert "| `widgets-geometry` | 0 | 1.5 | 3.0 | 2 |" in table, table
     assert "| `kani_proofs::no_input_panics` | SUCCESSFUL | 0.4419652 |" in table, table
 
@@ -321,13 +421,22 @@ def main() -> int:
         self_test()
     found, unowned = discover()
     if args.command == "list":
-        for shard, (package, prefixes) in SHARDS.items():
-            names = [n for n in found[package] if any(p in n for p in prefixes)]
-            print(f"{shard} ({package}): {len(names)} harnesses")
+        for shard, record in SHARDS.items():
+            names = [n for n in found[record.package] if any(p in n for p in record.filters)]
+            budget = (
+                "unmeasured"
+                if record.ci_minutes is None
+                else f"{record.ci_minutes} min, {record.ci_peak_gib} GiB on the runner"
+            )
+            print(f"{shard} ({record.package}, {record.gate}, {budget}): {len(names)} harnesses")
             for name in names:
                 print(f"  {name}")
         return 0
     problems = check(found, unowned)
+    # Budgets gate the table (`check`) and the CI matrix (`github-outputs`), not
+    # `run`: a shard over a margin must stay runnable so it can be re-measured.
+    if args.command in ("check", "github-outputs"):
+        problems += budget_problems(SHARDS)
     if problems:
         for problem in problems:
             print(f"kani-shards: {problem}", file=sys.stderr)
@@ -338,6 +447,8 @@ def main() -> int:
         return 0
     if args.command == "github-outputs":
         print(f"shards={json.dumps(list(SHARDS))}")
+        pr_shards = [name for name, shard in SHARDS.items() if shard.gate == "pull-request"]
+        print(f"pr-shards={json.dumps(pr_shards)}")
         print(f"kani-version={kani_version()}")
         return 0
     if args.shard == "all":
