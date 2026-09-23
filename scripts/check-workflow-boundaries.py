@@ -439,7 +439,7 @@ UI_SUBTREE = "ui"
 # orphaned `kani_proofs.rs` is a finding.
 KANI_HARNESS_MODULE_NAME = "kani_proofs.rs"
 KANI_HARNESS_GATE_RE = re.compile(
-    r"#\[cfg\(kani\)\]\s*\n\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+kani_proofs\s*;"
+    r"#\[cfg\(kani\)\][ \t]*\n[ \t]*(?:pub(?:\([^)\n]*\))?[ \t]+)?mod[ \t]+kani_proofs[ \t]*;"
 )
 
 

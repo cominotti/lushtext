@@ -389,6 +389,14 @@ triage them before marking the Sonar work complete: fix actionable findings,
 or add a documented rule-and-resource-scoped suppression with a project-specific
 rationale. Blanket ignores without a concrete first-scan finding are not allowed.
 
+`make sonar-local` (`scripts/sonar-local.sh`) is also the CI verifier after the
+scan upload. On a pull request it must check that pull request's analysis, not
+`main`'s: `.github/workflows/sonarqube.yml` passes `SONAR_PULL_REQUEST` (the PR
+number) and `SONAR_EXPECTED_REVISION` as the PR **head** SHA, because SonarQube
+Cloud records a pull-request analysis against its head commit and never against
+the merge ref `github.sha` names. Branch runs keep `github.sha` and the branch
+query. Locally, `SONAR_PULL_REQUEST=<n> make sonar-local` reads one PR.
+
 ## Adding Dependencies
 
 1. Add to `[workspace.dependencies]` in root `Cargo.toml`.

@@ -660,7 +660,7 @@ mod synthetic_scrollable {
 
         #[glib::object_subclass]
         impl ObjectSubclass for SyntheticScrollable {
-            const NAME: &'static str = "LushtextTestSyntheticScrollable";
+            const NAME: &str = "LushtextTestSyntheticScrollable";
             type Type = super::SyntheticScrollable;
             type ParentType = gtk4::Widget;
             type Interfaces = (gtk4::Scrollable,);

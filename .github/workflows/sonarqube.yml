@@ -95,6 +95,10 @@ jobs:
       - name: Verify SonarQube Cloud results
         if: env.SONAR_TOKEN != ''
         env:
-          SONAR_EXPECTED_REVISION: ${{ github.sha }}
+          # A pull request's analysis is recorded against its head commit and
+          # queried by number; GitHub's `github.sha` for a pull request is the
+          # merge ref, which SonarQube Cloud never records.
+          SONAR_PULL_REQUEST: ${{ github.event.pull_request.number }}
+          SONAR_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
           SONAR_WAIT_SECONDS: "300"
         run: make sonar-local

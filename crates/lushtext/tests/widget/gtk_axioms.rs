@@ -56,7 +56,7 @@ mod fixed_host {
 
         #[glib::object_subclass]
         impl ObjectSubclass for FixedHost {
-            const NAME: &'static str = "LushtextTestAxiomFixedHost";
+            const NAME: &str = "LushtextTestAxiomFixedHost";
             type Type = super::FixedHost;
             type ParentType = gtk4::Widget;
         }

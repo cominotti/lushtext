@@ -85,12 +85,12 @@ class Shard:
     measured_in: str
 
 
-# The runs every budget below comes from: four `workflow_dispatch` runs of
+# The runs every budget below comes from: five `workflow_dispatch` runs of
 # kani.yml on `ubuntu-latest` (Fedora 44 container), cold and warm Kani install
 # cache, with each shard recording the largest wall time and peak memory seen
 # across them, rounded up. Per-run figures and local CBMC times (Kani 0.68.0,
 # one toolbox) are in docs/next/formal-verification.md, phase 2.
-MEASURED_IN = "runs 35920992670, 35923346671, 35925626107, 35927734943 (max of the four)"
+MEASURED_IN = "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757261 (max of the five)"
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -114,7 +114,7 @@ SHARDS: dict[str, Shard] = {
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_rests_",),
         gate="scheduled",
-        ci_minutes=14.7,
+        ci_minutes=16.2,
         ci_peak_gib=1.8,
         measured_in=MEASURED_IN,
     ),
@@ -127,7 +127,7 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_two_reconfiguring_",
         ),
         gate="scheduled",
-        ci_minutes=16.1,
+        ci_minutes=16.8,
         ci_peak_gib=1.8,
         measured_in=MEASURED_IN,
     ),
@@ -356,7 +356,7 @@ def run(shard_names: list[str], target_dir: str, measure: str | None = None) -> 
 def self_test() -> None:
     root = Path("/crate/src")
     assert module_path(root, root / "kani_proofs.rs") == "kani_proofs"
-    assert module_path(root, root / "a/b/mod.rs") == "a::b"
+    assert module_path(root, root / "outer/inner/mod.rs") == "outer::inner"
     text = "#[kani::proof]\n#[kani::should_panic]\n#[kani::unwind(4)]\nfn one() {}\n#[kani::proof]\npub fn two() {}\n"
     assert [m.group(1) for m in PROOF_RE.finditer(text)] == ["one", "two"]
     assert KANI_VERSION_RE.search("X ?= 1\nKANI_VERSION ?= 0.68.0\n").group(1) == "0.68.0"

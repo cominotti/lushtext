@@ -13,6 +13,11 @@
 #   SONAR_HOST_URL    (default: https://sonarcloud.io)
 #   SONAR_PROJECT_KEY (default: cominotti_lushtext)
 #   SONAR_BRANCH      (default: current git branch)
+#   SONAR_PULL_REQUEST (optional: pull request number; checks that PR's
+#                       analysis instead of a branch's. A pull request analysis
+#                       is recorded against the PR head commit, not the merge
+#                       ref GitHub checks out, so pass the head SHA as
+#                       SONAR_EXPECTED_REVISION.)
 #   SONAR_PAGE_SIZE   (default: 500)
 #   SONAR_EXPECTED_REVISION (optional: wait for this commit SHA to be analyzed)
 #   SONAR_WAIT_SECONDS      (default: 0; max wait for expected revision)
@@ -25,6 +30,7 @@ cd "$ROOT_DIR"
 SONAR_HOST_URL="${SONAR_HOST_URL:-https://sonarcloud.io}"
 SONAR_PROJECT_KEY="${SONAR_PROJECT_KEY:-cominotti_lushtext}"
 SONAR_BRANCH="${SONAR_BRANCH:-}"
+SONAR_PULL_REQUEST="${SONAR_PULL_REQUEST:-}"
 SONAR_PAGE_SIZE="${SONAR_PAGE_SIZE:-500}"
 SONAR_EXPECTED_REVISION="${SONAR_EXPECTED_REVISION:-}"
 SONAR_WAIT_SECONDS="${SONAR_WAIT_SECONDS:-0}"
@@ -34,6 +40,7 @@ REPORT_DIR=".sonar/reports"
 QUALITY_GATE_JSON="$REPORT_DIR/quality-gate.json"
 ISSUES_JSON="$REPORT_DIR/issues.json"
 BRANCHES_JSON="$REPORT_DIR/branches.json"
+PULL_REQUESTS_JSON="$REPORT_DIR/pull-requests.json"
 ANALYSES_JSON="$REPORT_DIR/analyses.json"
 
 fail() {
@@ -102,6 +109,41 @@ fetch_branches() {
 		--data-urlencode "project=${SONAR_PROJECT_KEY}" >"$BRANCHES_JSON"
 }
 
+fetch_pull_requests() {
+	sonar_curl \
+		--get "${SONAR_HOST_URL%/}/api/project_pull_requests/list" \
+		--data-urlencode "project=${SONAR_PROJECT_KEY}" >"$PULL_REQUESTS_JSON"
+}
+
+pull_request_analysis_revision() {
+	jq -r --arg key "$SONAR_PULL_REQUEST" '
+		.pullRequests[]?
+		| select(.key == $key)
+		| .commit.sha // ""
+	' "$PULL_REQUESTS_JSON"
+}
+
+# The analysis selector for the quality gate and issue queries: the pull
+# request when one is set, otherwise the branch (empty means main).
+append_scope_args() {
+	local -n args_ref="$1"
+	local branch="$2"
+	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
+		args_ref+=(--data-urlencode "pullRequest=${SONAR_PULL_REQUEST}")
+	elif [[ -n "$branch" ]]; then
+		args_ref+=(--data-urlencode "branch=${branch}")
+	fi
+}
+
+scope_label() {
+	local branch="$1"
+	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
+		echo "pull request ${SONAR_PULL_REQUEST}"
+	else
+		echo "${branch:-main}"
+	fi
+}
+
 sonar_branch_exists() {
 	local branch="$1"
 
@@ -144,15 +186,20 @@ wait_for_expected_revision() {
 	deadline=$((SECONDS + SONAR_WAIT_SECONDS))
 	while :; do
 		fetch_project_analyses
-		fetch_branches
-		revision="$(branch_analysis_revision "$branch")"
+		if [[ -n "$SONAR_PULL_REQUEST" ]]; then
+			fetch_pull_requests
+			revision="$(pull_request_analysis_revision)"
+		else
+			fetch_branches
+			revision="$(branch_analysis_revision "$branch")"
+		fi
 		if [[ "$revision" == "$SONAR_EXPECTED_REVISION" ]]; then
 			echo "Sonar analysis revision: $revision"
 			return 0
 		fi
 
 		if (( SONAR_WAIT_SECONDS <= 0 || SECONDS >= deadline )); then
-			fail "Sonar analysis for ${branch:-main} is at revision ${revision:-<none>}, expected ${SONAR_EXPECTED_REVISION}"
+			fail "Sonar analysis for $(scope_label "$branch") is at revision ${revision:-<none>}, expected ${SONAR_EXPECTED_REVISION}"
 		fi
 
 		sleep "$SONAR_POLL_INTERVAL"
@@ -168,9 +215,7 @@ check_quality_gate() {
 		--get "${SONAR_HOST_URL%/}/api/qualitygates/project_status"
 		--data-urlencode "projectKey=${SONAR_PROJECT_KEY}"
 	)
-	if [[ -n "$branch" ]]; then
-		curl_args+=(--data-urlencode "branch=${branch}")
-	fi
+	append_scope_args curl_args "$branch"
 
 	response="$(sonar_curl "${curl_args[@]}")"
 	printf '%s\n' "$response" >"$QUALITY_GATE_JSON"
@@ -181,7 +226,7 @@ check_quality_gate() {
 		echo "Sonar quality gate: OK"
 		;;
 	NONE | "")
-		fail "Sonar quality gate has not been computed for ${branch:-main}"
+		fail "Sonar quality gate has not been computed for $(scope_label "$branch")"
 		;;
 	ERROR)
 		failing_summary="$(
@@ -220,9 +265,7 @@ fetch_unresolved_issues() {
 			--data-urlencode "p=${page}"
 			--data-urlencode "ps=${SONAR_PAGE_SIZE}"
 		)
-		if [[ -n "$branch" ]]; then
-			curl_args+=(--data-urlencode "branch=${branch}")
-		fi
+		append_scope_args curl_args "$branch"
 
 		response="$(sonar_curl "${curl_args[@]}")"
 		if (( page == 1 )); then
@@ -298,7 +341,10 @@ main() {
 	fi
 
 	mkdir -p "$REPORT_DIR"
-	rm -f "$QUALITY_GATE_JSON" "$ISSUES_JSON" "$BRANCHES_JSON" "$ANALYSES_JSON"
+	rm -f "$QUALITY_GATE_JSON" "$ISSUES_JSON" "$BRANCHES_JSON" "$PULL_REQUESTS_JSON" "$ANALYSES_JSON"
+	if [[ -n "$SONAR_PULL_REQUEST" && ! "$SONAR_PULL_REQUEST" =~ ^[1-9][0-9]*$ ]]; then
+		fail "SONAR_PULL_REQUEST must be a pull request number"
+	fi
 
 	local branch="$SONAR_BRANCH"
 	if [[ -z "$branch" ]]; then
@@ -306,7 +352,9 @@ main() {
 	fi
 
 	local dashboard_url="${SONAR_HOST_URL%/}/dashboard?id=${SONAR_PROJECT_KEY}"
-	if [[ -n "$branch" ]]; then
+	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
+		dashboard_url+="&pullRequest=${SONAR_PULL_REQUEST}"
+	elif [[ -n "$branch" ]]; then
 		dashboard_url+="&branch=${branch}"
 	fi
 	echo "Sonar dashboard: $dashboard_url"
@@ -319,7 +367,11 @@ main() {
 
 	wait_for_expected_revision "$branch"
 
-	if [[ -n "$branch" ]] && ! sonar_branch_exists "$branch"; then
+	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
+		# A pull request analysis is judged on its own quality gate and issues;
+		# the branch-existence and main-history checks below do not apply.
+		:
+	elif [[ -n "$branch" ]] && ! sonar_branch_exists "$branch"; then
 		if [[ "$branch" == "main" ]]; then
 			fail "Sonar branch ${branch} was not found for project ${SONAR_PROJECT_KEY}"
 		fi
@@ -331,7 +383,7 @@ main() {
 		return 0
 	fi
 
-	if [[ "${branch:-main}" == "main" ]] && ! project_has_any_analysis; then
+	if [[ -z "$SONAR_PULL_REQUEST" && "${branch:-main}" == "main" ]] && ! project_has_any_analysis; then
 		write_no_data_reports "${branch:-main}" "No SonarQube Cloud analysis exists for the main branch yet"
 		fail "SonarQube Cloud project ${SONAR_PROJECT_KEY} has no recorded analysis for main"
 	fi
