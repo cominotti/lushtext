@@ -39,6 +39,19 @@ pub const ADJUSTMENT_EPSILON: f64 = 0.5;
 /// top of the viewport), settled on a value that must be written back, or made
 /// a divergence this allocation cannot classify, which must be deferred.
 ///
+/// # Domain
+///
+/// The function never panics for any `f64`, and for every input a resting
+/// child (`child_value == published_offset`) is [`ChildScrollDecision::Rest`]
+/// and a [`ChildScrollDecision::Request`] carries at least
+/// [`ADJUSTMENT_EPSILON`]. **Exact landing** — `viewport_top + delta ==
+/// child_value` bit for bit, which a `GtkListBase` needs because it compares
+/// adjustment values exactly — is guaranteed on the **whole-pixel domain**:
+/// `published_offset`, `child_value`, and `viewport_top` integer values in the
+/// `i32` range and `reconfigure_shift` a whole number that fits a `u16`. All of
+/// these are proved by Kani (`make kani`); exact landing is not claimed for
+/// general `f64`, where Kani finds rounding counterexamples.
+///
 /// # Why a child's own geometry correction bounds its settle
 ///
 /// `reconfigure_shift` is how far the child moved the adjustment's `upper` or
@@ -178,7 +191,8 @@ pub enum ChildScrollDecision {
 /// Returns the distance of a [`ChildScrollDecision::Request`] and `None` for
 /// every other decision, so `None` does not mean the value may be overwritten:
 /// a deferred divergence must be left in place (see [`classify_child_scroll`],
-/// which carries the arguments' full contract).
+/// which carries the arguments' full contract and the whole-pixel domain on
+/// which a returned distance lands exactly).
 #[must_use]
 pub fn outer_scroll_request(
     published_offset: f64,

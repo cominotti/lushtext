@@ -151,7 +151,12 @@ they are not default PR gates:
   metadata, accepted-versus-retryable generations, aggregate-cap lazy restore,
   and recovery diagnostics from the relaunch snapshot, and preserves
   before/after metadata summaries, logs, assertions, a bounded scenario
-  manifest, and a relaunch screenshot.
+  manifest, and a relaunch screenshot. It also kills the process deterministically
+  inside the `draft-body-before-commit`, `durable-renamed-before-dirsync`, and
+  `stale-preserved-before-retire` protocol windows, using a separate binary built
+  with the smoke-only `crash-kill-points` feature (`LUSHTEXT_KILL_AT`), and requires
+  no lost work after each relaunch. Release, Meson, Flatpak, and Snap builds never
+  enable that feature and contain no kill-point code.
 - `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
   writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
   runs supported confined smoke checks while skipping clearly when runtimes are

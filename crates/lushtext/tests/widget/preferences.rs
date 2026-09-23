@@ -672,3 +672,157 @@ fn test_data_page_keeps_failed_convert_retryable() {
         "failed convert should still leave backup evidence before retry"
     );
 }
+
+fn seed_set_aside(data_dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    let area = lushtext_core::services::draft_service::set_aside_dir(data_dir);
+    fixture::create_dir_all(&area);
+    let path = area.join(name);
+    fixture::write_text(&path, body);
+    path
+}
+
+#[test]
+fn test_data_page_hides_preserved_drafts_when_none_are_set_aside() {
+    let _data_dir = isolated_data_dir();
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_operation_inflight.get()
+    });
+    // Let the set-aside listing land too.
+    crate::common::flush_after_delay(Duration::from_millis(200));
+    assert!(
+        !imp.data_set_aside_group.is_visible(),
+        "an empty set-aside area must not leave an empty Preserved Drafts group"
+    );
+    assert!(imp.data_set_aside_rows.borrow().is_empty());
+}
+
+#[test]
+fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
+    let data_dir = isolated_data_dir();
+    let older = seed_set_aside(
+        data_dir.path(),
+        "abcdef0123456789.1700000000.draft",
+        "older",
+    );
+    let newer = seed_set_aside(
+        data_dir.path(),
+        "untitled-00000000000000aa.1700000100.draft",
+        "newer",
+    );
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 2
+    });
+
+    assert!(imp.data_set_aside_group.is_visible());
+    let titles: Vec<String> = imp
+        .data_set_aside_rows
+        .borrow()
+        .iter()
+        .map(|row| row.title().to_string())
+        .collect();
+    assert_eq!(titles, vec!["Untitled document", "Unknown file"]);
+    for row in imp.data_set_aside_rows.borrow().iter() {
+        let subtitle = row
+            .subtitle()
+            .map(|text| text.to_string())
+            .unwrap_or_default();
+        assert!(
+            subtitle.starts_with("Kept "),
+            "row subtitle names when: {subtitle}"
+        );
+        AccessibleAudit::new()
+            .properties(&[gtk4::AccessibleProperty::Label])
+            .assert_on(row);
+    }
+
+    prefs.delete_set_aside_draft(&older);
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 1
+    });
+    assert!(
+        !fs_metadata::exists(&older),
+        "the confirmed delete removes the body"
+    );
+    assert!(fs_metadata::exists(&newer));
+
+    prefs.delete_set_aside_draft(&newer);
+    wait_until(Duration::from_secs(10), || {
+        !imp.data_set_aside_group.is_visible()
+    });
+    assert!(imp.data_set_aside_rows.borrow().is_empty());
+}
+
+#[test]
+fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
+    let data_dir = isolated_data_dir();
+    let kept = seed_set_aside(
+        data_dir.path(),
+        "abcdef0123456789.1700000200.draft",
+        "preserved unsaved edits\n",
+    );
+    let window = crate::common::test_window();
+    crate::common::present_window(&window);
+    let prefs = LushtextPreferences::new();
+    prefs.present(Some(&window));
+    let pages_before = window.imp().tab_view.n_pages();
+
+    prefs.open_set_aside_draft(&kept);
+
+    let text_of_last_tab = || {
+        let pages = window.imp().tab_view.n_pages();
+        (pages > pages_before).then(|| {
+            let child = window.imp().tab_view.nth_page(pages - 1).child();
+            let editor = child
+                .downcast_ref::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+                .expect("an editor page")
+                .clone();
+            let buffer = editor.buffer();
+            let (start, end) = buffer.bounds();
+            (
+                buffer.text(&start, &end, false).to_string(),
+                buffer.is_modified(),
+            )
+        })
+    };
+    wait_until(Duration::from_secs(10), || {
+        text_of_last_tab().is_some_and(|(text, _)| text == "preserved unsaved edits\n")
+    });
+    let (_, modified) = text_of_last_tab().expect("the new tab");
+    assert!(
+        modified,
+        "the opened draft is unsaved work autosave must protect"
+    );
+    assert!(
+        fs_metadata::exists(&kept),
+        "opening keeps the set-aside copy"
+    );
+
+    // Modified is not enough: autosave only writes draft-dirty tabs, and the
+    // bounded install suspends the buffer handlers that would mark it. The
+    // user may delete the set-aside copy right after opening it, so the new
+    // tab must reach its own draft without waiting for a keystroke.
+    let pages = window.imp().tab_view.n_pages();
+    let child = window.imp().tab_view.nth_page(pages - 1).child();
+    let editor = child
+        .downcast_ref::<lushtext_core::ui::editor_page::LushtextEditorPage>()
+        .expect("an editor page")
+        .clone();
+    assert!(
+        editor.draft_dirty(),
+        "the opened draft must be offered to autosave"
+    );
+    let draft_id = editor.draft_id().expect("the new tab has a draft id");
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        lushtext_core::services::draft_service::read_draft(data_dir.path(), &draft_id)
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("preserved unsaved edits\n")
+    });
+    drop(window);
+}

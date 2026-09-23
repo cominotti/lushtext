@@ -1350,7 +1350,7 @@ fn migrate_loaded_document(
             fs_write::rename_durable(&from, &to)
                 .or_else(|error| {
                     if fs_write::is_cross_device(&error) {
-                        fs_write::copy_file_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
+                        fs_write::move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
                     } else {
                         Err(error)
                     }

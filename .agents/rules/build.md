@@ -63,6 +63,8 @@ make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with ar
 make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
+make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard)
+make check-kani-shards # every Kani harness in exactly one CI shard (no Kani needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
 make check-automation-docs # automation docs drift check against action/D-Bus contracts
@@ -470,6 +472,52 @@ using one process-global slot that a parallel operation can consume.
 Do not raise the default pull-request case count just to investigate one broad
 invariant; tighten the generator or use the deep lane.
 
+## Formal Verification (Kani)
+
+- Tool: Kani, the programme's **only** formal tool (see
+  `docs/next/formal-verification.md` §2). Quint is dropped and Lean is dormant;
+  do not add a second specification language without a recorded maintainer
+  decision.
+- Pin: `KANI_VERSION` in the Makefile and the `KANI_VERSION` env of
+  `.github/workflows/kani.yml`, currently `0.68.0` (CBMC 6.11.0). Kani pins its
+  own nightly, independent of `rust-toolchain.toml`; upgrades are deliberate and
+  change both pins together. Install with
+  `cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup`.
+- Placement: harnesses live in a `#[cfg(kani)] mod kani_proofs` of the crate
+  that owns the checked code (`gtk-lush-widgets` for geometry, `lushtext-core`
+  for the draft journal and the durable write), over GTK-free, I/O-free code
+  that ships, or a pure core production drives. Never a copy of the code.
+  `cfg(kani)` is a declared expected cfg in the workspace lints, so ordinary
+  builds, Clippy, and tests compile none of it and need no Kani install.
+- Harness style: only `kani::any`, `kani::assume`, `#[kani::unwind]`, and
+  `#[kani::should_panic]`. Function and loop contracts are experimental and not
+  used. A harness proving a property on a restricted domain states that domain
+  in the harness **and** in the checked function's rustdoc or spec; a rustdoc
+  promise must never claim more than was proved. A known-unsafe ordering or
+  guard removal is pinned by a `should_panic` harness showing the property
+  fails without it.
+- Lane: `make kani` runs every harness, shard by shard, through
+  `scripts/kani-shards.py` with its own `KANI_TARGET_DIR` (`target/kani`), and
+  fails when the installed Kani is not the pinned version or any harness fails;
+  `make kani KANI_SHARD=<shard>` runs one shard (`scripts/kani-shards.py list`).
+  Every harness belongs to exactly one shard, and `make check-kani-shards` (in
+  `make check-policy`, no Kani needed) fails when a harness anywhere under
+  `crates/` matches no shard or several, so a harness cannot silently drop out
+  of CI. The shard table and the Makefile's `KANI_VERSION` are the only copies:
+  the workflow's `shards` job builds its matrix from
+  `scripts/kani-shards.py github-outputs`. CI runs one shard per matrix job, weekly and by
+  `workflow_dispatch`, in `.github/workflows/kani.yml` (Fedora 44 container,
+  `timeout-minutes: 30`), because the whole lane is longer than one job's cap;
+  a harness whose own run approaches the cap gets its own shard rather than a
+  longer timeout. The lane stays outside the pull-request gate until its run
+  time is measured stable. A counterexample is triaged like a failing test:
+  decide whether the code, the stated domain, or the envelope is wrong, and
+  record the outcome in the programme record. Kani cannot run two jobs on one
+  target directory; use a second `--target-dir` for a parallel local run.
+- Envelopes: a model that treats GTK as nondeterministic constrains it only
+  with `kani::assume` clauses citing ledger axiom ids from
+  `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`.
+
 ## Fuzzing
 
 - Framework: `cargo-fuzz`, isolated under `fuzz/`
@@ -662,7 +710,11 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   GTK process, sends `SIGKILL`, relaunches with the same app data, verifies
   recovery through AT-SPI plus app-owned metadata, and stores before/after
   metadata summaries, runtime logs, assertions, and a screenshot under
-  `build/smoke/crash-recovery` by default.
+  `build/smoke/crash-recovery` by default. It also builds a second binary with
+  the smoke-only `crash-kill-points` feature into `target/crash-kill-points` and
+  aborts it inside named protocol windows (`LUSHTEXT_KILL_AT`); never enable
+  that feature in release, Meson, Flatpak, or Snap builds, which must compile
+  `services::kill_point::reach` as an empty inline function.
 - `make portal-sandbox-smoke` records available Flatpak/Snap runtime state,
   writes `permission-posture.txt`, preserves portal bus-name diagnostics, and
   invokes supported confined smoke checks. It must skip explicitly when neither
@@ -779,6 +831,7 @@ All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but thi
 - `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Tests`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, workflow-timeout policy, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; widget tests run through `scripts/run-widget-tests.sh --headless --retries 1`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
 - `Widget Tests` job budget: `timeout-minutes: 30`, which is the hard ceiling `scripts/check-workflow-timeouts.py` enforces; do not raise that ceiling. After slot 7b (1,203 widget tests) the job measured about 25 minutes on the shared runner and was cancelled once at the previous 25-minute budget, so the remaining headroom is small. The durable next step when 30 minutes is approached again is sharding the widget binary across matrix jobs, not a longer timeout. `scripts/run-widget-tests.sh` streams the sanitized harness output through `tee` while it runs, so a cancelled job still shows how far the suite got.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
+- `.github/workflows/kani.yml` — scheduled/manual `make kani` lane, one `scripts/kani-shards.py` shard per matrix job, matrix and pinned `KANI_VERSION` derived from the script and Makefile by a `shards` job (Fedora 44 container, `timeout-minutes: 30`). It stays outside required PR checks until its run time is measured stable, following the fuzz-smoke precedent.
 - `.github/workflows/end-user-smoke.yml` — scheduled/manual artifact workflow for host-sensitive automation, visual-geometry, visual, portal/sandbox, accessibility, crash-recovery, and performance-smoke lanes plus a split benchmark-report matrix. Keep it outside required PR checks unless a future slice proves one lane is cheap and stable enough to promote.
 - `.github/workflows/flatpak.yml` — Flatpak build via `flatpak-github-actions` in `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50` container (Docker Hub `bilelmoussaoui/` stopped at gnome-47; GNOME 48+ images are on ghcr.io) with cache keys tied to actual Flatpak build inputs rather than commit SHA alone.
 - `.github/workflows/release-dry-run.yml` — path-filtered release automation check for release scripts, Flatpak manifests, AppStream metadata, desktop metadata, and cargo vendoring; runs release helper tests, Flathub manifest tests, Cominotti repository metadata tests, a no-mutation release preview, and current metadata validation.
@@ -791,7 +844,7 @@ Rust validation helpers installed in CI must be version-pinned in workflow
 `CARGO_DENY_VERSION=0.19.8`, `CARGO_NEXTEST_VERSION=0.9.137`,
 `CARGO_FUZZ_VERSION=0.13.1`, `CARGO_MUTANTS_VERSION=27.0.0`,
 `CARGO_SEMVER_CHECKS_VERSION=0.48.0`, `CARGO_PUBLIC_API_VERSION=0.52.0`,
-`GTK_LUSH_MSRV=1.96.0`, and
+`GTK_LUSH_MSRV=1.96.0`, `KANI_VERSION=0.68.0` (also the Makefile default), and
 `GTK_LUSH_PUBLIC_API_TOOLCHAIN=nightly-2026-06-01`. Update the pin and rerun
 the affected local validation command when intentionally refreshing a tool.
 

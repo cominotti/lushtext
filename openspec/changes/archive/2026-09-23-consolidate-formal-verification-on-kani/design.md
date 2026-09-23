@@ -262,3 +262,85 @@ that evidence.
   K3 and record it in the matrix.
 - The exact k for bounded L1. Choose the smallest k that covers the longest
   fault-free autosave-to-clean path in the core.
+
+## Implementation Decisions and Deviations (recorded during apply)
+
+- **Open question 3.1 resolved: service-level home.** The journal core is
+  `crates/lushtext-core/src/services/draft_service/journal_core.rs`, not
+  `ui/window/drafts/policy.rs`. `draft_service` must drive it too, and a service
+  cannot depend on `ui/`; `services/**` is already inside the mutation scope.
+  The two registration predicates moved there out of `drafts/policy.rs` (no
+  copy kept). The Kani harness is `services/draft_service/kani_proofs.rs`.
+- **D5, "one owner for stale bodies" — partial.** `services/draft_service/set_aside.rs`
+  is now the single owner of set-aside bytes (move-in, keep-copy, list, read,
+  delete) and every preservation path goes through it. Local history still
+  receives its `Periodic` snapshot as before; it is documented as a *view*
+  whose pruning loses nothing, but it is not a zero-copy view over the
+  set-aside file, because that needs a local-history index/browser change and
+  this change forbids persisted-format changes.
+- **K3 finding (fixed, failing-first):** `RestoreEnding::Unavailable` (the file
+  vanished before a lazy restore resolved) released the autosave hold without
+  preserving the body, so the next autosave — or a Discard — destroyed a body
+  the user never saw. Kani S1 counterexample: Startup → RestoreApply(Unavailable)
+  → Discard → DeletionStep. Now `PreserveCopy`; widget test
+  `window::test_an_unavailable_restore_keeps_the_unshown_draft_before_autosave_replaces_it`
+  failed before the fix.
+- **L1 bound:** k = 7, not the design's 6 (stale restore 1 + retirement 3 +
+  register/write/commit 3).
+- **K4 (D6) envelope:** A8's "does not survive into a stable-geometry frame" is
+  modelled literally (a held settle re-anchors on the published offset in a
+  stable frame); requests only from bins whose band is non-zero (A5).
+  The learning-frame residual is **recorded** (should_panic harness), not fixed
+  (ledger A8 justification). A second residual was found: two consecutive
+  reconfiguring allocations with settles can be forwarded as a request
+  (should_panic harness); recorded, not fixed, for the same reason.
+- **D6 residuals, final:** both kept as recorded `should_panic` residuals. The
+  handoff's candidate fix for the two-reconfigure residual (bound a settle by
+  `shift + |held − published|` while a divergence is held and the geometry
+  still moves) was evaluated **in the model only**: it proves the
+  two-reconfigure harness (63.0 s) and keeps the one-bin rest, request,
+  learning-frame, and one-reconfigure harnesses proved. It was not applied,
+  because no failing-first test can reach the case through real GTK: both
+  consumers use uniform rows and the phase-0 instrumentation saw 0 settles.
+  The programme record states the residuals, their reachability evidence, and
+  the candidate fix.
+- **D2 lane shape: sharded.** Measured locally, the whole lane is about
+  45 minutes of CBMC (K8 alone 866 s and about 18 GB RSS), past the 30-minute
+  job cap. `scripts/kani-shards.py` owns a five-shard table, `make kani` runs
+  every shard (`KANI_SHARD=<shard>` for one; `KANI_PACKAGES` is retired),
+  `kani.yml` runs one shard per matrix job, and `make check-kani-shards` (added
+  to `make check-policy`) fails when a harness matches no shard or several.
+  The workflow derives its matrix and `KANI_VERSION` from the script and the
+  Makefile (`kani-shards.py github-outputs`), so neither is copied by hand.
+- **K3 data-safety audit follow-ups (both fixed failing-first).** (1) A failed
+  set-aside copy of an unrestored body released the restore hold, so the next
+  autosave replaced the only copy — production was weaker than the proved
+  model. The hold now stays and each autosave tick retries the copy
+  (`unrestored_copy_retries` in `DraftEvidence`, status
+  `UNRESTORED_COPY_FAILED_STATUS` in `drafts/policy.rs`); widget test
+  `test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft`. (2) A
+  set-aside draft opened from the Data page was never draft-dirty, because the
+  bounded install suspends the buffer handlers; `open_set_aside_draft` now
+  marks it and schedules the first autosave.
+- **`draft_service::fixture` stays ungated**, like `services::filesystem::fixture`,
+  because benches use it without a feature; recorded in the deferral inventory.
+- **K6 harness shape.** The disk abstraction models one destination name, its
+  previous inode, and one temp inode, with crash views over durable data,
+  durable metadata, and the durable directory entry; `kani::cover!` pins
+  reachability of the proved branches. Guarded-delete safety (phase-5 theorem
+  4) is not a property of the write core; orphan cleanup is S2 of K3.
+- **9.3 worktree check.** Files identical to `main` or whose changes a
+  three-way merge against the base shows `main` already contains passed
+  outright; the remaining files differ only where `main`'s phase-0 commit
+  rewrote the same code later (launch nonce, `child_directories`,
+  `into_io_error`), with worktree mtimes before that commit. Both worktrees
+  were removed and their branches (at `5d75fc30`, fully merged) deleted with
+  `git branch -d`.
+- **K8 decision: accept with documentation.** At 8 actions the two-writer
+  harness fails S1 and "a body was written without an entry" (1017.5 s,
+  about 18 GB); both traces need two processes with the same draft id over
+  one data directory, which the unique `GApplication` only allows across two
+  D-Bus sessions of one user. No lock in this change; the follow-up is an
+  inter-process data-directory lock if that use is reported. The kept
+  `should_panic` harness runs at 6 actions (`SECOND_WRITER_STEPS`, 500.8 s,
+  about 9 GB) so its CI shard fits a runner's memory and the 30-minute cap.

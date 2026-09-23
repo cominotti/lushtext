@@ -463,3 +463,36 @@ pub fn editor_text(editor: &lushtext_core::ui::editor_page::LushtextEditorPage) 
         .text(&buffer.start_iter(), &buffer.end_iter(), true)
         .to_string()
 }
+
+/// A `GtkListView` of `rows` labels reading `row 0000`, `row 0001`, …, with the
+/// selection model `select` builds around the strings; `setup_label`
+/// configures each row label once, when its list item is set up.
+pub fn numbered_label_list(
+    rows: u32,
+    select: impl FnOnce(gtk4::StringList) -> gtk4::SelectionModel,
+    setup_label: impl Fn(&gtk4::Label) + 'static,
+) -> gtk4::ListView {
+    use gtk4::prelude::*;
+
+    let strings: Vec<String> = (0..rows).map(|index| format!("row {index:04}")).collect();
+    let model = gtk4::StringList::new(&strings.iter().map(String::as_str).collect::<Vec<_>>());
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(move |_, item| {
+        let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
+        let label = gtk4::Label::new(None);
+        setup_label(&label);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
+        let text = item
+            .item()
+            .and_downcast::<gtk4::StringObject>()
+            .map(|object| object.string().to_string())
+            .unwrap_or_default();
+        if let Some(label) = item.child().and_downcast::<gtk4::Label>() {
+            label.set_text(&text);
+        }
+    });
+    gtk4::ListView::new(Some(select(model)), Some(factory))
+}

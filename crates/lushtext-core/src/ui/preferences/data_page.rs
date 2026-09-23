@@ -14,7 +14,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use crate::services::{format_upgrade, json_store};
+use crate::services::{draft_service, format_upgrade, json_store};
 use crate::ui::accessibility;
 
 use super::LushtextPreferences;
@@ -372,5 +372,171 @@ fn action_summary(planned: &format_upgrade::FormatPlannedItem) -> String {
         format_upgrade::FormatPlanAction::ReportOnly => {
             "Recovery metadata will preserve or report this issue".to_string()
         }
+    }
+}
+
+/// Title for one preserved set-aside draft row.
+fn set_aside_row_title(draft: &draft_service::SetAsideDraft) -> String {
+    match (&draft.original_path, draft.untitled) {
+        (Some(path), _) => path.display().to_string(),
+        (None, true) => "Untitled document".to_string(),
+        (None, false) => "Unknown file".to_string(),
+    }
+}
+
+/// Subtitle for one preserved set-aside draft row: when and how much.
+fn set_aside_row_subtitle(draft: &draft_service::SetAsideDraft) -> String {
+    let kept = i64::try_from(draft.body.stamp_secs)
+        .ok()
+        .and_then(|secs| glib::DateTime::from_unix_local(secs).ok())
+        .and_then(|time| time.format("%Y-%m-%d %H:%M").ok())
+        .map_or_else(|| "an unknown time".to_string(), |time| time.to_string());
+    format!("Kept {kept} · {}", glib::format_size(draft.body.byte_size))
+}
+
+impl LushtextPreferences {
+    /// List the preserved set-aside drafts off GTK and project them into the
+    /// Data page's Preserved Drafts group, which stays hidden while empty.
+    pub fn refresh_set_aside_drafts(&self) {
+        spawn_blocking_then_weak(
+            self,
+            || draft_service::list_set_aside_drafts(&json_store::data_dir()),
+            |prefs, listed| match listed {
+                Ok(drafts) => prefs.render_set_aside_drafts(&drafts),
+                Err(error) => {
+                    tracing::warn!("Could not list preserved drafts: {error}");
+                    prefs.render_set_aside_drafts(&[]);
+                }
+            },
+        );
+    }
+
+    fn render_set_aside_drafts(&self, drafts: &[draft_service::SetAsideDraft]) {
+        let imp = self.imp();
+        for row in imp.data_set_aside_rows.take() {
+            imp.data_set_aside_group.remove(&row);
+        }
+        imp.data_set_aside_group.set_visible(!drafts.is_empty());
+        let total = i32::try_from(drafts.len()).unwrap_or(i32::MAX);
+        let mut rows = Vec::with_capacity(drafts.len());
+        for (position, draft) in (1i32..).zip(drafts) {
+            let title = set_aside_row_title(draft);
+            let subtitle = set_aside_row_subtitle(draft);
+            let row = libadwaita::ActionRow::builder()
+                .title(&title)
+                .subtitle(&subtitle)
+                .title_lines(2)
+                .build();
+            accessibility::apply_row_accessibility(
+                &row,
+                accessibility::RowAccessibility::new(&format!("Preserved draft of {title}"))
+                    .description(&subtitle)
+                    .position(position, total),
+            );
+            let open = gtk4::Button::builder()
+                .label("Open")
+                .valign(gtk4::Align::Center)
+                .tooltip_text("Open these changes in a new tab")
+                .build();
+            open.add_css_class("flat");
+            accessibility::set_label(&open, &format!("Open preserved draft of {title}"));
+            let delete = gtk4::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .valign(gtk4::Align::Center)
+                .tooltip_text("Delete these preserved changes")
+                .build();
+            delete.add_css_class("flat");
+            accessibility::set_label(&delete, &format!("Delete preserved draft of {title}"));
+            let path = draft.body.path.clone();
+            let prefs_weak = self.downgrade();
+            open.connect_clicked(move |_| {
+                if let Some(prefs) = prefs_weak.upgrade() {
+                    prefs.open_set_aside_draft(&path);
+                }
+            });
+            let path = draft.body.path.clone();
+            let prefs_weak = self.downgrade();
+            let confirm_title = title.clone();
+            delete.connect_clicked(move |_| {
+                if let Some(prefs) = prefs_weak.upgrade() {
+                    prefs.confirm_delete_set_aside_draft(&path, &confirm_title);
+                }
+            });
+            row.add_suffix(&open);
+            row.add_suffix(&delete);
+            imp.data_set_aside_group.add(&row);
+            rows.push(row);
+        }
+        imp.data_set_aside_rows.replace(rows);
+    }
+
+    /// Open one preserved draft's text in a new untitled tab of the window this
+    /// dialog belongs to; the set-aside copy stays until the user deletes it.
+    pub fn open_set_aside_draft(&self, path: &std::path::Path) {
+        let path = path.to_path_buf();
+        spawn_blocking_then_weak(
+            self,
+            move || draft_service::set_aside::read(&json_store::data_dir(), &path),
+            |prefs, text| match text {
+                Ok(text) => {
+                    if let Some(window) = prefs
+                        .root()
+                        .and_downcast::<crate::ui::window::LushtextWindow>()
+                    {
+                        window.open_set_aside_draft(text);
+                        prefs.close();
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("Could not open a preserved draft: {error}");
+                    accessibility::announce_with_lane(
+                        &*prefs.imp().data_set_aside_group,
+                        "The preserved draft could not be opened",
+                        accessibility::AnnouncementLane::Alert,
+                    );
+                }
+            },
+        );
+    }
+
+    /// Ask before deleting one preserved draft: it may be the only copy.
+    fn confirm_delete_set_aside_draft(&self, path: &std::path::Path, title: &str) {
+        let dialog = libadwaita::AlertDialog::builder()
+            .heading("Delete Preserved Draft?")
+            .body(format!(
+                "The unsaved changes kept for {title} will be permanently deleted."
+            ))
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("delete", "Delete");
+        dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let prefs_weak = self.downgrade();
+        let path = path.to_path_buf();
+        dialog.connect_response(None::<&str>, move |_, response| {
+            if response == "delete"
+                && let Some(prefs) = prefs_weak.upgrade()
+            {
+                prefs.delete_set_aside_draft(&path);
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    /// Delete one preserved draft durably after the user confirmed it, then
+    /// refresh the group.
+    pub fn delete_set_aside_draft(&self, path: &std::path::Path) {
+        let path = path.to_path_buf();
+        spawn_blocking_then_weak(
+            self,
+            move || draft_service::set_aside::delete(&json_store::data_dir(), &path),
+            |prefs, deleted| {
+                if let Err(error) = deleted {
+                    tracing::warn!("Could not delete a preserved draft: {error}");
+                }
+                prefs.refresh_set_aside_drafts();
+            },
+        );
     }
 }

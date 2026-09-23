@@ -197,6 +197,11 @@ Preferences are stored with GSettings under `dev.cominotti.lushtext`.
 - **Rescan data formats** reruns that check from the Preferences dialog.
 - **Update Data** appears only when supported older app data can be converted
   safely to the current format.
+- **Preserved Drafts** lists unsaved changes LushText kept aside instead of
+  restoring them (for example when the file changed on disk first). Each row
+  shows the original file when known, when the changes were kept, and their
+  size; **Open** puts them in a new untitled tab, and **Delete** removes them
+  after a confirmation. The group is hidden when nothing is set aside.
 
 Advanced users can inspect or reset settings with:
 
@@ -583,7 +588,12 @@ closed; its rationale, measured baseline, and deferred work are recorded in
 
 The formal-verification programme — its phases, GTK and POSIX axiom ledgers,
 draft-journal invariants, and deferral inventory — is recorded in
-[`docs/next/formal-verification.md`](docs/next/formal-verification.md).
+[`docs/next/formal-verification.md`](docs/next/formal-verification.md). Its only
+tool is [Kani](https://github.com/model-checking/kani): `#[cfg(kani)]` harnesses
+beside the code they check prove the slice-bin geometry and feedback loop, the
+draft journal's decision core under crashes and restarts, and the durable-write
+protocol's crash atomicity. `make kani` runs them with the pinned Kani version;
+ordinary builds and tests need no Kani install.
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
 and [`docs/automation-reference.md`](docs/automation-reference.md). The

@@ -25,7 +25,8 @@
 //! | Module | Role | Owns |
 //! | --- | --- | --- |
 //! | this file | narrative facade | this narration, the workflow's own entry operations, and the test-seam surface. The 34 stage operations the window calls are declared by the coordination module that owns each stage, not re-exported one-by-one through here |
-//! | `journal` | coordination | the manifest and bodies, the mutation-serialization gate, tombstones, deletes, **and orphan cleanup** |
+//! | `journal` | coordination | the manifest and bodies, the mutation-serialization gate, tombstones, and deletes |
+//! | `cleanup_journal` | coordination | stage order C: orphan cleanup, the journal's own maintenance, qualified by the stage order it serves |
 //! | `admission` | coordination | preload demotion, the one-at-a-time lazy restore queue, disposal reservations, restore accounting |
 //! | `autosave_execution` | coordination | the autosave and close-flush pipelines: collect, snapshot, write, commit |
 //! | `restore_execution` | coordination | installing a recovered body and its inline alerts |
@@ -55,7 +56,7 @@
 //!    `DraftMutationIntent` **before** any document-sized work, so a later delete
 //!    can invalidate it.
 //!    **Register new ids first.** One batched manifest commit registers every
-//!    file-backed candidate id the persisted manifest lacks (`policy::draft_requires_registration`)
+//!    file-backed candidate id the persisted manifest lacks (`journal_core::registration_required`)
 //!    **before** any body is written, so no crash point leaves a body that no
 //!    entry describes — the leftover that used to wedge every later commit. A
 //!    candidate whose registration failed is not written; it stays dirty.
@@ -88,9 +89,11 @@
 //!     local history when it accepts the body — and only then retired,
 //!     through the journal's serialized delete. The alert names where the
 //!     edits went and may offer Show in Local History.
-//!     A body that is never applied for any other reason — edited over first,
-//!     oversized, unreadable, or a cancelled install — gets the same preserved
-//!     copy (`preserve_unrestored_draft`) before autosave may replace it.
+//!     A body never applied for any other reason — edited over first, oversized,
+//!     unreadable, a cancelled install, or its file could not be checked — gets
+//!     a preserved copy (`journal_core::unapplied_restore_disposition`) first;
+//!     while that copy fails, autosave keeps holding the id and each tick
+//!     retries it (`retry_unrestored_copies`).
 //!
 //! ## Stage order C: orphan cleanup
 //!
@@ -118,7 +121,7 @@
 //!   repeating tick both resume in `autosave_execution`'s `autosave_tick`.
 //! - **A3½, registration worker (autosave and close)**, resuming in
 //!   `register_new_draft_ids_then`'s completion, which partitions candidates by
-//!   `policy::candidate_may_write_after_registration`.
+//!   `journal_core::may_write_after_registration`.
 //! - **A4, chunked snapshot**, resuming in the capture's `finish_snapshot`
 //!   closure, which re-validates with `policy::captured_snapshot_is_current`.
 //! - **A4, body worker**, resuming in a completion that admits the next candidate.
@@ -155,6 +158,7 @@
 
 mod admission;
 mod autosave_execution;
+mod cleanup_journal;
 pub mod evidence;
 mod journal;
 pub mod policy;

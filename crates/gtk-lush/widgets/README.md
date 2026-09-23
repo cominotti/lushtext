@@ -43,6 +43,14 @@ content away and pin itself to the top. `outer_scroll_request` is the
 request-only projection of `classify_child_scroll`, which returns the whole
 `ChildScrollDecision`: rest, request, settle, or defer.
 
+Neither function panics for any `f64`. Their geometric guarantees — the slice
+lies inside the content and covers the visible intersection, and a honoured
+request lands exactly on the child's value — hold on the whole-pixel domain GTK
+produces (integer values in the `i32` range), where in-tree Kani harnesses
+prove them (`make kani` in the LushText workspace). They are deliberately not
+claimed for arbitrary `f64`: Kani keeps the counterexamples as `should_panic`
+harnesses.
+
 The geometry the bin publishes is expressed in the child's CSS content box. A
 `GtkScrollable` such as `GtkListView` measures its page and content there, so a
 padded child handed border-box numbers rewrites them on every allocation and

@@ -701,18 +701,12 @@ fn rename_target_guarded(old_path: &Path, new_path: &Path) -> Result<(), RenameF
     // two syscalls and is therefore only best-effort against external writers —
     // adequate against LushText's own writers, which the guards above serialize,
     // but not against a concurrent `mv`.
-    match fs_write::rename_durable_no_replace(old_path, new_path) {
+    // Older kernels and filesystems without the flag fall back to the
+    // best-effort check, which still closes the in-app window.
+    match fs_write::rename_durable_no_replace_or_checked(old_path, new_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             refuse_existing_destination()
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
-            // Older kernel or a filesystem without the flag: fall back to the
-            // best-effort check, which still closes the in-app window.
-            if fs_metadata::exists(new_path) {
-                return refuse_existing_destination();
-            }
-            fs_write::rename_durable(old_path, new_path).map_err(RenameFailure::Io)
         }
         Err(error) => Err(RenameFailure::Io(error)),
     }

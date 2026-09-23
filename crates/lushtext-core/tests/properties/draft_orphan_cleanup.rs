@@ -46,7 +46,8 @@ fn cleanup_never_reports_failed_evidence_as_removed() {
 
         let (plan, expected_failure, fault) = match case {
             GeneratedCleanupCase::ConfirmedDelete => {
-                draft_service::write_draft(data_dir, "orphan", "body").expect("write orphan");
+                draft_service::fixture::write_body(data_dir, "orphan", "body")
+                    .expect("write orphan");
                 (
                     draft_service::inspect_orphan_cleanup(data_dir, &DraftManifest::default())
                         .expect("inspect orphan"),
@@ -70,7 +71,8 @@ fn cleanup_never_reports_failed_evidence_as_removed() {
                 )
             }
             GeneratedCleanupCase::DeleteFailure => {
-                draft_service::write_draft(data_dir, "blocked", "body").expect("write body");
+                draft_service::fixture::write_body(data_dir, "blocked", "body")
+                    .expect("write body");
                 let plan =
                     draft_service::inspect_orphan_cleanup(data_dir, &DraftManifest::default())
                         .expect("inspect blocked body");

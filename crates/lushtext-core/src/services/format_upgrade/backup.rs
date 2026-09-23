@@ -27,6 +27,8 @@ use super::inventory::FormatInventoryItem;
 
 /// App-data directory containing format-upgrade backup attempts.
 pub const FORMAT_UPGRADE_BACKUP_DIR: &str = "format-upgrade-backups";
+/// Per-run directory holding the backed-up item copies.
+pub const FORMAT_UPGRADE_BACKUP_ITEMS_DIR: &str = "items";
 /// Maximum attempts to find a unique backup directory for one operation.
 ///
 /// Timestamp collisions are rare, but the bound keeps a hostile prefilled
@@ -101,7 +103,7 @@ impl BackupSession {
             let root = base.join(name);
             match fs_write::create_dir_durable(&root) {
                 Ok(()) => {
-                    let items_dir = root.join("items");
+                    let items_dir = root.join(FORMAT_UPGRADE_BACKUP_ITEMS_DIR);
                     fs_write::create_dir_durable(&items_dir).with_context(|| {
                         format!("failed to create backup items dir {}", items_dir.display())
                     })?;

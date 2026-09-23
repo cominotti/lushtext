@@ -1,16 +1,16 @@
 # Formal Verification — Evolution Candidates
 
-Status: **candidate list**, written on 2026-09-23 when phase 0 of
-[`formal-verification.md`](./formal-verification.md) closed. The programme
-record owns phases, axioms, and deferrals. This file ranks the next moves and
-records what the tool feasibility spike measured, so the ordering rests on
-evidence instead of assumptions. Nothing here is committed work until an
-OpenSpec change adopts it.
+Status: **done**. Written on 2026-09-23 when phase 0 of
+[`formal-verification.md`](./formal-verification.md) closed, to rank the next
+moves on the evidence of a measured tool spike. Every candidate K1–K8 was
+adopted and completed by the OpenSpec change
+`consolidate-formal-verification-on-kani`; the programme record owns the
+results, phases, axioms, and deferrals, and this file is kept as the ranking's
+rationale. The post-consolidation ranking lives in
+[`formal-verification-next.md`](./formal-verification-next.md).
 
-**Revised the same day.** The programme consolidated on **Kani as its only
-formal tool** (see §2 of the programme record). The ranking below is the
-Kani-only one. Candidates that assumed Quint or Lean were adapted, not
-dropped.
+The programme consolidated on **Kani as its only formal tool** (see §2 of the
+programme record). The ranking below is the Kani-only one.
 
 ## 1. What phase 0 taught
 
@@ -42,9 +42,7 @@ dropped.
 |---|---|---|---|
 | Kani | 0.68.0 (CBMC 6.11.0) | `cargo install --locked kani-verifier` 2.4 s, then `cargo kani setup` 13 s | 7 harnesses over the **real** `slice_geometry.rs` and `scroll_request.rs` (see appendix A): 5 proved, 2 counterexamples; each harness took 0.1–28 s |
 | Kani, in-tree | same | none | `cargo kani -p gtk-lush-widgets --only-codegen` compiled the crate and its whole GTK dependency tree in **31 s**, next to the workspace's 1.96 toolchain pin |
-| Lean 4 | 4.34.0 stable (elan) | about 1 min | micro-model of `atomic_replace` with two theorems plus a `Float` fact, checked in **0.37 s**. Superseded: it was ported to Kani (appendix B) |
-| Kani, protocol port | same | none | the Lean micro-model ported to Rust (see appendix B). Both Lean theorems were reproduced, and a stronger third harness (any sequence of up to 6 steps, in any order) was proved. 3 harnesses in **1.2 s** |
-| Quint | — | not installed | dropped by the consolidation |
+| Kani, protocol micro-model | same | none | a micro-model of `atomic_replace` (see appendix B): crash atomicity, the skipped-fsync counterexample, and a stronger any-order harness over up to 6 steps. 3 harnesses in **1.2 s** |
 
 The two Kani counterexamples matter more than the proofs:
 
@@ -69,6 +67,9 @@ OpenSpec change that carries them all is `consolidate-formal-verification-on-kan
 
 ### K1. Land the Kani lane — highest value per hour
 
+**Done:** `make kani`, the sharded `.github/workflows/kani.yml`, and the geometry harnesses; results in phase 2 of the programme record.
+
+
 Scope:
 - in-tree `#[cfg(kani)]` harnesses in `gtk-lush-widgets`, covering the seven
   spike harnesses over the real `slice_geometry.rs` and `scroll_request.rs`;
@@ -83,11 +84,17 @@ and in `gtk-lush-viewport-slice`, and prove it.
 
 ### K2. GTK axiom ledger (phase 1)
 
+**Done:** the ledger and the A5, A9, A11, A13 probes; phase 1 of the programme record.
+
+
 This needs no new tool. It adds isolated widget probes for A5, A9, A11 and
 A13, and records the phase-0 evidence for A8. The ledger defines the
 adversarial envelope that K4 feeds to Kani, so it comes first.
 
 ### K3. Draft journal core, pure and Kani-checked (was C3 plus phase 4)
+
+**Done:** `services/draft_service/journal_core.rs` and its harness; phase 4 of the programme record.
+
 
 The `/simplify` altitude findings and the phase-4 model merge into one step:
 extract the journal's decisions into a pure state machine that the service and
@@ -101,10 +108,13 @@ the GTK coordination both use. The work is:
 
 Kani then checks S1–S4 and a bounded L1 over action sequences that include
 `Crash`, with fixed-size state (up to 3 ids and 3 generations). This replaces
-the Quint model and its differential harness, because the checked machine is
-production code.
+a separately written model and its differential harness, because the checked
+machine is production code.
 
 ### K4. ViewportSliceBin closed loop in Kani (phase 3)
+
+**Done:** the `slice_loop` model; both residuals decided and recorded; phase 3 of the programme record.
+
 
 Write a Rust step model that calls the real `viewport_slice` and
 `classify_child_scroll`. The child is `kani::any()` restricted by the ledger's
@@ -120,12 +130,18 @@ The first target is the **learning-frame residual**.
 
 ### K5. Deterministic crash injection in the real-process smoke (was C6)
 
+**Done:** three kill points, all passing in `make crash-recovery-smoke`; K5 in the programme record.
+
+
 Add feature-gated kill points to the smoke build at the windows K3 and K6
 name, such as body-written-before-commit and renamed-before-directory-sync.
 This is the empirical counterpart of the Kani proofs: Kani shows the protocol
 is safe, and injection shows the real process follows it.
 
 ### K6. durable_write I/O-free core (was C7 / phase 5, adapted)
+
+**Done:** `services/filesystem/write_protocol.rs` and its harnesses; phase 5 of the programme record.
+
 
 Extract `WriteProtocol` (state plus event gives the next action) and keep a
 thin `sys::` shell. The ported protocol harnesses (appendix B) then check the
@@ -134,6 +150,9 @@ thin `sys::` shell. The ported protocol harnesses (appendix B) then check the
 proof, because the protocol is finite.
 
 ### K7. Base cleanups (was C4 plus C5)
+
+**Done:** all four items.
+
 
 - **Split** `copy_durable`, which keeps the source, from `move_durable`, which
   removes it, and retire the misleading `copy_file_durable`. K6 builds on this.
@@ -145,6 +164,9 @@ proof, because the protocol is finite.
   preserved drafts with Open and Delete actions.
 
 ### K8. Drop axiom A6 in the K3 machine (was C8)
+
+**Done:** see K8 in the programme record.
+
 
 Add a second writer (window or process) to the Kani journal machine and see
 what breaks. Only then decide whether the data directory needs an
@@ -158,10 +180,9 @@ inter-process lock.
 
 ### Retired by the consolidation
 
-- **Lean phase 5.** Its content moved into K6.
-- **The Quint draft model.** It became K3.
-- **The Lean/Rust differential corpus and Aeneas extraction.** They are no
-  longer needed, because the checked code is the production code.
+Candidates that checked a separately written model — of the draft journal, of
+the durable write, or a differential corpus between a model and the code — are
+retired: K3 and K6 check the production code instead.
 
 ## 4. Suggested order
 
@@ -217,82 +238,14 @@ mod proofs {
 }
 ```
 
-## Appendix B — The Lean spike, ported to Kani
+## Appendix B — The protocol micro-model (superseded)
 
-The Lean micro-model of `atomic_replace` was ported line for line:
-`inductive` became `enum`, `structure` became `struct`, and each `theorem`
-became a `#[kani::proof]`. Kani checked all three harnesses in 1.2 s.
-
-```rust
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Content { OldBytes, NewBytes, Torn }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(kani, derive(kani::Arbitrary))]
-pub enum Step { WriteTemp, SyncTemp, Rename, SyncDir }
-
-#[derive(Clone, Copy, Debug)]
-pub struct Disk { pub target: Content, pub durable_target: Content,
-                  pub temp_data: Option<Content>, pub temp_durable: bool }
-
-pub const INIT: Disk = Disk { target: Content::OldBytes, durable_target: Content::OldBytes,
-                              temp_data: None, temp_durable: false };
-
-pub fn step(d: Disk, s: Step) -> Disk {
-    match s {
-        Step::WriteTemp => Disk { temp_data: Some(Content::NewBytes), temp_durable: false, ..d },
-        Step::SyncTemp => Disk { temp_durable: true, ..d },
-        Step::Rename => Disk { target: Content::NewBytes, temp_data: None,
-            durable_target: if d.temp_durable { d.durable_target } else { Content::Torn }, ..d },
-        Step::SyncDir => Disk { durable_target: d.target, ..d },
-    }
-}
-
-pub fn crash(d: Disk) -> Content { d.durable_target }
-pub const PROTOCOL: [Step; 4] = [Step::WriteTemp, Step::SyncTemp, Step::Rename, Step::SyncDir];
-
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    #[kani::proof] #[kani::unwind(5)] // PROVED (Lean: crash_atomic)
-    fn crash_atomic() {
-        let n: usize = kani::any();
-        kani::assume(n <= PROTOCOL.len());
-        let mut d = INIT;
-        for s in &PROTOCOL[..n] { d = step(d, *s); }
-        assert!(crash(d) != Content::Torn);
-    }
-
-    #[kani::proof] // COUNTEREXAMPLE, as intended (Lean: skipping_fsync_is_unsafe);
-                   // in-tree it becomes #[kani::should_panic]
-    fn skipping_fsync_is_unsafe() {
-        let d = step(step(INIT, Step::WriteTemp), Step::Rename);
-        assert!(crash(d) != Content::Torn);
-    }
-
-    #[kani::proof] #[kani::unwind(7)] // PROVED — stronger than the Lean spike
-    fn torn_only_by_unsynced_rename() {
-        let mut d = INIT;
-        let mut unsynced_rename = false;
-        for _ in 0..6 {
-            let s: Step = kani::any();
-            if s == Step::Rename && !d.temp_durable { unsynced_rename = true; }
-            d = step(d, s);
-        }
-        assert!(crash(d) != Content::Torn || unsynced_rename);
-    }
-}
-```
-
-The third harness takes **any** sequence of up to 6 steps, in any order and
-with repetitions. It proves that a torn target arises only from a rename of an
-unsynced temp: the code's ordering rule is exactly the safety condition. The
-Lean spike only enumerated prefixes of the correct order.
-
-This is still a model of `durable_write.rs`, not the file itself. K6 closes
-that gap: once the I/O-free core exists, these harnesses import the real
-`WriteProtocol` instead of `step`.
-
-The original Lean 4.34 spike took 0.37 s with core tactics and no Mathlib. It
-is superseded; its source is in git history (commit `b2298918`).
+The spike's second Kani result was a hand-written micro-model of
+`atomic_replace` (a four-step `enum` and a volatile/durable disk), which proved
+crash atomicity, found the skipped-fsync counterexample, and proved that a torn
+target arises only from renaming an unsynced temp, over any order of up to six
+steps. K6 superseded it: the same properties are now proved over the
+**production** `WriteProtocol` core in
+`crates/lushtext-core/src/services/filesystem/write_protocol/kani_proofs.rs`,
+and the micro-model's source survives only in git history (commit
+`5398acde`).

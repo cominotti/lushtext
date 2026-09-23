@@ -20,6 +20,7 @@
 #   make fuzz-corpus-replay - Replay committed fuzz corpus seeds on stable Rust
 #   make fuzz-smoke  - Run bounded fuzz smoke against temporary corpus copies
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
+#   make kani        - Run every Kani proof harness (requires the pinned Kani)
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make test-search-retirement-release - Focused retirement proof with debug assertions disabled
@@ -81,7 +82,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke test-widget test-widget-headless test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani check-kani-shards test-widget test-widget-headless test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -131,6 +132,15 @@ FUZZ_OPERATION_TARGET ?= operation_script
 FUZZ_SMOKE_RUNS ?= 64
 FUZZ_SMOKE_SECONDS ?= 5
 FUZZ_SMOKE_MAX_LEN ?= 4096
+
+# Kani formal verification lane. The version is pinned here and only here:
+# `.github/workflows/kani.yml` reads it through `scripts/kani-shards.py
+# github-outputs`. Kani pins its own nightly, so the stable workspace toolchain is untouched. Proof
+# builds use their own target directory so they never churn `target/`.
+KANI_VERSION ?= 0.68.0
+# `all`, or one shard of scripts/kani-shards.py (`scripts/kani-shards.py list`).
+KANI_SHARD ?= all
+KANI_TARGET_DIR ?= target/kani
 
 # Local cargo-mutants parallelism. cargo-mutants defaults to serial (one mutant
 # at a time), which leaves a multi-core box mostly idle on the slowest workload.
@@ -264,6 +274,26 @@ fuzz-smoke:
 		$(CARGO_FUZZ) run "$$target" "$$corpus" -- -runs=$(FUZZ_SMOKE_RUNS) -max_len=$(FUZZ_SMOKE_MAX_LEN) -max_total_time=$(FUZZ_SMOKE_SECONDS); \
 	done
 
+# Every `#[kani::proof]` harness in the crates that own checked code. Fails when
+# the installed Kani is not the pinned version or when any harness fails;
+# `should_panic` harnesses count as passing only when Kani finds their
+# documented counterexample.
+kani:
+	@set -eu; \
+	installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^Kani Rust Verifier \([0-9.]*\).*/\1/p' | head -n 1 || true); \
+	if [ "$$installed" != "$(KANI_VERSION)" ]; then \
+		echo "make kani needs Kani $(KANI_VERSION) (found: $${installed:-none})." >&2; \
+		echo "Install it with: cargo install --locked kani-verifier --version $(KANI_VERSION) && cargo kani setup" >&2; \
+		exit 1; \
+	fi; \
+	./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)"
+
+# Every Kani harness belongs to exactly one shard of the table the lane runs;
+# no Kani install needed.
+check-kani-shards:
+	@echo "Checking the Kani shard table..."
+	./scripts/kani-shards.py check --self-test
+
 # Focused smoke for the structured operation target when byte-ingestion targets
 # are not part of the question being investigated.
 fuzz-operation-smoke:
@@ -344,9 +374,15 @@ editor-glyph-live-smoke: build-debug
 # Real-process crash/restart smoke under isolated headless Mutter. This lane
 # creates draft/session recovery state through the app, SIGKILLs the process,
 # relaunches with the same app data, and preserves recovery artifacts.
+# The kill-point scenarios need a second debug binary with the
+# crash-kill-points feature, in its own target directory so the ordinary debug
+# binary (and every release, Meson, Flatpak, and Snap build) never carries it.
 crash-recovery-smoke: build-debug
+	@echo "Building the crash-kill-points smoke binary..."
+	cargo build -p lushtext --features crash-kill-points --target-dir target/crash-kill-points
 	@echo "Running crash recovery smoke lane..."
-	./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery"
+	./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery" \
+		--kill-point-binary "$(PWD)/target/crash-kill-points/debug/lushtext"
 
 # Confined runtime smoke for available Flatpak/Snap paths. This records runtime
 # identity and skips clearly when neither confined runtime is installed.
@@ -595,7 +631,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-kani-shards check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and
@@ -873,6 +909,9 @@ help:
 	@echo "  fuzz-list    List configured cargo-fuzz targets"
 	@echo "  fuzz-smoke   Bounded cargo-fuzz smoke against temporary corpus copies"
 	@echo "  fuzz-operation-smoke Bounded structured operation fuzz smoke"
+	@echo ""
+	@echo "Formal verification (explicit lane):"
+	@echo "  kani         Run every Kani proof harness with the pinned Kani version"
 	@echo ""
 	@echo "Mutation targets:"
 	@echo "  mutants-smoke Small cargo-mutants smoke run"

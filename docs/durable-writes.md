@@ -28,6 +28,31 @@ Replacing an existing path runs this sequence, in order:
 Steps 5 and 7 are both required on ext4, XFS, and Btrfs: syncing only the file
 contents leaves the name→inode link able to vanish across power loss.
 
+The sequence is not spelled out in the helper's code as straight-line calls.
+It is an I/O-free state machine, `services/filesystem/write_protocol.rs`:
+`WriteProtocol::step(outcome)` takes the outcome of the last operation and
+returns the next one (probe, create temp, write content, apply metadata, sync
+temp, rename, sync directory, remove temp, finish with a classification).
+`MoveProtocol` and `RenameProtocol` do the same for `move_durable` and
+`rename_durable`. `durable_write.rs` is only the shell: it executes each action
+with exactly one backend call and feeds that call's outcome back unchanged, so
+every ordering and classification decision lives in the core. Because the core
+is finite and I/O-free, Kani (`make kani`) explores every outcome sequence and
+every crash point of the real core against a model disk with POSIX crash
+semantics, and proves:
+
+- after any crash, the destination holds the complete previous bytes, or the
+  complete new bytes with their metadata and the destination's permissions;
+- `BeforeRename` means the previous bytes are still the destination,
+  `AfterRename` that the new bytes are, and success that they are durably;
+- new bytes never sit in a file created wider than the destination's mode,
+  because the temp is created only after a successful probe;
+- a move removes its source only once the copy is durable, and a completed
+  rename synced every directory it mutated.
+
+A `should_panic` harness keeps the canonical counterexample: a shell that
+skips the temp sync can expose a torn destination after a crash.
+
 ## Identity-metadata preservation
 
 Because the rename installs a brand-new inode, a naive temp-file-then-rename
@@ -72,10 +97,14 @@ Saving through a symlink writes the resolved target and leaves the symlink in
 place. Broken symlink targets fail before rename, keeping the editor modified so
 the user can retry or choose another destination.
 
-`copy_file_durable()` is a fallback for a rename that must cross filesystems. It
+`move_durable()` is a fallback for a rename that must cross filesystems. It
 therefore preserves the source file's bytes and identity metadata on the
 destination, then removes the source only after the destination write and parent
-directory sync succeed.
+directory sync succeed. `copy_durable()` is the same durable copy without the
+removal: it never touches its source. The two are deliberately separate
+primitives; the retired `copy_file_durable()` removed its source under a copy's
+name, which phase 0 of the formal-verification programme caught as a defect
+waiting to happen.
 
 ## Streaming writes
 

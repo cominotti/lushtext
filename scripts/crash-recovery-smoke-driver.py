@@ -50,6 +50,7 @@ OWNED_ARTIFACT_NAMES = {
     "atspi-address.txt",
     "data-dir.txt",
     "fixtures",
+    "kill-points",
     "logs",
     "metadata",
     "runtime-dir-cleanup-error.txt",
@@ -68,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-dir", required=True, type=Path)
     parser.add_argument("--binary", required=True, type=Path)
+    parser.add_argument(
+        "--kill-point-binary",
+        type=Path,
+        default=None,
+        help="Debug binary built with the crash-kill-points feature; enables the kill-point scenarios.",
+    )
     parser.add_argument("--internal-run", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--mutter-child", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -104,13 +111,16 @@ def ensure_outer_tools() -> None:
 
 
 def child_cli_args(args: argparse.Namespace, mode: str) -> list[str]:
-    return [
+    cli = [
         f"--{mode}",
         "--artifact-dir",
         str(args.artifact_dir),
         "--binary",
         str(args.binary),
     ]
+    if args.kill_point_binary is not None:
+        cli += ["--kill-point-binary", str(args.kill_point_binary)]
+    return cli
 
 
 def prepare_state(args: argparse.Namespace) -> dict[str, str]:
@@ -580,8 +590,17 @@ def activate_window_action(bus, action_name: str) -> None:
     )
 
 
-def launch_app(args: argparse.Namespace, artifact_dir: Path, phase: str, extra_args: list[str]) -> subprocess.Popen:
+def launch_app(
+    args: argparse.Namespace,
+    artifact_dir: Path,
+    phase: str,
+    extra_args: list[str],
+    *,
+    binary: Path | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.Popen:
     env = os.environ.copy()
+    env.pop("LUSHTEXT_KILL_AT", None)
     env.update(
         {
             "GDK_BACKEND": "wayland",
@@ -592,8 +611,9 @@ def launch_app(args: argparse.Namespace, artifact_dir: Path, phase: str, extra_a
             "RUST_LOG": env.get("RUST_LOG", "warn"),
         }
     )
+    env.update(env_overrides or {})
     app = subprocess.Popen(
-        [str(args.binary), *extra_args],
+        [str(binary or args.binary), *extra_args],
         stdout=(artifact_dir / f"logs/lushtext-{phase}.stdout").open("wb"),
         stderr=(artifact_dir / f"logs/lushtext-{phase}.stderr").open("wb"),
         env=env,
@@ -1110,10 +1130,11 @@ def tail_log(path: Path, line_count: int, stream) -> None:
         print(line, file=stream)
 
 
-def write_summary(artifact_dir: Path) -> None:
+def write_summary(artifact_dir: Path, kill_points: list[dict] | None = None) -> None:
     data_dir = Path(os.environ["LUSHTEXT_DATA_DIR"])
     summary = {
         "result": "passed",
+        "kill_point_scenarios": [row["scenario"] for row in kill_points or []],
         "data_dir": str(data_dir),
         "file_backed_marker": FILE_BACKED_MARKER,
         "untitled_marker": UNTITLED_MARKER,
@@ -1349,11 +1370,214 @@ def mutter_child(args: argparse.Namespace) -> int:
                     encoding="utf-8",
                 )
         snapshot_metadata(data_dir, artifact_dir / "metadata/after-relaunch")
-        scan_runtime_warnings(artifact_dir)
-        write_summary(artifact_dir)
-        return 0
     finally:
         terminate_process(relaunch)
+
+    kill_point_results = run_kill_point_scenarios(args, bus, artifact_dir, app_env)
+    scan_runtime_warnings(artifact_dir)
+    write_summary(artifact_dir, kill_point_results)
+    return 0
+
+
+KILL_POINT_MARKER = "CRASH_SMOKE_KILL_POINT_EDITS"
+KILL_POINT_EXTERNAL_CONTENT = "Changed on disk by another program\n"
+
+
+def kill_point_state(artifact_dir: Path, name: str) -> tuple[Path, Path, dict[str, str]]:
+    """A fresh app-data directory and file for one kill-point scenario."""
+    root = artifact_dir / "kill-points" / name
+    if root.exists():
+        shutil.rmtree(root)
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True)
+    fixture = root / "document.txt"
+    fixture.write_text("Original kill-point document\n", encoding="utf-8")
+    return root, fixture, {"LUSHTEXT_DATA_DIR": str(data_dir)}
+
+
+def wait_for_exit(process: subprocess.Popen, timeout: float) -> int:
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"process {process.pid} did not reach its kill point in {timeout}s") from exc
+
+
+def manifest_entry_for(data_dir: Path, document: Path) -> dict | None:
+    manifest_path = data_dir / "drafts/manifest.json"
+    if not manifest_path.exists():
+        return None
+    manifest = public_json_data(load_json(manifest_path))
+    return next(
+        (entry for entry in manifest.get("drafts", []) if entry.get("original_path") == str(document)),
+        None,
+    )
+
+
+def draft_body_text(data_dir: Path, entry: dict) -> str:
+    path = data_dir / "drafts" / f"{entry['draft_id']}.draft"
+    return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+
+
+def set_aside_texts(data_dir: Path) -> list[str]:
+    area = data_dir / "drafts/set-aside"
+    if not area.exists():
+        return []
+    return [path.read_text(encoding="utf-8", errors="replace") for path in sorted(area.glob("*.draft"))]
+
+
+def kill_inside_draft_write(
+    args: argparse.Namespace, bus, artifact_dir: Path, app_env: dict[str, str], name: str, kill_at: str
+) -> dict:
+    """Abort inside a draft body write, relaunch, and require the edits back."""
+    root, document, env = kill_point_state(artifact_dir, name)
+    data_dir = Path(env["LUSHTEXT_DATA_DIR"])
+    victim = launch_app(
+        args,
+        artifact_dir,
+        f"kill-{name}",
+        [str(document)],
+        binary=args.kill_point_binary,
+        env_overrides={**env, "LUSHTEXT_KILL_AT": kill_at},
+    )
+    try:
+        wait_for_window_actions(bus)
+        wait_for_automation_object(bus)
+        wait_for_ready(bus, artifact_dir, "file-open-complete", 10000)
+        set_editor_text(artifact_dir, app_env, f"kill-{name}", f"{KILL_POINT_MARKER}\n{name}\n")
+        returncode = wait_for_exit(victim, 30)
+    finally:
+        terminate_process(victim)
+    if returncode != -signal.SIGABRT:
+        raise RuntimeError(f"{name}: expected an abort at {kill_at}, got return code {returncode}")
+    entry = manifest_entry_for(data_dir, document)
+    if entry is None:
+        raise RuntimeError(f"{name}: the body was written before its manifest entry existed")
+    if KILL_POINT_MARKER not in draft_body_text(data_dir, entry):
+        raise RuntimeError(f"{name}: the killed write left no body holding the edits")
+    snapshot_metadata(data_dir, root / "metadata-after-kill")
+
+    relaunch = launch_app(
+        args, artifact_dir, f"relaunch-{name}", [str(document)], env_overrides=env
+    )
+    try:
+        wait_for_window_actions(bus)
+        wait_for_automation_object(bus)
+        wait_for_ready(bus, artifact_dir, "recovery-restore-complete", 60000)
+        visible = ""
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and KILL_POINT_MARKER not in visible:
+            visible = list_editable_text(artifact_dir, app_env, f"relaunch-{name}")
+            time.sleep(0.25)
+        if KILL_POINT_MARKER not in visible:
+            raise RuntimeError(f"{name}: the relaunched editor did not restore the edits")
+        write_automation_snapshot(bus, artifact_dir, f"relaunch-{name}")
+        snapshot_metadata(data_dir, root / "metadata-after-relaunch")
+    finally:
+        terminate_process(relaunch)
+    return {"scenario": name, "kill_at": kill_at, "result": "passed", "abort_returncode": returncode}
+
+
+def kill_after_stale_preservation(
+    args: argparse.Namespace, bus, artifact_dir: Path, app_env: dict[str, str]
+) -> dict:
+    """Abort after a stale draft is preserved and before it is retired."""
+    name = "stale-preserved-before-retire"
+    root, document, env = kill_point_state(artifact_dir, name)
+    data_dir = Path(env["LUSHTEXT_DATA_DIR"])
+    first = launch_app(args, artifact_dir, f"seed-{name}", [str(document)], env_overrides=env)
+    try:
+        wait_for_window_actions(bus)
+        wait_for_automation_object(bus)
+        wait_for_ready(bus, artifact_dir, "file-open-complete", 10000)
+        set_editor_text(artifact_dir, app_env, f"seed-{name}", f"{KILL_POINT_MARKER}\n{name}\n")
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            entry = manifest_entry_for(data_dir, document)
+            session_path = data_dir / "session.json"
+            if (
+                entry is not None
+                and KILL_POINT_MARKER in draft_body_text(data_dir, entry)
+                and session_path.exists()
+                and str(document) in session_path.read_text(encoding="utf-8", errors="replace")
+            ):
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError(f"{name}: the seed draft was never accepted")
+        os.kill(first.pid, signal.SIGKILL)
+        first.wait(timeout=5)
+    finally:
+        terminate_process(first)
+    # Another program changes the file: the draft is now stale.
+    document.write_text(KILL_POINT_EXTERNAL_CONTENT, encoding="utf-8")
+    later = time.time() + 30
+    os.utime(document, (later, later))
+
+    victim = launch_app(
+        args,
+        artifact_dir,
+        f"kill-{name}",
+        [],
+        binary=args.kill_point_binary,
+        env_overrides={**env, "LUSHTEXT_KILL_AT": name},
+    )
+    try:
+        returncode = wait_for_exit(victim, 60)
+    finally:
+        terminate_process(victim)
+    if returncode != -signal.SIGABRT:
+        raise RuntimeError(f"{name}: expected an abort after preservation, got {returncode}")
+    if not any(KILL_POINT_MARKER in text for text in set_aside_texts(data_dir)):
+        raise RuntimeError(f"{name}: the stale edits were not preserved before the kill")
+    snapshot_metadata(data_dir, root / "metadata-after-kill")
+
+    relaunch = launch_app(args, artifact_dir, f"relaunch-{name}", [], env_overrides=env)
+    try:
+        wait_for_window_actions(bus)
+        wait_for_automation_object(bus)
+        wait_for_ready(bus, artifact_dir, "recovery-restore-complete", 60000)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            entry = manifest_entry_for(data_dir, document)
+            if entry is None or not draft_body_text(data_dir, entry):
+                break
+            time.sleep(0.25)
+        if not any(KILL_POINT_MARKER in text for text in set_aside_texts(data_dir)):
+            raise RuntimeError(f"{name}: the preserved edits were lost after relaunch")
+        if document.read_text(encoding="utf-8") != KILL_POINT_EXTERNAL_CONTENT:
+            raise RuntimeError(f"{name}: the stale draft was applied over the changed file")
+        write_automation_snapshot(bus, artifact_dir, f"relaunch-{name}")
+        snapshot_metadata(data_dir, root / "metadata-after-relaunch")
+    finally:
+        terminate_process(relaunch)
+    return {"scenario": name, "kill_at": name, "result": "passed", "abort_returncode": returncode}
+
+
+def run_kill_point_scenarios(args: argparse.Namespace, bus, artifact_dir: Path, app_env: dict[str, str]) -> list[dict]:
+    """Kill the real process inside each named protocol window and relaunch."""
+    if args.kill_point_binary is None:
+        (artifact_dir / "assertions/kill-points.txt").write_text(
+            "SKIP: no --kill-point-binary was supplied\n", encoding="utf-8"
+        )
+        return []
+    results = [
+        kill_inside_draft_write(
+            args, bus, artifact_dir, app_env, "draft-body-before-commit", "draft-body-before-commit"
+        ),
+        kill_inside_draft_write(
+            args,
+            bus,
+            artifact_dir,
+            app_env,
+            "durable-renamed-before-dirsync",
+            "durable-renamed-before-dirsync@draft",
+        ),
+        kill_after_stale_preservation(args, bus, artifact_dir, app_env),
+    ]
+    (artifact_dir / "assertions/kill-points.json").write_text(
+        json.dumps(results, indent=2) + "\n", encoding="utf-8"
+    )
+    return results
 
 
 def main() -> int:

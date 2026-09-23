@@ -137,6 +137,22 @@ lane proves stable enough for PR gating:
 - `logs/` for the D-Bus, Mutter, app, PipeWire, WirePlumber, and AT-SPI logs
 - `assertions/` for SIGKILL, AT-SPI, warning-scan, and PNG checks
 - `screenshots/after-relaunch.png` when monitor capture is available
+- `kill-points/` and `assertions/kill-points.json` for the deterministic
+  kill-point scenarios
+
+Beside the external `SIGKILL`, the smoke kills the real process **inside** three
+named protocol windows that a signal from outside cannot hit reliably:
+`draft-body-before-commit` (a draft body is durable, its manifest commit has not
+run), `durable-renamed-before-dirsync` (a durable write's rename landed, its
+parent-directory sync has not run), and `stale-preserved-before-retire` (a stale
+draft is preserved, not yet retired). Each scenario launches a second binary
+built with the `crash-kill-points` Cargo feature and `LUSHTEXT_KILL_AT=<window>`,
+which calls `std::process::abort()` at that window, then relaunches the ordinary
+debug binary over the same data and requires that no work is lost. The feature
+exists only for this lane: `make crash-recovery-smoke` builds that binary into
+its own `target/crash-kill-points` directory, and the release, Meson, Flatpak,
+and Snap builds never enable it, so they compile the kill points as empty inline
+functions with no environment read.
 
 The lane is expected to skip clearly when required compositor, screenshot,
 D-Bus, or AT-SPI support is unavailable. A skip is useful host-support

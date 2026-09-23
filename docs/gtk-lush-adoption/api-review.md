@@ -28,7 +28,9 @@ spikes for `gtk4-rs` and Kooha.
   decisions are now pure, public, and property-tested. `classify_child_scroll`
   / `ChildScrollDecision` widen the second to its full outcome (rest, request,
   settle, defer) once the bin had to defer a divergence rather than overwrite
-  it; `outer_scroll_request` stays as its request-only projection.
+  it; `outer_scroll_request` stays as its request-only projection. Their
+  rustdoc states the whole-pixel domain Kani proves them on (2026-09-23); the
+  `cfg(kani)` harnesses are test-like and add no public API.
 - `gtk-lush-proof-harness`: keep caller-owned environment mutation and test
   registry. The harness should not mutate process environment for consumers.
 - `gtk-lush-proof-spine`: keep GTK-free provider traits and bounded value

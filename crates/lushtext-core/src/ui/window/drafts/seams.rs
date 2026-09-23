@@ -56,6 +56,9 @@ pub(super) struct DirtyDraftCandidate {
     pub(super) buffer: sourceview5::Buffer,
     /// Main-thread intent assigned before snapshot admission.
     pub(super) intent: DraftMutationIntent,
+    /// Proof the body may be written, minted by the pass's registration step;
+    /// a candidate without one is refused rather than written.
+    pub(super) registered: Option<draft_service::RegisteredDraft>,
 }
 
 /// Compact metadata retained after one draft body has been durably written.

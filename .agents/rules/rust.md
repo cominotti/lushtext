@@ -198,7 +198,8 @@ Approved raw filesystem exceptions are limited to:
 Do not import the private durable implementation from callers. The public
 durability surface is `services::filesystem::write`, including
 `atomic_replace`, `atomic_replace_stream`, `rename_durable`,
-`copy_file_durable`, `create_dir_durable`, `sync_parent_dir`, and
+`copy_durable` (keeps its source), `move_durable` (removes the source only
+after the destination is durable), `create_dir_durable`, `sync_parent_dir`, and
 `TargetWriteGuard`.
 
 Tests and benches should use `services::filesystem::fixture` helpers such as

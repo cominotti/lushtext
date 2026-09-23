@@ -1,0 +1,88 @@
+name: Kani
+
+# Formal verification lane: every `#[kani::proof]` harness via `make kani`,
+# one shard of scripts/kani-shards.py per matrix job, because the whole lane
+# takes longer than the 30-minute job cap. The shard table and the Makefile's
+# pinned KANI_VERSION are the only sources of truth: the `shards` job checks the
+# table and hands both to the matrix. Scheduled and manual only, outside the
+# pull-request gate, until its run time has been measured stable (the same
+# promotion path the fuzz smoke follows).
+
+on:
+  schedule:
+    - cron: "37 5 * * 3"
+  workflow_dispatch:
+
+concurrency:
+  group: kani-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  shards:
+    name: Kani Shard Table
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.table.outputs.shards }}
+      kani-version: ${{ steps.table.outputs.kani-version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the shard table and export it
+        id: table
+        run: |
+          ./scripts/kani-shards.py check
+          ./scripts/kani-shards.py github-outputs >> "$GITHUB_OUTPUT"
+
+  kani:
+    name: Kani Proof Harnesses (${{ matrix.shard }})
+    needs: shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KANI_VERSION: ${{ needs.shards.outputs.kani-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.shards.outputs.shards) }}
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gcc-c++ \
+            gettext \
+            git \
+            glib2-devel \
+            python3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-kani
+
+      - name: Install Kani
+        # The official Kani action assumes an Ubuntu runner; this lane runs in
+        # the same Fedora container as every other job, so install directly.
+        run: |
+          cargo install --locked kani-verifier --version "${KANI_VERSION}"
+          cargo kani setup
+
+      - name: Run Kani harnesses
+        run: make kani KANI_VERSION="${KANI_VERSION}" KANI_SHARD="${{ matrix.shard }}"

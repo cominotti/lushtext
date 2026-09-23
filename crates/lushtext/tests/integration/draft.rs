@@ -50,7 +50,7 @@ fn draft_lifecycle_create_detect_delete() {
     let draft_content = "fn main() { println!(\"modified\"); }";
 
     // Create draft
-    draft_service::write_draft(ctx.data_dir(), &draft_id, draft_content)
+    draft_service::fixture::write_body(ctx.data_dir(), &draft_id, draft_content)
         .expect("expected operation to succeed");
 
     // Detect draft
@@ -158,7 +158,7 @@ fn cleanup_removes_manifest_entries_without_draft_files() {
 fn cleanup_removes_draft_files_without_manifest_entries() {
     let ctx = TestContext::new();
 
-    draft_service::write_draft(ctx.data_dir(), "orphan", "stale content")
+    draft_service::fixture::write_body(ctx.data_dir(), "orphan", "stale content")
         .expect("expected operation to succeed");
     let manifest = DraftManifest::default();
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
@@ -179,7 +179,7 @@ fn cleanup_removes_draft_files_without_manifest_entries() {
 fn cleanup_preserves_valid_drafts() {
     let ctx = TestContext::new();
 
-    draft_service::write_draft(ctx.data_dir(), "valid", "content")
+    draft_service::fixture::write_body(ctx.data_dir(), "valid", "content")
         .expect("expected operation to succeed");
     let manifest = DraftManifest {
         drafts: vec![DraftEntry {
@@ -217,7 +217,7 @@ fn cleanup_preserves_valid_drafts() {
 fn write_draft_with_large_content() {
     let ctx = TestContext::new();
     let large_content = "a".repeat(1_000_000); // 1MB
-    draft_service::write_draft(ctx.data_dir(), "large", &large_content)
+    draft_service::fixture::write_body(ctx.data_dir(), "large", &large_content)
         .expect("expected operation to succeed");
     let read_back =
         draft_service::read_draft(ctx.data_dir(), "large").expect("expected operation to succeed");
@@ -228,7 +228,7 @@ fn write_draft_with_large_content() {
 fn write_draft_with_unicode_content() {
     let ctx = TestContext::new();
     let content = "fn main() { println!(\"日本語\"); } // 🦀\n";
-    draft_service::write_draft(ctx.data_dir(), "unicode", content)
+    draft_service::fixture::write_body(ctx.data_dir(), "unicode", content)
         .expect("expected operation to succeed");
     let read_back = draft_service::read_draft(ctx.data_dir(), "unicode")
         .expect("expected operation to succeed");
@@ -312,7 +312,7 @@ fn delete_nonexistent_draft_is_ok() {
 #[test]
 fn cleanup_preserves_body_when_manifest_entry_appears_after_inspection() {
     let ctx = TestContext::new();
-    draft_service::write_draft(ctx.data_dir(), "orphan", "new recovery body")
+    draft_service::fixture::write_body(ctx.data_dir(), "orphan", "new recovery body")
         .expect("write orphan candidate");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
         .expect("inspection should succeed");
@@ -349,10 +349,11 @@ fn cleanup_preserves_body_when_manifest_entry_appears_after_inspection() {
 #[test]
 fn cleanup_preserves_new_orphan_body_generation_written_after_inspection() {
     let ctx = TestContext::new();
-    draft_service::write_draft(ctx.data_dir(), "orphan", "old body").expect("write inspected body");
+    draft_service::fixture::write_body(ctx.data_dir(), "orphan", "old body")
+        .expect("write inspected body");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
         .expect("inspect old body generation");
-    draft_service::write_draft(ctx.data_dir(), "orphan", "new body")
+    draft_service::fixture::write_body(ctx.data_dir(), "orphan", "new body")
         .expect("replace body atomically");
 
     let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
@@ -385,7 +386,7 @@ fn cleanup_preserves_manifest_when_body_reappears_after_inspection() {
     draft_service::save_manifest(ctx.data_dir(), &manifest).expect("seed manifest");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &manifest)
         .expect("inspection should find missing body");
-    draft_service::write_draft(ctx.data_dir(), "reappeared", "new body")
+    draft_service::fixture::write_body(ctx.data_dir(), "reappeared", "new body")
         .expect("write concurrent body");
 
     let outcome = draft_service::execute_orphan_cleanup(ctx.data_dir(), plan);
@@ -444,7 +445,7 @@ fn cleanup_preserves_newer_same_id_generation() {
 #[test]
 fn cleanup_reports_already_absent_body_without_counting_deletion() {
     let ctx = TestContext::new();
-    draft_service::write_draft(ctx.data_dir(), "vanished", "body").expect("write body");
+    draft_service::fixture::write_body(ctx.data_dir(), "vanished", "body").expect("write body");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
         .expect("inspect body");
     fixture::remove_file(&draft_service::drafts_dir(ctx.data_dir()).join("vanished.draft"));
@@ -458,8 +459,10 @@ fn cleanup_reports_already_absent_body_without_counting_deletion() {
 #[test]
 fn cleanup_reports_partial_success_without_counting_retained_body() {
     let ctx = TestContext::new();
-    draft_service::write_draft(ctx.data_dir(), "deleted", "body").expect("write first body");
-    draft_service::write_draft(ctx.data_dir(), "changed", "body").expect("write second body");
+    draft_service::fixture::write_body(ctx.data_dir(), "deleted", "body")
+        .expect("write first body");
+    draft_service::fixture::write_body(ctx.data_dir(), "changed", "body")
+        .expect("write second body");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
         .expect("inspect both bodies");
     let changed_path = draft_service::drafts_dir(ctx.data_dir()).join("changed.draft");
@@ -481,7 +484,7 @@ fn cleanup_reports_partial_success_without_counting_retained_body() {
 #[test]
 fn cleanup_reports_delete_failure_and_preserves_body() {
     let ctx = TestContext::new();
-    draft_service::write_draft(ctx.data_dir(), "blocked", "body").expect("write body");
+    draft_service::fixture::write_body(ctx.data_dir(), "blocked", "body").expect("write body");
     let plan = draft_service::inspect_orphan_cleanup(ctx.data_dir(), &DraftManifest::default())
         .expect("inspect body");
     let outcome = draft_service::execute_orphan_cleanup_with_fault_for_test(
@@ -552,9 +555,9 @@ fn batch_preload_reads_matching_drafts() {
     let id_a = draft_service::draft_id_for_path(&path_a);
     let id_b = draft_service::draft_id_for_path(&path_b);
 
-    draft_service::write_draft(ctx.data_dir(), &id_a, "content_a")
+    draft_service::fixture::write_body(ctx.data_dir(), &id_a, "content_a")
         .expect("expected operation to succeed");
-    draft_service::write_draft(ctx.data_dir(), &id_b, "content_b")
+    draft_service::fixture::write_body(ctx.data_dir(), &id_b, "content_b")
         .expect("expected operation to succeed");
 
     let manifest = DraftManifest {
@@ -746,7 +749,7 @@ fn unregistered_path_hash_body_is_attributed_from_session_and_journal_stays_trus
     let draft_id = draft_service::draft_id_for_path(&file_path);
     draft_service::save_manifest(ctx.data_dir(), &DraftManifest::default())
         .expect("seed a trusted empty manifest");
-    draft_service::write_draft(ctx.data_dir(), &draft_id, "orphaned unsaved edits")
+    draft_service::fixture::write_body(ctx.data_dir(), &draft_id, "orphaned unsaved edits")
         .expect("write the crash-window body");
     let session = file_session(&[&file_path]);
     session_service::save(ctx.data_dir(), &session).expect("save session");
@@ -811,7 +814,7 @@ fn unattributable_path_hash_body_is_set_aside_and_journal_stays_trusted() {
     let unknown = draft_service::draft_id_for_path(Path::new("/nowhere/lost.md"));
     draft_service::save_manifest(ctx.data_dir(), &DraftManifest::default())
         .expect("seed a trusted empty manifest");
-    draft_service::write_draft(ctx.data_dir(), &unknown, "edits with no owner")
+    draft_service::fixture::write_body(ctx.data_dir(), &unknown, "edits with no owner")
         .expect("write the crash-window body");
 
     let commit = draft_service::update_manifest(
@@ -854,7 +857,7 @@ fn stale_file_draft_is_preserved_as_periodic_local_history_snapshot() {
     let file_path = ctx.write_file("stale.txt", "current disk content");
     let draft_id = draft_service::draft_id_for_path(&file_path);
     let body = "stale draft content\nwith two lines";
-    draft_service::write_draft(ctx.data_dir(), &draft_id, body).expect("write draft");
+    draft_service::fixture::write_body(ctx.data_dir(), &draft_id, body).expect("write draft");
     let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
     let saved_at_secs = 1_700_000_030;
     draft_service::save_manifest(
@@ -916,7 +919,7 @@ fn stale_draft_for_file_outside_local_history_policy_is_set_aside() {
     );
     let draft_id = draft_service::draft_id_for_path(&file_path);
     let body = "edits to a very large file";
-    draft_service::write_draft(ctx.data_dir(), &draft_id, body).expect("write draft");
+    draft_service::fixture::write_body(ctx.data_dir(), &draft_id, body).expect("write draft");
     let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
     draft_service::save_manifest(
         ctx.data_dir(),

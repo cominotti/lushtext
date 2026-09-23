@@ -15,7 +15,10 @@ mod legacy;
 mod plan;
 
 pub use apply::{FormatApplyFailure, FormatApplyMode, FormatApplyOutcome, apply_plan, start_fresh};
-pub use backup::{FORMAT_UPGRADE_BACKUP_DIR, FormatBackupManifest, FormatBackupRecord};
+pub use backup::{
+    FORMAT_UPGRADE_BACKUP_DIR, FORMAT_UPGRADE_BACKUP_ITEMS_DIR, FormatBackupManifest,
+    FormatBackupRecord,
+};
 pub use diagnostics::{
     FormatClassification, FormatInventoryDiagnostic, FormatItemPath, FormatMetadataKind,
     FormatScanBounds,

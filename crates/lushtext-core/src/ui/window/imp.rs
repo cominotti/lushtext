@@ -21,7 +21,9 @@ use super::notes::ActiveNotesBrowser;
 use super::session_restore::SessionRestoreRuntime;
 use super::session_restore::policy::SessionRestoreTurnMetrics;
 use crate::config::{self, keys};
-use crate::model::draft::{DraftManifest, DraftManifestAuthority, PreloadedDraftRestore};
+use crate::model::draft::{
+    DraftEntry, DraftManifest, DraftManifestAuthority, PreloadedDraftRestore,
+};
 use crate::model::recent_document::RecentDocumentEntry;
 use crate::model::workspace::WorkspaceScope;
 use crate::services::notifications::NotificationBus;
@@ -254,6 +256,10 @@ pub struct DraftState {
     /// Autosave must not write a body for such an id: the new buffer would
     /// overwrite the recovery body before restore could apply or preserve it.
     pub(super) restore_pending_ids: RefCell<HashMap<String, usize>>,
+    /// Unrestored recovery bodies whose set-aside copy failed. Their restore
+    /// hold is kept — the body exists nowhere else — and each autosave tick
+    /// retries the copy; the value counts the failed attempts.
+    pub(super) unrestored_copy_retries: RefCell<HashMap<String, (DraftEntry, u32)>>,
     /// Cancellation token for the current autosave buffer copy, if any.
     pub(crate) autosave_snapshot: RefCell<Option<BufferSnapshotHandle>>,
     /// Cancellation token for the current close-time buffer copy, if any.
@@ -283,7 +289,8 @@ pub struct DraftState {
 }
 
 impl DraftState {
-    /// Cancel owned orphan-cleanup scheduling during window teardown.
+    /// Cancel owned orphan-cleanup scheduling: window teardown, lost manifest
+    /// authority, or a pass that has nothing left to do.
     pub(super) fn dispose_orphan_cleanup(&self) {
         self.orphan_cleanup_timer_pending.set(false);
         self.orphan_cleanup_pending_offset.set(None);

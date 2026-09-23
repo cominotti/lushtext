@@ -112,7 +112,7 @@ fn transparency_style_scheme_spec(
     let opacity_percent = (palette.opacity * 100.0).round() as u32;
     let derived_id = format!("lushtext-opacity-{sanitized_base}-{opacity_percent}");
 
-    let scheme_dir = json_store::data_dir().join("style-schemes");
+    let scheme_dir = json_store::style_schemes_dir(&json_store::data_dir());
     let file_path = scheme_dir.join(format!("{derived_id}.xml"));
     let text_bg = crate::ui::theme::sourceview_rgba_with_alpha(&palette.text_bg, palette.opacity);
     let line_numbers_bg =

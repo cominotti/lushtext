@@ -92,6 +92,13 @@ Expected screen-reader behavior includes:
   whose invalid state names the rejection reason, a reset control, and an
   explicit `No excluded names` row. Toggling the mode refreshes the tree without
   a manual-refresh announcement.
+- `Preferences > Data` shows a **Preserved Drafts** group only when unsaved
+  changes were set aside. Each row reads the original file (or `Untitled
+  document` / `Unknown file`), when the changes were kept, and their size, with
+  its position in the group; its `Open` and icon-only `Delete` buttons are
+  labelled with the draft they act on. Delete confirms through a destructive
+  alert whose default and Escape response is Cancel. The preserved body itself
+  is never read out.
 - Returning to the window refreshes the workspace sidebar and the command-palette
   file index so externally created files become reachable. This refresh is
   **silent**: it emits no announcement, and it preserves focus, selection, scroll

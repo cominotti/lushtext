@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `viewport_slice`, `classify_child_scroll`, and `outer_scroll_request` now
+  state the input domain of their guarantees. They never panic for any `f64`;
+  slice containment, coverage of the visible intersection, and exact request
+  landing are guaranteed on the **whole-pixel domain** GTK produces (integer
+  values in the `i32` range, overscan up to 4096, a reconfiguration shift that
+  fits a `u16`), where Kani proves them. Kani found that containment and exact
+  landing both fail for general `f64` (near `1e260`, and at non-integer
+  values), so the earlier unqualified rustdoc promise was wider than the truth;
+  behaviour is unchanged. The crate carries in-tree `#[cfg(kani)]` proof
+  harnesses, run by `make kani`; they add nothing to the public API or to any
+  ordinary build. The bin's whole-pixel rounding moved into a private pure
+  helper so its `i32::clamp` is proved panic-free too.
 - Fixed `ViewportSliceBin` erasing a child `scroll_to` made in the same
   allocation in which the child also moved the adjustment's `upper` or
   `page_size`, when the requested value lay within that correction of the

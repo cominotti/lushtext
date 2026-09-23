@@ -3,10 +3,10 @@
 //! Startup sweep of durable-write crash leftovers in LushText's own app data.
 //!
 //! Every app-data directory LushText durably writes into is named here, once,
-//! and swept non-recursively under one shared per-pass budget. Local-history
-//! lineages are the one nested family: their directories are listed one level
-//! below the local-history root, and that listing is charged to the same
-//! budget. The removal decision itself lives in
+//! and swept non-recursively under one shared per-pass budget. Two families are
+//! nested: local-history lineages, listed one level below the local-history
+//! root, and format-upgrade backup runs, each swept with its `items/` child.
+//! Both listings are charged to the same budget. The removal decision itself lives in
 //! `services::filesystem::leftovers`; this module only knows *where* to look.
 
 use std::path::Path;
@@ -15,8 +15,8 @@ use crate::services::filesystem::leftovers::{
     LeftoverScope, LeftoverSweepBudget, LeftoverSweepReport, child_directories, sweep_directory,
 };
 use crate::services::{
-    bookmark_service, document_note_service, draft_service, folder_note_service,
-    local_history_service, recovery_metadata, search_backup,
+    bookmark_service, document_note_service, draft_service, folder_note_service, format_upgrade,
+    json_store, local_history_service, recovery_metadata, search_backup,
 };
 
 /// Local-history lineage directories swept per startup pass.
@@ -24,6 +24,9 @@ use crate::services::{
 /// Lineages are listed in directory order, so a data home with more lineages
 /// than this sweeps a subset each launch; leftovers elsewhere simply wait.
 const MAX_LINEAGES_PER_PASS: usize = 1_024;
+
+/// Format-upgrade backup runs swept per startup pass, on the same terms.
+const MAX_BACKUP_RUNS_PER_PASS: usize = 256;
 
 /// Sweep stale durable-write leftovers from every app-data directory under `data_dir`.
 ///
@@ -38,6 +41,7 @@ pub fn sweep_startup_leftovers(data_dir: &Path) -> LeftoverSweepReport {
     let mut budget = LeftoverSweepBudget::startup();
     let mut report = LeftoverSweepReport::default();
     let history_root = local_history_service::local_history_dir(data_dir);
+    let format_backups = data_dir.join(format_upgrade::FORMAT_UPGRADE_BACKUP_DIR);
 
     for dir in [
         data_dir.to_path_buf(),
@@ -48,8 +52,28 @@ pub fn sweep_startup_leftovers(data_dir: &Path) -> LeftoverSweepReport {
         folder_note_service::folder_notes_dir(data_dir),
         data_dir.join(recovery_metadata::QUARANTINE_DIR),
         search_backup::journal_dir(data_dir),
+        json_store::style_schemes_dir(data_dir),
+        draft_service::set_aside_dir(data_dir),
+        format_backups.clone(),
     ] {
         sweep_directory(&dir, LeftoverScope::AppData, &mut budget, &mut report);
+    }
+
+    // Each format-upgrade run writes its manifest in the run directory and its
+    // backups in `items/` below it (hashed leaf names, never deeper).
+    for run in child_directories(
+        &format_backups,
+        MAX_BACKUP_RUNS_PER_PASS,
+        &mut budget,
+        &mut report,
+    ) {
+        sweep_directory(&run, LeftoverScope::AppData, &mut budget, &mut report);
+        sweep_directory(
+            &run.join(format_upgrade::FORMAT_UPGRADE_BACKUP_ITEMS_DIR),
+            LeftoverScope::AppData,
+            &mut budget,
+            &mut report,
+        );
     }
 
     for lineage in child_directories(
@@ -146,6 +170,44 @@ mod tests {
 
         assert_eq!(report.removed, 0);
         assert!(metadata::exists(&outside_leftover));
+    }
+
+    #[test]
+    fn startup_sweep_reaches_style_schemes_format_backups_and_the_set_aside_area() {
+        let data = TempDir::new().expect("temp dir");
+        let foreign_pid = std::process::id().wrapping_add(1);
+        let in_schemes = stale_leftover(
+            &crate::services::json_store::style_schemes_dir(data.path()),
+            &format!(".lushtext-opacity-adwaita-90.xml.style-scheme.{foreign_pid}.1.tmp"),
+        );
+        let run = data
+            .path()
+            .join(crate::services::format_upgrade::FORMAT_UPGRADE_BACKUP_DIR)
+            .join("1700000000-upgrade-00");
+        let in_run = stale_leftover(
+            &run,
+            &format!(".manifest.json.format-upgrade-manifest.{foreign_pid}.2.tmp"),
+        );
+        let in_items = stale_leftover(
+            &run.join(crate::services::format_upgrade::FORMAT_UPGRADE_BACKUP_ITEMS_DIR),
+            &format!(".abcdef.json.format-upgrade-backup.{foreign_pid}.3.tmp"),
+        );
+        let in_set_aside = stale_leftover(
+            &draft_service::set_aside_dir(data.path()),
+            &format!(".abcdef.7.draft.draft.{foreign_pid}.4.tmp"),
+        );
+        let kept_backup = run
+            .join(crate::services::format_upgrade::FORMAT_UPGRADE_BACKUP_ITEMS_DIR)
+            .join("abcdef.json");
+        fixture::write_text(&kept_backup, "{}");
+
+        let report = sweep_startup_leftovers(data.path());
+
+        for path in [&in_schemes, &in_run, &in_items, &in_set_aside] {
+            assert!(!metadata::exists(path), "{} must be swept", path.display());
+        }
+        assert_eq!(report.removed, 4);
+        fixture::assert_text(&kept_backup, "{}");
     }
 
     #[test]

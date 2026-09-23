@@ -13,6 +13,9 @@ release-service-roots = ["src/services"]
 release-model-roots = ["src/model"]
 
 [features]
+# Deterministic crash injection for the crash-recovery smoke build only; see
+# `services::kill_point`. Never enabled in release, Meson, Flatpak, or Snap.
+crash-kill-points = []
 fuzzing = []
 property-tests = []
 test-utils = []

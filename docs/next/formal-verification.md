@@ -2,10 +2,12 @@
 
 Status: **active**. Phase 0 is **complete** (OpenSpec change
 `formal-verification-phase-0`, implemented and archived 2026-09-23 as
-`openspec/changes/archive/2026-09-23-formal-verification-phase-0`). The ranked
-next moves and the measured tool feasibility spike live in
-[`formal-verification-evolution.md`](./formal-verification-evolution.md). Phases 1–5 are planned
-and have no change yet. Decided by the maintainer on 2026-09-23.
+`openspec/changes/archive/2026-09-23-formal-verification-phase-0`). Phases 1–5
+and the K5, K7, and K8 candidates of
+[`formal-verification-evolution.md`](./formal-verification-evolution.md) were
+carried by the OpenSpec change `consolidate-formal-verification-on-kani`
+(2026-09-23), and each phase below records its posture and every proof result.
+Decided by the maintainer on 2026-09-23.
 
 ## 1. Motivation
 
@@ -54,19 +56,18 @@ Why one tool:
 - Every extra tool costs a toolchain, a CI lane, version upkeep, a skill, and
   a mental model. For a single maintainer, that fixed cost outweighed the
   marginal fit of a per-target "best tool".
-- Kani is the only candidate that needs **no bridge to the code**. Quint and
-  Lean re-express the system in another language, and every such model then
-  needs its own bridge back to Rust (differential testing, or Aeneas
-  extraction).
+- Kani is the only candidate that needs **no bridge to the code**. A model in
+  another specification language re-expresses the system, and every such
+  model then needs its own bridge back to Rust.
 
-How Kani covers what the mix assigned to other tools:
+How Kani covers each target:
 
-| Target | Earlier assignment | With Kani |
-|---|---|---|
-| Pure geometry and policy functions | Kani | unchanged |
-| ViewportSliceBin closed loop | Rust model plus proptest | Rust model; the child is `kani::any()` constrained by `kani::assume` (the adversarial envelope); N bins, k steps |
-| Draft journal interleavings and crashes | Quint | pure Rust journal state machine; each step is a nondeterministic action, including `Crash` |
-| Durable-write crash atomicity | Lean 4 | I/O-free Rust core. The protocol is finite, so exploring every event sequence is a **complete** proof, not merely a bounded one |
+| Target | With Kani |
+|---|---|
+| Pure geometry and policy functions | harnesses over the real functions |
+| ViewportSliceBin closed loop | Rust step model calling the real functions; the child is `kani::any()` constrained by `kani::assume` (the adversarial envelope); N bins, k steps |
+| Draft journal interleavings and crashes | pure Rust journal decision core that production drives; each step is a nondeterministic action, including `Crash` |
+| Durable-write crash atomicity | I/O-free Rust core that production drives. The protocol is finite, so exploring every event sequence is a **complete** proof, not merely a bounded one |
 
 What this gives up:
 
@@ -80,18 +81,12 @@ What this gives up:
   `Vec`.
 
 Kani runs no real threads. That does not matter here, because interleavings
-are modelled as nondeterministic choice in a sequential model, the same way
-TLA+ and Quint work.
+are modelled as nondeterministic choice in a sequential model.
 
-**Lean is dormant, and Quint is dropped.** Lean returns only if a claim
-genuinely needs to be unbounded, for example "any number of bins" as evidence
-for publishing GTK Lush. The Lean spike's micro-model was ported to Kani in
-minutes and got stronger (see the evolution record).
-
-**Superseded decision** (2026-09-23, earlier the same day): a pragmatic mix of
-Kani for pure functions, a Rust model for the slice bin, Quint for drafts, and
-Lean for the durable write. It optimised per-target fit and ignored per-tool
-fixed cost.
+**Lean is dormant.** It returns only if a claim genuinely needs to be
+unbounded, for example "any number of bins" as evidence for publishing GTK
+Lush, and only by a recorded maintainer decision. No other specification
+language is planned.
 
 Tool facts as of September 2026:
 
@@ -102,6 +97,17 @@ Tool facts as of September 2026:
 - Harnesses live in GTK-free code behind `#[cfg(kani)]`.
 
 ## 3. Phases
+
+**Final lane run (2026-09-23, `make kani`, all five shards, Kani 0.68.0 /
+CBMC 6.11.0, this toolbox): 27 harnesses, 0 failures, 40 min 29 s wall**
+(while other lanes shared the machine). Per shard: widgets-geometry 9
+harnesses; widgets-slice-loop-rest 3 (longest `slice_loop_rests_with_three_bins`
+310.1 s); widgets-slice-loop-requests 6 (longest
+`slice_loop_honours_a_request_with_two_bins` 369.5 s);
+core-journal-and-write 8 (longest `journal_invariants_hold_under_crashes`
+470.4 s); core-second-writer 1 (532.7 s). The per-phase tables below give
+each harness's own time.
+
 
 ### Phase 0 — Fix what the reading found (`formal-verification-phase-0`)
 
@@ -160,25 +166,27 @@ This phase writes a normative ledger of the GTK behaviour that the
 ViewportSliceBin and adaptive-geometry designs depend on. Each entry is pinned
 by an isolated widget probe.
 
-| Id | Axiom | Pinned today |
-|---|---|---|
-| A1 | GtkListView realizes at most 200+2 rows per range; "visible" means its own vadjustment | yes |
-| A2 | a list outside a scroller reports its whole content as its minimum height | indirectly |
-| A3 | GtkViewport allocates a non-scrollable child its minimum | indirectly |
-| A4 | the list applies `scroll_to` and focus scrolling inside its own allocate | positive controls |
-| A5 | a zero-height allocation makes the list rewrite the host's adjustment | **no** |
-| A6 | a GtkScrollable works in its CSS content box, so `page = alloc − inset` | indirectly |
-| A7 | the child re-derives its value from its scroll anchor when page or upper change | indirectly |
-| A8 | a settle is bounded by the geometry correction that caused it, and does not survive into a stable-geometry frame | **partially** (phase 0: across all 48 slice-bin widget tests, instrumented, real consumers produced 39 requests, 0 settles, and no `Defer`; the only `Defer` came from the synthetic probe — so no discriminator was needed) |
-| A9 | GtkListBase drops a pending `scroll_to` on any `value-changed` | only via a focus-traversal test |
-| A10 | rows around focus and selection stay realized but unmapped | by probe discipline |
-| A11 | `configure`/`set_value` clamp, and an unchanged `set_value` emits nothing | **no** |
-| A12 | the child's natural height is independent of the outer position | not pinned; only approximately true |
-| A13 | moving the outer adjustment inside layout does not reliably schedule a relayout | **no** |
+**Status: complete (K2, 2026-09-23).** The ledger, A1–A13 with statements,
+dependent designs, and pinning status, now lives at
+[`.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`](../../.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md)
+and is no longer duplicated here. New isolated probes in
+`crates/lushtext/tests/widget/gtk_axioms.rs` pin the four previously unpinned
+axioms against real GTK 4.22:
 
-Exit: every axiom has an isolated probe, or is recorded as unpinnable with a
-reason. The ledger lives beside the gtk4-libadwaita-internals references and is
-cited by the Phase 3 model.
+- A5 `test_axiom_a5_zero_height_allocation_rewrites_the_hosts_adjustment` —
+  a zero-height `GtkListView` rewrote a published value of 1200 to 34 and the
+  page from 300 to 0, emitting `value-changed`.
+- A9 `test_axiom_a9_value_changed_drops_a_pending_scroll_to` — a
+  `scroll_to(200)` alone reaches the row; a 10px `set_value` before the next
+  allocation leaves the list at the nudge.
+- A11 `test_axiom_a11_adjustments_clamp_and_skip_unchanged_values`.
+- A13 `test_axiom_a13_an_in_layout_scroll_does_not_schedule_a_relayout` — the
+  same outer move re-allocates a re-slicing widget from an idle, and does not
+  from inside its `size_allocate`.
+
+A8 is backed by the phase-0 instrumentation (39 requests, 0 settles, no
+`Defer` across 48 tests) and recorded as not isolable by a probe; A10 and A12
+record why they are not pinned separately.
 
 ### Phase 2 — Kani lane
 
@@ -197,6 +205,40 @@ cited by the Phase 3 model.
 
 Exit: harnesses run in CI or a documented lane, and their counterexamples are
 triaged.
+
+**Status: K1 landed (2026-09-23, `consolidate-formal-verification-on-kani`).**
+`#[cfg(kani)] mod kani_proofs` in `gtk-lush-widgets`, run by `make kani`
+(pinned `KANI_VERSION=0.68.0`) and by the scheduled/manual
+`.github/workflows/kani.yml`. `cfg(kani)` is a declared expected cfg in the
+workspace lints. Results, Kani 0.68.0 / CBMC 6.11.0, this toolbox:
+
+| Harness | Domain | Result | Time |
+|---|---|---|---|
+| `no_input_panics` | any `f64`, all three decisions | PROVED | 0.35 s |
+| `whole_pixel_band_stays_inside_the_widget` | any `f64` slice, any `i32` height (the bin's `i32::clamp`) | PROVED | 0.42 s |
+| `slice_lies_inside_content_on_whole_pixels` | `i32` pixels, overscan 0..=4096 | PROVED | 29.3 s |
+| `slice_covers_the_visible_intersection_on_whole_pixels` | `i32` pixels, overscan 0..=4096 | PROVED | 176.9 s |
+| `slice_containment_fails_for_general_f64` | finite `f64` | `should_panic`: counterexample found, as documented | 0.63 s |
+| `resting_bin_never_requests` | any `f64` | PROVED | 0.33 s |
+| `requests_are_at_least_epsilon` | any `f64` | PROVED | 0.08 s |
+| `request_lands_exactly_on_whole_pixels` | `i32` pixels, `u16` shift | PROVED | 5.07 s |
+| `request_landing_fails_for_general_f64` | any `f64` | `should_panic`: counterexample found, as documented | 0.12 s |
+
+Whole lane: 9 harnesses, 0 failures, 4 min 11 s wall including the crate's
+GTK dependency build. The two general-`f64` harnesses are **kept** as
+`should_panic` counterexamples rather than removed, so a future rustdoc claim of
+a broader domain has to confront them. The rustdoc of `viewport_slice`,
+`classify_child_scroll`, and `outer_scroll_request` and the
+`gtk-lush-viewport-slice` spec now state the whole-pixel domain; behaviour is
+unchanged (design D3). The lane grew past one CI job's 30-minute cap once
+phases 3–5 landed, so `scripts/kani-shards.py` now owns a five-shard table
+(`widgets-geometry`, `widgets-slice-loop-rest`, `widgets-slice-loop-requests`,
+`core-journal-and-write`, `core-second-writer`): `make kani` runs every shard,
+`kani.yml` runs one per matrix job, and `make check-kani-shards` (in
+`make check-policy`) fails when a harness matches no shard or several. CI shard
+times on GitHub runners are not yet measured. The editor-memory, minimap, window-geometry, and
+`clamped_preview_width` harnesses listed above were not part of this change and
+remain open candidates.
 
 ### Phase 3 — ViewportSliceBin closed-loop model (Kani)
 
@@ -220,6 +262,72 @@ This is a state-machine model:
 Candidate follow-on: the adaptive-shell breakpoint loop in
 `window/geometry/policy.rs`.
 
+**Status: complete (K4, 2026-09-23, `consolidate-formal-verification-on-kani`).**
+The step model is `slice_loop` in `crates/gtk-lush/widgets/src/kani_proofs.rs`.
+Each allocation calls the real `viewport_slice`, `whole_pixel_band`, and
+`classify_child_scroll` in the order `ViewportSliceBin::size_allocate` does,
+and applies the bin's own publish / learn-inset / write-back / defer / request
+bookkeeping. The child is `kani::any()` restricted only by `kani::assume`
+clauses citing ledger axioms (A4–A13). No widget code changed. Results, Kani
+0.68.0 / CBMC 6.11.0, this toolbox:
+
+| Harness | Scope | Result | Time |
+|---|---|---|---|
+| `slice_loop_rests_with_one_bin` | N=1, no input | PROVED: fixed point within two allocations, no oscillation, drawn row = intended | 37.5 s |
+| `slice_loop_rests_with_two_bins` | N=2 | PROVED | 154.9 s |
+| `slice_loop_rests_with_three_bins` | N=3 | PROVED | 328.7 s |
+| `slice_loop_honours_a_request_with_one_bin` | N=1, one request | PROVED: lands where the re-slice republishes the child's value, or clamps at an end, within two frames | 87.8 s |
+| `slice_loop_honours_a_request_with_two_bins` | N=2 | PROVED | 366.3 s |
+| `slice_loop_learning_frame_request_beyond_the_inset_is_honoured` | first allocation, divergence > inset + 1 | PROVED | 35.6 s |
+| `slice_loop_learning_frame_request_within_the_inset_is_erased` | first allocation, divergence ≤ inset | `should_panic`: counterexample, the recorded learning-frame residual | 13.3 s |
+| `slice_loop_one_reconfiguring_allocation_leaves_the_outer_alone` | one allocation with a geometry correction and a settle within it | PROVED | 17.2 s |
+| `slice_loop_two_reconfiguring_allocations_can_move_the_outer` | two consecutive such allocations | `should_panic`: counterexample, a new residual | 18.8 s |
+
+Envelope assumptions narrower than the ledger, recorded as the ledger requires:
+the child's content height does not depend on the outer position or on which
+rows are realized (A12 holds only approximately; drift is modelled as a
+reconfiguring child); a settle happens only in an allocation whose geometry
+the child corrected (A7) and never exceeds that correction (A8); a settle does
+not survive into a stable-geometry frame (A8, modelled literally: a held settle
+re-anchors on the published offset); only a bin whose band is non-zero can
+request (A5). Integer abstraction as above; the landing lemma it relies on is
+`request_lands_exactly_on_whole_pixels` (phase 2).
+
+**Both residuals are decided: recorded, not fixed** (design D6). Each is a
+real counterexample of the model, and neither is reachable through any real
+consumer, so no failing-first widget test can be written for either:
+
+- *Learning-frame residual.* A request applied in the very first allocation,
+  within the inset the bin is learning, is indistinguishable there from the
+  learning-frame settle (~3px measured on a `navigation-sidebar` list) and is
+  erased (A9). Forwarding it instead would scroll `child - viewport_top`
+  (~58px) and hide the header on first show. Reachability evidence: the phase-0
+  instrumentation of 48 widget tests saw 39 requests, **0 settles and no
+  `Defer`**, and no request in a learning frame; ledger A8 records that the
+  discriminator cannot be isolated by a probe. Kept as the `should_panic`
+  harness above, which fails the day a change makes the case honoured or
+  widens it.
+- *Two consecutive reconfiguring allocations* (found by K4). Two allocations
+  that each correct the child's geometry and each settle within their own
+  correction can add up to a divergence larger than the second correction;
+  the bin then classifies it as a request and scrolls the chrome above the
+  bin away. Reachability evidence: a settle needs the child to re-estimate
+  its content height, and both real consumers (the LushText workspace tree
+  and the GTK Lush adoption lab) use uniform single-line rows, whose estimate
+  never corrects; the phase-0 instrumentation saw no settle at all.
+  **Candidate fix, evaluated in the model only:** while a held divergence
+  exists and the geometry is still moving, bound the settle by
+  `shift + |held − published|` rather than `shift`. With that change the model
+  proves `slice_loop_two_reconfiguring_allocations_can_move_the_outer`
+  (63.0 s) and keeps the one-bin rest, request, learning-frame, and
+  one-reconfigure harnesses proved. It widens what is deferred, so a genuine
+  request made while a settle is held would wait one more allocation; that
+  trade-off and a real-GTK failing-first test are what adopting it needs.
+
+Still open from this phase's plan: simultaneous requests from two bins in one
+frame (the concurrent-request double-count; the harnesses above issue one
+request at a time) and the adaptive-shell breakpoint loop.
+
 ### Phase 4 — Draft journal model (Kani)
 
 A pure Rust journal state machine, checked with Kani, covers two or three ids of mixed kind, generations up to
@@ -241,6 +349,95 @@ and GTK coordination and used by them, so the harness checks production logic.
 It is not a separate model. L1 becomes bounded: "clean within k steps".
 
 Known unmodelled assumption: one process and one window per data directory.
+
+**Status: complete (K3, 2026-09-23, `consolidate-formal-verification-on-kani`).**
+The decision core is `crates/lushtext-core/src/services/draft_service/journal_core.rs`
+(a service-level home, because `draft_service` drives it too). Every decision
+site of the service and of `ui/window/drafts/` routes through it: body
+ownership, the body-write decision, registration, delete-while-pending
+preservation, the serialized deletion steps, startup stale retirement, the six
+unapplied-restore dispositions, orphan-cleanup eligibility, and commit
+authority. A body write takes the `RegisteredDraft` token that only
+registration mints; insert-only commits run inside the one manifest command;
+`services/draft_service/set_aside.rs` owns the set-aside bytes.
+
+The harness `services/draft_service/kani_proofs.rs` drives the **real** core
+over a model disk with 3 ids, content ids for up to 3 edits (so 3 generations
+per id), and 8 nondeterministic actions after the first startup — Edit,
+Register, WriteBody, Commit, Save, Discard, DeletionStep, Inspect,
+ExecCleanup, RestoreApply, ExternalMtime, Crash, Startup — with an I/O fault
+possible on every step (`unwind(9)`). Results, Kani 0.68.0 / CBMC 6.11.0:
+
+| Harness | Property | Result | Time |
+|---|---|---|---|
+| `journal_invariants_hold_under_crashes` | S1–S4 after every step | PROVED | 487 s (about 8 GB) |
+| `a_dirty_editor_becomes_clean_without_faults` | L1 at k = 7 | PROVED | 57 s |
+| `a_dirty_editor_may_need_seven_steps` | L1 at k = 6 | `should_panic`: counterexample, so k = 7 is tight | 53.2 s |
+
+L1's bound is 7, not the design's 6: a pending restore that turns out stale
+(1), its preserve / delete-body / remove-entry retirement (3), then register,
+write, and commit (3).
+
+What the harness found, all fixed failing-first:
+
+- a model bug in `RemoveEntry` trust, fixed in the model;
+- **a real loss path:** an `Unavailable` restore (the file vanished before a
+  lazy restore resolved) released the autosave hold without keeping the body,
+  so the next autosave, or a Discard, destroyed a body the user never saw.
+  S1 counterexample: Startup → RestoreApply(Unavailable) → Discard →
+  DeletionStep. It now keeps a set-aside copy; widget test
+  `test_an_unavailable_restore_keeps_the_unshown_draft_before_autosave_replaces_it`.
+
+The data-safety audit of the refactor then found two more, both fixed
+failing-first:
+
+- **the production hold did not match the proved model:** when the set-aside
+  copy of an unrestored body failed, production released the restore hold
+  anyway, so the next autosave replaced the only copy. The hold now stays and
+  each autosave tick retries the copy (`unrestored_copy_retries` in
+  `DraftEvidence`); widget test
+  `test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft`;
+- **a preserved draft opened from `Preferences > Data` was never draft-dirty**
+  (the bounded install suspends the handlers that mark it), so deleting its
+  set-aside copy before typing left it in no draft at all. It is now marked and
+  scheduled; `test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it`.
+
+Known unmodelled assumption: one process per data directory (A6); K8 below
+drops it.
+
+#### K8 — dropping axiom A6
+
+**Status: complete; decision: accept with documentation, no lock in this
+change.** `a_second_writer_breaks_the_journal_invariants` adds a second
+LushText process with its own editors and in-memory journal over the same
+disk (`step_as`). With 8 actions after both startups (1017.5 s, about 18 GB,
+17 min wall) Kani fails two checks, each decoded by concrete playback:
+
+- **S1, accepted work lost.** Both processes restored the same draft id.
+  Process A edits it, writes its body, and commits (accepted); A crashes;
+  process B, whose tab still shows the older restore, discards the draft and
+  its deletion steps remove the body A had just committed. Trace: Startup(A),
+  Startup(B), A Edit, A Register, A WriteBody, A Commit, A Crash, B Discard,
+  B DeletionStep.
+- **A body written without an entry.** B edits and registers the id; A
+  discards it and its deletion removes the shared manifest entry; B then
+  writes its body with the token its own registration minted. Trace:
+  Startup(A), Startup(B), B Edit, A Discard, B Register, A DeletionStep,
+  B ExternalMtime, B RestoreApply, A DeletionStep, B WriteBody.
+
+Both need **two processes with the same draft id open over one data
+directory**. Production does not create that: LushText is a unique
+`GApplication`, so a second launch in the same session forwards its files to
+the running instance and exits; a Flatpak and a host build use different data
+directories. It takes two separate D-Bus sessions of one user sharing a home
+(two graphical logins, or a nested or remote session) running LushText at
+once. That is documented here and in the deferral inventory rather than fixed
+blind; an inter-process data-directory lock (`flock` on a lock file in the
+data directory, with a read-only or refuse-to-start second instance) is the
+follow-up change to open if that use is ever reported. The harness stays as a
+`should_panic` pin, run at 6 actions after both startups (500.8 s, about
+9 GB, which a CI runner holds; the body-without-entry counterexample is still
+found): the day it passes, A6 is no longer needed and this record changes.
 
 ### Phase 5 — Crash-atomicity of durable_write (Kani)
 
@@ -269,14 +466,64 @@ Theorems:
 4. **Guarded-delete safety,** assuming unique inodes. Dropping that
    assumption exposes the inode ABA gap.
 
-The Lean spike's micro-model and its two theorems were already ported to Kani,
-along with a stronger third result, so this phase adopts them against the real
-core rather than a model.
+**Status: complete (K6, 2026-09-23, `consolidate-formal-verification-on-kani`),
+built on the K7 split of `copy_durable` (keeps its source) and `move_durable`
+(removes it only after the destination is durable).** The core is
+`crates/lushtext-core/src/services/filesystem/write_protocol.rs`:
+`WriteProtocol`, `MoveProtocol`, and `RenameProtocol`, each
+`step(outcome) -> next action`. `services/durable_write.rs` is now only the
+shell loop, one backend call per action with its outcome fed back unchanged;
+streaming closures stay in the shell. The existing durable-write unit and
+fault-injection tests, plus three new characterization tests (content,
+rename, and probe failure), are the shell's evidence.
+
+The harnesses (`write_protocol/kani_proofs.rs`) drive the **real** core
+against a `cfg(kani)` disk abstraction — one destination name, its previous
+inode, and the temp inode — with POSIX crash semantics: unsynced bytes, and
+metadata applied after the last sync, may be anything after a crash (A2), and
+a rename whose directory was not synced may or may not survive (A1, A3). Every
+backend outcome is `kani::any()` (including `AlreadyExists` for temp creation,
+A5), and a crash may land before any step. Results, Kani 0.68.0 / CBMC 6.11.0:
+
+| Harness | Property | Result | Time |
+|---|---|---|---|
+| `a_crash_never_tears_the_destination` | theorem 1, plus mode non-widening (theorem 3) and metadata-before-final-sync at every step | PROVED | 2.27 s |
+| `every_classification_describes_the_destination` | theorem 2: `BeforeRename` ⇒ old visible, `AfterRename` ⇒ new visible, success ⇒ new durable; a failed write leaves a temp only when its removal failed | PROVED | 3.45 s |
+| `skipping_the_temp_sync_tears_the_destination` | the same with a shell that answers `SyncTemp` without syncing | `should_panic`: torn-destination counterexample | 2.11 s |
+| `a_move_removes_its_source_only_after_the_copy_is_durable` | move safety | PROVED | 0.06 s |
+| `a_completed_rename_synced_every_directory_it_mutated` | `rename_durable` syncs both parents across directories | PROVED | 0.06 s |
+
+`kani::cover!` checks confirm the proved branches are reachable (a successful
+write, a failed directory sync, a failed temp removal, a post-crash new
+destination, a completed move, a completed cross-directory rename). Theorem 4,
+guarded-delete safety, is not a property of this core: orphan-cleanup deletion
+is S2 of phase 4. A4 (sticky fsync errors) needs no modelling, because every
+failed sync already ends the protocol.
+
+### K5 — Deterministic kill points in the crash-recovery smoke
+
+**Status: complete.** `services/kill_point.rs::reach`, behind the smoke-only
+`crash-kill-points` feature, aborts the real process inside
+`draft-body-before-commit`, `durable-renamed-before-dirsync`, and
+`stale-preserved-before-retire`. `make crash-recovery-smoke` builds that binary
+into `target/crash-kill-points` and runs one scenario per window, each
+relaunching the ordinary binary and requiring no lost work: all three passed
+(2026-09-23, `assertions/kill-points.json`). A fresh release build contains no
+kill-point code (`strings target/release/lushtext` finds neither
+`LUSHTEXT_KILL_AT` nor the abort message; the feature binary finds both), and
+no Meson, Flatpak, or Snap build passes the feature.
+
+Next candidates after the Kani consolidation are ranked in
+[`formal-verification-next.md`](./formal-verification-next.md).
 
 ## 4. Deferral inventory
 
-- Multi-process and multi-window safety of the draft journal and the target
-  guard. The guard is process-local, and cleanup gating is per window.
+- Multi-process safety of the draft journal and the target guard (axiom A6).
+  K8 showed two concrete losses when two processes open the same draft over
+  one data directory (phase 4, K8); accepted with documentation because a
+  unique `GApplication` makes that need two D-Bus sessions of one user. The
+  follow-up, if ever reported, is an inter-process data-directory lock. The
+  target guard is process-local, and cleanup gating is per window.
 - NFS rename-retransmit misclassification (`BeforeRename` while the new bytes
   are live).
 - suid/sgid are cleared by `fchown` after `fchmod`. This is documented as
@@ -292,21 +539,29 @@ core rather than a model.
   (phase 0). Those snapshots remain subject to ordinary retention; exempting
   them would need an index format change. The byte-identical copy phase 0 also
   keeps in `drafts/set-aside/` is never pruned, so retention costs the
-  browsable version, not the content. The set-aside area has no size bound or
-  cleanup UI yet.
+  browsable version, not the content. `services/draft_service/set_aside.rs`
+  owns those bytes and `Preferences > Data` lists them with Open and Delete
+  (K7); local history stays a separate copy rather than a zero-copy view,
+  because a view needs a local-history index change. The set-aside area still
+  has no size bound.
 - Phase 0 audit: the workspace same-target leftover sweep trusts the local
   clock against a file server's mtime. Across hosts sharing a workspace with
   ≥24 h clock skew, another host's in-flight temp for the same target could
   look stale; that host's rename then fails `BeforeRename` with its target
   intact (no loss). Multi-host workspaces sit outside the single-process
   axiom (A6).
-- Phase 0 slice-bin residual: the **learning frame** (the first allocation
-  after the bin learns the child's content-box inset) still republishes the
-  offset instead of holding a divergence, because holding the measured ~3px
-  settle there would forward as a ~58px scroll that hides the header on first
-  show. A `scroll_to` applied in that very first allocation could therefore
-  still be erased. Telling the two apart needs a discriminator (A8), and phase
-  0 found no evidence the case is reachable; revisit with the phase 3 model.
+- Slice-bin residuals, **decided by K4 and recorded, not fixed** (phase 3
+  above): a request within the inset in the learning frame is erased, and two
+  consecutive reconfiguring allocations with settles can be forwarded as an
+  unrequested scroll. Both are Kani counterexamples kept as `should_panic`
+  harnesses; neither is reachable through a real consumer (0 settles across
+  the phase-0 instrumentation; uniform rows in both consumers). The second has
+  a model-checked candidate fix. Revisit when a consumer with variable-height
+  rows adopts `ViewportSliceBin`, starting from a failing real-GTK test.
+- `draft_service::fixture::write_body` bypasses the `RegisteredDraft` token for
+  test and bench seeding and is compiled into every build, like
+  `services::filesystem::fixture`; nothing enforces that production does not
+  call it. Gating it needs a feature on the bench target.
 - Phase 0: a lineage index repaired from snapshot files derives each
   timestamp from the snapshot id (capture time), so a preserved stale draft's
   `saved_at_secs` stamp does not survive an index repair.

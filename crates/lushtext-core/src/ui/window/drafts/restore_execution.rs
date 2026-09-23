@@ -24,6 +24,7 @@ use gtk4::prelude::*;
 
 use crate::model::draft::{FileDraftRestoreSkip, PreloadedDraftSkip, StaleDraftPreservation};
 use crate::services::draft_service;
+use crate::services::draft_service::journal_core::RestoreEnding;
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
@@ -64,7 +65,7 @@ impl LushtextWindow {
                 GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::Oversized) => {
                     Self::show_oversized_draft_skipped(editor);
                     // Never applied, so the next autosave would overwrite it.
-                    self.preserve_unrestored_draft(entry);
+                    self.dispose_unapplied_restore(RestoreEnding::Oversized, entry);
                 }
                 GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::LazyAggregateBudget) => {
                     self.queue_lazy_draft_restore(editor, entry);
@@ -131,7 +132,7 @@ impl LushtextWindow {
                 editor.set_draft_restored(false);
                 let entry = self.draft_manifest_entry(&draft_id);
                 match entry {
-                    Some(entry) => self.retire_stale_draft(entry),
+                    Some(entry) => self.dispose_unapplied_restore(RestoreEnding::Stale, entry),
                     None => Self::show_stale_draft_skipped(editor, StaleDraftPreservation::Kept),
                 }
             }
@@ -143,7 +144,7 @@ impl LushtextWindow {
                 // Never applied, so the next autosave would overwrite it.
                 let entry = self.draft_manifest_entry(&draft_id);
                 if let Some(entry) = entry {
-                    self.preserve_unrestored_draft(entry);
+                    self.dispose_unapplied_restore(RestoreEnding::Oversized, entry);
                 }
             }
             GuardedPreloadedDraftRestore::Compact(PreloadedDraftSkip::LazyAggregateBudget) => {
@@ -172,14 +173,15 @@ impl LushtextWindow {
             if let Some(editor) = ticket.editor.upgrade()
                 && editor.draft_id().as_deref() == Some(ticket.entry.draft_id.as_str())
                 && self.draft_manifest_entry_is_current(&ticket.entry)
-                && !matches!(
-                    result,
-                    Ok(GuardedDraftRestoreResolution::Compact(
-                        FileDraftRestoreSkip::MissingDraft | FileDraftRestoreSkip::Unavailable
-                    ))
-                )
             {
-                self.preserve_unrestored_draft(ticket.entry.clone());
+                let ending = match &result {
+                    Ok(GuardedDraftRestoreResolution::Compact(
+                        skip @ (FileDraftRestoreSkip::MissingDraft
+                        | FileDraftRestoreSkip::Unavailable),
+                    )) => RestoreEnding::from(*skip),
+                    _ => RestoreEnding::EditedOver,
+                };
+                self.dispose_unapplied_restore(ending, ticket.entry.clone());
             }
             self.finish_draft_restore_tracking(tracking);
             return;
@@ -190,20 +192,18 @@ impl LushtextWindow {
                 self.apply_draft(ticket, content, tracking);
                 return;
             }
-            Ok(GuardedDraftRestoreResolution::Compact(FileDraftRestoreSkip::Stale)) => {
-                // Preserve first, then retire, through the journal's serialized
-                // delete; the warning is published once the destination is known.
-                editor.set_draft_restored(false);
-                self.retire_stale_draft(ticket.entry.clone());
+            Ok(GuardedDraftRestoreResolution::Compact(skip)) => {
+                match skip {
+                    // Preserve first, then retire, through the journal's
+                    // serialized delete; the warning is published once the
+                    // destination is known.
+                    FileDraftRestoreSkip::Stale => editor.set_draft_restored(false),
+                    // Never applied, so the next autosave would overwrite it.
+                    FileDraftRestoreSkip::Oversized => Self::show_oversized_draft_skipped(&editor),
+                    FileDraftRestoreSkip::Unavailable | FileDraftRestoreSkip::MissingDraft => {}
+                }
+                self.dispose_unapplied_restore(RestoreEnding::from(skip), ticket.entry.clone());
             }
-            Ok(GuardedDraftRestoreResolution::Compact(FileDraftRestoreSkip::Oversized)) => {
-                Self::show_oversized_draft_skipped(&editor);
-                // Never applied, so the next autosave would overwrite it.
-                self.preserve_unrestored_draft(ticket.entry.clone());
-            }
-            Ok(GuardedDraftRestoreResolution::Compact(
-                FileDraftRestoreSkip::Unavailable | FileDraftRestoreSkip::MissingDraft,
-            )) => {}
             Err(error) => {
                 tracing::warn!("Failed to restore draft {draft_id}: {error}");
                 editor.emit_inline_notification(InlineActionNotification {
@@ -214,10 +214,51 @@ impl LushtextWindow {
                     secondary_button: None,
                 });
                 // Keep the promise above before the next autosave overwrites it.
-                self.preserve_unrestored_draft(ticket.entry.clone());
+                self.dispose_unapplied_restore(RestoreEnding::ReadFailed, ticket.entry.clone());
             }
         }
         self.finish_draft_restore_tracking(tracking);
+    }
+
+    /// Open a preserved set-aside draft's text in a new untitled tab.
+    ///
+    /// The set-aside copy stays where it is — only the user's confirmed Delete
+    /// removes it — and the new tab is modified, so autosave protects it as an
+    /// ordinary untitled draft from then on. The body is bounded by the
+    /// automatic-draft limit by the reader, and installs through the bounded
+    /// buffer replacement like any recovered body.
+    pub fn open_set_aside_draft(&self, text: String) {
+        self.new_tab();
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        let editor_weak = editor.downgrade();
+        let window_weak = self.downgrade();
+        let request = BufferReplacementRequest::new(
+            BufferReplacementTicket {
+                workflow: BufferReplacementWorkflow::DraftRecovery,
+                generation: editor.draft_dirty_generation(),
+            },
+            text,
+            |_| true,
+            move |outcome| {
+                if matches!(outcome, BufferReplacementOutcome::Complete { .. })
+                    && let Some(editor) = editor_weak.upgrade()
+                {
+                    editor.buffer().set_modified(true);
+                    // The bounded install suspends the buffer handlers that
+                    // would mark the tab draft-dirty, and autosave writes only
+                    // draft-dirty tabs. Mark it here, so the text reaches its
+                    // own draft even if the user deletes the set-aside copy
+                    // before typing anything.
+                    editor.set_draft_dirty(true);
+                    if let Some(window) = window_weak.upgrade() {
+                        window.schedule_first_dirty_draft_autosave();
+                    }
+                }
+            },
+        );
+        editor.replace_buffer_bounded(request);
     }
 
     /// Install restored draft content without publishing partial recovery state.
@@ -271,7 +312,10 @@ impl LushtextWindow {
                 {
                     // The install was superseded or went stale, so the body was
                     // never applied; keep it before an autosave replaces it.
-                    window.preserve_unrestored_draft(terminal_ticket.entry.clone());
+                    window.dispose_unapplied_restore(
+                        RestoreEnding::InstallCancelled,
+                        terminal_ticket.entry.clone(),
+                    );
                 }
                 window.finish_draft_restore_tracking(tracking);
             },

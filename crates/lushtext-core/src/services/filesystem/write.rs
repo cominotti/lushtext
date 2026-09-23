@@ -13,10 +13,10 @@ use crate::services::durable_write;
 use super::{sys, types::WriteLabel};
 
 pub(crate) use durable_write::parent_or_current;
+pub(crate) use durable_write::temp_name_launch_nonce;
 #[cfg(test)]
 pub(crate) use durable_write::unique_temp_path;
 pub use durable_write::{DurableWriteError, TargetWriteGuard, WriteTargetIdentity};
-pub(crate) use durable_write::{temp_name_launch_nonce, temp_sequence_launch_nonce};
 
 /// Resolve the stable target identity used by coordinated writes.
 ///
@@ -128,6 +128,29 @@ pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> 
     durable_write::rename_durable_no_replace(from, to)
 }
 
+/// [`rename_durable_no_replace`], falling back where the platform lacks the
+/// flag to an existence check plus [`rename_durable`].
+///
+/// The fallback is two syscalls, so it is only best-effort against another
+/// process creating the destination in between; callers serialize LushText's
+/// own writers with [`TargetWriteGuard`].
+///
+/// # Errors
+///
+/// [`std::io::ErrorKind::AlreadyExists`] when the destination exists, by
+/// either route; otherwise the rename or directory-sync error.
+pub fn rename_durable_no_replace_or_checked(from: &Path, to: &Path) -> std::io::Result<()> {
+    match rename_durable_no_replace(from, to) {
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+            if super::metadata::exists(to) {
+                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+            }
+            rename_durable(from, to)
+        }
+        other => other,
+    }
+}
+
 /// Whether a rename failed only because source and target are on different filesystems.
 ///
 /// This is the one rename failure a copy fallback may answer. Every other
@@ -139,14 +162,27 @@ pub fn is_cross_device(error: &std::io::Error) -> bool {
     sys::is_cross_device(error)
 }
 
-/// Copy a file with durable destination replacement and source cleanup support.
+/// Copy a file durably, keeping the source; see [`move_durable`] for the
+/// variant that removes it.
 ///
 /// # Errors
 ///
-/// Returns an error when the source cannot be read, the destination cannot be
-/// written durably, or source metadata cannot be preserved.
-pub fn copy_file_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Result<()> {
-    durable_write::copy_file_durable(from, to, label.as_str())
+/// Returns an error when the source cannot be read or the destination cannot be
+/// written durably with the source's metadata.
+pub fn copy_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Result<()> {
+    durable_write::copy_durable(from, to, label.as_str())
+}
+
+/// Move a file by a durable copy, removing the source only after the
+/// destination is durable: the cross-filesystem fallback for
+/// [`rename_durable`].
+///
+/// # Errors
+///
+/// Returns an error when the copy fails or the source cannot be removed and
+/// its directory synced.
+pub fn move_durable(from: &Path, to: &Path, label: WriteLabel) -> std::io::Result<()> {
+    durable_write::move_durable(from, to, label.as_str())
 }
 
 /// Create an empty file only when the destination is absent, then sync its parent.

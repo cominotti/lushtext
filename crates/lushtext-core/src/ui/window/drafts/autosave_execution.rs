@@ -34,6 +34,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::model::draft::{DraftEntry, DraftManifestAuthority};
+use crate::services::draft_service::journal_core;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::{draft_service, editor_io, json_store};
 use crate::ui::buffer_snapshot;
@@ -72,6 +73,7 @@ impl LushtextWindow {
     /// Single autosave tick: collect dirty tabs and write drafts.
     pub(super) fn autosave_tick(&self) {
         self.cancel_first_dirty_draft_autosave();
+        self.retry_unrestored_copies();
         let drafts = &self.imp().drafts;
         if autosave_admission(
             drafts.autosave_inflight.get(),
@@ -116,19 +118,26 @@ impl LushtextWindow {
         F: FnOnce(&Self, Vec<DirtyDraftCandidate>, Vec<String>) + 'static,
     {
         let trusted = self.imp().drafts.manifest_authority.get().is_trusted();
+        let mut candidates = candidates;
         let registrations: Vec<(String, Option<std::path::PathBuf>)> = {
             let manifest = self.imp().drafts.manifest.borrow();
-            candidates
-                .iter()
-                .filter(|candidate| {
-                    policy::draft_requires_registration(
-                        candidate.original_path.is_some(),
-                        manifest.find_by_id(&candidate.draft_id).is_some(),
-                        trusted,
-                    )
-                })
-                .map(|candidate| (candidate.draft_id.clone(), candidate.original_path.clone()))
-                .collect()
+            let mut registrations = Vec::new();
+            for candidate in &mut candidates {
+                // The journal core mints the body-write token directly when no
+                // registration is needed; otherwise only a committed
+                // registration below may.
+                candidate.registered = draft_service::RegisteredDraft::without_registration(
+                    &candidate.draft_id,
+                    candidate.original_path.is_some(),
+                    manifest.find_by_id(&candidate.draft_id).is_some(),
+                    trusted,
+                );
+                if candidate.registered.is_none() {
+                    registrations
+                        .push((candidate.draft_id.clone(), candidate.original_path.clone()));
+                }
+            }
+            registrations
         };
         if registrations.is_empty() {
             then(self, candidates, Vec::new());
@@ -162,19 +171,30 @@ impl LushtextWindow {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                let committed = match window.apply_draft_registration(result, registered) {
-                    Ok(()) => true,
+                let mut tokens = match window.apply_draft_registration(result, registered) {
+                    Ok(tokens) => tokens,
                     Err(detail) => {
                         tracing::warn!("Failed to register new draft ids: {detail}");
-                        false
+                        Vec::new()
                     }
                 };
+                let committed = !tokens.is_empty();
+                let mut candidates = candidates;
+                for candidate in &mut candidates {
+                    if candidate.registered.is_none()
+                        && let Some(index) = tokens
+                            .iter()
+                            .position(|token| token.draft_id() == candidate.draft_id)
+                    {
+                        candidate.registered = Some(tokens.swap_remove(index));
+                    }
+                }
                 let (writable, refused): (Vec<_>, Vec<_>) =
                     candidates.into_iter().partition(|candidate| {
-                        policy::candidate_may_write_after_registration(
+                        journal_core::may_write_after_registration(
                             required.contains(&candidate.draft_id),
                             committed,
-                        )
+                        ) && candidate.registered.is_some()
                     });
                 let refused = refused
                     .into_iter()
@@ -292,7 +312,9 @@ impl LushtextWindow {
             }
             // The recovery body for this id has not been restored or
             // preserved yet; writing the buffer now would destroy it.
-            if self.draft_restore_is_pending(&draft_id) {
+            if self.draft_body_write_decision(&draft_id, editor.file_path().is_some())
+                == journal_core::BodyWriteDecision::Hold
+            {
                 restore_blocked += 1;
                 continue;
             }
@@ -309,6 +331,7 @@ impl LushtextWindow {
                 editor: editor.downgrade(),
                 buffer: editor.buffer(),
                 intent,
+                registered: None,
             });
         }
         (dirty_tabs, restore_blocked)
@@ -362,6 +385,7 @@ impl LushtextWindow {
                     let data_dir = json_store::data_dir();
                     let draft_id = candidate.draft_id.clone();
                     let original_path = candidate.original_path;
+                    let registered = candidate.registered;
                     let completion = DirtyDraftCompletion {
                         draft_id: candidate.draft_id,
                         dirty_generation: candidate.dirty_generation,
@@ -377,7 +401,10 @@ impl LushtextWindow {
                             let text = text.into_string_on_worker();
                             delay_draft_body_for_test();
                             fail_next_draft_body_for_test()?;
-                            draft_service::write_draft(&data_dir, &draft_id, &text)?;
+                            let registered = registered.ok_or_else(|| {
+                                anyhow::anyhow!("{draft_id}: recovery metadata was not registered")
+                            })?;
+                            draft_service::write_draft(&data_dir, &registered, &text)?;
                             Ok::<_, anyhow::Error>(DraftEntry {
                                 draft_id,
                                 original_mtime_secs: original_path
@@ -613,6 +640,7 @@ impl LushtextWindow {
                     let data_dir = json_store::data_dir();
                     let draft_id = candidate.draft_id.clone();
                     let original_path = candidate.original_path.clone();
+                    let registered = candidate.registered;
                     let completion = DirtyDraftCompletion {
                         draft_id: candidate.draft_id,
                         dirty_generation: candidate.dirty_generation,
@@ -629,7 +657,10 @@ impl LushtextWindow {
                             let text = text.into_string_on_worker();
                             delay_draft_body_for_test();
                             fail_next_draft_body_for_test()?;
-                            let result = draft_service::write_draft(&data_dir, &draft_id, &text)
+                            let registered = registered.ok_or_else(|| {
+                                anyhow::anyhow!("{draft_id}: recovery metadata was not registered")
+                            })?;
+                            let result = draft_service::write_draft(&data_dir, &registered, &text)
                                 .map(|()| DraftEntry {
                                     draft_id,
                                     original_mtime_secs: original_path

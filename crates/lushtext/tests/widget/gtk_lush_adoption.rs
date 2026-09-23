@@ -9,8 +9,8 @@ use std::time::Duration;
 use crate::common::{
     RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
     ensure_gtk_init, first_label, flush_after_delay, flush_events, force_layout, mapped_list_rows,
-    mapped_row_with_label, placement_relative_to, present_window, row_straddling_bottom,
-    sample_placements, test_application, wait_until, wait_until_or_false,
+    mapped_row_with_label, numbered_label_list, placement_relative_to, present_window,
+    row_straddling_bottom, sample_placements, test_application, wait_until, wait_until_or_false,
 };
 use gtk_lush_tasks::{FreshnessToken, spawn_blocking_then};
 use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
@@ -246,27 +246,11 @@ fn install_padded_list_css() {
 }
 
 fn adoption_list(rows: u32) -> gtk4::ListView {
-    let strings: Vec<String> = (0..rows).map(|index| format!("row {index:04}")).collect();
-    let model = gtk4::StringList::new(&strings.iter().map(String::as_str).collect::<Vec<_>>());
-    let factory = gtk4::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
-        let label = gtk4::Label::new(None);
-        label.set_xalign(0.0);
-        item.set_child(Some(&label));
-    });
-    factory.connect_bind(|_, item| {
-        let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
-        let text = item
-            .item()
-            .and_downcast::<gtk4::StringObject>()
-            .map(|object| object.string().to_string())
-            .unwrap_or_default();
-        if let Some(label) = item.child().and_downcast::<gtk4::Label>() {
-            label.set_text(&text);
-        }
-    });
-    gtk4::ListView::new(Some(gtk4::SingleSelection::new(Some(model))), Some(factory))
+    numbered_label_list(
+        rows,
+        |model| gtk4::SingleSelection::new(Some(model)).upcast(),
+        |label| label.set_xalign(0.0),
+    )
 }
 
 /// A scroller whose content is `sections` copies of "header then slice bin".

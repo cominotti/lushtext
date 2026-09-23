@@ -13,9 +13,11 @@ pub mod metadata;
 pub mod mutate;
 pub mod read;
 pub(in crate::services) mod sys;
+pub mod temp_name;
 pub mod tree;
 pub mod types;
 pub mod write;
+pub mod write_protocol;
 
 pub use types::{
     DirectoryEntryInfo, DirectoryPage, DirectoryPageVisitMetrics, DirectoryScanPolicy, FileFacts,
@@ -220,7 +222,12 @@ mod tests {
             WriteLabel::LOCAL_HISTORY_COPY.as_str(),
             "local-history-copy"
         );
-        assert_eq!(WriteLabel::from("custom-op").as_str(), "custom-op");
+        assert_eq!(WriteLabel::KNOWN.len(), 10);
+        assert!(
+            WriteLabel::KNOWN
+                .iter()
+                .all(|label| WriteLabel::is_known(label.as_str()))
+        );
     }
 
     #[test]
@@ -439,13 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn copy_file_durable_wrapper_moves_source_bytes_to_destination() {
+    fn move_durable_wrapper_moves_source_bytes_to_destination() {
         let dir = TempDir::new().expect("temp dir");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
         fixture::write_text(&from, "copy me\n");
 
-        write::copy_file_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("copy file");
+        write::move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY).expect("move file");
 
         assert!(!metadata::exists(&from));
         fixture::assert_text(&to, "copy me\n");

@@ -38,9 +38,23 @@ of allocations, the model SHALL prove:
 - every request beyond epsilon is honoured or clamped within the bound;
 - at rest, the drawn row position equals the intended position.
 
+These properties are proved within the envelope the ledger currently pins.
+Axiom A8 says a settle does not survive into a stable-geometry frame. A case
+that falls outside that envelope and yields a counterexample SHALL be kept as
+a named `#[kani::should_panic]` residual harness. The programme record SHALL
+state the residual, the evidence on whether real consumers can reach it, and a
+candidate fix. A residual MUST be fixed, starting from a failing real-GTK
+test, as soon as any consumer can reach it. Two such residuals are known: the
+learning-frame request, and two consecutive reconfiguring allocations with
+settles.
+
 #### Scenario: Resting loop reaches a fixed point
 - **WHEN** no external input occurs for any admissible child behaviour
 - **THEN** the model shows the outer value, published offsets, and child values stop changing within two allocations
+
+#### Scenario: A residual becomes reachable
+- **WHEN** a consumer, such as a variable-height list, is shown to reach a recorded residual through real GTK
+- **THEN** a failing widget test is written first, the fix is applied, and the residual harness becomes a proof
 
 #### Scenario: The learning-frame residual is decided
 - **WHEN** the model explores a request applied in the first allocation after inset learning

@@ -21,6 +21,8 @@ harness = false
 # and ordinary dev builds keep it disabled so shipped code stays latest-only.
 [features]
 manual-format-upgrade-fixtures = ["lushtext-core/test-utils"]
+# Kill points for `make crash-recovery-smoke`; see `services::kill_point`.
+crash-kill-points = ["lushtext-core/crash-kill-points"]
 
 [lints]
 workspace = true

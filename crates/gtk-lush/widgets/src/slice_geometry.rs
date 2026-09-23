@@ -37,9 +37,21 @@ pub struct ViewportSlice {
 ///   correctly; a positive value trades that precision for fewer row
 ///   realizations while scrolling.
 ///
-/// The returned slice always lies inside the content and always contains the
-/// intersection of the viewport with the content. When the content fits the
-/// viewport, the whole content is returned at offset zero.
+/// When the content fits the viewport, the whole content is returned at offset
+/// zero.
+///
+/// # Domain
+///
+/// The function never panics, for any `f64` input: NaN, infinities, and
+/// negative lengths degrade to zero. Its geometric guarantees are stated on
+/// the **whole-pixel domain** GTK actually produces — every argument an
+/// integer value in the `i32` range, with `overscan` in `0..=4096` — where the
+/// returned slice always lies inside the content (`top >= 0`, `height >= 0`,
+/// `top + height <= max(content_height, 0)`) and always contains the
+/// intersection of the viewport with the content. Both are proved there by
+/// Kani (`make kani`). They are not claimed for arbitrary `f64`: near `1e260`
+/// rounding can make `top + height` exceed the content by one ulp, a
+/// counterexample Kani keeps as a `should_panic` harness.
 #[must_use]
 pub fn viewport_slice(
     viewport_top: f64,
@@ -79,6 +91,29 @@ pub fn viewport_slice(
     let height = (visible_height + 2.0 * overscan).min(content_height);
     let top = (visible_top - overscan).clamp(0.0, content_height - height);
     ViewportSlice { top, height }
+}
+
+/// Round a slice to the whole-pixel band the bin allocates inside a widget of
+/// `height` pixels: `(top, height)`, with `0 <= top` and
+/// `top + height <= max(height, 0)` for every input, finite or not.
+///
+/// A scrollable child's vertical minimum is its content height; GTK exempts
+/// `GtkScrollable` widgets from the under-allocation check for exactly this
+/// reason, so the band may legitimately be smaller than `height`.
+pub(crate) fn whole_pixel_band(slice: ViewportSlice, height: i32) -> (i32, i32) {
+    let height = height.max(0);
+    let band_height = whole_pixels(slice.height).min(height);
+    let band_top = whole_pixels(slice.top).clamp(0, height - band_height);
+    (band_top, band_height)
+}
+
+/// Round a logical-pixel length to whole pixels for GTK allocation.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "saturating float-to-int casts are the intent; the band is then clamped to a widget height"
+)]
+fn whole_pixels(value: f64) -> i32 {
+    value.round().max(0.0) as i32
 }
 
 fn sanitize(value: f64) -> f64 {
@@ -162,6 +197,16 @@ mod tests {
         let below = viewport_slice(-20_000.0, 665.0, 11_486.0, 0.0);
         assert_eq!(below.height, 0.0);
         assert_eq!(below.top, 0.0);
+    }
+
+    #[test]
+    fn whole_pixel_band_rounds_and_stays_inside_the_widget() {
+        let band = |top, height, widget| whole_pixel_band(ViewportSlice { top, height }, widget);
+        assert_eq!(band(10.4, 99.6, 500), (10, 100));
+        assert_eq!(band(480.0, 100.0, 500), (400, 100));
+        assert_eq!(band(0.0, 900.0, 500), (0, 500));
+        assert_eq!(band(f64::NAN, f64::INFINITY, 500), (0, 500));
+        assert_eq!(band(-5.0, -5.0, -10), (0, 0));
     }
 
     #[test]

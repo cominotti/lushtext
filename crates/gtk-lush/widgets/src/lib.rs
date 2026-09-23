@@ -20,6 +20,8 @@
 #![deny(missing_docs)]
 
 mod clip_bin;
+#[cfg(kani)]
+mod kani_proofs;
 mod render_hold;
 mod scroll_request;
 mod single_child;

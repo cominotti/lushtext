@@ -200,6 +200,9 @@ unimplemented                 = "deny"
 # Edition 2024 defaults that remain enforced across the workspace.
 unsafe_op_in_unsafe_fn  = "deny"
 tail_expr_drop_order    = "deny"
+# `cfg(kani)` gates the in-tree Kani proof harnesses (`make kani`); ordinary
+# builds never set it, so declare it expected instead of warning on every use.
+unexpected_cfgs         = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 # --- Compilation speed profiles ---
 

@@ -343,6 +343,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             <property name="title" translatable="yes">Details</property>
           </object>
         </child>
+        <child>
+          <object class="AdwPreferencesGroup" id="data_set_aside_group">
+            <property name="title" translatable="yes">Preserved Drafts</property>
+            <property name="description" translatable="yes">Unsaved changes that were kept aside instead of being restored</property>
+            <property name="visible">false</property>
+          </object>
+        </child>
       </object>
     </child>
   </template>

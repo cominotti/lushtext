@@ -29,7 +29,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
-use crate::services::filesystem::sys;
+use crate::services::filesystem::write_protocol::{
+    MoveAction, MoveProtocol, RenameAction, RenameProtocol, StepOutcome, WriteAction, WriteClass,
+    WriteProtocol,
+};
+use crate::services::filesystem::{sys, temp_name};
 
 /// Process-local counter for temp-file names that may be created concurrently.
 ///
@@ -85,15 +89,6 @@ pub(crate) fn temp_name_launch_nonce() -> u32 {
     })
 }
 
-/// The launch nonce a temp name's sequence field carries.
-#[must_use]
-pub(crate) fn temp_sequence_launch_nonce(sequence: u64) -> u32 {
-    u32::try_from(sequence >> 32).unwrap_or(u32::MAX)
-}
-
-/// Bounded fresh names tried when a temp name already exists.
-const MAX_TEMP_NAME_ATTEMPTS: usize = 8;
-
 /// Build a unique hidden temp path next to the final destination.
 #[must_use]
 pub fn unique_temp_path(path: &Path, tmp_tag: &str) -> PathBuf {
@@ -101,12 +96,12 @@ pub fn unique_temp_path(path: &Path, tmp_tag: &str) -> PathBuf {
     let file_name = path
         .file_name()
         .map_or_else(|| "untitled".into(), OsStr::to_string_lossy);
-    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX);
-    let sequence = (u64::from(temp_name_launch_nonce()) << 32) | counter;
-    parent.join(format!(
-        ".{file_name}.{tmp_tag}.{}.{}.tmp",
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(temp_name::format(
+        &file_name,
+        tmp_tag,
         std::process::id(),
-        sequence
+        temp_name::sequence(temp_name_launch_nonce(), counter),
     ))
 }
 
@@ -280,47 +275,118 @@ fn atomic_write_stream_with_metadata<F>(
 where
     F: FnOnce(&mut dyn Write) -> std::io::Result<()>,
 {
-    let metadata_plan = match MetadataPlan::probe(path, metadata_source) {
-        Ok(plan) => plan,
-        Err(error) => return Err(DurableWriteError::BeforeRename(error)),
-    };
-    let mut tmp_path = unique_temp_path(path, tmp_tag);
-    let mut attempts = 1;
-    let file = loop {
-        match sys::create_temp_file(&tmp_path, metadata_plan.create_mode()) {
-            Ok(file) => break file,
-            // Never reuse an existing name: it may be another writer's temp.
-            Err(error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists
-                    && attempts < MAX_TEMP_NAME_ATTEMPTS =>
-            {
-                attempts += 1;
-                tmp_path = unique_temp_path(path, tmp_tag);
+    // The shell: every decision is `WriteProtocol`'s. Each action is exactly
+    // one backend call, and its outcome goes back to the protocol unchanged;
+    // the shell only keeps the resources those calls produce and the latest
+    // error, which the protocol's classification is reported with.
+    let (mut protocol, mut action) = WriteProtocol::start();
+    let mut metadata_plan = None;
+    let mut temp: Option<(PathBuf, sys::File)> = None;
+    let mut write_content = Some(write_content);
+    let mut last_error: Option<std::io::Error> = None;
+    loop {
+        let outcome = match action {
+            WriteAction::ProbeMetadata => {
+                outcome_of(MetadataPlan::probe(path, metadata_source), &mut last_error)
+                    .map(|plan| metadata_plan = Some(plan))
             }
-            Err(error) => return Err(DurableWriteError::BeforeRename(error)),
-        }
-    };
-
-    let write_result = {
-        let mut writer = std::io::BufWriter::new(&file);
-        write_content(&mut writer).and_then(|()| writer.flush())
+            WriteAction::CreateTemp => {
+                let tmp_path = unique_temp_path(path, tmp_tag);
+                let mode = metadata_plan.as_ref().and_then(MetadataPlan::create_mode);
+                match sys::create_temp_file(&tmp_path, mode) {
+                    Ok(file) => {
+                        temp = Some((tmp_path, file));
+                        Ok(())
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        last_error = Some(error);
+                        Err(StepOutcome::AlreadyExists)
+                    }
+                    Err(error) => {
+                        last_error = Some(error);
+                        Err(StepOutcome::Failed)
+                    }
+                }
+            }
+            WriteAction::WriteContent => {
+                let (tmp_path, file) = temp
+                    .as_ref()
+                    .expect("the protocol writes only after creating");
+                let write_content = write_content
+                    .take()
+                    .expect("the protocol writes content once");
+                outcome_of(
+                    {
+                        let mut writer = std::io::BufWriter::new(file);
+                        write_content(&mut writer).and_then(|()| writer.flush())
+                    }
+                    .and_then(|()| observe_temp_after_content_for_test(tmp_path)),
+                    &mut last_error,
+                )
+            }
+            WriteAction::ApplyMetadata => {
+                let (_, file) = temp
+                    .as_ref()
+                    .expect("the protocol applies metadata to its temp");
+                let plan = metadata_plan
+                    .as_ref()
+                    .expect("the protocol probed metadata first");
+                outcome_of(plan.apply(file), &mut last_error)
+            }
+            WriteAction::SyncTemp => {
+                let (_, file) = temp.as_ref().expect("the protocol syncs its temp");
+                outcome_of(sync_temp_after_metadata(file), &mut last_error)
+            }
+            WriteAction::Rename => {
+                let (tmp_path, _) = temp.as_ref().expect("the protocol renames its temp");
+                outcome_of(sys::rename(tmp_path, path), &mut last_error)
+            }
+            WriteAction::SyncDir => {
+                // The rename has landed: the new bytes are now the
+                // destination. A failure here means the change is visible but
+                // not yet crash-durable.
+                crate::services::kill_point::reach(
+                    crate::services::kill_point::KillWindow::DurableRenamedBeforeDirSync,
+                    tmp_tag,
+                );
+                outcome_of(sync_parent_dir(path), &mut last_error)
+            }
+            WriteAction::RemoveTemp => {
+                if let Some((tmp_path, file)) = temp.take() {
+                    drop(file);
+                    let _ = sys::remove_file(&tmp_path);
+                }
+                Ok(())
+            }
+            WriteAction::Finish(class) => {
+                let mut error = || {
+                    last_error
+                        .take()
+                        .unwrap_or_else(|| std::io::Error::other("durable write failed"))
+                };
+                return match class {
+                    WriteClass::Success => Ok(()),
+                    WriteClass::BeforeRename => Err(DurableWriteError::BeforeRename(error())),
+                    WriteClass::AfterRename => Err(DurableWriteError::AfterRename(error())),
+                };
+            }
+        };
+        (protocol, action) = protocol.step(match outcome {
+            Ok(()) => StepOutcome::Done,
+            Err(step_outcome) => step_outcome,
+        });
     }
-    .and_then(|()| observe_temp_after_content_for_test(&tmp_path))
-    .and_then(|()| metadata_plan.apply(&file))
-    .and_then(|()| sync_temp_after_metadata(&file));
+}
 
-    if let Err(error) = write_result {
-        let _ = sys::remove_file(&tmp_path);
-        return Err(DurableWriteError::BeforeRename(error));
-    }
-
-    if let Err(error) = sys::rename(&tmp_path, path) {
-        let _ = sys::remove_file(&tmp_path);
-        return Err(DurableWriteError::BeforeRename(error));
-    }
-    // The rename has landed: the new bytes are now the destination. A failure
-    // here means the change is visible but not yet crash-durable.
-    sync_parent_dir(path).map_err(DurableWriteError::AfterRename)
+/// Map one backend result to the protocol's outcome, keeping its error.
+fn outcome_of<T>(
+    result: std::io::Result<T>,
+    last_error: &mut Option<std::io::Error>,
+) -> Result<T, StepOutcome> {
+    result.map_err(|error| {
+        *last_error = Some(error);
+        StepOutcome::Failed
+    })
 }
 
 /// Stable resolved identity for a write target.
@@ -462,8 +528,7 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
     if FAIL_NEXT_RENAME_CROSS_DEVICE.with(|fail| fail.replace(false)) {
         return Err(sys::cross_device_error_for_test());
     }
-    sys::rename(from, to)?;
-    sync_rename_parents(from, to)
+    run_rename_protocol(from, to, sys::rename)
 }
 
 /// Rename durably, refusing atomically when the destination already exists.
@@ -481,17 +546,35 @@ pub fn rename_durable(from: &Path, to: &Path) -> std::io::Result<()> {
 /// implement the flag — callers fall back to a best-effort check rather than
 /// refusing every rename.
 pub fn rename_durable_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
-    sys::rename_no_replace(from, to)?;
-    sync_rename_parents(from, to)
+    run_rename_protocol(from, to, sys::rename_no_replace)
 }
 
-/// Sync whichever parent directories a completed rename mutated.
-fn sync_rename_parents(from: &Path, to: &Path) -> std::io::Result<()> {
-    sync_parent_dir(from)?;
-    if parent_or_current(from) != parent_or_current(to) {
-        sync_parent_dir(to)?;
+/// The shell of [`RenameProtocol`]: rename with `rename`, then sync whichever
+/// parent directories the rename mutated, one backend call per action.
+fn run_rename_protocol(
+    from: &Path,
+    to: &Path,
+    rename: fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let (mut protocol, mut action) =
+        RenameProtocol::start(parent_or_current(from) != parent_or_current(to));
+    let mut last_error = None;
+    loop {
+        let result = match action {
+            RenameAction::Rename => rename(from, to),
+            RenameAction::SyncSourceDir => sync_parent_dir(from),
+            RenameAction::SyncDestinationDir => sync_parent_dir(to),
+            RenameAction::Finish(true) => return Ok(()),
+            RenameAction::Finish(false) => {
+                return Err(last_error.unwrap_or_else(|| std::io::Error::other("rename failed")));
+            }
+        };
+        let succeeded = result.is_ok();
+        if let Err(error) = result {
+            last_error = Some(error);
+        }
+        (protocol, action) = protocol.step(succeeded);
     }
-    Ok(())
 }
 
 /// Create one directory and sync the parent directory that received the entry.
@@ -508,23 +591,51 @@ pub fn create_dir_durable(path: &Path) -> std::io::Result<()> {
     sync_parent_dir(path)
 }
 
-/// Copy a file with a durable target write, then remove and sync the source.
-///
-/// This is a cross-filesystem fallback for `rename_durable()`. The source is not
-/// removed until the destination bytes and destination directory entry are
-/// durable.
+/// Copy a file durably: the destination receives the source's bytes and
+/// metadata through the full atomic-write protocol. The source is never
+/// touched.
 ///
 /// # Errors
 ///
-/// Returns an error if the source cannot be read, the destination cannot be
-/// atomically written, the source cannot be removed, or the source directory
-/// cannot be synced after removal.
-pub fn copy_file_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()> {
+/// Returns an error if the source cannot be read or the destination cannot be
+/// atomically written.
+pub fn copy_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()> {
     let bytes = sys::read(from)?;
     atomic_write_bytes_with_metadata_source_classified(to, tmp_tag, &bytes, from)
-        .map_err(DurableWriteError::into_io_error)?;
-    sys::remove_file(from)?;
-    sync_parent_dir(from)
+        .map_err(DurableWriteError::into_io_error)
+}
+
+/// Move a file durably by copying: [`copy_durable`], then remove the source
+/// and sync its directory. This is the cross-filesystem fallback for
+/// [`rename_durable`].
+///
+/// The source is removed only after the destination's bytes **and** its
+/// directory entry are durable, so any failure before that leaves the source
+/// in place.
+///
+/// # Errors
+///
+/// Returns an error if the copy fails, the source cannot be removed, or the
+/// source directory cannot be synced after removal.
+pub fn move_durable(from: &Path, to: &Path, tmp_tag: &str) -> std::io::Result<()> {
+    let (mut protocol, mut action) = MoveProtocol::start();
+    let mut last_error = None;
+    loop {
+        let result = match action {
+            MoveAction::Copy => copy_durable(from, to, tmp_tag),
+            MoveAction::RemoveSource => sys::remove_file(from),
+            MoveAction::SyncSourceDir => sync_parent_dir(from),
+            MoveAction::Finish(true) => return Ok(()),
+            MoveAction::Finish(false) => {
+                return Err(last_error.unwrap_or_else(|| std::io::Error::other("move failed")));
+            }
+        };
+        let succeeded = result.is_ok();
+        if let Err(error) = result {
+            last_error = Some(error);
+        }
+        (protocol, action) = protocol.step(succeeded);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -922,21 +1033,47 @@ mod tests {
     }
 
     #[test]
-    fn copy_file_durable_writes_destination_before_removing_source() {
+    fn copy_durable_keeps_its_source() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
         fixture::write_text(&from, "snapshot");
 
-        copy_file_durable(&from, &to, "copy").expect("expected operation to succeed");
+        copy_durable(&from, &to, "copy").expect("copy");
+
+        fixture::assert_text(&from, "snapshot");
+        fixture::assert_text(&to, "snapshot");
+    }
+
+    #[test]
+    fn move_durable_writes_destination_before_removing_source() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        fixture::write_text(&from, "snapshot");
+
+        move_durable(&from, &to, "copy").expect("expected operation to succeed");
 
         assert!(!fixture::exists(&from));
         fixture::assert_text(&to, "snapshot");
     }
 
+    #[test]
+    fn move_durable_keeps_its_source_when_the_destination_is_not_durable() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        fixture::write_text(&from, "snapshot");
+
+        fail_next_parent_sync_for_test();
+        move_durable(&from, &to, "copy").expect_err("the destination sync failed");
+
+        fixture::assert_text(&from, "snapshot");
+    }
+
     #[cfg(unix)]
     #[test]
-    fn copy_file_durable_preserves_source_mode_over_existing_destination() {
+    fn move_durable_preserves_source_mode_over_existing_destination() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
@@ -945,7 +1082,7 @@ mod tests {
         fixture::set_mode(&from, 0o644);
         fixture::set_mode(&to, 0o600);
 
-        copy_file_durable(&from, &to, "copy").expect("copy fallback");
+        move_durable(&from, &to, "copy").expect("copy fallback");
 
         assert!(!fixture::exists(&from));
         fixture::assert_text(&to, "source");
@@ -954,7 +1091,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn copy_file_durable_preserves_source_user_xattr_when_supported() {
+    fn move_durable_preserves_source_user_xattr_when_supported() {
         let dir = TempDir::new().expect("expected operation to succeed");
         let from = dir.path().join("from.txt");
         let to = dir.path().join("to.txt");
@@ -968,7 +1105,7 @@ mod tests {
             return;
         }
 
-        copy_file_durable(&from, &to, "copy").expect("copy fallback");
+        move_durable(&from, &to, "copy").expect("copy fallback");
 
         let read_back =
             fixture::get_xattr(&to, name).expect("source user xattr must survive copy fallback");
@@ -977,7 +1114,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn copy_file_durable_preserves_source_posix_acl_when_supported() {
+    fn move_durable_preserves_source_posix_acl_when_supported() {
         use std::process::Command;
 
         let (Ok(setfacl), Ok(getfacl)) = (which("setfacl"), which("getfacl")) else {
@@ -1003,7 +1140,7 @@ mod tests {
             }
         }
 
-        copy_file_durable(&from, &to, "copy").expect("copy fallback");
+        move_durable(&from, &to, "copy").expect("copy fallback");
 
         let after = Command::new(&getfacl)
             .arg("--omit-header")
@@ -1257,6 +1394,61 @@ mod tests {
             Some(0o600),
             "temp file already containing new bytes must stay private"
         );
+    }
+
+    #[test]
+    fn atomic_write_content_failure_is_before_rename_and_removes_the_temp() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("data.txt");
+        fixture::write_bytes(&path, b"old");
+
+        let error = atomic_write_stream_classified(&path, "test", |writer| {
+            writer.write_all(b"partial")?;
+            Err(std::io::Error::other("serializer failed"))
+        })
+        .expect_err("a failing content stream must fail the write");
+
+        assert!(matches!(error, DurableWriteError::BeforeRename(_)));
+        assert_eq!(fixture::read_bytes(&path), b"old");
+        assert_eq!(
+            fixture::entry_names(dir.path()),
+            vec!["data.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn atomic_write_rename_failure_is_before_rename_and_removes_the_temp() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("occupied");
+        fixture::create_dir_all(&path.join("child"));
+
+        let error = atomic_write_bytes_classified(&path, "test", b"new")
+            .expect_err("renaming a file over a non-empty directory fails");
+
+        assert!(matches!(error, DurableWriteError::BeforeRename(_)));
+        assert!(fixture::exists(&path.join("child")));
+        assert_eq!(
+            fixture::entry_names(dir.path()),
+            vec!["occupied".to_string()]
+        );
+    }
+
+    #[test]
+    fn atomic_write_metadata_probe_failure_is_before_rename_and_creates_nothing() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let path = dir.path().join("data.txt");
+        let missing_source = dir.path().join("missing-source.txt");
+
+        let error = atomic_write_bytes_with_metadata_source_classified(
+            &path,
+            "test",
+            b"new",
+            &missing_source,
+        )
+        .expect_err("a required metadata source that is missing fails first");
+
+        assert!(matches!(error, DurableWriteError::BeforeRename(_)));
+        assert!(fixture::entry_names(dir.path()).is_empty());
     }
 
     #[cfg(unix)]

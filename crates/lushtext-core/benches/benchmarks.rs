@@ -384,7 +384,7 @@ fn make_draft_fixtures(
     for tab in tabs.iter().take(n_drafts) {
         if let Some(ref path) = tab.path {
             let draft_id = draft_service::draft_id_for_path(path);
-            draft_service::write_draft(dir.path(), &draft_id, &draft_content)
+            draft_service::fixture::write_body(dir.path(), &draft_id, &draft_content)
                 .expect("expected operation to succeed");
             manifest.upsert(DraftEntry {
                 draft_id,
@@ -2407,7 +2407,7 @@ fn bench_draft_restore(c: &mut Criterion) {
 
                         for i in 0..n_valid {
                             let id = format!("valid-{i}");
-                            draft_service::write_draft(dir.path(), &id, "content")
+                            draft_service::fixture::write_body(dir.path(), &id, "content")
                                 .expect("expected operation to succeed");
                             manifest.upsert(DraftEntry {
                                 draft_id: id,
@@ -2426,7 +2426,7 @@ fn bench_draft_restore(c: &mut Criterion) {
                         }
                         fixture::create_dir_all(&draft_service::drafts_dir(dir.path()));
                         for i in 0..n_orphan_files {
-                            draft_service::write_draft(
+                            draft_service::fixture::write_body(
                                 dir.path(),
                                 &format!("orphan-file-{i}"),
                                 "stale",
@@ -2698,7 +2698,7 @@ fn bench_recovery_performance(c: &mut Criterion) {
                 let content = "x".repeat(4 * 1024);
                 let mut manifest = DraftManifest::default();
                 for draft_id in ids {
-                    draft_service::write_draft(black_box(dir.path()), &draft_id, &content)
+                    draft_service::fixture::write_body(black_box(dir.path()), &draft_id, &content)
                         .expect("expected operation to succeed");
                     manifest.upsert(DraftEntry {
                         draft_id,

@@ -153,52 +153,55 @@ impl DirectoryScanPolicy {
 }
 
 /// Human-readable label used in temp-file names and diagnostics.
+///
+/// The set is **closed**: the field is private and there is no conversion from
+/// a string, so every label is one of the constants below, and [`Self::KNOWN`]
+/// is generated from the same single list the constants are. The leftover
+/// sweep removes a temp file only when its tag is in that set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WriteLabel(&'static str);
 
-impl WriteLabel {
+/// Declare every write label once: the constant and its [`WriteLabel::KNOWN`]
+/// entry both come from this list.
+macro_rules! write_labels {
+    ($( $(#[$doc:meta])* $name:ident = $tag:literal; )*) => {
+        impl WriteLabel {
+            $( $(#[$doc])* pub const $name: Self = Self($tag); )*
+
+            /// Every label production code writes with, generated from the
+            /// same list as the constants.
+            pub const KNOWN: [Self; [$($tag),*].len()] = [$(Self::$name),*];
+        }
+    };
+}
+
+write_labels! {
     /// Editor save write label.
-    pub const SAVE: Self = Self("save");
+    SAVE = "save";
     /// JSON state write label.
-    pub const JSON: Self = Self("json");
+    JSON = "json";
     /// Draft persistence write label.
-    pub const DRAFT: Self = Self("draft");
+    DRAFT = "draft";
     /// Replace All write label.
-    pub const REPLACE: Self = Self("replace");
+    REPLACE = "replace";
     /// Recovery quarantine copy label.
     ///
     /// Quarantine writes preserve broken app-owned metadata before any caller is
     /// allowed to replace it with a repaired or default file.
-    pub const RECOVERY_QUARANTINE: Self = Self("recovery-quarantine");
+    RECOVERY_QUARANTINE = "recovery-quarantine";
     /// Local-history snapshot migration copy label.
-    pub const LOCAL_HISTORY_COPY: Self = Self("local-history-copy");
+    LOCAL_HISTORY_COPY = "local-history-copy";
     /// Format-upgrade backup copy label.
-    pub const FORMAT_UPGRADE_BACKUP: Self = Self("format-upgrade-backup");
+    FORMAT_UPGRADE_BACKUP = "format-upgrade-backup";
     /// Format-upgrade backup manifest label.
-    pub const FORMAT_UPGRADE_MANIFEST: Self = Self("format-upgrade-manifest");
+    FORMAT_UPGRADE_MANIFEST = "format-upgrade-manifest";
     /// Format-upgrade converted-file label.
-    pub const FORMAT_UPGRADE_CONVERT: Self = Self("format-upgrade-convert");
+    FORMAT_UPGRADE_CONVERT = "format-upgrade-convert";
     /// Custom GtkSourceView style-scheme label.
-    pub const STYLE_SCHEME: Self = Self("style-scheme");
+    STYLE_SCHEME = "style-scheme";
+}
 
-    /// Every label production code writes with.
-    ///
-    /// The crash-leftover sweep removes a temp file only when its name carries
-    /// one of these tags, so a label used in production but missing here only
-    /// means its leftovers are kept, never that a user file is removed.
-    pub const KNOWN: [Self; 10] = [
-        Self::SAVE,
-        Self::JSON,
-        Self::DRAFT,
-        Self::REPLACE,
-        Self::RECOVERY_QUARANTINE,
-        Self::LOCAL_HISTORY_COPY,
-        Self::FORMAT_UPGRADE_BACKUP,
-        Self::FORMAT_UPGRADE_MANIFEST,
-        Self::FORMAT_UPGRADE_CONVERT,
-        Self::STYLE_SCHEME,
-    ];
-
+impl WriteLabel {
     /// Whether `tag` is one of the [`Self::KNOWN`] labels.
     #[must_use]
     pub fn is_known(tag: &str) -> bool {
@@ -209,12 +212,6 @@ impl WriteLabel {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         self.0
-    }
-}
-
-impl From<&'static str> for WriteLabel {
-    fn from(value: &'static str) -> Self {
-        Self(value)
     }
 }
 

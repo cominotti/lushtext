@@ -9,14 +9,18 @@ source "$REPO_ROOT/scripts/smoke-common.sh"
 
 ARTIFACT_DIR="${LUSHTEXT_SMOKE_ARTIFACT_DIR:-build/smoke/crash-recovery}"
 BINARY="$REPO_ROOT/target/debug/lushtext"
+KILL_POINT_BINARY="${LUSHTEXT_CRASH_KILL_POINT_BINARY:-$REPO_ROOT/target/crash-kill-points/debug/lushtext}"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-crash-recovery-smoke.sh [--artifact-dir DIR] [--binary PATH]
+Usage: scripts/run-crash-recovery-smoke.sh [--artifact-dir DIR] [--binary PATH] [--kill-point-binary PATH]
 
 Launch LushText in isolated app state, create draft/session recovery state
 through the real GTK process, terminate it with SIGKILL, relaunch, and preserve
-metadata, logs, assertions, and screenshots as artifacts.
+metadata, logs, assertions, and screenshots as artifacts. With a binary built
+with the crash-kill-points feature (make crash-recovery-smoke builds one), it
+also aborts the real process inside each named protocol window and requires
+the relaunch to lose no work.
 EOF
 }
 
@@ -30,6 +34,11 @@ while [[ $# -gt 0 ]]; do
         --binary)
             [[ $# -lt 2 ]] && smoke_fail "--binary requires a value"
             BINARY="$2"
+            shift 2
+            ;;
+        --kill-point-binary)
+            [[ $# -lt 2 ]] && smoke_fail "--kill-point-binary requires a value"
+            KILL_POINT_BINARY="$2"
             shift 2
             ;;
         -h|--help)
@@ -49,6 +58,7 @@ smoke_require_command gsettings
 
 [[ -x /usr/bin/python3 ]] || smoke_skip "/usr/bin/python3 is not available."
 [[ -x "$BINARY" ]] || smoke_skip "LushText debug binary is missing. Run 'make build-debug' first."
+[[ -x "$KILL_POINT_BINARY" ]] || smoke_fail "kill-point binary is missing: $KILL_POINT_BINARY (make crash-recovery-smoke builds it)"
 
 if [[ ! -x /usr/libexec/at-spi2-registryd ]]; then
     smoke_skip "at-spi2-registryd is not available."
@@ -62,6 +72,7 @@ smoke_write_environment_report "$ARTIFACT_DIR/environment.txt"
 
 if ! /usr/bin/python3 "$REPO_ROOT/scripts/crash-recovery-smoke-driver.py" \
     --artifact-dir "$ARTIFACT_DIR" \
-    --binary "$BINARY"; then
+    --binary "$BINARY" \
+    --kill-point-binary "$KILL_POINT_BINARY"; then
     smoke_fail "crash recovery smoke failed. Artifacts: $ARTIFACT_DIR"
 fi

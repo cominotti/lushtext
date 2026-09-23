@@ -48,7 +48,7 @@ proptest! {
 
         let before = file_mode(&path);
 
-        fs_write::atomic_replace(&path, WriteLabel::from("prop"), &new_bytes)
+        fs_write::atomic_replace(&path, WriteLabel::JSON, &new_bytes)
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
 
         // Content is replaced ...
@@ -80,7 +80,7 @@ proptest! {
 
         let expected_mode = file_mode(&from);
 
-        fs_write::copy_file_durable(&from, &to, WriteLabel::from("prop-copy"))
+        fs_write::move_durable(&from, &to, WriteLabel::LOCAL_HISTORY_COPY)
             .map_err(|e| TestCaseError::fail(e.to_string()))?;
 
         prop_assert!(!fs_metadata::exists(&from));

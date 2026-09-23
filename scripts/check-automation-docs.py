@@ -24,7 +24,7 @@ GUIDE_DOC = REPO_ROOT / "docs/automation.md"
 REFERENCE_DOC = REPO_ROOT / "docs/automation-reference.md"
 EXPECTED_HELPER_FLAG_MARKER = (
     "<!-- automation-helper-flags: run-automation-smoke --artifact-dir --binary "
-    "run-crash-recovery-smoke --artifact-dir --binary "
+    "run-crash-recovery-smoke --artifact-dir --binary --kill-point-binary "
     "run-accessibility-smoke --artifact-dir --binary --case --list-cases "
     "run-visual-smoke --artifact-dir --binary "
     "cargo-gtk-proof-run --artifact-dir --binary --scenario-dir --case-filter --oracle "

@@ -130,6 +130,11 @@ pub struct LushtextPreferences {
     /// Group that hosts the bounded per-file format details list.
     #[template_child]
     pub data_details_group: TemplateChild<libadwaita::PreferencesGroup>,
+    /// Group listing preserved set-aside drafts; hidden when there are none.
+    #[template_child]
+    pub data_set_aside_group: TemplateChild<libadwaita::PreferencesGroup>,
+    /// Rows currently shown in the set-aside group, removed on each refresh.
+    pub data_set_aside_rows: RefCell<Vec<libadwaita::ActionRow>>,
 
     /// Application settings used by every preferences row binding.
     pub settings: gio::Settings,
@@ -182,6 +187,8 @@ impl Default for LushtextPreferences {
             data_convert_row: TemplateChild::default(),
             data_convert_button: TemplateChild::default(),
             data_details_group: TemplateChild::default(),
+            data_set_aside_group: TemplateChild::default(),
+            data_set_aside_rows: RefCell::new(Vec::new()),
             settings: gio::Settings::new(crate::config::APP_ID),
             data_details_list: gtk4::ListBox::new(),
             data_last_scan_offers_convert: Cell::new(false),
@@ -389,6 +396,7 @@ impl LushtextPreferences {
         });
 
         self.obj().run_data_scan_immediate();
+        self.obj().refresh_set_aside_drafts();
     }
 
     /// Keep the workspace width preference aligned with the three named shell presets

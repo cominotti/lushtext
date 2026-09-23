@@ -1566,6 +1566,11 @@
           "internal-child": "",
           "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/4:child",
           "type": ""
+        },
+        {
+          "internal-child": "",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/5:child",
+          "type": ""
         }
       ],
       "layout_properties": [],
@@ -1826,6 +1831,11 @@
           "class": "AdwPreferencesGroup",
           "id": "data_details_group",
           "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/4:child/0:object:AdwPreferencesGroup#data_details_group"
+        },
+        {
+          "class": "AdwPreferencesGroup",
+          "id": "data_set_aside_group",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/5:child/0:object:AdwPreferencesGroup#data_set_aside_group"
         }
       ],
       "properties": [
@@ -2367,6 +2377,20 @@
           "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/4:child/0:object:AdwPreferencesGroup#data_details_group/0:property",
           "translatable": "yes",
           "value": "Details"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/5:child/0:object:AdwPreferencesGroup#data_set_aside_group/0:property",
+          "translatable": "yes",
+          "value": "Preserved Drafts"
+        },
+        {
+          "context": "",
+          "name": "visible",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/5:child/0:object:AdwPreferencesGroup#data_set_aside_group/2:property",
+          "translatable": "",
+          "value": "false"
         }
       ],
       "roots": [
@@ -2735,6 +2759,18 @@
           "name": "title",
           "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/4:child/0:object:AdwPreferencesGroup#data_details_group/0:property",
           "value": "Details"
+        },
+        {
+          "context": "",
+          "name": "title",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/5:child/0:object:AdwPreferencesGroup#data_set_aside_group/0:property",
+          "value": "Preserved Drafts"
+        },
+        {
+          "context": "",
+          "name": "description",
+          "path": "0:template:LushtextPreferences/3:child/0:object:AdwPreferencesPage/5:child/0:object:AdwPreferencesGroup#data_set_aside_group/1:property",
+          "value": "Unsaved changes that were kept aside instead of being restored"
         }
       ]
     },

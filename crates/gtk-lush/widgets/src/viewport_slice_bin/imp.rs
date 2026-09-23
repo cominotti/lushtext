@@ -19,7 +19,7 @@ use crate::scroll_request::{
     ADJUSTMENT_EPSILON, ChildScrollDecision, classify_child_scroll, outer_scroll_request,
 };
 use crate::single_child::replace_child;
-use crate::slice_geometry::viewport_slice;
+use crate::slice_geometry::{viewport_slice, whole_pixel_band};
 
 /// Private widget state for `GtkLushViewportSliceBin`.
 pub struct ViewportSliceBin {
@@ -248,11 +248,7 @@ impl WidgetImpl for ViewportSliceBin {
             content_height,
             self.overscan.get(),
         );
-        // A scrollable child's vertical minimum is its content height; GTK
-        // exempts `GtkScrollable` widgets from the under-allocation check for
-        // exactly this reason, so the slice may legitimately be smaller.
-        let slice_height = whole_pixels(slice.height).min(height.max(0));
-        let slice_top = whole_pixels(slice.top).clamp(0, height.max(0) - slice_height);
+        let (slice_top, slice_height) = whole_pixel_band(slice, height);
 
         self.allocation_count.set(self.allocation_count.get() + 1);
         self.allocating.set(true);
@@ -340,15 +336,6 @@ struct DeferredDivergence {
     published: f64,
     /// The value the child chose in it.
     child_value: f64,
-}
-
-/// Round a logical-pixel length to whole pixels for GTK allocation.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the slice geometry is already clamped to a widget height, which is an i32"
-)]
-fn whole_pixels(value: f64) -> i32 {
-    value.round().max(0.0) as i32
 }
 
 /// Convert a whole-pixel offset to the `f32` graphene coordinate space.

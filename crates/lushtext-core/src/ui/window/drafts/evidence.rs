@@ -69,6 +69,9 @@ pub struct DraftEvidence {
     pub stale_preservations_pending: usize,
     /// Draft ids autosave is holding off because their restore is pending.
     pub restore_held_draft_ids: usize,
+    /// Unrestored recovery bodies whose set-aside copy failed and is retried
+    /// on each autosave tick; their ids stay in `restore_held_draft_ids`.
+    pub unrestored_copy_retries: usize,
 
     // --- autosave ---
     /// Whether an autosave batch is currently snapshotting or writing.
@@ -143,6 +146,7 @@ impl LushtextWindow {
         let close_discard_count = drafts.close_discard_ids.borrow().len();
         let stale_preservations_pending = drafts.stale_preservations.borrow().len();
         let restore_held_draft_ids = drafts.restore_pending_ids.borrow().len();
+        let unrestored_copy_retries = drafts.unrestored_copy_retries.borrow().len();
         let (preloaded_entries, preloaded_reservation_weight) = {
             let preloaded = drafts.preloaded.borrow();
             (preloaded.len(), preloaded.reservation_weight())
@@ -166,6 +170,7 @@ impl LushtextWindow {
             close_discard_count,
             stale_preservations_pending,
             restore_held_draft_ids,
+            unrestored_copy_retries,
             autosave_inflight,
             autosave_pending: drafts.autosave_pending.get(),
             first_dirty_timer_pending: drafts.first_dirty_autosave_pending.get(),

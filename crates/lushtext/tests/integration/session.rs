@@ -268,7 +268,7 @@ fn test_startup_restore_load_preserves_temporarily_unavailable_file_tabs() {
     let missing_path = ctx.path().join("offline-share/notes.md");
     let real_file = ctx.write_file("local.txt", "local");
     let real_draft_id = draft_service::draft_id_for_path(&real_file);
-    draft_service::write_draft(ctx.data_dir(), &real_draft_id, "drafted local")
+    draft_service::fixture::write_body(ctx.data_dir(), &real_draft_id, "drafted local")
         .expect("expected operation to succeed");
     draft_service::save_manifest(
         ctx.data_dir(),
@@ -308,7 +308,7 @@ fn test_startup_restore_load_marks_stale_file_backed_drafts_and_removes_them() {
 
     let file_path = ctx.write_file("stale.txt", "current disk content");
     let draft_id = draft_service::draft_id_for_path(&file_path);
-    draft_service::write_draft(ctx.data_dir(), &draft_id, "stale draft content")
+    draft_service::fixture::write_body(ctx.data_dir(), &draft_id, "stale draft content")
         .expect("expected operation to succeed");
     let current_mtime = editor_io::mtime_secs(&file_path).expect("expected file mtime");
     let stale_mtime = current_mtime
@@ -357,7 +357,8 @@ fn test_startup_restore_load_marks_stale_file_backed_drafts_and_removes_them() {
 fn test_startup_restore_reports_corrupt_session_json_without_deleting_drafts() {
     let ctx = TestContext::new();
     let draft_id = "untitled-0000000000000099";
-    draft_service::write_draft(ctx.data_dir(), draft_id, "valid draft").expect("write draft");
+    draft_service::fixture::write_body(ctx.data_dir(), draft_id, "valid draft")
+        .expect("write draft");
     draft_service::save_manifest(
         ctx.data_dir(),
         &DraftManifest {
@@ -394,7 +395,8 @@ fn test_startup_restore_reports_corrupt_session_json_without_deleting_drafts() {
 fn test_startup_restore_repairs_corrupt_manifest_for_untitled_draft() {
     let ctx = TestContext::new();
     let draft_id = "untitled-0000000000000100";
-    draft_service::write_draft(ctx.data_dir(), draft_id, "restored text").expect("write draft");
+    draft_service::fixture::write_body(ctx.data_dir(), draft_id, "restored text")
+        .expect("write draft");
     fixture::write_text(
         &draft_service::drafts_dir(ctx.data_dir()).join("manifest.json"),
         "not json",

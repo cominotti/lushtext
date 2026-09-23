@@ -25,8 +25,11 @@ the stable-toolchain gates MUST NOT depend on Kani being installed.
 
 ### Requirement: The Kani lane has a local command and a bounded CI job
 The project SHALL provide `make kani` to run every harness, and a scheduled or
-manually dispatched CI workflow that runs the same harnesses within the
-repository's 30-minute job budget. Each harness SHALL declare the unwind
+manually dispatched CI workflow that runs the same harnesses. When the whole
+lane would exceed the repository's 30-minute job budget, the workflow SHALL
+split it into shards, one job each and each within the budget. The shards
+SHALL come from a single table, which assigns every harness to exactly one
+shard and is checked by the local policy gate. Each harness SHALL declare the unwind
 bounds it needs. The lane SHALL report per-harness results.
 
 #### Scenario: Local run
@@ -35,7 +38,11 @@ bounds it needs. The lane SHALL report per-harness results.
 
 #### Scenario: CI run
 - **WHEN** the Kani workflow runs
-- **THEN** it installs the pinned Kani version, runs every harness, and finishes within the job timeout
+- **THEN** it installs the pinned Kani version, runs every harness across its shards, and every job finishes within the job timeout
+
+#### Scenario: A harness outside every shard is caught
+- **WHEN** a new harness matches no shard, or more than one
+- **THEN** the local policy gate fails before the workflow runs
 
 ### Requirement: Safety regressions are pinned by should_panic harnesses
 For each ordering or guard whose removal is known to break a safety property,

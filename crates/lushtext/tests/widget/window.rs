@@ -904,7 +904,7 @@ fn seed_file_backed_draft(window: &LushtextWindow, path: &Path, content: &str) -
         original_mtime_secs: editor_io::mtime_secs(path),
         saved_at_secs: editor_io::now_epoch_secs(),
     };
-    draft_service::write_draft(&data_dir, &draft_id, content).expect("seed draft bytes");
+    draft_service::fixture::write_body(&data_dir, &draft_id, content).expect("seed draft bytes");
     let mut manifest = draft_service::load_manifest(&data_dir).expect("load draft manifest");
     manifest.upsert(entry.clone());
     draft_service::save_manifest(&data_dir, &manifest).expect("seed draft manifest");
@@ -5791,7 +5791,7 @@ fn test_failed_file_retry_reads_durable_draft_after_preload_release() {
         original_mtime_secs: None,
         saved_at_secs: 1,
     };
-    draft_service::write_draft(&data_dir, &draft_id, "durable recovered content\n")
+    draft_service::fixture::write_body(&data_dir, &draft_id, "durable recovered content\n")
         .expect("write durable draft fallback");
     let manifest = DraftManifest {
         drafts: vec![entry],
@@ -6717,7 +6717,7 @@ fn test_pre_restore_untitled_creation_cannot_overwrite_existing_draft_identity()
     set_first_dirty_autosave_delay_for_test(60_000);
     let data_dir = json_store::data_dir();
     let existing_id = draft_service::draft_id_for_untitled(0);
-    draft_service::write_draft(&data_dir, &existing_id, "existing recovery body")
+    draft_service::fixture::write_body(&data_dir, &existing_id, "existing recovery body")
         .expect("seed existing untitled body");
     draft_service::save_manifest(
         &data_dir,
@@ -8284,9 +8284,9 @@ fn test_draft_pipeline_lazy_restore_rejects_stale_editor_and_advances_queue() {
     let first_id = first.draft_id().expect("first draft id");
     let second_id = second.draft_id().expect("second draft id");
     let data_dir = json_store::data_dir();
-    draft_service::write_draft(&data_dir, &first_id, "stale lazy body")
+    draft_service::fixture::write_body(&data_dir, &first_id, "stale lazy body")
         .expect("write first lazy draft");
-    draft_service::write_draft(&data_dir, &second_id, "current lazy body")
+    draft_service::fixture::write_body(&data_dir, &second_id, "current lazy body")
         .expect("write second lazy draft");
     for draft_id in [&first_id, &second_id] {
         window
@@ -8342,7 +8342,7 @@ fn test_ordinary_untitled_restore_rejects_edit_and_preserves_recovery() {
         original_mtime_secs: None,
         saved_at_secs: 1,
     };
-    draft_service::write_draft(&data_dir, &draft_id, "older recovery")
+    draft_service::fixture::write_body(&data_dir, &draft_id, "older recovery")
         .expect("write recovery body");
     window.imp().drafts.manifest.borrow_mut().upsert(entry);
     draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
@@ -8390,7 +8390,7 @@ fn test_ordinary_restore_blocks_readiness_and_empty_candidate_close() {
         original_mtime_secs: None,
         saved_at_secs: 1,
     };
-    draft_service::write_draft(&data_dir, &draft_id, "recovery in flight")
+    draft_service::fixture::write_body(&data_dir, &draft_id, "recovery in flight")
         .expect("write recovery body");
     window.imp().drafts.manifest.borrow_mut().upsert(entry);
     draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
@@ -8454,7 +8454,7 @@ fn test_edits_during_a_pending_restore_never_overwrite_the_recovery_body() {
         original_mtime_secs: None,
         saved_at_secs: 1_700_000_777,
     };
-    draft_service::write_draft(&data_dir, &draft_id, "recovery not yet restored")
+    draft_service::fixture::write_body(&data_dir, &draft_id, "recovery not yet restored")
         .expect("write recovery body");
     window.imp().drafts.manifest.borrow_mut().upsert(entry);
     draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
@@ -8491,6 +8491,111 @@ fn test_edits_during_a_pending_restore_never_overwrite_the_recovery_body() {
     });
 }
 
+/// When the set-aside copy of an unrestored recovery body cannot be written,
+/// autosave keeps holding that id: releasing the hold anyway would let the
+/// next autosave replace a body the user never saw and that exists nowhere
+/// else. The copy is retried, and once it lands the new edits autosave as usual.
+#[test]
+fn test_a_failed_set_aside_copy_keeps_autosave_off_the_unshown_draft() {
+    ensure_gtk_init();
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    let _restore_reset = RestoreDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    set_draft_restore_delay_for_test(300);
+    let window = test_window();
+    window.new_tab();
+    present_window(&window);
+    let editor = active_editor(&window);
+    let draft_id = editor.draft_id().expect("draft id");
+    let data_dir = json_store::data_dir();
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: None,
+        original_mtime_secs: None,
+        saved_at_secs: 1_700_000_666,
+    };
+    draft_service::fixture::write_body(&data_dir, &draft_id, "only copy of earlier work")
+        .expect("write recovery body");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
+        .expect("persist recovery manifest");
+    // A regular file where the set-aside directory belongs makes every copy
+    // fail, whatever the process's privileges.
+    let set_aside_dir = draft_service::set_aside_dir(&data_dir);
+    fixture::write_text(&set_aside_dir, "not a directory");
+
+    window.check_draft_by_id(&editor, &draft_id);
+    editor.buffer().set_text("typed before the restore landed");
+    editor.buffer().set_modified(true);
+    // The restore resolves as edited over and its set-aside copy fails.
+    wait_until(Duration::from_secs(10), || {
+        window.draft_evidence().unrestored_copy_retries == 1
+    });
+    assert_eq!(
+        window.draft_evidence().restore_held_draft_ids,
+        1,
+        "a failed copy keeps the restore hold"
+    );
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_evidence().autosave_inflight && !window.draft_evidence().mutation_inflight
+    });
+    assert_eq!(
+        draft_service::read_draft(&data_dir, &draft_id).expect("read body"),
+        Some("only copy of earlier work".to_string()),
+        "autosave must not replace an unshown body whose copy failed"
+    );
+
+    fs_mutate::remove_file_if_exists(&set_aside_dir).expect("unblock the set-aside area");
+    let set_aside = set_aside_dir.join(format!("{draft_id}.1700000666.draft"));
+    wait_until(Duration::from_secs(10), || {
+        window.autosave_tick_for_test();
+        fixture::exists(&set_aside)
+    });
+    fixture::assert_text(&set_aside, "only copy of earlier work");
+    wait_until(Duration::from_secs(10), || {
+        window.draft_evidence().restore_held_draft_ids == 0
+    });
+    assert_eq!(window.draft_evidence().unrestored_copy_retries, 0);
+    wait_until(Duration::from_secs(10), || {
+        window.autosave_tick_for_test();
+        !window.draft_evidence().mutation_inflight
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read body")
+                .as_deref()
+                == Some("typed before the restore landed")
+    });
+}
+
+/// Register a recovery draft for `path` both on disk and in the window's
+/// manifest copy, as a restored session would have left it.
+fn seed_registered_recovery_draft(
+    window: &LushtextWindow,
+    path: &Path,
+    body: &str,
+    saved_at_secs: u64,
+) -> String {
+    let data_dir = json_store::data_dir();
+    let draft_id = draft_service::draft_id_for_path(path);
+    let entry = DraftEntry {
+        draft_id: draft_id.clone(),
+        original_path: Some(path.to_path_buf()),
+        original_mtime_secs: editor_io::mtime_secs(path),
+        saved_at_secs,
+    };
+    draft_service::update_manifest(
+        &data_dir,
+        &SessionData::default(),
+        window.draft_evidence().manifest_authority,
+        |manifest| manifest.upsert(entry.clone()),
+    )
+    .expect("register recovery entry");
+    draft_service::fixture::write_body(&data_dir, &draft_id, body).expect("body");
+    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    draft_id
+}
+
 /// Saving a tab whose recovery draft is still waiting to be restored deletes
 /// that draft only after keeping a copy of it.
 #[test]
@@ -8502,22 +8607,8 @@ fn test_saving_during_a_pending_restore_keeps_the_unshown_draft() {
     let (window, _dir, path) = open_temp_document("on disk\n");
     let editor = active_editor(&window);
     let data_dir = json_store::data_dir();
-    let draft_id = draft_service::draft_id_for_path(&path);
-    let entry = DraftEntry {
-        draft_id: draft_id.clone(),
-        original_path: Some(path.clone()),
-        original_mtime_secs: editor_io::mtime_secs(&path),
-        saved_at_secs: 1_700_000_888,
-    };
-    draft_service::update_manifest(
-        &data_dir,
-        &SessionData::default(),
-        window.draft_evidence().manifest_authority,
-        |manifest| manifest.upsert(entry.clone()),
-    )
-    .expect("register recovery entry");
-    draft_service::write_draft(&data_dir, &draft_id, "earlier unsaved edits").expect("body");
-    window.imp().drafts.manifest.borrow_mut().upsert(entry);
+    let draft_id =
+        seed_registered_recovery_draft(&window, &path, "earlier unsaved edits", 1_700_000_888);
 
     set_draft_restore_delay_for_test(800);
     window.check_draft_on_open(&editor, &path);
@@ -8532,6 +8623,49 @@ fn test_saving_during_a_pending_restore_keeps_the_unshown_draft() {
     });
     fixture::assert_text(&set_aside, "earlier unsaved edits");
     fixture::assert_text(&path, "new edits saved right away\n");
+}
+
+/// A restore that cannot check its file (it vanished before the lazy read
+/// resolved) never shows the body, so the body is kept before an autosave of
+/// the tab can replace it. Found by the Kani journal harness (S1).
+#[test]
+fn test_an_unavailable_restore_keeps_the_unshown_draft_before_autosave_replaces_it() {
+    let _reset = DraftPipelinePolicyReset;
+    let _delay_reset = FirstDirtyAutosaveDelayReset;
+    let _restore_reset = RestoreDelayReset;
+    set_first_dirty_autosave_delay_for_test(60_000);
+    let (window, _dir, path) = open_temp_document("on disk\n");
+    let editor = active_editor(&window);
+    let data_dir = json_store::data_dir();
+    let draft_id =
+        seed_registered_recovery_draft(&window, &path, "unshown earlier edits", 1_700_000_555);
+
+    set_draft_restore_delay_for_test(800);
+    window.check_draft_on_open(&editor, &path);
+    fs_mutate::remove_file_if_exists(&path).expect("the file vanishes");
+    wait_until(Duration::from_secs(10), || {
+        window.draft_evidence().restore_held_draft_ids == 0
+    });
+    editor
+        .buffer()
+        .set_text("typed after the restore gave up\n");
+    editor.buffer().set_modified(true);
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        !window.draft_evidence().mutation_inflight
+            && draft_service::read_draft(&data_dir, &draft_id)
+                .expect("read body")
+                .as_deref()
+                == Some("typed after the restore gave up\n")
+    });
+
+    let set_aside =
+        draft_service::set_aside_dir(&data_dir).join(format!("{draft_id}.1700000555.draft"));
+    assert!(
+        fixture::exists(&set_aside),
+        "the unshown recovery body must be kept before autosave replaces it"
+    );
+    fixture::assert_text(&set_aside, "unshown earlier edits");
 }
 
 /// A recovery body too large to restore automatically is moved to the
@@ -8602,7 +8736,7 @@ fn test_file_restore_rejects_reload_and_path_change() {
             saved_at_secs: 1,
         };
         let data_dir = json_store::data_dir();
-        draft_service::write_draft(&data_dir, &draft_id, "stale completion")
+        draft_service::fixture::write_body(&data_dir, &draft_id, "stale completion")
             .expect("write recovery body");
         window.imp().drafts.manifest.borrow_mut().upsert(entry);
         draft_service::save_manifest(&data_dir, &window.imp().drafts.manifest.borrow())
@@ -8656,7 +8790,7 @@ fn test_file_restore_rejects_manifest_replacement_and_closed_editor() {
             saved_at_secs: 1,
         };
         let data_dir = json_store::data_dir();
-        draft_service::write_draft(&data_dir, &draft_id, "preserved recovery")
+        draft_service::fixture::write_body(&data_dir, &draft_id, "preserved recovery")
             .expect("write recovery body");
         window
             .imp()
@@ -11153,7 +11287,7 @@ fn test_flush_dirty_drafts_skips_close_discarded_editors() {
 
     let draft_id = editor.draft_id().expect("draft id");
     let data_dir = json_store::data_dir();
-    draft_service::write_draft(&data_dir, &draft_id, "stale draft").expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &draft_id, "stale draft").expect("seed draft");
     draft_service::delete_draft_file(&data_dir, &draft_id).expect("delete seeded draft");
 
     window
@@ -11232,7 +11366,8 @@ fn test_complete_save_as_failure_keeps_existing_editor_identity() {
 
     let old_draft_id = editor.draft_id().expect("untitled draft id");
     let data_dir = json_store::data_dir();
-    draft_service::write_draft(&data_dir, &old_draft_id, "unsaved draft").expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &old_draft_id, "unsaved draft")
+        .expect("seed draft");
 
     let path = std::env::temp_dir()
         .join("lushtext-save-as-missing-parent")
@@ -11275,7 +11410,8 @@ fn test_complete_save_as_success_updates_editor_identity_and_cleans_old_draft() 
 
     let old_draft_id = editor.draft_id().expect("untitled draft id");
     let data_dir = json_store::data_dir();
-    draft_service::write_draft(&data_dir, &old_draft_id, "saved content").expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &old_draft_id, "saved content")
+        .expect("seed draft");
 
     let dir = tempfile::tempdir().expect("save as tempdir");
     let path = dir.path().join("saved.txt");
@@ -11357,7 +11493,7 @@ fn test_file_chooser_save_as_selection_adopts_destination_after_write() {
     editor.buffer().set_modified(true);
     let old_draft_id = editor.draft_id().expect("untitled draft id");
     let data_dir = json_store::data_dir();
-    draft_service::write_draft(&data_dir, &old_draft_id, "save as through chooser\n")
+    draft_service::fixture::write_body(&data_dir, &old_draft_id, "save as through chooser\n")
         .expect("seed draft");
 
     window.select_save_as_destination_for_test(&path);
@@ -11852,7 +11988,7 @@ fn test_file_chooser_cancellation_preserves_document_workspace_and_draft_state()
     editor.buffer().set_modified(true);
     let old_draft_id = editor.draft_id().expect("untitled draft id");
     let data_dir = json_store::data_dir();
-    draft_service::write_draft(&data_dir, &old_draft_id, "cancelled chooser draft\n")
+    draft_service::fixture::write_body(&data_dir, &old_draft_id, "cancelled chooser draft\n")
         .expect("seed draft");
     let workspace_folders = window.imp().sidebar.all_workspace_folder_paths();
 
@@ -14002,7 +14138,8 @@ fn test_close_modified_untitled_cancel_preserves_and_discard_cleans_draft() {
     editor.buffer().set_modified(true);
     let draft_id = editor.draft_id().expect("untitled draft id");
     let data_dir = json_store::data_dir();
-    draft_service::write_draft(&data_dir, &draft_id, "untitled draft\n").expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &draft_id, "untitled draft\n")
+        .expect("seed draft");
 
     close_selected_tab(&window);
     wait_for_save_changes_dialog(&window);
@@ -19605,7 +19742,7 @@ fn test_local_history_startup_restore_uses_restored_draft_as_baseline() {
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&file_path);
     let draft_content = "draft content";
-    draft_service::write_draft(&data_dir, &draft_id, draft_content).expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &draft_id, draft_content).expect("seed draft");
     let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
     draft_service::save_manifest(
         &data_dir,
@@ -19698,7 +19835,7 @@ fn test_startup_restore_applies_matching_file_backed_draft() {
     fixture::write_text(&file_path, "disk content");
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&file_path);
-    draft_service::write_draft(&data_dir, &draft_id, "draft content").expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &draft_id, "draft content").expect("seed draft");
     let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
     draft_service::save_manifest(
         &data_dir,
@@ -19758,7 +19895,7 @@ fn test_startup_restore_skips_stale_file_backed_draft_once() {
     fixture::write_text(&file_path, "current disk content");
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_path(&file_path);
-    draft_service::write_draft(&data_dir, &draft_id, "stale draft").expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &draft_id, "stale draft").expect("seed draft");
     let current_mtime = editor_io::mtime_secs(&file_path).expect("file mtime");
     let stale_mtime = current_mtime
         .checked_add(1)
@@ -19894,7 +20031,7 @@ fn test_lazily_opened_stale_draft_is_kept_in_local_history_before_retirement() {
         |manifest| manifest.upsert(stale_entry.clone()),
     )
     .expect("seed stale manifest entry");
-    draft_service::write_draft(&data_dir, &draft_id, body).expect("seed draft");
+    draft_service::fixture::write_body(&data_dir, &draft_id, body).expect("seed draft");
     window
         .imp()
         .drafts
@@ -19945,7 +20082,7 @@ fn test_startup_restore_keeps_untitled_draft_behavior() {
     ensure_gtk_init();
     let data_dir = json_store::data_dir();
     let draft_id = draft_service::draft_id_for_untitled(42);
-    draft_service::write_draft(&data_dir, &draft_id, "untitled restored content")
+    draft_service::fixture::write_body(&data_dir, &draft_id, "untitled restored content")
         .expect("seed untitled draft");
     draft_service::save_manifest(
         &data_dir,

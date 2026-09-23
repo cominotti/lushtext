@@ -301,5 +301,11 @@ template $LushtextPreferences: Adw.PreferencesDialog {
     Adw.PreferencesGroup data_details_group {
       title: _("Details");
     }
+
+    Adw.PreferencesGroup data_set_aside_group {
+      title: _("Preserved Drafts");
+      description: _("Unsaved changes that were kept aside instead of being restored");
+      visible: false;
+    }
   }
 }

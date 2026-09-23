@@ -153,40 +153,12 @@ pub(super) const fn draft_workflow_blocks_readiness(
 }
 
 // --- write-ahead registration ----------------------------------------------
-
-/// Whether a candidate's draft id must be registered in the persisted manifest
-/// before its body may be written.
-///
-/// A file-backed body written for an id the persisted manifest does not know is
-/// exactly the crash leftover that used to wedge the journal: until the pass's
-/// single commit lands, nothing on disk says which file the body belongs to. So
-/// such an id is registered first, in one batched commit per pass. An untitled
-/// id needs no registration: its `untitled-…` id already makes its body
-/// recoverable. When the window's authority is not trusted its copy may not
-/// match disk, so every file-backed candidate is registered; registration only
-/// ever inserts an absent entry, so doing it for a known id is harmless.
-#[must_use]
-pub(super) const fn draft_requires_registration(
-    file_backed: bool,
-    registered_in_window_manifest: bool,
-    manifest_authority_trusted: bool,
-) -> bool {
-    file_backed && (!registered_in_window_manifest || !manifest_authority_trusted)
-}
-
-/// Whether a candidate may proceed to its body write after the pass's
-/// registration step.
-///
-/// A candidate that needed registration may write only when that commit
-/// succeeded; otherwise it stays dirty and retryable, and no unregistered body
-/// is ever created.
-#[must_use]
-pub(super) const fn candidate_may_write_after_registration(
-    required_registration: bool,
-    registration_committed: bool,
-) -> bool {
-    !required_registration || registration_committed
-}
+//
+// The registration rules (`registration_required`,
+// `may_write_after_registration`) and every other journal ordering and
+// ownership decision moved to `services::draft_service::journal_core`, the pure
+// state machine the service drives too and Kani checks. This workflow calls
+// them there rather than keeping a second copy.
 
 // --- stale-draft warning ------------------------------------------------------
 
@@ -209,6 +181,13 @@ pub(super) fn stale_draft_alert_body(
         StaleDraftPreservation::Kept => "The file changed on disk, so unsaved changes from a previous session were not restored. They remain in the recovery drafts.".to_string(),
     }
 }
+
+/// Status when the set-aside copy of an unrestored recovery body failed. The
+/// body stays the only copy, so autosave of that document waits and the copy
+/// is retried.
+pub(super) const UNRESTORED_COPY_FAILED_STATUS: &str = "Unsaved changes from a previous session \
+could not be set aside; they remain in the recovery drafts, and autosave of this document waits \
+until they are kept.";
 
 /// Status-bar text for a preserved earlier draft when its tab is already being
 /// edited, so no inline alert is shown.
@@ -422,25 +401,6 @@ impl DraftMutationOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn registration_is_required_only_for_unknown_ids_or_untrusted_state() {
-        assert!(!draft_requires_registration(true, true, true));
-        assert!(draft_requires_registration(true, false, true));
-        assert!(draft_requires_registration(true, true, false));
-        assert!(draft_requires_registration(true, false, false));
-        // An untitled id is recoverable from its body alone.
-        assert!(!draft_requires_registration(false, false, false));
-        assert!(!draft_requires_registration(false, true, false));
-    }
-
-    #[test]
-    fn a_body_is_written_only_after_its_required_registration_committed() {
-        assert!(candidate_may_write_after_registration(false, false));
-        assert!(candidate_may_write_after_registration(false, true));
-        assert!(candidate_may_write_after_registration(true, true));
-        assert!(!candidate_may_write_after_registration(true, false));
-    }
 
     #[test]
     fn stale_draft_status_message_names_each_destination() {

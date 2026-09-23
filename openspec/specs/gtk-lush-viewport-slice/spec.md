@@ -19,10 +19,10 @@ Specify the GTK Lush `ViewportSliceBin` container that hosts a `GtkScrollable` c
 - **THEN** the child is allocated its full content height at offset zero and its adjustment value is zero
 
 ### Requirement: Slice geometry is a pure, property-tested policy
-The slice decision SHALL be a GTK-free pure function in `gtk-lush-widgets` that maps (outer viewport top relative to the container, outer viewport height, content height, overscan) to (slice top, slice height). It MUST be covered by unit tests and bounded property tests.
+The slice decision SHALL be a GTK-free pure function in `gtk-lush-widgets` that maps (outer viewport top relative to the container, outer viewport height, content height, overscan) to (slice top, slice height). It MUST be covered by unit tests and bounded property tests, and its safety properties MUST be proved by Kani harnesses. The function MUST NOT panic for any `f64` input. Containment and exact request landing are guaranteed on whole-pixel inputs (integer values in the `i32` range, and overscan and reconfiguration shift within stated bounds). The rustdoc and this requirement state that domain; they do not claim the properties for arbitrary `f64`.
 
 #### Scenario: Slice always lies inside the content
-- **WHEN** any non-negative viewport top, viewport height, content height, and overscan are supplied
+- **WHEN** any whole-pixel non-negative viewport top, viewport height, content height, and overscan are supplied
 - **THEN** slice top is at least zero and slice top plus slice height does not exceed content height
 
 #### Scenario: Slice covers the visible intersection
@@ -32,6 +32,14 @@ The slice decision SHALL be a GTK-free pure function in `gtk-lush-widgets` that 
 #### Scenario: Slice is stable when the viewport does not move
 - **WHEN** the same inputs are supplied twice
 - **THEN** the same slice is returned, and a viewport move smaller than the overscan margin returns a slice that still covers the new intersection
+
+#### Scenario: No input panics
+- **WHEN** any `f64` values are supplied, including NaN, infinities, and negatives
+- **THEN** the slice and request decisions return without panicking, as proved by Kani
+
+#### Scenario: A honoured request lands exactly
+- **WHEN** a request is forwarded for whole-pixel published offset, child value, and viewport top
+- **THEN** viewport top plus the forwarded delta equals the child value exactly, as proved by Kani
 
 ### Requirement: Adjustment synchronization is bidirectional and loop-free
 The container SHALL re-slice when the outer vertical adjustment changes value or page size, and SHALL translate child-originated adjustment changes (keyboard focus moves, `scroll_to`) into outer adjustment changes so the focused row enters the outer viewport. Changes the container itself makes to the child adjustment MUST NOT be re-translated to the outer adjustment. The container SHALL recognise its own changes by comparing against the offset it published, not against the outer viewport's unclamped top edge, so that a container resting anywhere other than the viewport's top edge reports no request. A value the child settles on within a geometry correction the container's own publish provoked SHALL NOT be treated as a request in that allocation. When the container cannot tell a settle from a request because both fall within that correction, it SHALL NOT erase the divergence. It SHALL re-decide in a following allocation with stable geometry, so that a genuine child request is eventually honoured or proven to be a settle, and is never silently dropped. The decisions SHALL be GTK-free pure functions covered by unit and property tests.
@@ -86,3 +94,38 @@ The container SHALL publish the child adjustment's upper and page size in the ch
 #### Scenario: Corrections terminate
 - **WHEN** the container is at rest after the inset is known, or an already visible row is selected
 - **THEN** the container's allocation count does not grow across idle passes and its correction count does not grow
+
+### Requirement: The slice-bin feedback loop is verified against the axiom ledger
+The project SHALL keep a Kani-checked step model of the `ViewportSliceBin`
+feedback loop. It SHALL call the real `viewport_slice` and
+`classify_child_scroll`, and model the child as a nondeterministic reaction
+constrained only by ledger axioms. For one to three bins over a bounded number
+of allocations, the model SHALL prove:
+
+- the loop reaches rest within two allocations when there is no input;
+- bins never oscillate;
+- a honoured request lands where the re-slice republishes the child's value;
+- every request beyond epsilon is honoured or clamped within the bound;
+- at rest, the drawn row position equals the intended position.
+
+These properties are proved within the envelope the ledger currently pins.
+Axiom A8 says a settle does not survive into a stable-geometry frame. A case
+that falls outside that envelope and yields a counterexample SHALL be kept as
+a named `#[kani::should_panic]` residual harness. The programme record SHALL
+state the residual, the evidence on whether real consumers can reach it, and a
+candidate fix. A residual MUST be fixed, starting from a failing real-GTK
+test, as soon as any consumer can reach it. Two such residuals are known: the
+learning-frame request, and two consecutive reconfiguring allocations with
+settles.
+
+#### Scenario: Resting loop reaches a fixed point
+- **WHEN** no external input occurs for any admissible child behaviour
+- **THEN** the model shows the outer value, published offsets, and child values stop changing within two allocations
+
+#### Scenario: A residual becomes reachable
+- **WHEN** a consumer, such as a variable-height list, is shown to reach a recorded residual through real GTK
+- **THEN** a failing widget test is written first, the fix is applied, and the residual harness becomes a proof
+
+#### Scenario: The learning-frame residual is decided
+- **WHEN** the model explores a request applied in the first allocation after inset learning
+- **THEN** the result either proves the request is honoured or produces a counterexample, and the counterexample is fixed or recorded with a ledger-cited justification

@@ -7,8 +7,9 @@
 //! file behind forever. This module removes such a file only when it is provably
 //! LushText's and provably abandoned:
 //!
-//! - its name parses exactly as the durable-write temp-name builder emits it,
-//!   with a tag LushText actually writes;
+//! - its name parses exactly as `temp_name` (the one owner of the format,
+//!   shared with the builder) emits it, with a tag from the closed
+//!   `WriteLabel` set;
 //! - the embedded process id is not this process, so no write of ours can still
 //!   be in flight on it;
 //! - it is a regular file (never a symlink, directory, or special file);
@@ -26,59 +27,11 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use super::sys;
-use super::types::WriteLabel;
 
 /// Minimum age before a matching leftover may be removed.
 pub const STALE_LEFTOVER_AGE: Duration = Duration::from_hours(24);
 
-/// Suffix every durable-write temp name ends with.
-const TEMP_SUFFIX: &str = ".tmp";
-
-/// The parts of a durable-write temp name, parsed from the right.
-///
-/// `{file}` may itself contain dots, so the fixed-shape fields are split off
-/// the end and whatever remains is the target's file name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DurableTempName<'a> {
-    /// The target file name the temp file was written for.
-    pub target_file: &'a str,
-    /// The write label that created it.
-    pub tag: &'a str,
-    /// The process id that created it.
-    pub pid: u32,
-    /// The process-local sequence number.
-    pub sequence: u64,
-}
-
-/// Parse `name` as `.{file}.{tag}.{pid}.{seq}.tmp`, exactly as built by the
-/// durable-write temp-name builder, with a tag from [`WriteLabel::KNOWN`].
-///
-/// Returns `None` for anything else, including non-UTF-8 names, unknown tags,
-/// and numbers the builder would not print (signs, leading zeros, overflow).
-#[must_use]
-pub fn parse_durable_temp_name(name: &str) -> Option<DurableTempName<'_>> {
-    let rest = name.strip_prefix('.')?.strip_suffix(TEMP_SUFFIX)?;
-    let (rest, sequence) = rest.rsplit_once('.')?;
-    let (rest, pid) = rest.rsplit_once('.')?;
-    let (target_file, tag) = rest.rsplit_once('.')?;
-    if target_file.is_empty() || !WriteLabel::is_known(tag) {
-        return None;
-    }
-    Some(DurableTempName {
-        target_file,
-        tag,
-        pid: parse_canonical_decimal(pid)?,
-        sequence: parse_canonical_decimal(sequence)?,
-    })
-}
-
-/// Parse an unsigned decimal exactly as `format!("{}")` prints it.
-fn parse_canonical_decimal<T: std::str::FromStr>(digits: &str) -> Option<T> {
-    let canonical = !digits.is_empty()
-        && digits.bytes().all(|byte| byte.is_ascii_digit())
-        && (digits == "0" || !digits.starts_with('0'));
-    if canonical { digits.parse().ok() } else { None }
-}
+pub use super::temp_name::{DurableTempName, parse as parse_durable_temp_name};
 
 /// What a sweep may remove, and for whom.
 #[derive(Debug, Clone, Copy)]
@@ -154,9 +107,8 @@ pub fn is_sweepable_leftover(
             .duration_since(modified)
             .is_ok_and(|age| age >= STALE_LEFTOVER_AGE)
     });
-    let this_launch = parsed.pid == clock.current_pid
-        && crate::services::filesystem::write::temp_sequence_launch_nonce(parsed.sequence)
-            == clock.current_launch;
+    let this_launch =
+        parsed.pid == clock.current_pid && parsed.launch_nonce() == clock.current_launch;
     in_scope && !this_launch && facts.is_regular_file && stale
 }
 
@@ -350,6 +302,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::services::filesystem::types::WriteLabel;
     use crate::services::filesystem::{fixture, metadata};
 
     const OTHER_PID: u32 = 4_000_000_001;
@@ -465,10 +418,7 @@ mod tests {
         let parsed = parse_durable_temp_name(name).expect("builder output parses");
         let current = LeftoverClock::current();
         assert_eq!(parsed.pid, current.current_pid);
-        assert_eq!(
-            crate::services::filesystem::write::temp_sequence_launch_nonce(parsed.sequence),
-            current.current_launch
-        );
+        assert_eq!(parsed.launch_nonce(), current.current_launch);
         assert!(!is_sweepable_leftover(
             OsStr::new(name),
             LeftoverFacts {

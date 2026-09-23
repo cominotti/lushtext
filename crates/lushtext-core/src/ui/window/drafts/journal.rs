@@ -2,25 +2,16 @@
 
 //! The draft manifest and bodies: the record startup recovery reads back.
 //!
-//! `journal` on slot 3a's reusable test — *does a later stage of the same
-//! workflow restore from the record* — which the draft manifest and bodies pass
-//! outright: startup recovery reads them and installs their content into the
-//! user's buffers. Slot 3a reserved this name for exactly this workflow after
-//! rejecting it for document save.
+//! It is `journal` because a later stage of the same workflow restores from
+//! this record: startup recovery reads the manifest and bodies back and installs
+//! their content into the user's buffers.
 //!
-//! Per slot 2b's definition, the record's **mutual-exclusion gate lives inside
-//! the journal**, not in a separate `admission`: `mutation_inflight`,
-//! `pending_deletes`, `delete_tombstones`, and the `DraftMutationOrder` epoch
-//! allocator are all here, because they serialize this record's writes.
+//! The record's **mutual-exclusion gate lives here**, not in a separate
+//! `admission`: `mutation_inflight`, `pending_deletes`, `delete_tombstones`, and
+//! the `DraftMutationOrder` epoch allocator serialize this record's writes.
 //!
-//! **Orphan cleanup is here too, and that is a deliberate finding rather than a
-//! default.** It looks like `retirement`, but `retirement` in this codebase means
-//! the disposal lane's off-GTK destruction of an in-memory payload. Orphan cleanup
-//! reloads *this* manifest under *this* record's write lock, is gated by *this*
-//! record's authority, and merges its result back into *this* record. A reader
-//! asking "what keeps the manifest consistent with the bodies on disk" looks
-//! here, so `DraftCleanupContinuation`'s manifest offset lives with the journal it
-//! protects.
+//! Orphan cleanup is journal maintenance too; it lives in the
+//! stage-order-qualified sibling [`super::cleanup_journal`] (stage order C).
 //!
 //! ## The deletion ordering this module must never lose
 //!
@@ -31,7 +22,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::Result;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -42,20 +32,17 @@ use gtk4::prelude::*;
 use crate::model::draft::{
     DraftEntry, DraftManifestAuthority, PreloadedDraftRestore, StaleDraftPreservation,
 };
+use crate::services::draft_service::journal_core;
 use crate::services::notifications::NotificationSeverity;
 use crate::services::{draft_service, editor_io, json_store};
 use crate::ui::buffer_snapshot;
 use crate::ui::editor_page::LushtextEditorPage;
 
 use super::policy;
-use super::policy::{
-    OrphanCleanupFollowUp, grouped_orphan_cleanup_failure_message, orphan_cleanup_follow_up,
-};
-use super::seams::{DraftManifestFailure, OrphanCleanupUiResult, PendingPreservation};
+use super::seams::{DraftManifestFailure, PendingPreservation};
 use super::{
     automatic_draft_limit, delay_draft_delete_for_test, delay_draft_manifest_for_test,
-    delay_orphan_cleanup_worker_for_test, fail_next_draft_delete_for_test,
-    fail_next_draft_manifest_for_test, orphan_cleanup_followup_delay, orphan_cleanup_start_delay,
+    fail_next_draft_delete_for_test, fail_next_draft_manifest_for_test,
 };
 use crate::ui::window::LushtextWindow;
 
@@ -88,41 +75,71 @@ impl LushtextWindow {
     /// completeness or durable replacement eligibility.
     pub(super) fn reject_draft_manifest_authority(&self, authority: DraftManifestAuthority) {
         self.imp().drafts.manifest_authority.set(authority);
-        self.imp().drafts.orphan_cleanup_pending_offset.set(None);
-        self.imp().drafts.orphan_cleanup_timer_pending.set(false);
-        let _ = self.imp().drafts.orphan_cleanup_timer.invalidate();
+        self.imp().drafts.dispose_orphan_cleanup();
     }
 
     /// Adopt the outcome of one write-ahead registration.
     ///
     /// Both pipelines share this: a trusted commit is accepted whole, while an
     /// additive registration mirrors exactly what the service persisted (absent
-    /// ids only) and leaves the journal untrusted. Returns whether the bodies of
-    /// `registered` may now be written; on failure the caller must not write
-    /// them.
+    /// ids only) and leaves the journal untrusted. Returns the body-write
+    /// tokens the registration minted; on failure there are none and the caller
+    /// must not write those bodies.
     pub(super) fn apply_draft_registration(
         &self,
         result: std::result::Result<draft_service::DraftRegistration, DraftManifestFailure>,
         registered: Vec<DraftEntry>,
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<Vec<draft_service::RegisteredDraft>, String> {
         match result {
-            Ok(draft_service::DraftRegistration::Committed(commit)) => {
-                self.accept_draft_manifest_commit(commit);
-                Ok(())
-            }
-            Ok(draft_service::DraftRegistration::Additive { authority }) => {
-                self.reject_draft_manifest_authority(authority);
-                let mut manifest = self.imp().drafts.manifest.borrow_mut();
-                for entry in registered {
-                    manifest.insert_if_absent(entry);
+            Ok(mut registration) => {
+                let tokens = registration.take_registered();
+                match registration {
+                    draft_service::DraftRegistration::Committed { commit, .. } => {
+                        self.accept_draft_manifest_commit(commit);
+                    }
+                    draft_service::DraftRegistration::Additive { authority, .. } => {
+                        self.reject_draft_manifest_authority(authority);
+                        let mut manifest = self.imp().drafts.manifest.borrow_mut();
+                        for entry in registered {
+                            manifest.insert_if_absent(entry);
+                        }
+                    }
                 }
-                Ok(())
+                Ok(tokens)
             }
             Err(error) => {
                 self.reject_draft_manifest_authority(error.authority);
                 Err(error.detail)
             }
         }
+    }
+
+    /// The journal core's body-write decision for one candidate of this
+    /// window, from what the window knows: its manifest copy, its authority,
+    /// and whether a restore of the id is still pending.
+    ///
+    /// The window cannot see the body file, so it answers "present" whenever a
+    /// restore is pending or its manifest lists the id — the conservative side
+    /// of the ownership check.
+    pub(super) fn draft_body_write_decision(
+        &self,
+        draft_id: &str,
+        file_backed: bool,
+    ) -> journal_core::BodyWriteDecision {
+        let registered = self.draft_manifest_entry(draft_id).is_some();
+        let restore_pending = self.draft_restore_is_pending(draft_id);
+        let owner = journal_core::ownership(journal_core::BodyFacts::from_window_view(
+            registered,
+            restore_pending,
+        ));
+        journal_core::body_write_decision(
+            owner,
+            journal_core::registration_required(
+                file_backed,
+                registered,
+                self.imp().drafts.manifest_authority.get().is_trusted(),
+            ),
+        )
     }
 
     /// The window's current manifest entry for `draft_id`, if any.
@@ -256,7 +273,9 @@ impl LushtextWindow {
             }
             // As in the asynchronous collectors: a body whose restore is still
             // pending must not be overwritten.
-            if self.draft_restore_is_pending(&draft_id) {
+            if self.draft_body_write_decision(&draft_id, editor.file_path().is_some())
+                == journal_core::BodyWriteDecision::Hold
+            {
                 write_errors.push(format!("{draft_id}: its draft restore is still pending"));
                 continue;
             }
@@ -279,26 +298,26 @@ impl LushtextWindow {
                 }
             };
             let original_path = editor.file_path();
+            let mtime = original_path.as_deref().and_then(editor_io::mtime_secs);
             // Write-ahead registration, as in the asynchronous pipelines: a
             // body is never written for an id the persisted manifest lacks.
             let authority = self.imp().drafts.manifest_authority.get();
-            let registered = self
-                .imp()
-                .drafts
-                .manifest
-                .borrow()
-                .find_by_id(&draft_id)
-                .is_some();
-            if policy::draft_requires_registration(
+            let mut token = draft_service::RegisteredDraft::without_registration(
+                &draft_id,
                 original_path.is_some(),
-                registered,
+                self.draft_manifest_entry(&draft_id).is_some(),
                 authority.is_trusted(),
-            ) {
+            );
+            // Decided afresh: an earlier tab's registration in this same loop may
+            // have changed the window's manifest or authority.
+            if self.draft_body_write_decision(&draft_id, original_path.is_some())
+                == journal_core::BodyWriteDecision::RegisterFirst
+            {
                 let session = self.collect_session_for_draft_reconciliation();
                 let entry = DraftEntry {
                     draft_id: draft_id.clone(),
                     original_path: original_path.clone(),
-                    original_mtime_secs: original_path.as_deref().and_then(editor_io::mtime_secs),
+                    original_mtime_secs: mtime,
                     saved_at_secs: now,
                 };
                 let result = draft_service::register_draft_entries(
@@ -308,19 +327,24 @@ impl LushtextWindow {
                     std::slice::from_ref(&entry),
                 )
                 .map_err(DraftManifestFailure::from);
-                if let Err(detail) = self.apply_draft_registration(result, vec![entry]) {
-                    registration_errors.push(format!("{draft_id}: {detail}"));
-                    continue;
+                match self.apply_draft_registration(result, vec![entry]) {
+                    Ok(mut tokens) => token = tokens.pop(),
+                    Err(detail) => {
+                        registration_errors.push(format!("{draft_id}: {detail}"));
+                        continue;
+                    }
                 }
             }
-            if let Err(e) = draft_service::write_draft(&data_dir, &draft_id, &text) {
+            let Some(token) = token else {
+                registration_errors
+                    .push(format!("{draft_id}: recovery metadata was not registered"));
+                continue;
+            };
+            if let Err(e) = draft_service::write_draft(&data_dir, &token, &text) {
                 tracing::error!("Failed to write draft on close: {e}");
                 write_errors.push(format!("{draft_id}: {e}"));
                 continue;
             }
-            let mtime = original_path
-                .as_ref()
-                .and_then(|path| editor_io::mtime_secs(path));
             manifest_updates.push(DraftEntry {
                 draft_id,
                 original_path,
@@ -365,185 +389,6 @@ impl LushtextWindow {
         Ok(())
     }
 
-    /// Deferred orphan cleanup — runs after restore so startup stays responsive.
-    ///
-    /// Cleanup is skipped when startup recovery did not trust the manifest,
-    /// preventing deletion based on unsafe metadata.
-    pub(crate) fn schedule_orphan_cleanup(&self, cleanup_allowed: bool) {
-        let drafts = &self.imp().drafts;
-        drafts.orphan_cleanup_failure_streak.set(0);
-        drafts.orphan_cleanup_pending_offset.set(None);
-        drafts.orphan_cleanup_timer_pending.set(true);
-        drafts.orphan_cleanup_timer.arm(
-            self,
-            orphan_cleanup_start_delay(),
-            move |window, _| {
-                window
-                    .imp()
-                    .drafts
-                    .orphan_cleanup_timer_pending
-                    .set(false);
-                // Eager strings can be released after the ordinary restore window,
-                // but compact lazy markers must survive slow file loads so they
-                // cannot bypass the serialized admission queue.
-                super::retirement::release_eager_preloads(&mut window.imp().drafts.preloaded.borrow_mut());
-                if !cleanup_allowed {
-                    tracing::warn!(
-                        "Skipped draft orphan cleanup because startup recovery did not trust the draft manifest"
-                    );
-                    return;
-                }
-                window.run_orphan_cleanup_pass(0);
-            },
-        );
-    }
-
-    /// Run one inspect/execute pass off the GTK thread and merge exact commits.
-    pub(super) fn run_orphan_cleanup_pass(&self, manifest_offset: usize) {
-        let drafts = &self.imp().drafts;
-        if !drafts.manifest_authority.get().is_trusted() {
-            drafts.orphan_cleanup_pending_offset.set(None);
-            drafts.orphan_cleanup_timer_pending.set(false);
-            let _ = drafts.orphan_cleanup_timer.invalidate();
-            return;
-        }
-        if drafts.mutation_inflight.get() {
-            self.arm_orphan_cleanup_follow_up(
-                manifest_offset,
-                policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL,
-            );
-            return;
-        }
-        if drafts.orphan_cleanup_inflight.replace(true) {
-            drafts
-                .orphan_cleanup_pending_offset
-                .set(Some(manifest_offset));
-            return;
-        }
-        {
-            drafts.orphan_cleanup_workers_started.set(
-                drafts
-                    .orphan_cleanup_workers_started
-                    .get()
-                    .saturating_add(1),
-            );
-            drafts
-                .orphan_cleanup_workers_high_water
-                .set(drafts.orphan_cleanup_workers_high_water.get().max(1));
-        }
-        let data_dir = json_store::data_dir();
-        // Clone GTK-owned state before dispatch so the worker receives plain
-        // owned data and never borrows through the window's interior mutability.
-        let manifest = self.imp().drafts.manifest.borrow().clone();
-        spawn_blocking_then(
-            self.clone(),
-            move || {
-                delay_orphan_cleanup_worker_for_test();
-                draft_service::inspect_orphan_cleanup_from(&data_dir, &manifest, manifest_offset)
-                    .map(|plan| {
-                        let mut outcome = draft_service::execute_orphan_cleanup(&data_dir, plan);
-                        // Drop the full manifest before crossing back to GTK; the
-                        // callback needs only fingerprints, failures, and continuation.
-                        outcome.latest_persisted_manifest.take();
-                        let committed_by_id = outcome
-                            .committed_manifest_removals
-                            .iter()
-                            .map(|fingerprint| (fingerprint.draft_id.clone(), fingerprint.clone()))
-                            .collect();
-                        OrphanCleanupUiResult {
-                            outcome,
-                            committed_by_id,
-                        }
-                    })
-            },
-            move |window, result| {
-                window.imp().drafts.orphan_cleanup_inflight.set(false);
-                let follow_up = match result {
-                    Ok(result) => {
-                        let OrphanCleanupUiResult {
-                            outcome,
-                            committed_by_id,
-                        } = result;
-                        // Merge exact generations instead of replacing live state;
-                        // autosaves accepted while the worker ran must survive.
-                        draft_service::merge_committed_orphan_removals(
-                            &mut window.imp().drafts.manifest.borrow_mut(),
-                            &committed_by_id,
-                        );
-                        if !outcome.failures.is_empty() {
-                            let message = grouped_orphan_cleanup_failure_message(&outcome.failures);
-                            tracing::warn!("{message}");
-                            window.publish_status_message(&message, NotificationSeverity::Warning);
-                        }
-                        orphan_cleanup_follow_up(
-                            outcome.has_more_work,
-                            outcome.next_manifest_offset,
-                            !outcome.failures.is_empty(),
-                            window.imp().drafts.orphan_cleanup_failure_streak.get(),
-                        )
-                    }
-                    Err(error) => {
-                        let message = format!("Draft recovery cleanup scan failed: {error}");
-                        tracing::warn!("{message}");
-                        window.publish_status_message(&message, NotificationSeverity::Warning);
-                        orphan_cleanup_follow_up(
-                            true,
-                            None,
-                            true,
-                            window.imp().drafts.orphan_cleanup_failure_streak.get(),
-                        )
-                    }
-                };
-                window.finish_orphan_cleanup_pass(follow_up);
-                window.drive_pending_draft_mutations();
-            },
-        );
-    }
-
-    pub(super) fn finish_orphan_cleanup_pass(&self, follow_up: OrphanCleanupFollowUp) {
-        if let Some(manifest_offset) = self.imp().drafts.orphan_cleanup_pending_offset.take() {
-            self.imp().drafts.orphan_cleanup_failure_streak.set(0);
-            self.arm_orphan_cleanup_follow_up(
-                manifest_offset,
-                orphan_cleanup_followup_delay(policy::ORPHAN_CLEANUP_FOLLOWUP_DELAY),
-            );
-            return;
-        }
-
-        match follow_up {
-            OrphanCleanupFollowUp::Stop => {
-                self.imp().drafts.orphan_cleanup_failure_streak.set(0);
-                self.imp().drafts.orphan_cleanup_timer_pending.set(false);
-                let _ = self.imp().drafts.orphan_cleanup_timer.invalidate();
-            }
-            OrphanCleanupFollowUp::Schedule {
-                manifest_offset,
-                delay,
-                next_failure_streak,
-            } => {
-                self.imp()
-                    .drafts
-                    .orphan_cleanup_failure_streak
-                    .set(next_failure_streak);
-                self.arm_orphan_cleanup_follow_up(
-                    manifest_offset,
-                    orphan_cleanup_followup_delay(delay),
-                );
-            }
-        }
-    }
-
-    pub(super) fn arm_orphan_cleanup_follow_up(&self, manifest_offset: usize, delay: Duration) {
-        self.imp().drafts.orphan_cleanup_timer_pending.set(true);
-        self.imp()
-            .drafts
-            .orphan_cleanup_timer
-            .arm(self, delay, move |window, _| {
-                window.imp().drafts.orphan_cleanup_timer_pending.set(false);
-                window.run_orphan_cleanup_pass(manifest_offset);
-            });
-    }
-
     /// Delete the draft for a given file path.
     pub fn delete_draft_for_path(&self, path: &Path) {
         let draft_id = {
@@ -574,34 +419,88 @@ impl LushtextWindow {
         self.delete_draft_by_id(&draft_id);
     }
 
+    /// Act on a restore attempt that did not apply its body, as the journal
+    /// core's `unapplied_restore_disposition` decides: keep a preserved copy,
+    /// preserve and retire a stale body, or do nothing.
+    pub(super) fn dispose_unapplied_restore(
+        &self,
+        ending: journal_core::RestoreEnding,
+        entry: DraftEntry,
+    ) {
+        match journal_core::unapplied_restore_disposition(ending) {
+            journal_core::RestoreDisposition::Nothing => {}
+            journal_core::RestoreDisposition::PreserveCopy => self.preserve_unrestored_draft(entry),
+            journal_core::RestoreDisposition::PreserveThenRetire => self.retire_stale_draft(entry),
+        }
+    }
+
     /// Keep a copy of a recovery body the user edited over before it could be
     /// restored, then let autosave replace it.
     ///
     /// The body stays in the journal; only a preserved copy is added (local
     /// history for a file, and the set-aside area). Autosave of the id stays
-    /// held until the copy has been attempted, so the copy always reads the
-    /// unrestored body.
+    /// held until the copy **exists**, so the copy always reads the unrestored
+    /// body and a failed copy never lets autosave replace the only one; the
+    /// autosave tick retries it (`retry_unrestored_copies`).
     pub(super) fn preserve_unrestored_draft(&self, entry: DraftEntry) {
-        let draft_id = entry.draft_id.clone();
-        self.hold_draft_restore(&draft_id);
+        self.hold_draft_restore(&entry.draft_id);
+        self.attempt_unrestored_copy(entry, 0);
+    }
+
+    /// Retry every unrestored copy that failed, keeping each one's hold. Called
+    /// from the autosave tick, so a persistent failure costs one small worker
+    /// per tick rather than a loop.
+    pub(super) fn retry_unrestored_copies(&self) {
+        let retries = std::mem::take(&mut *self.imp().drafts.unrestored_copy_retries.borrow_mut());
+        for (entry, failures) in retries.into_values() {
+            self.attempt_unrestored_copy(entry, failures);
+        }
+    }
+
+    fn attempt_unrestored_copy(&self, entry: DraftEntry, failures: u32) {
         let data_dir = json_store::data_dir();
         let window_weak = self.downgrade();
         spawn_blocking_then(
             (),
-            move || draft_service::preserve_stale_draft_body(&data_dir, &entry),
-            move |(), outcome| {
+            move || {
+                let outcome = draft_service::preserve_stale_draft_body(&data_dir, &entry);
+                (entry, outcome)
+            },
+            move |(), (entry, outcome)| {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                window.release_draft_restore(&draft_id);
+                let draft_id = entry.draft_id.clone();
                 let preservation = match outcome {
                     Ok(Some(preservation)) => preservation,
-                    Ok(None) => return,
+                    Ok(None) => {
+                        window.release_draft_restore(&draft_id);
+                        return;
+                    }
                     Err(error) => {
-                        tracing::warn!("Could not preserve unrestored draft {draft_id}: {error}");
-                        StaleDraftPreservation::Kept
+                        if failures == 0 {
+                            tracing::warn!(
+                                "Could not preserve unrestored draft {draft_id}: {error}"
+                            );
+                            window.publish_status_message(
+                                policy::UNRESTORED_COPY_FAILED_STATUS,
+                                NotificationSeverity::Warning,
+                            );
+                        } else {
+                            tracing::debug!(
+                                "Retry {failures} of unrestored draft copy {draft_id} failed: {error}"
+                            );
+                        }
+                        window
+                            .imp()
+                            .drafts
+                            .unrestored_copy_retries
+                            .borrow_mut()
+                            .insert(draft_id, (entry, failures.saturating_add(1)));
+                        return;
                     }
                 };
+                window.release_draft_restore(&draft_id);
                 window.publish_preservation_outcome(&draft_id, preservation, false);
             },
         );
@@ -652,9 +551,15 @@ impl LushtextWindow {
             .stale_preservations
             .borrow()
             .contains_key(draft_id);
-        if self.draft_restore_is_pending(draft_id)
+        let entry = self.draft_manifest_entry(draft_id);
+        let restore_pending = self.draft_restore_is_pending(draft_id);
+        let owner = journal_core::ownership(journal_core::BodyFacts::from_window_view(
+            entry.is_some(),
+            restore_pending,
+        ));
+        if journal_core::deletion_start(owner) == journal_core::DeletionStep::Preserve
             && !preservation_queued
-            && let Some(entry) = self.draft_manifest_entry(draft_id)
+            && let Some(entry) = entry
         {
             self.imp().drafts.stale_preservations.borrow_mut().insert(
                 draft_id.to_string(),
@@ -738,42 +643,63 @@ impl LushtextWindow {
         spawn_blocking_then(
             (),
             move || {
-                // A stale draft is preserved before anything is deleted; when
-                // preservation fails, the body and its entry both stay.
-                let preservation = stale_entry.map(|pending| {
-                    let outcome =
-                        draft_service::preserve_stale_draft_body(&data_dir, &pending.entry)
-                            .map_err(|error| error.to_string());
-                    (pending, outcome)
-                });
-                if let Some((_, Err(error))) = &preservation {
-                    return (
-                        Some(format!("stale draft body could not be preserved: {error}")),
-                        None,
-                        preservation,
-                    );
-                }
-                // Keep the persisted manifest as the durable retry marker until
-                // the body is gone. A failed body deletion therefore leaves a
-                // fully recoverable pre-delete state across unrelated manifest
-                // mutations and process restart.
-                delay_draft_delete_for_test();
-                let body_error = fail_next_draft_delete_for_test()
-                    .and_then(|()| draft_service::delete_draft_file(&data_dir, &draft_id))
-                    .err()
-                    .map(|error| error.to_string());
-                let manifest_result = if body_error.is_none() {
-                    delay_draft_manifest_for_test();
-                    Some(match fail_next_draft_manifest_for_test() {
-                        Ok(()) => draft_service::remove_manifest_entry(
-                            &data_dir, &session, authority, &draft_id,
-                        )
-                        .map_err(DraftManifestFailure::from),
-                        Err(error) => Err(DraftManifestFailure::injected(&error)),
-                    })
+                // The journal core's deletion order: a queued preservation runs
+                // first, then the body, then the manifest entry. The persisted
+                // entry stays the durable retry marker until the body is gone,
+                // so a failure at any step leaves a fully recoverable pre-delete
+                // state across unrelated manifest mutations and process restart.
+                let start = if stale_entry.is_some() {
+                    journal_core::DeletionStep::Preserve
                 } else {
-                    None
+                    journal_core::DeletionStep::DeleteBody
                 };
+                let mut preservation = None;
+                let mut body_error = None;
+                let mut manifest_result = None;
+                let mut stale_entry = stale_entry;
+                journal_core::run_deletion(start, |step| match step {
+                    journal_core::DeletionStep::Preserve => {
+                        let Some(pending) = stale_entry.take() else {
+                            return false;
+                        };
+                        let outcome =
+                            draft_service::preserve_stale_draft_body(&data_dir, &pending.entry)
+                                .map_err(|error| error.to_string());
+                        let succeeded = outcome.is_ok();
+                        if let Err(error) = &outcome {
+                            body_error =
+                                Some(format!("stale draft body could not be preserved: {error}"));
+                        }
+                        preservation = Some((pending, outcome));
+                        succeeded
+                    }
+                    journal_core::DeletionStep::DeleteBody => {
+                        delay_draft_delete_for_test();
+                        body_error = fail_next_draft_delete_for_test()
+                            .and_then(|()| draft_service::delete_draft_file(&data_dir, &draft_id))
+                            .err()
+                            .map(|error| error.to_string());
+                        body_error.is_none()
+                    }
+                    _ => {
+                        delay_draft_manifest_for_test();
+                        let result = match fail_next_draft_manifest_for_test() {
+                            Ok(()) => draft_service::remove_manifest_entry(
+                                &data_dir, &session, authority, &draft_id,
+                            )
+                            .map_err(DraftManifestFailure::from),
+                            Err(error) => Err(DraftManifestFailure::injected(&error)),
+                        };
+                        let succeeded = result.is_ok();
+                        manifest_result = Some(result);
+                        succeeded
+                    }
+                });
+                // A failed preservation deleted nothing: report it as the
+                // stopping error only, never as a body-deletion failure.
+                if matches!(preservation, Some((_, Err(_)))) {
+                    return (body_error, None, preservation);
+                }
                 (body_error, manifest_result, preservation)
             },
             move |(), (body_error, manifest_result, preservation)| {
@@ -860,17 +786,5 @@ impl LushtextWindow {
             draft_service::new_untitled_draft_id()
         };
         editor.set_draft_id(id);
-    }
-
-    /// Schedule startup orphan cleanup through the production timer owner.
-    #[cfg(feature = "test-utils")]
-    pub fn schedule_orphan_cleanup_for_test(&self, cleanup_allowed: bool) {
-        self.schedule_orphan_cleanup(cleanup_allowed);
-    }
-
-    /// Exercise the same orphan-cleanup cancellation used by window disposal.
-    #[cfg(feature = "test-utils")]
-    pub fn dispose_orphan_cleanup_for_test(&self) {
-        self.imp().drafts.dispose_orphan_cleanup();
     }
 }
