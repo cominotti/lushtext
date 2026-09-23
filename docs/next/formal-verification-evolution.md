@@ -7,6 +7,11 @@ records what the tool feasibility spike measured, so the ordering rests on
 evidence instead of assumptions. Nothing here is committed work until an
 OpenSpec change adopts it.
 
+**Revised the same day.** The programme consolidated on **Kani as its only
+formal tool** (see §2 of the programme record). The ranking below is the
+Kani-only one. Candidates that assumed Quint or Lean were adapted, not
+dropped.
+
 ## 1. What phase 0 taught
 
 - **Writing a protocol down as a state machine is the cheapest verification
@@ -37,8 +42,9 @@ OpenSpec change adopts it.
 |---|---|---|---|
 | Kani | 0.68.0 (CBMC 6.11.0) | `cargo install --locked kani-verifier` 2.4 s, then `cargo kani setup` 13 s | 7 harnesses over the **real** `slice_geometry.rs` and `scroll_request.rs` (see appendix A): 5 proved, 2 counterexamples; each harness took 0.1–28 s |
 | Kani, in-tree | same | none | `cargo kani -p gtk-lush-widgets --only-codegen` compiled the crate and its whole GTK dependency tree in **31 s**, next to the workspace's 1.96 toolchain pin |
-| Lean 4 | 4.34.0 stable (elan) | about 1 min | micro-model of `atomic_replace` with two theorems plus a `Float` fact (see appendix B) checked in **0.37 s** |
-| Quint | — | not installed | not spiked. It needs a Node or npm toolchain, so evaluate it inside phase 4 |
+| Lean 4 | 4.34.0 stable (elan) | about 1 min | micro-model of `atomic_replace` with two theorems plus a `Float` fact, checked in **0.37 s**. Superseded: it was ported to Kani (appendix B) |
+| Kani, protocol port | same | none | the Lean micro-model ported to Rust (see appendix B). Both Lean theorems were reproduced, and a stronger third harness (any sequence of up to 6 steps, in any order) was proved. 3 harnesses in **1.2 s** |
+| Quint | — | not installed | dropped by the consolidation |
 
 The two Kani counterexamples matter more than the proofs:
 
@@ -56,134 +62,113 @@ Proved outright: no panic for any `f64` (NaN, ∞, negatives); a resting bin
 never requests a scroll (the v0.7.0 regression as a theorem); every forwarded
 request is at least `ADJUSTMENT_EPSILON`.
 
-## 3. Ranked candidates
+## 3. Ranked candidates (Kani-only, in order of value)
 
-### C1. Land the Kani lane now (was phase 2) — highest value per hour
+Each candidate either adopts Kani or strengthens what Kani checks. The one
+OpenSpec change that carries them all is `consolidate-formal-verification-on-kani`.
 
-The spike removed every adoption risk the plan listed: toolchain coexistence,
-GTK crates compiling, and run time. Two real specification gaps came out in
-under a minute.
+### K1. Land the Kani lane — highest value per hour
 
 Scope:
-- in-tree `#[cfg(kani)]` harnesses in `gtk-lush-widgets`;
-- a `make kani` target;
-- an optional CI job using `model-checking/kani-github-action`.
+- in-tree `#[cfg(kani)]` harnesses in `gtk-lush-widgets`, covering the seven
+  spike harnesses over the real `slice_geometry.rs` and `scroll_request.rs`;
+- `make kani`;
+- an optional or scheduled CI job using `model-checking/kani-github-action`;
+- `#[kani::should_panic]` for the harnesses that must find a counterexample.
 
-Resolve the two counterexamples by stating each function's domain in its
-rustdoc and spec (the `gtk-lush-viewport-slice` "pure, property-tested policy"
-requirement), or by clamping inputs to the whole-pixel range. Then extend to
-the pure-geometry candidates the phase-0 reading listed: `minimap/policy.rs`
-fit functions, `window/geometry/policy.rs`, width presets, and
-`clamped_preview_width`, which is known to violate its "≤ 1/3" rule below
-3·MIN.
+Resolve the two domain gaps. The rustdoc promises "the slice lies inside the
+content" and "the request lands exactly on the child value" hold on
+whole-pixel inputs, not on arbitrary `f64`. State that domain in the rustdoc
+and in `gtk-lush-viewport-slice`, and prove it.
 
-### C2. GTK axiom ledger (phase 1), then the closed-loop model (phase 3)
+### K2. GTK axiom ledger (phase 1)
 
-These stay in order, because the model is only as good as its envelope. The
-ledger must add isolated probes for A5, A9, A11, and A13, and record A8's
-phase-0 evidence.
+This needs no new tool. It adds isolated widget probes for A5, A9, A11 and
+A13, and records the phase-0 evidence for A8. The ledger defines the
+adversarial envelope that K4 feeds to Kani, so it comes first.
 
-The phase-3 model now has a concrete first target: the **learning-frame
-residual**. The first allocation after inset learning still erases a
-same-frame request, and phase 0 could not decide whether that case is
-reachable.
+### K3. Draft journal core, pure and Kani-checked (was C3 plus phase 4)
 
-### C3. Close the draft journal's invariants inside the service, before modelling it (pre-phase 4)
+The `/simplify` altitude findings and the phase-4 model merge into one step:
+extract the journal's decisions into a pure state machine that the service and
+the GTK coordination both use. The work is:
 
-The `/simplify` altitude review proposed redesigns that were out of scope for
-phase 0. Each one removes state the phase-4 Quint model would otherwise have to
-carry:
+- **one body-ownership check**, replacing the restore hold, the six preserve
+  call sites, and the overwrite copy;
+- "no body without an entry" enforced inside the service's write;
+- insert-only commits routed through `update_manifest`;
+- **one owner** for stale bodies.
 
-- enforce "no body without an entry" inside `draft_service`'s write, not in
-  its callers;
-- let insert-only commits pass through `update_manifest` instead of a separate
-  additive path;
-- replace the restore-hold counter, the six preserve call sites, and the
-  overwrite copy with **one body-ownership check**;
-- give stale bodies **one owner** (set-aside, with local history as a view)
-  instead of two parallel stores.
+Kani then checks S1–S4 and a bounded L1 over action sequences that include
+`Crash`, with fixed-size state (up to 3 ids and 3 generations). This replaces
+the Quint model and its differential harness, because the checked machine is
+production code.
 
-Do this first. The model then shrinks from about 18 actions toward about 12,
-and each invariant becomes a property of one function.
+### K4. ViewportSliceBin closed loop in Kani (phase 3)
 
-### C4. Split the durable copy and move primitives
+Write a Rust step model that calls the real `viewport_slice` and
+`classify_child_scroll`. The child is `kani::any()` restricted by the ledger's
+envelope, with N ∈ {1, 2, 3} bins and k allocations. Properties:
 
-Provide `copy_durable`, which keeps its source, and `move_durable`, which
-removes it, and retire `copy_file_durable`. This closes the naming trap behind
-one phase-0 defect, and gives the phase-5 Lean model primitives whose names
-match their semantics. It also belongs with the altitude items below:
+- fixed point at rest;
+- no oscillation;
+- request fidelity;
+- bounded liveness;
+- render fidelity.
 
-- **one owner** for the temp-name format, which today is shared by the
-  builder and the leftover predicate;
-- **closed** `WriteLabel` construction, so the predicate's known-tag set cannot
-  drift.
+The first target is the **learning-frame residual**.
 
-### C5. Leftover sweep coverage and a set-aside recovery surface
+### K5. Deterministic crash injection in the real-process smoke (was C6)
 
-The startup sweep does not cover `style-schemes/`, `format-upgrade-backups/`,
-or `drafts/set-aside/`, and the set-aside area has no size bound and no UI. A
-Preferences > Data row that lists set-aside drafts with Open and Delete
-actions would turn a hidden directory into a user-owned recovery surface. It
-would also resolve the "no size bound" deferral by making the user the
-decision-maker.
+Add feature-gated kill points to the smoke build at the windows K3 and K6
+name, such as body-written-before-commit and renamed-before-directory-sync.
+This is the empirical counterpart of the Kani proofs: Kani shows the protocol
+is safe, and injection shows the real process follows it.
 
-### C6. Deterministic crash injection in the real-process smoke
+### K6. durable_write I/O-free core (was C7 / phase 5, adapted)
 
-`make crash-recovery-smoke` could not kill inside the body-write-to-commit
-window, because the smoke binary has no delay hooks. Two routes:
+Extract `WriteProtocol` (state plus event gives the next action) and keep a
+thin `sys::` shell. The ported protocol harnesses (appendix B) then check the
+**real** core instead of a model, including the copy fallback,
+`rename_durable`, and mode non-widening. Crash atomicity becomes a complete
+proof, because the protocol is finite.
 
-- **feature-gated delay hooks** in the smoke build, so that a kill point
-  inside any protocol window becomes deterministic;
-- **LazyFS or dm-flakey** power-loss simulation on top of that.
+### K7. Base cleanups (was C4 plus C5)
 
-Crash injection is the empirical counterpart of phases 4 and 5: the models say
-which windows exist, and injection proves the real process survives them.
+- **Split** `copy_durable`, which keeps the source, from `move_durable`, which
+  removes it, and retire the misleading `copy_file_durable`. K6 builds on this.
+- **One owner** for the temp-name format, and closed `WriteLabel`
+  construction.
+- **Extend the leftover sweep** to `style-schemes/`, `format-upgrade-backups/`
+  and `drafts/set-aside/`.
+- **A set-aside recovery surface** on the Preferences Data page, listing the
+  preserved drafts with Open and Delete actions.
 
-### C7. Grow the Lean spike into phase 5
+### K8. Drop axiom A6 in the K3 machine (was C8)
 
-The micro-model in appendix B already proves crash atomicity for every prefix
-of the protocol. It also proves that dropping the temp `fsync` is unsafe,
-which is the regression the ordering exists to prevent.
+Add a second writer (window or process) to the Kani journal machine and see
+what breaks. Only then decide whether the data directory needs an
+inter-process lock.
 
-Next steps:
-- add the copy fallback and `rename_durable`;
-- add mode non-widening;
-- replace the prefix enumeration with an inductive proof over arbitrary crash
-  points;
-- keep the model in-repo as a Lake project with an elan-pinned toolchain.
+### Opportunistic
 
-The phase-0 NFS and inode-ABA deferrals become explicit axioms that the proofs
-name.
+- **Draft freshness precision (was C9).** Waits for a draft-manifest format
+  bump.
+- **GTK Lush publication evidence (was C10).** Would come from K1 and K4.
 
-### C8. Multi-window and multi-process safety — the largest unmodelled axiom
+### Retired by the consolidation
 
-Everything above assumes one process and one window per data directory
-(axiom A6). Production reuses the active window, but widget tests create
-several, and a second instance is one `flatpak run` away. In the phase-4 model
-this is the first axiom worth *dropping*, to find out what breaks, before
-deciding whether an inter-process lock on the data directory is warranted.
-
-### C9. Draft freshness precision
-
-`original_mtime_secs` has second granularity. Phase 0 made false positives
-non-destructive, but every one still hides a restore behind a detour. A
-nanosecond or file-identity freshness token would need a draft-manifest format
-change, so it waits until a format bump is justified on other grounds.
-
-### C10. GTK Lush publication evidence (dormant track)
-
-If publication reopens (`docs/next/gtk-lush.md`), machine-checked invariants
-from C1–C2 are a differentiator no comparable GTK helper crate offers. Record
-them in the crate README as verified properties with their stated domains.
+- **Lean phase 5.** Its content moved into K6.
+- **The Quint draft model.** It became K3.
+- **The Lean/Rust differential corpus and Aeneas extraction.** They are no
+  longer needed, because the checked code is the production code.
 
 ## 4. Suggested order
 
 ```
-C1 Kani lane ─┬─► C2 axiom ledger ─► phase 3 closed-loop model
-              │
-C4 primitives ┴─► C7 Lean phase 5
-C3 journal invariants ─► phase 4 Quint model ─► C8 drop axiom A6
-C5, C6 in parallel whenever convenient; C9 and C10 are opportunistic
+K1 Kani lane ─► K2 axiom ledger ─► K4 closed-loop in Kani
+K7 base cleanups ─► K6 durable_write core ─► (K5 kill points at K6 windows)
+K3 journal core ─► (K5 kill points at K3 windows) ─► K8 drop axiom A6
 ```
 
 ## Appendix A — Kani spike harness
@@ -232,50 +217,82 @@ mod proofs {
 }
 ```
 
-## Appendix B — Lean spike micro-model (Lean 4.34.0)
+## Appendix B — The Lean spike, ported to Kani
 
-```lean
-inductive Content | oldBytes | newBytes | torn deriving DecidableEq, Repr
-inductive Step | writeTemp | syncTemp | rename | syncDir deriving DecidableEq, Repr
+The Lean micro-model of `atomic_replace` was ported line for line:
+`inductive` became `enum`, `structure` became `struct`, and each `theorem`
+became a `#[kani::proof]`. Kani checked all three harnesses in 1.2 s.
 
-structure Disk where
-  target : Content
-  durableTarget : Content
-  tempData : Option Content
-  tempDurable : Bool
-  deriving Repr
+```rust
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Content { OldBytes, NewBytes, Torn }
 
-def init : Disk := ⟨.oldBytes, .oldBytes, none, false⟩
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum Step { WriteTemp, SyncTemp, Rename, SyncDir }
 
-def step (d : Disk) : Step → Disk
-  | .writeTemp => { d with tempData := some .newBytes, tempDurable := false }
-  | .syncTemp  => { d with tempDurable := true }
-  | .rename    => { d with target := .newBytes, tempData := none,
-                           durableTarget := if d.tempDurable then d.durableTarget else .torn }
-  | .syncDir   => { d with durableTarget := d.target }
+#[derive(Clone, Copy, Debug)]
+pub struct Disk { pub target: Content, pub durable_target: Content,
+                  pub temp_data: Option<Content>, pub temp_durable: bool }
 
-def crash (d : Disk) : Content := d.durableTarget
+pub const INIT: Disk = Disk { target: Content::OldBytes, durable_target: Content::OldBytes,
+                              temp_data: None, temp_durable: false };
 
-def run (d : Disk) : List Step → Disk
-  | [] => d
-  | s :: ss => run (step d s) ss
+pub fn step(d: Disk, s: Step) -> Disk {
+    match s {
+        Step::WriteTemp => Disk { temp_data: Some(Content::NewBytes), temp_durable: false, ..d },
+        Step::SyncTemp => Disk { temp_durable: true, ..d },
+        Step::Rename => Disk { target: Content::NewBytes, temp_data: None,
+            durable_target: if d.temp_durable { d.durable_target } else { Content::Torn }, ..d },
+        Step::SyncDir => Disk { durable_target: d.target, ..d },
+    }
+}
 
-def protocol : List Step := [.writeTemp, .syncTemp, .rename, .syncDir]
+pub fn crash(d: Disk) -> Content { d.durable_target }
+pub const PROTOCOL: [Step; 4] = [Step::WriteTemp, Step::SyncTemp, Step::Rename, Step::SyncDir];
 
--- A crash after any prefix of the protocol never exposes a torn target.
-theorem crash_atomic :
-    (List.range (protocol.length + 1)).all
-      (fun n => crash (run init (protocol.take n)) != Content.torn) = true := by decide
+#[cfg(kani)]
+mod proofs {
+    use super::*;
 
--- Dropping the temp fsync is caught.
-theorem skipping_fsync_is_unsafe :
-    crash (run init [.writeTemp, .rename]) = Content.torn := by decide
+    #[kani::proof] #[kani::unwind(5)] // PROVED (Lean: crash_atomic)
+    fn crash_atomic() {
+        let n: usize = kani::any();
+        kani::assume(n <= PROTOCOL.len());
+        let mut d = INIT;
+        for s in &PROTOCOL[..n] { d = step(d, *s); }
+        assert!(crash(d) != Content::Torn);
+    }
 
--- Float is IEEE-754 binary64 in the logic.
-example : (0.1 + 0.2 : Float) ≠ 0.3 := by native_decide
+    #[kani::proof] // COUNTEREXAMPLE, as intended (Lean: skipping_fsync_is_unsafe);
+                   // in-tree it becomes #[kani::should_panic]
+    fn skipping_fsync_is_unsafe() {
+        let d = step(step(INIT, Step::WriteTemp), Step::Rename);
+        assert!(crash(d) != Content::Torn);
+    }
+
+    #[kani::proof] #[kani::unwind(7)] // PROVED — stronger than the Lean spike
+    fn torn_only_by_unsynced_rename() {
+        let mut d = INIT;
+        let mut unsynced_rename = false;
+        for _ in 0..6 {
+            let s: Step = kani::any();
+            if s == Step::Rename && !d.temp_durable { unsynced_rename = true; }
+            d = step(d, s);
+        }
+        assert!(crash(d) != Content::Torn || unsynced_rename);
+    }
+}
 ```
 
-This is a toy: it folds axioms A2 and A3 into one `durableTarget` field and
-enumerates prefixes rather than proving over arbitrary crash points. Its value
-is the measurement, not the theorem. Lean 4.34 with core tactics alone
-(no Mathlib) checks a finite protocol model interactively.
+The third harness takes **any** sequence of up to 6 steps, in any order and
+with repetitions. It proves that a torn target arises only from a rename of an
+unsynced temp: the code's ordering rule is exactly the safety condition. The
+Lean spike only enumerated prefixes of the correct order.
+
+This is still a model of `durable_write.rs`, not the file itself. K6 closes
+that gap: once the I/O-free core exists, these harnesses import the real
+`WriteProtocol` instead of `step`.
+
+The original Lean 4.34 spike took 0.37 s with core tactics and no Mathlib. It
+is superseded; its source is in git history (commit `b2298918`).

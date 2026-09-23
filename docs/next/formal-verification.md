@@ -43,31 +43,63 @@ The programme therefore does two things:
    behaves the way we believe". A model built on believed behaviour proves the
    bug correct. Checked against an envelope, 129a7e61 fails in two steps.
 
-## 2. Tool mix (decided 2026-09-23: pragmatic mix)
+## 2. Tool: Kani only (decided 2026-09-23, supersedes the pragmatic mix)
 
-| Target | Nature | Tool | Why not Lean here |
-|---|---|---|---|
-| Pure policy and geometry functions (`policy.rs`, `slice_geometry.rs`, `scroll_request.rs`) | arithmetic over `f64` | **Kani** (bounded, bit-precise floats) | Lean float libraries are weeks old |
-| ViewportSliceBin closed loop | discrete feedback loop, nondeterministic child | **Rust state-machine model** (proptest-state-machine or stateright) calling the **real** pure functions | re-implementing the functions in Lean opens a translation gap |
-| Draft journal | interleavings plus crashes, about 18 actions | **Quint** model checker, plus a crash-equals-stop-and-reload differential harness | Lean has no model checker for interleavings |
-| Crash-durable write | small (about 14 transitions), POSIX axioms, general theorem | **Lean 4** | — this is where Lean fits |
+**Current decision.** Kani is the programme's single formal tool. The testing
+stack the project already runs covers the rest: proptest, cargo-fuzz, and the
+headless widget harness, whose probes pin the GTK axioms.
 
-Rejected alternatives:
+Why one tool:
 
-- **Lean-centric** (every model in Lean, Cedar-style differential testing).
-  One language and unbounded proofs, but no interleaving exploration, and the
-  functions get re-implemented.
-- **Rust-only** (Kani plus Rust models). Cheapest, but it drops the proof
-  angle entirely.
+- Every extra tool costs a toolchain, a CI lane, version upkeep, a skill, and
+  a mental model. For a single maintainer, that fixed cost outweighed the
+  marginal fit of a per-target "best tool".
+- Kani is the only candidate that needs **no bridge to the code**. Quint and
+  Lean re-express the system in another language, and every such model then
+  needs its own bridge back to Rust (differential testing, or Aeneas
+  extraction).
+
+How Kani covers what the mix assigned to other tools:
+
+| Target | Earlier assignment | With Kani |
+|---|---|---|
+| Pure geometry and policy functions | Kani | unchanged |
+| ViewportSliceBin closed loop | Rust model plus proptest | Rust model; the child is `kani::any()` constrained by `kani::assume` (the adversarial envelope); N bins, k steps |
+| Draft journal interleavings and crashes | Quint | pure Rust journal state machine; each step is a nondeterministic action, including `Crash` |
+| Durable-write crash atomicity | Lean 4 | I/O-free Rust core. The protocol is finite, so exploring every event sequence is a **complete** proof, not merely a bounded one |
+
+What this gives up:
+
+- Unbounded proofs. The draft journal is checked for small scopes, for example
+  up to 3 ids, 3 generations, and 8 actions. This relies on the small-scope
+  hypothesis, and crash-consistency studies find most bugs within 3
+  operations.
+- Unbounded liveness. It becomes bounded liveness: L1 reads "clean within k
+  steps".
+- Collection-heavy models. They must use fixed arrays instead of `HashMap` or
+  `Vec`.
+
+Kani runs no real threads. That does not matter here, because interleavings
+are modelled as nondeterministic choice in a sequential model, the same way
+TLA+ and Quint work.
+
+**Lean is dormant, and Quint is dropped.** Lean returns only if a claim
+genuinely needs to be unbounded, for example "any number of bins" as evidence
+for publishing GTK Lush. The Lean spike's micro-model was ported to Kani in
+minutes and got stronger (see the evolution record).
+
+**Superseded decision** (2026-09-23, earlier the same day): a pragmatic mix of
+Kani for pure functions, a Rust model for the slice bin, Quint for drafts, and
+Lean for the durable write. It optimised per-target fit and ignored per-tool
+fixed cost.
 
 Tool facts as of September 2026:
 
 - Kani 0.68 pins its own nightly, independent of this workspace's toolchain
-  pin. Its contracts are still experimental. Harnesses must live in GTK-free
-  code behind `#[cfg(kani)]`.
-- Aeneas/Charon is production-proven only on pure, safe, arithmetic code
-  (SymCrypt). It is not usable on `RefCell` or GTK code.
-- Lean 4 `Float` is modelled as IEEE-754 binary64.
+  pin. In the phase-0 spike, `cargo kani -p gtk-lush-widgets` compiled next to
+  the 1.96 pin in 31 s.
+- Kani function contracts and loop contracts are still experimental.
+- Harnesses live in GTK-free code behind `#[cfg(kani)]`.
 
 ## 3. Phases
 
@@ -166,7 +198,7 @@ cited by the Phase 3 model.
 Exit: harnesses run in CI or a documented lane, and their counterexamples are
 triaged.
 
-### Phase 3 — ViewportSliceBin closed-loop model
+### Phase 3 — ViewportSliceBin closed-loop model (Kani)
 
 This is a state-machine model:
 
@@ -188,9 +220,9 @@ This is a state-machine model:
 Candidate follow-on: the adaptive-shell breakpoint loop in
 `window/geometry/policy.rs`.
 
-### Phase 4 — Draft journal model
+### Phase 4 — Draft journal model (Kani)
 
-The Quint model covers two or three ids of mixed kind, generations up to
+A pure Rust journal state machine, checked with Kani, covers two or three ids of mixed kind, generations up to
 about 3, and about 18 actions, including Crash and Startup. Invariants:
 
 - **S1 acceptance durability:** an accepted generation stays recoverable
@@ -204,16 +236,18 @@ about 3, and about 18 actions, including Crash and Startup. Invariants:
 - **L1 liveness:** without I/O faults, an open dirty editor eventually
   becomes clean. This is false before phase 0, because of the wedge.
 
-The differential harness drives `draft_service` over a tempdir with operation
-scripts in which "crash" means stop and reload, and checks each result against
-the model.
+The state machine is the journal's decision core, extracted out of the service
+and GTK coordination and used by them, so the harness checks production logic.
+It is not a separate model. L1 becomes bounded: "clean within k steps".
 
 Known unmodelled assumption: one process and one window per data directory.
 
-### Phase 5 — Lean crash-atomicity of durable_write
+### Phase 5 — Crash-atomicity of durable_write (Kani)
 
-The model covers states S0–S6, the copy fallback, and `rename_durable` over a
-volatile/durable disk.
+The I/O-free `WriteProtocol` core covers states S0–S6, the copy fallback, and
+`rename_durable` over a volatile/durable disk abstraction. A thin shell
+executes each action through `sys::`. Kani explores every event and crash
+sequence of the finite protocol.
 
 POSIX axioms:
 
@@ -235,8 +269,9 @@ Theorems:
 4. **Guarded-delete safety,** assuming unique inodes. Dropping that
    assumption exposes the inode ABA gap.
 
-Afterwards, re-evaluate Lean for GTK Lush: an unbounded-N slice-bin proof, or
-Aeneas extraction of `slice_geometry`.
+The Lean spike's micro-model and its two theorems were already ported to Kani,
+along with a stronger third result, so this phase adopts them against the real
+core rather than a model.
 
 ## 4. Deferral inventory
 
