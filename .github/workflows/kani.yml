@@ -86,8 +86,11 @@ jobs:
         with:
           shared-key: fedora-44-kani
           # Only the registry is worth caching here: nothing in this job builds
-          # with the stable toolchain, the Kani binaries have their own cache
-          # below, and Kani's target directory is evaluated separately.
+          # with the stable toolchain, and the Kani binaries have their own cache
+          # below. Kani's target directory is deliberately not cached: measured
+          # on this runner it saved under 1.5 minutes on widgets-geometry, less
+          # than the 3 minutes that would justify ~650 MB of cache (see
+          # docs/next/formal-verification.md, phase 2).
           cache-targets: false
           cache-bin: false
 
@@ -116,17 +119,6 @@ jobs:
             cargo install --locked --force kani-verifier --version "${KANI_VERSION}"
             cargo kani setup
           fi
-
-      - name: Restore the Kani target directory
-        # EVALUATION (harden-kani-lane-and-draft-token task 2.4): kept only if
-        # a warm widgets-geometry job saves at least 3 minutes and the caches
-        # stay under 5 GB in total.
-        uses: actions/cache@v4
-        with:
-          path: target/kani
-          key: kani-target-${{ matrix.shard }}-${{ env.KANI_VERSION }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            kani-target-${{ matrix.shard }}-${{ env.KANI_VERSION }}-
 
       - name: Run Kani harnesses
         run: >-

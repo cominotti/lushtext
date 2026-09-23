@@ -235,10 +235,82 @@ phases 3–5 landed, so `scripts/kani-shards.py` now owns a five-shard table
 (`widgets-geometry`, `widgets-slice-loop-rest`, `widgets-slice-loop-requests`,
 `core-journal-and-write`, `core-second-writer`): `make kani` runs every shard,
 `kani.yml` runs one per matrix job, and `make check-kani-shards` (in
-`make check-policy`) fails when a harness matches no shard or several. CI shard
-times on GitHub runners are not yet measured. The editor-memory, minimap, window-geometry, and
+`make check-policy`) fails when a harness matches no shard or several. The shard
+times on GitHub runners are measured, and `widgets-geometry` is in the
+pull-request gate (below, `harden-kani-lane-and-draft-token`). The editor-memory, minimap, window-geometry, and
 `clamped_preview_width` harnesses listed above were not part of this change and
 remain open candidates.
+
+**Runner budgets and the pull-request gate (2026-09-23,
+`harden-kani-lane-and-draft-token`).** `make kani KANI_MEASURE=<json>`
+(`scripts/kani-shards.py run --measure`) records each shard's `cargo kani` wall
+time, the peak resident memory of its largest descendant (per-child `wait4`
+rusage), and every harness's `Verification Time:`; `kani.yml` always runs in
+that mode, writes a job-summary table, and uploads one `kani-measure-<shard>`
+artifact. Four `workflow_dispatch` runs on `ubuntu-latest` (4 vCPU, 16 GB,
+Fedora 44 container), Kani 0.68.0:
+
+- A `35920992670`: cold Kani install cache;
+- B `35923346671`: warm install cache;
+- C `35925626107`: warm install, `target/kani` cache added (cold);
+- D `35927734943`: warm install, warm `target/kani` cache.
+
+| Shard | Gate | Wall A / B / C / D (min) | Peak A / B / C / D (GiB) | Job, longest (min) | Recorded budget |
+|---|---|---|---|---|---|
+| `widgets-geometry` | pull-request | 8.16 / 7.62 / 6.45 / 7.41 | 1.74 / 1.69 / 1.70 / 0.11 | 9.96 | 8.2 min, 1.8 GiB |
+| `widgets-slice-loop-rest` | scheduled | 14.60 / 13.01 / 14.69 / 9.86 | 1.73 / 1.69 / 1.69 / 1.26 | 16.21 | 14.7 min, 1.8 GiB |
+| `widgets-slice-loop-requests` | scheduled | 14.82 / 15.10 / 16.02 / 14.22 | 1.73 / 1.69 / 1.69 / 1.21 | 17.51 | 16.1 min, 1.8 GiB |
+| `core-journal-and-write` | scheduled | 19.40 / 20.81 / 19.67 / 14.47 | 8.27 / 8.26 / 8.27 / 8.26 | 22.20 | 20.9 min, 8.3 GiB |
+| `core-second-writer` | scheduled | 16.53 / 16.30 / 17.28 / 13.90 | 8.81 / 8.81 / 8.80 / 8.78 | 18.78 | 17.3 min, 8.9 GiB |
+
+- The recorded budget in the shard table is the largest figure across the four
+  runs, rounded up. The task asked for the larger of A and B; C and D only
+  raise it (`widgets-slice-loop-rest`, `widgets-slice-loop-requests`,
+  `core-second-writer`), so the table is at least that conservative.
+- Every shard fits the margins that `make check-kani-shards` now enforces:
+  25 minutes and 12 GiB per shard, and 15 minutes for a `pull-request` shard.
+  **No shard was split, no solver changed, and no bound reduced** (the design's
+  fit order was not needed). The job adds about 1.5–2 minutes around the shard
+  (container, `dnf`, caches); the longest job, 22.2 minutes, is inside the
+  30-minute cap.
+- The peak is the Kani compiler's (about 1.7 GiB building GTK dependencies) for
+  the widget shards and CBMC's for the core shards. With a warm target cache
+  (run D) nothing is compiled, so the widget peaks drop to CBMC's own.
+- The runner's CBMC is about 1.8x slower than the toolbox: the longest
+  harness, `journal_invariants_hold_under_crashes`, took 835 s in run A against
+  487 s locally, and `slice_covers_the_visible_intersection_on_whole_pixels`
+  328 s against 177 s. Run-to-run CBMC variance on the runner is about ±1.5
+  minutes per shard, which is why a single run is not a budget.
+- **Kani install cache: adopted.** Keyed `kani-<KANI_VERSION>-fedora-44`; it
+  holds `cargo-kani`, `kani`, `~/.kani`, and the nightly `cargo kani setup`
+  installs through rustup (the bundle links to it). About 379 MB. Cold, the
+  install took 19–22 s plus a 9 s save; warm, an 8 s restore and no install.
+  The gain is small because `kani-verifier` downloads a prebuilt bundle rather
+  than building from source; the cache is kept because it is version-keyed,
+  small, and removes two network downloads from every job.
+- **`target/kani` cache: rejected.** The five per-shard caches totalled about
+  650 MB (90–189 MB each), inside the 5 GB limit, but a warm cache cut the
+  `widgets-geometry` build share from 1.17–1.57 minutes to 0.18: a saving under
+  1.5 minutes, below the 3 minutes the design required, and smaller than the
+  runner's CBMC variance (the warm job D took 8.80 minutes against the
+  cold-cache jobs' 7.61–9.96). The step was removed and its cache entries
+  deleted.
+- **Pull-request gate.** `kani.yml` now also runs on `pull_request` and on
+  pushes to `main`, and those events run only the `pull-request` shards
+  (`github-outputs` emits them as `pr-shards`): `widgets-geometry`, 9 harnesses.
+  The recommendation for the maintainer (a repository setting, not code) is to
+  mark `Kani Proof Harnesses (widgets-geometry)` as a required check.
+- **Harness modules are verification code.** A harness module must be named
+  `kani_proofs.rs` and declared `#[cfg(kani)] mod kani_proofs;`.
+  `.cargo/mutants.toml` excludes `crates/**/kani_proofs.rs`: `make mutants-list`
+  had listed 171 mutants in the two harness modules (138 in
+  `draft_service/kani_proofs.rs`, 33 in `write_protocol/kani_proofs.rs`), which
+  no test build compiles, plus 1 in `draft_service/fixture.rs`, now excluded
+  like its filesystem sibling. The scope went from 6,001 to 5,829 mutants,
+  exactly 172, with no other file's count changing. `make
+  check-workflow-boundaries` skips a gated `kani_proofs.rs` in its
+  decision-logic and role-home rules and fails an ungated or orphaned one, so
+  harnesses over `ui/**/policy.rs` (N2) need no ledger entry.
 
 ### Phase 3 — ViewportSliceBin closed-loop model (Kani)
 
@@ -405,6 +477,23 @@ failing-first:
 Known unmodelled assumption: one process per data directory (A6); K8 below
 drops it.
 
+**Token closed (2026-09-23, `harden-kani-lane-and-draft-token`).** The
+`RegisteredDraft` token no longer has a production bypass: both
+`draft_service::fixture` (its `write_body`) and `services::filesystem::fixture`
+(whose writers could put bytes at `drafts/<id>.draft` directly) compile only
+under `#[cfg(any(test, feature = "test-utils"))]`, `property-tests` implies
+`test-utils`, and every benchmark command passes `--features test-utils`.
+`make check-filesystem-boundary` checks both gates and that `test-utils` is
+neither a default feature nor enabled by any shipping build (the `lushtext`
+`[dependencies]`, `build-aux/cargo.sh`, the Flatpak manifest, Snap, Meson), with
+a self-test; CI's lint job checks the shipped binary with default features
+(`cargo check -p lushtext --bins --locked`), because the all-features Clippy
+gate cannot see a production caller. Failing first: the rule failed on the
+ungated tree, and a scratch call to `draft_service::fixture::write_body` in
+`ui/window/drafts/journal.rs` compiled before the gate and after it failed with
+``error[E0433]: cannot find `fixture` in `draft_service` ``. The deferral
+inventory entry for `write_body` is closed.
+
 #### K8 — dropping axiom A6
 
 **Status: complete; decision: accept with documentation, no lock in this
@@ -558,10 +647,6 @@ Next candidates after the Kani consolidation are ranked in
   the phase-0 instrumentation; uniform rows in both consumers). The second has
   a model-checked candidate fix. Revisit when a consumer with variable-height
   rows adopts `ViewportSliceBin`, starting from a failing real-GTK test.
-- `draft_service::fixture::write_body` bypasses the `RegisteredDraft` token for
-  test and bench seeding and is compiled into every build, like
-  `services::filesystem::fixture`; nothing enforces that production does not
-  call it. Gating it needs a feature on the bench target.
 - Phase 0: a lineage index repaired from snapshot files derives each
   timestamp from the snapshot id (capture time), so a preserved stale draft's
   `saved_at_secs` stamp does not survive an index repair.

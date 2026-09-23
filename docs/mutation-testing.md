@@ -421,6 +421,13 @@ Classify each survivor:
 - **Timeout:** first check whether the baseline test is too broad or blocked.
   Increase `MUTANTS_TIMEOUT` only when the test is legitimately slow and stable.
 
+Verification and fixture code is out of scope by name, not by survivor:
+`crates/**/kani_proofs.rs` (Kani harness modules, compiled only under
+`cfg(kani)`, so no build cargo-mutants runs compiles them and no test can kill
+their mutants) and the two fixture modules, `services/filesystem/fixture.rs`
+and `services/draft_service/fixture.rs`. Excluding them removed 172 mutants
+(6,001 to 5,829): 171 in harness code and 1 in the draft-body fixture.
+
 Do not silence a survivor just because the current test suite misses it. The
 preferred ratchet is tests first, small deterministic extraction second, narrow
 documented exclusion last.

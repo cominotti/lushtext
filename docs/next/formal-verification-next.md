@@ -40,7 +40,7 @@ change adopts it.
 
 | Order | Change | Carries | Depends on |
 |---|---|---|---|
-| 1 | `harden-kani-lane-and-draft-token` | N1 (measure the shards on runners, geometry shard in the PR gate) and N5 (both fixture modules gated) | — |
+| 1 | `harden-kani-lane-and-draft-token` (**implemented 2026-09-23**) | N1 (measure the shards on runners, geometry shard in the PR gate) and N5 (both fixture modules gated). **Done**; figures in the programme record, phase 2 | — |
 | 2 | `extend-kani-to-pure-policies` | N2. `clamped_preview_width` keeps its floor, and the exception is stated in the spec. The sidebar-width `NaN` bug is fixed failing-first | 1 |
 | 3 | `verify-multi-window-draft-journal` | N4, first half: window actors against process actors in the journal machine | 1 |
 | 4 | `extend-closed-loop-geometry-verification` | N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
@@ -61,6 +61,13 @@ an unbounded claim is actually needed.
 ## 3. Ranked candidates, in order of value
 
 ### N1. Measure the Kani lane on real runners, then promote a fast shard to the PR gate
+
+**Done** by `harden-kani-lane-and-draft-token` (2026-09-23). Every shard is
+measured on `ubuntu-latest` and fits its margins without a split or a bound
+change; `widgets-geometry` runs on every pull request and push to `main`. The
+per-shard table, the run ids, and both cache verdicts are in
+[`formal-verification.md`](./formal-verification.md), phase 2. What follows is
+the candidate as it was ranked.
 
 Nobody has timed the shards on GitHub runners yet. `core-second-writer` and
 `core-journal-and-write` peak around 9 GB, which is close to a standard
@@ -113,6 +120,13 @@ K8 is about two processes. Two narrower cases need no inter-process lock:
   The K4 model can show this directly.
 
 ### N5. Make the draft-registration token airtight
+
+**Done** by `harden-kani-lane-and-draft-token` (2026-09-23): both
+`draft_service::fixture` and `filesystem::fixture` compile only under
+`cfg(test)` or `test-utils`, `make check-filesystem-boundary` keeps them gated
+and `test-utils` out of every shipping build, and CI's lint job checks the
+shipped binary with default features. What follows is the candidate as it was
+ranked.
 
 `draft_service::fixture::write_body` bypasses `RegisteredDraft` and is
 compiled into every build. Gate it behind a `test-utils` or bench feature, as
@@ -216,8 +230,13 @@ case is "any number of bins" as evidence if GTK Lush publication reopens
 ## 4. Suggested order
 
 ```
-N1 measure + PR-gate a shard ─► N2 more pure policies ─► N3 breakpoint loop
-N5 token airtight (small) ─► N4 multi-window + two-bin requests
-N9 mutation × proofs (any time after N1)
-N11 after N5 and N4 (multi-window); N6, N7 only on their triggers; N8, N10 opportunistic
+N1 ✓ measured, geometry shard PR-gated ─► N2 more pure policies ─► N3 breakpoint loop
+N5 ✓ token airtight ─► N4 multi-window + two-bin requests
+N9 mutation × proofs (N1 is done, so any time now)
+N11 after N4 (multi-window; N5 is done); N6, N7 only on their triggers; N8, N10 opportunistic
 ```
+
+N1 and N5 landed together in `harden-kani-lane-and-draft-token`, so the next
+step is N2 (`extend-kani-to-pure-policies`), which the same change prepared:
+a harness over a `ui/**/policy.rs` named `kani_proofs.rs` and gated
+`#[cfg(kani)]` needs no workflow-boundaries or mutation-scope entry.

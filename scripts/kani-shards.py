@@ -85,8 +85,12 @@ class Shard:
     measured_in: str
 
 
-# Local CBMC times (Kani 0.68.0, one toolbox) and the runner measurements
-# behind each budget are in docs/next/formal-verification.md.
+# The runs every budget below comes from: four `workflow_dispatch` runs of
+# kani.yml on `ubuntu-latest` (Fedora 44 container), cold and warm Kani install
+# cache, with each shard recording the largest wall time and peak memory seen
+# across them, rounded up. Per-run figures and local CBMC times (Kani 0.68.0,
+# one toolbox) are in docs/next/formal-verification.md, phase 2.
+MEASURED_IN = "runs 35920992670, 35923346671, 35925626107, 35927734943 (max of the four)"
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -104,15 +108,15 @@ SHARDS: dict[str, Shard] = {
         gate="pull-request",
         ci_minutes=8.2,
         ci_peak_gib=1.8,
-        measured_in="runs 35920992670",
+        measured_in=MEASURED_IN,
     ),
     "widgets-slice-loop-rest": Shard(
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_rests_",),
         gate="scheduled",
-        ci_minutes=14.6,
+        ci_minutes=14.7,
         ci_peak_gib=1.8,
-        measured_in="runs 35920992670",
+        measured_in=MEASURED_IN,
     ),
     "widgets-slice-loop-requests": Shard(
         "gtk-lush-widgets",
@@ -123,9 +127,9 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_two_reconfiguring_",
         ),
         gate="scheduled",
-        ci_minutes=14.9,
+        ci_minutes=16.1,
         ci_peak_gib=1.8,
-        measured_in="runs 35920992670",
+        measured_in=MEASURED_IN,
     ),
     "core-journal-and-write": Shard(
         "lushtext-core",
@@ -135,17 +139,17 @@ SHARDS: dict[str, Shard] = {
             "services::filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=19.4,
+        ci_minutes=20.9,
         ci_peak_gib=8.3,
-        measured_in="runs 35920992670",
+        measured_in=MEASURED_IN,
     ),
     "core-second-writer": Shard(
         "lushtext-core",
         ("services::draft_service::kani_proofs::a_second_writer_",),
         gate="scheduled",
-        ci_minutes=16.6,
+        ci_minutes=17.3,
         ci_peak_gib=8.9,
-        measured_in="runs 35920992670",
+        measured_in=MEASURED_IN,
     ),
 }
 

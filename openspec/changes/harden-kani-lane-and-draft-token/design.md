@@ -295,3 +295,48 @@ leaves the measurement machinery in place.
 - Should the pull-request Kani check be marked required in branch protection?
   That is a repository setting for the maintainer, not code. The change records
   a recommendation only.
+
+## Implementation Deviations (recorded during apply)
+
+- **D1, peak memory source.** `run --measure` reads the per-child rusage from
+  `os.wait4(child.pid)` rather than `getrusage(RUSAGE_CHILDREN)`. On Linux the
+  two give the same figure for a single shard (the child's `ru_maxrss` folds in
+  every descendant it waited for, so it is CBMC's peak, or the Kani compiler's
+  when that is larger), but `RUSAGE_CHILDREN` is cumulative across the process,
+  so `make kani` over all shards would have reported the largest shard's peak
+  for every later shard. Verified locally: shard wall 222.9 s against an
+  external `/usr/bin/time` 223.04 s, peak 0.11 GiB against `time`'s 115,668 KB.
+- **D2, bootstrap flag.** `--allow-unmeasured` was implemented and then removed
+  before it was ever committed: the first dispatched run (35920992670) was
+  recorded in the same commit that added the budget rule, so no committed
+  state needed a report-only check. Budgets are enforced by `check` and
+  `github-outputs` only, not by `run` or `list`, so a shard over a margin stays
+  runnable and re-measurable.
+- **D2, what `ci_minutes` measures.** It is the shard's `cargo kani` wall time
+  from measurement mode (crate build plus CBMC). The job adds about 1.5–2
+  minutes around it (container start, `dnf`, caches); the 5-minute margin to
+  the 30-minute cap covers that, and the job durations are recorded beside the
+  shard figures in the programme record.
+- **D5, install cache contents.** `cargo kani setup` also installs the nightly
+  Kani pins through rustup and links `~/.kani/kani-<ver>/toolchain` to it, so
+  the install cache also holds `~/.rustup/toolchains/nightly-*`. A restored
+  install is used only if `cargo kani --version` runs; otherwise it is
+  reinstalled.
+- **D5, excluding `target/kani` from rust-cache.** rust-cache cannot exclude a
+  subdirectory, so the Kani job sets `cache-targets: false` and
+  `cache-bin: false`: nothing in that job builds with the stable toolchain, and
+  the Kani binaries have their own cache. rust-cache still caches the registry.
+- **D5, target-dir cache key.** The evaluation keyed the cache per shard, not
+  per package, so concurrent jobs of one package do not race to save one key.
+- **D7, policy scope.** The fixture-gating rule also scans `meson.build` and
+  the Meson options files. The backend operations in `filesystem/sys.rs` that
+  only `filesystem::fixture` uses are gated the same way, because the
+  default-feature build otherwise warns that they are dead code.
+- **D7, release-binary check.** `strings target/release/lushtext` finds no
+  `write fixture text`, as task 5.7 asks, but this is not discriminating: the
+  ungated fixture was already unused, so release dead-code elimination dropped
+  it before the gate too. The default-feature `cargo check -p lushtext --bins`
+  and the policy rule are the real guards; the scratch call proved the first.
+- **D9, harness gate scope.** Besides the two exemptions, the boundaries gate
+  reports every `kani_proofs.rs` under `crates/` whose parent does not declare
+  it `#[cfg(kani)] mod kani_proofs;`, not only those in `ui/`.
