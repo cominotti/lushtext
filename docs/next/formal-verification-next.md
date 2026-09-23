@@ -36,7 +36,29 @@ change adopts it.
   `should_panic` harnesses, with reachability evidence and a model-checked
   candidate fix, instead of being fixed blind or hidden.
 
-## 2. Ranked candidates, in order of value
+## 2. OpenSpec changes carrying these candidates (proposed 2026-09-23)
+
+| Order | Change | Carries | Depends on |
+|---|---|---|---|
+| 1 | `harden-kani-lane-and-draft-token` | N1 (measure the shards on runners, geometry shard in the PR gate) and N5 (both fixture modules gated) | — |
+| 2 | `extend-kani-to-pure-policies` | N2. `clamped_preview_width` keeps its floor, and the exception is stated in the spec. The sidebar-width `NaN` bug is fixed failing-first | 1 |
+| 3 | `verify-multi-window-draft-journal` | N4, first half: window actors against process actors in the journal machine | 1 |
+| 4 | `extend-closed-loop-geometry-verification` | N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
+| 5 | `measure-proof-strength-with-mutation` | N9. The harness-file mutant exclusion is owned by change 1 | 1 |
+| 6 | `bound-draft-set-aside-retention` | N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
+| 7 | `add-sidebar-visual-proof-scenario` | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check | — |
+| 8 | `apply-verification-altitude-redesigns` | N8, as six groups that can be applied one at a time | 1, 6 |
+| 9 | `verify-shell-conformance-against-proven-cores` | N11: the imperative shells checked against the Kani-proven cores used as oracles | 1, 3 |
+| — | `evaluate-quint-and-tlaplus-empirically` | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only: its output is a decision record, not a production dependency | — |
+
+Only two candidates wait for a trigger, and neither has a proposal. N6
+(inter-process lock) waits for axiom A6 to be breached. N7 (slice-bin
+residuals) waits for a variable-height consumer.
+
+Lean is re-discussed only if **both** in-Kani attempts in change 4 fail **and**
+an unbounded claim is actually needed.
+
+## 3. Ranked candidates, in order of value
 
 ### N1. Measure the Kani lane on real runners, then promote a fast shard to the PR gate
 
@@ -143,17 +165,59 @@ existing mutation lane to the new one.
 - Freshness precision for drafts (a nanosecond or file-identity token) needs
   a manifest format bump, so wait for one.
 
+### N11. Check the shells against the proven cores
+
+Kani proves the pure cores: `journal_core`, `WriteProtocol`, `MoveProtocol`,
+`RenameProtocol`, and the slice-bin decisions. It does not prove the
+imperative shells that drive them:
+
+- the GTK drafts coordination (`ui/window/drafts/journal.rs`,
+  `cleanup_journal.rs`);
+- the durable-write shell loop running against the real filesystem;
+- the seam between the two.
+
+A model-based test closes the chain. Random operation sequences, including
+"crash means stop and reload", drive the real `draft_service` and write
+shell over a tempdir. The **proven core is the oracle**, so no parallel spec
+is needed. Kani shows the core is safe, and conformance shows the shell obeys
+the core.
+
+This came out of evaluating Quint Connect: this project gets the same
+spec-to-implementation conformance with no second language, because its
+oracle is production code that is already proved.
+
+### Tool criteria recorded on 2026-09-23 (TLA+, Quint, Bend 2)
+
+- **TLA+ (TLC):** only as a **disposable design sketch**, and only if the N6
+  trigger fires. An inter-process lock with crashes, leases, and liveness
+  under fairness is classic TLA+ ground, and TLC is the most mature liveness
+  checker. The final core is still pure Rust checked by Kani.
+- **Quint:** for the N6 sketch, prefer it over TLA+ only if the model should
+  later drive tests (Quint Connect). A maintained Quint model re-creates the
+  bridge that the Kani consolidation removed.
+- **Scale:** if a needed model outgrows Kani (K8 took 18 GB for 8 steps),
+  evaluate `stateright`, an explicit-state checker that runs Rust code,
+  before any external language.
+- **Bend 2** (HigherOrderCO, September 2026): evaluated, and **not
+  applicable**. It verifies only Bend programs and cannot check Rust. Its
+  README says it is young and that its compiler is "99% AI-written and not
+  fully audited". The one transferable idea, `LAWS.bend` (declared laws that
+  the compiler demands a proof of on every edit), is what Kani harnesses in
+  the PR gate already provide.
+- `evaluate-quint-and-tlaplus-empirically` tests these judgements against
+  measurements before any of them hardens into policy.
+
 ### Dormant: Lean
 
 Lean returns only if a claim genuinely needs to be unbounded. The likeliest
 case is "any number of bins" as evidence if GTK Lush publication reopens
 (`docs/next/gtk-lush.md`).
 
-## 3. Suggested order
+## 4. Suggested order
 
 ```
 N1 measure + PR-gate a shard ─► N2 more pure policies ─► N3 breakpoint loop
 N5 token airtight (small) ─► N4 multi-window + two-bin requests
 N9 mutation × proofs (any time after N1)
-N6, N7 only on their triggers; N8, N10 opportunistic
+N11 after N5 and N4 (multi-window); N6, N7 only on their triggers; N8, N10 opportunistic
 ```
