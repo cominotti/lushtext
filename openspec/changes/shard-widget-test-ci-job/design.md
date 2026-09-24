@@ -156,14 +156,18 @@ None.
   flushes every line, because CI's stdout is a pipe and a cancelled job would
   otherwise lose its visible progress.
 - **Measured budgets** (widget step wall time, including the build; the
-  larger of two runs, rounded up):
+  largest of three runs, rounded up). The first recording used only runs 1
+  and 2. Run 3, on the commit that recorded them, measured `surfaces` at 10.42
+  minutes, above its recorded 9.1, so all three runs were folded in. On this
+  runner a single shard varies by up to 4 minutes between runs, which is why
+  the budget keeps the maximum and the margin sits at 20 minutes:
 
-  | Shard | Tests | Run 35946276130 | Run 35947171706 | Recorded |
-  |---|---|---|---|---|
-  | `window` | 376 | 10.23 min | 11.10 min | 11.1 |
-  | `editor-page` | 148 | 8.75 min | 7.01 min | 8.8 |
-  | `surfaces` | 768 | 9.03 min | 6.55 min | 9.1 |
+  | Shard | Tests | Run 35946276130 | Run 35947171706 | Run 35948158637 | Recorded |
+  |---|---|---|---|---|---|
+  | `window` | 376 | 10.23 min | 11.10 min | 11.03 min | 11.1 |
+  | `editor-page` | 148 | 8.75 min | 7.01 min | 6.71 min | 8.8 |
+  | `surfaces` | 768 | 9.03 min | 6.55 min | 10.42 min | 10.5 |
 
-  Both runs: 376 + 148 + 768 = 1,292 selected, which is the binary's full
+  Every run selected 376 + 148 + 768 = 1,292 tests, which is the binary's full
   `--list`. The longest job took 12.0 minutes end to end, compared with the
   15–30 minutes of the single job.
