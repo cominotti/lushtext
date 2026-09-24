@@ -132,4 +132,38 @@ None.
 
 ## Deviations
 
-<!-- Recorded during implementation. -->
+- **Provisional bootstrap budgets.** D7 requires every shard to carry a CI
+  runner measurement before `github-outputs` exports the matrix, but the
+  sharded matrix had never run, so it could not produce one. The first commit
+  recorded provisional figures (window 11.5, editor-page 9.1, surfaces 10.5
+  minutes), labelled as such in `measured_in`: the worst per-module harness
+  minutes reconstructed from the per-line timestamps of the unsharded runs
+  35878201619, 35909749851, and 35920527262, plus 2 minutes for the build.
+  They were replaced by the real shard measurements (below) before merge; the
+  gate itself was never relaxed.
+- **Durations attributed by position, not by printed name.** D6 planned to
+  read each test's name from its `test NAME ... ok` line. The first local run
+  recovered only 119 of 148 names and credited the minimap mid-scan test's 51 s
+  to its neighbour: when a child prints on the same line as the harness's
+  `test NAME ... ` prefix, the result lands on a later bare `ok` line, and
+  `scripts/run-widget-tests.sh`'s benign-noise filter can drop the prefix line
+  entirely. Since the harness runs the selected tests one at a time in list
+  order, `widget-shards.py` now runs each shard in the binary's `--list` order
+  and assigns the i-th result line (prefixed or bare) to the i-th test; if the
+  result count differs from the shard size, the durations are recorded as
+  unattributed (`durations_attributed: false`) instead of guessed. The shard
+  count assertion (D5) never depended on this and is unchanged. The relay also
+  flushes every line, because CI's stdout is a pipe and a cancelled job would
+  otherwise lose its visible progress.
+- **Measured budgets** (widget step wall time, including the build; the
+  larger of two runs, rounded up):
+
+  | Shard | Tests | Run 35946276130 | Run 35947171706 | Recorded |
+  |---|---|---|---|---|
+  | `window` | 376 | 10.23 min | 11.10 min | 11.1 |
+  | `editor-page` | 148 | 8.75 min | 7.01 min | 8.8 |
+  | `surfaces` | 768 | 9.03 min | 6.55 min | 9.1 |
+
+  Both runs: 376 + 148 + 768 = 1,292 selected, which is the binary's full
+  `--list`. The longest job took 12.0 minutes end to end, compared with the
+  15–30 minutes of the single job.

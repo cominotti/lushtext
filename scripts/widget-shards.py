@@ -83,21 +83,22 @@ class Shard:
 # lands in a different shard: the local-history one with `window`, the minimap
 # mid-scan one with `editor-page`, and the minimap long-line one, by name, with
 # `surfaces`. See openspec/changes/shard-widget-test-ci-job/design.md.
-MEASURED_IN = (
-    "provisional: reconstructed from per-test log timestamps of unsharded runs "
-    "35878201619, 35909749851, 35920527262 (worst of the three, plus 2 min build)"
-)
+# The runs every budget below comes from: the first two runs of the sharded
+# matrix on `ubuntu-latest` (Fedora 44 container), each shard recording the
+# larger widget-step wall time of the two, rounded up to 0.1 minute. Run 1:
+# window 10.23, editor-page 8.75, surfaces 9.03; run 2: 11.10, 7.01, 6.55.
+MEASURED_IN = "runs 35946276130, 35947171706 (max of the two)"
 SHARDS: dict[str, Shard] = {
     "window": Shard(
         modules=("window",),
         tests=(),
-        ci_minutes=11.5,
+        ci_minutes=11.1,
         measured_in=MEASURED_IN,
     ),
     "editor-page": Shard(
         modules=("editor_page",),
         tests=(),
-        ci_minutes=9.1,
+        ci_minutes=8.8,
         measured_in=MEASURED_IN,
     ),
     "surfaces": Shard(
@@ -129,7 +130,7 @@ SHARDS: dict[str, Shard] = {
             "workspace_tree_virtualization",
         ),
         tests=("editor_page::test_minimap_long_line_warning_scan_slices_large_many_short_buffer",),
-        ci_minutes=10.5,
+        ci_minutes=9.1,
         measured_in=MEASURED_IN,
     ),
 }
