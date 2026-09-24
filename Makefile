@@ -21,7 +21,7 @@
 #   make fuzz-smoke  - Run bounded fuzz smoke against temporary corpus copies
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
 #   make kani        - Run every Kani proof harness (requires the pinned Kani)
-#   make formal-evaluation - LOCAL ONLY: rerun the Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|t1|t2|t3|all|report-data)
+#   make formal-evaluation - LOCAL ONLY: rerun the Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make test-widget-shard WIDGET_SHARD=<shard> - One CI widget shard, exactly as CI runs it
@@ -949,7 +949,7 @@ help:
 	@echo ""
 	@echo "Formal verification (explicit lane):"
 	@echo "  kani         Run every Kani proof harness with the pinned Kani version"
-	@echo "  formal-evaluation LOCAL ONLY: rerun the Quint vs TLA+ evaluation (FORMAL_EVAL_TARGET=install|t1|t2|t3|all|report-data)"
+	@echo "  formal-evaluation LOCAL ONLY: rerun the Quint vs TLA+ evaluation (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)"
 	@echo ""
 	@echo "Mutation targets:"
 	@echo "  mutants-smoke Small cargo-mutants smoke run"

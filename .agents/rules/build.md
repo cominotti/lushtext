@@ -65,7 +65,7 @@ make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
 make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode)
-make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|t1|t2|t3|all|report-data)
+make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
 make check-widget-shards # every widget test in exactly one CI shard, each shard measured within 20 minutes (no build needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
