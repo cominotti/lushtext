@@ -9,9 +9,9 @@
 //! ([`keep_copy`]), and the earlier body of an id whose registration would
 //! overwrite it (also [`keep_copy`]). The set-aside copy owns the bytes: it is
 //! never pruned, and nothing but the user's own confirmed decision on
-//! `Preferences > Data` removes one: a per-row Delete ([`delete`]) or "Delete
-//! All Preserved Drafts…" ([`delete_confirmed`], which removes only the bodies
-//! that confirmation listed, unchanged). Growth past the soft retention bound
+//! `Preferences > Data` removes one: a per-row Delete or "Delete All Preserved
+//! Drafts…", both through [`delete_confirmed`], which removes only the bodies
+//! that confirmation listed, unchanged. Growth past the soft retention bound
 //! (`set_aside_retention`) only asks the user to review; it deletes nothing. A local-history snapshot a
 //! stale body may also receive is a browsable **view** of the same edits for
 //! the file it belongs to; local history may prune it without any data loss,
@@ -80,22 +80,18 @@ enum Transfer {
     Copy,
 }
 
-/// The first set-aside name for one body, `{id}.{stamp}.draft`.
+/// The set-aside name tried on one placement attempt: `{id}.{stamp}.draft`
+/// first, then `{id}.{stamp}-{attempt}.draft`.
 ///
-/// Later collisions take a `-{n}` suffix. A name existing does **not** mean
-/// this body is kept: a crash between a body write and its manifest commit
-/// leaves a newer body under an unchanged entry stamp, so only a
-/// byte-identical file counts as already kept (see [`keep_copy`]).
-fn primary_path(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> PathBuf {
-    dir(data_dir).join(format!("{draft_id}.{stamp_secs}.draft"))
-}
-
-/// The set-aside name tried on one placement attempt.
-fn candidate_path(data_dir: &Path, draft_id: &str, stamp_secs: u64, attempt: u32) -> PathBuf {
+/// A name existing does **not** mean this body is kept: a crash between a
+/// body write and its manifest commit leaves a newer body under an unchanged
+/// entry stamp, so only a byte-identical file counts as already kept (see
+/// [`keep_copy`]).
+fn candidate_path(area: &Path, draft_id: &str, stamp_secs: u64, attempt: u32) -> PathBuf {
     if attempt == 0 {
-        primary_path(data_dir, draft_id, stamp_secs)
+        area.join(format!("{draft_id}.{stamp_secs}.draft"))
     } else {
-        dir(data_dir).join(format!("{draft_id}.{stamp_secs}-{attempt}.draft"))
+        area.join(format!("{draft_id}.{stamp_secs}-{attempt}.draft"))
     }
 }
 
@@ -153,7 +149,7 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
         }
     };
     for attempt in 0..MAX_SET_ASIDE_NAME_ATTEMPTS {
-        let target = candidate_path(data_dir, draft_id, stamp_secs, attempt);
+        let target = candidate_path(&dir, draft_id, stamp_secs, attempt);
         let slot = if !fs_metadata::exists(&target) {
             SetAsideSlot::Free
         } else if copy_bytes
@@ -211,7 +207,7 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
 /// costs one more copy.
 fn holds_exactly(target: &Path, bytes: &[u8]) -> bool {
     let expected = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if fs_metadata::file_facts(target).map_or(true, |facts| facts.byte_size != expected) {
+    if fs_metadata::file_stat(target).map_or(true, |facts| facts.byte_size != expected) {
         return false;
     }
     fs_read::prefix_bytes(target, bytes.len().saturating_add(1))
@@ -236,11 +232,17 @@ pub struct SetAsideBody {
     /// When the preserved edits were last saved (seconds since the epoch), as
     /// recorded in the name.
     pub stamp_secs: u64,
-    /// The body's size in bytes.
-    pub byte_size: u64,
-    /// What identifies this body as listed: a bulk deletion confirmed over it
-    /// removes it only while its file still matches.
+    /// What identifies this body as listed, including its size: a deletion
+    /// confirmed over it removes it only while its file still matches.
     pub fingerprint: SetAsideFingerprint,
+}
+
+impl SetAsideBody {
+    /// The body's size in bytes.
+    #[must_use]
+    pub const fn byte_size(&self) -> u64 {
+        self.fingerprint.byte_size
+    }
 }
 
 /// Parse a set-aside file name, `{id}.{stamp}.draft` or `{id}.{stamp}-{n}.draft`.
@@ -262,43 +264,24 @@ pub struct SetAsideListing {
     /// At most [`MAX_LISTED_SET_ASIDE_BODIES`] bodies, newest first, chosen
     /// from every body the scan visited.
     pub rows: Vec<SetAsideBody>,
-    /// Bodies the scan counted (a lower bound when `complete` is false).
-    pub total_count: u64,
-    /// Their total size in bytes (a lower bound when `complete` is false).
-    pub total_bytes: u64,
-    /// The scan reached the end of the area within
-    /// [`MAX_SET_ASIDE_SCAN_ENTRIES`].
-    pub complete: bool,
+    /// What the whole area holds; `complete` means the scan reached the end
+    /// of the area within [`MAX_SET_ASIDE_SCAN_ENTRIES`].
+    pub totals: SetAsideTotals,
 }
 
-impl SetAsideListing {
-    /// The totals the retention core judges against the soft bound.
-    #[must_use]
-    pub const fn totals(&self) -> SetAsideTotals {
-        SetAsideTotals {
-            count: self.total_count,
-            bytes: self.total_bytes,
-            complete: self.complete,
-        }
-    }
-
-    /// Whether some bodies in the area are not among [`Self::rows`].
-    #[must_use]
-    pub fn is_truncated(&self) -> bool {
-        !self.complete || u64::try_from(self.rows.len()).unwrap_or(u64::MAX) < self.total_count
-    }
+/// A body's place in the newest-first order: a later stamp, then the smaller
+/// path, ranks higher.
+fn recency(stamp_secs: u64, path: &Path) -> (u64, Reverse<&Path>) {
+    (stamp_secs, Reverse(path))
 }
 
-/// Orders listed bodies newest first: a later stamp, then the smaller path.
+/// Orders listed bodies by [`recency`].
 #[derive(PartialEq, Eq)]
 struct Newest(SetAsideBody);
 
 impl Ord for Newest {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .stamp_secs
-            .cmp(&other.0.stamp_secs)
-            .then_with(|| other.0.path.cmp(&self.0.path))
+        recency(self.0.stamp_secs, &self.0.path).cmp(&recency(other.0.stamp_secs, &other.0.path))
     }
 }
 
@@ -310,13 +293,11 @@ impl PartialOrd for Newest {
 
 /// The fingerprint of one set-aside file as it is now; `None` when it is gone.
 fn fingerprint_of(path: &Path, file_name: &str) -> std::io::Result<Option<SetAsideFingerprint>> {
-    match fs_metadata::file_facts(path) {
+    match fs_metadata::file_stat(path) {
         Ok(facts) if facts.kind == FileKind::File => Ok(Some(SetAsideFingerprint {
             file_name: file_name.to_string(),
             byte_size: facts.byte_size,
-            identity: facts
-                .identity
-                .map(|identity| (identity.device, identity.inode)),
+            identity: facts.identity,
             modified_at_nanos: facts.modified_at_nanos,
         })),
         Ok(_) => Ok(None),
@@ -338,16 +319,35 @@ fn fingerprint_of(path: &Path, file_name: &str) -> std::io::Result<Option<SetAsi
 ///
 /// Returns an error when the area exists but cannot be read.
 pub fn list(data_dir: &Path) -> Result<SetAsideListing> {
+    scan(data_dir, MAX_LISTED_SET_ASIDE_BODIES)
+}
+
+/// The area's totals alone, from the same bounded scan as [`list`] without
+/// keeping any row.
+///
+/// **Threading:** blocking directory and metadata I/O; call off GTK.
+///
+/// # Errors
+///
+/// Returns an error when the area exists but cannot be read.
+pub fn totals(data_dir: &Path) -> Result<SetAsideTotals> {
+    scan(data_dir, 0).map(|listing| listing.totals)
+}
+
+/// One bounded traversal of the area keeping the newest `max_rows` bodies.
+fn scan(data_dir: &Path, max_rows: usize) -> Result<SetAsideListing> {
     let dir = dir(data_dir);
     if !fs_metadata::exists(&dir) {
         return Ok(SetAsideListing {
-            complete: true,
-            ..SetAsideListing::default()
+            rows: Vec::new(),
+            totals: SetAsideTotals {
+                complete: true,
+                ..SetAsideTotals::default()
+            },
         });
     }
-    let mut newest: BinaryHeap<Reverse<Newest>> = BinaryHeap::new();
-    let mut total_count = 0u64;
-    let mut total_bytes = 0u64;
+    let mut newest: BinaryHeap<Reverse<Newest>> = BinaryHeap::with_capacity(max_rows + 1);
+    let mut totals = SetAsideTotals::default();
     let metrics = fs_tree::visit_directory_pages_with_cancel(
         &dir,
         DirectoryScanPolicy {
@@ -369,16 +369,24 @@ pub fn list(data_dir: &Path) -> Result<SetAsideListing> {
                 let Ok(Some(fingerprint)) = fingerprint_of(&entry.path, &entry.file_name) else {
                     continue;
                 };
-                total_count = total_count.saturating_add(1);
-                total_bytes = total_bytes.saturating_add(fingerprint.byte_size);
+                totals.count = totals.count.saturating_add(1);
+                totals.bytes = totals.bytes.saturating_add(fingerprint.byte_size);
+                // Once the heap is full, a body no newer than its oldest row
+                // would be popped again at once; skip building it.
+                let displaces = newest.len() < max_rows
+                    || newest.peek().is_some_and(|Reverse(Newest(oldest))| {
+                        recency(stamp_secs, &entry.path) > recency(oldest.stamp_secs, &oldest.path)
+                    });
+                if !displaces {
+                    continue;
+                }
                 newest.push(Reverse(Newest(SetAsideBody {
                     path: entry.path.clone(),
                     draft_id,
                     stamp_secs,
-                    byte_size: fingerprint.byte_size,
                     fingerprint,
                 })));
-                if newest.len() > MAX_LISTED_SET_ASIDE_BODIES {
+                if newest.len() > max_rows {
                     newest.pop();
                 }
             }
@@ -386,22 +394,14 @@ pub fn list(data_dir: &Path) -> Result<SetAsideListing> {
         },
     )
     .with_context(|| format!("failed to list {}", dir.display()))?;
-    let mut rows: Vec<SetAsideBody> = newest
+    // Ascending `Reverse<Newest>` is newest first.
+    let rows = newest
+        .into_sorted_vec()
         .into_iter()
         .map(|Reverse(Newest(body))| body)
         .collect();
-    rows.sort_by(|left, right| {
-        right
-            .stamp_secs
-            .cmp(&left.stamp_secs)
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    Ok(SetAsideListing {
-        rows,
-        total_count,
-        total_bytes,
-        complete: !metrics.stopped_by_limit,
-    })
+    totals.complete = !metrics.stopped_by_limit;
+    Ok(SetAsideListing { rows, totals })
 }
 
 /// Read one preserved body as UTF-8 text, bounded by the automatic-draft
@@ -417,22 +417,7 @@ pub fn read(data_dir: &Path, path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("{} no longer exists", path.display()))
 }
 
-/// Remove one preserved body durably: the file, then its directory entry is
-/// synced. Only the user's confirmed per-row Delete calls this.
-///
-/// # Errors
-///
-/// Returns an error when the path is not inside the set-aside area or the
-/// removal cannot be made durable.
-pub fn delete(data_dir: &Path, path: &Path) -> Result<()> {
-    ensure_inside(data_dir, path)?;
-    fs_mutate::remove_file_if_exists(path)
-        .with_context(|| format!("failed to delete {}", path.display()))?;
-    fs_write::sync_parent_dir(path)
-        .with_context(|| format!("failed to sync the directory of {}", path.display()))
-}
-
-/// What one confirmed bulk deletion did.
+/// What one confirmed deletion did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetAsideBulkDeletion {
     /// Bodies removed.
@@ -447,8 +432,9 @@ pub struct SetAsideBulkDeletion {
     pub durability_unconfirmed: bool,
 }
 
-/// Delete exactly the bodies the user confirmed in "Delete All Preserved
-/// Drafts…", as the confirmation listed them.
+/// Delete exactly the bodies the user confirmed, as the confirmation listed
+/// them: the one row of a per-row Delete, or every row "Delete All Preserved
+/// Drafts…" showed. This is the area's only deletion.
 ///
 /// Each body's fingerprint is re-read immediately before its removal, and the
 /// pure [`may_delete`] decides whether it may go: a body that changed since
@@ -578,9 +564,14 @@ mod tests {
         let stamps: Vec<u64> = listing.rows.iter().map(|body| body.stamp_secs).collect();
         let newest: Vec<u64> = (45..=300).rev().collect();
         assert_eq!(stamps, newest, "the newest 256 bodies, newest first");
-        assert_eq!((listing.total_count, listing.total_bytes), (300, 300));
-        assert!(listing.complete, "300 entries fit the scan budget");
-        assert!(listing.is_truncated(), "not every body is listed");
+        assert_eq!((listing.totals.count, listing.totals.bytes), (300, 300));
+        assert!(listing.totals.complete, "300 entries fit the scan budget");
+        assert!(
+            listing.totals.is_truncated(listing.rows.len()),
+            "not every body is listed"
+        );
+        let totals_only = totals(data.path()).expect("totals");
+        assert_eq!(totals_only, listing.totals, "the totals-only scan agrees");
     }
 
     #[test]
@@ -645,27 +636,28 @@ mod tests {
     fn listing_is_newest_first_and_reading_and_deleting_stay_inside_the_area() {
         let data = tempfile::tempdir().expect("tempdir");
         let empty = list(data.path()).expect("empty list");
-        assert!(empty.rows.is_empty() && empty.complete && !empty.is_truncated());
+        assert!(empty.rows.is_empty() && empty.totals.complete && !empty.totals.is_truncated(0));
         let area = dir(data.path());
         fixture::create_dir_all(&area);
         fixture::write_text(&area.join("aaaa.10.draft"), "older");
         fixture::write_text(&area.join("bbbb.20-1.draft"), "newer");
         fixture::write_text(&area.join("notes.txt"), "ignored");
         let listing = list(data.path()).expect("list");
-        assert_eq!((listing.total_count, listing.total_bytes), (2, 10));
-        assert!(listing.complete && !listing.is_truncated());
+        assert_eq!((listing.totals.count, listing.totals.bytes), (2, 10));
+        assert!(listing.totals.complete && !listing.totals.is_truncated(listing.rows.len()));
         let listed = listing.rows;
         assert_eq!(
             listed
                 .iter()
-                .map(|body| (body.draft_id.as_str(), body.stamp_secs, body.byte_size))
+                .map(|body| (body.draft_id.as_str(), body.stamp_secs, body.byte_size()))
                 .collect::<Vec<_>>(),
             vec![("bbbb", 20, 5), ("aaaa", 10, 5)]
         );
         assert_eq!(read(data.path(), &listed[0].path).expect("read"), "newer");
         assert!(read(data.path(), &area.join("notes.txt")).is_err());
         assert!(read(data.path(), &data.path().join("aaaa.10.draft")).is_err());
-        delete(data.path(), &listed[1].path).expect("delete");
+        let outcome = delete_confirmed(data.path(), &[listed[1].fingerprint.clone()]);
+        assert_eq!(outcome.deleted, 1, "a per-row Delete of the listed body");
         assert!(!fixture::exists(&listed[1].path));
         assert_eq!(list(data.path()).expect("list").rows.len(), 1);
     }

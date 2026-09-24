@@ -673,6 +673,39 @@ fn test_data_page_keeps_failed_convert_retryable() {
     );
 }
 
+/// The per-draft rows the Preserved Drafts list shows, in order.
+fn set_aside_rows(prefs: &LushtextPreferences) -> Vec<libadwaita::ActionRow> {
+    let mut rows = Vec::new();
+    let mut child = prefs.imp().data_set_aside_list.first_child();
+    while let Some(current) = child {
+        child = current.next_sibling();
+        if let Ok(row) = current.downcast::<libadwaita::ActionRow>() {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+/// The fingerprint the group listed for the body at `path`.
+fn listed_fingerprint(
+    prefs: &LushtextPreferences,
+    path: &std::path::Path,
+) -> lushtext_core::services::draft_service::set_aside_retention::SetAsideFingerprint {
+    prefs
+        .imp()
+        .data_set_aside_listing
+        .borrow()
+        .as_ref()
+        .and_then(|listing| {
+            listing
+                .drafts
+                .iter()
+                .find(|draft| draft.body.path == path)
+                .map(|draft| draft.body.fingerprint.clone())
+        })
+        .expect("the body is listed")
+}
+
 fn seed_set_aside(data_dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
     let area = lushtext_core::services::draft_service::set_aside_dir(data_dir);
     fixture::create_dir_all(&area);
@@ -695,7 +728,7 @@ fn test_data_page_hides_preserved_drafts_when_none_are_set_aside() {
         !imp.data_set_aside_group.is_visible(),
         "an empty set-aside area must not leave an empty Preserved Drafts group"
     );
-    assert!(imp.data_set_aside_rows.borrow().is_empty());
+    assert!(set_aside_rows(&prefs).is_empty());
 }
 
 #[test]
@@ -714,7 +747,7 @@ fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
     let prefs = LushtextPreferences::new();
     let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 2
+        set_aside_rows(&prefs).len() == 2
     });
 
     assert!(imp.data_set_aside_group.is_visible());
@@ -722,14 +755,12 @@ fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
         set_aside_summary(&prefs).map(|(title, _)| title).as_deref(),
         Some("2 preserved drafts")
     );
-    let titles: Vec<String> = imp
-        .data_set_aside_rows
-        .borrow()
+    let titles: Vec<String> = set_aside_rows(&prefs)
         .iter()
         .map(|row| row.title().to_string())
         .collect();
     assert_eq!(titles, vec!["Untitled document", "Unknown file"]);
-    for row in imp.data_set_aside_rows.borrow().iter() {
+    for row in &set_aside_rows(&prefs) {
         let subtitle = row
             .subtitle()
             .map(|text| text.to_string())
@@ -743,9 +774,9 @@ fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
             .assert_on(row);
     }
 
-    prefs.delete_set_aside_draft(&older);
+    prefs.delete_set_aside_draft(listed_fingerprint(&prefs, &older));
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 1
+        set_aside_rows(&prefs).len() == 1
     });
     assert!(
         !fs_metadata::exists(&older),
@@ -757,11 +788,11 @@ fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
         set_aside_summary(&prefs).map(|(title, _)| title).as_deref(),
         Some("1 preserved draft")
     );
-    prefs.delete_set_aside_draft(&newer);
+    prefs.delete_set_aside_draft(listed_fingerprint(&prefs, &newer));
     wait_until(Duration::from_secs(10), || {
         !imp.data_set_aside_group.is_visible()
     });
-    assert!(imp.data_set_aside_rows.borrow().is_empty());
+    assert!(set_aside_rows(&prefs).is_empty());
 }
 
 #[test]
@@ -870,7 +901,7 @@ fn test_data_page_summarizes_preserved_drafts_over_the_soft_bound() {
     let prefs = LushtextPreferences::new();
     let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 101
+        set_aside_rows(&prefs).len() == 101
     });
 
     let (title, subtitle) = set_aside_summary(&prefs).expect("a summary row");
@@ -919,7 +950,7 @@ fn test_data_page_states_when_only_the_newest_preserved_drafts_are_listed() {
     prefs.present(Some(&window));
     let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 256
+        set_aside_rows(&prefs).len() == 256
     });
     crate::common::flush_after_delay(Duration::from_millis(100));
     let list_scroller = imp
@@ -945,7 +976,7 @@ fn test_data_page_states_when_only_the_newest_preserved_drafts_are_listed() {
         subtitle.contains("showing the newest 256 of 300"),
         "truncation is stated: {subtitle}"
     );
-    let newest = imp.data_set_aside_rows.borrow()[0]
+    let newest = set_aside_rows(&prefs)[0]
         .subtitle()
         .map(|text| text.to_string())
         .unwrap_or_default();
@@ -971,9 +1002,8 @@ fn test_delete_all_preserved_drafts_states_count_and_size_and_cancel_deletes_not
     crate::common::present_window(&window);
     let prefs = LushtextPreferences::new();
     prefs.present(Some(&window));
-    let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 3
+        set_aside_rows(&prefs).len() == 3
     });
 
     let dialog = prefs
@@ -1000,7 +1030,7 @@ fn test_delete_all_preserved_drafts_states_count_and_size_and_cancel_deletes_not
         3,
         "cancel deletes nothing"
     );
-    assert_eq!(imp.data_set_aside_rows.borrow().len(), 3);
+    assert_eq!(set_aside_rows(&prefs).len(), 3);
     drop(window);
 }
 
@@ -1014,9 +1044,8 @@ fn test_delete_all_preserved_drafts_removes_exactly_the_confirmed_set() {
     crate::common::present_window(&window);
     let prefs = LushtextPreferences::new();
     prefs.present(Some(&window));
-    let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 3
+        set_aside_rows(&prefs).len() == 3
     });
     let dialog = prefs
         .confirm_delete_all_set_aside_drafts()
@@ -1032,7 +1061,7 @@ fn test_delete_all_preserved_drafts_removes_exactly_the_confirmed_set() {
 
     dialog.emit_by_name::<()>("response", &[&"delete"]);
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 2
+        set_aside_rows(&prefs).len() == 2
     });
 
     assert_eq!(
@@ -1122,7 +1151,7 @@ fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_
     assert_eq!(prefs.visible_page_name().as_deref(), Some("data"));
     let imp = prefs.imp();
     wait_until(Duration::from_secs(10), || {
-        imp.data_set_aside_rows.borrow().len() == 102
+        set_aside_rows(&prefs).len() == 102
     });
     assert!(imp.data_set_aside_group.property::<bool>("visible"));
     assert!(

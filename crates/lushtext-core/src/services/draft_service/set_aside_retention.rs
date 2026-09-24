@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Set-aside retention: the soft bound, the review notice, and the bulk
-//! deletion plan for `drafts/set-aside/`.
+//! Set-aside retention: the soft bound, the review notice, and the deletion
+//! decision for `drafts/set-aside/`.
 //!
 //! GTK-free and I/O-free. The set-aside area ([`super::set_aside`]) owns every
 //! draft body that left the journal without being applied, and **nothing here
 //! deletes one**: crossing the soft bound only makes a review notice due, and
-//! the only plan that names bodies to delete is the one built from the user's
-//! own confirmed "Delete All Preserved Drafts…" decision. Kani (`kani_proofs`
-//! below) and a property test check the plan's safety properties:
+//! the only decision that admits a deletion is [`may_delete`] under the user's
+//! own confirmed Delete. The service (`set_aside::delete_confirmed`) applies it
+//! to each body immediately before removing it, so the set of bodies one
+//! confirmation deletes is exactly the bodies it admits. Kani (`kani_proofs`
+//! below) and a property test check its safety properties:
 //!
-//! - **R1** with no user decision, the plan is empty;
-//! - **R2** every planned body's current fingerprint is one the user confirmed;
+//! - **R1** with no user decision, nothing is deleted;
+//! - **R2** every deleted body's current fingerprint is one the user confirmed;
 //! - **R3** a body that changed after the confirmation, or that the
-//!   confirmation did not list, is never planned;
+//!   confirmation did not list, is never deleted;
 //! - **R4** the bound and notice decisions never panic, and none of them feeds
-//!   the plan.
-//!
-//! The per-body decision is [`may_delete`]; [`deletion_plan`] is that decision
-//! applied to every body found, and the service applies it to each body again
-//! immediately before removing it.
+//!   the deletion decision.
+
+use crate::services::filesystem::FileIdentity;
 
 /// Preserved bodies past which the user is asked to review the area.
 pub const SOFT_BOUND_BODIES: u64 = 100;
@@ -39,6 +39,14 @@ pub struct SetAsideTotals {
     pub bytes: u64,
     /// The scan reached the end of the area within its budget.
     pub complete: bool,
+}
+
+impl SetAsideTotals {
+    /// Whether some of the counted bodies are not among the `listed` rows.
+    #[must_use]
+    pub fn is_truncated(self, listed: usize) -> bool {
+        !self.complete || u64::try_from(listed).unwrap_or(u64::MAX) < self.count
+    }
 }
 
 /// Where the set-aside area stands against the soft bound.
@@ -117,7 +125,7 @@ pub struct SetAsideFingerprint {
     /// Its size in bytes.
     pub byte_size: u64,
     /// Device and inode, when the filesystem reports them.
-    pub identity: Option<(u64, u64)>,
+    pub identity: Option<FileIdentity>,
     /// Modification time in nanoseconds, when reported. Set-aside files are
     /// never rewritten in place, so this also tells a new file apart from an
     /// earlier one that reused its freed name and inode.
@@ -129,8 +137,8 @@ pub struct SetAsideFingerprint {
 pub enum UserDecision<'a, F = SetAsideFingerprint> {
     /// No decision: nothing may be deleted.
     None,
-    /// The user confirmed "Delete All Preserved Drafts…" over exactly these
-    /// bodies, as the confirmation dialog listed them.
+    /// The user confirmed a Delete (one row, or "Delete All Preserved
+    /// Drafts…") over exactly these bodies, as the confirmation listed them.
     DeleteAll {
         /// The fingerprints the confirmation showed.
         confirmed: &'a [F],
@@ -155,32 +163,6 @@ pub fn may_delete<F: PartialEq>(now: &F, decision: UserDecision<'_, F>) -> bool 
     match decision {
         UserDecision::None => false,
         UserDecision::DeleteAll { confirmed } => confirmed.contains(now),
-    }
-}
-
-/// Which of the bodies found now may be deleted: indices into the `current`
-/// slice passed to [`deletion_plan`], in order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DeletionPlan {
-    /// Positions of the bodies to delete.
-    pub indices: Vec<usize>,
-}
-
-/// Plan a bulk deletion from the bodies' **current** fingerprints and the
-/// user's decision: exactly the bodies [`may_delete`] admits, so a body that
-/// appeared or changed after the confirmation dialog opened is kept.
-#[must_use]
-pub fn deletion_plan<F: PartialEq>(current: &[F], decision: UserDecision<'_, F>) -> DeletionPlan {
-    if matches!(decision, UserDecision::None) {
-        return DeletionPlan::default();
-    }
-    DeletionPlan {
-        indices: current
-            .iter()
-            .enumerate()
-            .filter(|(_, body)| may_delete(*body, decision))
-            .map(|(index, _)| index)
-            .collect(),
     }
 }
 
@@ -257,33 +239,21 @@ mod tests {
     }
 
     #[test]
-    fn only_confirmed_unchanged_bodies_are_planned() {
+    fn only_confirmed_unchanged_bodies_may_be_deleted() {
         let confirmed = vec![1u8, 2, 3];
-        assert_eq!(
-            deletion_plan(&[1u8, 2, 3], UserDecision::None),
-            DeletionPlan::default()
-        );
-        assert_eq!(
-            deletion_plan(
-                &[3u8, 9, 1],
-                UserDecision::DeleteAll {
-                    confirmed: &confirmed
-                }
-            )
-            .indices,
-            vec![0, 2],
+        let decision = UserDecision::DeleteAll {
+            confirmed: &confirmed,
+        };
+        assert!(!may_delete(&1u8, UserDecision::None));
+        assert!(may_delete(&3u8, decision));
+        assert!(
+            !may_delete(&9u8, decision),
             "9 appeared (or changed) after the confirmation"
         );
-        assert!(
-            deletion_plan::<u8>(
-                &[],
-                UserDecision::DeleteAll {
-                    confirmed: &confirmed
-                }
-            )
-            .indices
-            .is_empty()
-        );
+        assert!(!may_delete(
+            &1u8,
+            UserDecision::DeleteAll { confirmed: &[] }
+        ));
     }
 
     /// One body in the property model: its name, the version the
@@ -306,13 +276,20 @@ mod tests {
         )
     }
 
-    /// The plan the properties below check; swap in a broken plan here to see
-    /// them fail (task 2.2 did, with "every listed body").
-    fn plan_under_test(
+    /// The bodies one confirmed deletion removes: [`may_delete`] applied to
+    /// each body as it reads now, as `set_aside::delete_confirmed` does. Swap in
+    /// a broken decision here to see the properties below fail (task 2.2 did,
+    /// with "every listed body").
+    fn deleted_under_test(
         current: &[(usize, u8)],
         decision: UserDecision<'_, (usize, u8)>,
-    ) -> DeletionPlan {
-        deletion_plan(current, decision)
+    ) -> Vec<usize> {
+        current
+            .iter()
+            .enumerate()
+            .filter(|(_, now)| may_delete(*now, decision))
+            .map(|(index, _)| index)
+            .collect()
     }
 
     proptest! {
@@ -320,7 +297,7 @@ mod tests {
         /// body is "changed" when its current version differs from the one
         /// the confirmation showed.
         #[test]
-        fn the_plan_never_reaches_past_the_confirmed_bodies(
+        fn deletion_never_reaches_past_the_confirmed_bodies(
             bodies in model_bodies(),
             decided in any::<bool>(),
         ) {
@@ -341,12 +318,12 @@ mod tests {
                 UserDecision::None
             };
 
-            let plan = plan_under_test(&current, decision);
+            let deleted = deleted_under_test(&current, decision);
 
             if !decided {
-                prop_assert!(plan.indices.is_empty(), "R1");
+                prop_assert!(deleted.is_empty(), "R1");
             }
-            for &index in &plan.indices {
+            for &index in &deleted {
                 prop_assert!(confirmed.contains(&current[index]), "R2");
                 let body = &bodies[index];
                 prop_assert!(body.listed && body.current_version == body.shown_version, "R3");
@@ -355,7 +332,7 @@ mod tests {
                 // Nothing confirmed and unchanged is left out.
                 for (index, body) in bodies.iter().enumerate() {
                     if body.listed && body.current_version == body.shown_version {
-                        prop_assert!(plan.indices.contains(&index));
+                        prop_assert!(deleted.contains(&index));
                     }
                 }
             }

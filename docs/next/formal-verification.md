@@ -638,7 +638,7 @@ no Meson, Flatpak, or Snap build passes the feature.
 status notice due, which points to `app.review-preserved-drafts`; only the
 user's confirmed per-row Delete or "Delete All Preserved Drafts…" removes a
 body. The pure core is `services/draft_service/set_aside_retention.rs`
-(`bound_status`, `notice_due`, `may_delete`, `deletion_plan`), and its
+(`bound_status`, `notice_due`, `may_delete`), and its
 harnesses sit in `set_aside_retention/kani_proofs.rs`, over four bodies with
 arbitrary fingerprints, listing, and change facts, and an arbitrary decision:
 
@@ -651,9 +651,12 @@ arbitrary fingerprints, listing, and change facts, and an arbitrary decision:
 A first draft of the model kept the plan's `Vec` and a cloned confirmed set;
 its main harness ran past 14 minutes. The shipped core borrows the confirmed
 slice and the harnesses check the per-body `may_delete` over fixed arrays,
-which the service applies to each body again immediately before removing it;
-`deletion_plan`'s composition is covered by the proptest mirror of R1–R3
-(which a deliberately broken plan fails). The E1 fix in the same change added
+which the service applies to each body immediately before removing it, for the
+per-row Delete as well as the bulk one (both go through
+`set_aside::delete_confirmed`); its composition over every confirmed body is
+covered by the proptest mirror of R1–R3 (which a deliberately broken decision
+fails). A separate `deletion_plan` over a pre-read slice was removed because
+nothing executed it. The E1 fix in the same change added
 K9 (`journal_set_aside_keeps_every_body_it_reports_kept`, 3.1 s) and its
 `should_panic` twin (3.0 s), recorded in the deferral inventory. All five join
 the `core-journal-and-write` shard (by its `journal_` and

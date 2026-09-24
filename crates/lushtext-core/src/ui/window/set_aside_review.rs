@@ -26,6 +26,7 @@ use crate::services::draft_service::set_aside;
 use crate::services::draft_service::set_aside_retention::{SetAsideTotals, notice_due};
 use crate::services::json_store;
 use crate::services::notifications::NotificationSeverity;
+use crate::ui::preferences::{drafts_phrase, lower_bound_prefix};
 
 use super::LushtextWindow;
 
@@ -46,16 +47,13 @@ pub struct SetAsideReviewState {
     pub notices_published: u64,
 }
 
-/// The review notice: names the count and size and the review action.
+/// The review notice: names the count and size and the review action, in the
+/// wording the Preserved Drafts summary row uses.
 fn review_notice_text(totals: SetAsideTotals) -> String {
-    let count = if totals.complete {
-        totals.count.to_string()
-    } else {
-        format!("at least {}", totals.count)
-    };
-    let noun = if totals.count == 1 { "draft" } else { "drafts" };
     format!(
-        "LushText is keeping {count} preserved {noun} ({}). Review them with Review Preserved Drafts.",
+        "LushText is keeping {}{} ({}). Review them with Review Preserved Drafts.",
+        lower_bound_prefix(totals),
+        drafts_phrase(totals.count),
         glib::format_size(totals.bytes)
     )
 }
@@ -71,12 +69,10 @@ impl LushtextWindow {
         let Some(app) = self.lushtext_application() else {
             return;
         };
-        let mut state = app.set_aside_review_state();
-        if state.startup_evaluated {
+        if app.set_aside_review_state().startup_evaluated {
             return;
         }
-        state.startup_evaluated = true;
-        app.set_set_aside_review_state(state);
+        app.update_set_aside_review_state(|state| state.startup_evaluated = true);
         self.evaluate_preserved_drafts();
     }
 
@@ -89,7 +85,6 @@ impl LushtextWindow {
         };
         let state = app.set_aside_review_state();
         if state.startup_evaluated
-            && !state.evaluation_inflight
             && !state.reviewed
             && set_aside::placements() != state.placements_seen
         {
@@ -102,38 +97,41 @@ impl LushtextWindow {
         let Some(app) = self.lushtext_application() else {
             return;
         };
-        let mut state = app.set_aside_review_state();
-        if state.evaluation_inflight {
+        if app.set_aside_review_state().evaluation_inflight {
             return;
         }
-        state.evaluation_inflight = true;
-        state.placements_seen = set_aside::placements();
-        app.set_set_aside_review_state(state);
+        app.update_set_aside_review_state(|state| {
+            state.evaluation_inflight = true;
+            state.placements_seen = set_aside::placements();
+        });
         // The application, not this window, receives the result: the window
         // may close first, and the in-flight flag must still clear.
         spawn_blocking_then_weak(
             &app,
             || {
-                set_aside::list(&json_store::data_dir())
-                    .map(|listing| listing.totals())
+                set_aside::totals(&json_store::data_dir())
                     .map_err(|error| tracing::warn!("Could not scan preserved drafts: {error}"))
                     .ok()
             },
             |app, totals| {
-                let mut state = app.set_aside_review_state();
-                state.evaluation_inflight = false;
-                if notice_due(totals, state.last_notified, state.reviewed)
-                    && let Some(totals) = totals
-                    && let Some(window) = app.active_window().and_downcast::<LushtextWindow>()
-                {
-                    state.last_notified = Some(totals);
-                    state.notices_published = state.notices_published.saturating_add(1);
+                let state = app.set_aside_review_state();
+                let window = app.active_window().and_downcast::<LushtextWindow>();
+                let notice = totals
+                    .filter(|_| notice_due(totals, state.last_notified, state.reviewed))
+                    .zip(window);
+                app.update_set_aside_review_state(|state| {
+                    state.evaluation_inflight = false;
+                    if let Some((totals, _)) = &notice {
+                        state.last_notified = Some(*totals);
+                        state.notices_published = state.notices_published.saturating_add(1);
+                    }
+                });
+                if let Some((totals, window)) = notice {
                     window.publish_status_message(
                         &review_notice_text(totals),
                         NotificationSeverity::Warning,
                     );
                 }
-                app.set_set_aside_review_state(state);
             },
         );
     }
@@ -157,6 +155,6 @@ mod tests {
             bytes: 1,
             complete: false,
         });
-        assert!(partial.contains("at least 10000 preserved drafts"));
+        assert!(partial.contains("at least 10,000 preserved drafts"));
     }
 }

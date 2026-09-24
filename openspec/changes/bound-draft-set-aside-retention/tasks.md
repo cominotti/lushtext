@@ -13,7 +13,7 @@
 
 ## 2. Pure retention core and proofs
 
-- [x] 2.1 Create `crates/lushtext-core/src/services/draft_service/set_aside_retention.rs` (GTK-free, I/O-free) with `bound_status`, `notice_due`, `deletion_plan`, `UserDecision`, `ListedBody`, and fingerprint types, plus characterization unit tests. Verify: `make test-unit`.
+- [x] 2.1 Create `crates/lushtext-core/src/services/draft_service/set_aside_retention.rs` (GTK-free, I/O-free) with `bound_status`, `notice_due`, `deletion_plan` (later removed for the per-body `may_delete` the service executes), `UserDecision`, `ListedBody`, and fingerprint types, plus characterization unit tests. Verify: `make test-unit`.
 - [x] 2.2 Add a proptest for R1–R3 (design D4). Verify: it passes, and a deliberately broken `deletion_plan` (planning a listed body outside `confirmed`) fails it; revert the break.
 - [x] 2.3 Add `#[cfg(kani)] mod kani_proofs` with harnesses for R1–R4 over 4 bodies, and a `should_panic` harness showing that a plan deleting a body outside the confirmed set breaks R2. Assign them in `scripts/kani-shards.py`. Verify: `cargo kani -p lushtext-core` with those harnesses PROVED and the `should_panic` harness passing, and `make check-kani-shards` passes. Record times.
 
@@ -30,7 +30,7 @@
 
 ## 5. Data-safety audit
 
-- [x] 5.1 Run the explicit `data-safety` skill audit over the diff. Confirm by test or code trace that no startup, bound, notice, or review-action path deletes a set-aside body; that every deletion goes through `deletion_plan` or the per-row confirmed Delete; that no new persisted file is written; and that no body text reaches logs, announcements, notifications, or automation. Fix every confirmed finding failing-first.
+- [x] 5.1 Run the explicit `data-safety` skill audit over the diff. Confirm by test or code trace that no startup, bound, notice, or review-action path deletes a set-aside body; that every deletion goes through `may_delete` in `delete_confirmed` (the bulk and, since the simplification pass, the per-row confirmed Delete); that no new persisted file is written; and that no body text reaches logs, announcements, notifications, or automation. Fix every confirmed finding failing-first.
 
 ## 6. Documentation sync
 

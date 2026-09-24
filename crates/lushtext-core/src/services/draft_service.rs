@@ -259,29 +259,15 @@ pub struct SetAsideDraft {
 pub struct SetAsideDraftListing {
     /// At most [`set_aside::MAX_LISTED_SET_ASIDE_BODIES`] drafts, newest first.
     pub drafts: Vec<SetAsideDraft>,
-    /// Bodies in the area (a lower bound when `complete` is false).
-    pub total_count: u64,
-    /// Their total size in bytes (a lower bound when `complete` is false).
-    pub total_bytes: u64,
-    /// The scan reached the end of the area within its budget.
-    pub complete: bool,
+    /// What the whole area holds.
+    pub totals: set_aside_retention::SetAsideTotals,
 }
 
 impl SetAsideDraftListing {
-    /// The totals the retention core judges against the soft bound.
-    #[must_use]
-    pub const fn totals(&self) -> set_aside_retention::SetAsideTotals {
-        set_aside_retention::SetAsideTotals {
-            count: self.total_count,
-            bytes: self.total_bytes,
-            complete: self.complete,
-        }
-    }
-
     /// Whether some bodies in the area are not among [`Self::drafts`].
     #[must_use]
     pub fn is_truncated(&self) -> bool {
-        !self.complete || u64::try_from(self.drafts.len()).unwrap_or(u64::MAX) < self.total_count
+        self.totals.is_truncated(self.drafts.len())
     }
 }
 
@@ -298,9 +284,7 @@ pub fn list_set_aside_drafts(data_dir: &Path) -> Result<SetAsideDraftListing> {
     let listing = set_aside::list(data_dir)?;
     let mut result = SetAsideDraftListing {
         drafts: Vec::with_capacity(listing.rows.len()),
-        total_count: listing.total_count,
-        total_bytes: listing.total_bytes,
-        complete: listing.complete,
+        totals: listing.totals,
     };
     if listing.rows.is_empty() {
         return Ok(result);

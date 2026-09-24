@@ -20,7 +20,7 @@ use libadwaita::prelude::*;
 
 use crate::services::draft_service::set_aside::SetAsideBulkDeletion;
 use crate::services::draft_service::set_aside_retention::{
-    BoundStatus, SetAsideFingerprint, bound_status,
+    BoundStatus, SetAsideFingerprint, SetAsideTotals, bound_status,
 };
 use crate::services::draft_service::{self, SetAsideDraftListing};
 use crate::services::json_store;
@@ -49,11 +49,14 @@ fn set_aside_row_subtitle(draft: &draft_service::SetAsideDraft) -> String {
         .and_then(|secs| glib::DateTime::from_unix_local(secs).ok())
         .and_then(|time| time.format("%Y-%m-%d %H:%M").ok())
         .map_or_else(|| "an unknown time".to_string(), |time| time.to_string());
-    format!("Kept {kept} · {}", glib::format_size(draft.body.byte_size))
+    format!(
+        "Kept {kept} · {}",
+        glib::format_size(draft.body.byte_size())
+    )
 }
 
 /// `1204` as `1,204`.
-fn grouped(count: u64) -> String {
+pub(crate) fn grouped(count: u64) -> String {
     let digits = count.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
@@ -66,7 +69,7 @@ fn grouped(count: u64) -> String {
 }
 
 /// `1 preserved draft`, `37 preserved drafts`.
-fn drafts_phrase(count: u64) -> String {
+pub(crate) fn drafts_phrase(count: u64) -> String {
     if count == 1 {
         "1 preserved draft".to_string()
     } else {
@@ -74,57 +77,66 @@ fn drafts_phrase(count: u64) -> String {
     }
 }
 
+/// `at least ` when a scan stopped at its budget, so its totals are a lower
+/// bound; empty otherwise.
+pub(crate) const fn lower_bound_prefix(totals: SetAsideTotals) -> &'static str {
+    if totals.complete { "" } else { "at least " }
+}
+
+/// Rows the group lists.
+fn shown_count(listing: &SetAsideDraftListing) -> u64 {
+    u64::try_from(listing.drafts.len()).unwrap_or(u64::MAX)
+}
+
+/// `newest 256 of [at least ]1,204`.
+fn newest_of_total(listing: &SetAsideDraftListing) -> String {
+    format!(
+        "newest {} of {}{}",
+        grouped(shown_count(listing)),
+        lower_bound_prefix(listing.totals),
+        grouped(listing.totals.count)
+    )
+}
+
 /// Summary row title: the area's count, or its lower bound.
 fn summary_title(listing: &SetAsideDraftListing) -> String {
-    if listing.complete {
-        capitalize(&drafts_phrase(listing.total_count))
+    let phrase = drafts_phrase(listing.totals.count);
+    if listing.totals.complete {
+        phrase
     } else {
-        format!("At least {}", drafts_phrase(listing.total_count))
+        format!("At least {phrase}")
     }
 }
 
 /// Summary row subtitle: size, soft-bound state, and truncation.
 fn summary_subtitle(listing: &SetAsideDraftListing) -> String {
-    let mut parts = vec![if listing.complete {
-        glib::format_size(listing.total_bytes).to_string()
+    let size = glib::format_size(listing.totals.bytes);
+    let mut parts = vec![if listing.totals.complete {
+        size.to_string()
     } else {
-        format!("at least {}", glib::format_size(listing.total_bytes))
+        format!("At least {size}")
     }];
-    if matches!(
-        bound_status(Some(listing.totals())),
-        BoundStatus::Over { .. }
-    ) {
+    if matches!(bound_status(Some(listing.totals)), BoundStatus::Over { .. }) {
         parts.push("over the suggested limit".to_string());
     }
     if listing.is_truncated() {
-        let shown = u64::try_from(listing.drafts.len()).unwrap_or(u64::MAX);
-        parts.push(format!(
-            "showing the newest {} of {}{}",
-            grouped(shown),
-            if listing.complete { "" } else { "at least " },
-            grouped(listing.total_count)
-        ));
+        parts.push(format!("showing the {}", newest_of_total(listing)));
     }
-    capitalize(&parts.join(" · "))
+    parts.join(" · ")
 }
 
 /// Body of the Delete All confirmation: the exact count and size it deletes.
 fn delete_all_body(listing: &SetAsideDraftListing) -> String {
-    let shown = u64::try_from(listing.drafts.len()).unwrap_or(u64::MAX);
-    let bytes = listed_bytes(listing);
+    let size = glib::format_size(listed_bytes(listing));
     let what = if listing.is_truncated() {
         format!(
-            "The newest {} of {}{} preserved drafts ({}) will be permanently deleted; the rest stay for a later pass.",
-            grouped(shown),
-            if listing.complete { "" } else { "at least " },
-            grouped(listing.total_count),
-            glib::format_size(bytes)
+            "The {} preserved drafts ({size}) will be permanently deleted; the rest stay for a later pass.",
+            newest_of_total(listing)
         )
     } else {
         format!(
-            "{} ({}) will be permanently deleted.",
-            capitalize(&drafts_phrase(shown)),
-            glib::format_size(bytes)
+            "{} ({size}) will be permanently deleted.",
+            drafts_phrase(shown_count(listing))
         )
     };
     format!("{what} This cannot be undone. Drafts preserved after this dialog opened are kept.")
@@ -133,7 +145,7 @@ fn delete_all_body(listing: &SetAsideDraftListing) -> String {
 /// Total size of the rows the group lists (what Delete All confirms).
 fn listed_bytes(listing: &SetAsideDraftListing) -> u64 {
     listing.drafts.iter().fold(0u64, |total, draft| {
-        total.saturating_add(draft.body.byte_size)
+        total.saturating_add(draft.body.byte_size())
     })
 }
 
@@ -158,11 +170,29 @@ fn bulk_deletion_message(outcome: SetAsideBulkDeletion) -> String {
     message
 }
 
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
+/// A destructive confirmation whose default and close response is Cancel;
+/// `on_confirm` runs only when the user picks `confirm_label`.
+fn destructive_confirmation(
+    heading: &str,
+    body: &str,
+    confirm_label: &str,
+    on_confirm: impl Fn() + 'static,
+) -> libadwaita::AlertDialog {
+    let dialog = libadwaita::AlertDialog::builder()
+        .heading(heading)
+        .body(body)
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("delete", confirm_label);
+    dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    dialog.connect_response(None::<&str>, move |_, response| {
+        if response == "delete" {
+            on_confirm();
+        }
+    });
+    dialog
 }
 
 impl LushtextPreferences {
@@ -246,9 +276,7 @@ impl LushtextPreferences {
 
     fn render_set_aside_drafts(&self, listing: SetAsideDraftListing) {
         let imp = self.imp();
-        for row in imp.data_set_aside_rows.take() {
-            imp.data_set_aside_list.remove(&row);
-        }
+        imp.data_set_aside_list.remove_all();
         let empty = listing.drafts.is_empty();
         imp.data_set_aside_group.set_visible(!empty);
         if empty {
@@ -262,13 +290,10 @@ impl LushtextPreferences {
         accessibility::set_labelled_description(&imp.data_set_aside_summary, &title, &subtitle);
         let drafts = &listing.drafts;
         let total = i32::try_from(drafts.len()).unwrap_or(i32::MAX);
-        let mut rows = Vec::with_capacity(drafts.len());
         for (position, draft) in (1i32..).zip(drafts) {
-            let row = self.set_aside_row(draft, position, total);
-            imp.data_set_aside_list.append(&row);
-            rows.push(row);
+            imp.data_set_aside_list
+                .append(&self.set_aside_row(draft, position, total));
         }
-        imp.data_set_aside_rows.replace(rows);
         imp.data_set_aside_listing.replace(Some(listing));
         self.focus_set_aside_summary_if_pending();
     }
@@ -313,12 +338,11 @@ impl LushtextPreferences {
                 prefs.open_set_aside_draft(&path);
             }
         });
-        let path = draft.body.path.clone();
+        let fingerprint = draft.body.fingerprint.clone();
         let prefs_weak = self.downgrade();
-        let confirm_title = title;
         delete.connect_clicked(move |_| {
             if let Some(prefs) = prefs_weak.upgrade() {
-                prefs.confirm_delete_set_aside_draft(&path, &confirm_title);
+                prefs.confirm_delete_set_aside_draft(&fingerprint, &title);
             }
         });
         row.add_suffix(&open);
@@ -355,41 +379,47 @@ impl LushtextPreferences {
         );
     }
 
-    /// Ask before deleting one preserved draft: it may be the only copy.
-    fn confirm_delete_set_aside_draft(&self, path: &std::path::Path, title: &str) {
-        let dialog = libadwaita::AlertDialog::builder()
-            .heading("Delete Preserved Draft?")
-            .body(format!(
-                "The unsaved changes kept for {title} will be permanently deleted."
-            ))
-            .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("delete", "Delete");
-        dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
+    /// Ask before deleting one preserved draft: it may be the only copy. The
+    /// row's fingerprint, as listed, is what the confirmation deletes.
+    fn confirm_delete_set_aside_draft(&self, fingerprint: &SetAsideFingerprint, title: &str) {
         let prefs_weak = self.downgrade();
-        let path = path.to_path_buf();
-        dialog.connect_response(None::<&str>, move |_, response| {
-            if response == "delete"
-                && let Some(prefs) = prefs_weak.upgrade()
-            {
-                prefs.delete_set_aside_draft(&path);
-            }
-        });
+        let fingerprint = fingerprint.clone();
+        let dialog = destructive_confirmation(
+            "Delete Preserved Draft?",
+            &format!("The unsaved changes kept for {title} will be permanently deleted."),
+            "Delete",
+            move || {
+                if let Some(prefs) = prefs_weak.upgrade() {
+                    prefs.delete_set_aside_draft(fingerprint.clone());
+                }
+            },
+        );
         dialog.present(Some(self));
     }
 
-    /// Delete one preserved draft durably after the user confirmed it, then
-    /// refresh the group.
-    pub fn delete_set_aside_draft(&self, path: &std::path::Path) {
-        let path = path.to_path_buf();
+    /// Delete one preserved draft durably after the user confirmed it, only
+    /// while it is unchanged since it was listed, then refresh the group.
+    pub fn delete_set_aside_draft(&self, fingerprint: SetAsideFingerprint) {
         spawn_blocking_then_weak(
             self,
-            move || draft_service::set_aside::delete(&json_store::data_dir(), &path),
-            |prefs, deleted| {
-                if let Err(error) = deleted {
-                    tracing::warn!("Could not delete a preserved draft: {error}");
+            move || {
+                draft_service::set_aside::delete_confirmed(
+                    &json_store::data_dir(),
+                    std::slice::from_ref(&fingerprint),
+                )
+            },
+            |prefs, outcome| {
+                if outcome.deleted == 0 {
+                    let message = if outcome.failed > 0 {
+                        "The preserved draft could not be deleted"
+                    } else {
+                        "The preserved draft changed or was removed after you confirmed; nothing was deleted"
+                    };
+                    accessibility::announce_with_lane(
+                        &*prefs.imp().data_set_aside_group,
+                        message,
+                        accessibility::AnnouncementLane::Alert,
+                    );
                 }
                 prefs.refresh_set_aside_drafts();
             },
@@ -415,25 +445,20 @@ impl LushtextPreferences {
                 .collect();
             (delete_all_body(listing), confirmed)
         };
-        let dialog = libadwaita::AlertDialog::builder()
-            .heading("Delete All Preserved Drafts?")
-            .body(body)
-            .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("delete", "Delete All");
-        dialog.set_response_appearance("delete", libadwaita::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
         let prefs_weak = self.downgrade();
         let confirmed = std::cell::RefCell::new(Some(confirmed));
-        dialog.connect_response(None::<&str>, move |_, response| {
-            if response == "delete"
-                && let Some(prefs) = prefs_weak.upgrade()
-                && let Some(confirmed) = confirmed.take()
-            {
-                prefs.delete_confirmed_set_aside_drafts(confirmed);
-            }
-        });
+        let dialog = destructive_confirmation(
+            "Delete All Preserved Drafts?",
+            &body,
+            "Delete All",
+            move || {
+                if let Some(prefs) = prefs_weak.upgrade()
+                    && let Some(confirmed) = confirmed.take()
+                {
+                    prefs.delete_confirmed_set_aside_drafts(confirmed);
+                }
+            },
+        );
         dialog.present(Some(self));
         Some(dialog)
     }

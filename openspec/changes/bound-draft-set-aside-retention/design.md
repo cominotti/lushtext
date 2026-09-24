@@ -157,7 +157,11 @@ I/O-free, and is the only place the bulk plan and the notice are decided:
 - `bound_status(totals) -> BoundStatus { Within, Over { by_count, by_bytes }, Unknown }`
 - `notice_due(status, last_notified: Option<Totals>, reviewed_this_process: bool) -> bool`
   (D5).
-- `deletion_plan(bodies: &[ListedBody], decision: UserDecision) -> Plan`
+- `may_delete(now: &Fingerprint, decision: UserDecision) -> bool`, the
+  per-body decision; the plan is exactly the bodies it admits, each judged on
+  its fingerprint as re-read immediately before its removal. (A separate
+  `deletion_plan` over a pre-read slice was first built, then removed: nothing
+  executed it, so its proofs covered code that never ran.)
 
 `UserDecision` is one of:
 
@@ -173,7 +177,9 @@ Execution is `set_aside::delete_confirmed(data_dir, fingerprint)`. It runs off
 GTK, one body at a time. Immediately before removal it re-reads the metadata,
 skips on any mismatch, and syncs the directory once per batch. A failure keeps
 the remaining bodies and reports a count. Each deletion goes through
-`ensure_inside`. Per-row Delete keeps its existing path.
+`ensure_inside`. Per-row Delete goes through the same function with the one
+fingerprint its row listed, so a body replaced under that name after the row
+was rendered is kept, and the area has a single deletion path.
 
 **Proofs** (programme step 8a), in a `#[cfg(kani)] mod kani_proofs` beside the
 module, over 4 bodies with arbitrary fingerprint and change facts and an

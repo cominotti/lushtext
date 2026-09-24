@@ -97,7 +97,9 @@ Expected screen-reader behavior includes:
   document` / `Unknown file`), when the changes were kept, and their size, with
   its position in the group; its `Open` and icon-only `Delete` buttons are
   labelled with the draft they act on. Delete confirms through a destructive
-  alert whose default and Escape response is Cancel. The group opens with a
+  alert whose default and Escape response is Cancel; when the confirmed draft
+  changed or went away first, or could not be removed, an alert announcement
+  says nothing was deleted. The group opens with a
   summary row that reads the count, the total size, whether the area is over
   the suggested limit, and, when not every body is listed, `showing the newest
   256 of N`; then a `Delete All Preserved Drafts…` button row whose destructive

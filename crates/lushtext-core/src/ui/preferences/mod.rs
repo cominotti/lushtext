@@ -10,6 +10,8 @@
 mod data_page;
 mod excluded_names;
 mod preserved_drafts;
+
+pub(crate) use preserved_drafts::{drafts_phrase, lower_bound_prefix};
 // gtk-rs custom widgets are split into a public wrapper (`mod.rs`) and private
 // implementation (`imp.rs`) because GLib stores instance data separately from
 // the Rust-facing API.

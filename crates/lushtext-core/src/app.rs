@@ -261,9 +261,7 @@ impl LushtextApplication {
         let action_review_preserved_drafts = gio::ActionEntry::builder("review-preserved-drafts")
             .activate(|app: &Self, _, _| {
                 if let Some(window) = app.active_window() {
-                    let mut state = app.set_aside_review_state();
-                    state.reviewed = true;
-                    app.set_set_aside_review_state(state);
+                    app.update_set_aside_review_state(|state| state.reviewed = true);
                     let prefs = LushtextPreferences::new();
                     prefs.show_preserved_drafts();
                     prefs.present(Some(&window));
@@ -303,8 +301,15 @@ impl LushtextApplication {
         self.imp().set_aside_review.get()
     }
 
-    pub(crate) fn set_set_aside_review_state(&self, state: crate::ui::window::SetAsideReviewState) {
-        self.imp().set_aside_review.set(state);
+    /// Change this process's set-aside review state in place.
+    pub(crate) fn update_set_aside_review_state(
+        &self,
+        change: impl FnOnce(&mut crate::ui::window::SetAsideReviewState),
+    ) {
+        self.imp().set_aside_review.update(|mut state| {
+            change(&mut state);
+            state
+        });
     }
 
     /// Record current workflow observations and return the bounded event stream.

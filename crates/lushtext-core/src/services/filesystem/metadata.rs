@@ -28,6 +28,29 @@ pub fn file_facts(path: &Path) -> std::io::Result<FileFacts> {
     })
 }
 
+/// Read kind, size, modification time, and identity for `path` from one
+/// metadata call.
+///
+/// The cheap form of [`file_facts`] for callers scanning many entries: it
+/// does not canonicalize (`canonical_path` is always `None`) and takes the
+/// size from that same metadata.
+///
+/// # Errors
+///
+/// Returns an error when the target metadata cannot be read.
+pub fn file_stat(path: &Path) -> std::io::Result<FileFacts> {
+    let metadata = sys::metadata(path)?;
+    Ok(FileFacts {
+        path: path.to_path_buf(),
+        canonical_path: None,
+        kind: kind_from_metadata(&metadata),
+        byte_size: metadata.len(),
+        modified_at_secs: modified_at_secs(&metadata),
+        modified_at_nanos: modified_at_nanos(&metadata),
+        identity: sys::file_identity(&metadata),
+    })
+}
+
 /// Read only existence and coarse kind for `path`.
 ///
 /// Missing paths are reported as [`PathStatus::Missing`]; other metadata

@@ -76,7 +76,7 @@ pub struct FileFacts {
 }
 
 /// Stable identity for one concrete filesystem object.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FileIdentity {
     /// Filesystem device identifier.
     pub device: u64,

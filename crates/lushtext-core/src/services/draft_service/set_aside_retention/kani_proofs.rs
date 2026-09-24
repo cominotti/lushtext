@@ -6,11 +6,10 @@
 //!
 //! The harnesses check [`may_delete`], the per-body decision the service
 //! applies immediately before each removal, over fixed-size arrays (no heap),
-//! which keeps them to seconds. `deletion_plan` is that decision applied to
-//! every body found; its composition is covered by the property test in the
-//! parent module.
+//! which keeps them to seconds. Its composition over every confirmed body is
+//! covered by the property test in the parent module.
 
-use super::{SetAsideTotals, UserDecision, bound_status, deletion_plan, may_delete, notice_due};
+use super::{SetAsideTotals, UserDecision, bound_status, may_delete, notice_due};
 
 /// Bodies in the model.
 const BODIES: usize = 4;
@@ -96,8 +95,9 @@ fn set_aside_retention_deletes_only_confirmed_bodies() {
     check_decision(may_delete);
 }
 
-/// R4: the bound and notice decisions are total, and the plan takes no input
-/// from them: with no decision it is empty whatever the status.
+/// R4: the bound and notice decisions are total, and the deletion decision
+/// takes no input from them: with no user decision it admits no body whatever
+/// the status.
 #[kani::proof]
 #[kani::unwind(6)]
 fn set_aside_retention_bound_and_notice_never_plan_a_deletion() {
@@ -113,11 +113,9 @@ fn set_aside_retention_bound_and_notice_never_plan_a_deletion() {
     let _ = bound_status(current);
     let _ = notice_due(current, last, kani::any());
     let model = Model::any();
-    assert!(
-        deletion_plan(&model.current, UserDecision::None)
-            .indices
-            .is_empty()
-    );
+    for now in &model.current {
+        assert!(!may_delete(now, UserDecision::None));
+    }
 }
 
 /// A decision that deletes every body once the user decided anything,

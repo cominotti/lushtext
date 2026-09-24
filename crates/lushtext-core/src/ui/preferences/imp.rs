@@ -133,8 +133,6 @@ pub struct LushtextPreferences {
     /// Group listing preserved set-aside drafts; hidden when there are none.
     #[template_child]
     pub data_set_aside_group: TemplateChild<libadwaita::PreferencesGroup>,
-    /// Rows currently shown in the set-aside group, removed on each refresh.
-    pub data_set_aside_rows: RefCell<Vec<libadwaita::ActionRow>>,
     /// Summary row (count, size, soft-bound state, truncation), first in the
     /// set-aside group.
     pub data_set_aside_summary: libadwaita::ActionRow,
@@ -203,7 +201,6 @@ impl Default for LushtextPreferences {
             data_convert_button: TemplateChild::default(),
             data_details_group: TemplateChild::default(),
             data_set_aside_group: TemplateChild::default(),
-            data_set_aside_rows: RefCell::new(Vec::new()),
             data_set_aside_summary: libadwaita::ActionRow::new(),
             data_set_aside_delete_all: libadwaita::ButtonRow::new(),
             data_set_aside_list: gtk4::ListBox::new(),
