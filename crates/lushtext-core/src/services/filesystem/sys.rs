@@ -7,10 +7,6 @@
 //! public boundary stay readable while this module owns low-level descriptor
 //! handling and platform details.
 
-// Operations gated `#[cfg(any(test, feature = "test-utils"))]` below serve only
-// `filesystem::fixture`, which is itself test-only, so shipping builds carry
-// no raw writer that bypasses the durable-write path.
-
 use std::ffi::{CString, OsString};
 use std::fs;
 use std::io::{self, Read};
@@ -42,11 +38,6 @@ pub(in crate::services) fn read(path: &Path) -> io::Result<Vec<u8>> {
 
 pub(in crate::services) fn read_to_string(path: &Path) -> io::Result<String> {
     fs::read_to_string(path)
-}
-
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
-    fs::write(path, contents)
 }
 
 pub(in crate::services) fn create_new_empty_file(path: &Path) -> io::Result<()> {
@@ -205,21 +196,6 @@ pub(in crate::services) fn rename_no_replace(from: &Path, to: &Path) -> io::Resu
 pub(in crate::services) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
     // No portable atomic equivalent; callers fall back to their own check.
     Err(io::Error::from(io::ErrorKind::Unsupported))
-}
-
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn create_sparse_file(path: &Path, len: u64) -> io::Result<()> {
-    let file = fs::File::create(path)?;
-    file.set_len(len)
-}
-
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn write_at_start(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::{Seek, SeekFrom, Write};
-
-    let mut file = fs::OpenOptions::new().write(true).open(path)?;
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(bytes)
 }
 
 /// Streaming read chunk shared by the bounded and prefix readers.
@@ -451,81 +427,6 @@ where
     Ok(())
 }
 
-/// Set a path's access and modification times without following a final symlink.
-#[cfg(unix)]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn set_times_no_follow(
-    path: &Path,
-    time: std::time::SystemTime,
-) -> io::Result<()> {
-    let since_epoch = time
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let timespec = rustix::fs::Timespec {
-        tv_sec: i64::try_from(since_epoch.as_secs())
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
-        tv_nsec: since_epoch.subsec_nanos().into(),
-    };
-    rustix::fs::utimensat(
-        rustix::fs::CWD,
-        path,
-        &rustix::fs::Timestamps {
-            last_access: timespec,
-            last_modification: timespec,
-        },
-        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-    )
-    .map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn set_times_no_follow(
-    path: &Path,
-    time: std::time::SystemTime,
-) -> io::Result<()> {
-    fs::File::options()
-        .write(true)
-        .open(path)?
-        .set_modified(time)
-}
-
-#[cfg(unix)]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn symlink(target: &Path, link: &Path) -> io::Result<()> {
-    rustix::fs::symlinkat(target, rustix::fs::CWD, link).map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "symlink fixtures require Unix",
-    ))
-}
-
-#[cfg(unix)]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn set_permissions_mode(path: &Path, mode: u32) -> io::Result<()> {
-    rustix::fs::chmodat(
-        rustix::fs::CWD,
-        path,
-        rustix::fs::Mode::from_raw_mode(mode),
-        rustix::fs::AtFlags::empty(),
-    )
-    .map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn set_permissions_mode(_path: &Path, _mode: u32) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "permission-mode fixtures require Unix",
-    ))
-}
-
 #[cfg(unix)]
 pub(in crate::services) fn mode(path: &Path) -> io::Result<u32> {
     rustix::fs::stat(path)
@@ -695,37 +596,6 @@ pub(in crate::services) fn copy_xattrs_best_effort(source: &Path, dest: &File) {
 pub(in crate::services) fn copy_xattrs_best_effort(_source: &Path, _dest: &File) {}
 
 #[cfg(target_os = "linux")]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
-    rustix::fs::setxattr(path, name, value, rustix::fs::XattrFlags::empty())
-        .map_err(io::Error::from)
-}
-
-#[cfg(not(target_os = "linux"))]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn set_xattr(_path: &Path, _name: &str, _value: &[u8]) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "xattr fixtures require Linux",
-    ))
-}
-
-#[cfg(target_os = "linux")]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn get_xattr(path: &Path, name: &str) -> io::Result<Vec<u8>> {
-    get_xattr_with_name(path, name)
-}
-
-#[cfg(not(target_os = "linux"))]
-#[cfg(any(test, feature = "test-utils"))]
-pub(in crate::services) fn get_xattr(_path: &Path, _name: &str) -> io::Result<Vec<u8>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "xattr fixtures require Linux",
-    ))
-}
-
-#[cfg(target_os = "linux")]
 fn xattr_names(path: &Path) -> io::Result<Vec<u8>> {
     let mut empty = [0u8; 0];
     let len = rustix::fs::listxattr(path, &mut empty).map_err(io::Error::from)?;
@@ -751,6 +621,137 @@ fn get_xattr_with_name<Name: Copy + rustix::path::Arg>(
     value.truncate(read);
     Ok(value)
 }
+
+/// Raw writers and metadata setters that serve only `filesystem::fixture`,
+/// which is itself test-only. Gating them as one module keeps every shipping
+/// build free of a raw writer that bypasses the durable-write path.
+#[cfg(any(test, feature = "test-utils"))]
+mod fixture_ops {
+    use std::fs;
+    use std::io::{self, Seek, SeekFrom, Write};
+    use std::path::Path;
+
+    #[cfg(target_os = "linux")]
+    use super::get_xattr_with_name;
+
+    pub(in crate::services) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+        fs::write(path, contents)
+    }
+
+    pub(in crate::services) fn create_sparse_file(path: &Path, len: u64) -> io::Result<()> {
+        let file = fs::File::create(path)?;
+        file.set_len(len)
+    }
+
+    pub(in crate::services) fn write_at_start(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let mut file = fs::OpenOptions::new().write(true).open(path)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(bytes)
+    }
+
+    /// Set a path's access and modification times without following a final symlink.
+    #[cfg(unix)]
+    pub(in crate::services) fn set_times_no_follow(
+        path: &Path,
+        time: std::time::SystemTime,
+    ) -> io::Result<()> {
+        let since_epoch = time
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let timespec = rustix::fs::Timespec {
+            tv_sec: i64::try_from(since_epoch.as_secs())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+            tv_nsec: since_epoch.subsec_nanos().into(),
+        };
+        rustix::fs::utimensat(
+            rustix::fs::CWD,
+            path,
+            &rustix::fs::Timestamps {
+                last_access: timespec,
+                last_modification: timespec,
+            },
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(io::Error::from)
+    }
+
+    #[cfg(not(unix))]
+    pub(in crate::services) fn set_times_no_follow(
+        path: &Path,
+        time: std::time::SystemTime,
+    ) -> io::Result<()> {
+        fs::File::options()
+            .write(true)
+            .open(path)?
+            .set_modified(time)
+    }
+
+    #[cfg(unix)]
+    pub(in crate::services) fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+        rustix::fs::symlinkat(target, rustix::fs::CWD, link).map_err(io::Error::from)
+    }
+
+    #[cfg(not(unix))]
+    pub(in crate::services) fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "symlink fixtures require Unix",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(in crate::services) fn set_permissions_mode(path: &Path, mode: u32) -> io::Result<()> {
+        rustix::fs::chmodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::Mode::from_raw_mode(mode),
+            rustix::fs::AtFlags::empty(),
+        )
+        .map_err(io::Error::from)
+    }
+
+    #[cfg(not(unix))]
+    pub(in crate::services) fn set_permissions_mode(_path: &Path, _mode: u32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "permission-mode fixtures require Unix",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::services) fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
+        rustix::fs::setxattr(path, name, value, rustix::fs::XattrFlags::empty())
+            .map_err(io::Error::from)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(in crate::services) fn set_xattr(
+        _path: &Path,
+        _name: &str,
+        _value: &[u8],
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "xattr fixtures require Linux",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::services) fn get_xattr(path: &Path, name: &str) -> io::Result<Vec<u8>> {
+        get_xattr_with_name(path, name)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(in crate::services) fn get_xattr(_path: &Path, _name: &str) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "xattr fixtures require Linux",
+        ))
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub(in crate::services) use fixture_ops::*;
 
 #[cfg(all(test, unix))]
 mod tests {

@@ -123,15 +123,24 @@ pull_request_analysis_revision() {
 	' "$PULL_REQUESTS_JSON"
 }
 
-# The analysis selector for the quality gate and issue queries: the pull
-# request when one is set, otherwise the branch (empty means main).
+# The analysis selector shared by the dashboard URL and the quality gate and
+# issue queries: the pull request when one is set, otherwise the branch (empty
+# means main, which needs no selector).
+scope_query() {
+	local branch="$1"
+	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
+		echo "pullRequest=${SONAR_PULL_REQUEST}"
+	elif [[ -n "$branch" ]]; then
+		echo "branch=${branch}"
+	fi
+}
+
 append_scope_args() {
 	local -n args_ref="$1"
-	local branch="$2"
-	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
-		args_ref+=(--data-urlencode "pullRequest=${SONAR_PULL_REQUEST}")
-	elif [[ -n "$branch" ]]; then
-		args_ref+=(--data-urlencode "branch=${branch}")
+	local query
+	query="$(scope_query "$2")"
+	if [[ -n "$query" ]]; then
+		args_ref+=(--data-urlencode "$query")
 	fi
 }
 
@@ -185,11 +194,11 @@ wait_for_expected_revision() {
 	info "Waiting for Sonar analysis revision ${SONAR_EXPECTED_REVISION}"
 	deadline=$((SECONDS + SONAR_WAIT_SECONDS))
 	while :; do
-		fetch_project_analyses
 		if [[ -n "$SONAR_PULL_REQUEST" ]]; then
 			fetch_pull_requests
 			revision="$(pull_request_analysis_revision)"
 		else
+			fetch_project_analyses
 			fetch_branches
 			revision="$(branch_analysis_revision "$branch")"
 		fi
@@ -339,12 +348,12 @@ main() {
 	if ! [[ "$SONAR_POLL_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
 		fail "SONAR_POLL_INTERVAL must be a positive integer"
 	fi
-
-	mkdir -p "$REPORT_DIR"
-	rm -f "$QUALITY_GATE_JSON" "$ISSUES_JSON" "$BRANCHES_JSON" "$PULL_REQUESTS_JSON" "$ANALYSES_JSON"
 	if [[ -n "$SONAR_PULL_REQUEST" && ! "$SONAR_PULL_REQUEST" =~ ^[1-9][0-9]*$ ]]; then
 		fail "SONAR_PULL_REQUEST must be a pull request number"
 	fi
+
+	mkdir -p "$REPORT_DIR"
+	rm -f "$QUALITY_GATE_JSON" "$ISSUES_JSON" "$BRANCHES_JSON" "$PULL_REQUESTS_JSON" "$ANALYSES_JSON"
 
 	local branch="$SONAR_BRANCH"
 	if [[ -z "$branch" ]]; then
@@ -352,26 +361,27 @@ main() {
 	fi
 
 	local dashboard_url="${SONAR_HOST_URL%/}/dashboard?id=${SONAR_PROJECT_KEY}"
-	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
-		dashboard_url+="&pullRequest=${SONAR_PULL_REQUEST}"
-	elif [[ -n "$branch" ]]; then
-		dashboard_url+="&branch=${branch}"
+	local dashboard_scope
+	dashboard_scope="$(scope_query "$branch")"
+	if [[ -n "$dashboard_scope" ]]; then
+		dashboard_url+="&${dashboard_scope}"
 	fi
 	echo "Sonar dashboard: $dashboard_url"
 
-	info "Checking Sonar project analysis history"
-	fetch_project_analyses
+	# A pull request analysis is judged on its own quality gate and issues, so
+	# the analysis history and branch list, which only the branch-existence and
+	# main-history checks below read, are fetched for branches alone.
+	if [[ -z "$SONAR_PULL_REQUEST" ]]; then
+		info "Checking Sonar project analysis history"
+		fetch_project_analyses
 
-	info "Checking Sonar branch list"
-	fetch_branches
+		info "Checking Sonar branch list"
+		fetch_branches
+	fi
 
 	wait_for_expected_revision "$branch"
 
-	if [[ -n "$SONAR_PULL_REQUEST" ]]; then
-		# A pull request analysis is judged on its own quality gate and issues;
-		# the branch-existence and main-history checks below do not apply.
-		:
-	elif [[ -n "$branch" ]] && ! sonar_branch_exists "$branch"; then
+	if [[ -z "$SONAR_PULL_REQUEST" && -n "$branch" ]] && ! sonar_branch_exists "$branch"; then
 		if [[ "$branch" == "main" ]]; then
 			fail "Sonar branch ${branch} was not found for project ${SONAR_PROJECT_KEY}"
 		fi

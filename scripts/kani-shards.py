@@ -84,6 +84,9 @@ class Shard:
     ci_peak_gib: float | None
     measured_in: str
 
+    def owns(self, package: str, harness: str) -> bool:
+        return self.package == package and any(f in harness for f in self.filters)
+
 
 # The runs every budget below comes from: five `workflow_dispatch` runs of
 # kani.yml on `ubuntu-latest` (Fedora 44 container), cold and warm Kani install
@@ -207,45 +210,41 @@ def check(found: dict[str, list[str]], unowned: list[Path]) -> list[str]:
     ]
     for package, names in found.items():
         for name in names:
-            owners = [
-                name_
-                for name_, shard in SHARDS.items()
-                if shard.package == package and any(p in name for p in shard.filters)
-            ]
+            owners = [shard_name for shard_name, shard in SHARDS.items() if shard.owns(package, name)]
             if len(owners) != 1:
                 problems.append(f"{package} harness {name} matches shards {owners or 'none'}")
-    for shard, record in SHARDS.items():
-        for prefix in record.filters:
-            if not any(prefix in name for name in found.get(record.package, [])):
-                problems.append(f"shard {shard} prefix {prefix} matches no harness")
+    for shard_name, shard in SHARDS.items():
+        for prefix in shard.filters:
+            if not any(prefix in name for name in found.get(shard.package, [])):
+                problems.append(f"shard {shard_name} prefix {prefix} matches no harness")
     return problems
 
 
 def budget_problems(shards: dict[str, Shard]) -> list[str]:
     """Every shard has a runner measurement inside the margins for its gate."""
     problems = []
-    for name, shard in shards.items():
+    for shard_name, shard in shards.items():
         if shard.gate not in GATES:
-            problems.append(f"shard {name} gate {shard.gate!r} is not one of {GATES}")
+            problems.append(f"shard {shard_name} gate {shard.gate!r} is not one of {GATES}")
         if shard.ci_minutes is None or shard.ci_peak_gib is None or not shard.measured_in:
             problems.append(
-                f"shard {name} has no recorded CI runner measurement "
+                f"shard {shard_name} has no recorded CI runner measurement "
                 "(ci_minutes, ci_peak_gib, measured_in); dispatch kani.yml and record it"
             )
             continue
         if shard.ci_minutes > MAX_SHARD_MINUTES:
             problems.append(
-                f"shard {name} takes {shard.ci_minutes} min on the runner, over the "
+                f"shard {shard_name} takes {shard.ci_minutes} min on the runner, over the "
                 f"{MAX_SHARD_MINUTES:g}-minute margin; split it"
             )
         if shard.ci_peak_gib > MAX_SHARD_PEAK_GIB:
             problems.append(
-                f"shard {name} peaks at {shard.ci_peak_gib} GiB on the runner, over the "
+                f"shard {shard_name} peaks at {shard.ci_peak_gib} GiB on the runner, over the "
                 f"{MAX_SHARD_PEAK_GIB:g} GiB margin; split it"
             )
         if shard.gate == "pull-request" and shard.ci_minutes > MAX_PULL_REQUEST_SHARD_MINUTES:
             problems.append(
-                f"shard {name} is gated pull-request but takes {shard.ci_minutes} min, over "
+                f"shard {shard_name} is gated pull-request but takes {shard.ci_minutes} min, over "
                 f"the {MAX_PULL_REQUEST_SHARD_MINUTES:g}-minute pull-request margin; gate it scheduled"
             )
     return problems
@@ -287,8 +286,7 @@ def run_measured(command: list[str]) -> tuple[int, float, int, HarnessLog]:
         log.feed(line)
     sys.stdout.flush()
     _, wait_status, usage = os.wait4(child.pid, 0)
-    child.returncode = os.waitstatus_to_exitcode(wait_status)
-    return child.returncode, time.monotonic() - start, usage.ru_maxrss, log
+    return os.waitstatus_to_exitcode(wait_status), time.monotonic() - start, usage.ru_maxrss, log
 
 
 def shard_record(shard: str, status: int, seconds: float, peak_kib: int, log: HarnessLog) -> dict[str, object]:
@@ -332,11 +330,12 @@ def run(shard_names: list[str], target_dir: str, measure: str | None = None) -> 
         if measure is None:
             status = subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
         else:
-            status, seconds, peak_kib, log = run_measured(command)
-            records.append(shard_record(shard, status, seconds, peak_kib, log))
+            record = shard_record(shard, *run_measured(command))
+            records.append(record)
+            status = record["status"]
             print(
-                f"Kani shard {shard}: {seconds / 60:.2f} min, peak RSS {peak_kib / (1024 * 1024):.2f} GiB, "
-                f"{len(log.harnesses)} harnesses",
+                f"Kani shard {shard}: {record['wall_minutes']} min, peak RSS {record['peak_rss_gib']} GiB, "
+                f"{len(record['harnesses'])} harnesses",
                 flush=True,
             )
         if status != 0:
@@ -393,6 +392,9 @@ def self_test() -> None:
         "harnesses": log.harnesses,
     }
     table = summary_markdown([record])
+    assert "| `widgets-geometry` | 0 | 1.5 | 3.0 | 2 |" in table, table
+    assert "| `kani_proofs::no_input_panics` | SUCCESSFUL | 0.4419652 |" in table, table
+
     # Budget rules: an unmeasured shard, one over 25 minutes, one over 12 GiB,
     # and a pull-request shard over 15 minutes each fail; a measured shard
     # inside every margin passes.
@@ -409,8 +411,6 @@ def self_test() -> None:
     }
     for label, shard in cases.items():
         assert budget_problems({label: shard}), f"budget self-test {label} should fail"
-    assert "| `widgets-geometry` | 0 | 1.5 | 3.0 | 2 |" in table, table
-    assert "| `kani_proofs::no_input_panics` | SUCCESSFUL | 0.4419652 |" in table, table
 
 
 def main() -> int:
@@ -425,14 +425,14 @@ def main() -> int:
         self_test()
     found, unowned = discover()
     if args.command == "list":
-        for shard, record in SHARDS.items():
-            names = [n for n in found[record.package] if any(p in n for p in record.filters)]
+        for shard_name, shard in SHARDS.items():
+            names = [n for n in found[shard.package] if shard.owns(shard.package, n)]
             budget = (
                 "unmeasured"
-                if record.ci_minutes is None
-                else f"{record.ci_minutes} min, {record.ci_peak_gib} GiB on the runner"
+                if shard.ci_minutes is None
+                else f"{shard.ci_minutes} min, {shard.ci_peak_gib} GiB on the runner"
             )
-            print(f"{shard} ({record.package}, {record.gate}, {budget}): {len(names)} harnesses")
+            print(f"{shard_name} ({shard.package}, {shard.gate}, {budget}): {len(names)} harnesses")
             for name in names:
                 print(f"  {name}")
         return 0
@@ -451,7 +451,7 @@ def main() -> int:
         return 0
     if args.command == "github-outputs":
         print(f"shards={json.dumps(list(SHARDS))}")
-        pr_shards = [name for name, shard in SHARDS.items() if shard.gate == "pull-request"]
+        pr_shards = [shard_name for shard_name, shard in SHARDS.items() if shard.gate == "pull-request"]
         print(f"pr-shards={json.dumps(pr_shards)}")
         print(f"kani-version={kani_version()}")
         return 0

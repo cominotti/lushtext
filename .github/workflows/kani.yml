@@ -43,9 +43,9 @@ jobs:
 
       - name: Check the shard table and export it
         id: table
-        run: |
-          ./scripts/kani-shards.py check
-          ./scripts/kani-shards.py github-outputs >> "$GITHUB_OUTPUT"
+        # `github-outputs` runs the same membership and budget checks as
+        # `check` and exits non-zero before exporting anything if one fails.
+        run: ./scripts/kani-shards.py github-outputs >> "$GITHUB_OUTPUT"
 
   kani:
     name: Kani Proof Harnesses (${{ matrix.shard }})

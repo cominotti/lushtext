@@ -3,7 +3,7 @@
 
 """Enforce LushText's workflow readability boundary conventions.
 
-Four mechanical guarantees, all derived from
+Nine mechanical guarantees, all derived from
 `openspec/specs/workflow-readability-boundaries/spec.md`,
 `openspec/specs/mutation-testing/spec.md`, and the completion rule in
 `docs/workflow-readability-matrix.md`:
@@ -458,14 +458,14 @@ def harness_parent_module(path: Path) -> Path | None:
     return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
+def parent_gates_kani_harness(parent: Path | None) -> bool:
+    """Return whether `parent` declares `#[cfg(kani)] mod kani_proofs;`."""
+    return parent is not None and KANI_HARNESS_GATE_RE.search(parent.read_text(encoding="utf-8")) is not None
+
+
 def is_gated_kani_harness(path: Path) -> bool:
     """Return whether `path` is a `kani_proofs.rs` its parent gates on `cfg(kani)`."""
-    if path.name != KANI_HARNESS_MODULE_NAME:
-        return False
-    parent = harness_parent_module(path)
-    if parent is None:
-        return False
-    return KANI_HARNESS_GATE_RE.search(parent.read_text(encoding="utf-8")) is not None
+    return path.name == KANI_HARNESS_MODULE_NAME and parent_gates_kani_harness(harness_parent_module(path))
 
 
 def kani_harness_findings(root: Path) -> list[str]:
@@ -475,12 +475,12 @@ def kani_harness_findings(root: Path) -> list[str]:
     if not crates.is_dir():
         return findings
     for path in sorted(crates.rglob(KANI_HARNESS_MODULE_NAME)):
-        if is_gated_kani_harness(path):
+        parent = harness_parent_module(path)
+        if parent_gates_kani_harness(parent):
             continue
         relative_path = (
             display_path(path) if root == REPO_ROOT else str(path.relative_to(root))
         )
-        parent = harness_parent_module(path)
         where = (
             "has no parent module file"
             if parent is None

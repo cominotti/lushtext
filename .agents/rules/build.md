@@ -468,7 +468,11 @@ Both fixture modules, `services::filesystem::fixture` and
 write and the `RegisteredDraft` token, so production must not be able to name
 them. `test-utils` is never a default feature and no shipping build (the
 `lushtext` `[dependencies]`, `build-aux/cargo.sh`, the Flatpak manifest, Snap)
-enables it; `make check-filesystem-boundary` enforces all of that, and CI's lint
+enables it, directly or through a feature that implies it (the check resolves
+those from the manifests, so `property-tests` and
+`manual-format-upgrade-fixtures` need no list entry). The raw backend operations
+only the filesystem fixture uses live in one gated `sys::fixture_ops` module.
+`make check-filesystem-boundary` enforces all of that, and CI's lint
 job runs `cargo check -p lushtext --bins --locked` with default features, the
 build that fails if production names a fixture (the all-features Clippy gate
 cannot see one). Unit tests get the fixtures from `cfg(test)`, the `lushtext`
