@@ -599,7 +599,7 @@ draft-journal invariants, and deferral inventory — is recorded in
 tool is [Kani](https://github.com/model-checking/kani): `#[cfg(kani)]` harnesses
 beside the code they check prove the slice-bin geometry and feedback loop, the
 draft journal's decision core under crashes and restarts, and the durable-write
-protocol's crash atomicity. `make kani` runs them with the pinned Kani version;
+protocol's crash atomicity, plus the pure policies with the longest visual-bug and data-safety history: the live editor-memory budget, the minimap fit functions, the adaptive-shell layout and breakpoint, the workspace-sidebar width presets, and the side-by-side preview-width clamp. `make kani` runs them with the pinned Kani version;
 ordinary builds and tests need no Kani install. CI runs every shard of the lane
 weekly and on dispatch, and the fast `widgets-geometry` shard on every pull
 request, within per-shard wall-time and memory budgets measured on the CI

@@ -13,6 +13,8 @@
 //! `crate::model::buffer_replacement` owns it, and forking a shared limit would
 //! let it drift while both copies still read as correct.
 
+#![deny(clippy::float_arithmetic)]
+
 use std::path::PathBuf;
 
 use crate::model::buffer_replacement::{
@@ -61,6 +63,10 @@ pub(super) const PREVIEW_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
 #[expect(
     clippy::cast_possible_truncation,
     reason = "The proportional viewer size is clamped back into GTK i32 geometry bounds"
+)]
+#[expect(
+    clippy::float_arithmetic,
+    reason = "the viewer is a fractional share of the parent axis; whole pixels in and out, rounded once"
 )]
 #[must_use]
 pub(super) fn parent_relative_dialog_axis_size(
@@ -303,6 +309,10 @@ pub(super) fn format_snapshot_meta(origin: LocalHistorySnapshotOrigin, byte_len:
 #[expect(
     clippy::cast_precision_loss,
     reason = "Snapshot sizes are displayed to one decimal place, where f64 precision is ample"
+)]
+#[expect(
+    clippy::float_arithmetic,
+    reason = "a size shown to one decimal place of a MiB or KiB is inherently fractional"
 )]
 pub(super) fn format_bytes(byte_len: u64) -> String {
     const KIB: u64 = 1024;

@@ -35,7 +35,7 @@ use crate::ui::accessibility;
 use crate::ui::buffer_snapshot::BufferSnapshotHandle;
 use crate::ui::command_palette::LushtextCommandPalette;
 use crate::ui::editor_page::LushtextEditorPage;
-use crate::ui::markdown_preview::LushtextMarkdownPreview;
+use crate::ui::markdown_preview::{LushtextMarkdownPreview, PREVIEW_DEFAULT_WIDTH_SP};
 use crate::ui::open_popover::LushtextOpenPopover;
 use crate::ui::properties_panel::LushtextPropertiesPanel;
 use crate::ui::search_panel::LushtextSearchPanel;
@@ -60,12 +60,6 @@ use std::sync::{
 pub(super) const PREVIEW_LAYOUT_EDITOR: &str = "editor";
 /// Focused preview presentation: Markdown preview fills the editor content area.
 pub(super) const PREVIEW_LAYOUT_PREVIEW: &str = "preview";
-/// Tiny non-zero floor used only before the first real preview-width sync.
-pub(super) const PREVIEW_MIN_WIDTH_SP: f64 = 1.0;
-/// Fallback side-by-side preview width for invalid legacy settings.
-pub(super) const PREVIEW_DEFAULT_WIDTH_SP: i32 = 300;
-/// Maximum share of the editor content that side-by-side preview may consume.
-pub(super) const PREVIEW_MAX_WIDTH_FRACTION: f64 = 1.0 / 3.0;
 /// Short delay for Adwaita layout and embedded preview children to settle.
 pub(super) const PREVIEW_SETTLE_DELAY_MS: u64 = 16;
 /// Delay before final secondary-surface reconciliation after a sidebar toggle.

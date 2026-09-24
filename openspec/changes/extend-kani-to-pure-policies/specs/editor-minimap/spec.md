@@ -6,17 +6,28 @@ functions: `fit_native_slider_to_source_map_bounds`, `fit_marker_bounds`,
 `fit_projected_bounds`, `expanded_to_min_height`, and
 `native_slider_estimate_from_inputs`. The harnesses SHALL prove that none of
 these functions panics for any `f64` input, including non-finite values, or any
-`i32` input. On a whole-pixel domain the harnesses SHALL prove containment and
-the minimum-height guarantee. In that domain every coordinate is an integer
-with magnitude at most 2^20, and every minimum height is an integer from 0 to
-2^16. They SHALL prove:
+`i32` input, and that every coordinate a function returns is finite. The one
+exception is the private `expanded_to_min_height`, whose callers guarantee a
+finite, non-empty band that already contains the span: it SHALL be proved on
+that precondition for every `f64` minimum height, and a kept `should_panic`
+harness SHALL show that it panics on an inverted band.
+
+The fit functions' inputs are GTK widget coordinates and scroll-adjustment
+values, which are fractional under scaling and smooth scrolling, so the
+functions stay `f64` and their rustdoc states the domain of each property. On a
+whole-pixel domain the harnesses SHALL prove containment. In that domain
+every coordinate is an integer with magnitude at most 2^20, and every minimum
+height is an integer from 0 to 2^16. They SHALL prove:
 
 - a returned marker or projected rectangle lies inside the rendered-content
-  band, `lower <= top < bottom <= upper`. Here `lower` is
-  `max(content_top, 0)`, and `upper` is `min(content_bottom, h)`, where `h` is
-  the strip height or the target height;
-- a returned rectangle's height is positive and at least the smaller of the
-  minimum height and the band height;
+  band, `lower <= top < bottom <= upper`, with a positive height. Here `lower`
+  is `max(content_top, 0)`, and `upper` is `min(content_bottom, h)`, where `h`
+  is the strip height or the target height;
+- `expanded_to_min_height`, to which both fits delegate the minimum height,
+  returns a span at least the smaller of the minimum height and the band
+  height. This is proved on the smaller whole-pixel domain the solver can
+  finish (magnitude at most 2^8, minimum heights from 0 to 2^6), stated in the
+  harness and the rustdoc, and a unit test SHALL sample the 2^20 domain;
 - `RejectOutside` returns nothing for a span entirely outside the band;
 - the fitted native slider keeps its horizontal position and width and lies
   vertically inside the source-map bounds.

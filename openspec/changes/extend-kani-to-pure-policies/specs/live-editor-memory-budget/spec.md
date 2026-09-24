@@ -6,8 +6,11 @@ The project SHALL keep Kani harnesses over the production functions
 `EditorResidencyLedger`. Each harness SHALL state its input domain. The domain
 SHALL cover every `u64` estimate, access generation, and policy generation, so
 that saturation is exercised, and snapshots of up to three pages with distinct
-editor identities. Ledger sequences SHALL be bounded, with the bound stated. The
-harnesses SHALL prove:
+editor identities. Ledger sequences SHALL be bounded, with the bound stated.
+The ledger's record map is standard-library code and MAY be trusted: the
+harnesses then drive the production accounting the ledger applies to each
+displaced record through a fixed-size record set that displaces records as
+the map does, and the harness states that trust. The harnesses SHALL prove:
 
 - an evicted editor's estimate is the fixed bookkeeping figure, and a loaded
   editor's estimate is at least its known file size and never wraps;

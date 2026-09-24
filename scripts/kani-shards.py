@@ -94,6 +94,9 @@ class Shard:
 # across them, rounded up. Per-run figures and local CBMC times (Kani 0.68.0,
 # one toolbox) are in docs/next/formal-verification.md, phase 2.
 MEASURED_IN = "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757261 (max of the five)"
+PROVISIONAL = "PROVISIONAL placeholder until the first dispatched run is recorded"
+PROVISIONAL_MINUTES = 20.0
+PROVISIONAL_PEAK_GIB = 4.0
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -154,6 +157,27 @@ SHARDS: dict[str, Shard] = {
         ci_minutes=17.3,
         ci_peak_gib=8.9,
         measured_in=MEASURED_IN,
+    ),
+    "core-memory-policy": Shard(
+        "lushtext-core",
+        ("model::editor_memory::kani_proofs::",),
+        gate="scheduled",
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
+    ),
+    "core-geometry-policies": Shard(
+        "lushtext-core",
+        (
+            "ui::editor_page::minimap::policy::kani_proofs::",
+            "ui::window::geometry::policy::kani_proofs::",
+            "ui::sidebar::width_preset::kani_proofs::",
+            "ui::markdown_preview::policy::kani_proofs::",
+        ),
+        gate="scheduled",
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
     ),
 }
 

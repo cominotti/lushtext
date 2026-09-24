@@ -131,7 +131,10 @@ the `lushtext-workflow` skill. Read the rule before restructuring a workflow. Th
 criteria formerly stated here — cross-cutting eligibility, the seam value-object
 rule, and the `#[expect(clippy::too_many_arguments)]` exemption for domain catalog
 construction — now live there, so an older citation of *this* file for one of them
-resolves in one hop.
+resolves in one hop. The same file holds the whole-pixel geometry policy rule
+(`#![deny(clippy::float_arithmetic)]` in pure geometry and budget policy
+modules, fractional values admitted only by a reasoned function-level
+`#[expect]`), enforced by Clippy and `make check-workflow-boundaries`.
 
 ## Coordination Vocabulary
 

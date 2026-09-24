@@ -113,10 +113,9 @@ This follows the slice-geometry precedent (programme record, phase 2) and the
   to 2 operations and is stated.
 - **Width presets** use every `i32` width and every `f64` for `from_fraction`.
 - **Preview width** uses every `i32` preferred and available width. The
-  one-third bound is proved as the exact rational comparison
-  `3.0 * result <= f64::from(max(available, 1))`. That is exact because
-  `result` is an integer below 2^31. It is not proved against the rounded
-  `1.0 / 3.0` product.
+  one-third bound is proved as the exact integer comparison
+  `3 * result <= max(available, 1)` in `i64`; since D8 the clamp itself is
+  integer-only.
 
 Each harness's doc comment names its domain, and a `kani::cover!` confirms that
 the interesting branches are reachable. Those branches are:
@@ -272,6 +271,69 @@ runner job, and its budget fields are filled from that run.
 - **Ledger entry.** `PROSE_CLASSIFIED_UNMUTATED` keeps `width_preset.rs`, but its
   reason is updated: the module now holds decision logic (the `from_fraction`
   fix), it is Kani-proved, and it is still outside the mutation scope.
+
+### D8. Whole pixels at the policy boundary (maintainer decision, during implementation)
+
+Pure geometry and budget policies in this change take and return **whole
+pixels** (integers), and the conversion to `f64` happens once, at the GTK
+adapter boundary, wherever the value is not inherently fractional.
+
+- **Preview width: converted.** `clamped_preview_width` is integer-only
+  (`available.max(1) / 3`, then the floor and the preference) and returns
+  `i32`; `ui/window/preview.rs` converts it with `f64::from` where it sets the
+  split view's constraints, and `PREVIEW_MIN_WIDTH_SP` is an `i32` that
+  `geometry/execution.rs` converts the same way. The old
+  `floor(available * (1.0 / 3.0))` was suspected of flooring `3k` to `k - 1`.
+  It did not in the `i32` domain: `3k * (1/3)` rounds back to `k` for
+  `k < 2^31`, which the in-band harness had already proved on the `f64` form,
+  so the off-by-one is recorded as unreachable rather than as a defect. The
+  integer form removed the `f64` multiply and floor that cost the preview
+  harnesses up to 12 minutes each.
+- **Inherently fractional, kept in `f64` with the domain stated:** the
+  workspace-sidebar preset width (a hint fraction times the window width, fed
+  back as a split fraction); the adaptive-shell fractions and the breakpoint's
+  workspace-width input (derived from that preset width); and the minimap fit
+  functions, whose inputs are GTK widget coordinates and scroll-adjustment
+  values that are fractional under scaling and smooth scrolling. Each states
+  its proved domain in its rustdoc and in the delta spec, as the slice-bin
+  geometry does.
+- **Editor memory** was integer arithmetic already.
+
+### D9. Enforce the whole-pixel rule mechanically (maintainer decision, during implementation)
+
+D8 is a rule a reviewer would otherwise have to remember, so it is held in two
+layers:
+
+- **Compiler.** Every whole-pixel policy module carries
+  `#![deny(clippy::float_arithmetic)]` after its module documentation. A
+  genuinely fractional value is admitted by a function-level
+  `#[expect(clippy::float_arithmetic, reason = "...")]` naming the value and
+  its domain; `expect` rather than `allow` because it fails once the function
+  stops doing float arithmetic. The listed modules are the four this change
+  proves (`ui/window/geometry/policy.rs`, `ui/editor_page/minimap/policy.rs`,
+  `ui/markdown_preview/policy.rs`, `ui/sidebar/width_preset.rs`),
+  `model/editor_memory.rs` (already integer; the deny keeps it so), and,
+  because convention amendments apply retroactively, the two other migrated
+  policies holding geometry: `ui/window/local_history/policy.rs` (viewer
+  size, two admitted functions) and `ui/window/focus_mode/policy.rs` (a
+  comparison only, no admission needed). The markdown-preview and
+  editor-memory modules need no admission at all.
+- **Policy check.** Rule 10 of `scripts/check-workflow-boundaries.py` declares
+  `WHOLE_PIXEL_POLICY_MODULES` and `GEOMETRY_ROLE_HOMES` and fails on a missing
+  deny, any `allow` of the lint, a module-wide `expect`, an `expect` without a
+  reason, or a listed module that no longer exists; a new `policy.rs` under a
+  geometry role home is covered without editing the list. Proved failing
+  first: removing the deny from `ui/window/geometry/policy.rs` made the check
+  fail naming the module, and reintroducing the old `f64` preview arithmetic
+  made Clippy fail with `float_arithmetic`.
+- **Not listed: `gtk-lush-widgets`' `slice_geometry.rs` and
+  `scroll_request.rs`.** Every function in both is arithmetic on
+  `GtkAdjustment` values, fractional under smooth scrolling, so the deny would
+  need an `expect` on every function and would enforce nothing. Their
+  whole-pixel domain is already stated and Kani-proved.
+- **Normative home:** the "Whole-pixel geometry policy" section of
+  `.agents/rules/workflow-convention.md`; `rust.md` and `AGENTS.md` point to
+  it.
 
 ## Risks / Trade-offs
 

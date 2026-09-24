@@ -41,7 +41,7 @@ change adopts it.
 | Order | Change | Carries | Depends on |
 |---|---|---|---|
 | 1 | `harden-kani-lane-and-draft-token` (**implemented 2026-09-23**) | N1 (measure the shards on runners, geometry shard in the PR gate) and N5 (both fixture modules gated). **Done**; figures in the programme record, phase 2 | — |
-| 2 | `extend-kani-to-pure-policies` | N2. `clamped_preview_width` keeps its floor, and the exception is stated in the spec. The sidebar-width `NaN` bug is fixed failing-first | 1 |
+| 2 | `extend-kani-to-pure-policies` (**implemented 2026-09-24**) | N2. `clamped_preview_width` keeps its floor, and the exception is stated in the spec. The sidebar-width `NaN` bug is fixed failing-first. **Done**; results, the second defect it found (an infinite native-slider height), and the three new shards are in the programme record, phase 2 | 1 |
 | 3 | `verify-multi-window-draft-journal` | N4, first half: window actors against process actors in the journal machine | 1 |
 | 4 | `extend-closed-loop-geometry-verification` | N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
 | 5 | `measure-proof-strength-with-mutation` | N9. The harness-file mutant exclusion is owned by change 1 | 1 |
@@ -83,6 +83,8 @@ runner's memory.
 This is cheap, and it turns proofs from periodic evidence into a guard.
 
 ### N2. Extend Kani to the other pure geometry and budget policies
+
+**Done (2026-09-24, `extend-kani-to-pure-policies`).** Results in the programme record, phase 2.
 
 These were listed in phase 2 but were outside this change:
 
@@ -258,13 +260,14 @@ case is "any number of bins" as evidence if GTK Lush publication reopens
 ## 4. Suggested order
 
 ```
-N1 ✓ measured, geometry shard PR-gated ─► N2 more pure policies ─► N3 breakpoint loop
+N1 ✓ measured, geometry shard PR-gated ─► N2 ✓ more pure policies ─► N3 breakpoint loop
 N5 ✓ token airtight ─► N4 multi-window + two-bin requests
 N9 mutation × proofs (N1 is done, so any time now)
 N11 after N4 (multi-window; N5 is done); N6, N7 only on their triggers; N8, N10 opportunistic
 ```
 
-N1 and N5 landed together in `harden-kani-lane-and-draft-token`, so the next
-step is N2 (`extend-kani-to-pure-policies`), which the same change prepared:
-a harness over a `ui/**/policy.rs` named `kani_proofs.rs` and gated
-`#[cfg(kani)]` needs no workflow-boundaries or mutation-scope entry.
+N1 and N5 landed together in `harden-kani-lane-and-draft-token`, and N2
+landed in `extend-kani-to-pure-policies`, so the next step on this line is N3
+(the adaptive-shell breakpoint loop, carried by
+`extend-closed-loop-geometry-verification`), which builds on the shell-layout
+harnesses N2 added in `ui/window/geometry/policy/kani_proofs.rs`.

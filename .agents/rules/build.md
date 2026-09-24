@@ -527,23 +527,32 @@ invariant; tighten the generator or use the deep lane.
   change both pins together. Install with
   `cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup`.
 - Placement: harnesses live in a `#[cfg(kani)] mod kani_proofs` of the crate
-  that owns the checked code (`gtk-lush-widgets` for geometry, `lushtext-core`
-  for the draft journal and the durable write), over GTK-free, I/O-free code
+  that owns the checked code (`gtk-lush-widgets` for geometry; `lushtext-core`
+  for the draft journal, the durable write, and the pure policies: the
+  editor-memory budget in `model/`, and the `ui/**` policies of the minimap
+  fits, the adaptive-shell geometry, the width presets, and the preview-width
+  clamp), over GTK-free, I/O-free code
   that ships, or a pure core production drives. Never a copy of the code.
   `cfg(kani)` is a declared expected cfg in the workspace lints, so ordinary
   builds, Clippy, and tests compile none of it and need no Kani install.
   The module name is mandatory: a harness module is a file named
   `kani_proofs.rs`, declared by its parent as `#[cfg(kani)] mod kani_proofs;`
   (`policy/kani_proofs.rs` by `policy.rs`, `x/kani_proofs.rs` by `x/mod.rs` or
-  `x.rs`, a crate-root one by `lib.rs`). That name is how the rest of the
+  `x.rs`, a crate-root one by `lib.rs`). A harness over a module goes in that
+  module's **child** directory (`ui/window/geometry/policy/kani_proofs.rs`, not
+  a sibling of `policy.rs`), so it can reach the module's private helpers
+  without widening their visibility, and so no `cfg(kani)` code lands inside a
+  `ui/**/policy.rs` mutation-scope file. That name is how the rest of the
   tooling treats it as verification code: `.cargo/mutants.toml` excludes
   `crates/**/kani_proofs.rs` (no build cargo-mutants runs compiles it, so no
   test could kill its mutants), and `make check-workflow-boundaries` skips it in
   the unclassified-decision-logic and role-home rules, but only when the parent
   gates it on `cfg(kani)`; an ungated or orphaned `kani_proofs.rs` is a finding.
-- Harness style: only `kani::any`, `kani::assume`, `#[kani::unwind]`, and
-  `#[kani::should_panic]`. Function and loop contracts are experimental and not
-  used. A harness proving a property on a restricted domain states that domain
+- Harness style: only `kani::any`, `kani::assume`, `kani::cover!`,
+  `#[kani::unwind]`, `#[kani::should_panic]`, and `#[kani::solver(...)]` (the
+  latter only under the fit order below). Function and loop contracts are
+  experimental and not used. A `kani::cover!` on each interesting branch keeps
+  a vacuous proof visible. A harness proving a property on a restricted domain states that domain
   in the harness **and** in the checked function's rustdoc or spec; a rustdoc
   promise must never claim more than was proved. A known-unsafe ordering or
   guard removal is pinned by a `should_panic` harness showing the property

@@ -13,6 +13,8 @@
 //! This module imports no toolkit crate, which is what keeps it inside the
 //! `ui/**/policy.rs` mutation scope.
 
+#![deny(clippy::float_arithmetic)]
+
 /// Pointer distance from the top edge that reveals the Focus Mode affordance.
 ///
 /// Forty-eight pixels is large enough to hit deliberately while staying above

@@ -41,13 +41,14 @@ use libadwaita::prelude::AdwApplicationWindowExt;
 use crate::config::keys;
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
-use super::super::imp::{PREVIEW_LAYOUT_EDITOR, PREVIEW_MIN_WIDTH_SP};
+use super::super::imp::PREVIEW_LAYOUT_EDITOR;
 use super::policy::{
     self, AdaptiveShellInputs, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
     PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PropertiesPresentation, WORKSPACE_SIDEBAR_MIN_WIDTH_SP,
     derive_adaptive_shell_layout, desired_properties_fraction, properties_breakpoint_condition,
     workspace_breakpoint_condition,
 };
+use crate::ui::markdown_preview::PREVIEW_MIN_WIDTH_SP;
 
 pub(in crate::ui::window) fn configure_split_views(
     workspace_split_view: &libadwaita::OverlaySplitView,
@@ -77,8 +78,8 @@ pub(in crate::ui::window) fn configure_split_views(
     preview_layout_view.set_layout_name(PREVIEW_LAYOUT_EDITOR);
     preview_split_view.set_sidebar_position(gtk4::PackType::End);
     preview_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
-    preview_split_view.set_min_sidebar_width(PREVIEW_MIN_WIDTH_SP);
-    preview_split_view.set_max_sidebar_width(PREVIEW_MIN_WIDTH_SP);
+    preview_split_view.set_min_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP));
+    preview_split_view.set_max_sidebar_width(f64::from(PREVIEW_MIN_WIDTH_SP));
     preview_split_view.set_pin_sidebar(true);
     preview_split_view.set_enable_show_gesture(false);
     preview_split_view.set_enable_hide_gesture(false);

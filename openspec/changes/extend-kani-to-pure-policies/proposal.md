@@ -72,6 +72,14 @@ recognition.
   A `should_panic` harness pins the unconditional form as false. The rule is
   written into the `adaptive-editor-geometry` spec for the first time. Behaviour
   is unchanged (design D5).
+- **Whole pixels at the policy boundary, enforced mechanically** (maintainer
+  decisions during implementation, design D8 and D9). The preview-width clamp
+  becomes integer-only, converted to `f64` once at the split view. Every pure
+  geometry or budget policy module carries `#![deny(clippy::float_arithmetic)]`,
+  admitting a genuinely fractional value only through a reasoned
+  function-level `#[expect]`, and `make check-workflow-boundaries` fails when a
+  listed module or a new geometry `policy.rs` lacks the deny. New requirement
+  in `workflow-readability-boundaries`.
 - **Add a Kani shard.** The shard `core-pure-policies` enters the shard table
   with a runner measurement inside the budget. It is gated `pull-request` only
   if its measured cold wall time is at most 15 minutes. Otherwise it is
@@ -104,6 +112,9 @@ _None._
   one third of the content width above its floor; this rule was previously
   documented only in AGENTS.md and rustdoc, and it now carries its 3 sp
   exception.
+- `workflow-readability-boundaries`: new requirement. Pure geometry and budget
+  policies do whole-pixel arithmetic, enforced by Clippy and the boundary
+  check.
 - `workspace-sidebar-width-policy`: one modified requirement and one new one.
   The modified "deterministic and persistent" requirement adds that a
   non-finite stored value resolves to the default preset. The new requirement

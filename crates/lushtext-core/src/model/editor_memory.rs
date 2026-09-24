@@ -6,7 +6,12 @@
 //! recently-used selection, hysteresis, and protected-work behavior fully
 //! deterministic without retaining widgets or reading document text.
 
+#![deny(clippy::float_arithmetic)]
+
 use std::collections::BTreeMap;
+
+#[cfg(kani)]
+mod kani_proofs;
 
 /// Aggregate live-editor estimate that starts safe background eviction.
 ///
@@ -79,18 +84,43 @@ pub struct EditorResidencyUpdate {
 /// public aggregate is saturated at `u64::MAX`. The number of GTK editor pages
 /// cannot approach the wider integer's capacity, so ordinary mutations remain
 /// constant work relative to the open-tab count.
+///
+/// The map holds the records; the arithmetic lives in [`ResidencyTotals`],
+/// which every upsert and remove drives with the record the map displaced.
+/// Kani proves that arithmetic over every sequence of three upserts or
+/// removes on two identities with every `u64` estimate: the saturating totals
+/// equal a recomputation over the records and the totals
+/// [`evaluate_editor_memory_budget`] computes from them, and
+/// `crossed_upper_threshold` is exact (`editor_memory/kani_proofs.rs`). The
+/// `BTreeMap` itself is trusted: a second insert into it exhausted 20 GiB in
+/// CBMC, so the harnesses drive the totals with a fixed-array record set that
+/// displaces records exactly as the map does.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EditorResidencyLedger {
     records: BTreeMap<usize, EditorResidency>,
+    totals: ResidencyTotals,
+}
+
+/// Exact aggregate accounting for [`EditorResidencyLedger`].
+///
+/// Exact `u128` accumulators make a later decrement trustworthy even while the
+/// public aggregate is saturated at `u64::MAX`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ResidencyTotals {
     exact_total_bytes: u128,
     exact_protected_bytes: u128,
 }
 
-impl EditorResidencyLedger {
-    /// Insert or replace one current editor record using exact scalar deltas.
-    pub fn upsert(&mut self, residency: EditorResidency) -> EditorResidencyUpdate {
+impl ResidencyTotals {
+    /// Account for one record replacing another: `previous` is the record the
+    /// map displaced (if any), `next` the record it now holds (if any).
+    fn replace(
+        &mut self,
+        previous: Option<&EditorResidency>,
+        next: Option<&EditorResidency>,
+    ) -> EditorResidencyUpdate {
         let previous_total_bytes = self.total_bytes();
-        if let Some(previous) = self.records.insert(residency.editor_id, residency) {
+        if let Some(previous) = previous {
             self.exact_total_bytes = self
                 .exact_total_bytes
                 .saturating_sub(u128::from(previous.estimated_bytes));
@@ -100,47 +130,53 @@ impl EditorResidencyLedger {
                     .saturating_sub(u128::from(previous.estimated_bytes));
             }
         }
-        self.exact_total_bytes = self
-            .exact_total_bytes
-            .saturating_add(u128::from(residency.estimated_bytes));
-        if !residency.eligible_for_eviction {
-            self.exact_protected_bytes = self
-                .exact_protected_bytes
-                .saturating_add(u128::from(residency.estimated_bytes));
+        if let Some(next) = next {
+            self.exact_total_bytes = self
+                .exact_total_bytes
+                .saturating_add(u128::from(next.estimated_bytes));
+            if !next.eligible_for_eviction {
+                self.exact_protected_bytes = self
+                    .exact_protected_bytes
+                    .saturating_add(u128::from(next.estimated_bytes));
+            }
         }
         let total_bytes = self.total_bytes();
         EditorResidencyUpdate {
             previous_total_bytes,
             total_bytes,
-            crossed_upper_threshold: previous_total_bytes <= EDITOR_MEMORY_UPPER_BUDGET_BYTES
+            // Only an upsert can start enforcement; a removal never does.
+            crossed_upper_threshold: next.is_some()
+                && previous_total_bytes <= EDITOR_MEMORY_UPPER_BUDGET_BYTES
                 && total_bytes > EDITOR_MEMORY_UPPER_BUDGET_BYTES,
         }
     }
 
+    fn total_bytes(&self) -> u64 {
+        u64::try_from(self.exact_total_bytes).unwrap_or(u64::MAX)
+    }
+
+    fn protected_bytes(&self) -> u64 {
+        u64::try_from(self.exact_protected_bytes).unwrap_or(u64::MAX)
+    }
+}
+
+impl EditorResidencyLedger {
+    /// Insert or replace one current editor record using exact scalar deltas.
+    pub fn upsert(&mut self, residency: EditorResidency) -> EditorResidencyUpdate {
+        let previous = self.records.insert(residency.editor_id, residency);
+        self.totals.replace(previous.as_ref(), Some(&residency))
+    }
+
     /// Remove one detached editor record using the same exact delta path.
     pub fn remove(&mut self, editor_id: usize) -> Option<EditorResidencyUpdate> {
-        let previous_total_bytes = self.total_bytes();
         let previous = self.records.remove(&editor_id)?;
-        self.exact_total_bytes = self
-            .exact_total_bytes
-            .saturating_sub(u128::from(previous.estimated_bytes));
-        if !previous.eligible_for_eviction {
-            self.exact_protected_bytes = self
-                .exact_protected_bytes
-                .saturating_sub(u128::from(previous.estimated_bytes));
-        }
-        Some(EditorResidencyUpdate {
-            previous_total_bytes,
-            total_bytes: self.total_bytes(),
-            crossed_upper_threshold: false,
-        })
+        Some(self.totals.replace(Some(&previous), None))
     }
 
     /// Replace the ledger from a freshness-checked exceptional/full scan.
     pub fn reconcile(&mut self, records: impl IntoIterator<Item = EditorResidency>) {
         self.records.clear();
-        self.exact_total_bytes = 0;
-        self.exact_protected_bytes = 0;
+        self.totals = ResidencyTotals::default();
         for record in records {
             self.upsert(record);
         }
@@ -155,13 +191,13 @@ impl EditorResidencyLedger {
     /// Return the saturating aggregate across every tracked editor.
     #[must_use]
     pub fn total_bytes(&self) -> u64 {
-        u64::try_from(self.exact_total_bytes).unwrap_or(u64::MAX)
+        self.totals.total_bytes()
     }
 
     /// Return the saturating aggregate for non-evictable editor residency.
     #[must_use]
     pub fn protected_bytes(&self) -> u64 {
-        u64::try_from(self.exact_protected_bytes).unwrap_or(u64::MAX)
+        self.totals.protected_bytes()
     }
 
     /// Copy current scalar records only when policy enforcement needs a plan.
@@ -227,6 +263,15 @@ pub struct EditorMemoryBudgetDecision {
 ///
 /// Totals saturate instead of wrapping, and ties use editor identity so the
 /// same input always produces the same candidate order.
+///
+/// Kani proves (`editor_memory/kani_proofs.rs`), over every `u64` estimate and
+/// generation and every snapshot of up to three pages with distinct
+/// identities: no protected or bookkeeping-sized page is selected; candidates
+/// are the least-recently-used prefix in (access generation, identity) order;
+/// selection stops at the lower watermark; the projected total is the
+/// aggregate minus the reclaimed sum, saturating; and the outcome agrees with
+/// it (`WithinBudget` at or below the upper budget, `Converged` exactly at or
+/// below the watermark, `NoProgress` only once every eligible page is chosen).
 #[must_use]
 pub fn evaluate_editor_memory_budget(pages: &[EditorResidency]) -> EditorMemoryBudgetDecision {
     let total_bytes = pages.iter().fold(0u64, |total, page| {
@@ -256,16 +301,27 @@ pub fn evaluate_editor_memory_budget(pages: &[EditorResidency]) -> EditorMemoryB
             page.eligible_for_eviction && page.estimated_bytes > EVICTED_EDITOR_BOOKKEEPING_BYTES
         })
         .collect::<Vec<_>>();
-    // Select oldest access first with editor identity as a stable tie-breaker.
-    // Continue to low water so small estimate changes do not retrigger eviction.
-    eligible.sort_unstable_by_key(|page| (page.access_generation, page.editor_id));
 
+    // Select oldest access first with editor identity as a stable tie-breaker,
+    // and continue to low water so small estimate changes do not retrigger
+    // eviction. Each step takes the least-recently-used remaining page, which
+    // yields exactly the prefix a full sort would, in O(pages x candidates)
+    // rather than O(pages log pages) (a pass usually selects one or two). It is
+    // also what lets Kani check this function: `sort_unstable`'s pivot
+    // recursion never terminated symbolic execution over a snapshot of
+    // symbolic length (`editor_memory/kani_proofs.rs`).
     let mut projected_bytes = total_bytes;
     let mut candidates = Vec::new();
-    for page in eligible {
-        if projected_bytes <= EDITOR_MEMORY_LOWER_WATER_BYTES {
+    while projected_bytes > EDITOR_MEMORY_LOWER_WATER_BYTES {
+        let Some(index) = eligible
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, page)| (page.access_generation, page.editor_id))
+            .map(|(index, _)| index)
+        else {
             break;
-        }
+        };
+        let page = eligible.swap_remove(index);
         let reclaimable_bytes = page
             .estimated_bytes
             .saturating_sub(EVICTED_EDITOR_BOOKKEEPING_BYTES);
@@ -308,6 +364,73 @@ mod tests {
             access_generation,
             policy_generation: 7,
             eligible_for_eviction,
+        }
+    }
+
+    /// The selection the policy used before its least-recently-used loop
+    /// replaced the full sort: sort every eligible page, take the prefix.
+    fn sorted_prefix_reference(pages: &[EditorResidency]) -> Vec<usize> {
+        let total = pages.iter().fold(0u64, |total, page| {
+            total.saturating_add(page.estimated_bytes)
+        });
+        if total <= EDITOR_MEMORY_UPPER_BUDGET_BYTES {
+            return Vec::new();
+        }
+        let mut eligible = pages
+            .iter()
+            .copied()
+            .filter(|page| {
+                page.eligible_for_eviction
+                    && page.estimated_bytes > EVICTED_EDITOR_BOOKKEEPING_BYTES
+            })
+            .collect::<Vec<_>>();
+        eligible.sort_unstable_by_key(|page| (page.access_generation, page.editor_id));
+        let mut projected = total;
+        let mut selected = Vec::new();
+        for page in eligible {
+            if projected <= EDITOR_MEMORY_LOWER_WATER_BYTES {
+                break;
+            }
+            projected =
+                projected.saturating_sub(page.estimated_bytes - EVICTED_EDITOR_BOOKKEEPING_BYTES);
+            selected.push(page.editor_id);
+        }
+        selected
+    }
+
+    #[test]
+    fn least_recently_used_loop_selects_the_sorted_prefix() {
+        // A small deterministic generator: every snapshot of up to eight pages
+        // mixes sizes around the budget, shared access generations (so the
+        // identity tie-breaker decides), and protected pages.
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2_000 {
+            let count = usize::try_from(next() % 9).expect("a count below 9 fits usize");
+            let mut ids: Vec<usize> = (0..count).collect();
+            ids.reverse();
+            let pages = ids
+                .into_iter()
+                .map(|editor_id| {
+                    page(
+                        editor_id,
+                        next() % (EDITOR_MEMORY_UPPER_BUDGET_BYTES / 2),
+                        next() % 4,
+                        next() % 4 != 0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let selected = evaluate_editor_memory_budget(&pages)
+                .candidates
+                .iter()
+                .map(|candidate| candidate.editor_id)
+                .collect::<Vec<_>>();
+            assert_eq!(selected, sorted_prefix_reference(&pages), "{pages:?}");
         }
     }
 

@@ -139,6 +139,9 @@ pub use evidence::{
 // modules that own them.
 #[cfg(feature = "property-tests")]
 pub use policy::lower_inline_footnotes_for_property_test;
+pub(crate) use policy::{
+    PREVIEW_DEFAULT_WIDTH_SP, PREVIEW_MIN_WIDTH_SP, clamped_preview_width, preferred_preview_width,
+};
 #[cfg(feature = "fuzzing")]
 pub use policy::{lowered_markdown_for_fuzzing, preprocess_markdown_for_fuzzing};
 pub use seams::MarkdownPreviewRenderContext;

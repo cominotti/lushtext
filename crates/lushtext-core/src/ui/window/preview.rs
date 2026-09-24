@@ -12,16 +12,15 @@ use crate::services::markdown_render::MAX_MARKDOWN_SOURCE_BYTES;
 use crate::ui::accessibility::{self, AnnouncementLane};
 use crate::ui::buffer_snapshot::{self, BufferSnapshotOutcome};
 use crate::ui::editor_page::LushtextEditorPage;
-use crate::ui::markdown_preview::MarkdownPreviewRenderContext;
+use crate::ui::markdown_preview::{
+    MarkdownPreviewRenderContext, clamped_preview_width, preferred_preview_width,
+};
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{glib, prelude::*};
 use sourceview5::prelude::*;
 
 use super::LushtextWindow;
-use super::imp::{
-    PREVIEW_DEFAULT_WIDTH_SP, PREVIEW_LAYOUT_EDITOR, PREVIEW_LAYOUT_PREVIEW,
-    PREVIEW_MAX_WIDTH_FRACTION, PREVIEW_MIN_WIDTH_SP, PREVIEW_SETTLE_DELAY_MS,
-};
+use super::imp::{PREVIEW_LAYOUT_EDITOR, PREVIEW_LAYOUT_PREVIEW, PREVIEW_SETTLE_DELAY_MS};
 
 /// Content placeholder shown while the preview waits for installed text.
 const PREPARING_MARKDOWN_PREVIEW: &str = "Preparing Markdown preview…";
@@ -267,7 +266,7 @@ impl LushtextWindow {
         let imp = self.imp();
         let available_width = effective_preview_available_width(self, window_width);
         let preferred_width = preferred_preview_width(imp.preferred_preview_width.get());
-        let preview_width = clamped_preview_width(preferred_width, available_width);
+        let preview_width = f64::from(clamped_preview_width(preferred_width, available_width));
         let changed = set_preview_split_fixed_width(&imp.preview_split_view, preview_width);
 
         if changed && (imp.preview_visible.get() || imp.preview_mode.get()) {
@@ -585,23 +584,6 @@ fn effective_preview_available_width(window: &LushtextWindow, window_width: i32)
     } else {
         window.width().max(1)
     }
-}
-
-fn preferred_preview_width(width: i32) -> i32 {
-    if width > 0 {
-        width
-    } else {
-        PREVIEW_DEFAULT_WIDTH_SP
-    }
-}
-
-fn clamped_preview_width(preferred_width: i32, available_width: i32) -> f64 {
-    let max_width = (f64::from(available_width.max(1)) * PREVIEW_MAX_WIDTH_FRACTION)
-        .floor()
-        .max(PREVIEW_MIN_WIDTH_SP);
-    f64::from(preferred_width)
-        .max(PREVIEW_MIN_WIDTH_SP)
-        .min(max_width)
 }
 
 fn set_preview_split_fixed_width(

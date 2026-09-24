@@ -3,7 +3,7 @@
 
 """Enforce LushText's workflow readability boundary conventions.
 
-Nine mechanical guarantees, all derived from
+Ten mechanical guarantees, all derived from
 `openspec/specs/workflow-readability-boundaries/spec.md`,
 `openspec/specs/mutation-testing/spec.md`, and the completion rule in
 `docs/workflow-readability-matrix.md`:
@@ -67,6 +67,15 @@ Nine mechanical guarantees, all derived from
    (rule 7), but only when its parent module declares it
    `#[cfg(kani)] mod kani_proofs;`. Any `kani_proofs.rs` under `crates/` whose
    parent does not gate it, or that has no parent module file, is a finding.
+10. Whole-pixel geometry policy: every module in `WHOLE_PIXEL_POLICY_MODULES`,
+   and every `policy.rs` under a directory in `GEOMETRY_ROLE_HOMES` (so a new
+   one is covered without an edit here), carries the inner attribute
+   `#![deny(clippy::float_arithmetic)]`, which `make check`'s Clippy then
+   enforces. A genuinely fractional value is admitted only by a narrow
+   `#[expect(clippy::float_arithmetic, reason = "...")]` on its function: an
+   `allow` of the lint, a module-wide `expect`, or an `expect` without a
+   `reason` in such a module is a finding. A listed module missing from the
+   tree is a finding at the real-tree entry point, so a rename cannot drop it.
 """
 
 from __future__ import annotations
@@ -493,6 +502,84 @@ def kani_harness_findings(root: Path) -> list[str]:
     return findings
 
 
+# Rule 10. The pure geometry and budget policies take and return whole pixels
+# wherever the value is not inherently fractional; the compiler holds that line
+# (`clippy::float_arithmetic`, denied module-wide) and this list holds the
+# compiler to every module that must carry it. See the "Whole-pixel geometry
+# policy" section of `.agents/rules/workflow-convention.md`.
+WHOLE_PIXEL_POLICY_MODULES = (
+    "ui/window/geometry/policy.rs",
+    "ui/editor_page/minimap/policy.rs",
+    "ui/markdown_preview/policy.rs",
+    "ui/sidebar/width_preset.rs",
+    "model/editor_memory.rs",
+    "ui/window/local_history/policy.rs",
+    "ui/window/focus_mode/policy.rs",
+)
+# Role homes whose `policy.rs` files hold geometry decisions: any `policy.rs`
+# beneath them, present or future, must carry the deny too.
+GEOMETRY_ROLE_HOMES = (
+    "ui/window/geometry",
+    "ui/editor_page/minimap",
+    "ui/markdown_preview",
+)
+FLOAT_ARITHMETIC_DENY_RE = re.compile(
+    r"^#!\[(?:deny|forbid)\(clippy::float_arithmetic\)\]", re.MULTILINE
+)
+FLOAT_ARITHMETIC_ALLOW_RE = re.compile(r"#!?\[allow\([^\]]*clippy::float_arithmetic")
+FLOAT_ARITHMETIC_INNER_EXPECT_RE = re.compile(r"#!\[expect\([^\]]*clippy::float_arithmetic")
+FLOAT_ARITHMETIC_EXPECT_RE = re.compile(r"#\[expect\((.*?)\)\]", re.DOTALL)
+
+
+def whole_pixel_policy_modules(root: Path) -> list[Path]:
+    """Return the listed whole-pixel modules plus every geometry `policy.rs`."""
+    core = root / CORE_SRC
+    modules = {core / path for path in WHOLE_PIXEL_POLICY_MODULES}
+    for home in GEOMETRY_ROLE_HOMES:
+        directory = core / home
+        if directory.is_dir():
+            modules.update(directory.rglob(POLICY_MODULE_NAME))
+    return sorted(modules)
+
+
+def whole_pixel_findings(root: Path, *, require_listed: bool) -> list[str]:
+    """Return findings for geometry policy modules that do not deny float arithmetic."""
+    findings: list[str] = []
+    for path in whole_pixel_policy_modules(root):
+        relative_path = display_path(path) if root == REPO_ROOT else str(path.relative_to(root))
+        if not path.is_file():
+            if require_listed:
+                findings.append(
+                    f"{relative_path} is listed in WHOLE_PIXEL_POLICY_MODULES but does not exist; "
+                    "update the list when a geometry policy moves"
+                )
+            continue
+        text = path.read_text(encoding="utf-8")
+        if FLOAT_ARITHMETIC_DENY_RE.search(text) is None:
+            findings.append(
+                f"{relative_path} is a whole-pixel geometry policy module but lacks "
+                "`#![deny(clippy::float_arithmetic)]`"
+            )
+        if FLOAT_ARITHMETIC_ALLOW_RE.search(text) is not None:
+            findings.append(
+                f"{relative_path} allows clippy::float_arithmetic; admit a fractional value "
+                "with a function-level `#[expect(clippy::float_arithmetic, reason = ...)]`"
+            )
+        if FLOAT_ARITHMETIC_INNER_EXPECT_RE.search(text) is not None:
+            findings.append(
+                f"{relative_path} expects clippy::float_arithmetic module-wide; "
+                "put the expectation on the function that needs it"
+            )
+        for match in FLOAT_ARITHMETIC_EXPECT_RE.finditer(text):
+            if "clippy::float_arithmetic" in match.group(1) and "reason" not in match.group(1):
+                line = text.count("\n", 0, match.start()) + 1
+                findings.append(
+                    f"{relative_path}:{line} expects clippy::float_arithmetic without a "
+                    "`reason` naming the fractional value and its domain"
+                )
+    return findings
+
+
 def module_doc(text: str) -> str:
     """Return the file's leading `//!` module documentation block."""
     doc: list[str] = []
@@ -559,8 +646,11 @@ PROSE_CLASSIFIED_UNMUTATED = {
         "slot 7b superseded it) and consumed by Preferences and the window shell. "
         "That row is now migrated and its own policy is mutation-covered at "
         "ui/window/geometry/policy.rs; this value type stays a prose-classified "
-        "unmutated module because it is a named enum plus its fraction accessor, "
-        "not decision logic, and moving it into the role home would put a "
+        "unmutated module. It now holds one decision, from_fraction (nearest "
+        "preset, non-finite to the default), which extend-kani-to-pure-policies "
+        "fixed failing-first and which Kani proves with the clamps and "
+        "round-trips (width_preset/kani_proofs.rs); it remains outside the "
+        "mutation scope because moving it into the role home would put a "
         "Preferences-facing type behind a workflow directory"
     ),
     "crates/lushtext-core/src/ui/sidebar/workspace_section/watch_targets.rs": (
@@ -1426,6 +1516,7 @@ def check_tree(
     # a missing matrix must not silently disarm the discovery half.
     findings.extend(unclassified_pure_module_findings(root))
     findings.extend(kani_harness_findings(root))
+    findings.extend(whole_pixel_findings(root, require_listed=require_seam_ceiling))
 
     if not matrix_path.is_file():
         findings.append(f"missing workflow readability matrix: {display_path(matrix_path)}")
@@ -2732,6 +2823,43 @@ def run_self_test() -> None:
                 for f in check_tree(root, matrix, config)
                 if "kani_proofs.rs" in f
             ]
+
+    deny = "#![deny(clippy::float_arithmetic)]\n"
+    expect_ok = (
+        '#[expect(clippy::float_arithmetic, reason = "a widget coordinate is fractional")]\n'
+        "pub fn half(value: f64) -> f64 { value / 2.0 }\n"
+    )
+
+    def whole_pixel_case(
+        relative: str, content: str, *, require_listed: bool = False
+    ) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root / CORE_SRC / relative, content)
+            return whole_pixel_findings(root, require_listed=require_listed)
+
+    listed = WHOLE_PIXEL_POLICY_MODULES[0]
+    if whole_pixel_case(listed, "//! Pure.\n\n" + deny + expect_ok):
+        raise AssertionError("expected a denying module with a reasoned fn-level expect to pass")
+    if not whole_pixel_case(listed, "//! Pure.\npub fn ok() {}\n"):
+        raise AssertionError("expected a listed module without the deny to be a finding")
+    new_home_policy = GEOMETRY_ROLE_HOMES[0] + "/nested/policy.rs"
+    if not whole_pixel_case(new_home_policy, "//! Pure.\npub fn ok() {}\n"):
+        raise AssertionError("expected a new policy.rs under a geometry role home without the deny to be a finding")
+    if whole_pixel_case(new_home_policy, "//! Pure.\n" + deny):
+        raise AssertionError("expected a new geometry policy.rs with the deny to pass")
+    if not whole_pixel_case(listed, deny + "#![allow(clippy::float_arithmetic)]\n"):
+        raise AssertionError("expected a module-wide allow to be a finding")
+    if not whole_pixel_case(listed, deny + "#[allow(clippy::float_arithmetic)]\nfn f() {}\n"):
+        raise AssertionError("expected a function-level allow to be a finding")
+    if not whole_pixel_case(listed, deny + "#![expect(clippy::float_arithmetic, reason = \"x\")]\n"):
+        raise AssertionError("expected a module-wide expect to be a finding")
+    if not whole_pixel_case(listed, deny + "#[expect(clippy::float_arithmetic)]\nfn f() {}\n"):
+        raise AssertionError("expected an expect without a reason to be a finding")
+    if not whole_pixel_case("model/other.rs", "pub fn ok() {}\n", require_listed=True):
+        raise AssertionError("expected a missing listed module to be a finding at the real-tree entry point")
+    if whole_pixel_case("model/other.rs", "pub fn ok() {}\n"):
+        raise AssertionError("expected fixtures without the listed modules to pass when not required")
 
     home_gated = home_harness_findings("#[cfg(kani)]\nmod kani_proofs;\n")
     if home_gated:

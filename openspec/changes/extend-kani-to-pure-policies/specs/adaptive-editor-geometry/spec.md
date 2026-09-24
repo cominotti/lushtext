@@ -15,7 +15,10 @@ SHALL prove that `derive_adaptive_shell_layout`:
 - chooses the sheet presentation exactly when the window width is at or below
   its derived breakpoint threshold.
 
-They SHALL also prove, for every workspace width from 0 to 440 sp, that
+The window width is whole pixels; the workspace width and the split
+fractions are inherently fractional (they derive from the preset's hint
+fraction) and stay `f64`, with the domain stated in the rustdoc. They SHALL
+also prove, for every finite workspace width from 0 to 440 sp, that
 `properties_breakpoint_max_width_sp` never decreases as the width grows. The
 threshold SHALL be at least the editor-content minimum, plus the layout
 overhead, the workspace width, and the properties minimum. For every `i32`
@@ -43,8 +46,11 @@ resolves to the 300 sp default. An available width of zero or less counts as
 - when the preferred width lies between the floor and that one-third bound, it
   equals the preferred width.
 
-The resolution SHALL be a GTK-free policy function. Kani harnesses SHALL prove
-these properties over every `i32` preferred and available width. A kept
+The resolution SHALL be a GTK-free policy function that takes and returns
+whole pixels (`i32`), with no floating-point arithmetic inside it; the window
+SHALL convert the result to `f64` once, where it sets the split view's
+constraints. Kani harnesses SHALL prove these properties over every `i32`
+preferred and available width. A kept
 `should_panic` harness SHALL show that the unconditional "at most one third"
 form is false below 3 sp.
 

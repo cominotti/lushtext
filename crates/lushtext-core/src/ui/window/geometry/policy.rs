@@ -34,7 +34,12 @@
 //! sweep in seven subdirectories, four of them role homes no predicate has ever
 //! protected.
 
+#![deny(clippy::float_arithmetic)]
+
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
+
+#[cfg(kani)]
+mod kani_proofs;
 
 /// Tiny non-zero floor used before the first real workspace-width sync.
 pub(in crate::ui::window) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;
@@ -151,6 +156,10 @@ pub(in crate::ui::window) fn effective_workspace_sidebar_fraction(
 }
 
 /// Return the right-properties fraction relative to its current inner split.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "split-view fractions are inherently fractional; every i32 width is in the proved domain"
+)]
 pub(in crate::ui::window) fn effective_properties_fraction(input: AdaptiveShellInputs) -> f64 {
     let total_fraction = desired_properties_fraction(input.window_width);
     if derive_adaptive_shell_layout(input).workspace_consumes_width {
@@ -180,6 +189,10 @@ pub(in crate::ui::window) fn effective_properties_fraction(input: AdaptiveShellI
 /// testable, which kills the whole family at once. Retiring the exclusion beats
 /// documenting it: a justified exclusion has to be re-justified every time either
 /// constant moves.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "derives from the fractional preset width"
+)]
 fn properties_inner_split_width(total_width: f64, workspace_width: f64) -> f64 {
     (total_width - workspace_width).max(1.0)
 }
@@ -192,6 +205,14 @@ pub(in crate::ui::window) fn desired_properties_fraction(window_width: i32) -> f
     )
 }
 
+/// Derive which secondary surfaces render, and how, for one stable intent.
+///
+/// Kani proves (`policy/kani_proofs.rs`), for every `i32` width, preset,
+/// requested visibility, Focus Mode, and compact-surface choice: Focus Mode
+/// renders nothing; an unrequested surface never renders; the sheet
+/// presentation renders at most one surface; the pane presentation above the
+/// workspace breakpoint renders every requested surface; and the sheet is
+/// chosen exactly at or below the derived breakpoint.
 pub(in crate::ui::window) fn derive_adaptive_shell_layout(
     input: AdaptiveShellInputs,
 ) -> AdaptiveShellLayout {
@@ -276,9 +297,18 @@ fn secondary_surface_requested_for_intent(
 }
 
 /// Compute the total width below which properties must stop consuming width.
+///
+/// Kani proves it never decreases as the workspace width grows over the
+/// reachable range [0, 440] sp, and that it is at least the editor-content
+/// minimum plus the layout overhead, the workspace width, and the properties
+/// minimum.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "Stored window geometry is clamped to GTK window dimensions before converting to i32"
+)]
+#[expect(
+    clippy::float_arithmetic,
+    reason = "derives from the fractional preset width; the proved domain is [0, 440] sp"
 )]
 fn properties_breakpoint_max_width_sp(workspace_width_sp: f64) -> i32 {
     let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
@@ -288,11 +318,25 @@ fn properties_breakpoint_max_width_sp(workspace_width_sp: f64) -> i32 {
 }
 
 /// Convert a center-width target and workspace width into total window width.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "divides by the fractional properties share"
+)]
 fn dual_sidebar_window_width_for_center(center_width_sp: f64, workspace_width_sp: f64) -> f64 {
     (center_width_sp + workspace_width_sp)
         / (1.0 - FIXED_PROPERTIES_SIDEBAR_FRACTION).max(f64::EPSILON)
 }
 
+/// A target fraction of the window, raised so it never falls below
+/// `min_width_sp`, and capped at the whole window.
+///
+/// Kani proves the production use finite and in (0, 1] for every `i32` width,
+/// as it does [`effective_properties_fraction`] and
+/// [`effective_workspace_sidebar_fraction`].
+#[expect(
+    clippy::float_arithmetic,
+    reason = "a split-view fraction is inherently fractional; every i32 width is in the proved domain"
+)]
 fn fixed_fraction(window_width: i32, min_width_sp: f64, target_fraction: f64) -> f64 {
     let width = f64::from(window_width.max(1));
     let lower = (min_width_sp / width).min(1.0);

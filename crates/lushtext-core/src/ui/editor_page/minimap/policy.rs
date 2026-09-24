@@ -31,7 +31,12 @@
 //! one bounded slice at a time from a live buffer cursor without ever copying
 //! the document.
 
+#![deny(clippy::float_arithmetic)]
+
 use std::time::Duration;
+
+#[cfg(kani)]
+mod kani_proofs;
 
 /// Width reserved for the semantic marker strip painted over the map edge.
 ///
@@ -194,6 +199,10 @@ pub struct MinimapMarkerBounds {
 impl MinimapMarkerBounds {
     /// Height in marker-strip widget coordinates.
     #[must_use]
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "marker-strip coordinates are GTK widget coordinates, fractional under scaling"
+    )]
     pub fn height(&self) -> f64 {
         self.bottom - self.top
     }
@@ -218,6 +227,10 @@ pub struct MinimapProjectedBounds {
 impl MinimapProjectedBounds {
     /// Bottom edge in target widget coordinates.
     #[must_use]
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "projected bounds are GTK widget coordinates, fractional under scaling"
+    )]
     pub fn bottom(&self) -> f64 {
         self.y + self.height
     }
@@ -302,6 +315,10 @@ pub(crate) struct MinimapNativeSliderDiagnostics {
 }
 
 /// Compute the source-map/editor ratio, returning `None` for unusable geometry.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "a ratio of two widget heights is inherently fractional"
+)]
 pub(super) fn source_map_editor_height_ratio_from_heights(
     editor_document_height: i32,
     source_map_document_height: i32,
@@ -316,6 +333,10 @@ pub(super) fn source_map_editor_height_ratio_from_heights(
 ///
 /// GTK can expose transitional non-finite values while a newly bound source
 /// map is allocating. Those values must never be passed back to `set_value`.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "GtkAdjustment values are fractional under smooth scrolling"
+)]
 pub(super) fn finite_adjustment_distance_from_lower(value: f64, lower: f64) -> Option<f64> {
     if !value.is_finite() || !lower.is_finite() {
         return None;
@@ -324,6 +345,10 @@ pub(super) fn finite_adjustment_distance_from_lower(value: f64, lower: f64) -> O
 }
 
 /// Return the child page size that represents a fitting, non-scrollable source.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "GtkAdjustment page sizes are fractional under smooth scrolling"
+)]
 pub(super) fn fitting_source_map_page_size(
     source_upper: f64,
     source_page_size: f64,
@@ -359,6 +384,10 @@ pub(super) fn document_height_from_line_span(line_y: i32, line_height: i32) -> O
     (height > 0).then_some(height)
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "scales a fractional GTK coordinate to integer milli-units for diagnostics"
+)]
 pub(super) fn gtk_f64_to_milli(value: f64) -> i64 {
     if !value.is_finite() {
         return 0;
@@ -402,6 +431,13 @@ pub(super) struct NativeSliderEstimateInput {
 /// This estimate explains where GTK should draw the native slider after
 /// applying source-map scroll offset and CSS outset. It is diagnostic;
 /// screenshot pixel anchors remain the authority for rendered correctness.
+///
+/// Kani proves it never panics and never returns a non-finite coordinate for
+/// any `f64` or `i32` input.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "mirrors GtkSourceMap's own f64 slider ratio; domain stated above (any f64, no panic)"
+)]
 pub(super) fn native_slider_estimate_from_inputs(
     input: NativeSliderEstimateInput,
 ) -> Option<MinimapProjectedBounds> {
@@ -442,12 +478,22 @@ pub(super) fn native_slider_estimate_from_inputs(
 
 /// Fit the raw native slider estimate vertically into the source-map allocation.
 ///
+/// Kani (`policy/kani_proofs.rs`) proves it never panics and never returns a
+/// non-finite coordinate for any `f64`, and that on whole pixels (magnitude at
+/// most 2^20) the result keeps `x` and `width` and lies inside the source-map
+/// bounds; for general `f64` the bottom can round past the map's, kept as a
+/// `should_panic` counterexample.
+///
 /// The raw estimate intentionally mirrors `GtkSourceMap`'s private ratio math,
 /// which can point outside the map when the tiny source-map document is taller
 /// than the visible widget. Screenshot crops and widget tests need the visible
 /// vertical part of that effect, while diagnostics keep the raw estimate
 /// separately. The horizontal CSS outset is preserved because it is part of the
 /// native slider effect and intentionally paints outside the map text column.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "GTK widget coordinates are fractional; containment is proved on whole pixels up to 2^20 (rustdoc above)"
+)]
 pub(super) fn fit_native_slider_to_source_map_bounds(
     raw: MinimapProjectedBounds,
     source_map_bounds: MinimapProjectedBounds,
@@ -458,6 +504,8 @@ pub(super) fn fit_native_slider_to_source_map_bounds(
         || !raw.height.is_finite()
         || raw.width <= 0.0
         || raw.height <= 0.0
+        || !source_map_bounds.y.is_finite()
+        || !source_map_bounds.height.is_finite()
         || source_map_bounds.height <= 0.0
     {
         return None;
@@ -487,11 +535,15 @@ pub(super) fn fit_native_slider_to_source_map_bounds(
 
     top = top.max(lower);
     bottom = bottom.min(upper);
-    (bottom > top).then_some(MinimapProjectedBounds {
+    // Both edges are finite and inside the map, but their difference can still
+    // overflow when the map is nearly `f64::MAX` tall (Kani counterexample,
+    // `native_slider_fit_never_returns_an_infinite_height`).
+    let height = bottom - top;
+    (bottom > top && height.is_finite()).then_some(MinimapProjectedBounds {
         x: raw.x,
         y: top,
         width: raw.width,
-        height: bottom - top,
+        height,
     })
 }
 
@@ -676,6 +728,10 @@ pub(super) fn line_bottom_in_target(
     target_y_from_widget_y(map_y_in_target, widget_y_for_buffer_y(bottom_y))
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "offsets an integer widget y by a fractional target-relative map origin"
+)]
 fn target_y_from_widget_y(map_y_in_target: f64, widget_y: i32) -> f64 {
     // `buffer_to_window_coords` returns y relative to the source-map widget;
     // add the map's target-relative top edge to produce crop/anchor coordinates.
@@ -683,6 +739,15 @@ fn target_y_from_widget_y(map_y_in_target: f64, widget_y: i32) -> f64 {
 }
 
 /// Grow a projected span to the minimum visible height, without leaving content.
+///
+/// **Precondition:** a finite band with `lower < upper` and a span inside it,
+/// which both callers guarantee; an inverted band panics in `f64::clamp`.
+/// Kani proves that on this precondition it never panics for any `f64`
+/// minimum height and keeps the result inside the band, and that on whole
+/// pixels with magnitude at most 2^8 (minimum heights up to 2^6) the result is
+/// at least the smaller of the minimum height and the band height. A unit
+/// test samples the same guarantee up to 2^20; with fractional coordinates it
+/// can fall a rounding error short (a kept `should_panic` counterexample).
 ///
 /// Both minimap fitting functions need the same expansion, and they needed it
 /// **identically** — this was one verbatim-duplicated block before it was
@@ -695,6 +760,10 @@ fn target_y_from_widget_y(map_y_in_target: f64, widget_y: i32) -> f64 {
 /// edges, then clamped. That final clamp is what keeps a minimum larger than the
 /// rendered content span from bleeding into the blank EOF overscroll: such a
 /// span ends up exactly as tall as the content, never taller.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "GTK widget coordinates are fractional; the minimum-height domain is stated above"
+)]
 fn expanded_to_min_height(
     top: f64,
     bottom: f64,
@@ -729,6 +798,13 @@ fn expanded_to_min_height(
     (top.max(lower), bottom.min(upper))
 }
 
+/// Fit a marker span into the rendered-content band of the marker strip.
+///
+/// Kani proves it never panics or returns a non-finite edge for any `f64`, and
+/// that every returned marker lies inside `[max(content_top, 0),
+/// min(content_bottom, strip_height)]` for every finite `f64`, so no marker
+/// reaches the EOF overscroll tail. Its minimum height is
+/// [`expanded_to_min_height`]'s guarantee and domain.
 pub(super) fn fit_marker_bounds(
     kind: MinimapMarkerKind,
     raw_top: f64,
@@ -774,6 +850,18 @@ pub(super) fn fit_marker_bounds(
 /// visible at document edges. Content-row diagnostics use `RejectOutside`
 /// because fabricating a row would let screenshots pass without rendered text.
 /// Small projections expand around their center to remain pixel-detectable.
+///
+/// Kani proves it never panics or returns a non-finite coordinate for any
+/// `f64`; that `RejectOutside` returns nothing for a span entirely outside the
+/// band, for every finite `f64`; and that on whole pixels (magnitude at most
+/// 2^20) a returned rectangle keeps `x` and `width` and lies inside the band.
+/// For general `f64`, `y + height` can round above the band (a kept
+/// `should_panic` counterexample). Its minimum height is
+/// [`expanded_to_min_height`]'s guarantee and domain.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "GTK widget coordinates are fractional; containment is proved on whole pixels up to 2^20 (rustdoc above)"
+)]
 pub(super) fn fit_projected_bounds(
     x: f64,
     width: f64,
@@ -824,6 +912,10 @@ pub(super) fn fit_projected_bounds(
     })
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "a lane is a fractional share of the strip width"
+)]
 pub(super) fn marker_lane_width(kind: MinimapMarkerKind, total_width: f64) -> f64 {
     let ratio = match kind {
         MinimapMarkerKind::Bookmark => 1.0,
@@ -834,6 +926,10 @@ pub(super) fn marker_lane_width(kind: MinimapMarkerKind, total_width: f64) -> f6
     (total_width * ratio).max(2.0)
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "the strip width and lane width are fractional widget sizes"
+)]
 pub(super) fn marker_lane_x(total_width: f64, lane_width: f64) -> f64 {
     total_width - lane_width
 }
@@ -854,6 +950,64 @@ pub(super) fn marker_rgba(kind: MinimapMarkerKind, dark: bool) -> (f64, f64, f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kani's `native_slider_fit_never_panics` counterexample: with a
+    /// source map near `f64::MAX` tall, pushing the slider back inside the map
+    /// made `bottom - top` overflow, so the fit returned an infinite height.
+    #[test]
+    fn native_slider_fit_never_returns_an_infinite_height() {
+        let raw = MinimapProjectedBounds {
+            x: 0.0,
+            y: f64::from_bits(0xfd7d_3ebf_8000_0000),
+            width: 1.0,
+            height: f64::MAX,
+        };
+        let source_map = MinimapProjectedBounds {
+            x: 0.0,
+            y: f64::from_bits(0xff78_0000_0014_b9c0),
+            width: 1.0,
+            height: f64::MAX,
+        };
+        if let Some(fitted) = fit_native_slider_to_source_map_bounds(raw, source_map) {
+            assert!(
+                fitted.y.is_finite() && fitted.height.is_finite(),
+                "{fitted:?}"
+            );
+        }
+    }
+
+    /// The wider-domain companion of the Kani harness
+    /// `min_height_expansion_reaches_the_minimum_on_small_whole_pixels`, which
+    /// CBMC can finish only up to 2^8: sampled whole pixels up to 2^20 and
+    /// minimum heights up to 2^16.
+    #[test]
+    fn expanded_to_min_height_reaches_the_minimum_on_whole_pixels() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |bound: i64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let span = u64::try_from(2 * bound + 1).expect("a positive span");
+            let offset = i64::try_from(state % span).expect("below the span");
+            f64::from(i32::try_from(offset - bound).expect("within the pixel bound"))
+        };
+        for _ in 0..200_000 {
+            let mut edges = [next(1 << 20), next(1 << 20), next(1 << 20), next(1 << 20)];
+            edges.sort_by(f64::total_cmp);
+            let [lower, top, bottom, upper] = edges;
+            if lower >= upper {
+                continue;
+            }
+            let min_height = next(1 << 16).abs();
+            let (fitted_top, fitted_bottom) =
+                expanded_to_min_height(top, bottom, lower, upper, min_height);
+            assert!(lower <= fitted_top && fitted_top <= fitted_bottom && fitted_bottom <= upper);
+            assert!(
+                fitted_bottom - fitted_top >= min_height.min(upper - lower),
+                "{top} {bottom} in {lower}..{upper}, minimum {min_height}"
+            );
+        }
+    }
 
     #[test]
     fn test_minimap_policy_constants_are_stable() {

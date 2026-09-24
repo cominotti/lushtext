@@ -1,10 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Inline-footnote lowering for the GTK-native Markdown preview.
+//! Inline-footnote lowering and the side-by-side preview-width clamp for the
+//! GTK-native Markdown preview.
 //!
 //! This module stays GTK-free so the preview-specific Markdown preprocessing can
 //! be unit-tested without constructing widgets. It belongs beside the renderer
 //! because the generated labels and parser input are purely presentation details.
+//!
+//! The preview-width clamp moved here from the GTK module `ui/window/preview.rs`
+//! (a called presentation surface of this workflow) so Kani can check it
+//! GTK-free; `policy/kani_proofs.rs` proves its one-third bound and the 1 sp
+//! floor that wins below 3 sp.
+
+#![deny(clippy::float_arithmetic)]
+
+#[cfg(kani)]
+mod kani_proofs;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::collections::HashSet;
@@ -646,6 +657,68 @@ pub(super) fn inline_footnote_limited_plan(source_bytes: usize) -> MarkdownRende
             ..MarkdownPlanMetrics::default()
         },
         limit: Some(MarkdownPlanLimit::InlineFootnotes),
+    }
+}
+
+// ─── Side-by-side preview width ───────────────────────────────────────
+//
+// The window shell (`ui/window/preview.rs`, `ui/window/imp.rs`, and
+// `ui/window/geometry/execution.rs`) sizes the end preview pane from these.
+
+/// Tiny non-zero floor used only before the first real preview-width sync.
+pub(crate) const PREVIEW_MIN_WIDTH_SP: i32 = 1;
+/// Fallback side-by-side preview width for invalid legacy settings.
+pub(crate) const PREVIEW_DEFAULT_WIDTH_SP: i32 = 300;
+/// The side-by-side preview may consume at most one part in this many of the
+/// editor content width.
+pub(super) const PREVIEW_MAX_WIDTH_DIVISOR: i32 = 3;
+
+/// The stored preferred preview width, with zero or less meaning the
+/// [`PREVIEW_DEFAULT_WIDTH_SP`] default.
+pub(crate) fn preferred_preview_width(width: i32) -> i32 {
+    if width > 0 {
+        width
+    } else {
+        PREVIEW_DEFAULT_WIDTH_SP
+    }
+}
+
+/// Resolve the side-by-side preview width, in whole pixels, from the preferred
+/// width and the available content width (zero or less counts as 1 sp).
+///
+/// The result is at least the [`PREVIEW_MIN_WIDTH_SP`] floor. With at least
+/// 3 sp available it is at most one third of the available width, and a
+/// preferred width between the floor and that bound is kept exactly. **Below
+/// 3 sp the floor wins**: `available / 3` is 0 there, so the result is 1 sp,
+/// more than one third. That state is reachable only before the first
+/// allocation or with a 1–2 px content box, where no preview is readable, and
+/// the floor keeps the split view's sidebar constraint non-zero.
+///
+/// The arithmetic is integer-only; the window converts the result to `f64`
+/// once, where it sets the split view's constraints. (Until
+/// `extend-kani-to-pure-policies` it computed `floor(available * (1.0 / 3.0))`
+/// in `f64`. That never floored a multiple of 3 to one less: for `k < 2^31`
+/// the product `3k * (1/3)` rounds back to `k`, which the in-band Kani harness
+/// proved; the integer form is exact by construction and far cheaper to
+/// prove.)
+///
+/// Kani proves all of this over every `i32` preferred and available width,
+/// and keeps the unconditional "at most one third" form as a `should_panic`
+/// counterexample (`policy/kani_proofs.rs`).
+pub(crate) fn clamped_preview_width(preferred_width: i32, available_width: i32) -> i32 {
+    let max_width = (available_width.max(1) / PREVIEW_MAX_WIDTH_DIVISOR).max(PREVIEW_MIN_WIDTH_SP);
+    preferred_width.max(PREVIEW_MIN_WIDTH_SP).min(max_width)
+}
+
+#[cfg(test)]
+mod preview_width_tests {
+    use super::clamped_preview_width;
+
+    #[test]
+    fn preview_width_floor_wins_below_three_sp() {
+        assert_eq!(clamped_preview_width(500, 2), 1);
+        assert!(clamped_preview_width(500, 900) <= 300);
+        assert_eq!(clamped_preview_width(200, 900), 200);
     }
 }
 

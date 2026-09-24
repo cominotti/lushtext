@@ -20,9 +20,11 @@ The system SHALL persist the selected workspace sidebar preset across launches. 
 ## ADDED Requirements
 
 ### Requirement: Preset clamps and round-trips are machine-checked
-The project SHALL keep Kani harnesses over `WorkspaceSidebarWidthPreset`. For
-every preset and every `i32` window width (a width of zero or less counts as 1
-sp), they SHALL prove:
+The project SHALL keep Kani harnesses over `WorkspaceSidebarWidthPreset`. The
+input window width is whole pixels; the preset width and the split fraction
+are inherently fractional (a hint fraction of the window width) and stay
+`f64`, with this domain stated in their rustdoc. For every preset and every
+`i32` window width (a width of zero or less counts as 1 sp), they SHALL prove:
 
 - `clamped_width_sp` equals `clamp(max(window_width, 1) * hint_fraction,
   min_width_sp, max_width_sp)`;

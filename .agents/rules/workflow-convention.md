@@ -170,6 +170,46 @@ drift while both copies still read as correct. A one-line delegating alias under
 second domain name is not a duplicate and may stay when it makes the calling
 workflow narrate in its own vocabulary; say so in the alias's doc comment.
 
+### Whole-pixel geometry policy
+
+A pure geometry or budget policy takes and returns **whole pixels** (integers)
+and does no floating-point arithmetic; the GTK adapter converts to `f64` once,
+at the widget or split-view boundary. A value that is genuinely fractional — a
+hint fraction of a window width, a split-view fraction, a GTK widget coordinate
+or scroll-adjustment value that is fractional under scaling — stays `f64`, and
+the function that computes it states its domain in its rustdoc (and, where a
+spec covers it, in the spec), as the slice-bin geometry does.
+
+Two layers enforce it (maintainer decision, `extend-kani-to-pure-policies`):
+
+- **The compiler.** Each such module carries `#![deny(clippy::float_arithmetic)]`
+  directly after its module documentation, so `make check`'s Clippy fails on any
+  float arithmetic it does not admit. A fractional value is admitted only by a
+  narrow `#[expect(clippy::float_arithmetic, reason = "...")]` on the one
+  function that computes it, whose reason names the fractional value and its
+  domain; never a module-wide `allow` or `expect`. The `expect` also fails once
+  the function stops doing float arithmetic, so an admission cannot outlive its
+  cause.
+- **The policy check.** `make check-workflow-boundaries` (rule 10) fails when a
+  module in `WHOLE_PIXEL_POLICY_MODULES` or any `policy.rs` under a directory in
+  `GEOMETRY_ROLE_HOMES` (`ui/window/geometry/`, `ui/editor_page/minimap/`,
+  `ui/markdown_preview/`) lacks the deny, allows the lint, expects it
+  module-wide, or expects it without a reason. A new geometry `policy.rs` in
+  those homes is covered with no edit; a geometry policy elsewhere is added to
+  the list in the same change.
+
+The listed modules are `ui/window/geometry/policy.rs`,
+`ui/editor_page/minimap/policy.rs`, `ui/markdown_preview/policy.rs`,
+`ui/sidebar/width_preset.rs`, `model/editor_memory.rs`, and — applied
+retroactively to the two other migrated workflows whose policy holds geometry —
+`ui/window/local_history/policy.rs` (viewer geometry) and
+`ui/window/focus_mode/policy.rs` (the top-edge reveal band). The
+`gtk-lush-widgets` slice geometry (`slice_geometry.rs`, `scroll_request.rs`) is
+**deliberately not listed**: every function in both modules is arithmetic on
+`GtkAdjustment` values, which are fractional under smooth scrolling, so a deny
+there would be satisfied only by an `expect` on every function and would enforce
+nothing; their whole-pixel domain is stated and Kani-proved instead.
+
 ## Evidence surfaces
 
 A migrated workflow exposes one typed `evidence.rs` that is the single source of

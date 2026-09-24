@@ -20,6 +20,11 @@
 //! Its three consumers are `ui/preferences/imp.rs`,
 //! `ui/window/geometry/policy.rs`, and `ui/window/geometry/execution.rs`.
 
+#![deny(clippy::float_arithmetic)]
+
+#[cfg(kani)]
+mod kani_proofs;
+
 /// Supported named workspace sidebar presets used by Preferences and shell math.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceSidebarWidthPreset {
@@ -53,8 +58,22 @@ impl WorkspaceSidebarWidthPreset {
     }
 
     /// Map an arbitrary stored fraction back onto the nearest supported preset.
+    ///
+    /// Presets equally near (within `f64::EPSILON`) resolve in the order
+    /// `Comfy`, `Small`, `Large`. A non-finite value resolves to
+    /// [`Self::DEFAULT`]: the settings key has no schema range and GVariant
+    /// text parses `nan` and `inf`, and without this guard every delta
+    /// comparison is false and NaN or `-inf` would silently mean `Large`.
+    /// Kani proves this over every `f64` (`kani_proofs.rs`).
     #[must_use]
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "the stored setting is a fraction; every f64 is in the proved domain"
+    )]
     pub fn from_fraction(fraction: f64) -> Self {
+        if !fraction.is_finite() {
+            return Self::DEFAULT;
+        }
         let small_delta = (fraction - Self::Small.fraction()).abs();
         let comfy_delta = (fraction - Self::Comfy.fraction()).abs();
         let large_delta = (fraction - Self::Large.fraction()).abs();
@@ -111,15 +130,45 @@ impl WorkspaceSidebarWidthPreset {
     }
 
     /// Convert the preset's hint fraction into a bounded visible width for the current window.
+    ///
+    /// Kani proves, for every `i32` width (zero or less counts as 1 sp), that
+    /// the result is the clamped product, lies within the preset's bounds, and
+    /// never decreases as the width grows.
     #[must_use]
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "a hint fraction of the window width is inherently fractional; every i32 width is in the proved domain"
+    )]
     pub fn clamped_width_sp(self, window_width: i32) -> f64 {
         (f64::from(window_width.max(1)) * self.fraction())
             .clamp(self.min_width_sp(), self.max_width_sp())
     }
 
     /// Return the effective split-view fraction after clamping this preset for the window width.
+    ///
+    /// Kani proves it finite and in (0, 1] for every `i32` width.
     #[must_use]
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "a split-view fraction is inherently fractional; every i32 width is in the proved domain"
+    )]
     pub fn effective_fraction(self, window_width: i32) -> f64 {
         (self.clamped_width_sp(window_width) / f64::from(window_width.max(1))).min(1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkspaceSidebarWidthPreset;
+
+    #[test]
+    fn non_finite_stored_fraction_resolves_to_default() {
+        for fraction in [f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
+            assert_eq!(
+                WorkspaceSidebarWidthPreset::from_fraction(fraction),
+                WorkspaceSidebarWidthPreset::Comfy,
+                "stored fraction {fraction}"
+            );
+        }
     }
 }
