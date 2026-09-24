@@ -207,7 +207,8 @@ classify() { # output status reason
   elif grep -qE 'No error has been found|\[ok\] No violation found|NoError|[0-9]+ passing|^wall_seconds=' "$out" && ((status == 0)); then
     echo pass
   else
-    echo "error($status)"
+    # A classification value on stdout for the caller, not a diagnostic.
+    printf '%s\n' "error($status)"
   fi
 }
 
