@@ -135,7 +135,10 @@ SHARDS: dict[str, Shard] = {
 }
 
 RUNNING_RE = re.compile(r"^running (\d+) tests$")
-TEST_DONE_RE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED)\b")
+# A test's result closes its line: `test NAME ... ok`, or, when the child's
+# own output interleaved (or the runner's benign-noise filter dropped the
+# `test NAME ... ` prefix it shared a line with), a bare `ok` / `FAILED` line.
+TEST_RESULT_RE = re.compile(r"(?:^|^test \S+ \.\.\. )(ok(?: \(FLAKY: passed on attempt \d+\))?|FAILED)$")
 
 
 def extract_test_functions(source: str) -> list[str]:
@@ -229,25 +232,41 @@ def budget_problems(shards: dict[str, Shard]) -> list[str]:
 
 class WidgetLog:
     """Parses the harness's streamed output: every `running N tests` count
-    (a whole-run retry prints it again) and each test's duration, measured as
-    the gap between consecutive completion lines. A test's name and result are
-    printed on one line, so its completion time is that line's arrival."""
+    (a whole-run retry prints it again and restarts the durations) and each
+    test's duration, measured as the gap between consecutive result lines.
 
-    def __init__(self) -> None:
+    Results are attributed by position, not by the printed name: the harness
+    runs the selected tests in `names` order, one at a time, and a test's
+    printed name can be lost to interleaved child output. When the number of
+    results does not match `names`, the durations are marked unattributed."""
+
+    def __init__(self, names: list[str]) -> None:
+        self.names = names
         self.running_counts: list[int] = []
-        self.tests: list[dict[str, object]] = []
+        self.results: list[tuple[str, float]] = []
         self._last: float | None = None
 
     def feed(self, line: str, now: float) -> None:
         line = line.strip()
         if match := RUNNING_RE.match(line):
             self.running_counts.append(int(match.group(1)))
+            self.results = []
             self._last = now
-        elif self._last is not None and (match := TEST_DONE_RE.match(line)):
-            self.tests.append(
-                {"name": match.group(1), "result": match.group(2), "seconds": round(now - self._last, 1)}
-            )
+        elif self._last is not None and (match := TEST_RESULT_RE.search(line)):
+            self.results.append((match.group(1), round(now - self._last, 1)))
             self._last = now
+
+    @property
+    def attributed(self) -> bool:
+        return len(self.results) == len(self.names)
+
+    @property
+    def tests(self) -> list[dict[str, object]]:
+        names = self.names if self.attributed else [f"#{index + 1}" for index in range(len(self.results))]
+        return [
+            {"name": name, "result": result, "seconds": seconds}
+            for name, (result, seconds) in zip(names, self.results)
+        ]
 
 
 def listed_tests() -> list[str]:
@@ -276,7 +295,7 @@ def count_problems(expected: int, log: WidgetLog) -> list[str]:
 def run_shard(shard: str, names: list[str], total: int) -> dict[str, object]:
     command = [str(RUNNER), "--headless", "--retries", "1", "--", "--exact", *names]
     print(f"Running widget shard {shard}: {len(names)} of {total} widget tests", flush=True)
-    log = WidgetLog()
+    log = WidgetLog(names)
     child = subprocess.Popen(
         command, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
     )
@@ -293,7 +312,18 @@ def run_shard(shard: str, names: list[str], total: int) -> dict[str, object]:
         print(f"widget-shards: shard {shard}: {problem}", file=sys.stderr)
     if status == 0 and problems:
         status = 1
-    return {"status": status, "selected": log.running_counts, "tests": log.tests}
+    if not log.attributed:
+        print(
+            f"widget-shards: shard {shard}: saw {len(log.results)} test results for {len(names)} tests; "
+            "per-test durations are recorded unattributed",
+            file=sys.stderr,
+        )
+    return {
+        "status": status,
+        "selected": log.running_counts,
+        "durations_attributed": log.attributed,
+        "tests": log.tests,
+    }
 
 
 def shard_record(shard: str, expected: int, total: int, seconds: float, result: dict[str, object]) -> dict[str, object]:
@@ -303,6 +333,7 @@ def shard_record(shard: str, expected: int, total: int, seconds: float, result: 
         "expected": expected,
         "suite_total": total,
         "selected": result["selected"],
+        "durations_attributed": result["durations_attributed"],
         "wall_seconds": round(seconds, 1),
         "wall_minutes": round(seconds / 60, 2),
         "tests": result["tests"],
@@ -339,7 +370,10 @@ def run(shard_names: list[str], static_tests: list[str], measure: str | None) ->
             print(f"widget-shards: {name} is in the binary's --list but not discovered from source", file=sys.stderr)
         print("widget-shards: the static discovery and the compiled widget binary disagree", file=sys.stderr)
         return 1
-    by_shard = assignment(SHARDS, static_tests)
+    # Run each shard's tests in the binary's own order, which is the order the
+    # harness runs them in and so the order results are attributed in.
+    order = {name: index for index, name in enumerate(binary_tests)}
+    by_shard = {name: sorted(tests, key=order.__getitem__) for name, tests in assignment(SHARDS, static_tests).items()}
     records = []
     result_status = 0
     for shard in shard_names:
@@ -403,27 +437,40 @@ def self_test() -> None:
     }.items():
         assert budget_problems({label: shard}), f"budget self-test {label} should fail"
 
-    # The harness's streamed output, abridged: counts and per-test gaps.
-    log = WidgetLog()
+    # The harness's streamed output, abridged: counts and per-test gaps. The
+    # second test's prefix shared a line with its own output, which the
+    # runner's noise filter dropped, so only its bare result line remains.
+    log = WidgetLog(["window::test_a", "window::test_b", "window::test_c"])
     for line, now in (
         ("   Compiling lushtext v0.8.3\n", 0.0),
-        ("running 2 tests\n", 10.0),
+        ("running 3 tests\n", 10.0),
         ("test window::test_a ... ok\n", 12.5),
-        ("some stderr from a test\n", 13.0),
-        ("test window::test_b ... ok (FLAKY: passed on attempt 2)\n", 20.0),
-        ("test result: ok. all tests passed (1 flaky on retry)\n", 20.1),
+        ("evidence line from test_b\n", 13.0),
+        ("ok\n", 20.0),
+        ("test window::test_c ... ok (FLAKY: passed on attempt 2)\n", 21.0),
+        ("test result: ok. all tests passed (1 flaky on retry)\n", 21.1),
     ):
         log.feed(line, now)
-    assert log.running_counts == [2]
+    assert log.running_counts == [3]
     assert log.tests == [
         {"name": "window::test_a", "result": "ok", "seconds": 2.5},
         {"name": "window::test_b", "result": "ok", "seconds": 7.5},
+        {"name": "window::test_c", "result": "ok (FLAKY: passed on attempt 2)", "seconds": 1.0},
     ], log.tests
-    assert count_problems(2, log) == []
-    assert count_problems(3, log)
-    assert count_problems(2, WidgetLog())
+    assert count_problems(3, log) == []
+    assert count_problems(4, log)
+    assert count_problems(3, WidgetLog([]))
+    # A whole-run retry restarts the durations; a short count is unattributed.
+    log.feed("running 3 tests\n", 30.0)
+    log.feed("test window::test_a ... FAILED\n", 31.0)
+    assert log.running_counts == [3, 3] and not log.attributed
+    assert log.tests == [{"name": "#1", "result": "FAILED", "seconds": 1.0}], log.tests
+    log = WidgetLog(["window::test_a", "window::test_b"])
+    log.feed("running 2 tests\n", 0.0)
+    log.feed("test window::test_a ... ok\n", 2.5)
+    log.feed("test window::test_b ... ok\n", 10.0)
 
-    record = shard_record("window", 2, 5, 90.0, {"status": 0, "selected": [2], "tests": log.tests})
+    record = shard_record("window", 2, 5, 90.0, {"status": 0, "selected": [2], "durations_attributed": True, "tests": log.tests})
     table_text = summary_markdown([record])
     assert "| `window` | 0 | 1.5 | 2 / 5 |" in table_text, table_text
     assert "| `window::test_b` | ok | 7.5 |" in table_text, table_text
