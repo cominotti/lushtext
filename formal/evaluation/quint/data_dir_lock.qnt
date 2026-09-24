@@ -37,6 +37,8 @@ module data_dir_lock {
   var crashes: str -> int
   var jnl: Journal
   var steps: int
+  /// Ghost: a read-only instance's unsaved edits were thrown away.
+  var roDropped: bool
 
   // --- journal plumbing -------------------------------------------------------
 
@@ -53,6 +55,13 @@ module data_dir_lock {
            lastReconciliationComplete: started.lastReconciliationComplete }
   }
 
+  /// A read-only instance's edits exist only in its buffers (it may not write
+  /// drafts), so exiting or upgrading with a reconciling restart drops them.
+  pure def hasUnsavedEdits(jj: Journal, p: str): bool = {
+    val editors = if (isB(p)) jj.other.editors else jj.editors
+    WithJournal and Ids.exists(id => editors.get(id).dirty)
+  }
+
   pure def upgrade(jj: Journal, p: str): Journal =
     if (UpgradeReconciles) writerStartup(gone(jj, p), p) else jj
 
@@ -67,6 +76,7 @@ module data_dir_lock {
       lock' = NoOne,
       crashes' = Procs.mapBy(_ => 0),
       steps' = 0,
+      roDropped' = false,
       jnl' = if (WithJournal) previousSession(entryPresent, bodyPresent, backingMoved)
              else previousSession(Ids.mapBy(_ => false), Ids.mapBy(_ => false), Ids.mapBy(_ => false)),
     }
@@ -77,7 +87,7 @@ module data_dir_lock {
   action launch(p: str): bool = all {
     mode.get(p) == Down,
     mode' = mode.set(p, Starting),
-    lock' = lock, crashes' = crashes, jnl' = jnl, steps' = steps,
+    lock' = lock, crashes' = crashes, jnl' = jnl, steps' = steps, roDropped' = roDropped,
   }
 
   /// flock(LOCK_EX | LOCK_NB) succeeds ("none": there is no lock).
@@ -87,7 +97,7 @@ module data_dir_lock {
     mode' = mode.set(p, Writer),
     lock' = if (LockKind == "none") lock else p,
     jnl' = if (WithJournal) writerStartup(jnl, p) else jnl,
-    crashes' = crashes, steps' = steps,
+    crashes' = crashes, steps' = steps, roDropped' = roDropped,
   }
 
   action busy(p: str): bool = all {
@@ -95,7 +105,7 @@ module data_dir_lock {
     lock != NoOne and LockKind != "none",
     mode' = mode.set(p, if (Variant == "ReadOnly") ReadOnly else Down),
     jnl' = if (WithJournal and Variant == "ReadOnly") readOnlyView(jnl, p) else jnl,
-    lock' = lock, crashes' = crashes, steps' = steps,
+    lock' = lock, crashes' = crashes, steps' = steps, roDropped' = roDropped,
   }
 
   /// A read-only instance retries the lock (a timer, or an inotify on the file).
@@ -105,6 +115,7 @@ module data_dir_lock {
     mode' = mode.set(p, Writer),
     lock' = p,
     jnl' = if (WithJournal) upgrade(jnl, p) else jnl,
+    roDropped' = (roDropped or (UpgradeReconciles and hasUnsavedEdits(jnl, p))),
     crashes' = crashes, steps' = steps,
   }
 
@@ -114,6 +125,7 @@ module data_dir_lock {
     mode' = mode.set(p, Down),
     lock' = if (lock == p) NoOne else lock,
     jnl' = if (WithJournal) gone(jnl, p) else jnl,
+    roDropped' = (roDropped or (mode.get(p) == ReadOnly and hasUnsavedEdits(jnl, p))),
     crashes' = crashes, steps' = steps,
   }
 
@@ -125,7 +137,7 @@ module data_dir_lock {
     lock' = if (lock == p and LockKind == "flock") NoOne else lock,
     crashes' = crashes.set(p, crashes.get(p) + 1),
     jnl' = if (WithJournal) gone(jnl, p) else jnl,
-    steps' = steps,
+    steps' = steps, roDropped' = roDropped,
   }
 
   /// One T2 journal action; a read-only instance may only edit its buffers.
@@ -135,15 +147,27 @@ module data_dir_lock {
     mode.get(p) == Writer or mode.get(p) == ReadOnly,
     nondet id = Ids.oneOf()
     nondet fault = Set(true, false).oneOf()
-    nondet a = (if (mode.get(p) == Writer) Actions.exclude(Set(Crash, Startup)) else Set(Edit)).oneOf()
+    nondet a = (if (mode.get(p) == Writer) Actions.exclude(Set(Crash, Startup, ExternalMtime)) else Set(Edit)).oneOf()
     jnl' = asP(jnl, p, a, id, fault),
     steps' = steps + 1,
-    mode' = mode, lock' = lock, crashes' = crashes,
+    mode' = mode, lock' = lock, crashes' = crashes, roDropped' = roDropped,
   }
 
-  action step = {
+  /// The backing file changes on disk: an environment event, whatever mode
+  /// either process is in (review E7 caught a writer-only first form).
+  action envMtime = all {
+    WithJournal,
+    steps < MaxSteps,
+    nondet id = Ids.oneOf()
+    jnl' = { ...jnl, backing: jnl.backing.set(id, jnl.backing.get(id) + 1) },
+    steps' = steps + 1,
+    mode' = mode, lock' = lock, crashes' = crashes, roDropped' = roDropped,
+  }
+
+  action step = any {
+    envMtime,
     nondet p = Procs.oneOf()
-    any { launch(p), acquire(p), busy(p), retry(p), exit(p), crash(p), journalAct(p) }
+    any { launch(p), acquire(p), busy(p), retry(p), exit(p), crash(p), journalAct(p) },
   }
 
   // --- safety -------------------------------------------------------------------
@@ -152,10 +176,14 @@ module data_dir_lock {
   val LockNamesWriter = LockKind != "none" implies Procs.forall(p => mode.get(p) == Writer implies lock == p)
   val JournalSafe = WithJournal implies (s1(jnl) and not(jnl.cleanupUnsafe) and not(jnl.bodyWithoutEntry))
   val Safety = AtMostOneWriter and LockNamesWriter and JournalSafe
+  /// An open design question, not a property any variant satisfies: S1
+  /// protects committed drafts only, so it cannot see a read-only user's
+  /// typing thrown away by an exit or a reconciling upgrade (review E7).
+  val NoReadOnlyEditsDropped = not(roDropped)
 
   // --- fairness and liveness ------------------------------------------------------
 
-  val vars = (mode, lock, crashes, jnl, steps)
+  val vars = (mode, lock, crashes, jnl, steps, roDropped)
 
   temporal RetryWF = Procs.forall(p => weakFair(retry(p), vars))
   temporal RetrySF = Procs.forall(p => strongFair(retry(p), vars))
@@ -166,8 +194,9 @@ module data_dir_lock {
   temporal NoReadOnlyWedge = Procs.forall(p =>
     always(eventually(lock == NoOne)) implies always(eventually(mode.get(p) != ReadOnly)))
 
-  /// Once the other process is gone for good, a read-only instance moves on.
-  temporal ReadOnlyEventuallyWrites = Procs.forall(p =>
+  /// Once the other process is gone for good, a read-only instance does not
+  /// stay read-only: it becomes the writer, or exits or crashes itself.
+  temporal ReadOnlyEventuallyLeaves = Procs.forall(p =>
     eventually(always(mode.get(other(p)) == Down))
       implies always(mode.get(p) == ReadOnly implies eventually(mode.get(p) != ReadOnly)))
 
@@ -178,10 +207,10 @@ module data_dir_lock {
 
   // Each check pairs a property with the fairness it assumes; `quint verify
   // --temporal` takes a property name, so the implication is written out.
-  temporal liveRoSf = (StartupWF and RetrySF) implies (NoReadOnlyWedge and ReadOnlyEventuallyWrites)
+  temporal liveRoSf = (StartupWF and RetrySF) implies (NoReadOnlyWedge and ReadOnlyEventuallyLeaves)
   temporal liveRoWfWedge = (StartupWF and RetryWF) implies NoReadOnlyWedge
-  temporal liveRoWfEventual = (StartupWF and RetryWF) implies ReadOnlyEventuallyWrites
-  temporal liveRoNoFairness = ReadOnlyEventuallyWrites
+  temporal liveRoWfEventual = (StartupWF and RetryWF) implies ReadOnlyEventuallyLeaves
+  temporal liveRoNoFairness = ReadOnlyEventuallyLeaves
   temporal liveRefuse = (StartupWF and RelaunchWF) implies RefusedEventuallyWrites
   temporal liveRefuseNoFairness = RefusedEventuallyWrites
 }

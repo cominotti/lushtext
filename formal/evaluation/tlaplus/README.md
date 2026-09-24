@@ -17,7 +17,10 @@ alone.
 | `MC_WriteProtocolApalache.tla` | T1 | an Apalache wrapper: typed declarations plus `INSTANCE WriteProtocol` | — |
 | `MoveRename.tla` | T1 | `MoveProtocol::step`, `RenameProtocol::step` | the move and rename harnesses |
 | `Journal.tla` | T2 | every `journal_core.rs` decision the harness calls, plus the environment of `draft_service/kani_proofs.rs` | `journal_invariants_hold_under_crashes`, `a_second_writer_breaks_the_journal_invariants` |
-| `DataDirLock.tla` (PlusCal) | T3 | a design sketch of the N6 inter-process data-directory lock | none (new ground) |
+| `MC_JournalApalache.tla` | T2 | an Apalache wrapper for `Journal.tla` (E5); the type aliases and operator annotations live in `Journal.tla` | — |
+| `DataDirLock.tla` (plain TLA+; PlusCal's per-label fairness did not fit) | T3 | a design sketch of the N6 inter-process data-directory lock | none (new ground) |
+| `LockProof.tla` | E6 | a TLAPS proof of the lock layer's at-most-one-writer invariant for every behaviour (`tlapm --cleanfp LockProof.tla`) | none |
+| `JournalLiveness.tla` | E9 | L1 (a dirty editor becomes clean) as an unbounded liveness property under weak fairness | `a_dirty_editor_becomes_clean_without_faults` (bounded, k = 7) |
 | `*.cfg` | — | one TLC model per check; `DataDirLock_*.cfg` carry an `\* expect:` line read by the script | — |
 
 The PlusCal translation is committed inside each `.tla` file (between
@@ -27,7 +30,8 @@ The PlusCal translation is committed inside each `.tla` file (between
 ## Tool version
 
 `tla2tools.jar` 1.7.4 (TLC 2.19, the latest stable release; 1.8.0 was a
-pre-release on the day), Apalache 0.62.2. Installed by
+pre-release on the day), Apalache 0.62.2, TLAPS 1.5.0 (for E6, installed by
+hand from the release page into `build/formal-evaluation/tools/tlaps/`). Installed by
 `scripts/formal-evaluation.sh install` into the gitignored
 `build/formal-evaluation/tools/`.
 
@@ -44,6 +48,6 @@ apalache-mc check --cinit=CInitMutant --init=Init --next=Next --inv=RunWriteAsse
 ## Bounds
 
 The same as the Kani harnesses. `Journal.tla` bounds the loop with
-`MaxSteps` and fingerprints states by `VIEW JournalView` (the journal record
-alone), so the step counter and the trace decoration do not multiply the
-state space.
+`MaxSteps` and fingerprints states by `VIEW JournalView == <<j, n>>`, which
+drops only the trace decoration `last`. The step counter must stay in the
+view: an earlier journal-only view was unsound (review E7).

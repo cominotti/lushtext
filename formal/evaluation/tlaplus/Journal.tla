@@ -20,12 +20,29 @@ EXTENDS Integers, FiniteSets
 CONSTANTS MaxSteps, TwoProcesses, IdCount
 
 \* The harness's IDS = 3; T3 reuses these operators with fewer ids.
+(*
+  Apalache type aliases (comments to TLC). E5 added these and the operator
+  annotations below so Apalache's Snowcat can type the record parameters.
+  @typeAlias: editor = {open: Bool, content: Int, dirty: Bool, token: Bool,
+    written: Int, restorePending: Bool, deletion: Str, preserveQueued: Bool,
+    knownEntry: Bool, cleanupCandidate: Int};
+  @typeAlias: window = {editors: Int -> $editor, running: Bool, trusted: Bool, lrc: Bool};
+  @typeAlias: journal = {hasOther: Bool, other: $window,
+    entry: Int -> {present: Bool, backing: Int}, body: Int -> Int,
+    backing: Int -> Int, preserved: Set(Int), editors: Int -> $editor,
+    running: Bool, trusted: Bool, lrc: Bool, accepted: Set(Int),
+    resolved: Set(Int), ancestors: Int -> Set(Int), nextContent: Int,
+    edits: Int, bodyWithoutEntry: Bool, cleanupUnsafe: Bool};
+*)
+Journal_aliases == TRUE
+
 Ids == 0..(IdCount - 1)
 MaxEdits == 3
 None == -1
 
 \* ---- 1. journal_core ---------------------------------------------------
 
+\* @type: ({bodyPresent: Bool, entry: Str, restorePending: Bool, backingStale: Bool}) => Str;
 Ownership(f) ==
   IF ~f.bodyPresent THEN "Nothing"
   ELSE IF f.restorePending THEN "Unseen"
@@ -62,6 +79,7 @@ UnappliedRestoreDisposition(e) ==
     [] OTHER -> "Nothing"
 
 \* Collapsed to the decision; the retention reason is not observed.
+\* @type: ({manifestTrusted: Bool, pathMatches: Bool, entry: Str, writeGuardHeld: Bool, identity: Str}) => Str;
 OrphanBodyDecision(f) ==
   IF ~f.manifestTrusted \/ ~f.pathMatches \/ f.entry = "Referenced" \/ ~f.writeGuardHeld
   THEN "Retain"
@@ -79,9 +97,12 @@ Closed == [open |-> FALSE, content |-> 0, dirty |-> FALSE, token |-> FALSE,
 ClosedEditors == [id \in Ids |-> Closed]
 ClosedWindow == [editors |-> ClosedEditors, running |-> FALSE, trusted |-> FALSE, lrc |-> FALSE]
 
+\* @type: ($journal, Int) => Bool;
 HasBody(j, id) == j.body[id] # None
+\* @type: ($journal, Int, $editor) => $journal;
 SetEditor(j, id, e) == [j EXCEPT !.editors[id] = e]
 
+\* @type: ($journal) => $journal;
 SwapWindows(j) ==
   IF ~j.hasOther THEN j
   ELSE [j EXCEPT !.editors = j.other.editors, !.running = j.other.running,
@@ -89,19 +110,25 @@ SwapWindows(j) ==
                  !.other = [editors |-> j.editors, running |-> j.running,
                             trusted |-> j.trusted, lrc |-> j.lrc]]
 
+\* @type: ($journal, Int, Int) => Bool;
 Holds(j, holder, c) == holder \notin {0, None} /\ c \in j.ancestors[holder]
 
+\* @type: ($journal, Int -> {present: Bool, backing: Int}) => Bool;
 InventoryCompleteWith(j, entries) == \A id \in Ids : j.body[id] = None \/ entries[id].present
+\* @type: ($journal) => Bool;
 InventoryComplete(j) == InventoryCompleteWith(j, j.entry)
 
+\* @type: ($journal, Int) => {bodyPresent: Bool, entry: Str, restorePending: Bool, backingStale: Bool};
 WindowBodyFacts(j, id) ==
   LET e == j.editors[id] IN
   [bodyPresent |-> e.restorePending \/ e.knownEntry,
    entry |-> IF e.knownEntry THEN "Current" ELSE "Absent",
    restorePending |-> e.restorePending, backingStale |-> FALSE]
 
+\* @type: ($journal, Int) => $journal;
 PreserveBody(j, id) == IF HasBody(j, id) THEN [j EXCEPT !.preserved = @ \cup {j.body[id]}] ELSE j
 
+\* @type: ($journal, Int) => $journal;
 DoEdit(j, id) ==
   LET e == j.editors[id] IN
   IF e.open /\ j.edits < MaxEdits THEN
@@ -111,6 +138,7 @@ DoEdit(j, id) ==
               !.editors[id] = [e EXCEPT !.content = c, !.dirty = TRUE, !.token = FALSE]]
   ELSE j
 
+\* @type: ($journal, Int, Bool) => $journal;
 DoRegister(j, id, fault) ==
   LET e == j.editors[id]
       needed == RegistrationRequired(TRUE, e.knownEntry, j.trusted)
@@ -137,6 +165,7 @@ DoRegister(j, id, fault) ==
     IN IF ~committed THEN j1
        ELSE SetEditor(j3, id, [e EXCEPT !.knownEntry = TRUE, !.token = MayWriteAfterRegistration(TRUE, TRUE)])
 
+\* @type: ($journal, Int, Bool) => $journal;
 DoWriteBody(j, id, fault) ==
   LET e == j.editors[id]
       needed == RegistrationRequired(TRUE, e.knownEntry, j.trusted)
@@ -151,6 +180,7 @@ DoWriteBody(j, id, fault) ==
                  !.body[id] = e.content,
                  !.editors[id].written = e.content]
 
+\* @type: ($journal, Int, Bool) => $journal;
 DoCommit(j, id, fault) ==
   LET e == j.editors[id] IN
   IF e.written = None THEN j
@@ -168,6 +198,7 @@ DoCommit(j, id, fault) ==
               IF e.content = written THEN [j3 EXCEPT !.editors[id].dirty = FALSE] ELSE j3
          ELSE j2
 
+\* @type: ($journal, Int, Bool) => $journal;
 DoSaveOrDiscard(j, id, save) ==
   LET e == j.editors[id] IN
   IF ~e.open \/ e.deletion # "None" THEN j
@@ -180,6 +211,7 @@ DoSaveOrDiscard(j, id, save) ==
                                    !.content = 0, !.knownEntry = FALSE,
                                    !.preserveQueued = (start = "Preserve"), !.deletion = start])
 
+\* @type: ($journal, Int, Bool) => $journal;
 DoDeletionStep(j, id, fault) ==
   LET s == j.editors[id].deletion
       ok == ~fault
@@ -208,11 +240,13 @@ DoDeletionStep(j, id, fault) ==
                       [] OTHER -> following
     IN SetEditor(j1, id, [e1 EXCEPT !.deletion = deletion])
 
+\* @type: ($journal, Int) => $journal;
 DoInspect(j, id) ==
   IF j.trusted /\ ~j.editors[id].knownEntry /\ HasBody(j, id)
   THEN [j EXCEPT !.editors[id].cleanupCandidate = j.body[id]]
   ELSE j
 
+\* @type: ($journal, Int, Bool) => $journal;
 DoExecCleanup(j, id, fault) ==
   LET e == j.editors[id] IN
   IF e.cleanupCandidate = None THEN j
@@ -229,6 +263,7 @@ DoExecCleanup(j, id, fault) ==
                        !.body[id] = None]
        ELSE j1
 
+\* @type: ($journal, Int, Bool, Str) => $journal;
 DoRestoreApply(j, id, fault, chosen) ==
   LET e == j.editors[id] IN
   IF ~e.restorePending THEN j
@@ -250,6 +285,7 @@ DoRestoreApply(j, id, fault, chosen) ==
          [] d = "PreserveThenRetire" ->
               SetEditor(j1, id, [e1 EXCEPT !.preserveQueued = TRUE, !.knownEntry = FALSE, !.deletion = "Preserve"])
 
+\* @type: ($journal, Bool) => $journal;
 Startup(j, fault) ==
   LET setAside == {id \in Ids : HasBody(j, id) /\ ~j.entry[id].present}
       j1 == [j EXCEPT !.running = TRUE,
@@ -268,6 +304,7 @@ Startup(j, fault) ==
           ELSE [opened EXCEPT !.restorePending = TRUE]]]
 
 \* `step`. `a` is an action name; `ending` is used only by RestoreApply.
+\* @type: ($journal, Str, Int, Bool, Str) => $journal;
 StepJournal(j, a, id, fault, ending) ==
   IF ~j.running /\ a # "Startup" THEN j
   ELSE CASE a = "Edit" -> DoEdit(j, id)
@@ -284,10 +321,12 @@ StepJournal(j, a, id, fault, ending) ==
          [] a = "Crash" -> [j EXCEPT !.running = FALSE, !.trusted = FALSE, !.editors = ClosedEditors]
          [] a = "Startup" -> IF ~j.running THEN Startup(j, fault) ELSE j
 
+\* @type: ($journal, Bool, Str, Int, Bool, Str) => $journal;
 StepAs(j, actorB, a, id, fault, ending) ==
   IF actorB /\ j.hasOther THEN SwapWindows(StepJournal(SwapWindows(j), a, id, fault, ending))
   ELSE StepJournal(j, a, id, fault, ending)
 
+\* @type: (Int -> Bool, Int -> Bool, Int -> Bool) => $journal;
 PreviousSession(entryPresent, bodyPresent, backingMoved) ==
   [hasOther |-> TwoProcesses, other |-> ClosedWindow,
    entry |-> [id \in Ids |-> [present |-> entryPresent[id], backing |-> 0]],
@@ -302,6 +341,7 @@ PreviousSession(entryPresent, bodyPresent, backingMoved) ==
 
 \* ---- invariants ------------------------------------------------------------
 
+\* @type: ($journal) => Bool;
 S1Holds(j) ==
   \A c \in 1..(j.nextContent - 1) :
     (c \in j.accepted /\ c \notin j.resolved) =>
@@ -313,7 +353,9 @@ S1Holds(j) ==
                          /\ \E id \in Ids : j.other.editors[id].open /\ Holds(j, j.other.editors[id].content, c)
       IN onDisk \/ inEditor
 
+\* @type: ($journal) => Bool;
 DeleteOrdered(j) == \A id \in Ids : j.editors[id].deletion # "None" => ~(HasBody(j, id) /\ ~j.entry[id].present)
+\* @type: ($journal) => Bool;
 TrustSound(j) == (j.running /\ j.trusted) => (j.lrc /\ InventoryComplete(j))
 
 \* ---- the state machine ------------------------------------------------------
@@ -350,11 +392,13 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-\* TLC fingerprints states by this VIEW: `last` is trace decoration and `n` a
-\* bound, so two states with the same journal are one state. Breadth-first
-\* search reaches every journal first at its smallest depth, so the view
-\* explores exactly the journals reachable within MaxSteps actions.
-JournalView == j
+\* TLC fingerprints states by this VIEW, dropping only `last`, which is trace
+\* decoration. The step counter `n` must stay in the view: without it TLC
+\* keeps the first copy of a journal it meets, and with several workers (or
+\* any search that is not strictly level by level) that copy may carry a
+\* larger `n` than a later one, whose remaining in-bound steps would then
+\* never be explored. A fresh-eyes review (E7) caught the unsound first form.
+JournalView == <<j, n>>
 
 S1 == S1Holds(j)
 S2 == ~j.cleanupUnsafe

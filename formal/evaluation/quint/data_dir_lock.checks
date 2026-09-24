@@ -3,6 +3,7 @@
 safety_ro_reconcile|pass|--main safety_ro_reconcile --invariant Safety
 safety_refuse|pass|--main safety_refuse --invariant Safety
 safety_pidfile|pass|--main safety_pidfile --invariant Safety
+safety_ro_edits_dropped|violation|--main safety_ro_reconcile --invariant NoReadOnlyEditsDropped
 safety_ro_in_place|violation|--main safety_ro_in_place --invariant Safety
 safety_no_lock|violation|--main safety_no_lock --invariant JournalSafe
 live_ro_sf|pass|--main live_ro --temporal liveRoSf

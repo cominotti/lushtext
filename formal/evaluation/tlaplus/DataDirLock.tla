@@ -45,8 +45,9 @@ VARIABLES
   lock,     \* who the lock file names: a process, or NoOne
   crashes,  \* [Procs -> Nat], bounded by MaxCrashes (finitely many crashes)
   jnl,      \* the T2 journal record (Journal.tla), when WithJournal
-  steps     \* journal actions taken, bounded by MaxSteps
-vars == <<mode, lock, crashes, jnl, steps>>
+  steps,    \* journal actions taken, bounded by MaxSteps
+  roDropped \* ghost: a read-only instance's unsaved edits were thrown away
+vars == <<mode, lock, crashes, jnl, steps, roDropped>>
 
 \* ---- journal plumbing -------------------------------------------------------
 
@@ -69,11 +70,15 @@ ReadOnlyView(jj, p) ==
   IN IF IsB(p) THEN [jj EXCEPT !.other = view]
      ELSE [jj EXCEPT !.editors = view.editors, !.running = TRUE, !.trusted = FALSE, !.lrc = view.lrc]
 
+\* A read-only instance's edits exist only in its buffers (it may not write
+\* drafts), so exiting or upgrading with a reconciling restart drops them.
+HasUnsavedEdits(jj, p) == WithJournal /\ \E id \in 0..(IdCount - 1) : Window(jj, p).editors[id].dirty
+
 Upgrade(jj, p) == IF UpgradeReconciles THEN WriterStartup(Gone(jj, p), p) ELSE jj
 
 \* The journal actions each mode may take. A read-only instance may edit its
 \* buffers and nothing else; everything else writes the data directory.
-WriterActions == J!Actions
+WriterActions == J!Actions \ {"ExternalMtime"}
 ReadOnlyActions == {"Edit"}
 
 Init ==
@@ -81,6 +86,7 @@ Init ==
   /\ lock = NoOne
   /\ crashes = [p \in Procs |-> 0]
   /\ steps = 0
+  /\ roDropped = FALSE
   /\ IF WithJournal
      THEN \E entryPresent, bodyPresent, backingMoved \in [0..(IdCount - 1) -> BOOLEAN] :
             jnl = J!PreviousSession(entryPresent, bodyPresent, backingMoved)
@@ -91,7 +97,7 @@ Init ==
 Launch(p) ==
   /\ mode[p] = "down"
   /\ mode' = [mode EXCEPT ![p] = "starting"]
-  /\ UNCHANGED <<lock, crashes, jnl, steps>>
+  /\ UNCHANGED <<lock, crashes, jnl, steps, roDropped>>
 
 \* flock(LOCK_EX | LOCK_NB) succeeds (LockKind "none": there is no lock).
 Acquire(p) ==
@@ -100,7 +106,7 @@ Acquire(p) ==
   /\ mode' = [mode EXCEPT ![p] = "writer"]
   /\ lock' = IF LockKind = "none" THEN lock ELSE p
   /\ jnl' = IF WithJournal THEN WriterStartup(jnl, p) ELSE jnl
-  /\ UNCHANGED <<crashes, steps>>
+  /\ UNCHANGED <<crashes, steps, roDropped>>
 
 Busy(p) ==
   /\ mode[p] = "starting"
@@ -110,7 +116,7 @@ Busy(p) ==
           /\ jnl' = IF WithJournal THEN ReadOnlyView(jnl, p) ELSE jnl
      ELSE /\ mode' = [mode EXCEPT ![p] = "down"]
           /\ UNCHANGED jnl
-  /\ UNCHANGED <<lock, crashes, steps>>
+  /\ UNCHANGED <<lock, crashes, steps, roDropped>>
 
 \* A read-only instance retries the lock (a timer, or an inotify on the file).
 Retry(p) ==
@@ -119,6 +125,7 @@ Retry(p) ==
   /\ mode' = [mode EXCEPT ![p] = "writer"]
   /\ lock' = p
   /\ jnl' = IF WithJournal THEN Upgrade(jnl, p) ELSE jnl
+  /\ roDropped' = (roDropped \/ (UpgradeReconciles /\ HasUnsavedEdits(jnl, p)))
   /\ UNCHANGED <<crashes, steps>>
 
 \* A clean exit closes the lock file descriptor, which releases the flock;
@@ -128,6 +135,7 @@ Exit(p) ==
   /\ mode' = [mode EXCEPT ![p] = "down"]
   /\ lock' = IF lock = p THEN NoOne ELSE lock
   /\ jnl' = IF WithJournal THEN Gone(jnl, p) ELSE jnl
+  /\ roDropped' = (roDropped \/ (mode[p] = "readonly" /\ HasUnsavedEdits(jnl, p)))
   /\ UNCHANGED <<crashes, steps>>
 
 \* A crash: the kernel releases a flock; a pidfile stays behind.
@@ -138,7 +146,7 @@ Crash(p) ==
   /\ lock' = IF lock = p /\ LockKind = "flock" THEN NoOne ELSE lock
   /\ crashes' = [crashes EXCEPT ![p] = @ + 1]
   /\ jnl' = IF WithJournal THEN Gone(jnl, p) ELSE jnl
-  /\ UNCHANGED steps
+  /\ UNCHANGED <<steps, roDropped>>
 
 \* One T2 journal action, allowed only in the process's mode.
 JournalAct(p) ==
@@ -151,9 +159,19 @@ JournalAct(p) ==
        \/ /\ mode[p] = "writer"
           /\ \E ending \in J!ChosenEndings : jnl' = AsP(jnl, p, "RestoreApply", id, fault, ending)
   /\ steps' = steps + 1
-  /\ UNCHANGED <<mode, lock, crashes>>
+  /\ UNCHANGED <<mode, lock, crashes, roDropped>>
 
-Next == \E p \in Procs :
+\* The backing file changes on disk (another editor, a checkout): an
+\* environment event, whatever mode either process is in. A review (E7)
+\* caught the first form, which allowed it only through a writer.
+EnvMtime ==
+  /\ WithJournal
+  /\ steps < MaxSteps
+  /\ \E id \in 0..(IdCount - 1) : jnl' = [jnl EXCEPT !.backing[id] = @ + 1]
+  /\ steps' = steps + 1
+  /\ UNCHANGED <<mode, lock, crashes, roDropped>>
+
+Next == EnvMtime \/ \E p \in Procs :
   Launch(p) \/ Acquire(p) \/ Busy(p) \/ Retry(p) \/ Exit(p) \/ Crash(p) \/ JournalAct(p)
 
 Spec == Init /\ [][Next]_vars
@@ -184,8 +202,16 @@ S1 == WithJournal => J!S1Holds(jnl)
 NoBodyWithoutEntry == WithJournal => ~jnl.bodyWithoutEntry
 Safety == AtMostOneWriter /\ LockNamesWriter /\ JournalSafe
 
-\* States are fingerprinted without the step counter (a bound, not state).
-LockView == <<mode, lock, crashes, jnl>>
+\* An open design question, not a property any variant here satisfies: S1
+\* protects committed drafts only, so it cannot see a read-only user's
+\* typing thrown away by an exit or a reconciling upgrade (review E7).
+NoReadOnlyEditsDropped == ~roDropped
+
+\* No VIEW is used: an earlier `<<mode, lock, crashes, jnl>>` view dropped
+\* the journal step bound, so TLC could keep a copy with more steps used and
+\* discard a later copy with fewer, silently skipping in-bound behaviours
+\* (breadth-first depth here also counts lock actions). A fresh-eyes review
+\* (E7) caught it.
 
 \* ---- liveness ---------------------------------------------------------------
 
@@ -194,9 +220,10 @@ LockView == <<mode, lock, crashes, jnl>>
 NoReadOnlyWedge == \A p \in Procs :
   ([]<>(lock = NoOne)) => []<>(mode[p] # "readonly")
 
-\* Once the other process is gone for good, a read-only instance becomes the
-\* writer (or exits or crashes itself).
-ReadOnlyEventuallyWrites == \A p \in Procs :
+\* Once the other process is gone for good, a read-only instance does not
+\* stay read-only: it becomes the writer, or exits or crashes itself. (Weaker
+\* than "becomes the writer"; named for what it checks, after review E7.)
+ReadOnlyEventuallyLeaves == \A p \in Procs :
   (<>[](mode[Other(p)] = "down")) => [](mode[p] = "readonly" => <>(mode[p] # "readonly"))
 
 \* Refuse variant: once the other process is gone for good and the user keeps
