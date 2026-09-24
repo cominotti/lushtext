@@ -38,11 +38,7 @@ fn start_two_processes() -> Journal {
 }
 
 fn all_hold(journal: &Journal) -> bool {
-    journal.acceptance_durability_holds()
-        && !journal.cleanup_unsafe
-        && journal.delete_ordering_holds()
-        && journal.trust_holds()
-        && !journal.body_without_entry
+    journal.all_invariants_hold()
 }
 
 /// Replays `trace` fault-free on id 0, asserting every invariant holds before

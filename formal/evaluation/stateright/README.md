@@ -53,12 +53,18 @@ its 8-action and 6-action forms) and a one-process control.
 
 ## Commands
 
-Run these from this directory.
+Run these from this directory. `.cargo/config.toml` points the target
+directory at the gitignored `build/formal-evaluation/target-rust`. Nothing in
+the repository's gates formats or lints this package; run `cargo fmt` and
+`cargo clippy` here by hand if you change it. Its own `Cargo.lock` resolves
+`lushtext-core`'s dependencies separately from the root lockfile, so the two
+can drift.
 
 ```sh
 T=../../../build/formal-evaluation/target-rust
-nice -n 19 env CARGO_BUILD_JOBS=6 CARGO_TARGET_DIR=$T cargo build --release
-nice -n 19 env CARGO_BUILD_JOBS=6 CARGO_TARGET_DIR=$T cargo test --release
+nice -n 19 env CARGO_BUILD_JOBS=6 cargo build --release
+# The E1 tests shell out to quint; see the E1 section for their command.
+nice -n 19 env CARGO_BUILD_JOBS=6 cargo test --release --test k8_traces --test seeded_from_tlc
 $T/release/lushtext-journal-stateright --max-steps 8 --threads 8 --strategy dfs
 $T/release/lushtext-journal-stateright --two-processes --max-steps 8 --threads 8 --strategy dfs
 ```
@@ -90,7 +96,7 @@ tests shell out to `quint`, so put the pinned Quint first on `PATH`:
 ```sh
 Q=../../../build/formal-evaluation/tools
 export PATH=$PWD/$Q/quint/node_modules/.bin:$PATH QUINT_HOME=$PWD/$Q/quint-home
-nice -n 19 env CARGO_BUILD_JOBS=6 CARGO_TARGET_DIR=$T cargo test --release \
+nice -n 19 env CARGO_BUILD_JOBS=6 cargo test --release \
   --test quint_connect_core --test quint_connect_service --test e1_findings -- --nocapture
 ```
 

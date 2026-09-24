@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lushtext_core::services::draft_service::journal_core::RestoreEnding;
 use serde::Deserialize;
 
 // --- The Quint shapes ----------------------------------------------------------
@@ -39,6 +40,21 @@ pub enum QEnding {
     InstallCancelled,
     Unavailable,
     MissingBody,
+}
+
+impl From<QEnding> for RestoreEnding {
+    fn from(e: QEnding) -> Self {
+        match e {
+            QEnding::Applied => Self::Applied,
+            QEnding::Stale => Self::Stale,
+            QEnding::Oversized => Self::Oversized,
+            QEnding::ReadFailed => Self::ReadFailed,
+            QEnding::EditedOver => Self::EditedOver,
+            QEnding::InstallCancelled => Self::InstallCancelled,
+            QEnding::Unavailable => Self::Unavailable,
+            QEnding::MissingBody => Self::MissingBody,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

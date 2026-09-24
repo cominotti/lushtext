@@ -193,19 +193,6 @@ impl<L: Layout> Default for CoreDriver<L> {
     }
 }
 
-fn ending(e: QEnding) -> RestoreEnding {
-    match e {
-        QEnding::Applied => RestoreEnding::Applied,
-        QEnding::Stale => RestoreEnding::Stale,
-        QEnding::Oversized => RestoreEnding::Oversized,
-        QEnding::ReadFailed => RestoreEnding::ReadFailed,
-        QEnding::EditedOver => RestoreEnding::EditedOver,
-        QEnding::InstallCancelled => RestoreEnding::InstallCancelled,
-        QEnding::Unavailable => RestoreEnding::Unavailable,
-        QEnding::MissingBody => RestoreEnding::MissingBody,
-    }
-}
-
 fn action(a: QAction) -> (Action, Option<RestoreEnding>) {
     let plain = match a {
         QAction::Edit => Action::Edit,
@@ -217,7 +204,7 @@ fn action(a: QAction) -> (Action, Option<RestoreEnding>) {
         QAction::DeletionStepAction => Action::DeletionStep,
         QAction::Inspect => Action::Inspect,
         QAction::ExecCleanup => Action::ExecCleanup,
-        QAction::RestoreApply(e) => return (Action::RestoreApply, Some(ending(e))),
+        QAction::RestoreApply(e) => return (Action::RestoreApply, Some(e.into())),
         QAction::ExternalMtime => Action::ExternalMtime,
         QAction::Crash => Action::Crash,
         QAction::Startup => Action::Startup,

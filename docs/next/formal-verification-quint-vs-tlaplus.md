@@ -719,7 +719,9 @@ The `stateright` package and the E1 and E3 tests build separately:
 
 ```sh
 cd formal/evaluation/stateright
-CARGO_TARGET_DIR=../../../build/formal-evaluation/target-rust cargo test --release
+# .cargo/config.toml targets build/formal-evaluation/target-rust; the E1
+# tests also need the pinned quint on PATH (formal/evaluation/stateright/README.md).
+cargo test --release
 ```
 
 E2 regenerates its traces from local smoke artefacts:

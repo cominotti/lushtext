@@ -739,4 +739,14 @@ impl Journal {
     pub fn trust_holds(&self) -> bool {
         self.for_both_windows(Self::trust_holds_active)
     }
+
+    /// S1 to S4 and `NoBodyWithoutEntry` together: the conjunction of the
+    /// properties `JournalModel` checks one by one.
+    pub fn all_invariants_hold(&self) -> bool {
+        self.acceptance_durability_holds()
+            && !self.cleanup_unsafe
+            && self.delete_ordering_holds()
+            && self.trust_holds()
+            && !self.body_without_entry
+    }
 }

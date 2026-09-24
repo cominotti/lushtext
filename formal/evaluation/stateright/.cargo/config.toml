@@ -1,0 +1,3 @@
+# Build into the gitignored evaluation tree, never beside the sources.
+[build]
+target-dir = "../../../build/formal-evaluation/target-rust"

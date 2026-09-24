@@ -59,19 +59,6 @@ use serde::Deserialize;
 mod common;
 use common::{QAction, QEnding, QJournal};
 
-fn ending(e: QEnding) -> RestoreEnding {
-    match e {
-        QEnding::Applied => RestoreEnding::Applied,
-        QEnding::Stale => RestoreEnding::Stale,
-        QEnding::Oversized => RestoreEnding::Oversized,
-        QEnding::ReadFailed => RestoreEnding::ReadFailed,
-        QEnding::EditedOver => RestoreEnding::EditedOver,
-        QEnding::InstallCancelled => RestoreEnding::InstallCancelled,
-        QEnding::Unavailable => RestoreEnding::Unavailable,
-        QEnding::MissingBody => RestoreEnding::MissingBody,
-    }
-}
-
 // --- What is compared ------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq)]
@@ -465,7 +452,7 @@ impl ServiceDriver {
         let ending = if body.is_none() {
             RestoreEnding::MissingBody
         } else {
-            ending(chosen)
+            chosen.into()
         };
         self.window.editors[id].restore_pending = false;
         match journal_core::unapplied_restore_disposition(ending) {
