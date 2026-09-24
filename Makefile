@@ -21,6 +21,7 @@
 #   make fuzz-smoke  - Run bounded fuzz smoke against temporary corpus copies
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
 #   make kani        - Run every Kani proof harness (requires the pinned Kani)
+#   make formal-evaluation - LOCAL ONLY: rerun the Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|t1|t2|t3|all|report-data)
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
 #   make test-widget-shard WIDGET_SHARD=<shard> - One CI widget shard, exactly as CI runs it
@@ -83,7 +84,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani check-kani-shards check-widget-shards test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani check-kani-shards formal-evaluation check-widget-shards test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -145,6 +146,12 @@ KANI_TARGET_DIR ?= target/kani
 # Measurement mode: a JSON path makes `make kani` record each shard's wall time,
 # peak memory, and per-harness verification time (`kani-shards.py run --measure`).
 KANI_MEASURE ?=
+
+# Quint vs TLA+ evaluation (docs/next/formal-verification-quint-vs-tlaplus.md).
+# LOCAL ONLY and disposable: not a prerequisite of check, check-policy, test,
+# kani, or end-user-smoke, and no CI workflow calls it. Kani stays the single
+# maintained formal tool.
+FORMAL_EVAL_TARGET ?= t1
 
 # CI widget shard: one shard of scripts/widget-shards.py
 # (`scripts/widget-shards.py list`), or `all` to run every shard in turn.
@@ -299,6 +306,12 @@ kani:
 		exit 1; \
 	fi; \
 	./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
+
+# LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models under
+# formal/evaluation/ with the tool versions the report records. Tools install
+# into the gitignored build/formal-evaluation/tools/ (FORMAL_EVAL_TARGET=install).
+formal-evaluation:
+	./scripts/formal-evaluation.sh $(FORMAL_EVAL_TARGET)
 
 # Every Kani harness belongs to exactly one shard of the table the lane runs;
 # no Kani install needed.
@@ -936,6 +949,7 @@ help:
 	@echo ""
 	@echo "Formal verification (explicit lane):"
 	@echo "  kani         Run every Kani proof harness with the pinned Kani version"
+	@echo "  formal-evaluation LOCAL ONLY: rerun the Quint vs TLA+ evaluation (FORMAL_EVAL_TARGET=install|t1|t2|t3|all|report-data)"
 	@echo ""
 	@echo "Mutation targets:"
 	@echo "  mutants-smoke Small cargo-mutants smoke run"

@@ -36,6 +36,8 @@ _build/
 /build/gtk-lush-adoption/
 /build/proof-corpus/
 /build/smoke/
+# Local-only formal-evaluation tools and run logs (scripts/formal-evaluation.sh).
+/build/formal-evaluation/
 
 # Local agent worktree caches can contain full repo checkouts and smoke logs.
 /.claude/worktrees/
