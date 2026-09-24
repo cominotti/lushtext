@@ -302,8 +302,14 @@ Fedora 44 container), Kani 0.68.0:
   (`github-outputs` emits them as `pr-shards`): `widgets-geometry`, 9 harnesses.
   On pull request #41 only that job ran (run `35930740981`: 7.66-minute shard,
   9.18-minute job), while the dispatched run E still ran all five shards.
-  The recommendation for the maintainer (a repository setting, not code) is to
-  mark `Kani Proof Harnesses (widgets-geometry)` as a required check. Failing
+  `Kani Proof Harnesses (widgets-geometry)` is a **required check**
+  (maintainer decision, 2026-09-23). `main` had no branch protection and no
+  ruleset before this. The repository ruleset `main: Kani geometry proofs
+  required` (id `23911547`) targets the default branch and has one rule: that
+  status check must pass, and only the GitHub Actions app (integration
+  `15368`) can report it. Repository admins bypass it, so direct pushes to
+  `main` and release pushes keep working; in practice it gates pull requests.
+  Deleting the ruleset undoes this. Failing
   first: on pull request #41, a scratch commit (never merged, then dropped from
   the branch) widened `viewport_slice`'s clamp by one pixel, and the
   pull-request run `35929586005` ran only `widgets-geometry` and failed it,
