@@ -613,6 +613,7 @@ module k3_10 { import journal(MaxSteps = 10, TwoProc = false, NIds = 3).* }
 /// `a_second_writer_breaks_the_journal_invariants` at the CI pin (6) and at
 /// the programme record's 8.
 module k8_6 { import journal(MaxSteps = 6, TwoProc = true, NIds = 3).* }
+module k8_7 { import journal(MaxSteps = 7, TwoProc = true, NIds = 3).* }
 module k8_8 { import journal(MaxSteps = 8, TwoProc = true, NIds = 3).* }
 module k8_10 { import journal(MaxSteps = 10, TwoProc = true, NIds = 3).* }
 module k8_12 { import journal(MaxSteps = 12, TwoProc = true, NIds = 3).* }
@@ -671,4 +672,124 @@ module k8_traces {
       .then(stepWith(A, DeletionStepAction, 0, false))
       .then(stepWith(B, WriteBody, 0, false))
       .expect(not(NoBodyWithoutEntry))
+}
+
+/// E1 (Quint Connect replay): the three `k8_traces` runs, re-expressed so a
+/// Quint Connect driver can replay them. `quint test` (unlike `quint run
+/// --mbt`) writes no `mbt::actionTaken`/`mbt::nondetPicks` variables, so the
+/// choices are recorded in one sum-typed variable, `choice`, which the
+/// driver's `Config::nondet` points at. The initial disk is given as the
+/// previous-session bits (as `init` picks them) rather than as a `Journal`,
+/// so the driver can rebuild it. The semantics are the `journal` module's
+/// `initFrom` and `stepWith`, unchanged; only `choice` is added.
+module k8_traces_connect {
+  import journal(MaxSteps = 8, TwoProc = true, NIds = 3).*
+  import journal_defs(TwoProcesses = true, IdCount = 3).*
+
+  type Choice =
+    | Init({ entryPresent: int -> bool, bodyPresent: int -> bool, backingMoved: int -> bool, startupFault: bool })
+    | Step({ actorB: bool, a: Action, id: int, fault: bool })
+  var choice: Choice
+
+  action initC(entryPresent: int -> bool, bodyPresent: int -> bool, backingMoved: int -> bool, startupFault: bool): bool = all {
+    initFrom(previousSession(entryPresent, bodyPresent, backingMoved), startupFault),
+    choice' = Init({ entryPresent: entryPresent, bodyPresent: bodyPresent, backingMoved: backingMoved, startupFault: startupFault }),
+  }
+
+  action stepC(actorB: bool, a: Action, id: int, fault: bool): bool = all {
+    stepWith(actorB, a, id, fault),
+    choice' = Step({ actorB: actorB, a: a, id: id, fault: fault }),
+  }
+
+  pure val NoIds = Map(0 -> false, 1 -> false, 2 -> false)
+  /// `k8_traces::EntryOnly0` as previous-session bits.
+  action initEntryOnly0 = initC(Map(0 -> true, 1 -> false, 2 -> false), NoIds, NoIds, false)
+  pure val A = false
+  pure val B = true
+
+  run s1LossTest =
+    initEntryOnly0
+      .then(stepC(A, Edit, 0, false))
+      .then(stepC(A, Register, 0, false))
+      .then(stepC(A, WriteBody, 0, false))
+      .then(stepC(A, Commit, 0, false))
+      .expect(S1 and j.accepted.contains(4))
+      .then(stepC(A, Crash, 0, false))
+      .then(stepC(B, Discard, 0, false))
+      .then(stepC(B, DeletionStepAction, 0, false))
+      .expect(not(S1))
+
+  run bodyWithoutEntry8Test =
+    initEntryOnly0
+      .then(stepC(B, Edit, 0, false))
+      .then(stepC(A, Discard, 0, false))
+      .then(stepC(B, Register, 0, false))
+      .then(stepC(A, DeletionStepAction, 0, false))
+      .then(stepC(B, ExternalMtime, 0, false))
+      .then(stepC(B, RestoreApply(Applied), 0, false))
+      .then(stepC(A, DeletionStepAction, 0, false))
+      .expect(NoBodyWithoutEntry)
+      .then(stepC(B, WriteBody, 0, false))
+      .expect(not(NoBodyWithoutEntry))
+
+  run bodyWithoutEntry6Test =
+    initEntryOnly0
+      .then(stepC(B, Edit, 0, false))
+      .then(stepC(A, Discard, 0, false))
+      .then(stepC(B, Register, 0, false))
+      .then(stepC(A, DeletionStepAction, 0, false))
+      .then(stepC(A, DeletionStepAction, 0, false))
+      .then(stepC(B, WriteBody, 0, false))
+      .expect(not(NoBodyWithoutEntry))
+}
+
+/// E1 part B (Quint Connect against the real `draft_service` over a tempdir):
+/// the one-process harness restricted to the actions the service driver
+/// implements, fault-free, with no backing-file movement (no `Save`,
+/// `ExternalMtime`, or moved previous-session backing) and no startup fault.
+/// `RestoreApply` is included because without it every editor restored with
+/// a body holds (`Unseen`) forever and registration is almost never reached.
+/// Only the choice sets differ from `k3_8`; `initFrom` and `stepWith` are the
+/// `journal` module's own.
+module k3_service {
+  import journal(MaxSteps = 16, TwoProc = false, NIds = 3).*
+  import journal_defs(TwoProcesses = false, IdCount = 3).*
+
+  pure val ServiceActions = Set(Edit, Register, WriteBody, Commit, Discard, DeletionStepAction, Crash, Startup)
+    .union(RestoreEndingsChosen.map(e => RestoreApply(e)))
+
+  action initService = {
+    nondet entryPresent = Ids.setOfMaps(Set(true, false)).oneOf()
+    nondet bodyPresent = Ids.setOfMaps(Set(true, false)).oneOf()
+    initFrom(previousSession(entryPresent, bodyPresent, Ids.mapBy(_ => false)), false)
+  }
+
+  action stepService = all {
+    n < MaxSteps,
+    nondet a = ServiceActions.oneOf()
+    nondet id = Ids.oneOf()
+    stepWith(false, a, id, false),
+  }
+
+  /// `stepService` restricted to choices that change the journal, with the
+  /// lifecycle actions down-weighted. A uniform random walk over 14 actions
+  /// and 3 ids almost never chains Edit, Register, WriteBody, and Commit on
+  /// one id before a Crash (2,000 `stepService` traces: 6 body writes, no
+  /// registration, no commit). The guard "the step is not a no-op" keeps
+  /// every reachable journal state reachable (a no-op only consumes budget);
+  /// repeating `workStep` in `any` only biases the simulator's choice.
+  pure val LifecycleActions = Set(Crash, Startup)
+
+  action effectiveStep(actions: Set[Action]): bool = all {
+    n < MaxSteps,
+    nondet a = actions.oneOf()
+    nondet id = Ids.oneOf()
+    all {
+      stepAs(j, false, a, id, false) != j,
+      stepWith(false, a, id, false),
+    },
+  }
+  action workStep = effectiveStep(ServiceActions.exclude(LifecycleActions))
+  action lifecycleStep = effectiveStep(LifecycleActions)
+  action stepServiceWeighted = any { workStep, workStep, workStep, workStep, workStep, workStep, lifecycleStep }
 }

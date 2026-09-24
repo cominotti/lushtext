@@ -38,6 +38,8 @@ _build/
 /build/smoke/
 # Local-only formal-evaluation tools and run logs (scripts/formal-evaluation.sh).
 /build/formal-evaluation/
+# TLC run metadata when a model is checked from its own directory.
+/formal/evaluation/**/states/
 
 # Local agent worktree caches can contain full repo checkouts and smoke logs.
 /.claude/worktrees/

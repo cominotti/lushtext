@@ -1,0 +1,26 @@
+# Disposable evaluation model (E8 of `evaluate-quint-and-tlaplus-empirically`).
+# Standalone: its own empty workspace table and Cargo.lock, and excluded from
+# the root workspace, so cargo-deny, hakari, Clippy, and nextest never see it.
+[package]
+name = "lushtext-journal-stateright"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+lushtext-core = { path = "../../../crates/lushtext-core" }
+stateright = "0.31.0"
+
+[profile.release]
+debug = "line-tables-only"
+
+# E1 (Quint Connect replay): test-only. See tests/quint_connect_*.rs.
+[dev-dependencies]
+quint-connect = "0.1.2"
+itf = "0.4"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+anyhow = "1"

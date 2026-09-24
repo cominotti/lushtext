@@ -15,7 +15,7 @@ members = [
     "crates/lushtext",
     "workspace-hack",
 ]
-exclude = ["fuzz", "fixtures/gtk-lush-adoption/stock-settle"]
+exclude = ["fuzz", "formal/evaluation/stateright", "fixtures/gtk-lush-adoption/stock-settle"]
 
 # Default binary for `cargo run`
 default-members = ["crates/lushtext"]

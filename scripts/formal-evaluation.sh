@@ -15,13 +15,14 @@
 #   FORMAL_EVAL_TIMEOUT   seconds per check (default 1800, the CI job cap)
 #   FORMAL_EVAL_MEM_MB    process-tree RSS ceiling in MiB (default 24576)
 #   FORMAL_EVAL_T2_DEPTHS space-separated K8 depths for t2 (default "6 8")
+#   FORMAL_EVAL_DIR       tools and runs root (default build/formal-evaluation)
 #   FORMAL_EVAL_WORKERS   TLC workers (default 1, comparable with Kani's
 #                         single-threaded solver; "auto" for every core)
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
-EVAL_DIR="$REPO_ROOT/build/formal-evaluation"
+EVAL_DIR="${FORMAL_EVAL_DIR:-$REPO_ROOT/build/formal-evaluation}"
 TOOLS="$EVAL_DIR/tools"
 RUNS="$EVAL_DIR/runs"
 MODELS="$REPO_ROOT/formal/evaluation"
@@ -167,7 +168,7 @@ measure() {
   local verdict=unexpected
   [[ $outcome == "$expect" ]] && verdict=expected
   local states
-  states=$(sed -n 's/.* \([0-9,]*\) distinct states found.*/\1/p' "$dir/output.txt" | tail -n 1 | tr -d ,)
+  states=$(sed -n -e 's/.* \([0-9,]*\) distinct states found.*/\1/p' -e 's/^unique_states=\([0-9]*\)$/\1/p' "$dir/output.txt" | tail -n 1 | tr -d ,)
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$expect" "$outcome" "$verdict" \
     "$wall" "$((peak / 1024))" "${states:--}" "$reason" | tee -a "$RUNS/results.tsv"
   [[ $verdict == expected ]]
@@ -177,9 +178,9 @@ classify() { # output status reason
   local out=$1 status=$2 reason=$3
   if [[ $reason != finished ]]; then
     echo "$reason"
-  elif grep -qE 'is violated|was violated|were violated|\[violation\]|Found [0-9]+ error|found a counterexample|Invariant violated|failed [0-9]+ test|[0-9]+ failing' "$out"; then
+  elif grep -qE 'is violated|was violated|were violated|\[violation\]|Found [0-9]+ error|found a counterexample|Invariant violated|failed [0-9]+ test|[0-9]+ failing|: VIOLATED' "$out"; then
     echo violation
-  elif grep -qE 'No error has been found|\[ok\] No violation found|NoError|[0-9]+ passing' "$out" && ((status == 0)); then
+  elif grep -qE 'No error has been found|\[ok\] No violation found|NoError|[0-9]+ passing|^wall_seconds=' "$out" && ((status == 0)); then
     echo pass
   else
     echo "error($status)"
