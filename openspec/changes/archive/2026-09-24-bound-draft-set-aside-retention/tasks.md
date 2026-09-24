@@ -38,5 +38,5 @@
 - [x] 6.2 Update `docs/automation.md` and `docs/automation-reference.md` for `app.review-preserved-drafts`. Run `make check-automation-docs` (and `make automation-client-self-test` if the client changed).
 - [x] 6.3 Update `docs/next/formal-verification.md` (a step 8a record with the R1–R4 results, and the deferral-inventory "no size bound" item now resolved as "soft bound, no automatic deletion"), and `docs/next/formal-verification-next.md` N10.
 - [x] 6.4 Update the README features, AGENTS.md / `.claude/CLAUDE.md` (the draft persistence and set-aside notes and the module layout for `set_aside_retention.rs`), and the `WFR-DRAFT-RECOVERY` row in `docs/workflow-readability-matrix.md` if called modules changed. Run `make check-workflow-boundaries`.
-- [ ] 6.5 Run the full gates: `make check`, `make test`, `make test-widget`, and the Kani harnesses from 2.3. Re-run the new widget tests 5 times in isolation.
-- [ ] 6.6 Run `openspec validate bound-draft-set-aside-retention --strict` and confirm it is valid.
+- [x] 6.5 Run the full gates: `make check`, `make test`, `make test-widget`, and the Kani harnesses from 2.3. Re-run the new widget tests 5 times in isolation.
+- [x] 6.6 Run `openspec validate bound-draft-set-aside-retention --strict` and confirm it is valid.

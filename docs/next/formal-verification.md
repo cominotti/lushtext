@@ -753,5 +753,12 @@ Next candidates after the Kani consolidation are ranked in
     `formal/evaluation/stateright/tests/e1_findings.rs` now asserts the fixed
     behaviour, and its seed-12 weighted Quint Connect run replays 1000 traces
     with no divergence.
+- `bound-draft-set-aside-retention` hardening candidate: `set_aside::place`
+  (dedupe by bytes) and `set_aside::delete_confirmed` (fingerprint check,
+  then removal) do not hold the stable target write guard across their
+  check-then-act windows. Every deletion re-checks the fingerprint the user
+  confirmed, so no confirmed-other body is removed, but the window between
+  that re-check and the removal is unguarded. No failing sequence is known;
+  take it up with a design for acquiring the guard inside `place()`.
 - `cargo-gtk-proof` has no sidebar or slice-bin scenario. The screenshot lane
   is waiting on a `reveal-workspace-path` automation action.
