@@ -21,6 +21,17 @@ user decision".
 
 ## What Changes
 
+- **Fix first: a newer body is never skipped as "already kept" (E1).** The
+  Quint vs TLA+ evaluation found that `set_aside::keep_copy` treated an
+  existing `{id}.{stamp}.draft` as proof the body was kept. After a crash
+  between a body write and its manifest commit, the body on disk is newer than
+  its entry's stamp; a second unapplied restore then reported it set aside
+  without copying it and released the restore hold, so autosave could replace
+  the only copy. A name now counts as kept only when it holds a
+  byte-identical copy; a different body takes the next free name, and neither
+  is overwritten. The decision is a pure `journal_core` function with a Kani
+  harness. This lives in the same module, so the pre-existing-blockers rule
+  puts it in this change.
 - **Retention policy: surface, never auto-delete.** A soft bound on the
   set-aside area, 100 bodies or 256 MiB, is evaluated off GTK once per process
   after startup restore settles, and again after any set-aside placement.
@@ -68,6 +79,7 @@ user decision".
     the summary, the confirmed Delete All bulk action, and truthful listing.
   - ADDED "Set-aside retention never deletes a draft without a user decision".
   - ADDED "Set-aside growth past a soft bound is surfaced for review".
+  - ADDED "A set-aside copy counts as kept only when it holds the same bytes".
 
 ## Impact
 

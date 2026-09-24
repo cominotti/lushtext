@@ -1,3 +1,10 @@
+## 0. Fix first: the set-aside copy of a newer body (E1)
+
+- [x] 0.1 Add failing-first `draft_service` unit tests: `keep_copy` of a changed body under the same id and stamp keeps both bodies, and the E1 reproduction (`formal/evaluation/stateright/tests/e1_findings.rs`) promoted to `unapplied_restore_keeps_an_uncommitted_newer_body_under_the_same_stamp`. Record that both FAIL on the current tree.
+- [x] 0.2 Add the pure `journal_core::set_aside_name_step` (a name counts as kept only when it holds a byte-identical copy; a different body takes the next free name, and neither is overwritten) and drive `set_aside::place` through it. Verify: 0.1 passes, and every existing draft-service test passes.
+- [x] 0.3 Add Kani harnesses over an abstract set-aside area (K9: every body reported kept is in the area and no kept body is replaced), plus a `should_panic` harness showing the stamp-only rule breaks K9. They fall under the `core-journal-and-write` shard's `journal_` filter. Verify: `make check-kani-shards`, and the shard run.
+- [x] 0.4 Update the E1 reproduction to assert the fixed behaviour, the programme record's deferral entry, and the Quint vs TLA+ report's E1 note.
+
 ## 1. Failing-first tests
 
 - [ ] 1.1 Add a `set_aside.rs` unit test seeding 300 bodies whose newest stamps sort last in directory order. Assert that the listing shows the newest 256 and reports a total of 300 and "incomplete". Record that it FAILS on the current tree.

@@ -31,6 +31,8 @@
 //! 6. **Reconciliation authority** ([`commit_authority`],
 //!    [`untrusted_commit_disposition`]) — a manifest is trusted only after a
 //!    complete reconciliation that was durably written.
+//! 7. **Set-aside naming** ([`set_aside_name_step`]) — a body counts as already
+//!    set aside only under a byte-identical copy, never by its name alone.
 //!
 //! Invariants Kani checks over these functions (see the programme record,
 //! `docs/next/formal-verification.md`, phase 4):
@@ -488,6 +490,49 @@ pub const fn commit_authority(
     }
 }
 
+// --- 7. set-aside naming ----------------------------------------------------
+
+/// What one candidate set-aside name (`{id}.{stamp}[-n].draft`) holds when a
+/// body is about to be kept there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum SetAsideSlot {
+    /// Nothing has that name.
+    Free,
+    /// A byte-identical copy of the body being kept.
+    SameBody,
+    /// Something else: an earlier, different body under the same id and stamp.
+    OtherBody,
+}
+
+/// What keeping a body does with one candidate set-aside name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetAsideNameStep {
+    /// Place the body under this name.
+    Place,
+    /// The body is already kept under this name; nothing to write.
+    AlreadyKept,
+    /// Leave this name alone and try the next one.
+    NextName,
+}
+
+/// Decide what to do with one candidate set-aside name.
+///
+/// Only a byte-identical copy counts as already kept. A name alone never
+/// does: after a crash between a body write and its manifest commit, a newer
+/// body sits under an entry whose stamp names an older, different copy. The
+/// stamp-only rule reported that newer body kept without copying it (the E1
+/// finding of the formal-methods evaluation), and the restore hold was then
+/// released over the only copy.
+#[must_use]
+pub const fn set_aside_name_step(slot: SetAsideSlot) -> SetAsideNameStep {
+    match slot {
+        SetAsideSlot::Free => SetAsideNameStep::Place,
+        SetAsideSlot::SameBody => SetAsideNameStep::AlreadyKept,
+        SetAsideSlot::OtherBody => SetAsideNameStep::NextName,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Characterization of every decision the journal core took over from its
@@ -647,6 +692,22 @@ mod tests {
         }
         assert!(startup_may_retire_stale(true));
         assert!(!startup_may_retire_stale(false));
+    }
+
+    #[test]
+    fn only_a_byte_identical_set_aside_copy_counts_as_kept() {
+        assert_eq!(
+            set_aside_name_step(SetAsideSlot::Free),
+            SetAsideNameStep::Place
+        );
+        assert_eq!(
+            set_aside_name_step(SetAsideSlot::SameBody),
+            SetAsideNameStep::AlreadyKept
+        );
+        assert_eq!(
+            set_aside_name_step(SetAsideSlot::OtherBody),
+            SetAsideNameStep::NextName
+        );
     }
 
     #[test]

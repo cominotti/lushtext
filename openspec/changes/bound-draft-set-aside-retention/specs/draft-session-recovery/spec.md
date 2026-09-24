@@ -94,3 +94,22 @@ and the review surface MUST NOT expose any draft body text.
 #### Scenario: No repeated nagging within a process
 - **WHEN** the area is still over the bound after a placement but has not grown materially since the last notice, or the user has already run the review action in this process
 - **THEN** no further notice is published
+
+### Requirement: A set-aside copy counts as kept only when it holds the same bytes
+When the system keeps a draft body in the set-aside location, an existing
+set-aside file SHALL count as that body already kept only if it is
+byte-identical to the body being preserved. Otherwise the body SHALL be kept
+under a distinct set-aside name, and neither file SHALL be overwritten. A
+preservation that reports a body set aside MUST leave that exact body in the
+set-aside location. This decision SHALL be a pure journal-core function, and a
+Kani harness SHALL check that every body reported kept is in the set-aside
+location and no kept body is replaced.
+
+#### Scenario: A newer body under an unchanged entry stamp is still set aside
+- **WHEN** a crash falls between a draft body write and its manifest commit, so the body on disk is newer than its entry's stamp, and a set-aside copy for that stamp already holds the older body
+- **AND** an unapplied restore preserves the body again
+- **THEN** the newer body is copied to a distinct set-aside name, the older copy is unchanged, and only then is the restore hold released
+
+#### Scenario: Keeping the same body again does not duplicate it
+- **WHEN** a body is preserved again and a byte-identical set-aside copy for its id and stamp already exists
+- **THEN** no second copy is written

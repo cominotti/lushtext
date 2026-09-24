@@ -507,8 +507,10 @@ Each idea's budget was declared before it started (default 2 h, maximum 4 h,
   committed. Kani's model preserves exact contents and never models set-aside
   naming.
 - **Reproduction.** `stateright/tests/e1_findings.rs` reduces it to 5 public
-  calls. **It is not fixed here (task 8.2 forbids production changes); see
-  "Follow-up" in §8.**
+  calls. It was not fixed here (task 8.2 forbids production changes); see
+  "Follow-up" in §8. **Fixed since, in `bound-draft-set-aside-retention`
+  (2026-09-24):** only a byte-identical copy counts as kept, the reproduction
+  now asserts both bodies are kept, and the weighted run replays cleanly.
 - **The lesson.** The catch came from comparing the real service with an
   abstract disk model. That model is the Rust `env.rs`; Quint only generated
   the traces. Costs: the driver and mapping took about 700 lines; a trivial
@@ -691,7 +693,9 @@ it, and this report stays as the record either way.
 
 ### Follow-up changes
 
-1. **Fix the E1 set-aside defect** (data safety, fix first). A body that is
+1. **Fix the E1 set-aside defect** (data safety, fix first). **Done in
+   `bound-draft-set-aside-retention` (2026-09-24)**, by comparing contents
+   before skipping, with a Kani harness (K9) over set-aside naming. A body that is
    newer than its entry's `saved_at_secs` must not be treated as already kept.
    Options: key set-aside names by content or body identity, or compare
    contents before skipping. Start from the reproduction in

@@ -48,6 +48,32 @@ Facts that shape the design:
 
 ## Decisions
 
+### D0. A set-aside name identifies a body only with its bytes (E1 fix)
+
+`keep_copy(id, stamp)` used to return early when `{id}.{stamp}.draft`
+existed. The stamp is the entry's `saved_at_secs`, and a crash between a body
+write and its manifest commit leaves a newer body under that unchanged stamp,
+so the early return reported the newer body kept without copying it. The
+caller then released the restore hold, and autosave could replace the only
+copy.
+
+`place` now probes `{id}.{stamp}[-n].draft` in order, and asks the pure
+`journal_core::set_aside_name_step` what to do with each name: a free name is
+taken, a byte-identical copy is "already kept" (so retries stay idempotent),
+and any other content is left alone while the next name is tried. The size is
+compared before any bytes are read; a read failure counts as "different",
+which costs at most one extra copy. A move (`move_in`) never dedupes.
+
+A Kani harness (K9) drives that function over an abstract area for one id,
+arbitrary stamps, and arbitrary contents, and checks that every body reported
+kept is in the area and no kept body is replaced. A `should_panic` twin shows
+that the stamp-only rule breaks K9. The journal model keeps preserved content
+as a set and cannot see naming, which is why the proofs missed this.
+
+*Alternatives considered:* keying names by a content hash. Rejected: it
+changes the set-aside name format that older builds' `parse_name` reads, and
+comparing only the few names under one id and stamp is enough.
+
 ### D1. No automatic deletion, even of opened bodies
 
 The brief allows auto-pruning of bodies the user already opened or restored.

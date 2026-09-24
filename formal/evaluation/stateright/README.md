@@ -113,7 +113,7 @@ the state diff on a divergence (the diff is printed only at that verbosity).
 - `tests/quint_connect_service.rs` (part B) replays the `k3_service`
   instance (one process, fault-free, no backing movement) against the real
   `draft_service` over a tempdir; the driver plays the window. The weighted
-  run pins a divergence: `tests/e1_findings.rs` reduces it to five public
-  service calls. `E1_CONTENT_STAMP=1` swaps in content-keyed set-aside names
-  to explore past it.
+  run found a divergence, which `tests/e1_findings.rs` reduces to five public
+  service calls; it is fixed (`bound-draft-set-aside-retention`), and both
+  now pass. `E1_CONTENT_STAMP=1` swaps in content-keyed set-aside names.
 - `tests/common/mod.rs` holds the Quint shapes as serde types.

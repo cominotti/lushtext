@@ -24,10 +24,10 @@
 use super::journal_core::{
     BodyFacts, BodyWriteDecision, CleanupBodyIdentity, CleanupEntryState, CleanupFacts,
     DeletionStep, EntryState, OrphanBodyDecision, RestoreDisposition, RestoreEnding,
-    UntrustedCommitDisposition, body_write_decision, commit_authority, deletion_start,
-    may_write_after_registration, next_deletion_step, orphan_body_decision, ownership,
-    registration_required, startup_may_retire_stale, unapplied_restore_disposition,
-    untrusted_commit_disposition,
+    SetAsideNameStep, SetAsideSlot, UntrustedCommitDisposition, body_write_decision,
+    commit_authority, deletion_start, may_write_after_registration, next_deletion_step,
+    orphan_body_decision, ownership, registration_required, set_aside_name_step,
+    startup_may_retire_stale, unapplied_restore_disposition, untrusted_commit_disposition,
 };
 use crate::model::draft::DraftManifestCompleteness;
 
@@ -751,4 +751,118 @@ fn a_second_writer_breaks_the_journal_invariants() {
         journal.step_as(kani::any(), kani::any(), any_id(), kani::any());
         journal.assert_invariants();
     }
+}
+
+// --- set-aside naming ---------------------------------------------------------
+//
+// The journal model above keeps preserved content as a set, so it cannot see
+// how the set-aside area names what it keeps. This separate model does: one
+// draft id, whose copies are named by the entry stamp the caller passes plus a
+// collision suffix, exactly as `set_aside::place` probes them, with every
+// naming decision taken by the production `set_aside_name_step`.
+
+/// Stamps a caller may pass (the entry's `saved_at_secs`).
+const SET_ASIDE_STAMPS: usize = 2;
+/// Names probed per stamp: the primary name plus collision suffixes.
+const SET_ASIDE_NAMES: usize = 3;
+/// `keep_copy` calls in one run.
+const SET_ASIDE_CALLS: usize = 4;
+
+/// The set-aside area for one id: which content, if any, each name holds.
+struct SetAsideArea {
+    names: [[Option<ContentId>; SET_ASIDE_NAMES]; SET_ASIDE_STAMPS],
+}
+
+impl SetAsideArea {
+    /// `keep_copy(id, stamp)` of a body holding `content`: probes names in
+    /// order and asks `decide` what to do with each. `true` means the call
+    /// reported the body kept.
+    fn keep_copy(
+        &mut self,
+        stamp: usize,
+        content: ContentId,
+        decide: fn(SetAsideSlot) -> SetAsideNameStep,
+    ) -> bool {
+        for name in 0..SET_ASIDE_NAMES {
+            let slot = match self.names[stamp][name] {
+                None => SetAsideSlot::Free,
+                Some(held) if held == content => SetAsideSlot::SameBody,
+                Some(_) => SetAsideSlot::OtherBody,
+            };
+            match decide(slot) {
+                SetAsideNameStep::Place => {
+                    // `place` refuses an existing name (no-replace rename or a
+                    // free-name probe), so it can only fill an empty one.
+                    if self.names[stamp][name].is_none() {
+                        self.names[stamp][name] = Some(content);
+                    }
+                    return true;
+                }
+                SetAsideNameStep::AlreadyKept => return true,
+                SetAsideNameStep::NextName => {}
+            }
+        }
+        false
+    }
+
+    fn holds(&self, content: ContentId) -> bool {
+        self.names
+            .iter()
+            .any(|names| names.iter().any(|held| *held == Some(content)))
+    }
+}
+
+/// Runs arbitrary `keep_copy` calls (arbitrary stamp and body content, as a
+/// crash between a body write and its commit allows) and asserts that a call
+/// reported kept left that exact content in the area, and that no call ever
+/// changed a name that already held a body.
+fn set_aside_keeps_what_it_reports(decide: fn(SetAsideSlot) -> SetAsideNameStep) {
+    let mut area = SetAsideArea {
+        names: [[None; SET_ASIDE_NAMES]; SET_ASIDE_STAMPS],
+    };
+    for _ in 0..SET_ASIDE_CALLS {
+        let stamp: usize = kani::any();
+        kani::assume(stamp < SET_ASIDE_STAMPS);
+        let content: ContentId = kani::any();
+        kani::assume(usize::from(content) < CONTENTS);
+        let before = area.names;
+        let kept = area.keep_copy(stamp, content, decide);
+        if kept {
+            assert!(
+                area.holds(content),
+                "a body reported kept is not in the area"
+            );
+        }
+        for (stamp, names) in before.iter().enumerate() {
+            for (name, held) in names.iter().enumerate() {
+                if held.is_some() {
+                    assert_eq!(area.names[stamp][name], *held, "a kept body was replaced");
+                }
+            }
+        }
+    }
+}
+
+/// K9: every body `keep_copy` reports kept is in the set-aside area, byte for
+/// byte, and no kept body is ever replaced, for any sequence of stamps and
+/// contents.
+#[kani::proof]
+#[kani::unwind(5)]
+fn journal_set_aside_keeps_every_body_it_reports_kept() {
+    set_aside_keeps_what_it_reports(set_aside_name_step);
+}
+
+/// The stamp-only rule the E1 finding exposed (an existing name counts as
+/// kept, whatever it holds) breaks K9, so the harness catches that class.
+#[kani::proof]
+#[kani::should_panic]
+#[kani::unwind(5)]
+fn journal_set_aside_stamp_only_naming_loses_a_newer_body() {
+    fn stamp_only(slot: SetAsideSlot) -> SetAsideNameStep {
+        match slot {
+            SetAsideSlot::Free => SetAsideNameStep::Place,
+            SetAsideSlot::SameBody | SetAsideSlot::OtherBody => SetAsideNameStep::AlreadyKept,
+        }
+    }
+    set_aside_keeps_what_it_reports(stamp_only);
 }

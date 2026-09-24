@@ -682,20 +682,36 @@ Next candidates after the Kani consolidation are ranked in
 - Phase 0: the startup leftover sweep skips the legacy folder-note sidecar
   directory kept for older releases, and a pass over a directory larger than
   its budget may leave leftovers for a later pass.
-- **Open defect, fix first: the set-aside copy of a newer body is skipped.**
-  The Quint vs TLA+ evaluation found it (E1): the real `draft_service`,
-  driven against a Rust abstract disk model.
+- **Fixed (2026-09-24, `bound-draft-set-aside-retention`): the set-aside
+  copy of a newer body was skipped.** The Quint vs TLA+ evaluation found it
+  (E1): the real `draft_service`, driven against a Rust abstract disk model.
   - **Where:** `preserve_stale_draft_body` keeps an unapplied restore's body
     under `set_aside::keep_copy(id, entry.saved_at_secs)`, and `keep_copy`
-    treats an existing `{id}.{stamp}.draft` as already kept.
+    treated an existing `{id}.{stamp}.draft` as already kept.
   - **The failure:** a crash falls between a body write and its manifest
     commit, so the body on disk is newer than its entry's stamp. A second
-    unapplied restore then reports `SetAside` without copying it, and releases
-    the hold. Autosave may then replace the only copy.
-  - **Why the proofs miss it:** S1 does not flag it, because that body was
-    never committed. Kani's model never modelled set-aside naming.
-  - **Reproduction:** `formal/evaluation/stateright/tests/e1_findings.rs`.
-  - **The fix** needs its own change. That evaluation could not change
-    production code.
+    unapplied restore then reported `SetAside` without copying it, and
+    released the hold. Autosave could then replace the only copy.
+  - **Why the proofs missed it:** S1 does not flag it, because that body was
+    never committed, and the journal model keeps preserved content as a set,
+    so it never modelled set-aside naming.
+  - **The fix:** a name counts as kept only when it holds a byte-identical
+    copy; a different body takes the next free `-{n}` name, and neither is
+    overwritten. The decision is the pure `journal_core::set_aside_name_step`,
+    which `set_aside::place` drives.
+  - **Evidence:** two failing-first `draft_service` tests
+    (`set_aside_copy_of_a_changed_body_under_the_same_stamp_keeps_both` and
+    `unapplied_restore_keeps_an_uncommitted_newer_body_under_the_same_stamp`,
+    the promoted reproduction). A new Kani harness, K9
+    (`journal_set_aside_keeps_every_body_it_reports_kept`), checks over an
+    abstract set-aside area for one id, 2 stamps, 3 names per stamp, and 4
+    `keep_copy` calls with arbitrary contents that every body reported kept
+    is in the area and no kept body is replaced (about 3 s). Its
+    `should_panic` twin (`journal_set_aside_stamp_only_naming_loses_a_newer_body`)
+    shows the stamp-only rule breaks K9. Both run in the
+    `core-journal-and-write` shard. The evaluation's
+    `formal/evaluation/stateright/tests/e1_findings.rs` now asserts the fixed
+    behaviour, and its seed-12 weighted Quint Connect run replays 1000 traces
+    with no divergence.
 - `cargo-gtk-proof` has no sidebar or slice-bin scenario. The screenshot lane
   is waiting on a `reveal-workspace-path` automation action.

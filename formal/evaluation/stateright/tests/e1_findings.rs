@@ -21,14 +21,17 @@
 //! never committed (never "accepted"), and Kani does not model set-aside
 //! naming.
 //!
-//! This test pins the CURRENT behaviour so the finding is reproducible; it
-//! is evidence, not a desired contract.
+//! Fixed in `bound-draft-set-aside-retention`: an existing set-aside name
+//! counts as kept only when it holds a byte-identical copy
+//! (`journal_core::set_aside_name_step`), so both bodies are now kept. This
+//! test asserts the fixed behaviour; the promoted production test is
+//! `draft_service::tests::unapplied_restore_keeps_an_uncommitted_newer_body_under_the_same_stamp`.
 
 use lushtext_core::model::draft::{DraftEntry, DraftManifest, StaleDraftPreservation};
 use lushtext_core::services::draft_service::{self, RegisteredDraft, set_aside};
 
 #[test]
-fn unrestored_copy_is_skipped_when_an_uncommitted_body_shares_the_entry_stamp() {
+fn unrestored_copy_is_kept_when_an_uncommitted_body_shares_the_entry_stamp() {
     let data = tempfile::tempdir().expect("tempdir");
     let path = std::path::PathBuf::from("/e1-quint-connect/file1.txt");
     let id = draft_service::draft_id_for_path(&path);
@@ -57,16 +60,17 @@ fn unrestored_copy_is_skipped_when_an_uncommitted_body_shares_the_entry_stamp() 
     // commit, so the entry still says `saved_at_secs = 2`.
     draft_service::write_draft(data.path(), &token(), "c4").expect("body c4");
 
-    // Second unapplied restore, after restart: reported as kept aside...
+    // Second unapplied restore, after restart: reported as kept aside,
     assert_eq!(
         draft_service::preserve_stale_draft_body(data.path(), &entry).expect("preserve c4"),
         Some(StaleDraftPreservation::SetAside)
     );
-    // ...but the set-aside area holds only the older body.
-    let kept: Vec<String> = set_aside::list(data.path())
+    // and the set-aside area now holds both bodies.
+    let mut kept: Vec<String> = set_aside::list(data.path())
         .expect("list")
         .into_iter()
         .map(|body| std::fs::read_to_string(body.path).expect("read"))
         .collect();
-    assert_eq!(kept, vec!["c2".to_string()], "c4 was not preserved");
+    kept.sort();
+    assert_eq!(kept, vec!["c2".to_string(), "c4".to_string()], "c4 was not preserved");
 }

@@ -3552,6 +3552,64 @@ mod tests {
     }
 
     #[test]
+    fn set_aside_copy_of_a_changed_body_under_the_same_stamp_keeps_both() {
+        let dir = TempDir::new().expect("set-aside changed body tempdir");
+        super::fixture::write_body(dir.path(), "abcdef0123456789", "first").expect("body");
+        let first = set_aside::keep_copy(dir.path(), "abcdef0123456789", 7).expect("copy");
+        // The body changes while its entry's stamp does not (a crash between
+        // a body write and its manifest commit).
+        super::fixture::write_body(dir.path(), "abcdef0123456789", "second").expect("body");
+
+        let second = set_aside::keep_copy(dir.path(), "abcdef0123456789", 7).expect("copy");
+
+        assert_ne!(second, first, "a different body must not count as kept");
+        fixture::assert_text(&first, "first");
+        fixture::assert_text(&second, "second");
+        // Keeping the unchanged body again is still idempotent.
+        assert_eq!(
+            set_aside::keep_copy(dir.path(), "abcdef0123456789", 7).expect("dedupe"),
+            second
+        );
+        assert_eq!(fixture::entry_names(&set_aside_dir(dir.path())).len(), 2);
+    }
+
+    /// E1 of the Quint vs TLA+ evaluation
+    /// (`formal/evaluation/stateright/tests/e1_findings.rs`): an uncommitted
+    /// newer body under an unchanged entry stamp must still be set aside
+    /// before a second unapplied restore reports it kept.
+    #[test]
+    fn unapplied_restore_keeps_an_uncommitted_newer_body_under_the_same_stamp() {
+        let dir = TempDir::new().expect("E1 tempdir");
+        let path = PathBuf::from("/e1/file1.txt");
+        let draft_id = draft_id_for_path(&path);
+        let entry = DraftEntry {
+            draft_id: draft_id.clone(),
+            original_path: Some(path),
+            original_mtime_secs: None,
+            saved_at_secs: 2,
+        };
+        super::fixture::write_body(dir.path(), &draft_id, "c2").expect("body c2");
+        assert_eq!(
+            preserve_stale_draft_body(dir.path(), &entry).expect("preserve c2"),
+            Some(StaleDraftPreservation::SetAside)
+        );
+        // Autosave writes the next body; the process dies before the commit.
+        super::fixture::write_body(dir.path(), &draft_id, "c4").expect("body c4");
+
+        assert_eq!(
+            preserve_stale_draft_body(dir.path(), &entry).expect("preserve c4"),
+            Some(StaleDraftPreservation::SetAside)
+        );
+
+        let mut kept: Vec<String> = fixture::entry_names(&set_aside_dir(dir.path()))
+            .into_iter()
+            .map(|name| fixture::read_text(&set_aside_dir(dir.path()).join(name)))
+            .collect();
+        kept.sort();
+        assert_eq!(kept, vec!["c2".to_string(), "c4".to_string()]);
+    }
+
+    #[test]
     fn stale_body_is_not_reported_preserved_by_prunable_local_history_alone() {
         let dir = TempDir::new().expect("backstop tempdir");
         let path = dir.path().join("notes.md");

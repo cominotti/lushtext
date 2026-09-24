@@ -29,6 +29,7 @@ use crate::services::filesystem::{
     read as fs_read, tree as fs_tree, write as fs_write,
 };
 
+use super::journal_core::{SetAsideNameStep, SetAsideSlot, set_aside_name_step};
 use super::{MAX_AUTOMATIC_DRAFT_BYTES, draft_body_path, drafts_dir, read_draft_path_bounded};
 
 /// Subdirectory of `drafts/` holding preserved bodies that left the journal.
@@ -56,24 +57,38 @@ enum Transfer {
 
 /// The first set-aside name for one body, `{id}.{stamp}.draft`.
 ///
-/// Later collisions take a `-{n}` suffix, so this name existing means a copy
-/// for exactly this draft id and stamp was already kept.
+/// Later collisions take a `-{n}` suffix. A name existing does **not** mean
+/// this body is kept: a crash between a body write and its manifest commit
+/// leaves a newer body under an unchanged entry stamp, so only a
+/// byte-identical file counts as already kept (see [`keep_copy`]).
 fn primary_path(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> PathBuf {
     dir(data_dir).join(format!("{draft_id}.{stamp_secs}.draft"))
 }
 
-/// Copy a body into the set-aside area unless a copy for this id and stamp
-/// was already kept.
+/// The set-aside name tried on one placement attempt.
+fn candidate_path(data_dir: &Path, draft_id: &str, stamp_secs: u64, attempt: u32) -> PathBuf {
+    if attempt == 0 {
+        primary_path(data_dir, draft_id, stamp_secs)
+    } else {
+        dir(data_dir).join(format!("{draft_id}.{stamp_secs}-{attempt}.draft"))
+    }
+}
+
+/// Copy a body into the set-aside area unless a byte-identical copy for this
+/// id and stamp was already kept.
+///
+/// Every existing `{id}.{stamp}[-n].draft` is compared with the body: an
+/// identical one is returned (so retries stay idempotent), and a different one
+/// is left untouched while the body takes the next free name. The stamp alone
+/// never identifies the content (the E1 finding of the formal-methods
+/// evaluation): a body rewritten after the entry that names it keeps the same
+/// stamp.
 ///
 /// # Errors
 ///
 /// Returns an error when the body cannot be read or no durable copy could be
 /// placed; the caller must then keep the journal body.
 pub fn keep_copy(data_dir: &Path, draft_id: &str, stamp_secs: u64) -> Result<PathBuf> {
-    let primary = primary_path(data_dir, draft_id, stamp_secs);
-    if fs_metadata::exists(&primary) {
-        return Ok(primary);
-    }
     place(data_dir, draft_id, stamp_secs, Transfer::Copy)
 }
 
@@ -113,13 +128,22 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
         }
     };
     for attempt in 0..MAX_SET_ASIDE_NAME_ATTEMPTS {
-        let target = if attempt == 0 {
-            primary_path(data_dir, draft_id, stamp_secs)
+        let target = candidate_path(data_dir, draft_id, stamp_secs, attempt);
+        let slot = if !fs_metadata::exists(&target) {
+            SetAsideSlot::Free
+        } else if copy_bytes
+            .as_deref()
+            .is_some_and(|bytes| holds_exactly(&target, bytes))
+        {
+            SetAsideSlot::SameBody
         } else {
-            dir.join(format!("{draft_id}.{stamp_secs}-{attempt}.draft"))
+            // A move never dedupes: its source leaves the journal either way.
+            SetAsideSlot::OtherBody
         };
-        if fs_metadata::exists(&target) {
-            continue;
+        match set_aside_name_step(slot) {
+            SetAsideNameStep::Place => {}
+            SetAsideNameStep::AlreadyKept => return Ok(target),
+            SetAsideNameStep::NextName => continue,
         }
         let placed = match copy_bytes.as_deref() {
             Some(bytes) => fs_write::atomic_replace(&target, WriteLabel::DRAFT, bytes)
@@ -149,6 +173,20 @@ fn place(data_dir: &Path, draft_id: &str, stamp_secs: u64, transfer: Transfer) -
     anyhow::bail!(
         "no free set-aside name for draft {draft_id} after {MAX_SET_ASIDE_NAME_ATTEMPTS} attempts"
     )
+}
+
+/// Whether an existing set-aside file holds exactly `bytes`.
+///
+/// The size is checked first so a differing body is usually rejected without
+/// reading it; any read failure counts as "not identical", which only ever
+/// costs one more copy.
+fn holds_exactly(target: &Path, bytes: &[u8]) -> bool {
+    let expected = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if fs_metadata::file_facts(target).map_or(true, |facts| facts.byte_size != expected) {
+        return false;
+    }
+    fs_read::prefix_bytes(target, bytes.len().saturating_add(1))
+        .is_ok_and(|existing| existing == bytes)
 }
 
 /// Whether a failed set-aside transfer nevertheless placed the body.

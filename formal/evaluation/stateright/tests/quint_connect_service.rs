@@ -33,8 +33,10 @@
 //! `c{content id}`, the model's numbering; `saved_at_secs` is the committed
 //! content id, standing in for production's commit time (distinct per commit).
 //!
-//! Finding: every seed of `k3_service_weighted` diverges on `preserved`; see
-//! `tests/e1_findings.rs`. `E1_CONTENT_STAMP=1` explores past it.
+//! Finding: every seed of `k3_service_weighted` diverged on `preserved`; see
+//! `tests/e1_findings.rs`. Fixed in `bound-draft-set-aside-retention`, so the
+//! weighted run now replays cleanly. `E1_CONTENT_STAMP=1` still swaps in
+//! content-keyed set-aside names.
 
 #![expect(
     non_snake_case,
@@ -596,11 +598,10 @@ fn k3_service_uniform() -> impl Driver {
 
 /// Effective, work-weighted steps (see `stepServiceWeighted`).
 ///
-/// Expected to diverge: this pins the E1 finding (`tests/e1_findings.rs`),
-/// which trace 22 of seed 12 reaches. Run with `E1_CONTENT_STAMP=1` (and
-/// without this attribute's `should_panic`) to explore past it; the other
-/// seeds tried (11 to 18) all reach the same divergence within 25 traces.
-#[should_panic(expected = "State invariant failed")]
+/// Diverged before the E1 fix (`tests/e1_findings.rs`), which trace 22 of
+/// seed 12 reached; the other seeds tried (11 to 18) all reached the same
+/// divergence within 25 traces. Since `bound-draft-set-aside-retention` it
+/// replays with no divergence.
 #[quint_run(
     spec = "../quint/journal.qnt",
     main = "k3_service",
