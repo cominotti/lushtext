@@ -285,6 +285,8 @@ make test-unit   # Unit tests only
 make test-int    # Integration tests only
 make test-widget # Widget tests with the private headless runner
 make test-widget-headless # Widget tests with the CI mutter/dbus path
+make test-widget-shard WIDGET_SHARD=<shard> # One CI widget shard, exactly as CI runs it
+make check-widget-shards # Every widget test sits in exactly one CI shard, each shard measured within 20 minutes (no build needed)
 make test-workspace-row-states # Focused workspace file-row state widget tests
 make visual-smoke # Real-session screenshot smoke with artifacts
 make crash-recovery-smoke # Real-process SIGKILL/relaunch recovery smoke with artifacts

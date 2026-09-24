@@ -627,7 +627,10 @@ make check
 ```
 
 Widget tests require a display server; the repo runner uses the private
-headless Mutter path for deterministic full-suite runs. For host-sensitive
+headless Mutter path for deterministic full-suite runs. CI splits the widget
+suite into the shards of `scripts/widget-shards.py`, one job each; `make
+check-widget-shards` fails when a widget test belongs to no shard or to two,
+and `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one. For host-sensitive
 risks that the widget harness cannot honestly prove, use the smoke lanes in
 [`docs/end-user-coverage.md`](docs/end-user-coverage.md), including visual,
 automation, crash-recovery, portal/sandbox, accessibility, and performance
