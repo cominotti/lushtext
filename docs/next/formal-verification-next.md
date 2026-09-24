@@ -49,7 +49,7 @@ change adopts it.
 | 7 | `add-sidebar-visual-proof-scenario` | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check | — |
 | 8 | `apply-verification-altitude-redesigns` | N8, as six groups that can be applied one at a time | 1, 6 |
 | 9 | `verify-shell-conformance-against-proven-cores` | N11: the imperative shells checked against the Kani-proven cores used as oracles | 1, 3 |
-| — | `evaluate-quint-and-tlaplus-empirically` | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only: its output is a decision record, not a production dependency | — |
+| — | `evaluate-quint-and-tlaplus-empirically` (**implemented 2026-09-24**) | An empirical Quint vs TLA+ comparison, with open exploration. Evaluation only. **Done**: [`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md) decided Kani only for maintained properties, TLA+ with TLC for the disposable N6 sketch, and no Quint; its E1 run found a set-aside defect for a fix-first follow-up | — |
 
 Only two candidates wait for a trigger, and neither has a proposal. N6
 (inter-process lock) waits for axiom A6 to be breached. N7 (slice-bin
@@ -200,26 +200,51 @@ This came out of evaluating Quint Connect: this project gets the same
 spec-to-implementation conformance with no second language, because its
 oracle is production code that is already proved.
 
-### Tool criteria recorded on 2026-09-23 (TLA+, Quint, Bend 2)
+The 2026-09-24 evaluation (E1) sharpened this. Driving the real
+`draft_service` over a tempdir, against the Rust abstract disk model in
+`formal/evaluation/stateright/src/env.rs` (which calls the real
+`journal_core`), found a real set-aside defect that the proven core alone
+could not show: the core correctly answered "preserve", and the service
+effect was wrong. An oracle made only of the core's decisions would miss that
+class of defect. N11 should adopt the abstract disk model as its oracle.
 
-- **TLA+ (TLC):** only as a **disposable design sketch**, and only if the N6
-  trigger fires. An inter-process lock with crashes, leases, and liveness
-  under fairness is classic TLA+ ground, and TLC is the most mature liveness
-  checker. The final core is still pure Rust checked by Kani.
-- **Quint:** for the N6 sketch, prefer it over TLA+ only if the model should
-  later drive tests (Quint Connect). A maintained Quint model re-creates the
-  bridge that the Kani consolidation removed.
-- **Scale:** if a needed model outgrows Kani (K8 took 18 GB for 8 steps),
-  evaluate `stateright`, an explicit-state checker that runs Rust code,
-  before any external language.
+### Tool criteria recorded on 2026-09-23, measured on 2026-09-24
+
+The 2026-09-23 judgements were opinions. The 2026-09-24 evaluation
+([`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md))
+measured them on T1 (the durable write), T2 (the two-process journal), and T3
+(an N6 lock sketch).
+
+- **TLA+ (TLC): confirmed, as the disposable N6 design-sketch tool only.**
+  - It checked every T3 safety and liveness verdict in about 1 s each, and
+    distinguished weak from strong fairness.
+  - TLAPS proved the lock's at-most-one-writer invariant unbounded in 0.4 s.
+  - On T2 it was the only external route that reproduced K8 faster than Kani:
+    about 215 s at 6 actions, but with 24 cores, about 17 GB, and a
+    hand-written `VIEW`. With one worker it did not finish in 30 minutes.
+  - The final core stays Kani-checked Rust.
+- **Quint: rejected, including as a Kani replacement.**
+  - It matched TLA+ on T1 and T3 and read better (E7).
+  - Its toolchain gave a silent false green: exit 0 with the latest Apalache.
+  - Its simulator silently keeps unassigned variables.
+  - Its TLC translation has no `VIEW` and timed out on T2 at 6 actions
+    (131.6 M states). Its Apalache path ran out of heap while inlining T2.
+  - Quint Connect worked, but the defect it surfaced came from the Rust
+    abstract disk model it drove, which N11 can use without Quint.
+- **Scale: `stateright` — confirmed, and it beat Kani.**
+  - It ran on the real `journal_core`, with no second language.
+  - It explored the one-process journal at 8 actions in 49.5 s / 1.1 GiB
+    (Kani: 487 s / about 8 GB), and K8 at 6 in 73 s / 2.3 GiB (Kani:
+    500.8 s / about 9 GB).
+  - Adopting it as a maintained lane needs its own change.
 - **Bend 2** (HigherOrderCO, September 2026): evaluated, and **not
-  applicable**. It verifies only Bend programs and cannot check Rust. Its
-  README says it is young and that its compiler is "99% AI-written and not
-  fully audited". The one transferable idea, `LAWS.bend` (declared laws that
-  the compiler demands a proof of on every edit), is what Kani harnesses in
-  the PR gate already provide.
-- `evaluate-quint-and-tlaplus-empirically` tests these judgements against
-  measurements before any of them hardens into policy.
+  applicable**.
+  - It verifies only Bend programs and cannot check Rust.
+  - Its README says it is young and that its compiler is "99% AI-written and
+    not fully audited".
+  - The one transferable idea, `LAWS.bend` (declared laws that the compiler
+    demands a proof of on every edit), is what Kani harnesses in the PR gate
+    already provide.
 
 ### Dormant: Lean
 

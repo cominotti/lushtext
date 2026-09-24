@@ -65,6 +65,7 @@ make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
 make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode)
+make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|t1|t2|t3|all|report-data)
 make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
 make check-widget-shards # every widget test in exactly one CI shard, each shard measured within 20 minutes (no build needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
@@ -506,6 +507,14 @@ invariant; tighten the generator or use the deep lane.
 
 - Tool: Kani, the programme's **only** formal tool (see
   `docs/next/formal-verification.md` §2). Quint is dropped and Lean is dormant;
+  the measured Quint vs TLA+ evaluation
+  (`docs/next/formal-verification-quint-vs-tlaplus.md`, 2026-09-24) confirmed
+  Kani-only for maintained properties and chose TLA+ with TLC only as the
+  disposable N6 design-sketch tool if that trigger fires. Its models live in
+  `formal/evaluation/` and run through the local-only `make formal-evaluation`
+  (tools in the gitignored `build/formal-evaluation/`); it is never a
+  prerequisite of `check`, `check-policy`, `test`, `kani`, or `end-user-smoke`,
+  and no workflow calls it;
   do not add a second specification language without a recorded maintainer
   decision.
 - Pin: `KANI_VERSION` in the Makefile and the `KANI_VERSION` env of

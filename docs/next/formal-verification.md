@@ -96,6 +96,20 @@ Tool facts as of September 2026:
 - Kani function contracts and loop contracts are still experimental.
 - Harnesses live in GTK-free code behind `#[cfg(kani)]`.
 
+**Measured on 2026-09-24.** The OpenSpec change
+`evaluate-quint-and-tlaplus-empirically` compared Quint and TLA+ with Kani
+on three of this project's own targets, and on eight exploration ideas. The
+record is
+[`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md).
+
+- **Kani stays the only maintained formal tool.**
+- **TLA+ with TLC** is the recorded tool for the disposable N6 design sketch,
+  if that trigger ever fires.
+- **Quint is not adopted,** and cannot replace Kani.
+- **A narrow exception to the Kani-only rule** lets the disposable evaluation
+  models stay in `formal/evaluation/`. They sit outside every gate, and no
+  claim here rests on them (maintainer decision D7, option A).
+
 ## 3. Phases
 
 **Final lane run (2026-09-23, `make kani`, all five shards, Kani 0.68.0 /
@@ -668,5 +682,20 @@ Next candidates after the Kani consolidation are ranked in
 - Phase 0: the startup leftover sweep skips the legacy folder-note sidecar
   directory kept for older releases, and a pass over a directory larger than
   its budget may leave leftovers for a later pass.
+- **Open defect, fix first: the set-aside copy of a newer body is skipped.**
+  The Quint vs TLA+ evaluation found it (E1): the real `draft_service`,
+  driven against a Rust abstract disk model.
+  - **Where:** `preserve_stale_draft_body` keeps an unapplied restore's body
+    under `set_aside::keep_copy(id, entry.saved_at_secs)`, and `keep_copy`
+    treats an existing `{id}.{stamp}.draft` as already kept.
+  - **The failure:** a crash falls between a body write and its manifest
+    commit, so the body on disk is newer than its entry's stamp. A second
+    unapplied restore then reports `SetAside` without copying it, and releases
+    the hold. Autosave may then replace the only copy.
+  - **Why the proofs miss it:** S1 does not flag it, because that body was
+    never committed. Kani's model never modelled set-aside naming.
+  - **Reproduction:** `formal/evaluation/stateright/tests/e1_findings.rs`.
+  - **The fix** needs its own change. That evaluation could not change
+    production code.
 - `cargo-gtk-proof` has no sidebar or slice-bin scenario. The screenshot lane
   is waiting on a `reveal-workspace-path` automation action.

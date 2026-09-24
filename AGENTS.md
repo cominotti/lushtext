@@ -294,6 +294,7 @@ make portal-sandbox-smoke # Available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # Lightweight Criterion performance smoke
 make kani        # Every Kani proof harness (pinned Kani 0.68.0; KANI_SHARD=<shard> for one, KANI_MEASURE=<json> to record wall time/peak memory/per-harness time; sharded CI lane, pull-request-gated shards also run on PRs)
+make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|t1|t2|t3|all|report-data); never a gate or CI lane — see docs/next/formal-verification-quint-vs-tlaplus.md
 make check-kani-shards # Every Kani harness sits in exactly one CI shard, and every shard has a measured runner budget within its margins (no Kani needed)
 make automation-client-self-test # Reusable D-Bus automation client self-test
 make end-user-smoke # Run all host-supported end-user smoke lanes

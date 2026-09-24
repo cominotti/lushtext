@@ -596,7 +596,11 @@ protocol's crash atomicity. `make kani` runs them with the pinned Kani version;
 ordinary builds and tests need no Kani install. CI runs every shard of the lane
 weekly and on dispatch, and the fast `widgets-geometry` shard on every pull
 request, within per-shard wall-time and memory budgets measured on the CI
-runner and recorded in `scripts/kani-shards.py`.
+runner and recorded in `scripts/kani-shards.py`. A measured, local-only
+comparison of Quint and TLA+ on the same protocols
+([`docs/next/formal-verification-quint-vs-tlaplus.md`](docs/next/formal-verification-quint-vs-tlaplus.md),
+`make formal-evaluation`) kept Kani as the only maintained tool; its
+disposable models live in `formal/evaluation/`.
 
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
 and [`docs/automation-reference.md`](docs/automation-reference.md). The
