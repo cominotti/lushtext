@@ -114,6 +114,7 @@ record is
 
 **Final lane run (2026-09-23, `make kani`, all five shards, Kani 0.68.0 /
 CBMC 6.11.0, this toolbox): 27 harnesses, 0 failures, 40 min 29 s wall**
+(the lane has since grown to 74 harnesses in seven shards; see N2 in phase 2)
 (while other lanes shared the machine). Per shard: widgets-geometry 9
 harnesses; widgets-slice-loop-rest 3 (longest `slice_loop_rests_with_three_bins`
 310.1 s); widgets-slice-loop-requests 6 (longest
@@ -252,8 +253,8 @@ phases 3–5 landed, so `scripts/kani-shards.py` now owns a five-shard table
 `make check-policy`) fails when a harness matches no shard or several. The shard
 times on GitHub runners are measured, and `widgets-geometry` is in the
 pull-request gate (below, `harden-kani-lane-and-draft-token`). The editor-memory, minimap, window-geometry, and
-`clamped_preview_width` harnesses listed above were not part of this change and
-remain open candidates.
+`clamped_preview_width` harnesses listed above were not part of this change;
+they landed in `extend-kani-to-pure-policies` (N2, below).
 
 **Runner budgets and the pull-request gate (2026-09-23,
 `harden-kani-lane-and-draft-token`).** `make kani KANI_MEASURE=<json>`
@@ -340,6 +341,141 @@ Fedora 44 container), Kani 0.68.0:
   check-workflow-boundaries` skips a gated `kani_proofs.rs` in its
   decision-logic and role-home rules and fails an ungated or orphaned one, so
   harnesses over `ui/**/policy.rs` (N2) need no ledger entry.
+
+**The pure geometry and budget policies (2026-09-24,
+`extend-kani-to-pure-policies`, N2).** Harnesses over five GTK-free policies,
+each a `kani_proofs.rs` child of the checked module (so it reaches private
+helpers without widening them), in two new shards. Local times are from the
+final full-lane run (`make kani`, Kani 0.68.0 / CBMC 6.11.0, this toolbox, one
+shard at a time); the runner budgets follow the table.
+
+| Module | Harness | Domain | Result | Local time |
+|---|---|---|---|---|
+| `model/editor_memory` | `estimate_is_bookkeeping_when_evicted_and_floored_by_file_size_otherwise` | every `u64`, `Option<u64>`, `bool` | PROVED | 0.08 s |
+| | `budget_never_selects_protected_or_bookkeeping_pages` | three pages, distinct ids in `0..3`, every `u64` | PROVED | 40.8 s |
+| | `budget_selects_least_recently_used_first` | same | PROVED | 55.7 s |
+| | `budget_stops_at_the_lower_watermark` | same | PROVED | 38.2 s |
+| | `budget_outcome_matches_the_projected_total` (covers `WithinBudget`, `Converged`, `NoProgress`) | same | PROVED | 212.7 s |
+| | `within_budget_selects_nothing` | same | PROVED | 34.8 s |
+| | `ledger_totals_match_a_recomputation` | three upserts/removes on ids `{0, 1}`, every `u64` | PROVED | 262.7 s |
+| | `ledger_crossing_flag_is_exact` | same | PROVED | 0.6 s |
+| `ui/editor_page/minimap/policy` | `native_slider_fit_never_panics`, `marker_fit_never_panics`, `projected_fit_never_panics`, `native_slider_estimate_never_panics` | any `f64` and `i32` | PROVED | 0.2 / 1.1 / 1.5 / 5.1 s |
+| | `min_height_expansion_never_panics_inside_its_band` | finite band and span, any `f64` minimum | PROVED | 98.5 s |
+| | `min_height_expansion_panics_on_an_inverted_band` | finite, `lower > upper` | `should_panic`, as documented | 1.4 s |
+| | `marker_bounds_stay_in_content_for_finite_f64` | finite `f64` | PROVED | 3.0 s |
+| | `projected_fit_rejects_a_span_outside_the_band` | finite `f64` | PROVED | 4.0 s |
+| | `projected_bounds_stay_in_content_on_whole_pixels` | integers, magnitude ≤ 2^20, minimum ≤ 2^16 | PROVED | 27.0 s |
+| | `native_slider_stays_in_the_source_map_on_whole_pixels` | same | PROVED | 143.9 s |
+| | `min_height_expansion_reaches_the_minimum_on_small_whole_pixels` | integers, magnitude ≤ 2^8, minimum ≤ 2^6 | PROVED | 93.8 s |
+| | `projected_containment_fails_for_general_f64`, `native_slider_containment_fails_for_general_f64`, `marker_min_height_fails_for_general_f64` | fractional, magnitude ≤ 2^20 | `should_panic`, as documented | 6.8 / 7.3 / 4.6 s |
+| `ui/window/geometry/policy` | `focus_mode_renders_no_secondary_surface`, `layout_never_renders_an_unrequested_surface`, `compact_layout_renders_at_most_one_surface`, `wide_layout_renders_every_requested_surface`, `sheet_presentation_matches_the_breakpoint` (covers sheet and pane) | every `i32` width, preset, intent | PROVED | 0.1–0.2 s each |
+| | `breakpoint_is_monotone_and_bounded` | workspace width in [0, 440] sp | PROVED | 0.2 s |
+| | `pane_shares_are_positive`, `shell_policy_never_panics` | every `i32` width, preset, intent | PROVED | 0.9 / 0.6 s |
+| `ui/sidebar/width_preset` | `clamp_matches_the_spec_formula_and_bounds`, `clamp_is_monotone_in_window_width`, `percent_is_the_hint_fraction`, `index_round_trips`, `fraction_round_trips` | every preset, `i32`, `u32` | PROVED | 0.3 / 0.3 / 0.02 / 0.03 / 0.03 s |
+| | `from_fraction_picks_the_nearest_preset` | every `f64` (nearness for magnitude ≤ 2) | PROVED after the fix | 8.1 s |
+| `ui/markdown_preview/policy` | `preview_width_respects_the_floor`, `preview_width_is_at_most_a_third_above_three_sp`, `preview_width_is_the_floor_below_three_sp` (covers the floor winning), `preview_width_keeps_an_in_band_preference`, `preview_width_is_monotone_in_preference` | every `i32` preferred and available width | PROVED | under 0.2 s each |
+| | `preview_width_is_not_always_a_third` | same | `should_panic`, as documented | 0.03 s |
+
+Every `kani::cover!` was satisfied, so no proof is vacuous. Findings, each
+triaged like a failing test:
+
+- **Defect, fixed failing-first: a non-finite stored sidebar width meant
+  `Large`.** `from_fraction_picks_the_nearest_preset` failed on the unchanged
+  code (the `DEFAULT` assertion, and Kani's NaN-on-subtraction checks); the
+  unit test `non_finite_stored_fraction_resolves_to_default` failed with NaN →
+  `Large`. `from_fraction` now returns `Comfy` for any non-finite value (the
+  key has no schema range, and GVariant text parses `nan` and `inf`).
+- **Defect, fixed failing-first: the native-slider fit returned an infinite
+  height.** `native_slider_fit_never_panics` found a raw slider and a source map
+  both `f64::MAX` tall whose clamped edges were finite but whose difference
+  overflowed; `native_slider_fit_never_returns_an_infinite_height` reproduced it
+  (`height: inf`), and two finiteness guards fixed it. `make visual-geometry-smoke`
+  passed (80 cases).
+- **Precondition, recorded:** `expanded_to_min_height` panics in `f64::clamp` on
+  an inverted band. Both callers exclude that, so it is proved on its
+  precondition and the panic is kept as a `should_panic` harness; the spec and
+  rustdoc say so.
+- **The preview "≤ 1/3" rule keeps its floor (design D5).** The scratch proof of
+  the unconditional rule failed with `preferred = 1073741824, available = 0`
+  (counted as 1 sp, width 1). The rule is stated in `adaptive-editor-geometry`
+  with its 3 sp exception, and `preview_width_is_not_always_a_third` pins it.
+- **Tractability, by restructuring rather than by weakening:**
+  - the budget harnesses did not finish in 20 minutes through
+    `sort_unstable_by_key`'s pivot recursion, so selection now takes the
+    least-recently-used remaining page per step (same prefix, pinned against a
+    sorting reference by `least_recently_used_loop_selects_the_sorted_prefix`);
+  - a second insert into the ledger's `BTreeMap` exhausted 20 GiB, so the
+    accounting moved into a private `ResidencyTotals` value the ledger drives,
+    proved over a fixed-array record set that displaces records as the map
+    does (the map is trusted).
+- **A bound reduced, stated with the property it weakens:** the minimum-height
+  guarantee did not finish in 30 minutes at 2^20 (nor 15 at 2^12), through a
+  fit or on the helper, so it is proved on `expanded_to_min_height` at 2^8 /
+  2^6 and sampled to 2^20 by the unit test
+  `expanded_to_min_height_reaches_the_minimum_on_whole_pixels`. Containment
+  keeps the 2^20 domain.
+- **Whole pixels at the policy boundary (maintainer decisions, design D8 and
+  D9).** The preview clamp, the width presets, the shell geometry, and the
+  local-history viewer share became integer-only; the split-view fraction is
+  formed once in `geometry::execution::split_fraction`, unit-tested finite and
+  in (0, 1]. The preview harnesses fell from up to 12 minutes each (CaDiCaL on
+  the `f64` multiply and floor) to under a second, and `from_fraction` from
+  82 s to 8 s. The suspected `3k → k - 1` flooring of the old preview form was
+  unreachable for `i32` (the in-band harness had proved the `f64` form), and
+  the comparison form of `from_fraction` agrees with the nearest-delta form
+  everywhere except that form's own `f64::EPSILON` tie band, where it had
+  said `Comfy` (`tests/properties/width_preset.rs`). The geometry and budget
+  policy modules deny `clippy::float_arithmetic`; only the minimap fits and
+  the local-history size display still admit it, each through a reasoned
+  function-level `expect`, and rule 10 of `make check-workflow-boundaries`
+  fails a listed module or a new geometry `policy.rs` without the deny —
+  proved failing first on the real tree.
+
+Mutation scope (`make mutants-list`, 5,919 → 5,923 mutants): `ui/markdown_preview/policy.rs`
+177 → 188, a **gain from zero** (the clamp had 0 mutants in
+`ui/window/preview.rs`); `ui/window/geometry/policy.rs` 81 → 68, because the
+integer shares replaced the `f64` fraction arithmetic and its dead
+rebased-properties floor; `model/editor_memory.rs` 43 → 50, from the selection
+loop and `ResidencyTotals`; `ui/editor_page/minimap/policy.rs` 412 → 411 (the
+defect guards added some, and `gtk_f64_to_milli` moved into the minimap's
+coordination adapter); `ui/window/local_history/policy.rs` 92 → 92. No
+`kani_proofs.rs` mutant is listed. A focused run (`scripts/run-mutants.sh full`
+with `MUTANTS_RE` over `ui/window/geometry/policy.rs`, `model/editor_memory.rs`,
+the two preview-width functions, `fit_native_slider_to_source_map_bounds`, and
+`parent_relative_dialog_axis_size`) left **0 missed**: 235 caught, 16 unviable.
+It first needed a pre-existing blocker fixed: `cargo-mutants` builds
+`--package lushtext-core`, and the `persistent_json_format` integration test
+uses the `test-utils`-gated filesystem fixture, so the unmutated baseline did
+not compile; that target now declares `required-features = ["test-utils"]`,
+which workspace test runs still satisfy.
+
+**Runner budgets.** Four `workflow_dispatch` runs of `kani.yml`: `36052583128`
+(A) and `36054671084` (B) on the first form of the change, `36059814296` (C) and
+`36061831286` (D) on the final, whole-pixel form.
+
+| Shard | Harnesses | Gate | Wall A / B / C / D (min) | Peak (GiB) | Recorded budget | Local |
+|---|---|---|---|---|---|---|
+| `core-memory-policy` | 8 | scheduled | 14.86 / 16.15 / 13.05 / 15.05 | 8.9–8.91 | 16.2 min, 9.0 GiB (all four; the harnesses did not change) | 11.1 min, 8.91 GiB |
+| `core-geometry-policies` | 34 | **pull-request** | 15.15 / 15.73 / 13.51 / 12.49 | 2.17–2.18 | 13.6 min, 2.2 GiB (C and D; the rewrite changed its harnesses) | 7.45 min, 2.35 GiB |
+
+- One shard was projected over the 25-minute margin from the first local times
+  and the runner's 1.8x factor, so the design's split came first: the memory
+  harnesses (dominated by the ledger and the outcome harness) and everything
+  else.
+- `core-geometry-policies` measured 13.6 minutes at most on the final form, within
+  the 15-minute pull-request margin, so it joins `widgets-geometry` in the
+  pull-request gate (design D7). It is **not** a required check: the ruleset
+  `main: Kani geometry proofs required` still names only
+  `Kani Proof Harnesses (widgets-geometry)`, and adding this one is a
+  maintainer decision.
+- Runs C and D also re-measured the older shards on the runner.
+  `core-journal-and-write` reached 21.12 minutes (recorded 20.9) and
+  `core-second-writer` 17.39 (recorded 17.3), with no change to their
+  harnesses: runner variance, as the phase-2 note on ±1.5 minutes predicts.
+  Their recorded budgets were raised to 21.2 and 17.4 minutes, and their
+  `measured_in` now names all seven runs.
+- Local full lane (`make kani`, all seven shards, one heavy job at a time):
+  74 harnesses, 0 failures, about 66 minutes.
 
 ### Phase 3 — ViewportSliceBin closed-loop model (Kani)
 

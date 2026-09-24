@@ -94,9 +94,18 @@ class Shard:
 # across them, rounded up. Per-run figures and local CBMC times (Kani 0.68.0,
 # one toolbox) are in docs/next/formal-verification.md, phase 2.
 MEASURED_IN = "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757261 (max of the five)"
-PROVISIONAL = "PROVISIONAL placeholder until the first dispatched run is recorded"
-PROVISIONAL_MINUTES = 20.0
-PROVISIONAL_PEAK_GIB = 4.0
+# The two pure-policy shards (extend-kani-to-pure-policies) come from four
+# dispatched runs: 36052583128 and 36054671084 on the first form of the change,
+# and 36059814296 and 36061831286 on the final, whole-pixel form. The memory
+# harnesses did not change between the forms, so all four count for
+# core-memory-policy; core-geometry-policies uses the last two, because the
+# whole-pixel rewrite changed its harnesses (the first two took 15.2 and 15.7
+# minutes). Runs 36059814296 and 36061831286 also re-measured every older
+# shard; where they exceeded its recorded figure (core-journal-and-write 21.1,
+# core-second-writer 17.4) the figure was raised to the larger value.
+POLICY_MEASURED_IN = "runs 36052583128, 36054671084, 36059814296, 36061831286 (max of the four)"
+GEOMETRY_POLICY_MEASURED_IN = "runs 36059814296, 36061831286 (max of the two, final whole-pixel form)"
+RESAMPLED_IN = MEASURED_IN.replace(" (max of the five)", ", 36059814296, 36061831286 (max of the seven)")
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -146,25 +155,25 @@ SHARDS: dict[str, Shard] = {
             "services::filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=20.9,
+        ci_minutes=21.2,
         ci_peak_gib=8.3,
-        measured_in=MEASURED_IN,
+        measured_in=RESAMPLED_IN,
     ),
     "core-second-writer": Shard(
         "lushtext-core",
         ("services::draft_service::kani_proofs::a_second_writer_",),
         gate="scheduled",
-        ci_minutes=17.3,
+        ci_minutes=17.4,
         ci_peak_gib=8.9,
-        measured_in=MEASURED_IN,
+        measured_in=RESAMPLED_IN,
     ),
     "core-memory-policy": Shard(
         "lushtext-core",
         ("model::editor_memory::kani_proofs::",),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=16.2,
+        ci_peak_gib=9.0,
+        measured_in=POLICY_MEASURED_IN,
     ),
     "core-geometry-policies": Shard(
         "lushtext-core",
@@ -174,10 +183,10 @@ SHARDS: dict[str, Shard] = {
             "ui::sidebar::width_preset::kani_proofs::",
             "ui::markdown_preview::policy::kani_proofs::",
         ),
-        gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        gate="pull-request",
+        ci_minutes=13.6,
+        ci_peak_gib=2.2,
+        measured_in=GEOMETRY_POLICY_MEASURED_IN,
     ),
 }
 

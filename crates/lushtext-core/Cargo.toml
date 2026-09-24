@@ -84,3 +84,14 @@ required-features = ["property-tests"]
 name = "fuzz_corpus_replay"
 path = "tests/fuzz_corpus_replay.rs"
 required-features = ["fuzzing"]
+
+# The golden-fixture writer (`services::filesystem::fixture`) compiles only
+# under `cfg(test)` or `test-utils`, and an integration test is a separate
+# crate, so this target needs the feature. Workspace test runs enable it
+# through `crates/lushtext`'s dev-dependency; a package-only build (cargo-mutants
+# builds `--package lushtext-core`) skips the target instead of failing to
+# compile it.
+[[test]]
+name = "persistent_json_format"
+path = "tests/persistent_json_format.rs"
+required-features = ["test-utils"]
