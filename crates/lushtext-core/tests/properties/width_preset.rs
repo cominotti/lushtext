@@ -31,11 +31,13 @@ fn legacy_from_fraction(fraction: f64) -> WorkspaceSidebarWidthPreset {
 /// Where the nearest-delta form saw a tie within `f64::EPSILON` it said Comfy,
 /// and the comparisons name the strictly nearer preset instead. That happens
 /// in two places only: a few ulps around each midpoint, and at magnitudes so
-/// large (beyond about 10^15) that the three deltas round to the same value.
-/// Those are the only permitted disagreements, and the old answer there was
-/// always Comfy.
+/// large that the three deltas round to the same value. The deltas differ by at
+/// least 0.1, so they stay distinct while the spacing of doubles near the value
+/// is below that, which holds up to about 2^49 (5.6 * 10^14); the band starts at
+/// 10^14 to leave margin. Those are the only permitted disagreements, and the
+/// old answer there was always Comfy.
 fn in_tie_band(fraction: f64) -> bool {
-    (fraction - 0.25).abs() < 1e-12 || (fraction - 0.35).abs() < 1e-12 || fraction.abs() > 1e15
+    (fraction - 0.25).abs() < 1e-12 || (fraction - 0.35).abs() < 1e-12 || fraction.abs() > 1e14
 }
 
 #[test]
@@ -84,6 +86,23 @@ fn huge_magnitudes_now_resolve_to_the_nearer_end() {
     assert_eq!(WorkspaceSidebarWidthPreset::from_fraction(1e300), Large);
     assert_eq!(legacy_from_fraction(-1e300), Comfy);
     assert_eq!(WorkspaceSidebarWidthPreset::from_fraction(-1e300), Small);
+    // The shrunk counterexample CI's proptest seed found below 10^15.
+    assert_eq!(legacy_from_fraction(-669_941_564_817_968.5), Comfy);
+    assert_eq!(
+        WorkspaceSidebarWidthPreset::from_fraction(-669_941_564_817_968.5),
+        Small
+    );
+    // Below 10^14 the two forms agree at every sampled power of two.
+    for exponent in 0..=46 {
+        let magnitude = 2f64.powi(exponent);
+        for fraction in [magnitude, -magnitude] {
+            assert_eq!(
+                WorkspaceSidebarWidthPreset::from_fraction(fraction),
+                legacy_from_fraction(fraction),
+                "{fraction}"
+            );
+        }
+    }
 }
 
 proptest! {

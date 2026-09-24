@@ -295,7 +295,7 @@ adapter boundary, wherever the value is not inherently fractional.
   is comparisons only (below 0.25 `Small`, above 0.35 `Large`, else `Comfy`;
   a property test pins it to the nearest-delta form it replaced, which
   differed only inside that form's `f64::EPSILON` tie band — a few ulps
-  around each midpoint and magnitudes beyond about 10^15, where it said
+  around each midpoint and magnitudes beyond about 2^49 (5.6 × 10^14), where it said
   `Comfy`), and `effective_fraction` is gone. The shell policy returns pane
   widths and `PaneShare { width_sp, of_sp }` values, the breakpoint is the
   exact integer ceiling, and the one division into a split-view fraction is
