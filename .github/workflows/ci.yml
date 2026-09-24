@@ -282,13 +282,36 @@ jobs:
         # cargo-fuzz, sanitizer tooling, or a C++ compiler.
         run: make fuzz-corpus-replay
 
-  widget-tests:
-    name: Widget Tests
+  widget-shards:
+    name: Widget Shard Table
     runs-on: ubuntu-latest
-    # Policy ceiling (scripts/check-workflow-timeouts.py). The lane measured
-    # ~25 minutes on the shared runner after slot 7b; sharding the widget
-    # binary is the next step, not a higher timeout.
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.table.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the widget shard table and export it
+        id: table
+        # `github-outputs` runs the same membership and budget checks as
+        # `make check-widget-shards` and exits non-zero before exporting
+        # anything if one fails, so a broken table runs no shard.
+        run: ./scripts/widget-shards.py github-outputs >> "$GITHUB_OUTPUT"
+
+  widget-tests:
+    # One job per shard of scripts/widget-shards.py: the whole suite run
+    # serially took 15-30 minutes on this runner and was cancelled at the cap.
+    name: Widget Tests (${{ matrix.shard }})
+    needs: widget-shards
+    runs-on: ubuntu-latest
+    # Policy ceiling (scripts/check-workflow-timeouts.py). Each shard's
+    # recorded runner wall time must stay within 20 minutes of it
+    # (`make check-widget-shards`); split a shard, never raise this.
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.widget-shards.outputs.shards) }}
     container:
       image: registry.fedoraproject.org/fedora:44
 
@@ -305,7 +328,8 @@ jobs:
             gettext \
             git \
             mutter \
-            dbus-daemon
+            dbus-daemon \
+            python3
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96.0
@@ -318,10 +342,22 @@ jobs:
         # Widget tests use a custom single-threaded harness, so they must run
         # through `cargo test --test widget` under the shared runner instead of
         # nextest. The runner owns the mutter/dbus setup plus one retry for
-        # transient compositor failures.
+        # transient compositor failures. `widget-shards.py run` first checks
+        # the compiled binary's `--list` against the table's discovery, then
+        # runs exactly this shard's tests and fails unless the harness
+        # selected exactly that many; it records the step's wall time and
+        # per-test durations for the table's budget.
         run: |
           ./scripts/run-widget-tests.sh --self-test
-          ./scripts/run-widget-tests.sh --headless --retries 1
+          ./scripts/widget-shards.py run "${{ matrix.shard }}" --measure "widget-measure-${{ matrix.shard }}.json"
+
+      - name: Upload the shard measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: widget-measure-${{ matrix.shard }}
+          path: widget-measure-${{ matrix.shard }}.json
+          if-no-files-found: warn
 
   bench-compile:
     name: Bench Compile
