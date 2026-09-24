@@ -63,8 +63,8 @@
 
 ## 8. Final verification
 
-- [ ] 8.1 `make check`, `make check-policy`, and `make test` pass. Run `make test-widget` because `from_fraction` feeds the window and Preferences, and confirm that the sidebar width widget tests pass
-- [ ] 8.2 The change's pull-request CI is green, including the Kani pull-request job or jobs
+- [x] 8.1 `make check`, `make check-policy`, and `make test` pass. Run `make test-widget` because `from_fraction` feeds the window and Preferences, and confirm that the sidebar width widget tests pass — `make check` (includes `check-policy`) and `make test` pass on the final tree: 1,931 non-widget tests and 1,297 widget tests headless, no `FLAKY`; the sidebar-width, shell-geometry, and preferences widget tests pass
+- [x] 8.2 The change's pull-request CI is green, including the Kani pull-request job or jobs — pull request #44: every check green on `d90cc978`, including `Kani Proof Harnesses (core-geometry-policies)` (12m25s) and `(widgets-geometry)`
 
 ## 9. Whole-pixel geometry policy, enforced mechanically (maintainer decisions D8, D9)
 
