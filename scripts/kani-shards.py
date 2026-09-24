@@ -139,6 +139,7 @@ SHARDS: dict[str, Shard] = {
         (
             "services::draft_service::kani_proofs::journal_",
             "services::draft_service::kani_proofs::a_dirty_editor_",
+            "services::draft_service::set_aside_retention::kani_proofs::",
             "services::filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",

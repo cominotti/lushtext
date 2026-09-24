@@ -83,6 +83,7 @@ pub mod journal_core;
 #[cfg(kani)]
 mod kani_proofs;
 pub mod set_aside;
+pub mod set_aside_retention;
 #[cfg(test)]
 use cleanup_types::saturating_confirmed_cleanup_count;
 pub use cleanup_types::*;
@@ -252,23 +253,63 @@ pub struct SetAsideDraft {
     pub untitled: bool,
 }
 
-/// List the preserved set-aside bodies, newest first, resolving each one's
-/// original path from the manifest or the session when either still names it.
+/// The preserved set-aside drafts one listing shows, and what the whole area
+/// holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SetAsideDraftListing {
+    /// At most [`set_aside::MAX_LISTED_SET_ASIDE_BODIES`] drafts, newest first.
+    pub drafts: Vec<SetAsideDraft>,
+    /// Bodies in the area (a lower bound when `complete` is false).
+    pub total_count: u64,
+    /// Their total size in bytes (a lower bound when `complete` is false).
+    pub total_bytes: u64,
+    /// The scan reached the end of the area within its budget.
+    pub complete: bool,
+}
+
+impl SetAsideDraftListing {
+    /// The totals the retention core judges against the soft bound.
+    #[must_use]
+    pub const fn totals(&self) -> set_aside_retention::SetAsideTotals {
+        set_aside_retention::SetAsideTotals {
+            count: self.total_count,
+            bytes: self.total_bytes,
+            complete: self.complete,
+        }
+    }
+
+    /// Whether some bodies in the area are not among [`Self::drafts`].
+    #[must_use]
+    pub fn is_truncated(&self) -> bool {
+        !self.complete || u64::try_from(self.drafts.len()).unwrap_or(u64::MAX) < self.total_count
+    }
+}
+
+/// List the newest preserved set-aside bodies, newest first, resolving each
+/// one's original path from the manifest or the session when either still
+/// names it, with the whole area's totals.
 ///
 /// **Threading:** blocking I/O; call off GTK.
 ///
 /// # Errors
 ///
 /// Returns an error when the set-aside area exists but cannot be read.
-pub fn list_set_aside_drafts(data_dir: &Path) -> Result<Vec<SetAsideDraft>> {
-    let bodies = set_aside::list(data_dir)?;
-    if bodies.is_empty() {
-        return Ok(Vec::new());
+pub fn list_set_aside_drafts(data_dir: &Path) -> Result<SetAsideDraftListing> {
+    let listing = set_aside::list(data_dir)?;
+    let mut result = SetAsideDraftListing {
+        drafts: Vec::with_capacity(listing.rows.len()),
+        total_count: listing.total_count,
+        total_bytes: listing.total_bytes,
+        complete: listing.complete,
+    };
+    if listing.rows.is_empty() {
+        return Ok(result);
     }
     let manifest = load_manifest_recovering(data_dir).value;
     let session = session_service::load_recovering(data_dir).value;
     let session_paths = session_file_paths_by_draft_id(&session);
-    Ok(bodies
+    result.drafts = listing
+        .rows
         .into_iter()
         .map(|body| {
             let untitled = is_untitled_draft_id(&body.draft_id);
@@ -286,7 +327,8 @@ pub fn list_set_aside_drafts(data_dir: &Path) -> Result<Vec<SetAsideDraft>> {
                 untitled,
             }
         })
-        .collect())
+        .collect();
+    Ok(result)
 }
 
 /// Generate a stable draft ID from an absolute file path.
@@ -3479,7 +3521,7 @@ mod tests {
         )
         .expect("session");
 
-        let listed = list_set_aside_drafts(dir.path()).expect("list");
+        let listed = list_set_aside_drafts(dir.path()).expect("list").drafts;
 
         assert_eq!(listed.len(), 2);
         assert!(listed[0].untitled && listed[0].original_path.is_none());

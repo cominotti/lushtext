@@ -277,6 +277,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
     </child>
     <child>
       <object class="AdwPreferencesPage">
+        <property name="name">data</property>
         <property name="title" translatable="yes">Data</property>
         <property name="icon-name">drive-harddisk-symbolic</property>
         <child>

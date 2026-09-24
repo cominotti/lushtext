@@ -195,6 +195,12 @@ pub fn all_commands() -> &'static [CommandDef] {
             shortcut: None,
         },
         CommandDef {
+            id: "app.review-preserved-drafts",
+            label: "Review Preserved Drafts",
+            category: CommandCategory::App,
+            shortcut: None,
+        },
+        CommandDef {
             id: "app.about",
             label: "About LushText",
             category: CommandCategory::App,

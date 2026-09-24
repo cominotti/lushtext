@@ -172,8 +172,11 @@ existing mutation lane to the new one.
 
 ### N10. Smaller hygiene items
 
-- Put a size bound or retention policy on `drafts/set-aside/`. It is never
-  pruned today, and the Data page is the user's only control.
+- ~~Put a size bound or retention policy on `drafts/set-aside/`.~~ **Done
+  2026-09-24 (`bound-draft-set-aside-retention`, step 8a):** a soft bound
+  surfaces a review notice and `Preferences > Data` gained a summary row and a
+  confirmed "Delete All Preserved Drafts…"; nothing is deleted automatically,
+  and Kani R1–R4 check the bulk-deletion decision.
 - Add a sidebar and slice-bin scenario to `cargo-gtk-proof`. It is blocked on
   a `reveal-workspace-path` automation action.
 - Freshness precision for drafts (a nanosecond or file-identity token) needs

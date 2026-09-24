@@ -4,10 +4,12 @@
 //!
 //! The public dialog owns template wiring and direct settings bindings, while
 //! the Data page workflow is split into `data_page.rs` so format-upgrade UI
-//! state stays separate from simple preference rows.
+//! state stays separate from simple preference rows, and the Preserved Drafts
+//! review surface into `preserved_drafts.rs`.
 
 mod data_page;
 mod excluded_names;
+mod preserved_drafts;
 // gtk-rs custom widgets are split into a public wrapper (`mod.rs`) and private
 // implementation (`imp.rs`) because GLib stores instance data separately from
 // the Rust-facing API.

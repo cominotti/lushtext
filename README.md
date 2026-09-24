@@ -198,10 +198,17 @@ Preferences are stored with GSettings under `dev.cominotti.lushtext`.
 - **Update Data** appears only when supported older app data can be converted
   safely to the current format.
 - **Preserved Drafts** lists unsaved changes LushText kept aside instead of
-  restoring them (for example when the file changed on disk first). Each row
+  restoring them (for example when the file changed on disk first). A summary
+  row shows how many are kept, their total size, and whether that is over the
+  suggested limit (100 drafts or 256 MB); the newest 256 are listed. Each row
   shows the original file when known, when the changes were kept, and their
   size; **Open** puts them in a new untitled tab, and **Delete** removes them
-  after a confirmation. The group is hidden when nothing is set aside.
+  after a confirmation. **Delete All Preserved Drafts…** removes every listed
+  draft after a confirmation that states the exact count and size; a draft
+  kept after that dialog opened is not touched. LushText never deletes a
+  preserved draft on its own: past the suggested limit it shows one status
+  message pointing to **Review Preserved Drafts** (command palette), which
+  opens this group. The group is hidden when nothing is set aside.
 
 Advanced users can inspect or reset settings with:
 
@@ -232,7 +239,7 @@ Stored state can include document text:
 | `workspaces.json` | Saved workspace names and ordered folder sets |
 | `recent-documents.json` | App-owned recent-document paths and timestamps |
 | `drafts/` | Plain-text autosaved drafts for unsaved changes |
-| `drafts/set-aside/` | Draft bodies kept byte-identically after leaving the draft journal (never deleted by LushText) |
+| `drafts/set-aside/` | Draft bodies kept byte-identically after leaving the draft journal (never deleted by LushText on its own; only a confirmed Delete or Delete All on `Preferences > Data` removes them) |
 | `style-schemes/` | Generated opacity-aware GtkSourceView style schemes |
 | `bookmarks/` | Saved-file bookmark metadata |
 | `document-notes/` | Per-file document notes |

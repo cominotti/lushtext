@@ -67,11 +67,12 @@ mod imp {
     use crate::model::automation::AutomationWorkflowEventLog;
     use crate::ui::automation::AutomationRegistration;
     use crate::ui::window::LushtextWindow;
+    use crate::ui::window::SetAsideReviewState;
     use glib::prelude::*;
     use gtk4::gio;
     use gtk4::prelude::*;
     use libadwaita::subclass::prelude::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     /// Private GObject implementation for the application singleton.
     ///
@@ -93,6 +94,9 @@ mod imp {
         /// `RefCell` keeps mutation local to the GTK main context despite
         /// GObject callbacks exposing only shared `&self`.
         pub automation_workflow_events: RefCell<AutomationWorkflowEventLog>,
+        /// The set-aside retention notice's in-memory rate limit and the
+        /// review-done flag. Never persisted (`ui/window/set_aside_review.rs`).
+        pub set_aside_review: Cell<SetAsideReviewState>,
     }
 
     // ObjectSubclass registers this Rust struct with GLib's runtime type
@@ -252,7 +256,27 @@ impl LushtextApplication {
             })
             .build();
 
-        self.add_action_entries([action_quit, action_prefs, action_about]);
+        // Opens the review surface for the drafts set-aside area. It deletes
+        // nothing; it only stops this process's retention notice.
+        let action_review_preserved_drafts = gio::ActionEntry::builder("review-preserved-drafts")
+            .activate(|app: &Self, _, _| {
+                if let Some(window) = app.active_window() {
+                    let mut state = app.set_aside_review_state();
+                    state.reviewed = true;
+                    app.set_set_aside_review_state(state);
+                    let prefs = LushtextPreferences::new();
+                    prefs.show_preserved_drafts();
+                    prefs.present(Some(&window));
+                }
+            })
+            .build();
+
+        self.add_action_entries([
+            action_quit,
+            action_prefs,
+            action_review_preserved_drafts,
+            action_about,
+        ]);
         self.set_accels_for_action("app.quit", &["<Control>q"]);
 
         // Workspace-wide hidden-file visibility. Registered here rather than in
@@ -269,6 +293,18 @@ impl LushtextApplication {
             &format!("app.{SHOW_HIDDEN_FILES_ACTION}"),
             &["<Control><Shift>h"],
         );
+    }
+
+    /// This process's set-aside review state: the retention notice's
+    /// in-memory rate limit, the review-done flag, and how many notices were
+    /// published.
+    #[must_use]
+    pub fn set_aside_review_state(&self) -> crate::ui::window::SetAsideReviewState {
+        self.imp().set_aside_review.get()
+    }
+
+    pub(crate) fn set_set_aside_review_state(&self, state: crate::ui::window::SetAsideReviewState) {
+        self.imp().set_aside_review.set(state);
     }
 
     /// Record current workflow observations and return the bounded event stream.

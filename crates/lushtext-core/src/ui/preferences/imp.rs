@@ -135,6 +135,21 @@ pub struct LushtextPreferences {
     pub data_set_aside_group: TemplateChild<libadwaita::PreferencesGroup>,
     /// Rows currently shown in the set-aside group, removed on each refresh.
     pub data_set_aside_rows: RefCell<Vec<libadwaita::ActionRow>>,
+    /// Summary row (count, size, soft-bound state, truncation), first in the
+    /// set-aside group.
+    pub data_set_aside_summary: libadwaita::ActionRow,
+    /// The "Delete All Preserved Drafts…" bulk action row, below the summary.
+    pub data_set_aside_delete_all: libadwaita::ButtonRow,
+    /// Scroll-contained list of the listed bodies, so many rows never push the
+    /// summary and bulk action out of view.
+    pub data_set_aside_list: gtk4::ListBox,
+    /// The listing the set-aside group shows; Delete All confirms exactly its
+    /// rows' fingerprints.
+    pub data_set_aside_listing:
+        RefCell<Option<crate::services::draft_service::SetAsideDraftListing>>,
+    /// `app.review-preserved-drafts` asked for the group: focus its summary
+    /// row once the listing lands.
+    pub data_set_aside_focus_pending: Cell<bool>,
 
     /// Application settings used by every preferences row binding.
     pub settings: gio::Settings,
@@ -189,6 +204,11 @@ impl Default for LushtextPreferences {
             data_details_group: TemplateChild::default(),
             data_set_aside_group: TemplateChild::default(),
             data_set_aside_rows: RefCell::new(Vec::new()),
+            data_set_aside_summary: libadwaita::ActionRow::new(),
+            data_set_aside_delete_all: libadwaita::ButtonRow::new(),
+            data_set_aside_list: gtk4::ListBox::new(),
+            data_set_aside_listing: RefCell::new(None),
+            data_set_aside_focus_pending: Cell::new(false),
             settings: gio::Settings::new(crate::config::APP_ID),
             data_details_list: gtk4::ListBox::new(),
             data_last_scan_offers_convert: Cell::new(false),
@@ -395,6 +415,7 @@ impl LushtextPreferences {
             }
         });
 
+        self.obj().setup_set_aside_group();
         self.obj().run_data_scan_immediate();
         self.obj().refresh_set_aside_drafts();
     }

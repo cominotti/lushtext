@@ -166,7 +166,7 @@ I/O-free, and is the only place the bulk plan and the notice are decided:
   dialog showed.
 
 A body is planned only if its current fingerprint (file name, size, identity
-from metadata) is in `confirmed`. A body that appeared, or changed, after the
+and modification time from metadata) is in `confirmed`. A body that appeared, or changed, after the
 dialog opened has a fingerprint outside the set and is kept.
 
 Execution is `set_aside::delete_confirmed(data_dir, fingerprint)`. It runs off

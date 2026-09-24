@@ -631,6 +631,39 @@ kill-point code (`strings target/release/lushtext` finds neither
 `LUSHTEXT_KILL_AT` nor the abort message; the feature binary finds both), and
 no Meson, Flatpak, or Snap build passes the feature.
 
+### Step 8a — Set-aside retention (`bound-draft-set-aside-retention`)
+
+**Status: complete (2026-09-24).** N10's set-aside size bound, decided as
+**surface, never auto-delete**: a soft bound (100 bodies or 256 MiB) makes one
+status notice due, which points to `app.review-preserved-drafts`; only the
+user's confirmed per-row Delete or "Delete All Preserved Drafts…" removes a
+body. The pure core is `services/draft_service/set_aside_retention.rs`
+(`bound_status`, `notice_due`, `may_delete`, `deletion_plan`), and its
+harnesses sit in `set_aside_retention/kani_proofs.rs`, over four bodies with
+arbitrary fingerprints, listing, and change facts, and an arbitrary decision:
+
+| Harness | Property | Result | Time |
+|---|---|---|---|
+| `set_aside_retention_deletes_only_confirmed_bodies` | R1 no decision, no deletion; R2 only confirmed fingerprints; R3 never a changed or unlisted body | PROVED | 1.9 s |
+| `set_aside_retention_bound_and_notice_never_plan_a_deletion` | R4 bound and notice are total, and feed no plan | PROVED | 0.2 s |
+| `set_aside_retention_deleting_every_body_breaks_r2` (`should_panic`) | a decision that deletes whatever the user decided breaks R2 | fails as expected | 1.1 s |
+
+A first draft of the model kept the plan's `Vec` and a cloned confirmed set;
+its main harness ran past 14 minutes. The shipped core borrows the confirmed
+slice and the harnesses check the per-body `may_delete` over fixed arrays,
+which the service applies to each body again immediately before removing it;
+`deletion_plan`'s composition is covered by the proptest mirror of R1–R3
+(which a deliberately broken plan fails). The E1 fix in the same change added
+K9 (`journal_set_aside_keeps_every_body_it_reports_kept`, 3.1 s) and its
+`should_panic` twin (3.0 s), recorded in the deferral inventory. All five join
+the `core-journal-and-write` shard (by its `journal_` and
+`set_aside_retention::kani_proofs::` filters). Local shard run
+(`make kani KANI_SHARD=core-journal-and-write`, 2026-09-24, this toolbox):
+13 harnesses, 0 failures, 9.71 min wall, 8.31 GiB peak; the five new
+harnesses add about 8 s, so the recorded CI budget (20.9 min) stands. The same change fixed, failing-first, the pre-existing
+listing defect: `set_aside::list` stopped after 256 directory entries before
+sorting, so past 256 bodies it showed an arbitrary subset as the newest.
+
 Next candidates after the Kani consolidation are ranked in
 [`formal-verification-next.md`](./formal-verification-next.md).
 
@@ -659,9 +692,13 @@ Next candidates after the Kani consolidation are ranked in
   keeps in `drafts/set-aside/` is never pruned, so retention costs the
   browsable version, not the content. `services/draft_service/set_aside.rs`
   owns those bytes and `Preferences > Data` lists them with Open and Delete
-  (K7); local history stays a separate copy rather than a zero-copy view,
-  because a view needs a local-history index change. The set-aside area still
-  has no size bound.
+  (K7), plus a summary row and a confirmed Delete All (step 8a); local
+  history stays a separate copy rather than a zero-copy view,
+  because a view needs a local-history index change. **Resolved 2026-09-24
+  (step 8a) as "soft bound, no automatic deletion":** past 100 bodies or
+  256 MiB the user is asked, once per launch, to review the area; nothing is
+  deleted without a confirmed decision, and which bodies were opened is not
+  recorded (no new persisted file).
 - Phase 0 audit: the workspace same-target leftover sweep trusts the local
   clock against a file server's mtime. Across hosts sharing a workspace with
   ≥24 h clock skew, another host's in-flight temp for the same target could

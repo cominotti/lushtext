@@ -217,6 +217,7 @@ impl ServiceDriver {
         let manifest = self.manifest();
         let preserved = set_aside::list(self.data())
             .expect("set-aside lists")
+            .rows
             .into_iter()
             .map(|b| parse_body(&std::fs::read_to_string(&b.path).expect("set-aside reads")))
             .collect();

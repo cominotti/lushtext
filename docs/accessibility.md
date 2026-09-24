@@ -97,8 +97,19 @@ Expected screen-reader behavior includes:
   document` / `Unknown file`), when the changes were kept, and their size, with
   its position in the group; its `Open` and icon-only `Delete` buttons are
   labelled with the draft they act on. Delete confirms through a destructive
-  alert whose default and Escape response is Cancel. The preserved body itself
-  is never read out.
+  alert whose default and Escape response is Cancel. The group opens with a
+  summary row that reads the count, the total size, whether the area is over
+  the suggested limit, and, when not every body is listed, `showing the newest
+  256 of N`; then a `Delete All Preserved Drafts…` button row whose destructive
+  confirmation states the exact count and size it deletes (Cancel is again the
+  default and Escape response). The per-draft rows scroll in their own bounded
+  list, so the summary and Delete All stay reachable however many drafts are
+  kept. When the area passes the soft bound, one status-bar warning names the
+  count and size and the **Review Preserved Drafts** command (command palette
+  or `app.review-preserved-drafts`), which opens this page with focus on the
+  summary row; the warning is not repeated within a launch unless the area
+  grows materially, and never after the review. The preserved body itself is
+  never read out.
 - Returning to the window refreshes the workspace sidebar and the command-palette
   file index so externally created files become reachable. This refresh is
   **silent**: it emits no announcement, and it preserves focus, selection, scroll

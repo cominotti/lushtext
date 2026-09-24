@@ -68,6 +68,7 @@ fn unrestored_copy_is_kept_when_an_uncommitted_body_shares_the_entry_stamp() {
     // and the set-aside area now holds both bodies.
     let mut kept: Vec<String> = set_aside::list(data.path())
         .expect("list")
+        .rows
         .into_iter()
         .map(|body| std::fs::read_to_string(body.path).expect("read"))
         .collect();

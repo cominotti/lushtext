@@ -74,6 +74,7 @@ impl LushtextWindow {
     pub(super) fn autosave_tick(&self) {
         self.cancel_first_dirty_draft_autosave();
         self.retry_unrestored_copies();
+        self.evaluate_preserved_drafts_if_placed();
         let drafts = &self.imp().drafts;
         if autosave_admission(
             drafts.autosave_inflight.get(),

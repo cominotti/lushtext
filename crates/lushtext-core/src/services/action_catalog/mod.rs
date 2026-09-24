@@ -300,6 +300,20 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
     ),
     ActionCatalogEntry::new(
         ActionScope::App,
+        "review-preserved-drafts",
+        "Review Preserved Drafts",
+        ActionValueType::None,
+        ActionValueType::None,
+        "Requires an active window; opens Preferences > Data at Preserved Drafts and deletes nothing.",
+        "app",
+        &[ActionSurface::CommandPalette, ActionSurface::DbusAction],
+        ExternalActivationSafety::ContextualUserCommand,
+        ActionExposure::Exported,
+        "action-app-review-preserved-drafts",
+        &[ActionCoverageLane::Unit, ActionCoverageLane::Widget],
+    ),
+    ActionCatalogEntry::new(
+        ActionScope::App,
         "about",
         "About LushText",
         ActionValueType::None,
@@ -1863,6 +1877,12 @@ pub const BASELINE_APP_ACTIONS: &[ObservedAction] = &[
     ObservedAction::new(
         ActionScope::App,
         "about",
+        ActionValueType::None,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::App,
+        "review-preserved-drafts",
         ActionValueType::None,
         ActionValueType::None,
     ),

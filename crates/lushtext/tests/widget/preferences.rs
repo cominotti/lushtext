@@ -718,6 +718,10 @@ fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
     });
 
     assert!(imp.data_set_aside_group.is_visible());
+    assert_eq!(
+        set_aside_summary(&prefs).map(|(title, _)| title).as_deref(),
+        Some("2 preserved drafts")
+    );
     let titles: Vec<String> = imp
         .data_set_aside_rows
         .borrow()
@@ -749,6 +753,10 @@ fn test_data_page_lists_preserved_drafts_newest_first_and_deletes_one() {
     );
     assert!(fs_metadata::exists(&newer));
 
+    assert_eq!(
+        set_aside_summary(&prefs).map(|(title, _)| title).as_deref(),
+        Some("1 preserved draft")
+    );
     prefs.delete_set_aside_draft(&newer);
     wait_until(Duration::from_secs(10), || {
         !imp.data_set_aside_group.is_visible()
@@ -825,4 +833,330 @@ fn test_data_page_opens_a_preserved_draft_in_a_new_untitled_tab_and_keeps_it() {
             == Some("preserved unsaved edits\n")
     });
     drop(window);
+}
+
+/// Seed `count` one-byte set-aside bodies with stamps `1..=count`.
+fn seed_set_aside_bodies(data_dir: &std::path::Path, count: u64) {
+    for stamp in 1..=count {
+        seed_set_aside(data_dir, &format!("abcdef0123456789.{stamp}.draft"), "x");
+    }
+}
+
+fn set_aside_summary(prefs: &LushtextPreferences) -> Option<(String, String)> {
+    let imp = prefs.imp();
+    imp.data_set_aside_listing.borrow().as_ref().map(|_| {
+        let row = &imp.data_set_aside_summary;
+        (
+            row.title().to_string(),
+            row.subtitle()
+                .map(|text| text.to_string())
+                .unwrap_or_default(),
+        )
+    })
+}
+
+fn set_aside_names(data_dir: &std::path::Path) -> Vec<String> {
+    let mut names = fixture::entry_names(&lushtext_core::services::draft_service::set_aside_dir(
+        data_dir,
+    ));
+    names.sort();
+    names
+}
+
+#[test]
+fn test_data_page_summarizes_preserved_drafts_over_the_soft_bound() {
+    let data_dir = isolated_data_dir();
+    seed_set_aside_bodies(data_dir.path(), 101);
+    let prefs = LushtextPreferences::new();
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 101
+    });
+
+    let (title, subtitle) = set_aside_summary(&prefs).expect("a summary row");
+    assert_eq!(title, "101 preserved drafts");
+    assert!(
+        subtitle.contains("over the suggested limit"),
+        "over the bound: {subtitle}"
+    );
+    assert!(
+        !subtitle.contains("showing"),
+        "every body is listed: {subtitle}"
+    );
+    let delete_all = imp.data_set_aside_delete_all.clone();
+    assert_eq!(delete_all.title().as_str(), "Delete All Preserved Drafts…");
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&delete_all);
+    let summary = imp.data_set_aside_summary.clone();
+    AccessibleAudit::new()
+        .properties(&[
+            gtk4::AccessibleProperty::Label,
+            gtk4::AccessibleProperty::Description,
+        ])
+        .assert_on(&summary);
+    assert_eq!(
+        set_aside_names(data_dir.path()).len(),
+        101,
+        "nothing deleted"
+    );
+}
+
+#[test]
+fn test_data_page_states_when_only_the_newest_preserved_drafts_are_listed() {
+    let data_dir = isolated_data_dir();
+    seed_set_aside_bodies(data_dir.path(), 300);
+    // A narrow, short window: the dense list must scroll inside its own
+    // bounded region while the summary and bulk action stay usable.
+    let window = crate::common::test_window();
+    window.set_default_size(360, 560);
+    crate::common::present_window(&window);
+    let prefs = LushtextPreferences::new();
+    prefs.show_preserved_drafts();
+    prefs.present(Some(&window));
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 256
+    });
+    crate::common::flush_after_delay(Duration::from_millis(100));
+    let list_scroller = imp
+        .data_set_aside_list
+        .parent()
+        .and_then(|viewport| viewport.parent())
+        .and_downcast::<gtk4::ScrolledWindow>()
+        .expect("the list sits in its own scroller");
+    assert!(
+        list_scroller.height() <= 320,
+        "the dense list is bounded, got {}",
+        list_scroller.height()
+    );
+    assert!(imp.data_set_aside_summary.width() > 0 && imp.data_set_aside_delete_all.width() > 0);
+    assert!(
+        imp.data_set_aside_delete_all.width() <= prefs.width(),
+        "the bulk action fits the narrow dialog"
+    );
+
+    let (title, subtitle) = set_aside_summary(&prefs).expect("a summary row");
+    assert_eq!(title, "300 preserved drafts");
+    assert!(
+        subtitle.contains("showing the newest 256 of 300"),
+        "truncation is stated: {subtitle}"
+    );
+    let newest = imp.data_set_aside_rows.borrow()[0]
+        .subtitle()
+        .map(|text| text.to_string())
+        .unwrap_or_default();
+    assert!(newest.starts_with("Kept "), "{newest}");
+    let stamps = imp.data_set_aside_listing.borrow().as_ref().map(|listing| {
+        (
+            listing.drafts[0].body.stamp_secs,
+            listing.drafts[255].body.stamp_secs,
+        )
+    });
+    assert_eq!(stamps, Some((300, 45)), "the newest 256, newest first");
+    prefs.close();
+    drop(window);
+}
+
+#[test]
+fn test_delete_all_preserved_drafts_states_count_and_size_and_cancel_deletes_nothing() {
+    let data_dir = isolated_data_dir();
+    seed_set_aside(data_dir.path(), "aaaa000000000001.1.draft", "one");
+    seed_set_aside(data_dir.path(), "aaaa000000000002.2.draft", "two");
+    seed_set_aside(data_dir.path(), "aaaa000000000003.3.draft", "three");
+    let window = crate::common::test_window();
+    crate::common::present_window(&window);
+    let prefs = LushtextPreferences::new();
+    prefs.present(Some(&window));
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 3
+    });
+
+    let dialog = prefs
+        .confirm_delete_all_set_aside_drafts()
+        .expect("a confirmation");
+    let body = dialog.body().to_string();
+    let size = glib::format_size(11).to_string();
+    assert!(
+        body.contains(&format!("3 preserved drafts ({size})")),
+        "exact count and size: {body}"
+    );
+    assert_eq!(dialog.default_response().as_deref(), Some("cancel"));
+    assert_eq!(dialog.close_response().as_str(), "cancel");
+    assert_eq!(
+        dialog.response_appearance("delete"),
+        libadwaita::ResponseAppearance::Destructive
+    );
+
+    dialog.emit_by_name::<()>("response", &[&"cancel"]);
+    crate::common::flush_after_delay(Duration::from_millis(200));
+
+    assert_eq!(
+        set_aside_names(data_dir.path()).len(),
+        3,
+        "cancel deletes nothing"
+    );
+    assert_eq!(imp.data_set_aside_rows.borrow().len(), 3);
+    drop(window);
+}
+
+#[test]
+fn test_delete_all_preserved_drafts_removes_exactly_the_confirmed_set() {
+    let data_dir = isolated_data_dir();
+    seed_set_aside(data_dir.path(), "aaaa000000000001.1.draft", "one");
+    seed_set_aside(data_dir.path(), "aaaa000000000002.2.draft", "two");
+    seed_set_aside(data_dir.path(), "aaaa000000000003.3.draft", "three");
+    let window = crate::common::test_window();
+    crate::common::present_window(&window);
+    let prefs = LushtextPreferences::new();
+    prefs.present(Some(&window));
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 3
+    });
+    let dialog = prefs
+        .confirm_delete_all_set_aside_drafts()
+        .expect("a confirmation");
+
+    // While the dialog is open: a new body is set aside, and one listed body
+    // is replaced by different content under its name.
+    seed_set_aside(data_dir.path(), "aaaa000000000004.4.draft", "four");
+    let changed = lushtext_core::services::draft_service::set_aside_dir(data_dir.path())
+        .join("aaaa000000000002.2.draft");
+    fixture::remove_file(&changed);
+    fixture::write_text(&changed, "two, rewritten after the confirmation");
+
+    dialog.emit_by_name::<()>("response", &[&"delete"]);
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 2
+    });
+
+    assert_eq!(
+        set_aside_names(data_dir.path()),
+        vec!["aaaa000000000002.2.draft", "aaaa000000000004.4.draft"],
+        "only the confirmed, unchanged bodies went"
+    );
+    fixture::assert_text(&changed, "two, rewritten after the confirmation");
+    drop(window);
+}
+
+/// Every file under `root`, with its size, so a notice or action that wrote
+/// anything would show up.
+fn app_data_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for name in fixture::entry_names(&dir) {
+            let path = dir.join(&name);
+            match fs_metadata::path_status(&path) {
+                Ok(status) if status.is_directory() => pending.push(path),
+                Ok(_) => {
+                    let size = fs_metadata::file_facts(&path).map_or(0, |facts| facts.byte_size);
+                    files.push((path, size));
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn test_preserved_drafts_over_the_bound_notify_once_and_the_review_action_opens_them() {
+    use lushtext_core::services::draft_service;
+    let data_dir = isolated_data_dir();
+    seed_set_aside_bodies(data_dir.path(), 101);
+    let window = crate::common::test_window();
+    crate::common::present_window(&window);
+    let app = window
+        .application()
+        .and_downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("a LushText application");
+
+    window.load_session_and_drafts();
+    wait_until(Duration::from_secs(10), || {
+        app.set_aside_review_state().notices_published == 1
+    });
+    let message = window
+        .imp()
+        .status_bar
+        .imp()
+        .message_label
+        .label()
+        .to_string();
+    assert!(
+        message.starts_with("LushText is keeping 101 preserved drafts (")
+            && message.ends_with("Review them with Review Preserved Drafts."),
+        "the notice names the count, the size, and the action: {message}"
+    );
+    assert_eq!(
+        set_aside_names(data_dir.path()).len(),
+        101,
+        "nothing deleted"
+    );
+
+    // A later placement without material growth publishes nothing more.
+    draft_service::fixture::write_body(data_dir.path(), "untitled-00000000000000bb", "kept")
+        .expect("draft body");
+    draft_service::set_aside::keep_copy(data_dir.path(), "untitled-00000000000000bb", 7)
+        .expect("placement");
+    window.autosave_tick_for_test();
+    wait_until(Duration::from_secs(10), || {
+        let state = app.set_aside_review_state();
+        !state.evaluation_inflight
+            && state.placements_seen == draft_service::set_aside::placements()
+    });
+    assert_eq!(app.set_aside_review_state().notices_published, 1);
+
+    let before = app_data_files(data_dir.path());
+    app.activate_action("review-preserved-drafts", None);
+    let prefs = window
+        .visible_dialog()
+        .and_downcast::<LushtextPreferences>()
+        .expect("Preferences presented");
+    assert_eq!(prefs.visible_page_name().as_deref(), Some("data"));
+    let imp = prefs.imp();
+    wait_until(Duration::from_secs(10), || {
+        imp.data_set_aside_rows.borrow().len() == 102
+    });
+    assert!(imp.data_set_aside_group.property::<bool>("visible"));
+    assert!(
+        !imp.data_set_aside_focus_pending.get(),
+        "the summary row took focus once the listing landed"
+    );
+    assert!(app.set_aside_review_state().reviewed);
+
+    // After the review, even material growth publishes no further notice.
+    seed_set_aside_bodies_from(data_dir.path(), 200, 100);
+    draft_service::set_aside::keep_copy(data_dir.path(), "untitled-00000000000000bb", 8)
+        .expect("placement");
+    window.autosave_tick_for_test();
+    crate::common::flush_after_delay(Duration::from_millis(300));
+    assert_eq!(app.set_aside_review_state().notices_published, 1);
+    let after_review: Vec<_> = app_data_files(data_dir.path())
+        .into_iter()
+        .filter(|(path, _)| !path.to_string_lossy().contains("/set-aside/"))
+        .collect();
+    let before_review: Vec<_> = before
+        .into_iter()
+        .filter(|(path, _)| !path.to_string_lossy().contains("/set-aside/"))
+        .collect();
+    assert_eq!(
+        after_review, before_review,
+        "neither the notice nor the review action writes app data"
+    );
+    prefs.close();
+    drop(window);
+}
+
+/// Seed `count` more one-byte bodies with stamps starting at `first`.
+fn seed_set_aside_bodies_from(data_dir: &std::path::Path, first: u64, count: u64) {
+    for stamp in first..first + count {
+        seed_set_aside(data_dir, &format!("bcdef0123456789a.{stamp}.draft"), "x");
+    }
 }

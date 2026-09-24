@@ -42,6 +42,7 @@ mod recent_open;
 mod search;
 mod search_progress_execution;
 mod session_restore;
+mod set_aside_review;
 mod startup_data;
 mod tab_strip;
 mod transient_dismissal;
@@ -56,6 +57,7 @@ use gtk4::prelude::*;
 
 pub use attention_refresh::{AttentionSurfaces, ModalSurfaceGuard};
 pub use drafts::DraftFlushError;
+pub use set_aside_review::SetAsideReviewState;
 
 #[cfg(feature = "test-utils")]
 pub use dialogs::set_close_safety_completion_delay_for_test;

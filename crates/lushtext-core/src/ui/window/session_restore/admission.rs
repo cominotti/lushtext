@@ -65,6 +65,7 @@ impl LushtextWindow {
         if session.tabs.is_empty() {
             self.imp().session.restoring.set(false);
             self.schedule_orphan_cleanup(cleanup_allowed);
+            self.evaluate_preserved_drafts_after_startup();
             return;
         }
 
@@ -254,6 +255,7 @@ impl LushtextWindow {
         }
         evidence::record_restore_outcome(self, metrics);
         self.schedule_orphan_cleanup(cleanup_allowed);
+        self.evaluate_preserved_drafts_after_startup();
     }
 
     pub(super) fn cancel_session_restore_runtime(&self, publish_projection: bool) {

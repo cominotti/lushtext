@@ -442,6 +442,10 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
   reported as `workspace.show_hidden_files`, beside the bounded
   `workspace.excluded_names` list of always-excluded entry names. Set an explicit
   state through `org.gtk.Actions.SetState` rather than toggling blindly.
+- `app.review-preserved-drafts` opens `Preferences > Data` at the Preserved
+  Drafts group (the drafts set-aside area) in the active window. It deletes
+  nothing, writes no app data, and only stops this process's soft-bound review
+  notice; deleting preserved drafts stays behind the page's own confirmations.
 
 Use target-state actions for scenario setup whenever possible. They are easier
 to reason about than parity toggles because repeated calls converge on the same
