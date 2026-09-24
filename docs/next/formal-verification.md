@@ -98,7 +98,7 @@ Tool facts as of September 2026:
 
 **Measured on 2026-09-24.** The OpenSpec change
 `evaluate-quint-and-tlaplus-empirically` compared Quint and TLA+ with Kani
-on three of this project's own targets, and on eight exploration ideas. The
+on three of this project's own targets, and on nine exploration ideas (E1–E9). The
 record is
 [`formal-verification-quint-vs-tlaplus.md`](./formal-verification-quint-vs-tlaplus.md).
 

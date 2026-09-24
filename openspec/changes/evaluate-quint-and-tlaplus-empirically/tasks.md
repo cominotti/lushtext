@@ -11,7 +11,7 @@
 - [x] 2.2 Write `scripts/formal-evaluation.sh`:
   - `install` into `build/formal-evaluation/tools/`, recording versions and checksums;
   - one subcommand per target (`t1`, `t2`, `t3`), plus `all` and `report-data`;
-  - per-run `/usr/bin/time -v` capture under `build/formal-evaluation/runs/`;
+  - per-run capture under `build/formal-evaluation/runs/`, through a process-tree RSS sampler (`measure`) rather than `/usr/bin/time -v`, because Quint's Java server is a separate process;
   - `FORMAL_EVAL_TIMEOUT` (default 30 min) and a memory ceiling;
   - a clear missing-tool message.
 - [x] 2.3 Add a local-only `make formal-evaluation` target, with `FORMAL_EVAL_TARGET`. Add it to `.PHONY` and `help`. Confirm it is not a prerequisite of `check`, `check-policy`, `test`, `kani`, or `end-user-smoke`, and that no workflow references it.
@@ -28,7 +28,7 @@
 
 - [x] 4.1 Model the `journal_core` decisions, the `kani_proofs.rs` model disk, and all 13 actions (with an I/O fault on every step) with one process in both tools. Confirm S1–S4 hold as the control.
 - [x] 4.2 Add the second process actor (the K8 `step_as` semantics). Confirm both K8 traces are found at 8 actions after both startups (S1 loss; body without an entry), and only the body-without-entry trace at 6.
-- [x] 4.3 Measure wall time, peak RSS, and distinct states or solver depth at 6, 8, 10, 12, and deeper for each checker (Quint simulator, Apalache, TLC through Quint, and TLC on hand-written TLA+). Stop each at the timeout or memory ceiling and record the ceiling. Run one checker at a time.
+- [x] 4.3 Measure wall time, peak RSS, and distinct states or solver depth at 6, 8, 10, 12, and deeper for each checker (Quint simulator, Apalache, TLC through Quint, and TLC on hand-written TLA+). Stop each at the timeout or memory ceiling and record the ceiling. Run one checker at a time. Stopped at 6 or 7 actions: each checker hit its ceiling at the lower depth, so 8, 10, and 12 were not run (report §4).
 - [x] 4.4 Compare the results against Kani's 500.8 s / about 9 GB at 6 actions and 1017.5 s / about 18 GB at 8, and record counterexample readability against K8's decoded traces.
 
 ## 5. T3 design sketch: the N6 inter-process lock
@@ -46,7 +46,7 @@
 - [x] 6.4 E3 and E4: turn a TLC or Apalache counterexample into a Kani assumption, a proptest regression, or an N11 sequence; and generate conformance sequences from a spec. Keep any produced test code in scratch space, not in production crates.
 - [x] 6.5 E5: Apalache against TLC crossover on the T2 model.
 - [x] 6.6 E6: one TLAPS lemma. Compare it with the in-Kani unbounded attempts in `extend-closed-loop-geometry-verification`.
-- [x] 6.7 E7: review the T3 spec as a design document with a fresh agent and with the maintainer, and record the questions each raises.
+- [x] 6.7 E7: review the T3 spec as a design document with a fresh agent and with the maintainer, and record the questions each raises. The fresh-agent review was done; the maintainer review was not attempted (report §7).
 - [x] 6.8 E8: a `stateright` T2 comparator calling `journal_core`, as a standalone package under `formal/evaluation/stateright/` with its own `[workspace]` table, added to the root `Cargo.toml` `exclude`. Confirm `cargo deny` and hakari are unaffected.
 - [x] 6.9 Record any agent-added idea (E9 and on) with the same log format. Mark every unattempted idea "not attempted", with a reason.
 

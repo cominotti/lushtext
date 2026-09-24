@@ -66,7 +66,8 @@ nice -n 19 env CARGO_BUILD_JOBS=6 cargo build --release
 # The E1 tests shell out to quint; see the E1 section for their command.
 nice -n 19 env CARGO_BUILD_JOBS=6 cargo test --release --test k8_traces --test seeded_from_tlc
 $T/release/lushtext-journal-stateright --max-steps 8 --threads 8 --strategy dfs
-$T/release/lushtext-journal-stateright --two-processes --max-steps 8 --threads 8 --strategy dfs
+# A full two-process run at 8 is projected at about 70 GB; stop at the first K8 pair.
+$T/release/lushtext-journal-stateright --two-processes --max-steps 8 --threads 8 --strategy dfs --finish-when-k8
 ```
 
 The binary's flags are:

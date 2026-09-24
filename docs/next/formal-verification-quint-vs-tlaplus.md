@@ -103,11 +103,20 @@ Every run went through `scripts/formal-evaluation.sh measure`, which records:
 - the distinct-state count;
 - the command and the full output, under `build/formal-evaluation/runs/<run>/`.
 
-It kills a run at 30 minutes (the CI job cap) or at a memory ceiling of
-36 GiB (a 27 GiB JVM heap), and records the ceiling as the result. One checker
-ran at a time.
+It kills a run at 30 minutes (the CI job cap) or at a memory ceiling, and
+records the ceiling as the result. Most runs used `FORMAL_EVAL_MEM_MB=36000`
+(a 27 GiB JVM heap; Apalache through `JVM_ARGS=-Xmx27g`). The exceptions are
+`t2-tlc-k8-6-w1` (an 18 GiB heap), `t2-tlc-k8-6-w24` (a 40 GiB heap), and
+`t2-tlc-simulate-k8-8` (a 10-minute timeout). The script's default ceiling is
+24 GiB. One checker ran at a time.
 
-- TLC uses one worker unless a row says "w24" (all 24 cores).
+The recorded wall times come from a sampler that polled once a second after a
+0.2 s start, so each is an upper bound quantized to about 1.05 s: a figure of
+1.2 s means "at most 1.2 s". The runner now polls every 0.1 s; the recorded
+figures predate that change.
+
+- TLC used one worker in T1 and in `t2-tlc-k8-6-w1`. Every T2 row marked
+  "w24", every T3 check (both tools), and E9 used all 24 cores.
 - `stateright` uses 8 threads.
 - Kani's solver is single-threaded.
 
@@ -207,8 +216,8 @@ and `stateright`'s `tests/k8_traces.rs` replays them against the real core.
 | Quint → Apalache 0.58.3 | out of heap (27 GiB) in the inlining pass, 13.6 min | not attempted | not attempted |
 | Apalache 0.62.2 on TLA+ | out of heap (27 GiB) in the inlining pass, 7.4 min, after 26 type annotations | not attempted | not attempted |
 | Quint simulator | missed in 20 M traces (114.8 s) | not attempted | not attempted |
-| TLC `-simulate` | missed in 1.6 G states (10 min cap) | not attempted | not attempted |
-| stateright, real `journal_core`, 8 threads, DFS | found; S1 holds at 6: 73.1 s, 2.3 GiB, 141.8 M states | found at 7: 408.0 s, 9.0 GiB, 692.4 M states; within 8, stopping at the first K8 pair: 1.2 s | S1–S4 hold: 49.5 s, 1.1 GiB, 111.8 M states |
+| TLC `-simulate` | not attempted | missed within 8 actions in 1.6 G states (10 min cap) | not attempted |
+| stateright, real `journal_core`, 8 threads, DFS | found; S1 holds at 6: 73.1 s, 2.3 GiB, 141.8 M states | found at 7: 408.0 s, 9.0 GiB, 692.4 M states; within 8, stopping at the first K8 pair: 0.3 s (its own timer) | S1–S4 hold: 49.5 s, 1.1 GiB, 111.8 M states |
 | `quint test` / `stateright` tests (replay of the decoded traces) | reproduced | reproduced | — |
 
 Two facts every tool agreed on:
@@ -260,7 +269,7 @@ How to read the scale runs:
 
 - **Hand-written TLA+ with TLC is the only external route that beat Kani on
   T2.**
-  - It needs all 24 cores and about twice Kani's memory.
+  - It needs all 24 cores and 1.5–2.4× Kani's memory (12.3–20.3 GiB).
   - With one worker, TLC did not finish 6 actions in 30 minutes.
   - The fingerprint `VIEW` (drop the trace decoration `last`, keep the step
     counter `n`) is what makes it feasible. Without it, the first run held
@@ -284,16 +293,18 @@ How to read the scale runs:
   | K8 at 7 actions, where S1 first fails | 408 s, 9.0 GiB | not run |
 
   - A full K8 exploration at 8 actions is projected at about 6 G states and
-    70 GB, beyond this machine. Stopping at the first K8 pair takes 1.2 s.
-  - It also reports S3 and S4 as failing. Every such trace passes through a
+    70 GB, beyond this machine. Stopping at the first K8 pair takes 0.3 s
+    (the harness's own timer).
+  - At 6 actions it also reports S4 as failing, and at 7 and 8 both S3 and
+    S4. Every such trace passes through a
     body written without an entry. From there the port's sticky flag lets the
     path continue, where Kani's panicking `assert!` ends it. They add no new
     class.
   - Caveats: it enumerates a bounded model explicitly (Kani's small-scope
-    hypothesis again). Its environment is a 742-line hand port of
+    hypothesis again). Its environment is a 752-line hand port of
     `kani_proofs.rs`, a second copy of the environment, though not of the
     decisions. Depth-first counterexamples are not minimal.
-- **Random simulation is a poor falsifier here.** The Quint simulator missed the K8 violation in 20 M traces of 6 steps (115 s). TLC `-simulate` checked 1.6 G states in 10 minutes without finding it.
+- **Random simulation is a poor falsifier here.** The Quint simulator missed the K8 violation in 20 M traces of 6 steps (115 s). TLC `-simulate` checked 1.6 G states at 8 actions in 10 minutes without finding it.
 
 **Counterexample readability, measured as the steps needed to map a trace
 onto K8's decoded form:**
@@ -305,7 +316,7 @@ onto K8's decoded form:**
   `[tag |-> "Register", value |-> …]` and
   `[CreateTemp |-> [tag |-> "UNIT"]]`, which needed a script to read.
 - **TLC on hand-written TLA+.** It prints the `last` record directly. A
-  20-line script (`stateright/seed_from_tlc.py`) turned it into a Rust test.
+  94-line script (`stateright/seed_from_tlc.py`) turned it into a Rust test.
 - **stateright.** It prints the Rust action tuples directly.
 - **Kani.** It needs concrete playback plus hand decoding (the programme
   record, K8).
@@ -418,9 +429,9 @@ this project.
 | Types, sum types, records, `match` | every model | typed sum types (`RestoreApply(RestoreEnding)`, `Finish(WriteClass)`) mirror the Rust enums one to one; the E7 reviewer found this easier to check than TLA+ strings | many ordinary names are builtins or keywords and are refused: `next`, `cross`, `contains`, `action` (4 of Quint's 9 first-attempt errors) |
 | Effect system, modes (`pure def`, `def`, `action`, `temporal`) | eff1–eff4 probes | catches a `pure def` reading state (QNT200), a double assignment (QNT202), and `any` branches with different frames | does not catch a missing assignment (eff1) or an assignment hidden inside a boolean `or` (T1's precedence bug) |
 | Modules, constants, instances | T2, T3 | `import journal(MaxSteps = 6, …)` fixes bounds without a config file | `import m(C = C).*` conflicts on constant names (QNT101); an instance's names are not re-exported to its importers; cross-file imports need a relative `from` path, and absolute paths fail (QNT013) |
-| Simulator: `quint run` with `--invariant`, `--witnesses`, `--seed` | T1, T2 | fast (about 150 k traces/s on T2); `--witnesses` quantifies coverage; seeds reproduce | uniform random choice; it missed every K8 trace (§4); it silently keeps unassigned variables |
+| Simulator: `quint run` with `--invariant`, `--witnesses`, `--seed` | T1, T2 | fast (about 177 k traces/s on T2); `--witnesses` quantifies coverage; seeds reproduce | uniform random choice; it missed every K8 trace (§4); it silently keeps unassigned variables |
 | `quint test` and `run` | T2 `k8_traces`, E2 | step-by-step regression tests of decoded counterexamples, with an error that points at the failing `.then` | has no `--mbt`, so a `run` cannot feed Quint Connect without a hand-kept `choice` variable (E1) |
-| `quint verify` with Apalache | T1, T2 | a bounded symbolic proof of T1 in about 10–20 s | Quint 0.32.0 cannot drive Apalache ≥ 0.59 (§6.1); on T2 the inlining pass ran out of a 27 GiB heap |
+| `quint verify` with Apalache | T1, T2 | a bounded symbolic proof of T1 in about 9–23 s | Quint 0.32.0 cannot drive Apalache ≥ 0.59 (§6.1); on T2 the inlining pass ran out of a 27 GiB heap |
 | `quint verify --backend tlc` and `--temporal` | T1, T3 | real liveness under `weakFair` and `strongFair`; the same verdicts and state counts as hand-written TLA+ on T3 liveness | no `VIEW` and no symmetry: on T2 the fingerprint includes every variable, so it timed out at 6 actions; several seconds of fixed start-up per run (it compiles through an Apalache server) |
 | `quint compile --target tlaplus` | T1 | readable, typed TLA+ (874 lines from a 311-line spec) that TLC and Apalache accept | one action shared between two `--init` candidates cannot be translated (QNT409) |
 | ITF traces and `run --mbt` | T2, E1 | machine-readable traces with `mbt::actionTaken` and `mbt::nondetPicks` | variable names are module-qualified for imported instances and bare for the main module; each nondet pick is wrapped in an `Option` |
@@ -451,11 +462,11 @@ this project.
 
 | Feature | Exercised on | Good at here | Bad at here |
 |---|---|---|---|
-| TLC, breadth-first, `-workers`, `VIEW` | T1, T2, T3 | the only external checker that beat Kani on T2 (§4); exact state counts; `VIEW` removes trace decoration | memory-heavy (17 GB at w24); `VIEW` is a soundness footgun (§5, E7); a bounded model needs `CHECK_DEADLOCK FALSE` and an explicit step counter |
+| TLC, breadth-first, `-workers`, `VIEW` | T1, T2, T3 | the only external checker that beat Kani on T2 (§4); exact state counts; `VIEW` removes trace decoration | memory-heavy (12.3–20.3 GiB at w24); `VIEW` is a soundness footgun (§5, E7); a bounded model needs `CHECK_DEADLOCK FALSE` and an explicit step counter |
 | TLC liveness: `WF`, `SF`, `~>`, `[]<>` | T1, T3, E9 | mature and fast; the WF-vs-SF distinction in T3 took about a second | the state space must be finite, so liveness runs need a journal-free or budgeted model (E9) |
 | TLC simulation (`-simulate`) | T2 | fast (about 2.7 M states/s); it missed the K8 violation that breadth-first search found | — |
 | PlusCal | T1 | natural for one sequential process; fewer lines than plain TLA+ | per-step sequential assignment semantics; fairness per label only (did not fit T3); regenerates the `VARIABLES` line, which fights Apalache annotations |
-| Apalache on TLA+ | T1, T2 | bounded symbolic check of T1 in about 5 s | needs typed wrappers and 26 operator annotations on T2 (E5), then ran out of heap while inlining |
+| Apalache on TLA+ | T1, T2 | bounded symbolic check of T1 in about 6–7 s | needs typed wrappers and 26 operator annotations on T2 (E5), then ran out of heap while inlining |
 | TLAPS | E6 | proved at-most-one-writer for **every** behaviour in 0.4 s; a guard-removal mutant fails 3 of 35 obligations | the stable 1.5.0 is from 2022; proofs over the journal would need far more work; every lemma is maintenance |
 | Trace validation | E2 | validated all 61 recorded smoke event logs (190 events) against a 40-line spec in about 1 s | the logs witness only two workflows today (`minimap-refresh` and `search`) |
 
@@ -474,7 +485,7 @@ Each idea's budget was declared before it started (default 2 h, maximum 4 h,
 | E6 | One TLAPS lemma | 3 h / 0.4 h | **Worked** | See the E6 notes below. |
 | E7 | Specs as review documents | 1 h / 0.1 h | **Worked, and found a bug in this evaluation** | See the E7 notes below. |
 | E8 | `stateright` T2 comparator on the real `journal_core` | 4 h / 0.3 h (subagent) | **Worked: it beat Kani on T2 scale without a second language** (§4) | `formal/evaluation/stateright/`: a standalone package excluded from the workspace, with `cargo deny`, `cargo hakari verify`, and `cargo metadata` unaffected. It needed 1 compile error and a hand-written `Hash`. Figures in §4. |
-| E9 (added) | L1 as an unbounded liveness property in TLC | 2 h / 0.3 h | **Worked at 1 id; exceeded the cap at 2** | `JournalLiveness.tla`: every dirty open editor eventually becomes clean under weak fairness of the fault-free autosave pass. The environment may fault, crash, save, discard, and move the backing file up to `EnvBudget` times, and edit at any time. Kani checks only the bounded form (k = 7). With 1 id, L1 holds under `WF` (13.5 s, 212 k states) and fails without fairness. With 2 ids the fair check exceeded 30 minutes (17.1 M states, 25 GiB) in TLC's single-threaded liveness phase; the unfair check found its counterexample in 4 s. |
+| E9 (added) | L1 as an unbounded liveness property in TLC | 2 h / 0.3 h | **Worked at 1 id; exceeded the cap at 2** | `JournalLiveness.tla`: every dirty open editor eventually becomes clean under weak fairness of the fault-free autosave pass. The environment may fault, crash, save, discard, and move the backing file up to `EnvBudget` times, and edit at any time. Kani checks only the bounded form (k = 7). With 1 id, L1 holds under `WF` (13.5 s, 212 k states) and fails without fairness. With 2 ids the fair check exceeded 30 minutes with 24 workers (17.1 M distinct states, 25.1 GiB, 4.2 M states still queued): TLC was still exploring, slowed by its periodic temporal-property checks; the unfair check found its counterexample in 4 s. |
 
 **E1 notes.**
 
@@ -578,10 +589,10 @@ The two are combined only because each part has its own evidence.
   The `Unavailable` restore, found this way, had to be modelled explicitly in
   every external model before those models could "find" it.
 - **No external tool beat Kani on T2 without a large cost.**
-  - Hand-written TLC needed 24 cores and about twice the memory at 6 actions.
+  - Hand-written TLC needed 24 cores and 1.5–2.4× the memory at 6 actions.
   - Quint could not finish at 6 actions (TLC) or preprocess the model at all
     (Apalache).
-  - `stateright` *did* beat Kani on T2: 7–10× faster with 4–8× less memory, on the same `journal_core`. That is the evidence for follow-up 3 below, not for dropping Kani. Kani still proves the finite write protocol completely, and it proves the geometry harnesses over symbolic `i32` pixel ranges, which an explicit-state checker cannot enumerate.
+  - `stateright` *did* beat Kani on T2: 7–10× faster with about 4–7× less memory, on the same `journal_core`. That is the evidence for follow-up 3 below, not for dropping Kani. Kani still proves the finite write protocol completely, and it proves the geometry harnesses over symbolic `i32` pixel ranges, which an explicit-state checker cannot enumerate.
 - **What Kani lacks that the project needs now:** nothing on T1 or T2.
   Liveness under fairness (T3, E9) is needed only by the dormant N6.
 
@@ -589,7 +600,8 @@ The two are combined only because each part has its own evidence.
 
 - **Both tools checked T3 completely, with the same verdicts and the same
   liveness state counts.** TLC was fastest (about 1 s per liveness check).
-  Quint → TLC took about 17 s per check, most of it fixed start-up.
+  Quint → TLC took about 19–20 s per liveness check (21–44 s for safety),
+  most of it fixed start-up.
 - **The decisive difference is reliability, not expressiveness.**
   - Quint's pipeline had a silent false green (§6.1).
   - Its simulator silently keeps unassigned variables.
@@ -669,7 +681,7 @@ in TLA+ with TLC, which also scaled further.
 
   Follow-up 3 opens that change.
 - **B for maintained properties:** rejected. The same drift argument applies,
-  and T2 needed 17 GB and 24 cores.
+  and T2 needed 12.3–20.3 GiB and 24 cores.
 
 ### What happens to `formal/evaluation/`
 
@@ -711,9 +723,10 @@ FORMAL_EVAL_WORKERS=auto FORMAL_EVAL_T2_DEPTHS="6" make formal-evaluation FORMAL
 make formal-evaluation FORMAL_EVAL_TARGET=report-data
 ```
 
-`t2` at 8 actions exceeds the 30-minute cap for every external checker. The
-`FORMAL_EVAL_TIMEOUT` and `FORMAL_EVAL_MEM_MB` ceilings then record it as the
-result.
+`t2` at 8 actions was not run exhaustively. TLC needed 1490 s with 24 cores
+at 7, and Quint → TLC and Apalache already failed at 6, so 8 is expected to
+exceed the cap; the `FORMAL_EVAL_TIMEOUT` and `FORMAL_EVAL_MEM_MB` ceilings
+then record it as the result.
 
 The `stateright` package and the E1 and E3 tests build separately:
 
@@ -727,7 +740,7 @@ cargo test --release
 E2 regenerates its traces from local smoke artefacts:
 
 ```sh
-formal/evaluation/trace-validation/gen_traces.py OUT build/smoke/**/workflow-events.json
+formal/evaluation/trace-validation/gen_traces.py OUT $(find build/smoke -name workflow-events.json)
 ```
 
 TLAPS:

@@ -41,7 +41,8 @@ hand from the release page into `build/formal-evaluation/tools/tlaps/`). Install
 make formal-evaluation FORMAL_EVAL_TARGET=install
 make formal-evaluation FORMAL_EVAL_TARGET=t1     # or t2, t3, all
 java -cp build/formal-evaluation/tools/tlc/tla2tools.jar tlc2.TLC -workers 1 -config WriteProtocol.cfg WriteProtocol.tla
-java -cp build/formal-evaluation/tools/tlc/tla2tools.jar tlc2.TLC -workers 1 -config Journal_k8_6.cfg Journal.tla
+# K8 at 6 actions: about 252 s with -workers auto (24 cores); -workers 1 did not finish in 30 min.
+java -cp build/formal-evaluation/tools/tlc/tla2tools.jar tlc2.TLC -workers auto -config Journal_k8_6_body.cfg Journal.tla
 apalache-mc check --cinit=CInitMutant --init=Init --next=Next --inv=RunWriteAssertions --length=17 MC_WriteProtocolApalache.tla
 ```
 

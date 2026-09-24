@@ -216,11 +216,11 @@ measured them on T1 (the durable write), T2 (the two-process journal), and T3
 (an N6 lock sketch).
 
 - **TLA+ (TLC): confirmed, as the disposable N6 design-sketch tool only.**
-  - It checked every T3 safety and liveness verdict in about 1 s each, and
-    distinguished weak from strong fairness.
+  - It checked every T3 liveness verdict in about 1 s and every safety
+    verdict in 2–17 s, and distinguished weak from strong fairness.
   - TLAPS proved the lock's at-most-one-writer invariant unbounded in 0.4 s.
   - On T2 it was the only external route that reproduced K8 faster than Kani:
-    about 215 s at 6 actions, but with 24 cores, about 17 GB, and a
+    about 252 s at 6 actions, but with 24 cores, about 12.3 GiB, and a
     hand-written `VIEW`. With one worker it did not finish in 30 minutes.
   - The final core stays Kani-checked Rust.
 - **Quint: rejected, including as a Kani replacement.**
