@@ -170,14 +170,18 @@ def discover(widget_dir: Path = WIDGET_DIR) -> list[str]:
     return found
 
 
+def module_of(test: str) -> str:
+    """The widget-test file stem a `module::name` test lives in."""
+    return test.split("::", 1)[0]
+
+
 def owners(shards: dict[str, Shard], test: str) -> list[str]:
     """The shards owning `test`: those naming it explicitly, else those listing
     its module."""
     explicit = [name for name, shard in shards.items() if test in shard.tests]
     if explicit:
         return explicit
-    module = test.split("::", 1)[0]
-    return [name for name, shard in shards.items() if module in shard.modules]
+    return [name for name, shard in shards.items() if module_of(test) in shard.modules]
 
 
 def assignment(shards: dict[str, Shard], tests: list[str]) -> dict[str, list[str]]:
@@ -197,7 +201,7 @@ def check(shards: dict[str, Shard], tests: list[str]) -> list[str]:
         owned_by = owners(shards, test)
         if len(owned_by) != 1:
             problems.append(f"widget test {test} matches shards {owned_by or 'none'}")
-    modules = {test.split("::", 1)[0] for test in tests}
+    modules = {module_of(test) for test in tests}
     seen_modules: dict[str, str] = {}
     for shard_name, shard in shards.items():
         for module in shard.modules:
@@ -209,7 +213,7 @@ def check(shards: dict[str, Shard], tests: list[str]) -> list[str]:
         for test in shard.tests:
             if test not in tests:
                 problems.append(f"shard {shard_name} test {test} is not a widget test")
-            elif test.split("::", 1)[0] in shard.modules:
+            elif module_of(test) in shard.modules:
                 problems.append(f"shard {shard_name} names {test} explicitly but already owns its module")
     return problems
 
@@ -294,7 +298,10 @@ def count_problems(expected: int, log: WidgetLog) -> list[str]:
     ]
 
 
-def run_shard(shard: str, names: list[str], total: int) -> dict[str, object]:
+def run_shard(shard: str, names: list[str], total: int, started: float) -> dict[str, object]:
+    """Run one shard's tests and return its measurement record; `started` is
+    when this shard's step began (the first shard's includes the build and
+    `--list` cross-check)."""
     command = [str(RUNNER), "--headless", "--retries", "1", "--", "--exact", *names]
     print(f"Running widget shard {shard}: {len(names)} of {total} widget tests", flush=True)
     log = WidgetLog(names)
@@ -309,6 +316,7 @@ def run_shard(shard: str, names: list[str], total: int) -> dict[str, object]:
         sys.stdout.flush()
         log.feed(line, time.monotonic())
     status = child.wait()
+    seconds = time.monotonic() - started
     problems = count_problems(len(names), log)
     for problem in problems:
         print(f"widget-shards: shard {shard}: {problem}", file=sys.stderr)
@@ -321,24 +329,15 @@ def run_shard(shard: str, names: list[str], total: int) -> dict[str, object]:
             file=sys.stderr,
         )
     return {
+        "shard": shard,
         "status": status,
+        "expected": len(names),
+        "suite_total": total,
         "selected": log.running_counts,
         "durations_attributed": log.attributed,
-        "tests": log.tests,
-    }
-
-
-def shard_record(shard: str, expected: int, total: int, seconds: float, result: dict[str, object]) -> dict[str, object]:
-    return {
-        "shard": shard,
-        "status": result["status"],
-        "expected": expected,
-        "suite_total": total,
-        "selected": result["selected"],
-        "durations_attributed": result["durations_attributed"],
         "wall_seconds": round(seconds, 1),
         "wall_minutes": round(seconds / 60, 2),
-        "tests": result["tests"],
+        "tests": log.tests,
     }
 
 
@@ -354,7 +353,7 @@ def summary_markdown(records: list[dict[str, object]], slowest: int = 20) -> str
         )
     lines += ["", f"Slowest {slowest} tests per shard:", "", "| Test | Result | Seconds |", "|---|---|---|"]
     for record in records:
-        ranked = sorted(record["tests"], key=lambda test: -float(test["seconds"]))[:slowest]
+        ranked = sorted(record["tests"], key=lambda test: test["seconds"], reverse=True)[:slowest]
         for test in ranked:
             lines.append(f"| `{test['name']}` | {test['result']} | {test['seconds']} |")
     return "\n".join(lines) + "\n"
@@ -379,16 +378,16 @@ def run(shard_names: list[str], static_tests: list[str], measure: str | None) ->
     records = []
     result_status = 0
     for shard in shard_names:
-        result = run_shard(shard, by_shard[shard], len(static_tests))
-        records.append(shard_record(shard, len(by_shard[shard]), len(static_tests), time.monotonic() - start, result))
+        record = run_shard(shard, by_shard[shard], len(static_tests), start)
+        records.append(record)
         start = time.monotonic()
         print(
-            f"Widget shard {shard}: status {result['status']}, {records[-1]['wall_minutes']} min, "
-            f"{len(by_shard[shard])} of {len(static_tests)} tests",
+            f"Widget shard {shard}: status {record['status']}, {record['wall_minutes']} min, "
+            f"{record['expected']} of {len(static_tests)} tests",
             flush=True,
         )
-        if result["status"] != 0:
-            result_status = int(result["status"])
+        if record["status"] != 0:
+            result_status = int(record["status"])
             break
     if measure is not None:
         Path(measure).write_text(json.dumps({"shards": records}, indent=2) + "\n", encoding="utf-8")
@@ -472,7 +471,17 @@ def self_test() -> None:
     log.feed("test window::test_a ... ok\n", 2.5)
     log.feed("test window::test_b ... ok\n", 10.0)
 
-    record = shard_record("window", 2, 5, 90.0, {"status": 0, "selected": [2], "durations_attributed": True, "tests": log.tests})
+    record = {
+        "shard": "window",
+        "status": 0,
+        "expected": 2,
+        "suite_total": 5,
+        "selected": [2],
+        "durations_attributed": True,
+        "wall_seconds": 90.0,
+        "wall_minutes": 1.5,
+        "tests": log.tests,
+    }
     table_text = summary_markdown([record])
     assert "| `window` | 0 | 1.5 | 2 / 5 |" in table_text, table_text
     assert "| `window::test_b` | ok | 7.5 |" in table_text, table_text
@@ -481,7 +490,7 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["list", "check", "github-outputs", "run"])
-    parser.add_argument("shard", nargs="?", default="all")
+    parser.add_argument("shard", nargs="?", default="all", choices=["all", *SHARDS])
     parser.add_argument("--measure", metavar="JSON", help="run: record per-shard measurements to this JSON file")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
@@ -511,12 +520,7 @@ def main() -> int:
     if args.command == "github-outputs":
         print(f"shards={json.dumps(list(SHARDS))}")
         return 0
-    if args.shard == "all":
-        return run(list(SHARDS), tests, args.measure)
-    if args.shard not in SHARDS:
-        print(f"unknown shard {args.shard}; known: {', '.join(SHARDS)}", file=sys.stderr)
-        return 2
-    return run([args.shard], tests, args.measure)
+    return run(list(SHARDS) if args.shard == "all" else [args.shard], tests, args.measure)
 
 
 if __name__ == "__main__":
