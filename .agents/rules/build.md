@@ -398,7 +398,11 @@ scan upload. On a pull request it must check that pull request's analysis, not
 number) and `SONAR_EXPECTED_REVISION` as the PR **head** SHA, because SonarQube
 Cloud records a pull-request analysis against its head commit and never against
 the merge ref `github.sha` names. Branch runs keep `github.sha` and the branch
-query. Locally, `SONAR_PULL_REQUEST=<n> make sonar-local` reads one PR.
+query. Locally, `SONAR_PULL_REQUEST=<n> make sonar-local` reads one PR. The PR's revision comes from `api/project_pull_requests/list`;
+when that list omits a PR SonarQube Cloud has analyzed and gated (seen for
+PR 43, still omitted over an hour later), the verifier falls back to the latest
+successful REPORT task's scanner context, which is why the scan step passes
+`sonar.scm.revision` explicitly.
 
 ## Adding Dependencies
 

@@ -123,6 +123,37 @@ pull_request_analysis_revision() {
 	' "$PULL_REQUESTS_JSON"
 }
 
+# The revision of the pull request's latest processed analysis, read from its
+# compute-engine task when the pull request list does not report it.
+#
+# `api/project_pull_requests/list` can leave out a pull request whose
+# analysis SonarQube Cloud processed and gated (observed for PR 43 for over
+# an hour, while its task, measures, gate, and issues were all served). The
+# scan passes `sonar.scm.revision` explicitly, so the latest successful REPORT
+# task's scanner context names the commit it analyzed.
+pull_request_task_revision() {
+	local task_id
+	task_id="$(
+		sonar_curl \
+			--get "${SONAR_HOST_URL%/}/api/ce/activity" \
+			--data-urlencode "component=${SONAR_PROJECT_KEY}" \
+			--data-urlencode "pullRequest=${SONAR_PULL_REQUEST}" \
+			--data-urlencode "type=REPORT" \
+			--data-urlencode "status=SUCCESS" \
+			--data-urlencode "ps=1" | jq -r '.tasks[0].id // ""'
+	)" || return 0
+	if [[ -z "$task_id" ]]; then
+		return 0
+	fi
+	sonar_curl \
+		--get "${SONAR_HOST_URL%/}/api/ce/task" \
+		--data-urlencode "id=${task_id}" \
+		--data-urlencode "additionalFields=scannerContext" |
+		jq -r '.task.scannerContext // ""' |
+		sed -n 's/^[[:space:]]*-[[:space:]]*sonar\.scm\.revision=\([0-9a-f]*\)[[:space:]]*$/\1/p' |
+		head -n 1 || true
+}
+
 # The analysis selector shared by the dashboard URL and the quality gate and
 # issue queries: the pull request when one is set, otherwise the branch (empty
 # means main, which needs no selector).
@@ -197,6 +228,9 @@ wait_for_expected_revision() {
 		if [[ -n "$SONAR_PULL_REQUEST" ]]; then
 			fetch_pull_requests
 			revision="$(pull_request_analysis_revision)"
+			if [[ -z "$revision" ]]; then
+				revision="$(pull_request_task_revision)"
+			fi
 		else
 			fetch_project_analyses
 			fetch_branches

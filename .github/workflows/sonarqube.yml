@@ -88,9 +88,13 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
+          # sonar.scm.revision is set explicitly so the verifier can read the
+          # analyzed commit from the compute-engine task's scanner context when
+          # the pull request list omits the pull request (scripts/sonar-local.sh).
           args: >
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=300
+            -Dsonar.scm.revision=${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Verify SonarQube Cloud results
         if: env.SONAR_TOKEN != ''
