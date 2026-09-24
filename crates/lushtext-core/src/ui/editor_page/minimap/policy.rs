@@ -384,23 +384,6 @@ pub(super) fn document_height_from_line_span(line_y: i32, line_height: i32) -> O
     (height > 0).then_some(height)
 }
 
-#[expect(
-    clippy::float_arithmetic,
-    reason = "scales a fractional GTK coordinate to integer milli-units for diagnostics"
-)]
-pub(super) fn gtk_f64_to_milli(value: f64) -> i64 {
-    if !value.is_finite() {
-        return 0;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "GTK adjustment values are bounded logical coordinates serialized as coarse diagnostics"
-    )]
-    {
-        (value * 1000.0).round() as i64
-    }
-}
-
 /// Public-geometry inputs used to mirror `GtkSourceMap`'s native slider formula.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct NativeSliderEstimateInput {
@@ -1467,15 +1450,6 @@ mod tests {
         assert_eq!(document_height_from_line_span(12, -8), Some(12));
         assert_eq!(document_height_from_line_span(0, 0), None);
         assert_eq!(document_height_from_line_span(-1, 1), None);
-    }
-
-    #[test]
-    fn test_gtk_f64_to_milli_serializes_finite_values_and_suppresses_nonfinite() {
-        assert_eq!(gtk_f64_to_milli(10.49), 10_490);
-        assert_eq!(gtk_f64_to_milli(12.25), 12_250);
-        assert_eq!(gtk_f64_to_milli(-1.25), -1_250);
-        assert_eq!(gtk_f64_to_milli(f64::NAN), 0);
-        assert_eq!(gtk_f64_to_milli(f64::INFINITY), 0);
     }
 
     #[test]

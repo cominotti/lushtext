@@ -42,9 +42,9 @@ use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 mod kani_proofs;
 
 /// Tiny non-zero floor used before the first real workspace-width sync.
-pub(in crate::ui::window) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: f64 = 1.0;
+pub(in crate::ui::window) const WORKSPACE_SIDEBAR_MIN_WIDTH_SP: i32 = 1;
 /// Properties sidebar minimum width in scale-independent pixels.
-pub(in crate::ui::window) const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: f64 = 280.0;
+pub(in crate::ui::window) const PROPERTIES_SIDEBAR_MIN_WIDTH_SP: i32 = 280;
 /// Minimum normal-mode height that preserves persistent chrome and an editor.
 pub const NORMAL_MODE_MIN_HEIGHT_SP: i32 = 360;
 /// Collapse the left workspace pane on narrower windows.
@@ -52,12 +52,13 @@ pub(in crate::ui::window) const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
 /// GNOME Text Editor switches the header Open control to an icon at 400sp.
 pub(in crate::ui::window) const OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP: i32 = 400;
 
-/// Target total-window width for the visible right properties pane.
-const FIXED_PROPERTIES_SIDEBAR_FRACTION: f64 = 0.25;
+/// Target share of the total window width for the visible right properties
+/// pane, as a whole percentage.
+const FIXED_PROPERTIES_SIDEBAR_PERCENT: i32 = 25;
 /// Minimum center width that keeps restored-document inline alerts stable.
-const MIN_EDITOR_CONTENT_WIDTH_SP: f64 = 620.0;
+const MIN_EDITOR_CONTENT_WIDTH_SP: i32 = 620;
 /// Width budget for split separators, padding, and rounding noise.
-const DUAL_PANE_LAYOUT_OVERHEAD_SP: f64 = 32.0;
+const DUAL_PANE_LAYOUT_OVERHEAD_SP: i32 = 32;
 /// Wide document-properties presentation in the multi-layout view.
 const PROPERTIES_LAYOUT_PANE: &str = "pane";
 /// Compact document-properties presentation in the multi-layout view.
@@ -139,70 +140,95 @@ pub(in crate::ui::window) fn workspace_breakpoint_condition() -> String {
     properties_breakpoint_condition(WORKSPACE_BREAKPOINT_MAX_WIDTH_SP)
 }
 
+/// A secondary pane's width and the width it is a share of, both in whole sp.
+///
+/// The policy decides widths; the split views take a fraction, and the GTK
+/// adapter forms it once (`execution::split_fraction`), so no fraction is
+/// computed here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui::window) struct PaneShare {
+    /// The pane's width.
+    pub(in crate::ui::window) width_sp: i32,
+    /// The width the pane is a share of: the window, or the inner split.
+    pub(in crate::ui::window) of_sp: i32,
+}
+
 /// Return the preset-clamped workspace target width for this window.
 pub(in crate::ui::window) fn effective_workspace_sidebar_width_sp(
     input: AdaptiveShellInputs,
-) -> f64 {
+) -> i32 {
     input.workspace_preset.clamped_width_sp(input.window_width)
 }
 
-/// Return the preset-clamped workspace fraction for this window.
-pub(in crate::ui::window) fn effective_workspace_sidebar_fraction(
-    input: AdaptiveShellInputs,
-) -> f64 {
-    input
-        .workspace_preset
-        .effective_fraction(input.window_width)
+/// The workspace pane's share of the window for one preset.
+pub(in crate::ui::window) fn workspace_preset_share(
+    preset: WorkspaceSidebarWidthPreset,
+    window_width: i32,
+) -> PaneShare {
+    PaneShare {
+        width_sp: preset.clamped_width_sp(window_width),
+        of_sp: window_width.max(1),
+    }
 }
 
-/// Return the right-properties fraction relative to its current inner split.
-#[expect(
-    clippy::float_arithmetic,
-    reason = "split-view fractions are inherently fractional; every i32 width is in the proved domain"
-)]
-pub(in crate::ui::window) fn effective_properties_fraction(input: AdaptiveShellInputs) -> f64 {
-    let total_fraction = desired_properties_fraction(input.window_width);
+/// The workspace pane's share of the window for this intent.
+pub(in crate::ui::window) fn workspace_sidebar_share(input: AdaptiveShellInputs) -> PaneShare {
+    workspace_preset_share(input.workspace_preset, input.window_width)
+}
+
+/// The properties pane's share, measured against its current inner split: the
+/// window, or what the workspace pane leaves of it.
+///
+/// The width is always the window-relative target (a quarter of the window, at
+/// least the properties minimum); when the workspace consumes width only the
+/// denominator changes, to the inner split. The `f64` form raised the rebased
+/// ratio to `minimum / inner`, a floor that could never bind: the target is at
+/// least `min(minimum, window)`, which is at least `min(minimum, inner)`.
+pub(in crate::ui::window) fn effective_properties_share(input: AdaptiveShellInputs) -> PaneShare {
+    let desired = desired_properties_width_sp(input.window_width);
     if derive_adaptive_shell_layout(input).workspace_consumes_width {
-        let total_width = f64::from(input.window_width.max(1));
-        let workspace_width = effective_workspace_sidebar_width_sp(input);
-        let remaining_fraction = (1.0 - workspace_width / total_width).max(f64::EPSILON);
-        let inner_width = properties_inner_split_width(total_width, workspace_width);
-        let lower = (PROPERTIES_SIDEBAR_MIN_WIDTH_SP / inner_width).min(1.0);
-        (total_fraction / remaining_fraction).max(lower).min(1.0)
+        let inner_width = properties_inner_split_width(
+            input.window_width.max(1),
+            effective_workspace_sidebar_width_sp(input),
+        );
+        PaneShare {
+            width_sp: desired,
+            of_sp: inner_width,
+        }
     } else {
-        total_fraction
+        desired_properties_share(input.window_width)
     }
 }
 
 /// The inner split width the properties pane is measured against.
 ///
-/// The `max(1.0)` floor is load-bearing rather than defensive: the caller divides
-/// [`PROPERTIES_SIDEBAR_MIN_WIDTH_SP`] by this width, so a workspace pane that
-/// consumes the whole window must not produce a zero or negative divisor.
+/// The `max(1)` floor is load-bearing rather than defensive: the pane's share is
+/// this width's denominator, so a workspace pane that consumes the whole window
+/// must not produce a zero or negative one.
 ///
 /// This started as an extraction made only to narrow a mutation exclusion, and the
-/// extraction is what made the exclusion unnecessary. Every mutation of this
-/// arithmetic is invisible *through the caller* — the floor it feeds is provably
-/// non-binding for the current constants, and a mutated width only makes that floor
-/// less binding — so at the caller's boundary these really are equivalences. But a
-/// named pure function has a contract of its own, and that contract is directly
-/// testable, which kills the whole family at once. Retiring the exclusion beats
-/// documenting it: a justified exclusion has to be re-justified every time either
-/// constant moves.
-#[expect(
-    clippy::float_arithmetic,
-    reason = "derives from the fractional preset width"
-)]
-fn properties_inner_split_width(total_width: f64, workspace_width: f64) -> f64 {
-    (total_width - workspace_width).max(1.0)
+/// extraction is what made the exclusion unnecessary: a named pure function has a
+/// contract of its own, and that contract is directly testable, which kills the
+/// whole mutant family at once.
+fn properties_inner_split_width(total_width: i32, workspace_width: i32) -> i32 {
+    total_width.saturating_sub(workspace_width).max(1)
 }
 
-pub(in crate::ui::window) fn desired_properties_fraction(window_width: i32) -> f64 {
-    fixed_fraction(
-        window_width,
-        PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
-        FIXED_PROPERTIES_SIDEBAR_FRACTION,
-    )
+/// The properties pane's window-relative target width: a quarter of the window
+/// (floored), at least the properties minimum, and never wider than the window.
+pub(in crate::ui::window) fn desired_properties_width_sp(window_width: i32) -> i32 {
+    let width = window_width.max(1);
+    let quarter = i64::from(width) * i64::from(FIXED_PROPERTIES_SIDEBAR_PERCENT) / 100;
+    let quarter = i32::try_from(quarter).unwrap_or(width);
+    quarter.max(PROPERTIES_SIDEBAR_MIN_WIDTH_SP.min(width))
+}
+
+/// The properties pane's window-relative share.
+pub(in crate::ui::window) fn desired_properties_share(window_width: i32) -> PaneShare {
+    PaneShare {
+        width_sp: desired_properties_width_sp(window_width),
+        of_sp: window_width.max(1),
+    }
 }
 
 /// Derive which secondary surfaces render, and how, for one stable intent.
@@ -220,7 +246,7 @@ pub(in crate::ui::window) fn derive_adaptive_shell_layout(
     let workspace_width_sp = if workspace_consumes_width {
         effective_workspace_sidebar_width_sp(input)
     } else {
-        0.0
+        0
     };
     let properties_breakpoint_max_width = properties_breakpoint_max_width_sp(workspace_width_sp);
     let properties_presentation = if input.window_width <= properties_breakpoint_max_width {
@@ -298,49 +324,27 @@ fn secondary_surface_requested_for_intent(
 
 /// Compute the total width below which properties must stop consuming width.
 ///
-/// Kani proves it never decreases as the workspace width grows over the
-/// reachable range [0, 440] sp, and that it is at least the editor-content
-/// minimum plus the layout overhead, the workspace width, and the properties
-/// minimum.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "Stored window geometry is clamped to GTK window dimensions before converting to i32"
-)]
-#[expect(
-    clippy::float_arithmetic,
-    reason = "derives from the fractional preset width; the proved domain is [0, 440] sp"
-)]
-fn properties_breakpoint_max_width_sp(workspace_width_sp: f64) -> i32 {
+/// Two guards, in whole sp: the window width at which the properties pane's
+/// quarter leaves the editor-content minimum plus the layout overhead plus the
+/// workspace (rounded up), and that same sum plus the properties minimum. Kani
+/// proves it never decreases as the workspace width grows over the reachable
+/// range [0, 440] sp, and that it is at least the second guard.
+fn properties_breakpoint_max_width_sp(workspace_width_sp: i32) -> i32 {
     let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
     let fraction_guard = dual_sidebar_window_width_for_center(center_target, workspace_width_sp);
-    let min_width_guard = center_target + workspace_width_sp + PROPERTIES_SIDEBAR_MIN_WIDTH_SP;
-    fraction_guard.max(min_width_guard).ceil() as i32
+    let min_width_guard = center_target
+        .saturating_add(workspace_width_sp)
+        .saturating_add(PROPERTIES_SIDEBAR_MIN_WIDTH_SP);
+    fraction_guard.max(min_width_guard)
 }
 
-/// Convert a center-width target and workspace width into total window width.
-#[expect(
-    clippy::float_arithmetic,
-    reason = "divides by the fractional properties share"
-)]
-fn dual_sidebar_window_width_for_center(center_width_sp: f64, workspace_width_sp: f64) -> f64 {
-    (center_width_sp + workspace_width_sp)
-        / (1.0 - FIXED_PROPERTIES_SIDEBAR_FRACTION).max(f64::EPSILON)
-}
-
-/// A target fraction of the window, raised so it never falls below
-/// `min_width_sp`, and capped at the whole window.
-///
-/// Kani proves the production use finite and in (0, 1] for every `i32` width,
-/// as it does [`effective_properties_fraction`] and
-/// [`effective_workspace_sidebar_fraction`].
-#[expect(
-    clippy::float_arithmetic,
-    reason = "a split-view fraction is inherently fractional; every i32 width is in the proved domain"
-)]
-fn fixed_fraction(window_width: i32, min_width_sp: f64, target_fraction: f64) -> f64 {
-    let width = f64::from(window_width.max(1));
-    let lower = (min_width_sp / width).min(1.0);
-    target_fraction.max(lower).min(1.0)
+/// The smallest window width whose properties quarter leaves `center + workspace`
+/// for the rest: `ceil((center + workspace) * 100 / (100 - 25))`.
+fn dual_sidebar_window_width_for_center(center_width_sp: i32, workspace_width_sp: i32) -> i32 {
+    let rest_percent = i64::from(100 - FIXED_PROPERTIES_SIDEBAR_PERCENT);
+    let needed = (i64::from(center_width_sp) + i64::from(workspace_width_sp)) * 100;
+    let width = (needed + rest_percent - 1).div_euclid(rest_percent);
+    i32::try_from(width).unwrap_or(i32::MAX)
 }
 
 #[cfg(test)]
@@ -423,64 +427,53 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_fraction_follows_the_preset_and_stays_in_range() {
-        // Not 0.0, not 1.0, and not negative: a zero fraction collapses the pane
-        // and a unit fraction hides the editor.
+    fn the_workspace_share_follows_the_preset_and_stays_positive() {
+        // Not zero and not negative: a zero share collapses the pane.
         for width in [400, 860, 1280, 1920, 3840] {
             let mut probe = input(width);
-            for preset in [
-                WorkspaceSidebarWidthPreset::Small,
-                WorkspaceSidebarWidthPreset::Comfy,
-                WorkspaceSidebarWidthPreset::Large,
-            ] {
+            for preset in WorkspaceSidebarWidthPreset::ALL {
                 probe.workspace_preset = preset;
-                let fraction = effective_workspace_sidebar_fraction(probe);
-                assert!(
-                    fraction > 0.0 && fraction <= 1.0,
-                    "width {width} preset {preset:?} produced {fraction}"
-                );
-                assert_eq!(fraction, preset.effective_fraction(width));
+                let share = workspace_sidebar_share(probe);
+                assert_eq!(share.width_sp, preset.clamped_width_sp(width));
+                assert_eq!(share.of_sp, width);
+                assert!(share.width_sp >= 1 && share.width_sp <= share.of_sp);
             }
         }
     }
 
     #[test]
-    fn a_wider_preset_never_yields_a_narrower_workspace_fraction() {
+    fn a_wider_preset_never_yields_a_narrower_workspace_share() {
         let mut small = input(1920);
         small.workspace_preset = WorkspaceSidebarWidthPreset::Small;
         let mut large = input(1920);
         large.workspace_preset = WorkspaceSidebarWidthPreset::Large;
-        assert!(
-            effective_workspace_sidebar_fraction(large)
-                >= effective_workspace_sidebar_fraction(small)
-        );
+        assert!(workspace_sidebar_share(large).width_sp >= workspace_sidebar_share(small).width_sp);
     }
 
     #[test]
-    fn the_properties_fraction_is_taken_of_the_inner_split_not_the_window() {
-        // When the workspace consumes width, the properties fraction must be
-        // re-based onto the remaining inner split, so it is *larger* than the
-        // window-relative target. Subtracting the wrong way round would make the
+    fn the_properties_share_is_taken_of_the_inner_split_not_the_window() {
+        // When the workspace consumes width, the properties share is measured
+        // against the remaining inner split, so its denominator is the window
+        // minus the workspace. Subtracting the wrong way round would make the
         // properties pane too narrow to meet its own minimum.
         let wide = input(2560);
         let layout = derive_adaptive_shell_layout(wide);
         assert!(layout.workspace_consumes_width);
 
-        let rebased = effective_properties_fraction(wide);
-        let window_relative = desired_properties_fraction(wide.window_width);
-        assert!(
-            rebased > window_relative,
-            "rebased {rebased} must exceed window-relative {window_relative}"
+        let rebased = effective_properties_share(wide);
+        assert_eq!(rebased.width_sp, desired_properties_width_sp(2560));
+        assert_eq!(
+            rebased.of_sp,
+            2560 - effective_workspace_sidebar_width_sp(wide)
         );
-        assert!(rebased <= 1.0);
 
         // With no workspace consuming width, the two agree exactly.
         let mut no_workspace = input(2560);
         no_workspace.workspace_requested_visible = false;
         assert!(!derive_adaptive_shell_layout(no_workspace).workspace_consumes_width);
         assert_eq!(
-            effective_properties_fraction(no_workspace),
-            desired_properties_fraction(no_workspace.window_width)
+            effective_properties_share(no_workspace),
+            desired_properties_share(2560)
         );
     }
 
@@ -606,96 +599,66 @@ mod tests {
         // the workspace exceeds roughly 188sp, so the *sum* in the min-width guard
         // is only observable below that — which is why the monotonicity check
         // above cannot see an arithmetic error there.
-        assert_eq!(properties_breakpoint_max_width_sp(100.0), 1032);
-        assert_eq!(properties_breakpoint_max_width_sp(0.0), 932);
+        assert_eq!(properties_breakpoint_max_width_sp(100), 1032);
+        assert_eq!(properties_breakpoint_max_width_sp(0), 932);
         // 932 == center_target + properties minimum, exactly.
         assert_eq!(
-            f64::from(properties_breakpoint_max_width_sp(0.0)),
+            properties_breakpoint_max_width_sp(0),
             MIN_EDITOR_CONTENT_WIDTH_SP
                 + DUAL_PANE_LAYOUT_OVERHEAD_SP
                 + PROPERTIES_SIDEBAR_MIN_WIDTH_SP
         );
         // And above the crossover the fraction guard takes over.
-        assert_eq!(properties_breakpoint_max_width_sp(400.0), 1403);
+        assert_eq!(properties_breakpoint_max_width_sp(400), 1403);
     }
 
     #[test]
-    fn the_properties_fraction_floor_is_non_binding_by_construction() {
-        // `effective_properties_fraction` clamps its rebased ratio up to a floor
-        // of `properties-minimum / inner-width`. That floor is **provably
-        // non-binding** for the current constants, and this test pins the reason.
-        //
-        // Below 1120sp the target fraction *is* `minimum / total`, so the rebased
-        // ratio equals the floor exactly; at or above 1120sp the target is the
-        // fixed 0.25 and the ratio exceeds the floor because
-        // `0.25 * total >= minimum`. The crossover is `minimum / 0.25 == 1120`,
-        // so changing either constant can make the floor bind again.
-        //
-        // This proof no longer carries a mutation exclusion — see
-        // `the_inner_split_width_contract_holds_independently_of_the_floor`, which
-        // pins the width function directly and made the exclusion unnecessary. The
-        // proof is kept because it is what makes the *caller's* clamp readable.
+    fn the_properties_width_is_the_quarter_above_the_crossover_and_the_minimum_below() {
+        // Below 1120sp the target is the properties minimum; at or above it the
+        // floored quarter takes over. The crossover is `minimum * 100 / 25`, so
+        // changing either constant moves it.
         assert_eq!(
-            PROPERTIES_SIDEBAR_MIN_WIDTH_SP / FIXED_PROPERTIES_SIDEBAR_FRACTION,
-            1120.0,
-            "the floor's non-binding proof depends on this crossover"
+            PROPERTIES_SIDEBAR_MIN_WIDTH_SP * 100 / FIXED_PROPERTIES_SIDEBAR_PERCENT,
+            1120
         );
-
-        // A **sampled** sweep, not an exhaustive one: 85 widths x 3 presets = 255
-        // reachable pairs. The exhaustive claim would be false, and the crossover
-        // assertion above is what actually generalises the result — the sampling
-        // only demonstrates it.
+        assert_eq!(desired_properties_width_sp(1119), 280);
+        assert_eq!(desired_properties_width_sp(1120), 280);
+        assert_eq!(desired_properties_width_sp(1124), 281);
+        assert_eq!(desired_properties_width_sp(1800), 450);
+        // Never wider than a narrow window.
+        assert_eq!(desired_properties_width_sp(200), 200);
+        assert_eq!(desired_properties_width_sp(0), 1);
+        // The rebased share keeps the width and only changes its denominator.
         for width in (861..4000).step_by(37) {
-            for preset in [
-                WorkspaceSidebarWidthPreset::Small,
-                WorkspaceSidebarWidthPreset::Comfy,
-                WorkspaceSidebarWidthPreset::Large,
-            ] {
+            for preset in WorkspaceSidebarWidthPreset::ALL {
                 let mut probe = input(width);
                 probe.workspace_preset = preset;
                 if !derive_adaptive_shell_layout(probe).workspace_consumes_width {
                     continue;
                 }
-                let total = f64::from(width);
-                let workspace = effective_workspace_sidebar_width_sp(probe);
-                let remaining = (1.0 - workspace / total).max(f64::EPSILON);
-                let ratio = desired_properties_fraction(width) / remaining;
-                let floor =
-                    (PROPERTIES_SIDEBAR_MIN_WIDTH_SP / (total - workspace).max(1.0)).min(1.0);
+                let share = effective_properties_share(probe);
+                assert_eq!(share.width_sp, desired_properties_width_sp(width));
                 assert!(
-                    ratio + 1e-9 >= floor,
-                    "floor bound at width {width} preset {preset:?}: ratio {ratio} < floor {floor}"
-                );
-                // And the published fraction is the ratio, clamped only at 1.0.
-                assert!(
-                    (effective_properties_fraction(probe) - ratio.min(1.0)).abs() < 1e-9,
-                    "width {width} preset {preset:?} did not publish the rebased ratio"
+                    share.width_sp <= share.of_sp,
+                    "width {width} preset {preset:?}"
                 );
             }
         }
     }
 
     #[test]
-    fn the_inner_split_width_contract_holds_independently_of_the_floor() {
-        // Every mutation of `properties_inner_split_width` is invisible through
-        // `effective_properties_fraction`, because the floor it feeds is
-        // non-binding (see above) and a mutated width only makes that floor *less*
-        // binding. That made these mutants look like a family of equivalences
-        // needing a documented exclusion. They are not: the function is a named
-        // pure function with a contract of its own, and asserting that contract
-        // directly kills the whole family — subtraction swapped for addition or
-        // division, and whole-body replacement alike.
-        assert_eq!(properties_inner_split_width(1200.0, 360.0), 840.0);
+    fn the_inner_split_width_contract_holds() {
+        // A named pure function with a contract of its own: asserting it directly
+        // kills its mutant family — subtraction swapped for addition or division,
+        // and whole-body replacement alike.
+        assert_eq!(properties_inner_split_width(1200, 360), 840);
 
-        // The floor is load-bearing, not defensive: the caller divides
-        // `PROPERTIES_SIDEBAR_MIN_WIDTH_SP` by this value, so a workspace pane
-        // that consumes the entire window must still yield a positive divisor.
-        assert_eq!(properties_inner_split_width(360.0, 360.0), 1.0);
-        assert_eq!(properties_inner_split_width(100.0, 500.0), 1.0);
-        assert!(
-            PROPERTIES_SIDEBAR_MIN_WIDTH_SP / properties_inner_split_width(360.0, 360.0) > 0.0,
-            "the floor exists so this division stays finite and positive"
-        );
+        // The floor is load-bearing, not defensive: the width is the properties
+        // share's denominator, so a workspace pane that consumes the entire
+        // window must still yield a positive one.
+        assert_eq!(properties_inner_split_width(360, 360), 1);
+        assert_eq!(properties_inner_split_width(100, 500), 1);
+        assert_eq!(properties_inner_split_width(i32::MIN, i32::MAX), 1);
     }
 
     #[test]
@@ -703,16 +666,16 @@ mod tests {
         // The guard is `center + workspace + properties-minimum`, so a wider
         // workspace pushes the breakpoint up. Subtracting instead of adding the
         // properties minimum would let the pane appear below its own floor.
-        let narrow = properties_breakpoint_max_width_sp(0.0);
-        let wide = properties_breakpoint_max_width_sp(400.0);
+        let narrow = properties_breakpoint_max_width_sp(0);
+        let wide = properties_breakpoint_max_width_sp(400);
         assert!(wide > narrow, "{wide} must exceed {narrow}");
         assert!(
-            f64::from(narrow) >= MIN_EDITOR_CONTENT_WIDTH_SP + PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
+            narrow >= MIN_EDITOR_CONTENT_WIDTH_SP + PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
             "the breakpoint must clear the editor floor plus the properties minimum"
         );
         // Monotonic across the whole preset range.
         let mut previous = 0;
-        for workspace in [0.0, 100.0, 250.0, 400.0, 800.0] {
+        for workspace in [0, 100, 250, 400, 800] {
             let value = properties_breakpoint_max_width_sp(workspace);
             assert!(value >= previous, "not monotonic at {workspace}");
             previous = value;
@@ -725,7 +688,7 @@ mod tests {
             properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Comfy.max_width_sp()),
             1350
         );
-        assert_eq!(properties_breakpoint_max_width_sp(0.0), 932);
+        assert_eq!(properties_breakpoint_max_width_sp(0), 932);
         assert_eq!(
             properties_breakpoint_max_width_sp(WorkspaceSidebarWidthPreset::Small.max_width_sp()),
             1243
@@ -828,17 +791,17 @@ mod tests {
 
     #[test]
     fn dual_sidebar_width_helper_preserves_requested_center_space() {
+        // The smallest window whose remaining three quarters hold the center
+        // target plus the widest workspace: one sp less would not.
         let center_target = MIN_EDITOR_CONTENT_WIDTH_SP + DUAL_PANE_LAYOUT_OVERHEAD_SP;
-        let total_width = dual_sidebar_window_width_for_center(
-            center_target,
-            WorkspaceSidebarWidthPreset::Large.max_width_sp(),
-        );
-        assert!(
-            (total_width * 0.75
-                - WorkspaceSidebarWidthPreset::Large.max_width_sp()
-                - center_target)
-                .abs()
-                < 0.001
+        let workspace = WorkspaceSidebarWidthPreset::Large.max_width_sp();
+        let total_width = dual_sidebar_window_width_for_center(center_target, workspace);
+        let rest = |width: i32| i64::from(width) * 75 / 100;
+        assert!(rest(total_width) >= i64::from(center_target + workspace));
+        assert!(i64::from(total_width - 1) * 75 < i64::from(center_target + workspace) * 100);
+        assert_eq!(
+            dual_sidebar_window_width_for_center(center_target, 100),
+            1003
         );
     }
 
@@ -846,29 +809,32 @@ mod tests {
     fn workspace_sidebar_target_width_clamps_for_representative_window_sizes() {
         assert_eq!(
             WorkspaceSidebarWidthPreset::Small.clamped_width_sp(900),
-            220.0
+            220
         );
         assert_eq!(
             WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(1200),
-            360.0
+            360
         );
         assert_eq!(
             WorkspaceSidebarWidthPreset::Large.clamped_width_sp(1400),
-            440.0
+            440
         );
         assert_eq!(
             WorkspaceSidebarWidthPreset::Comfy.clamped_width_sp(2000),
-            360.0
+            360
         );
     }
 
     #[test]
-    fn properties_fraction_preserves_total_window_quarter_with_workspace_width() {
+    fn properties_share_preserves_total_window_quarter_with_workspace_width() {
+        // The pane stays a quarter of the whole window even though its share is
+        // taken of the inner split.
         let input = input(1800);
-        let workspace_width = effective_workspace_sidebar_width_sp(input);
-        let inner_fraction = effective_properties_fraction(input);
-        let total_fraction = inner_fraction * (1.0 - workspace_width / 1800.0);
-
-        assert!((total_fraction - FIXED_PROPERTIES_SIDEBAR_FRACTION).abs() < 0.001);
+        let share = effective_properties_share(input);
+        assert_eq!(share.width_sp, 1800 / 4);
+        assert_eq!(
+            share.of_sp,
+            1800 - effective_workspace_sidebar_width_sp(input)
+        );
     }
 }

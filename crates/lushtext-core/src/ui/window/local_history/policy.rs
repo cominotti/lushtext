@@ -28,10 +28,12 @@ use crate::services::local_history_service::LocalHistoryAvailability;
 /// Leave a visible gutter around the local-history viewer so it still reads as
 /// a parent-owned secondary surface instead of another primary window.
 pub(super) const VIEWER_PARENT_MARGIN_SP: i32 = 48;
-/// Wide local-history browsing should use most of the parent width.
-pub(super) const VIEWER_WIDTH_FRACTION: f64 = 0.9;
-/// Wide local-history browsing should use most of the parent height.
-pub(super) const VIEWER_HEIGHT_FRACTION: f64 = 0.88;
+/// Wide local-history browsing should use most of the parent width, in
+/// thousandths of it.
+pub(super) const VIEWER_WIDTH_PERMILLE: i32 = 900;
+/// Wide local-history browsing should use most of the parent height, in
+/// thousandths of it.
+pub(super) const VIEWER_HEIGHT_PERMILLE: i32 = 880;
 /// Wide local-history browsing should stay comfortably readable on desktops.
 pub(super) const VIEWER_MIN_WIDTH_SP: i32 = 1080;
 /// Wide local-history browsing should stop growing once it already feels like a viewer.
@@ -60,24 +62,23 @@ pub(super) const PREVIEW_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Clamp one dialog axis so the viewer uses most of the parent window without
 /// outgrowing it on either small or large desktops.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "The proportional viewer size is clamped back into GTK i32 geometry bounds"
-)]
-#[expect(
-    clippy::float_arithmetic,
-    reason = "the viewer is a fractional share of the parent axis; whole pixels in and out, rounded once"
-)]
+///
+/// Whole pixels throughout: the share is `target_permille` thousandths of the
+/// parent axis, rounded half up. That equals the `f64` form it replaced,
+/// `round(parent * fraction)`, for the shipped 900 and 880: 880 thousandths
+/// never lands on a half, and 900 thousandths lands on one only where the
+/// `f64` product rounded up too.
 #[must_use]
 pub(super) fn parent_relative_dialog_axis_size(
     parent_axis: i32,
-    target_fraction: f64,
+    target_permille: i32,
     min_axis: i32,
     max_axis: i32,
 ) -> i32 {
     let parent_axis = parent_axis.max(1);
-    let bounded_parent = (parent_axis - VIEWER_PARENT_MARGIN_SP).max(1);
-    let proportional = (f64::from(parent_axis) * target_fraction).round() as i32;
+    let bounded_parent = parent_axis.saturating_sub(VIEWER_PARENT_MARGIN_SP).max(1);
+    let proportional = (i64::from(parent_axis) * i64::from(target_permille) + 500).div_euclid(1000);
+    let proportional = i32::try_from(proportional).unwrap_or(i32::MAX);
     proportional.clamp(min_axis, max_axis).min(bounded_parent)
 }
 
@@ -107,13 +108,13 @@ pub(super) fn viewer_dialog_size(parent_width: i32, parent_height: i32) -> (i32,
     (
         parent_relative_dialog_axis_size(
             parent_width,
-            VIEWER_WIDTH_FRACTION,
+            VIEWER_WIDTH_PERMILLE,
             VIEWER_MIN_WIDTH_SP,
             VIEWER_MAX_WIDTH_SP,
         ),
         parent_relative_dialog_axis_size(
             parent_height,
-            VIEWER_HEIGHT_FRACTION,
+            VIEWER_HEIGHT_PERMILLE,
             VIEWER_MIN_HEIGHT_SP,
             VIEWER_MAX_HEIGHT_SP,
         ),
@@ -390,11 +391,10 @@ mod tests {
         assert_eq!(height, 880);
 
         // And the raw axis helper, so a fraction change cannot hide behind a clamp.
-        assert_eq!(parent_relative_dialog_axis_size(1000, 0.5, 1, 100_000), 500);
-        assert_eq!(
-            parent_relative_dialog_axis_size(1000, 0.25, 1, 100_000),
-            250
-        );
+        assert_eq!(parent_relative_dialog_axis_size(1000, 500, 1, 100_000), 500);
+        assert_eq!(parent_relative_dialog_axis_size(1000, 250, 1, 100_000), 250);
+        // Half up: 90% of 1005 is 904.5.
+        assert_eq!(parent_relative_dialog_axis_size(1005, 900, 1, 100_000), 905);
     }
 
     #[test]

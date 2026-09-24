@@ -85,7 +85,7 @@ pub struct EditorResidencyUpdate {
 /// cannot approach the wider integer's capacity, so ordinary mutations remain
 /// constant work relative to the open-tab count.
 ///
-/// The map holds the records; the arithmetic lives in [`ResidencyTotals`],
+/// The map holds the records; the arithmetic lives in the private `ResidencyTotals`,
 /// which every upsert and remove drives with the record the map displaced.
 /// Kani proves that arithmetic over every sequence of three upserts or
 /// removes on two identities with every `u64` estimate: the saturating totals

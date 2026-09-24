@@ -9,6 +9,9 @@
 //! because the `workspace-sidebar-width-fraction` key has no schema range and
 //! GVariant text syntax parses `nan` and `inf`.
 //!
+//! The policy is integer-only apart from those stored fractions, which it only
+//! compares: the split-view fraction is formed in the GTK adapter.
+//!
 //! Compiled only under `cfg(kani)` (`make kani`); ordinary builds and tests
 //! never see this module. The harnesses check the functions that ship.
 
@@ -21,24 +24,28 @@ fn any_preset() -> WorkspaceSidebarWidthPreset {
     WorkspaceSidebarWidthPreset::from_index(index).expect("indices 0..3 name presets")
 }
 
+/// A preset's position in the Small < Comfy < Large order.
+fn rank(preset: WorkspaceSidebarWidthPreset) -> u32 {
+    preset.index()
+}
+
 /// `clamped_width_sp` is the spec formula
-/// `clamp(max(window_width, 1) * hint_fraction, min_width_sp, max_width_sp)`,
-/// and it lies within the preset's bounds, for every `i32` width.
+/// `clamp(max(window_width, 1) * percent / 100, min_width_sp, max_width_sp)`
+/// with the product floored, and it lies within the preset's bounds, for every
+/// `i32` width.
 #[kani::proof]
 fn clamp_matches_the_spec_formula_and_bounds() {
     let preset = any_preset();
     let window_width: i32 = kani::any();
     let width = preset.clamped_width_sp(window_width);
-    let raw = f64::from(window_width.max(1)) * preset.fraction();
-    let expected = if raw < preset.min_width_sp() {
-        preset.min_width_sp()
-    } else if raw > preset.max_width_sp() {
-        preset.max_width_sp()
-    } else {
-        raw
-    };
-    assert!(width == expected);
+    let hinted = i64::from(window_width.max(1)) * i64::from(preset.percent()) / 100;
+    let expected = hinted.clamp(
+        i64::from(preset.min_width_sp()),
+        i64::from(preset.max_width_sp()),
+    );
+    assert!(i64::from(width) == expected);
     assert!(width >= preset.min_width_sp() && width <= preset.max_width_sp());
+    assert!(width >= 1);
 }
 
 /// `clamped_width_sp` never decreases as the window width grows.
@@ -51,13 +58,11 @@ fn clamp_is_monotone_in_window_width() {
     assert!(preset.clamped_width_sp(narrow) <= preset.clamped_width_sp(wide));
 }
 
-/// `effective_fraction` is finite and in (0, 1] for every `i32` width.
+/// The integer percentage is the stored hint fraction, exactly.
 #[kani::proof]
-fn effective_fraction_is_in_unit_interval() {
+fn percent_is_the_hint_fraction() {
     let preset = any_preset();
-    let fraction = preset.effective_fraction(kani::any());
-    assert!(fraction.is_finite());
-    assert!(fraction > 0.0 && fraction <= 1.0);
+    assert!(f64::from(preset.percent()) == preset.fraction() * 100.0);
 }
 
 /// `from_index(index())` is the identity, and every index from 3 up names no
@@ -78,9 +83,11 @@ fn fraction_round_trips() {
     assert!(WorkspaceSidebarWidthPreset::from_fraction(preset.fraction()) == preset);
 }
 
-/// `from_fraction` resolves a non-finite value to the default preset, and a
-/// finite value to a preset whose hint fraction is within `f64::EPSILON` of the
-/// nearest, following the tie order Comfy, Small, Large.
+/// `from_fraction` resolves a non-finite value to the default preset; for
+/// finite values it never moves down as the stored value grows, it resolves
+/// each midpoint (0.25, 0.35) to `Comfy`, and the preset it picks is at least
+/// as near as any other (up to the rounding of the reference deltas, checked
+/// for `|fraction| <= 2`, which contains every value the key has ever held).
 #[kani::proof]
 fn from_fraction_picks_the_nearest_preset() {
     let fraction: f64 = kani::any();
@@ -89,18 +96,16 @@ fn from_fraction_picks_the_nearest_preset() {
         assert!(resolved == WorkspaceSidebarWidthPreset::DEFAULT);
         return;
     }
-    let delta = |preset: WorkspaceSidebarWidthPreset| (fraction - preset.fraction()).abs();
-    let nearest = delta(WorkspaceSidebarWidthPreset::Small)
-        .min(delta(WorkspaceSidebarWidthPreset::Comfy))
-        .min(delta(WorkspaceSidebarWidthPreset::Large));
-    let ties = |preset| delta(preset) - nearest < f64::EPSILON;
-    assert!(ties(resolved));
-    let expected = if ties(WorkspaceSidebarWidthPreset::Comfy) {
-        WorkspaceSidebarWidthPreset::Comfy
-    } else if ties(WorkspaceSidebarWidthPreset::Small) {
-        WorkspaceSidebarWidthPreset::Small
-    } else {
-        WorkspaceSidebarWidthPreset::Large
-    };
-    assert!(resolved == expected);
+    let larger: f64 = kani::any();
+    kani::assume(larger.is_finite() && fraction <= larger);
+    assert!(rank(resolved) <= rank(WorkspaceSidebarWidthPreset::from_fraction(larger)));
+    if fraction == 0.25 || fraction == 0.35 {
+        assert!(resolved == WorkspaceSidebarWidthPreset::Comfy);
+    }
+    if fraction.abs() <= 2.0 {
+        let delta = |preset: WorkspaceSidebarWidthPreset| (fraction - preset.fraction()).abs();
+        for other in WorkspaceSidebarWidthPreset::ALL {
+            assert!(delta(resolved) <= delta(other) + 1e-15);
+        }
+    }
 }

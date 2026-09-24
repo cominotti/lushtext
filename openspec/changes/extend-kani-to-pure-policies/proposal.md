@@ -47,12 +47,12 @@ recognition.
   - it keeps both requested surfaces in the wide presentation;
   - its sheet or pane choice matches the breakpoint threshold;
   - `properties_breakpoint_max_width_sp` is monotone and bounded;
-  - `fixed_fraction` and `effective_properties_fraction` stay finite and in
-    (0, 1].
+  - every pane share has a positive width and denominator (since D8 the policy
+    returns whole-sp widths and shares, and the split fraction is formed in the
+    adapter).
 - **Width-preset harnesses** (`ui/sidebar/width_preset/kani_proofs.rs`):
   - `clamped_width_sp` stays inside the preset bounds for every `i32` width,
-    equals the spec formula, and is monotone;
-  - `effective_fraction` stays in (0, 1];
+    equals the spec formula, and is monotone (whole sp since D8);
   - the index and fraction round-trips hold, and `from_fraction` picks the
     nearest preset.
 - **Fix `from_fraction` for non-finite input.** The harness is expected to find

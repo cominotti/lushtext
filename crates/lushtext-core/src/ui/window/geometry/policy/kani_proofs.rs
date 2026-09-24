@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Kani harnesses over the adaptive-shell policy: the secondary-surface
-//! layout, the document-properties breakpoint, and the split-view fractions.
+//! layout, the document-properties breakpoint, and the pane shares the
+//! split-view fractions are formed from.
 //!
 //! Domain: every `i32` window width, every workspace preset, every combination
 //! of requested visibility and Focus Mode, and every compact-surface choice.
-//! The breakpoint harness takes every finite workspace width in [0, 440] sp,
+//! The policy is whole-pixel (widths in, widths and shares out; the fraction is
+//! formed once in the GTK adapter). The breakpoint harness takes every
+//! workspace width in [0, 440] sp,
 //! the reachable range: 0 when the workspace does not consume width, and up to
 //! the `Large` preset's maximum otherwise.
 //!
@@ -18,17 +21,16 @@
 //! never see this module. The harnesses check the functions that ship.
 
 use super::{
-    AdaptiveShellInputs, DUAL_PANE_LAYOUT_OVERHEAD_SP, FIXED_PROPERTIES_SIDEBAR_FRACTION,
-    MIN_EDITOR_CONTENT_WIDTH_SP, PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PropertiesPresentation,
-    SecondarySurface, WORKSPACE_BREAKPOINT_MAX_WIDTH_SP, derive_adaptive_shell_layout,
-    desired_properties_fraction, effective_properties_fraction,
-    effective_workspace_sidebar_fraction, effective_workspace_sidebar_width_sp, fixed_fraction,
-    properties_breakpoint_max_width_sp,
+    AdaptiveShellInputs, DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP,
+    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, SecondarySurface,
+    WORKSPACE_BREAKPOINT_MAX_WIDTH_SP, derive_adaptive_shell_layout, desired_properties_share,
+    effective_properties_share, effective_workspace_sidebar_width_sp,
+    properties_breakpoint_max_width_sp, workspace_sidebar_share,
 };
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
 /// The largest workspace width any preset can produce.
-const MAX_WORKSPACE_WIDTH_SP: f64 = 440.0;
+const MAX_WORKSPACE_WIDTH_SP: i32 = 440;
 
 /// Any preset.
 fn any_preset() -> WorkspaceSidebarWidthPreset {
@@ -118,10 +120,10 @@ fn sheet_presentation_matches_the_breakpoint() {
 /// width, and the properties minimum.
 #[kani::proof]
 fn breakpoint_is_monotone_and_bounded() {
-    let narrow: f64 = kani::any();
-    let wide: f64 = kani::any();
-    kani::assume((0.0..=MAX_WORKSPACE_WIDTH_SP).contains(&narrow));
-    kani::assume((0.0..=MAX_WORKSPACE_WIDTH_SP).contains(&wide));
+    let narrow: i32 = kani::any();
+    let wide: i32 = kani::any();
+    kani::assume((0..=MAX_WORKSPACE_WIDTH_SP).contains(&narrow));
+    kani::assume((0..=MAX_WORKSPACE_WIDTH_SP).contains(&wide));
     kani::assume(narrow <= wide);
     let narrow_threshold = properties_breakpoint_max_width_sp(narrow);
     assert!(narrow_threshold <= properties_breakpoint_max_width_sp(wide));
@@ -129,27 +131,24 @@ fn breakpoint_is_monotone_and_bounded() {
         + DUAL_PANE_LAYOUT_OVERHEAD_SP
         + narrow
         + PROPERTIES_SIDEBAR_MIN_WIDTH_SP;
-    assert!(f64::from(narrow_threshold) >= floor);
+    assert!(narrow_threshold >= floor);
 }
 
-/// Every split-view fraction is finite and in (0, 1] for every `i32` width.
+/// Every pane share has a positive width and a positive denominator, for every
+/// `i32` width, preset, and intent, so the adapter's one division yields a
+/// finite split fraction in (0, 1]; a share taken of the inner split has a
+/// denominator narrower than the window.
 #[kani::proof]
-fn fractions_are_finite_and_in_unit_interval() {
+fn pane_shares_are_positive() {
     let input = any_inputs();
-    let in_unit_interval =
-        |fraction: f64| fraction.is_finite() && fraction > 0.0 && fraction <= 1.0;
-    assert!(in_unit_interval(fixed_fraction(
-        input.window_width,
-        PROPERTIES_SIDEBAR_MIN_WIDTH_SP,
-        FIXED_PROPERTIES_SIDEBAR_FRACTION
-    )));
-    assert!(in_unit_interval(desired_properties_fraction(
-        input.window_width
-    )));
-    assert!(in_unit_interval(effective_properties_fraction(input)));
-    assert!(in_unit_interval(effective_workspace_sidebar_fraction(
-        input
-    )));
+    let positive = |share: PaneShare| share.width_sp >= 1 && share.of_sp >= 1;
+    assert!(positive(desired_properties_share(input.window_width)));
+    assert!(positive(workspace_sidebar_share(input)));
+    let properties = effective_properties_share(input);
+    assert!(positive(properties));
+    if derive_adaptive_shell_layout(input).workspace_consumes_width {
+        assert!(properties.of_sp < input.window_width);
+    }
 }
 
 /// No function in the module panics on any input in the domain.
@@ -158,7 +157,7 @@ fn shell_policy_never_panics() {
     let input = any_inputs();
     let _ = derive_adaptive_shell_layout(input);
     let _ = effective_workspace_sidebar_width_sp(input);
-    let _ = effective_workspace_sidebar_fraction(input);
-    let _ = effective_properties_fraction(input);
-    let _ = desired_properties_fraction(input.window_width);
+    let _ = workspace_sidebar_share(input);
+    let _ = effective_properties_share(input);
+    let _ = desired_properties_share(input.window_width);
 }

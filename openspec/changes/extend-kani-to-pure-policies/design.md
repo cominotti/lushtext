@@ -289,14 +289,30 @@ adapter boundary, wherever the value is not inherently fractional.
   so the off-by-one is recorded as unreachable rather than as a defect. The
   integer form removed the `f64` multiply and floor that cost the preview
   harnesses up to 12 minutes each.
-- **Inherently fractional, kept in `f64` with the domain stated:** the
-  workspace-sidebar preset width (a hint fraction times the window width, fed
-  back as a split fraction); the adaptive-shell fractions and the breakpoint's
-  workspace-width input (derived from that preset width); and the minimap fit
-  functions, whose inputs are GTK widget coordinates and scroll-adjustment
-  values that are fractional under scaling and smooth scrolling. Each states
-  its proved domain in its rustdoc and in the delta spec, as the slice-bin
-  geometry does.
+- **Width presets and shell geometry: converted too (maintainer follow-up).**
+  `WorkspaceSidebarWidthPreset::clamped_width_sp` returns whole sp
+  (`floor(width * percent / 100)` clamped to integer bounds), `from_fraction`
+  is comparisons only (below 0.25 `Small`, above 0.35 `Large`, else `Comfy`;
+  a property test pins it to the nearest-delta form it replaced, which
+  differed only inside that form's `f64::EPSILON` tie band — a few ulps
+  around each midpoint and magnitudes beyond about 10^15, where it said
+  `Comfy`), and `effective_fraction` is gone. The shell policy returns pane
+  widths and `PaneShare { width_sp, of_sp }` values, the breakpoint is the
+  exact integer ceiling, and the one division into a split-view fraction is
+  `execution::split_fraction`, unit-tested finite and in (0, 1]. The
+  rebased-properties floor the `f64` form carried could never bind and was
+  dropped. `fraction()` stays an `f64` constant because the settings key is
+  a `d`. The local-history viewer's axis share became integer thousandths
+  (equal to the `f64` round for every parent width up to 200,000, checked),
+  and the minimap's `gtk_f64_to_milli` diagnostic conversion moved into its
+  adapter.
+- **Inherently fractional, kept in `f64` with the domain stated:** the minimap
+  fit functions and their helpers, whose inputs are GTK widget coordinates and
+  scroll-adjustment values that are fractional under scaling and smooth
+  scrolling (13 functions carry a reasoned `expect`), and the local-history
+  size display (`format_bytes`, one decimal place of a MiB or KiB, whose
+  half-even formatting an integer form would change). Each states its domain
+  in its rustdoc, as the slice-bin geometry does.
 - **Editor memory** was integer arithmetic already.
 
 ### D9. Enforce the whole-pixel rule mechanically (maintainer decision, during implementation)
@@ -314,10 +330,10 @@ layers:
   `ui/markdown_preview/policy.rs`, `ui/sidebar/width_preset.rs`),
   `model/editor_memory.rs` (already integer; the deny keeps it so), and,
   because convention amendments apply retroactively, the two other migrated
-  policies holding geometry: `ui/window/local_history/policy.rs` (viewer
-  size, two admitted functions) and `ui/window/focus_mode/policy.rs` (a
-  comparison only, no admission needed). The markdown-preview and
-  editor-memory modules need no admission at all.
+  policies holding geometry: `ui/window/local_history/policy.rs` (one
+  admitted function, the size display) and `ui/window/focus_mode/policy.rs`
+  (a comparison only). Only the minimap policy and that display function
+  still admit float arithmetic.
 - **Policy check.** Rule 10 of `scripts/check-workflow-boundaries.py` declares
   `WHOLE_PIXEL_POLICY_MODULES` and `GEOMETRY_ROLE_HOMES` and fails on a missing
   deny, any `allow` of the lint, a module-wide `expect`, an `expect` without a

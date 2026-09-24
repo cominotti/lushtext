@@ -33,9 +33,9 @@ use super::policy::{
     MinimapMarkerKind, MinimapNativeProjectionSource, MinimapNativeSliderDiagnostics,
     MinimapProjectedBounds, MinimapProjectionSpace, MinimapTextViewRect, NativeSliderEstimateInput,
     ProjectedBoundsFit, document_height_from_line_span, fit_marker_bounds,
-    fit_native_slider_to_source_map_bounds, fit_projected_bounds, gtk_f64_to_milli,
-    line_bottom_in_target, line_top_in_target, marker_lane_width, marker_lane_x, marker_rgba,
-    markers_from_lines, modified_line_mark_samples, native_slider_estimate_from_inputs,
+    fit_native_slider_to_source_map_bounds, fit_projected_bounds, line_bottom_in_target,
+    line_top_in_target, marker_lane_width, marker_lane_x, marker_rgba, markers_from_lines,
+    modified_line_mark_samples, native_slider_estimate_from_inputs,
     source_map_editor_height_ratio_from_heights, wide_editor_slider_offset_class,
 };
 use crate::config::keys;
@@ -844,4 +844,34 @@ fn iter_at_line_or_last(buffer: &sourceview5::Buffer, line: u32) -> gtk4::TextIt
         .ok()
         .and_then(|line| buffer.iter_at_line(line))
         .unwrap_or_else(|| buffer.end_iter())
+}
+
+/// Serialize a GTK adjustment value as integer milli-units for Automation1
+/// diagnostics; a non-finite value serializes as 0. A boundary conversion, so
+/// it lives in this adapter rather than in the whole-pixel `policy.rs`.
+pub(super) fn gtk_f64_to_milli(value: f64) -> i64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GTK adjustment values are bounded logical coordinates serialized as coarse diagnostics"
+    )]
+    {
+        (value * 1000.0).round() as i64
+    }
+}
+
+#[cfg(test)]
+mod milli_tests {
+    use super::gtk_f64_to_milli;
+
+    #[test]
+    fn test_gtk_f64_to_milli_serializes_finite_values_and_suppresses_nonfinite() {
+        assert_eq!(gtk_f64_to_milli(10.49), 10_490);
+        assert_eq!(gtk_f64_to_milli(12.25), 12_250);
+        assert_eq!(gtk_f64_to_milli(-1.25), -1_250);
+        assert_eq!(gtk_f64_to_milli(f64::NAN), 0);
+        assert_eq!(gtk_f64_to_milli(f64::INFINITY), 0);
+    }
 }

@@ -44,11 +44,26 @@ use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 use super::super::imp::PREVIEW_LAYOUT_EDITOR;
 use super::policy::{
     self, AdaptiveShellInputs, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
-    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PropertiesPresentation, WORKSPACE_SIDEBAR_MIN_WIDTH_SP,
-    derive_adaptive_shell_layout, desired_properties_fraction, properties_breakpoint_condition,
+    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation,
+    WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout, properties_breakpoint_condition,
     workspace_breakpoint_condition,
 };
 use crate::ui::markdown_preview::PREVIEW_MIN_WIDTH_SP;
+
+/// Turn a pane's whole-sp share into the fraction an `AdwOverlaySplitView`
+/// takes. The one place the shell geometry becomes `f64`: the policy decides
+/// widths in whole sp, and this adapter divides once, capped at the whole split.
+/// The result is finite and in (0, 1] for every share whose width is positive,
+/// which the policy guarantees (`split_fraction_is_finite_and_in_unit_interval`).
+pub(in crate::ui::window) fn split_fraction(share: PaneShare) -> f64 {
+    (f64::from(share.width_sp) / f64::from(share.of_sp.max(1))).min(1.0)
+}
+
+/// The properties pane's window-relative fraction, the value stored in
+/// `properties-sidebar-width-fraction`.
+pub(in crate::ui::window) fn desired_properties_fraction(window_width: i32) -> f64 {
+    split_fraction(policy::desired_properties_share(window_width))
+}
 
 pub(in crate::ui::window) fn configure_split_views(
     workspace_split_view: &libadwaita::OverlaySplitView,
@@ -60,8 +75,8 @@ pub(in crate::ui::window) fn configure_split_views(
 ) {
     workspace_split_view.set_sidebar_position(gtk4::PackType::Start);
     workspace_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
-    workspace_split_view.set_min_sidebar_width(WORKSPACE_SIDEBAR_MIN_WIDTH_SP);
-    workspace_split_view.set_max_sidebar_width(WORKSPACE_SIDEBAR_MIN_WIDTH_SP);
+    workspace_split_view.set_min_sidebar_width(f64::from(WORKSPACE_SIDEBAR_MIN_WIDTH_SP));
+    workspace_split_view.set_max_sidebar_width(f64::from(WORKSPACE_SIDEBAR_MIN_WIDTH_SP));
     workspace_split_view.set_pin_sidebar(true);
     workspace_split_view.set_enable_show_gesture(false);
     workspace_split_view.set_enable_hide_gesture(false);
@@ -70,7 +85,7 @@ pub(in crate::ui::window) fn configure_split_views(
 
     properties_split_view.set_sidebar_position(gtk4::PackType::End);
     properties_split_view.set_sidebar_width_unit(libadwaita::LengthUnit::Sp);
-    properties_split_view.set_min_sidebar_width(PROPERTIES_SIDEBAR_MIN_WIDTH_SP);
+    properties_split_view.set_min_sidebar_width(f64::from(PROPERTIES_SIDEBAR_MIN_WIDTH_SP));
     properties_split_view.set_pin_sidebar(true);
     properties_split_view.set_enable_show_gesture(false);
     properties_split_view.set_enable_hide_gesture(false);
@@ -125,7 +140,7 @@ pub(in crate::ui::window) fn restore_workspace_split_view(window: &super::Lushte
         .settings
         .boolean(keys::WORKSPACE_SIDEBAR_VISIBLE);
     let preset = workspace_sidebar_preset(window);
-    let fraction = preset.effective_fraction(width);
+    let fraction = split_fraction(policy::workspace_preset_share(preset, width));
     sync_workspace_sidebar_width_constraints(window, width);
     window.imp().split_width_synced_for_width.set(width);
     window
@@ -273,7 +288,7 @@ pub(in crate::ui::window) fn adaptive_shell_inputs_for_width(
 pub(in crate::ui::window) fn effective_workspace_sidebar_width_sp(
     window: &super::LushtextWindow,
     window_width: i32,
-) -> f64 {
+) -> i32 {
     policy::effective_workspace_sidebar_width_sp(adaptive_shell_inputs_for_width(
         window,
         window_width,
@@ -284,9 +299,8 @@ pub(in crate::ui::window) fn effective_workspace_sidebar_fraction(
     window: &super::LushtextWindow,
     window_width: i32,
 ) -> f64 {
-    policy::effective_workspace_sidebar_fraction(adaptive_shell_inputs_for_width(
-        window,
-        window_width,
+    split_fraction(policy::workspace_sidebar_share(
+        adaptive_shell_inputs_for_width(window, window_width),
     ))
 }
 
@@ -294,12 +308,8 @@ pub(in crate::ui::window) fn sync_workspace_sidebar_width_constraints(
     window: &super::LushtextWindow,
     window_width: i32,
 ) {
-    let target_width = effective_workspace_sidebar_width_sp(window, window_width);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "The sidebar target width is derived from the current split width and remains within i32 paned coordinates"
-    )]
-    let target_width_request = target_width.round() as i32;
+    let target_width_request = effective_workspace_sidebar_width_sp(window, window_width);
+    let target_width = f64::from(target_width_request);
     let split = &window.imp().workspace_split_view;
     if (split.min_sidebar_width() - target_width).abs() > f64::EPSILON {
         split.set_min_sidebar_width(target_width);
@@ -316,7 +326,9 @@ pub(in crate::ui::window) fn effective_properties_fraction(
     window: &super::LushtextWindow,
     window_width: i32,
 ) -> f64 {
-    policy::effective_properties_fraction(adaptive_shell_inputs_for_width(window, window_width))
+    split_fraction(policy::effective_properties_share(
+        adaptive_shell_inputs_for_width(window, window_width),
+    ))
 }
 
 pub(in crate::ui::window) fn properties_presentation(
@@ -488,4 +500,65 @@ pub(in crate::ui::window) fn sync_split_view_widths(
 
     window.imp().split_width_synced_for_width.set(window_width);
     window.imp().split_width_syncing.set(false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_fraction;
+    use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
+    use crate::ui::window::geometry::policy::{
+        PaneShare, desired_properties_share, workspace_preset_share,
+    };
+
+    fn in_unit_interval(fraction: f64) -> bool {
+        fraction.is_finite() && fraction > 0.0 && fraction <= 1.0
+    }
+
+    /// Every share the policy produces has a positive width, so the one
+    /// division in the shell geometry yields a split-view fraction that is
+    /// finite and in (0, 1], across the whole `i32` width range.
+    #[test]
+    fn split_fraction_is_finite_and_in_unit_interval() {
+        let widths = [
+            i32::MIN,
+            -1,
+            0,
+            1,
+            2,
+            279,
+            280,
+            860,
+            861,
+            1119,
+            1120,
+            1350,
+            1920,
+            3840,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        for width in widths.into_iter().chain((1..5_000).step_by(7)) {
+            assert!(
+                in_unit_interval(split_fraction(desired_properties_share(width))),
+                "{width}"
+            );
+            for preset in WorkspaceSidebarWidthPreset::ALL {
+                let share = workspace_preset_share(preset, width);
+                assert!(share.width_sp >= 1, "{width} {preset:?}");
+                assert!(
+                    in_unit_interval(split_fraction(share)),
+                    "{width} {preset:?}"
+                );
+            }
+        }
+        // A pane wider than its split is capped at the whole split.
+        assert!(
+            (split_fraction(PaneShare {
+                width_sp: 500,
+                of_sp: 100
+            }) - 1.0)
+                .abs()
+                < f64::EPSILON
+        );
+    }
 }

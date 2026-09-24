@@ -57,34 +57,37 @@ impl WorkspaceSidebarWidthPreset {
         }
     }
 
+    /// The hint as a whole percentage of the window width (20, 30, 40), the
+    /// integer form [`Self::clamped_width_sp`] computes with.
+    #[must_use]
+    pub const fn percent(self) -> i32 {
+        match self {
+            Self::Small => 20,
+            Self::Comfy => 30,
+            Self::Large => 40,
+        }
+    }
+
     /// Map an arbitrary stored fraction back onto the nearest supported preset.
     ///
-    /// Presets equally near (within `f64::EPSILON`) resolve in the order
-    /// `Comfy`, `Small`, `Large`. A non-finite value resolves to
-    /// [`Self::DEFAULT`]: the settings key has no schema range and GVariant
-    /// text parses `nan` and `inf`, and without this guard every delta
-    /// comparison is false and NaN or `-inf` would silently mean `Large`.
-    /// Kani proves this over every `f64` (`kani_proofs.rs`).
+    /// Comparisons only: below the Small/Comfy midpoint (0.25) is `Small`,
+    /// above the Comfy/Large midpoint (0.35) is `Large`, and everything from
+    /// 0.25 to 0.35 inclusive is `Comfy`, so a value exactly at a midpoint
+    /// resolves to `Comfy`. A non-finite value resolves to [`Self::DEFAULT`]:
+    /// the settings key has no schema range and GVariant text parses `nan` and
+    /// `inf`, and the original nearest-delta form silently turned NaN and
+    /// `-inf` into `Large`. Kani proves this over every `f64`
+    /// (`width_preset/kani_proofs.rs`).
     #[must_use]
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "the stored setting is a fraction; every f64 is in the proved domain"
-    )]
     pub fn from_fraction(fraction: f64) -> Self {
         if !fraction.is_finite() {
-            return Self::DEFAULT;
-        }
-        let small_delta = (fraction - Self::Small.fraction()).abs();
-        let comfy_delta = (fraction - Self::Comfy.fraction()).abs();
-        let large_delta = (fraction - Self::Large.fraction()).abs();
-        let min_delta = small_delta.min(comfy_delta.min(large_delta));
-
-        if (comfy_delta - min_delta).abs() < f64::EPSILON {
-            Self::Comfy
-        } else if (small_delta - min_delta).abs() < f64::EPSILON {
+            Self::DEFAULT
+        } else if fraction < SMALL_COMFY_MIDPOINT {
             Self::Small
-        } else {
+        } else if fraction > COMFY_LARGE_MIDPOINT {
             Self::Large
+        } else {
+            Self::Comfy
         }
     }
 
@@ -109,57 +112,97 @@ impl WorkspaceSidebarWidthPreset {
         }
     }
 
-    /// Lower bound for this preset once the sidebar is side-by-side on desktop widths.
+    /// Lower bound, in whole sp, for this preset once the sidebar is
+    /// side-by-side on desktop widths.
     #[must_use]
-    pub const fn min_width_sp(self) -> f64 {
+    pub const fn min_width_sp(self) -> i32 {
         match self {
-            Self::Small => 220.0,
-            Self::Comfy => 280.0,
-            Self::Large => 340.0,
+            Self::Small => 220,
+            Self::Comfy => 280,
+            Self::Large => 340,
         }
     }
 
-    /// Upper bound that keeps the sidebar comfortable on wide and ultrawide windows.
+    /// Upper bound, in whole sp, that keeps the sidebar comfortable on wide and
+    /// ultrawide windows.
     #[must_use]
-    pub const fn max_width_sp(self) -> f64 {
+    pub const fn max_width_sp(self) -> i32 {
         match self {
-            Self::Small => 280.0,
-            Self::Comfy => 360.0,
-            Self::Large => 440.0,
+            Self::Small => 280,
+            Self::Comfy => 360,
+            Self::Large => 440,
         }
     }
 
-    /// Convert the preset's hint fraction into a bounded visible width for the current window.
+    /// Convert the preset's hint into a bounded visible width, in whole sp,
+    /// for the current window: `clamp(max(window_width, 1) * percent / 100,
+    /// min_width_sp, max_width_sp)`, with the product floored.
     ///
-    /// Kani proves, for every `i32` width (zero or less counts as 1 sp), that
-    /// the result is the clamped product, lies within the preset's bounds, and
-    /// never decreases as the width grows.
+    /// Integer-only. The split-view fraction the window needs is this width
+    /// divided by the window width, and that conversion happens once, in the
+    /// GTK adapter (`ui/window/geometry/execution.rs`). Kani proves, for every
+    /// `i32` width (zero or less counts as 1 sp), that the result is the
+    /// formula, lies within the preset's bounds, and never decreases as the
+    /// width grows.
     #[must_use]
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "a hint fraction of the window width is inherently fractional; every i32 width is in the proved domain"
-    )]
-    pub fn clamped_width_sp(self, window_width: i32) -> f64 {
-        (f64::from(window_width.max(1)) * self.fraction())
-            .clamp(self.min_width_sp(), self.max_width_sp())
-    }
-
-    /// Return the effective split-view fraction after clamping this preset for the window width.
-    ///
-    /// Kani proves it finite and in (0, 1] for every `i32` width.
-    #[must_use]
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "a split-view fraction is inherently fractional; every i32 width is in the proved domain"
-    )]
-    pub fn effective_fraction(self, window_width: i32) -> f64 {
-        (self.clamped_width_sp(window_width) / f64::from(window_width.max(1))).min(1.0)
+    pub fn clamped_width_sp(self, window_width: i32) -> i32 {
+        let hinted = i64::from(window_width.max(1)) * i64::from(self.percent()) / 100;
+        let clamped = hinted.clamp(
+            i64::from(self.min_width_sp()),
+            i64::from(self.max_width_sp()),
+        );
+        i32::try_from(clamped).unwrap_or_else(|_| self.max_width_sp())
     }
 }
+
+/// The midpoint between the `Small` and `Comfy` hint fractions.
+const SMALL_COMFY_MIDPOINT: f64 = 0.25;
+
+/// The midpoint between the `Comfy` and `Large` hint fractions.
+const COMFY_LARGE_MIDPOINT: f64 = 0.35;
 
 #[cfg(test)]
 mod tests {
     use super::WorkspaceSidebarWidthPreset;
+
+    #[test]
+    fn presets_and_midpoints_resolve_by_comparison() {
+        use WorkspaceSidebarWidthPreset::{Comfy, Large, Small};
+        for preset in WorkspaceSidebarWidthPreset::ALL {
+            assert_eq!(
+                WorkspaceSidebarWidthPreset::from_fraction(preset.fraction()),
+                preset
+            );
+        }
+        // Midpoints resolve to Comfy, matching the old tie order; the strict
+        // neighbours on either side do not. The equivalence with the old
+        // nearest-delta form is a property test
+        // (`tests/properties/width_preset.rs`), because the reference needs the
+        // float arithmetic this module denies.
+        assert_eq!(WorkspaceSidebarWidthPreset::from_fraction(0.25), Comfy);
+        assert_eq!(WorkspaceSidebarWidthPreset::from_fraction(0.35), Comfy);
+        assert_eq!(
+            WorkspaceSidebarWidthPreset::from_fraction(0.25f64.next_down()),
+            Small
+        );
+        assert_eq!(
+            WorkspaceSidebarWidthPreset::from_fraction(0.35f64.next_up()),
+            Large
+        );
+        assert_eq!(WorkspaceSidebarWidthPreset::from_fraction(-1.0), Small);
+        assert_eq!(WorkspaceSidebarWidthPreset::from_fraction(1.0), Large);
+    }
+
+    #[test]
+    fn clamped_width_is_the_floored_percentage_within_the_bounds() {
+        use WorkspaceSidebarWidthPreset::{Comfy, Large, Small};
+        assert_eq!(Small.clamped_width_sp(900), 220);
+        assert_eq!(Comfy.clamped_width_sp(1001), 300);
+        assert_eq!(Comfy.clamped_width_sp(1200), 360);
+        assert_eq!(Large.clamped_width_sp(1400), 440);
+        assert_eq!(Comfy.clamped_width_sp(i32::MIN), 280);
+        assert_eq!(Large.clamped_width_sp(i32::MAX), 440);
+    }
 
     #[test]
     fn non_finite_stored_fraction_resolves_to_default() {

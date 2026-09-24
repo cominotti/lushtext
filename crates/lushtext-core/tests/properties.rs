@@ -49,3 +49,5 @@ mod sidecar_reconciliation;
 mod support;
 #[path = "properties/viewport_slice.rs"]
 mod viewport_slice;
+#[path = "properties/width_preset.rs"]
+mod width_preset;

@@ -15,15 +15,17 @@ SHALL prove that `derive_adaptive_shell_layout`:
 - chooses the sheet presentation exactly when the window width is at or below
   its derived breakpoint threshold.
 
-The window width is whole pixels; the workspace width and the split
-fractions are inherently fractional (they derive from the preset's hint
-fraction) and stay `f64`, with the domain stated in the rustdoc. They SHALL
-also prove, for every finite workspace width from 0 to 440 sp, that
-`properties_breakpoint_max_width_sp` never decreases as the width grows. The
-threshold SHALL be at least the editor-content minimum, plus the layout
+The policy SHALL be whole-pixel: it takes widths and returns widths and pane
+shares (a pane width and the width it is a share of) in whole sp, and the
+split-view fraction SHALL be formed once, in the GTK adapter. The harnesses
+SHALL also prove, for every workspace width from 0 to 440 sp, that
+`properties_breakpoint_max_width_sp` never decreases as the width grows, and
+that the threshold is at least the editor-content minimum, plus the layout
 overhead, the workspace width, and the properties minimum. For every `i32`
-width, `fixed_fraction` and `effective_properties_fraction` SHALL be finite and
-in (0, 1]. No function in the module SHALL panic.
+width, every pane share SHALL have a positive width and a positive
+denominator, and a properties share taken of the inner split SHALL have a
+denominator narrower than the window; the adapter's split fraction SHALL be
+tested to be finite and in (0, 1]. No function in the module SHALL panic.
 
 #### Scenario: Compact presentation shows one secondary surface
 - **WHEN** the harness explores every input for which document properties use the sheet presentation

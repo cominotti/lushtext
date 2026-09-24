@@ -174,9 +174,11 @@ workflow narrate in its own vocabulary; say so in the alias's doc comment.
 
 A pure geometry or budget policy takes and returns **whole pixels** (integers)
 and does no floating-point arithmetic; the GTK adapter converts to `f64` once,
-at the widget or split-view boundary. A value that is genuinely fractional — a
-hint fraction of a window width, a split-view fraction, a GTK widget coordinate
-or scroll-adjustment value that is fractional under scaling — stays `f64`, and
+at the widget or split-view boundary: a split-view fraction, for example, is a
+whole-sp width divided once in the adapter (`geometry::execution::split_fraction`),
+never computed in the policy. A value the policy genuinely decides in fractional
+terms — a GTK widget coordinate or scroll-adjustment value that is fractional
+under scaling — stays `f64`, and
 the function that computes it states its domain in its rustdoc (and, where a
 spec covers it, in the spec), as the slice-bin geometry does.
 
