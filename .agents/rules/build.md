@@ -565,8 +565,8 @@ invariant; tighten the generator or use the deep lane.
   resources (programme record, phase 3), so none is in the lane. A harness that
   needs an experimental Kani flag gets it only through its shard's
   `kani_flags` entry in `scripts/kani-shards.py` (`run` appends it to that
-  shard alone; `github-outputs` exports `shard-flags` for the workflow to
-  print), never through a global flag. A `kani::cover!` on each interesting branch keeps
+  shard alone, and its logged command line shows them), never through a
+  global flag. A `kani::cover!` on each interesting branch keeps
   a vacuous proof visible. A harness proving a property on a restricted domain states that domain
   in the harness **and** in the checked function's rustdoc or spec; a rustdoc
   promise must never claim more than was proved. A known-unsafe ordering or

@@ -322,11 +322,6 @@ def check(found: dict[str, list[str]], unowned: list[Path]) -> list[str]:
     return problems
 
 
-def shard_flags_output(shards: dict[str, Shard]) -> str:
-    """The `shard-flags` GitHub output: each shard's own extra Kani flags."""
-    return f"shard-flags={json.dumps({name: list(shard.kani_flags) for name, shard in shards.items()})}"
-
-
 def budget_problems(shards: dict[str, Shard]) -> list[str]:
     """Every shard has a runner measurement inside the margins for its gate."""
     problems = []
@@ -537,7 +532,6 @@ def self_test() -> None:
     assert "loop-contracts" not in plain and "-Z" not in plain, plain
     assert contracts[:8] == ["cargo", "kani", "-p", "p", "--target-dir", "target/kani", "-Z", "loop-contracts"], contracts
     assert contracts[-2:] == ["--harness", "g"], contracts
-    assert shard_flags_output(flagged) == 'shard-flags={"plain": [], "contracts": ["-Z", "loop-contracts"]}'
 
 
 def main() -> int:
@@ -581,7 +575,6 @@ def main() -> int:
         pr_shards = [shard_name for shard_name, shard in SHARDS.items() if shard.gate == "pull-request"]
         print(f"pr-shards={json.dumps(pr_shards)}")
         print(f"kani-version={kani_version()}")
-        print(shard_flags_output(SHARDS))
         return 0
     if args.shard == "all":
         return run(list(SHARDS), args.target_dir, args.measure)
