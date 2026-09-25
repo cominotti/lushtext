@@ -27,6 +27,7 @@ mod kani_proofs;
 
 /// Supported named workspace sidebar presets used by Preferences and shell math.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum WorkspaceSidebarWidthPreset {
     Small,
     Comfy,

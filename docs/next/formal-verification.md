@@ -357,7 +357,7 @@ shard at a time); the runner budgets follow the table.
 | | `budget_stops_at_the_lower_watermark` | same | PROVED | 38.2 s |
 | | `budget_outcome_matches_the_projected_total` (covers `WithinBudget`, `Converged`, `NoProgress`) | same | PROVED | 212.7 s |
 | | `within_budget_selects_nothing` | same | PROVED | 34.8 s |
-| | `ledger_totals_match_a_recomputation` | three upserts/removes on ids `{0, 1}`, every `u64` | PROVED | 262.7 s |
+| | `ledger_totals_match_a_recomputation` | three upserts/removes on ids `{0, 1}`, every `u64` | PROVED | 40.1 s (262.7 s before the per-step full scan was replaced by the transitive `saturating_total` link) |
 | | `ledger_crossing_flag_is_exact` | same | PROVED | 0.6 s |
 | `ui/editor_page/minimap/policy` | `native_slider_fit_never_panics`, `marker_fit_never_panics`, `projected_fit_never_panics`, `native_slider_estimate_never_panics` | any `f64` and `i32` | PROVED | 0.2 / 1.1 / 1.5 / 5.1 s |
 | | `min_height_expansion_never_panics_inside_its_band` | finite band and span, any `f64` minimum | PROVED | 98.5 s |
@@ -431,11 +431,12 @@ triaged like a failing test:
   fails a listed module or a new geometry `policy.rs` without the deny —
   proved failing first on the real tree.
 
-Mutation scope (`make mutants-list`, 5,919 → 5,923 mutants): `ui/markdown_preview/policy.rs`
+Mutation scope (`make mutants-list`, 5,919 → 5,919 mutants): `ui/markdown_preview/policy.rs`
 177 → 188, a **gain from zero** (the clamp had 0 mutants in
-`ui/window/preview.rs`); `ui/window/geometry/policy.rs` 81 → 68, because the
+`ui/window/preview.rs`); `ui/window/geometry/policy.rs` 81 → 66, because the
 integer shares replaced the `f64` fraction arithmetic and its dead
-rebased-properties floor; `model/editor_memory.rs` 43 → 50, from the selection
+rebased-properties floor, and the properties quarter became a divisor
+(`width / 4`) instead of a percentage; `model/editor_memory.rs` 43 → 50, from the selection
 loop and `ResidencyTotals`; `ui/editor_page/minimap/policy.rs` 412 → 411 (the
 defect guards added some, and `gtk_f64_to_milli` moved into the minimap's
 coordination adapter); `ui/window/local_history/policy.rs` 92 → 92. No

@@ -52,9 +52,9 @@ pub(in crate::ui::window) const WORKSPACE_BREAKPOINT_MAX_WIDTH_SP: i32 = 860;
 /// GNOME Text Editor switches the header Open control to an icon at 400sp.
 pub(in crate::ui::window) const OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP: i32 = 400;
 
-/// Target share of the total window width for the visible right properties
-/// pane, as a whole percentage.
-const FIXED_PROPERTIES_SIDEBAR_PERCENT: i32 = 25;
+/// The visible right properties pane targets `1 / FIXED_PROPERTIES_SIDEBAR_DIVISOR`
+/// of the total window width: a quarter.
+const FIXED_PROPERTIES_SIDEBAR_DIVISOR: i32 = 4;
 /// Minimum center width that keeps restored-document inline alerts stable.
 const MIN_EDITOR_CONTENT_WIDTH_SP: i32 = 620;
 /// Width budget for split separators, padding, and rounding noise.
@@ -66,6 +66,7 @@ const PROPERTIES_LAYOUT_SHEET: &str = "sheet";
 
 /// Secondary surfaces that can compete for the compact-width slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum SecondarySurface {
     /// The left workspace sidebar.
     Workspace,
@@ -181,9 +182,9 @@ pub(in crate::ui::window) fn workspace_sidebar_share(input: AdaptiveShellInputs)
 ///
 /// The width is always the window-relative target (a quarter of the window, at
 /// least the properties minimum); when the workspace consumes width only the
-/// denominator changes, to the inner split. The `f64` form raised the rebased
-/// ratio to `minimum / inner`, a floor that could never bind: the target is at
-/// least `min(minimum, window)`, which is at least `min(minimum, inner)`.
+/// denominator changes, to the inner split. No `minimum / inner` floor is needed:
+/// the target is at least `min(minimum, window)`, which is at least
+/// `min(minimum, inner)`.
 pub(in crate::ui::window) fn effective_properties_share(input: AdaptiveShellInputs) -> PaneShare {
     let desired = desired_properties_width_sp(input.window_width);
     if derive_adaptive_shell_layout(input).workspace_consumes_width {
@@ -218,9 +219,7 @@ fn properties_inner_split_width(total_width: i32, workspace_width: i32) -> i32 {
 /// (floored), at least the properties minimum, and never wider than the window.
 pub(in crate::ui::window) fn desired_properties_width_sp(window_width: i32) -> i32 {
     let width = window_width.max(1);
-    let quarter = i64::from(width) * i64::from(FIXED_PROPERTIES_SIDEBAR_PERCENT) / 100;
-    let quarter = i32::try_from(quarter).unwrap_or(width);
-    quarter.max(PROPERTIES_SIDEBAR_MIN_WIDTH_SP.min(width))
+    (width / FIXED_PROPERTIES_SIDEBAR_DIVISOR).max(PROPERTIES_SIDEBAR_MIN_WIDTH_SP.min(width))
 }
 
 /// The properties pane's window-relative share.
@@ -339,11 +338,12 @@ fn properties_breakpoint_max_width_sp(workspace_width_sp: i32) -> i32 {
 }
 
 /// The smallest window width whose properties quarter leaves `center + workspace`
-/// for the rest: `ceil((center + workspace) * 100 / (100 - 25))`.
+/// for the rest: `ceil((center + workspace) * 4 / 3)`.
 fn dual_sidebar_window_width_for_center(center_width_sp: i32, workspace_width_sp: i32) -> i32 {
-    let rest_percent = i64::from(100 - FIXED_PROPERTIES_SIDEBAR_PERCENT);
-    let needed = (i64::from(center_width_sp) + i64::from(workspace_width_sp)) * 100;
-    let width = (needed + rest_percent - 1).div_euclid(rest_percent);
+    let rest_parts = i64::from(FIXED_PROPERTIES_SIDEBAR_DIVISOR - 1);
+    let needed = (i64::from(center_width_sp) + i64::from(workspace_width_sp))
+        * i64::from(FIXED_PROPERTIES_SIDEBAR_DIVISOR);
+    let width = (needed + rest_parts - 1).div_euclid(rest_parts);
     i32::try_from(width).unwrap_or(i32::MAX)
 }
 
@@ -615,10 +615,10 @@ mod tests {
     #[test]
     fn the_properties_width_is_the_quarter_above_the_crossover_and_the_minimum_below() {
         // Below 1120sp the target is the properties minimum; at or above it the
-        // floored quarter takes over. The crossover is `minimum * 100 / 25`, so
+        // floored quarter takes over. The crossover is `minimum * 4`, so
         // changing either constant moves it.
         assert_eq!(
-            PROPERTIES_SIDEBAR_MIN_WIDTH_SP * 100 / FIXED_PROPERTIES_SIDEBAR_PERCENT,
+            PROPERTIES_SIDEBAR_MIN_WIDTH_SP * FIXED_PROPERTIES_SIDEBAR_DIVISOR,
             1120
         );
         assert_eq!(desired_properties_width_sp(1119), 280);

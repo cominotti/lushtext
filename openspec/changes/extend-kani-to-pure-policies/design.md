@@ -141,9 +141,11 @@ The properties are those in the delta specs. The less obvious ones:
 - **Ledger agreement.** After each operation the harness recomputes the
   saturating total and the protected total from `snapshot()`, and compares them
   with `total_bytes()` and `protected_bytes()`. It also checks
-  `crossed_upper_threshold`, and it checks that the ledger and
-  `evaluate_editor_memory_budget` compute the same total from the same records.
-  That checks the spec's "incremental accounting" against the full scan.
+  `crossed_upper_threshold`. The recomputation is the same `saturating_total`
+  the budget harness equates with `evaluate_editor_memory_budget`'s totals, so
+  the ledger and the full scan compute the same total from the same records by
+  transitivity. That checks the spec's "incremental accounting" against the
+  full scan without scanning symbolically at every step.
 - **Compact exclusivity.**
   `properties_presentation == Sheet ⇒ !(render_workspace && render_properties)`.
   This is the machine-checked half of "Adaptive secondary surfaces settle from

@@ -2,7 +2,7 @@
 
 //! Kani harnesses over the live editor-memory policy:
 //! [`estimate_live_editor_bytes`], [`evaluate_editor_memory_budget`], and
-//! [`EditorResidencyLedger`]'s accounting.
+//! [`EditorResidencyLedger`](super::EditorResidencyLedger)'s accounting.
 //!
 //! Domain: every `u64` estimate, character count, file size, access
 //! generation, and policy generation, so saturation is exercised. A snapshot
@@ -12,11 +12,7 @@
 //! indistinguishable from an absent page. The loops over a snapshot — the
 //! totals' folds, the eligibility filter, and the least-recently-used
 //! selection with its inner minimum search — run at most three times, so the
-//! harnesses use `unwind(4)`. (The selection sorted every eligible page with
-//! `sort_unstable_by_key` when these harnesses were written; symbolic
-//! execution of the sort's pivot recursion did not finish in 20 minutes even
-//! for two pages, so the policy now takes the least-recently-used remaining
-//! page per step, which selects the same prefix.)
+//! harnesses use `unwind(4)`.
 //!
 //! Ledger sequences are three upserts or removes over identities `{0, 1}`.
 //! They drive the production [`ResidencyTotals`] accounting through a
@@ -35,15 +31,15 @@
 use super::{
     EDITOR_MEMORY_LOWER_WATER_BYTES, EDITOR_MEMORY_UPPER_BUDGET_BYTES,
     EVICTED_EDITOR_BOOKKEEPING_BYTES, EditorMemoryBudgetDecision, EditorMemoryBudgetOutcome,
-    EditorResidency, EditorResidencyLedger, EditorResidencyUpdate, ResidencyTotals,
-    estimate_live_editor_bytes, evaluate_editor_memory_budget,
+    EditorResidency, EditorResidencyUpdate, ResidencyTotals, estimate_live_editor_bytes,
+    evaluate_editor_memory_budget,
 };
 
 /// Pages in the largest modelled snapshot.
 const PAGES: usize = 3;
 
 /// Upserts or removes in the longest modelled ledger sequence (see the module
-/// documentation for why it is two).
+/// documentation for why the map is not in it).
 const LEDGER_OPERATIONS: usize = 3;
 
 /// One page with every scalar arbitrary and the given identity.
@@ -250,7 +246,7 @@ fn within_budget_selects_nothing() {
 
 /// The ledger's record set as the harnesses model it: one slot per identity,
 /// displacing records exactly as `BTreeMap::insert` and `BTreeMap::remove` do.
-/// The map itself is trusted (see [`EditorResidencyLedger`]); what is checked
+/// The map itself is trusted (see [`EditorResidencyLedger`](super::EditorResidencyLedger)); what is checked
 /// is the production [`ResidencyTotals`] accounting the ledger drives with the
 /// displaced record.
 struct ModelLedger {
@@ -280,7 +276,14 @@ impl ModelLedger {
 
     /// `EditorResidencyLedger::snapshot`, over the slots.
     fn records(&self) -> ([EditorResidency; 2], usize) {
-        let mut records = [any_page(0); 2];
+        let unused = EditorResidency {
+            editor_id: 0,
+            estimated_bytes: 0,
+            access_generation: 0,
+            policy_generation: 0,
+            eligible_for_eviction: false,
+        };
+        let mut records = [unused; 2];
         let mut len = 0;
         for record in self.slots.iter().flatten() {
             records[len] = *record;
@@ -303,9 +306,14 @@ impl ModelLedger {
 
 /// After every step of any sequence of [`LEDGER_OPERATIONS`] upserts and
 /// removes, the ledger's saturating totals equal a recomputation over its
-/// records, each update reports the totals before and after it, and the totals
-/// equal those `evaluate_editor_memory_budget` computes from the same records:
-/// the incremental accounting agrees with the full scan.
+/// records, and each update reports the totals before and after it.
+///
+/// That recomputation is `saturating_total`, which
+/// [`budget_outcome_matches_the_projected_total`] proves equal to the totals
+/// `evaluate_editor_memory_budget` computes for every snapshot of up to three
+/// pages (a snapshot of the ledger's zero to two records is one padded with
+/// zero-estimate protected pages). So the incremental accounting agrees with the
+/// full scan without re-running the scan symbolically at every step here.
 #[kani::proof]
 #[kani::unwind(4)]
 fn ledger_totals_match_a_recomputation() {
@@ -322,11 +330,10 @@ fn ledger_totals_match_a_recomputation() {
                 assert!(update.previous_total_bytes == previous);
                 assert!(update.total_bytes == ledger.totals.total_bytes());
             }
-            None => assert!(ledger.totals.total_bytes() == previous),
+            None => {
+                assert!(ledger.totals.total_bytes() == previous);
+            }
         }
-        let decision = evaluate_editor_memory_budget(records);
-        assert!(decision.total_bytes == ledger.totals.total_bytes());
-        assert!(decision.protected_bytes == ledger.totals.protected_bytes());
     }
 }
 

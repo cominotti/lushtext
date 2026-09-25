@@ -17,25 +17,13 @@
 
 use super::WorkspaceSidebarWidthPreset;
 
-/// Any of the three presets.
-fn any_preset() -> WorkspaceSidebarWidthPreset {
-    let index: u32 = kani::any();
-    kani::assume(index < 3);
-    WorkspaceSidebarWidthPreset::from_index(index).expect("indices 0..3 name presets")
-}
-
-/// A preset's position in the Small < Comfy < Large order.
-fn rank(preset: WorkspaceSidebarWidthPreset) -> u32 {
-    preset.index()
-}
-
 /// `clamped_width_sp` is the spec formula
 /// `clamp(max(window_width, 1) * percent / 100, min_width_sp, max_width_sp)`
 /// with the product floored, and it lies within the preset's bounds, for every
 /// `i32` width.
 #[kani::proof]
 fn clamp_matches_the_spec_formula_and_bounds() {
-    let preset = any_preset();
+    let preset: WorkspaceSidebarWidthPreset = kani::any();
     let window_width: i32 = kani::any();
     let width = preset.clamped_width_sp(window_width);
     let hinted = i64::from(window_width.max(1)) * i64::from(preset.percent()) / 100;
@@ -51,7 +39,7 @@ fn clamp_matches_the_spec_formula_and_bounds() {
 /// `clamped_width_sp` never decreases as the window width grows.
 #[kani::proof]
 fn clamp_is_monotone_in_window_width() {
-    let preset = any_preset();
+    let preset: WorkspaceSidebarWidthPreset = kani::any();
     let narrow: i32 = kani::any();
     let wide: i32 = kani::any();
     kani::assume(narrow <= wide);
@@ -61,7 +49,7 @@ fn clamp_is_monotone_in_window_width() {
 /// The integer percentage is the stored hint fraction, exactly.
 #[kani::proof]
 fn percent_is_the_hint_fraction() {
-    let preset = any_preset();
+    let preset: WorkspaceSidebarWidthPreset = kani::any();
     assert!(f64::from(preset.percent()) == preset.fraction() * 100.0);
 }
 
@@ -69,7 +57,7 @@ fn percent_is_the_hint_fraction() {
 /// preset.
 #[kani::proof]
 fn index_round_trips() {
-    let preset = any_preset();
+    let preset: WorkspaceSidebarWidthPreset = kani::any();
     assert!(WorkspaceSidebarWidthPreset::from_index(preset.index()) == Some(preset));
     let index: u32 = kani::any();
     kani::assume(index >= 3);
@@ -79,7 +67,7 @@ fn index_round_trips() {
 /// Storing a preset as its hint fraction and reading it back restores it.
 #[kani::proof]
 fn fraction_round_trips() {
-    let preset = any_preset();
+    let preset: WorkspaceSidebarWidthPreset = kani::any();
     assert!(WorkspaceSidebarWidthPreset::from_fraction(preset.fraction()) == preset);
 }
 
@@ -98,7 +86,8 @@ fn from_fraction_picks_the_nearest_preset() {
     }
     let larger: f64 = kani::any();
     kani::assume(larger.is_finite() && fraction <= larger);
-    assert!(rank(resolved) <= rank(WorkspaceSidebarWidthPreset::from_fraction(larger)));
+    // `index()` is the preset's position in the Small < Comfy < Large order.
+    assert!(resolved.index() <= WorkspaceSidebarWidthPreset::from_fraction(larger).index());
     if fraction == 0.25 || fraction == 0.35 {
         assert!(resolved == WorkspaceSidebarWidthPreset::Comfy);
     }

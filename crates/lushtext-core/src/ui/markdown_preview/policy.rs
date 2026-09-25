@@ -695,12 +695,7 @@ pub(crate) fn preferred_preview_width(width: i32) -> i32 {
 /// the floor keeps the split view's sidebar constraint non-zero.
 ///
 /// The arithmetic is integer-only; the window converts the result to `f64`
-/// once, where it sets the split view's constraints. (Until
-/// `extend-kani-to-pure-policies` it computed `floor(available * (1.0 / 3.0))`
-/// in `f64`. That never floored a multiple of 3 to one less: for `k < 2^31`
-/// the product `3k * (1/3)` rounds back to `k`, which the in-band Kani harness
-/// proved; the integer form is exact by construction and far cheaper to
-/// prove.)
+/// once, where it sets the split view's constraints.
 ///
 /// Kani proves all of this over every `i32` preferred and available width,
 /// and keeps the unconditional "at most one third" form as a `should_panic`

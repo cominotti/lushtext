@@ -163,6 +163,7 @@ impl MinimapAnalysisRequest {
 
 /// Semantic marker categories painted in the minimap strip.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum MinimapMarkerKind {
     /// Saved-file bookmarks projected from the editor's live bookmark marks.
     Bookmark,
@@ -686,6 +687,7 @@ pub(super) struct MarkerProjectionSpace {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub(super) enum ProjectedBoundsFit {
     /// Reject projections that land outside rendered minimap text.
     RejectOutside,

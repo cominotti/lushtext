@@ -46,18 +46,21 @@ const SMALL_PIXEL: i32 = 1 << 8;
 /// The minimum-height bound of that smaller domain.
 const SMALL_MIN_HEIGHT: i32 = 1 << 6;
 
+/// A whole pixel in `range`, as the `f64` the fits take.
+fn pixel_in(range: std::ops::RangeInclusive<i32>) -> f64 {
+    let pixel: i32 = kani::any();
+    kani::assume(range.contains(&pixel));
+    f64::from(pixel)
+}
+
 /// A whole-pixel coordinate with magnitude at most [`MAX_PIXEL`].
 fn whole_pixel() -> f64 {
-    let pixel: i32 = kani::any();
-    kani::assume((-MAX_PIXEL..=MAX_PIXEL).contains(&pixel));
-    f64::from(pixel)
+    pixel_in(-MAX_PIXEL..=MAX_PIXEL)
 }
 
 /// A whole-pixel minimum height in `0..=MAX_MIN_HEIGHT`.
 fn whole_pixel_min_height() -> f64 {
-    let height: i32 = kani::any();
-    kani::assume((0..=MAX_MIN_HEIGHT).contains(&height));
-    f64::from(height)
+    pixel_in(0..=MAX_MIN_HEIGHT)
 }
 
 /// Any finite `f64`.
@@ -81,23 +84,6 @@ fn fractional_min_height() -> f64 {
     let value: f64 = kani::any();
     kani::assume(value.is_finite() && (0.0..=f64::from(MAX_MIN_HEIGHT)).contains(&value));
     value
-}
-
-fn any_kind() -> MinimapMarkerKind {
-    match kani::any::<u8>() % 4 {
-        0 => MinimapMarkerKind::Bookmark,
-        1 => MinimapMarkerKind::Search,
-        2 => MinimapMarkerKind::Modified,
-        _ => MinimapMarkerKind::LongLine,
-    }
-}
-
-fn any_fit() -> ProjectedBoundsFit {
-    if kani::any() {
-        ProjectedBoundsFit::RejectOutside
-    } else {
-        ProjectedBoundsFit::ClampOutside
-    }
 }
 
 fn any_bounds(coordinate: fn() -> f64) -> MinimapProjectedBounds {
@@ -158,7 +144,7 @@ fn native_slider_fit_never_panics() {
 #[kani::proof]
 fn marker_fit_never_panics() {
     let fitted = fit_marker_bounds(
-        any_kind(),
+        kani::any::<MinimapMarkerKind>(),
         kani::any(),
         kani::any(),
         any_marker_space(kani::any::<f64>, kani::any::<f64>),
@@ -177,7 +163,7 @@ fn projected_fit_never_panics() {
         kani::any(),
         any_projection_space(kani::any::<f64>),
         kani::any(),
-        any_fit(),
+        kani::any::<ProjectedBoundsFit>(),
     );
     if let Some(bounds) = fitted {
         assert!(is_finite_bounds(bounds));
@@ -241,7 +227,7 @@ fn fitted_marker(
     let raw_top = coordinate();
     let raw_bottom = coordinate();
     let space = any_marker_space(coordinate, min_height);
-    let bounds = fit_marker_bounds(any_kind(), raw_top, raw_bottom, space)?;
+    let bounds = fit_marker_bounds(kani::any::<MinimapMarkerKind>(), raw_top, raw_bottom, space)?;
     let (lower, upper) = band(space.content_top, space.content_bottom, space.strip_height);
     kani::cover!(raw_top.min(raw_bottom) < lower, "clamped at the top");
     kani::cover!(raw_top.max(raw_bottom) > upper, "clamped at the bottom");
@@ -277,18 +263,12 @@ fn marker_bounds_stay_in_content_for_finite_f64() {
 /// `expanded_to_min_height_reaches_the_minimum_on_whole_pixels`.
 #[kani::proof]
 fn min_height_expansion_reaches_the_minimum_on_small_whole_pixels() {
-    let small = || {
-        let pixel: i32 = kani::any();
-        kani::assume((-SMALL_PIXEL..=SMALL_PIXEL).contains(&pixel));
-        f64::from(pixel)
-    };
+    let small = || pixel_in(-SMALL_PIXEL..=SMALL_PIXEL);
     let lower = small();
     let upper = small();
     let top = small();
     let bottom = small();
-    let min_height: i32 = kani::any();
-    kani::assume((0..=SMALL_MIN_HEIGHT).contains(&min_height));
-    let min_height = f64::from(min_height);
+    let min_height = pixel_in(0..=SMALL_MIN_HEIGHT);
     kani::assume(lower < upper && lower <= top && top <= bottom && bottom <= upper);
     let (top, bottom) = expanded_to_min_height(top, bottom, lower, upper, min_height);
     kani::cover!(bottom - top > 0.0, "a non-empty result");
@@ -318,7 +298,6 @@ struct ProjectedFit {
     raw_bottom: f64,
     lower: f64,
     upper: f64,
-    min_height: f64,
     fit: ProjectedBoundsFit,
     fitted: Option<MinimapProjectedBounds>,
 }
@@ -330,7 +309,7 @@ fn projected_fit(coordinate: fn() -> f64, min_height: fn() -> f64) -> ProjectedF
     let raw_bottom = coordinate();
     let space = any_projection_space(coordinate);
     let min = min_height();
-    let fit = any_fit();
+    let fit: ProjectedBoundsFit = kani::any();
     let fitted = fit_projected_bounds(x, width, raw_top, raw_bottom, space, min, fit);
     let (lower, upper) = band(space.content_top, space.content_bottom, space.target_height);
     if fitted.is_some() {
@@ -348,7 +327,6 @@ fn projected_fit(coordinate: fn() -> f64, min_height: fn() -> f64) -> ProjectedF
         raw_bottom,
         lower,
         upper,
-        min_height: min,
         fit,
         fitted,
     }

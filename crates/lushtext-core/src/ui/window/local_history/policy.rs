@@ -64,10 +64,7 @@ pub(super) const PREVIEW_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
 /// outgrowing it on either small or large desktops.
 ///
 /// Whole pixels throughout: the share is `target_permille` thousandths of the
-/// parent axis, rounded half up. That equals the `f64` form it replaced,
-/// `round(parent * fraction)`, for the shipped 900 and 880: 880 thousandths
-/// never lands on a half, and 900 thousandths lands on one only where the
-/// `f64` product rounded up too.
+/// parent axis, rounded half up.
 #[must_use]
 pub(super) fn parent_relative_dialog_axis_size(
     parent_axis: i32,

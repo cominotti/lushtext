@@ -22,40 +22,24 @@
 
 use super::{
     AdaptiveShellInputs, DUAL_PANE_LAYOUT_OVERHEAD_SP, MIN_EDITOR_CONTENT_WIDTH_SP,
-    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, SecondarySurface,
+    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation,
     WORKSPACE_BREAKPOINT_MAX_WIDTH_SP, derive_adaptive_shell_layout, desired_properties_share,
     effective_properties_share, effective_workspace_sidebar_width_sp,
     properties_breakpoint_max_width_sp, workspace_sidebar_share,
 };
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
-/// The largest workspace width any preset can produce.
-const MAX_WORKSPACE_WIDTH_SP: i32 = 440;
-
-/// Any preset.
-fn any_preset() -> WorkspaceSidebarWidthPreset {
-    let index: u32 = kani::any();
-    kani::assume(index < 3);
-    WorkspaceSidebarWidthPreset::from_index(index).expect("indices 0..3 name presets")
-}
-
-/// Any compact-surface choice, including none.
-fn any_compact_surface() -> Option<SecondarySurface> {
-    match kani::any::<u8>() % 3 {
-        0 => None,
-        1 => Some(SecondarySurface::Workspace),
-        _ => Some(SecondarySurface::DocumentProperties),
-    }
-}
+/// The largest workspace width any preset can produce: the `Large` maximum.
+const MAX_WORKSPACE_WIDTH_SP: i32 = WorkspaceSidebarWidthPreset::Large.max_width_sp();
 
 /// Any input the shell can hand the policy.
 fn any_inputs() -> AdaptiveShellInputs {
     AdaptiveShellInputs {
         window_width: kani::any(),
-        workspace_preset: any_preset(),
+        workspace_preset: kani::any(),
         workspace_requested_visible: kani::any(),
         properties_requested_visible: kani::any(),
-        compact_surface: any_compact_surface(),
+        compact_surface: kani::any(),
         focus_mode_active: kani::any(),
     }
 }
