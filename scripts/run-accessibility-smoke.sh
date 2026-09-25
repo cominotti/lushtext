@@ -972,9 +972,27 @@ replace-needle beta
 EOF
 }
 
+# The Open popover filters recent documents by fuzzy subsequence over the
+# whole path, so the fixture paths must not depend on where the checkout or the
+# artifact directory lives: a long enough checkout path fuzzily contains
+# `no-such-recent-document` and the no-match capture then lists every row. The
+# fixtures therefore live under one short, fixed-shape root in /tmp, which is
+# the only path text a query can match against, and which is removed on exit.
+RECENT_FIXTURE_ROOT=""
+
+# Called directly, never in a command substitution: the root and its EXIT
+# trap must belong to this shell, not a subshell that would delete it at once.
+ensure_recent_fixture_root() {
+    if [[ -z "$RECENT_FIXTURE_ROOT" ]]; then
+        RECENT_FIXTURE_ROOT="$(mktemp -d /tmp/lt-a11y-recent-XXXXXX)"
+        trap 'rm -rf -- "$RECENT_FIXTURE_ROOT"' EXIT
+    fi
+}
+
 seed_recent_documents_for_capture() {
     local capture="$1"
-    local recent_root="$ARTIFACT_DIR/fixtures/recent-documents"
+    ensure_recent_fixture_root
+    local recent_root="$RECENT_FIXTURE_ROOT/recent-documents"
     local deep_root="$recent_root/Long Workspace Name With Spaces/Deeply Nested Folder With A Very Long Segment"
     local alpha="$recent_root/Accessibility Recent Report.txt"
     local mixed="$recent_root/Mixed CASE Notes.md"
