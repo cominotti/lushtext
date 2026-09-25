@@ -533,6 +533,110 @@ pub const fn set_aside_name_step(slot: SetAsideSlot) -> SetAsideNameStep {
     }
 }
 
+// --- 8. one journal per process ------------------------------------------------
+
+/// Who holds the process's journal lane, as the window asking for it sees it.
+///
+/// The lane orders every registration, body-write pass, deletion, and orphan
+/// cleanup pass of **every** window of the process: the manifest write lock and
+/// the target guard serialize single I/O steps, but only the lane keeps one
+/// window's cleanup out of another window's register → write → commit pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum JournalLaneHolder {
+    /// Nobody: the lane is free.
+    Nobody,
+    /// The asking window, for other journal work of its own.
+    ThisWindow,
+    /// Another window of the process.
+    OtherWindow,
+}
+
+/// What journal work does when it asks for the lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalLaneAdmission {
+    /// Take the lane and start.
+    Admit,
+    /// Mark the window pending and return; it is woken when the lane frees.
+    /// Never a queue, so a burst of ticks cannot fan out.
+    MarkPending,
+}
+
+/// Admit journal work only on a free lane, whichever window holds it.
+#[must_use]
+pub const fn journal_lane_admission(holder: JournalLaneHolder) -> JournalLaneAdmission {
+    match holder {
+        JournalLaneHolder::Nobody => JournalLaneAdmission::Admit,
+        JournalLaneHolder::ThisWindow | JournalLaneHolder::OtherWindow => {
+            JournalLaneAdmission::MarkPending
+        }
+    }
+}
+
+/// Which window of the process owns one draft id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum DraftClaim {
+    /// No window has an editor for the id.
+    Unclaimed,
+    /// The asking window owns it.
+    ThisWindow,
+    /// Another window of the process owns it.
+    OtherWindow,
+}
+
+/// What opening a document does with the draft id its path derives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftOpenDecision {
+    /// Open it here; this window now owns the id.
+    OpenHere,
+    /// Present the window that owns it and select its tab instead: a second
+    /// editor for the id would give its unsaved work no durable home.
+    PresentOwner,
+}
+
+/// Decide an open from the id's claim.
+#[must_use]
+pub const fn draft_open_decision(claim: DraftClaim) -> DraftOpenDecision {
+    match claim {
+        DraftClaim::Unclaimed | DraftClaim::ThisWindow => DraftOpenDecision::OpenHere,
+        DraftClaim::OtherWindow => DraftOpenDecision::PresentOwner,
+    }
+}
+
+/// Whether a window may restore, autosave, or delete a draft id.
+///
+/// The backstop behind [`draft_open_decision`]: an editor that exists for an
+/// id another window owns (reached by a path the open redirect does not see)
+/// holds, rather than writing over or deleting the owner's accepted body.
+#[must_use]
+pub const fn window_may_journal_draft(claim: DraftClaim) -> bool {
+    !matches!(claim, DraftClaim::OtherWindow)
+}
+
+/// What a window's startup data flow does with the session and its drafts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartupRestore {
+    /// Restore the session's tabs and drafts, and own orphan-cleanup
+    /// scheduling for the process.
+    RestoreSession,
+    /// Start with no restored tabs, as a new window does: an earlier window of
+    /// the process already restored them, and restoring again would put the
+    /// same draft ids in two windows.
+    StartEmpty,
+}
+
+/// Restore once per process: only the first window to reach its startup data
+/// flow does.
+#[must_use]
+pub const fn startup_restore(process_already_restored: bool) -> StartupRestore {
+    if process_already_restored {
+        StartupRestore::StartEmpty
+    } else {
+        StartupRestore::RestoreSession
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Characterization of every decision the journal core took over from its
@@ -813,6 +917,47 @@ mod tests {
                 "{facts:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_journal_lane_admits_only_when_no_window_holds_it() {
+        assert_eq!(
+            journal_lane_admission(JournalLaneHolder::Nobody),
+            JournalLaneAdmission::Admit
+        );
+        assert_eq!(
+            journal_lane_admission(JournalLaneHolder::ThisWindow),
+            JournalLaneAdmission::MarkPending
+        );
+        assert_eq!(
+            journal_lane_admission(JournalLaneHolder::OtherWindow),
+            JournalLaneAdmission::MarkPending
+        );
+    }
+
+    #[test]
+    fn a_draft_id_has_one_owning_window() {
+        assert_eq!(
+            draft_open_decision(DraftClaim::Unclaimed),
+            DraftOpenDecision::OpenHere
+        );
+        assert_eq!(
+            draft_open_decision(DraftClaim::ThisWindow),
+            DraftOpenDecision::OpenHere
+        );
+        assert_eq!(
+            draft_open_decision(DraftClaim::OtherWindow),
+            DraftOpenDecision::PresentOwner
+        );
+        assert!(window_may_journal_draft(DraftClaim::Unclaimed));
+        assert!(window_may_journal_draft(DraftClaim::ThisWindow));
+        assert!(!window_may_journal_draft(DraftClaim::OtherWindow));
+    }
+
+    #[test]
+    fn only_the_first_window_restores_the_session() {
+        assert_eq!(startup_restore(false), StartupRestore::RestoreSession);
+        assert_eq!(startup_restore(true), StartupRestore::StartEmpty);
     }
 
     #[test]

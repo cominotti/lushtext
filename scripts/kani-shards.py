@@ -119,6 +119,14 @@ RESAMPLED_IN = (
 # two dispatched runs on the final form of the change (max of the two, rounded
 # up); both runs also re-measured every older shard inside its recorded figure.
 CLOSED_LOOP_MEASURED_IN = "runs 36136602024, 36139028016 (max of the two)"
+# A new or re-modelled shard's placeholder budget until the first dispatched
+# kani.yml run is recorded (the precedent of `extend-kani-to-pure-policies` and
+# `extend-closed-loop-geometry-verification`); `check` accepts it only while it
+# stays inside the margins, and it is replaced by measured figures before the
+# change lands.
+PROVISIONAL = "PROVISIONAL placeholder until the first dispatched run is recorded"
+PROVISIONAL_MINUTES = 20.0
+PROVISIONAL_PEAK_GIB = 10.0
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -209,23 +217,43 @@ SHARDS: dict[str, Shard] = {
     "core-journal-and-write": Shard(
         "lushtext-core",
         (
-            "services::draft_service::kani_proofs::journal_",
-            "services::draft_service::kani_proofs::a_dirty_editor_",
+            "services::draft_service::kani_proofs::journal_invariants_hold_under_crashes",
+            "services::draft_service::kani_proofs::journal_set_aside_",
             "services::draft_service::set_aside_retention::kani_proofs::",
             "services::filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=21.2,
-        ci_peak_gib=8.3,
-        measured_in=RESAMPLED_IN,
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
+    ),
+    # verify-multi-window-draft-journal added the journal lane to the model,
+    # which made the two L1 harnesses too slow to share the journal shard.
+    "core-journal-liveness": Shard(
+        "lushtext-core",
+        ("services::draft_service::kani_proofs::a_dirty_editor_",),
+        gate="scheduled",
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
     ),
     "core-second-writer": Shard(
         "lushtext-core",
         ("services::draft_service::kani_proofs::a_second_writer_",),
         gate="scheduled",
-        ci_minutes=17.4,
-        ci_peak_gib=8.9,
-        measured_in=RESAMPLED_IN,
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
+    ),
+    # verify-multi-window-draft-journal: two windows of one process over the
+    # journal machine, too large to share a job with the single-window harness.
+    "core-multi-window": Shard(
+        "lushtext-core",
+        ("services::draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
+        gate="scheduled",
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
     ),
     "core-memory-policy": Shard(
         "lushtext-core",
