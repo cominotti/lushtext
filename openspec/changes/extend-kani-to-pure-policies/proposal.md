@@ -75,11 +75,17 @@ recognition.
 - **Whole pixels at the policy boundary, enforced mechanically** (maintainer
   decisions during implementation, design D8 and D9). The preview-width clamp
   becomes integer-only, converted to `f64` once at the split view. Every pure
-  geometry or budget policy module carries `#![deny(clippy::float_arithmetic)]`,
-  admitting a genuinely fractional value only through a reasoned
-  function-level `#[expect]`, and `make check-workflow-boundaries` fails when a
-  listed module or a new geometry `policy.rs` lacks the deny. New requirement
-  in `workflow-readability-boundaries`.
+  geometry or budget policy module forbids `clippy::float_arithmetic` and
+  `clippy::disallowed_methods` (the root `clippy.toml` lists the float methods
+  that do arithmetic by call); only the minimap, whose GTK widget coordinates
+  are fractional, denies them instead and admits each fractional function
+  through a reasoned `#[expect]` on the function, under a recorded ceiling.
+  `make check-workflow-boundaries` fails on a missing attribute, on any
+  lint-lowering attribute Clippy's own gates miss (in the module or a child
+  file), on excess admissions, and on drift between the convention's table and
+  its own list (design D10). New requirement in
+  `workflow-readability-boundaries`; the `rust-linting-policy` requirement on
+  `clippy.toml` is modified for this one scoped, audited ban.
 - **Add a Kani shard.** The shard `core-pure-policies` enters the shard table
   with a runner measurement inside the budget. It is gated `pull-request` only
   if its measured cold wall time is at most 15 minutes. Otherwise it is
@@ -115,6 +121,9 @@ _None._
 - `workflow-readability-boundaries`: new requirement. Pure geometry and budget
   policies do whole-pixel arithmetic, enforced by Clippy and the boundary
   check.
+- `rust-linting-policy`: one modified requirement. `clippy.toml` may hold a ban
+  whose lint the workspace allows and only audited modules raise (the
+  whole-pixel float-method list).
 - `workspace-sidebar-width-policy`: one modified requirement and one new one.
   The modified "deterministic and persistent" requirement adds that a
   non-finite stored value resolves to the default preset. The new requirement

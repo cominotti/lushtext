@@ -425,11 +425,35 @@ triaged like a failing test:
   the comparison form of `from_fraction` agrees with the nearest-delta form
   everywhere except that form's own `f64::EPSILON` tie band, where it had
   said `Comfy` (`tests/properties/width_preset.rs`). The geometry and budget
-  policy modules deny `clippy::float_arithmetic`; only the minimap fits and
-  the local-history size display still admit it, each through a reasoned
-  function-level `expect`, and rule 10 of `make check-workflow-boundaries`
-  fails a listed module or a new geometry `policy.rs` without the deny —
-  proved failing first on the real tree.
+  policy modules deny `clippy::float_arithmetic`, and rule 10 of
+  `make check-workflow-boundaries` fails a listed module or a new geometry
+  `policy.rs` without the deny — proved failing first on the real tree.
+- **The whole-pixel enforcement, hardened (design D10).** An adversarial review
+  found that both layers could be walked past: a reasoned `expect` on an
+  `impl`, an inline `mod`, or a `mod x;` line; a child file's own inner
+  `expect`; a `cfg_attr` or group-level (`restriction`) lowering; a module-level
+  inner `allow`, which Clippy's `allow_attributes` ignores (re-verified with a
+  scratch crate; the simplify pass had wrongly dropped rule 10's scan for it);
+  float arithmetic by method call (`mul_add`, `powi`, `sqrt`, `midpoint`, …),
+  which `float_arithmetic` does not see; and a deny that counted inside a block
+  comment. Six of the seven modules now **forbid**
+  `clippy::float_arithmetic` and `clippy::disallowed_methods` (the root
+  `clippy.toml` lists the float methods, allowed workspace-wide), which rustc
+  lets nothing beneath lower. The minimap keeps the pair as `deny` with a
+  recorded ceiling of **10** admitted functions. Rule 10 now reads
+  comment-stripped code, scans child files, rejects every lint-lowering
+  attribute but a function-level `expect`, and checks the convention's table
+  against its own list; all 25 escape fixtures are findings, 20 of which the
+  previous rule passed. Three exceptions were removed, each against a dense
+  equivalence test with the replaced `f64` form: `format_bytes` (integer
+  tenths, ties to even; identical below 2^53 bytes), the minimap's wide-editor
+  ratio (`map * 5 > editor`; identical for every `i32` pair), and
+  `MinimapMarkerBounds::height` (the subtraction moved to its one cairo
+  caller). Focus Mode's `readable_column_margin`, an unlisted whole-pixel
+  decision, moved into `ui/window/focus_mode/policy.rs` on Pango units
+  (identical for every `i32` input). The minimap's marker lane widths stay
+  fractional and admitted; making them whole-pixel would change what is drawn,
+  so it is recorded as a maintainer option. No harnessed function changed.
 
 Mutation scope (`make mutants-list`, 5,919 → 5,919 mutants): `ui/markdown_preview/policy.rs`
 177 → 188, a **gain from zero** (the clamp had 0 mutants in

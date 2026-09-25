@@ -311,10 +311,10 @@ adapter boundary, wherever the value is not inherently fractional.
 - **Inherently fractional, kept in `f64` with the domain stated:** the minimap
   fit functions and their helpers, whose inputs are GTK widget coordinates and
   scroll-adjustment values that are fractional under scaling and smooth
-  scrolling (13 functions carry a reasoned `expect`), and the local-history
-  size display (`format_bytes`, one decimal place of a MiB or KiB, whose
-  half-even formatting an integer form would change). Each states its domain
-  in its rustdoc, as the slice-bin geometry does.
+  scrolling. Each states its domain in its rustdoc, as the slice-bin geometry
+  does. At the end of D9 thirteen functions carried a reasoned `expect` (twelve
+  in the minimap and the local-history size display `format_bytes`); D10 made
+  three of them whole-pixel, leaving ten, all in the minimap.
 - **Editor memory** was integer arithmetic already.
 
 ### D9. Enforce the whole-pixel rule mechanically (maintainer decision, during implementation)
@@ -333,9 +333,10 @@ layers:
   `model/editor_memory.rs` (already integer; the deny keeps it so), and,
   because convention amendments apply retroactively, the two other migrated
   policies holding geometry: `ui/window/local_history/policy.rs` (one
-  admitted function, the size display) and `ui/window/focus_mode/policy.rs`
-  (a comparison only). Only the minimap policy and that display function
-  still admit float arithmetic.
+  admitted function at the time, the size display) and
+  `ui/window/focus_mode/policy.rs` (a comparison only). D10 superseded the
+  attribute: six of these modules now forbid the lint pair, and only the
+  minimap still admits float arithmetic.
 - **Policy check.** Rule 10 of `scripts/check-workflow-boundaries.py` declares
   `WHOLE_PIXEL_POLICY_MODULES` and `GEOMETRY_ROLE_HOMES` and fails on a missing
   deny, any `allow` of the lint, a module-wide `expect`, an `expect` without a
@@ -352,6 +353,79 @@ layers:
 - **Normative home:** the "Whole-pixel geometry policy" section of
   `.agents/rules/workflow-convention.md`; `rust.md` and `AGENTS.md` point to
   it.
+
+### D10. Harden the whole-pixel enforcement (adversarial review, during implementation)
+
+A review of D9 at `ecd1dcbb` walked past both layers. Clippy's
+`allow_attributes` ignores inner attributes and `cfg_attr`, and neither it nor
+`allow_attributes_without_reason` notices a reasoned `expect` on an `impl`, an
+inline `mod`, or a `mod x;` line, or a child file's own inner `expect`. Group
+lowerings (`restriction` with `blanket_clippy_restriction_lints`) and
+`cfg_attr(all(), …)` passed too. `float_arithmetic` sees only operators, so
+`mul_add`, `powi`, `powf`, `sqrt`, `div_euclid`, `rem_euclid`, `recip`,
+`hypot`, and `f64::midpoint` (which the workspace's `manual_midpoint` pushes
+toward) escaped it. Rule 10 matched the deny even inside a block comment, and it
+never scanned child files. The simplify pass had removed rule 10's `allow` scan
+on the claim that the workspace lints cover it; a scratch crate showed a
+module-level inner `#![allow(clippy::float_arithmetic, reason = …)]` passes
+Clippy, so that claim was wrong for inner attributes. Readable-column margins
+(`ui/editor_page/focus_mode.rs`) were an unlisted whole-pixel decision, and the
+module list lived in three places with no agreement check.
+
+- **Forbid where nothing is admitted.** A module with no fractional function
+  carries `#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]`;
+  rustc rejects any lowering beneath it (E0453), in items, child modules, and
+  child files alike. Six of the seven modules forbid. The minimap keeps the pair
+  as `deny`, because GTK widget coordinates are fractional; rule 10 records its
+  ceiling of admitted functions (10) and fails on excess, as the `*_for_test`
+  ceiling does.
+- **Rule 10 for `deny` modules.** Comment- and literal-stripped reading; the
+  module and its child files (`x.rs` → `x/**/*.rs`, except a gated
+  `kani_proofs.rs`); every attribute that changes the level of either lint or a
+  group holding one (`restriction`, `style`, `all`,
+  `blanket_clippy_restriction_lints`) is a finding unless it is an outer
+  `expect` directly on a `fn`; `#[path]` and `include!` are findings because
+  they move text out of the scan. Two `expect`s on one function count once.
+- **Float methods.** The root `clippy.toml` lists the methods above for `f64`
+  and `f32`, each with a reason; `[workspace.lints.clippy]` allows
+  `disallowed_methods`, so the list bites only where a protected module raises
+  it. Nothing else in the workspace used `disallowed_methods`. The
+  `rust-linting-policy` requirement on `clippy.toml` is amended for this one
+  scoped, audited ban. `expanded_to_min_height`'s `f64::midpoint` gained a
+  `disallowed_methods` admission beside its `float_arithmetic` one.
+- **One list, checked.** The script's `WHOLE_PIXEL_POLICY_MODULES` maps each
+  module to its ceiling; the convention's table must match it (path, level, and
+  ceiling) at the real-tree entry point. The spec names the table instead of
+  enumerating modules.
+- **Exceptions removed**, each against a dense equivalence test with the
+  replaced `f64` form (kept as the test's reference, outside the forbidding
+  module where it needs float arithmetic):
+  - `format_bytes`: integer tenths, ties to even, matching `{:.1}` (1280 B is
+    "1.2 KB"). Identical for every size below 2^53 bytes, checked densely to
+    2^27 in a scratch program and in-tree to 2 MiB plus 65,536 MiB ties; above
+    2^53 the old form rounded the size to `f64` first and the new one is exact.
+  - The wide-editor ratio: `map * 5 > editor` in `i64`, replacing
+    `map as f64 / editor as f64 > 0.20`. Identical for every `i32` pair (a
+    ratio of two `i32` values that is not exactly one fifth is at least
+    10^-10 from it; the two forms could differ only within a few ulps).
+  - `MinimapMarkerBounds::height`: removed; its one caller, the cairo draw in
+    `projection_execution.rs`, subtracts the edges itself, and the two widget
+    tests compare `bottom > top`.
+  - Readable-column margins: moved to `ui/window/focus_mode/policy.rs` as
+    `readable_column_margin(width, char_width_pango_units, columns)`, computing
+    `floor((width * SCALE - char_width * columns) / (2 * SCALE))` with
+    `div_euclid` in `i64`. Identical for every `i32` width and character width
+    and `u32` column count (a dense sweep plus a property test); the adapter
+    passes `metrics.approximate_char_width()` straight through and asserts the
+    policy's `PANGO_UNITS_PER_PIXEL` equals `pango::SCALE`.
+- **Kept, as a maintainer option:** the marker lane widths
+  (`marker_lane_width`, `marker_lane_x`) take fractional shares (0.82, 0.64,
+  0.46) of the strip width. Rounding them to whole pixels would change what is
+  drawn, so they stay admitted; making them whole-pixel is a visual decision for
+  the maintainer, not a refactor.
+- **Proved failing first:** every escape fixture was replayed against the
+  previous rule 10 (`4032e411`); 20 of the 25 finding cases passed it and now
+  fail. No harnessed function changed.
 
 ## Risks / Trade-offs
 
