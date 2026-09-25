@@ -119,14 +119,10 @@ RESAMPLED_IN = (
 # two dispatched runs on the final form of the change (max of the two, rounded
 # up); both runs also re-measured every older shard inside its recorded figure.
 CLOSED_LOOP_MEASURED_IN = "runs 36136602024, 36139028016 (max of the two)"
-# A new or re-modelled shard's placeholder budget until the first dispatched
-# kani.yml run is recorded (the precedent of `extend-kani-to-pure-policies` and
-# `extend-closed-loop-geometry-verification`); `check` accepts it only while it
-# stays inside the margins, and it is replaced by measured figures before the
-# change lands.
-PROVISIONAL = "PROVISIONAL placeholder until the first dispatched run is recorded"
-PROVISIONAL_MINUTES = 20.0
-PROVISIONAL_PEAK_GIB = 10.0
+# The shards verify-multi-window-draft-journal added or re-modelled come from
+# two dispatched runs on the final form of the change (max of the two,
+# rounded up).
+MULTI_WINDOW_MEASURED_IN = "runs 36172512752, 36180356173 (max of the two)"
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -223,9 +219,9 @@ SHARDS: dict[str, Shard] = {
             "services::filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=10.2,
+        ci_peak_gib=2.6,
+        measured_in=MULTI_WINDOW_MEASURED_IN,
     ),
     # verify-multi-window-draft-journal added the journal lane to the model,
     # which made the two L1 harnesses too slow to share the journal shard.
@@ -233,17 +229,17 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("services::draft_service::kani_proofs::a_dirty_editor_",),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=14.5,
+        ci_peak_gib=4.8,
+        measured_in=MULTI_WINDOW_MEASURED_IN,
     ),
     "core-second-writer": Shard(
         "lushtext-core",
         ("services::draft_service::kani_proofs::a_second_writer_",),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=6.6,
+        ci_peak_gib=2.7,
+        measured_in=MULTI_WINDOW_MEASURED_IN,
     ),
     # verify-multi-window-draft-journal: two windows of one process over the
     # journal machine, too large to share a job with the single-window harness.
@@ -251,9 +247,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("services::draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=8.0,
+        ci_peak_gib=2.7,
+        measured_in=MULTI_WINDOW_MEASURED_IN,
     ),
     "core-memory-policy": Shard(
         "lushtext-core",
