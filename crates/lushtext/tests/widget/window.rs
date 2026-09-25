@@ -8,7 +8,8 @@
 //! lazy-restore freshness, generation acceptance, and close safety.
 
 use crate::common::{
-    EditorLoadDelayReset, action_state_bool, activate_action, editor_text,
+    DraftPipelinePolicyReset, EditorLoadDelayReset, FirstDirtyAutosaveDelayReset,
+    OrphanCleanupPolicyReset, action_state_bool, activate_action, editor_text,
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
     fs_metadata, fs_mutate, fs_read, isolated_data_dir, present_window, test_application,
     wait_until,
@@ -141,14 +142,6 @@ impl Drop for BookmarkExcerptPreviewDelayReset {
     }
 }
 
-struct FirstDirtyAutosaveDelayReset;
-
-impl Drop for FirstDirtyAutosaveDelayReset {
-    fn drop(&mut self) {
-        set_first_dirty_autosave_delay_for_test(750);
-    }
-}
-
 struct RestoreDelayReset;
 
 impl Drop for RestoreDelayReset {
@@ -162,26 +155,6 @@ struct CloseSafetyCompletionDelayReset;
 impl Drop for CloseSafetyCompletionDelayReset {
     fn drop(&mut self) {
         set_close_safety_completion_delay_for_test(0);
-    }
-}
-
-struct DraftPipelinePolicyReset;
-
-impl Drop for DraftPipelinePolicyReset {
-    fn drop(&mut self) {
-        set_automatic_draft_limit_for_test(draft_service::MAX_AUTOMATIC_DRAFT_BYTES);
-        set_lazy_draft_read_delay_for_test(0);
-        set_draft_mutation_delays_for_test(0, 0, 0);
-        set_draft_manifest_completion_delay_for_test(0);
-        fail_next_draft_mutations_for_test(false, false, false);
-    }
-}
-
-struct OrphanCleanupPolicyReset;
-
-impl Drop for OrphanCleanupPolicyReset {
-    fn drop(&mut self) {
-        set_orphan_cleanup_delays_for_test(2_000, 30_000, 0);
     }
 }
 

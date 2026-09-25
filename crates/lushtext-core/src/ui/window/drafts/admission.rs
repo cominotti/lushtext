@@ -1,6 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Bounded admission for restoring draft bodies into GTK.
+//! Admission to the draft journal: the process's one journal lane, draft-id
+//! ownership across windows, once-per-process startup restore, and bounded
+//! admission for restoring draft bodies into GTK.
+//!
+//! ## One journal per process
+//!
+//! The manifest write lock and the stable target guard are process-wide, but
+//! they serialize single I/O steps only. What keeps orphan cleanup out of a
+//! register → body write → commit pass, and out of a deletion's body-then-entry
+//! steps, is the journal **lane**, and it has to be process-wide too: with a
+//! lane per window, one window's cleanup retired the entry another window had
+//! just registered, and deleted an untitled body another window had written
+//! but not yet committed (the two-window Kani journal harness found both; see
+//! the programme record, phase 4). [`ProcessDraftJournal`] is that lane, plus
+//! the two other things a second window must not repeat: the claim on each
+//! draft id (one window's autosave, restore, and deletion per id), and the
+//! startup session restore, which the first window to reach it performs and no
+//! later window repeats. It also keeps every window's manifest copy the
+//! persisted one: a commit, an authority change, or a cleanup removal in one
+//! window is mirrored into every other window's copy, so no window acts on a
+//! stale entry another window already retired.
+//!
+//! It is per application, not a process global: widget tests build many
+//! applications in one process, and each must start with its own journal.
+//! Production has one application per process, so the two coincide. The
+//! per-window `mutation_inflight` / `orphan_cleanup_inflight` flags stay, as
+//! projections of "this window holds the lane" that `DraftEvidence` and the
+//! `draft-autosave` readiness blocker read.
+//!
+//! ## Restoring bodies
 //!
 //! *Reserve then settle.* A restored draft body can be 64 MiB, so exactly one
 //! crosses the worker boundary at a time and each one holds a disposal
@@ -10,6 +39,10 @@
 //! no headroom, every eager body is demoted to a compact lazy marker *before*
 //! this module returns, so GTK never owns an unguarded recovery body.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::glib;
@@ -17,6 +50,10 @@ use gtk4::prelude::*;
 
 use crate::model::draft::{
     DraftEntry, FileDraftRestoreResolution, PreloadedDraftRestore, PreloadedDraftSkip,
+};
+use crate::model::draft::{DraftManifest, DraftManifestAuthority};
+use crate::services::draft_service::journal_core::{
+    self, DraftClaim, JournalLaneAdmission, JournalLaneHolder,
 };
 use crate::services::{draft_service, json_store};
 use crate::ui::editor_page::LushtextEditorPage;
@@ -207,5 +244,391 @@ impl LushtextWindow {
             drafts.lazy_restore_inflight.get(),
             !drafts.lazy_restore_queue.borrow().is_empty(),
         )
+    }
+}
+
+/// Identity of one window inside its application's draft journal.
+type JournalWindowKey = u64;
+
+/// The draft journal state every window of one application shares.
+///
+/// GTK-thread only: every field is a `Cell` or `RefCell`, reached through the
+/// `Rc` each window keeps from its construction.
+#[derive(Default)]
+pub(crate) struct ProcessDraftJournal {
+    /// The application this journal belongs to.
+    application: glib::WeakRef<gtk4::Application>,
+    next_key: Cell<JournalWindowKey>,
+    /// Every live window, in creation order (the order session saves use).
+    windows: RefCell<Vec<(JournalWindowKey, glib::WeakRef<LushtextWindow>)>>,
+    /// The window holding the journal lane.
+    lane: Cell<Option<JournalWindowKey>>,
+    /// Whether a wakeup of the windows waiting for the lane is queued.
+    wake_queued: Cell<bool>,
+    /// Which window owns each draft id it has restored, autosaved, or deleted.
+    claims: RefCell<HashMap<String, JournalWindowKey>>,
+    /// Whether a window already ran the startup session restore.
+    session_restored: Cell<bool>,
+    /// The window that schedules orphan cleanup for the process.
+    cleanup_owner: Cell<Option<JournalWindowKey>>,
+    /// Process-wide ordering for session saves from any window.
+    session_generation: Cell<u64>,
+    /// Whether the application's `window-removed` handler is connected.
+    watching_removals: Cell<bool>,
+}
+
+thread_local! {
+    /// One journal per live application; dead entries are pruned on lookup.
+    static JOURNALS: RefCell<Vec<Rc<ProcessDraftJournal>>> = const { RefCell::new(Vec::new()) };
+}
+
+impl ProcessDraftJournal {
+    /// The journal of `application`, created on first use.
+    fn of(application: &gtk4::Application) -> Rc<Self> {
+        JOURNALS.with(|journals| {
+            let mut journals = journals.borrow_mut();
+            journals.retain(|journal| journal.application.upgrade().is_some());
+            if let Some(journal) = journals
+                .iter()
+                .find(|journal| journal.application.upgrade().as_ref() == Some(application))
+            {
+                return Rc::clone(journal);
+            }
+            let journal = Rc::new(Self::default());
+            journal.application.set(Some(application));
+            journals.push(Rc::clone(&journal));
+            journal
+        })
+    }
+
+    fn window(&self, key: JournalWindowKey) -> Option<LushtextWindow> {
+        self.windows
+            .borrow()
+            .iter()
+            .find(|(candidate, _)| *candidate == key)
+            .and_then(|(_, window)| window.upgrade())
+    }
+
+    /// Every live window except `key`, in creation order.
+    fn peers(&self, key: JournalWindowKey) -> Vec<LushtextWindow> {
+        self.windows
+            .borrow()
+            .iter()
+            .filter(|(candidate, _)| *candidate != key)
+            .filter_map(|(_, window)| window.upgrade())
+            .collect()
+    }
+
+    fn holder(&self, key: JournalWindowKey) -> JournalLaneHolder {
+        match self.lane.get() {
+            None => JournalLaneHolder::Nobody,
+            Some(holder) if holder == key => JournalLaneHolder::ThisWindow,
+            Some(_) => JournalLaneHolder::OtherWindow,
+        }
+    }
+
+    /// Release the lane when `key` holds it, and wake the windows that were
+    /// marked pending while it was held.
+    fn release(self: &Rc<Self>, key: JournalWindowKey) {
+        if self.lane.get() != Some(key) {
+            return;
+        }
+        self.lane.set(None);
+        // The releasing window's own continuation runs first (its completion
+        // drives its pending work right after releasing); the other windows
+        // are woken from an idle, and only if the lane is still free then.
+        if self.wake_queued.replace(true) {
+            return;
+        }
+        let journal = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(journal) = journal.upgrade() else {
+                return;
+            };
+            journal.wake_queued.set(false);
+            let waiting: Vec<LushtextWindow> = journal
+                .windows
+                .borrow()
+                .iter()
+                .filter_map(|(_, window)| window.upgrade())
+                .collect();
+            for window in waiting {
+                if journal.lane.get().is_some() {
+                    break;
+                }
+                window.drive_pending_draft_mutations();
+            }
+        });
+    }
+}
+
+impl LushtextWindow {
+    /// Join the draft journal of `application`. Called once, at construction.
+    pub(in crate::ui::window) fn join_process_draft_journal(
+        &self,
+        application: &libadwaita::Application,
+    ) {
+        let journal = ProcessDraftJournal::of(application.upcast_ref());
+        // A destroyed window leaves the application at once (ledger A21) but
+        // is disposed only when its last reference drops, so the journal is
+        // left from `window-removed`, not only from dispose: a window a caller
+        // still references must not keep the lane, its claims, or its tabs.
+        if !journal.watching_removals.replace(true) {
+            application.connect_window_removed(|_, window| {
+                if let Some(window) = window.downcast_ref::<Self>() {
+                    window.leave_process_draft_journal_unless_busy();
+                }
+            });
+        }
+        let key = journal.next_key.get().saturating_add(1);
+        journal.next_key.set(key);
+        journal.windows.borrow_mut().push((key, self.downgrade()));
+        self.imp().drafts.journal_key.set(key);
+        *self.imp().drafts.journal.borrow_mut() = Some(journal);
+    }
+
+    /// Leave the journal when the window leaves its application, or at the
+    /// latest at dispose: release the lane and every claim this window holds,
+    /// exactly once however often either path runs.
+    pub(in crate::ui::window) fn leave_process_draft_journal(&self) {
+        let Some(journal) = self.imp().drafts.journal.borrow_mut().take() else {
+            return;
+        };
+        let key = self.imp().drafts.journal_key.get();
+        journal
+            .windows
+            .borrow_mut()
+            .retain(|(candidate, _)| *candidate != key);
+        journal.claims.borrow_mut().retain(|_, owner| *owner != key);
+        if journal.cleanup_owner.get() == Some(key) {
+            journal.cleanup_owner.set(None);
+        }
+        journal.release(key);
+    }
+
+    /// Leave on `window-removed`, unless this window's journal work is still
+    /// in flight: its lane must stay held until that work's completion
+    /// releases it, or another window's cleanup could run inside the pass.
+    /// The completion then leaves (`release_journal_lane`), and dispose does
+    /// at the latest.
+    fn leave_process_draft_journal_unless_busy(&self) {
+        let drafts = &self.imp().drafts;
+        if drafts.mutation_inflight.get() || drafts.orphan_cleanup_inflight.get() {
+            return;
+        }
+        self.leave_process_draft_journal();
+    }
+
+    fn process_draft_journal(&self) -> Option<Rc<ProcessDraftJournal>> {
+        self.imp().drafts.journal.borrow().clone()
+    }
+
+    /// Who holds the process's journal lane, as this window sees it.
+    pub(super) fn journal_lane_holder(&self) -> JournalLaneHolder {
+        self.process_draft_journal()
+            .map_or(JournalLaneHolder::Nobody, |journal| {
+                journal.holder(self.imp().drafts.journal_key.get())
+            })
+    }
+
+    /// Whether another window's journal work holds the lane right now.
+    pub(super) fn journal_lane_held_elsewhere(&self) -> bool {
+        self.journal_lane_holder() == JournalLaneHolder::OtherWindow
+    }
+
+    /// Take the lane for journal work, when it is free. Returns whether this
+    /// window now holds it; on `false` the caller marks itself pending.
+    pub(super) fn take_journal_lane(&self) -> bool {
+        let Some(journal) = self.process_draft_journal() else {
+            return true;
+        };
+        let key = self.imp().drafts.journal_key.get();
+        if journal_core::journal_lane_admission(journal.holder(key))
+            == JournalLaneAdmission::MarkPending
+        {
+            return false;
+        }
+        journal.lane.set(Some(key));
+        true
+    }
+
+    /// Release the lane this window's journal work held.
+    pub(super) fn release_journal_lane(&self) {
+        if let Some(journal) = self.process_draft_journal() {
+            journal.release(self.imp().drafts.journal_key.get());
+        }
+        // A window removed from its application while this work was in flight
+        // deferred leaving the journal to here.
+        if self.application().is_none() {
+            self.leave_process_draft_journal();
+        }
+    }
+
+    /// Give back a lane taken in this same GTK turn for work that turned out
+    /// to be empty. No other window can have marked itself pending in between,
+    /// so none is woken: waking would re-run a pass that just found nothing.
+    pub(super) fn return_unused_journal_lane(&self) {
+        if let Some(journal) = self.process_draft_journal()
+            && journal.lane.get() == Some(self.imp().drafts.journal_key.get())
+        {
+            journal.lane.set(None);
+        }
+    }
+
+    /// Whether this window has an editor whose draft id is `draft_id`.
+    fn has_editor_for_draft_id(&self, draft_id: &str) -> bool {
+        let Some(tab_view) = self.imp().tab_view.try_get() else {
+            return false;
+        };
+        (0..tab_view.n_pages()).any(|index| {
+            tab_view
+                .nth_page(index)
+                .child()
+                .downcast_ref::<LushtextEditorPage>()
+                .is_some_and(|editor| editor.draft_id().as_deref() == Some(draft_id))
+        })
+    }
+
+    /// Claim `draft_id` for this window's restore, autosave, or deletion.
+    ///
+    /// The first window to claim an id owns it while it keeps an editor for
+    /// it; a claim whose owner no longer has one passes to the asking window.
+    pub(super) fn claim_draft_id(&self, draft_id: &str) -> DraftClaim {
+        let Some(journal) = self.process_draft_journal() else {
+            return DraftClaim::ThisWindow;
+        };
+        let key = self.imp().drafts.journal_key.get();
+        let owner = journal.claims.borrow().get(draft_id).copied();
+        match owner {
+            Some(owner) if owner == key => return DraftClaim::ThisWindow,
+            Some(owner)
+                if journal
+                    .window(owner)
+                    .is_some_and(|window| window.has_editor_for_draft_id(draft_id)) =>
+            {
+                return DraftClaim::OtherWindow;
+            }
+            Some(_) | None => {}
+        }
+        journal
+            .claims
+            .borrow_mut()
+            .insert(draft_id.to_string(), key);
+        DraftClaim::ThisWindow
+    }
+
+    /// Decide this window's startup restore: the first window of the process
+    /// to ask restores the session and owns orphan-cleanup scheduling.
+    pub(in crate::ui::window) fn claim_startup_restore(&self) -> journal_core::StartupRestore {
+        let Some(journal) = self.process_draft_journal() else {
+            return journal_core::StartupRestore::RestoreSession;
+        };
+        let decision = journal_core::startup_restore(journal.session_restored.get());
+        if decision == journal_core::StartupRestore::RestoreSession {
+            journal.session_restored.set(true);
+            journal
+                .cleanup_owner
+                .set(Some(self.imp().drafts.journal_key.get()));
+        }
+        decision
+    }
+
+    /// Whether this window schedules orphan cleanup for the process. The
+    /// first window that asks after the owner closed takes it over.
+    pub(super) fn owns_process_orphan_cleanup(&self) -> bool {
+        let Some(journal) = self.process_draft_journal() else {
+            return true;
+        };
+        let key = self.imp().drafts.journal_key.get();
+        if let Some(owner) = journal.cleanup_owner.get() {
+            owner == key
+        } else {
+            journal.cleanup_owner.set(Some(key));
+            true
+        }
+    }
+
+    /// Mirror a manifest this window just adopted into every other window's
+    /// copy, minus each window's own tombstones, with its authority.
+    pub(super) fn mirror_draft_manifest_to_peers(
+        &self,
+        manifest: &DraftManifest,
+        authority: DraftManifestAuthority,
+    ) {
+        let Some(journal) = self.process_draft_journal() else {
+            return;
+        };
+        for peer in journal.peers(self.imp().drafts.journal_key.get()) {
+            peer.adopt_peer_draft_manifest(manifest.clone(), authority);
+        }
+    }
+
+    /// Mirror orphan-cleanup removals into every other window's copy.
+    pub(super) fn mirror_orphan_removals_to_peers(
+        &self,
+        committed_by_id: &HashMap<String, draft_service::DraftEntryFingerprint>,
+    ) {
+        let Some(journal) = self.process_draft_journal() else {
+            return;
+        };
+        for peer in journal.peers(self.imp().drafts.journal_key.get()) {
+            draft_service::merge_committed_orphan_removals(
+                &mut peer.imp().drafts.manifest.borrow_mut(),
+                committed_by_id,
+            );
+        }
+    }
+
+    /// Mirror a revoked authority into every other window.
+    pub(super) fn mirror_draft_authority_to_peers(&self, authority: DraftManifestAuthority) {
+        let Some(journal) = self.process_draft_journal() else {
+            return;
+        };
+        for peer in journal.peers(self.imp().drafts.journal_key.get()) {
+            peer.imp().drafts.manifest_authority.set(authority);
+            if !authority.is_trusted() {
+                peer.imp().drafts.dispose_orphan_cleanup();
+            }
+        }
+    }
+
+    /// A manifest copy and authority from a window that already has one, for
+    /// a window that starts without restoring the session.
+    pub(super) fn peer_draft_manifest(&self) -> Option<(DraftManifest, DraftManifestAuthority)> {
+        let journal = self.process_draft_journal()?;
+        journal
+            .peers(self.imp().drafts.journal_key.get())
+            .first()
+            .map(|peer| {
+                (
+                    peer.imp().drafts.manifest.borrow().clone(),
+                    peer.imp().drafts.manifest_authority.get(),
+                )
+            })
+    }
+
+    /// Every live window of the process, in creation order.
+    pub(in crate::ui::window) fn process_windows(&self) -> Vec<Self> {
+        self.process_draft_journal().map_or_else(
+            || vec![self.clone()],
+            |journal| {
+                journal
+                    .windows
+                    .borrow()
+                    .iter()
+                    .filter_map(|(_, window)| window.upgrade())
+                    .collect()
+            },
+        )
+    }
+
+    /// The next process-wide session-save generation.
+    pub(in crate::ui::window) fn next_process_session_generation(&self) -> u64 {
+        let Some(journal) = self.process_draft_journal() else {
+            return 0;
+        };
+        let next = journal.session_generation.get().saturating_add(1);
+        journal.session_generation.set(next);
+        next
     }
 }

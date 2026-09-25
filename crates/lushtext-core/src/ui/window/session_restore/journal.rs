@@ -123,7 +123,40 @@ impl LushtextWindow {
     /// mistaken for an unattributable leftover and moved aside before its
     /// restore reads it.
     pub(crate) fn collect_session_for_draft_reconciliation(&self) -> SessionData {
-        self.collect_session_for_close()
+        self.process_session(Self::collect_session_for_close)
+    }
+
+    /// Every window of the process's tabs, in window creation order, with
+    /// this window's selection.
+    ///
+    /// The session file is one per data directory, and the startup restore
+    /// runs in one window per process, so each save must carry every window's
+    /// tabs: a save carrying only its own window's dropped the other window's
+    /// untitled draft from the file, and the next startup never offered it.
+    /// Reconciliation reads the same union, so no window's recovery body is
+    /// mistaken for an unattributable leftover.
+    fn process_session(&self, collect: impl Fn(&Self) -> SessionData) -> SessionData {
+        let mut tabs = Vec::new();
+        let mut active_tab_index = None;
+        for window in self.process_windows() {
+            let session = collect(&window);
+            if &window == self {
+                active_tab_index = session.active_tab_index.map(|index| index + tabs.len());
+            }
+            tabs.extend(session.tabs);
+        }
+        SessionData {
+            tabs,
+            active_tab_index,
+        }
+    }
+
+    /// Whether any window of the process still waits for its startup
+    /// descriptors, so a save must merge the persisted file, not replace it.
+    fn process_session_descriptors_pending(&self) -> bool {
+        self.process_windows()
+            .iter()
+            .any(Self::startup_session_descriptors_pending)
     }
 
     /// Snapshot mounted pages plus descriptors not yet admitted by progressive restore.
@@ -182,14 +215,16 @@ impl LushtextWindow {
             Duration::from_millis(500),
             move |window, token| {
                 if window.imp().session.restoring.get()
-                    || window.startup_session_descriptors_pending()
+                    || window.process_session_descriptors_pending()
                 {
                     return;
                 }
                 let generation = token.value();
-                let session = window.collect_session();
+                let session = window.process_session(Self::collect_session);
                 let data_dir = json_store::data_dir();
-                let ordered_generation = u64::from(generation);
+                // Ordered process-wide: the windows' own debounce generations
+                // are unrelated counters, and the higher one used to win.
+                let ordered_generation = window.next_process_session_generation();
                 spawn_blocking_then(
                     window,
                     move || session_service::save_ordered(&data_dir, &session, ordered_generation),
@@ -210,14 +245,18 @@ impl LushtextWindow {
     /// Synchronous session save for the close-request path.
     pub fn save_session_sync(&self) {
         let generation = self.imp().session.save_debounce.advance().value();
+        let ordered_generation = self.next_process_session_generation();
         let data_dir = json_store::data_dir();
-        let session = if self.startup_session_descriptors_pending() {
-            load_and_merge_persisted_session_for_close(&data_dir, self.collect_session())
+        let session = if self.process_session_descriptors_pending() {
+            load_and_merge_persisted_session_for_close(
+                &data_dir,
+                self.process_session(Self::collect_session),
+            )
         } else {
-            Ok(self.collect_session_for_close())
+            Ok(self.process_session(Self::collect_session_for_close))
         };
         match session.and_then(|session| {
-            session_service::save_ordered(&data_dir, &session, u64::from(generation))
+            session_service::save_ordered(&data_dir, &session, ordered_generation)
         }) {
             Ok(true) => self.clear_session_save_failure(generation),
             Ok(false) => {}
@@ -235,11 +274,12 @@ impl LushtextWindow {
         on_done: F,
     ) {
         let generation = self.imp().session.save_debounce.advance().value();
-        let descriptors_pending = self.startup_session_descriptors_pending();
+        let ordered_generation = self.next_process_session_generation();
+        let descriptors_pending = self.process_session_descriptors_pending();
         let session = if descriptors_pending {
-            self.collect_session()
+            self.process_session(Self::collect_session)
         } else {
-            self.collect_session_for_close()
+            self.process_session(Self::collect_session_for_close)
         };
         let data_dir = json_store::data_dir();
         spawn_blocking_then(
@@ -250,7 +290,7 @@ impl LushtextWindow {
                 } else {
                     session
                 };
-                session_service::save_ordered(&data_dir, &session, u64::from(generation))
+                session_service::save_ordered(&data_dir, &session, ordered_generation)
             },
             move |window, result| {
                 let close_result = match result {

@@ -30,6 +30,7 @@ use gtk4::gio;
 use gtk4::prelude::*;
 
 use crate::config::keys;
+use crate::services::draft_service::journal_core;
 use crate::services::editorconfig;
 use crate::services::filesystem::metadata as fs_metadata;
 use crate::services::notifications::InlineActionNotification;
@@ -206,6 +207,33 @@ impl LushtextWindow {
             }
             return Some((page, false));
         }
+        // The draft id derives from the path, so a second editor for a file
+        // another window has open would share that window's draft: present
+        // the owner's tab instead (`journal_core::draft_open_decision`).
+        // Session restore runs in one window per process and is left to the
+        // claim backstop, since its caller owns the page it returns.
+        let other_owner = if intent == OpenDocumentIntent::SessionRestore {
+            None
+        } else {
+            self.open_document_page_in_other_window(&key, intent)
+        };
+        let claim = if other_owner.is_some() {
+            journal_core::DraftClaim::OtherWindow
+        } else {
+            journal_core::DraftClaim::Unclaimed
+        };
+        if let (journal_core::DraftOpenDecision::PresentOwner, Some((owner, page))) =
+            (journal_core::draft_open_decision(claim), other_owner)
+        {
+            owner.imp().tab_view.set_selected_page(&page);
+            owner.present();
+            if intent.records_recent()
+                && let Some(editor) = page.child().downcast_ref::<LushtextEditorPage>()
+            {
+                owner.record_recent_open_for_editor(editor, path);
+            }
+            return None;
+        }
 
         self.imp().open_paths.borrow_mut().insert(key);
         let editor_page = LushtextEditorPage::new();
@@ -358,6 +386,21 @@ impl LushtextWindow {
             return Some(page);
         }
         None
+    }
+
+    /// Another window of the process with a tab for `key`, if any.
+    fn open_document_page_in_other_window(
+        &self,
+        key: &Path,
+        intent: OpenDocumentIntent,
+    ) -> Option<(Self, libadwaita::TabPage)> {
+        self.process_windows()
+            .into_iter()
+            .filter(|window| window != self)
+            .find_map(|window| {
+                let page = window.find_open_document_page(key, intent)?;
+                Some((window, page))
+            })
     }
 
     /// Close a just-loaded tab when another open tab already owns the same canonical file.

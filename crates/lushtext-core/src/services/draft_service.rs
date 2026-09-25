@@ -2364,6 +2364,41 @@ pub fn inspect_orphan_cleanup_from(
     Ok(plan)
 }
 
+/// Inspect one bounded page against the **latest persisted** manifest,
+/// loaded under the manifest write lock, rather than a caller's copy.
+///
+/// Every window of the process shares the data directory, so a window's own
+/// manifest copy can lag a commit another window made since it was adopted;
+/// the persisted manifest cannot. A manifest that does not load cleanly is
+/// reported as a status failure, so the caller retries later instead of
+/// inspecting against uncertain metadata.
+///
+/// **Threading:** blocking I/O; call from a background thread.
+///
+/// # Errors
+///
+/// Returns the same directory-level failures as [`inspect_orphan_cleanup`],
+/// plus a status failure when the persisted manifest is not trusted.
+///
+/// # Panics
+///
+/// Panics if an earlier panic poisoned the process-wide manifest write lock.
+pub fn inspect_orphan_cleanup_against_persisted(
+    data_dir: &Path,
+    manifest_offset: usize,
+) -> std::result::Result<DraftOrphanCleanupPlan, DraftOrphanCleanupScanError> {
+    let _guard = manifest_write_lock()
+        .lock()
+        .expect("draft manifest write lock poisoned");
+    let manifest = load_trusted_manifest_for_cleanup(data_dir).map_err(|error| {
+        DraftOrphanCleanupStatusError {
+            path: manifest_path(data_dir),
+            detail: error.to_string(),
+        }
+    })?;
+    inspect_orphan_cleanup_from(data_dir, &manifest, manifest_offset)
+}
+
 fn next_cleanup_continuation(
     current: Option<&DraftCleanupContinuation>,
     page: &crate::services::filesystem::DirectoryPage,
@@ -4464,6 +4499,51 @@ mod tests {
         );
         assert!(plan.failures.is_empty());
         assert!(!plan.has_more_work);
+    }
+
+    #[test]
+    fn orphan_inspection_against_persisted_reads_the_manifest_on_disk() {
+        // Another window of the process registered "fresh" after this
+        // caller's copy was adopted: inspection must see the persisted entry,
+        // so the fresh body is not nominated as an orphan.
+        let dir = TempDir::new().expect("expected operation to succeed");
+        let entry = DraftEntry {
+            draft_id: "fresh".into(),
+            original_path: None,
+            original_mtime_secs: None,
+            saved_at_secs: 1000,
+        };
+        save_manifest(
+            dir.path(),
+            &DraftManifest {
+                drafts: vec![entry],
+                cleanup_continuation: None,
+            },
+        )
+        .expect("save manifest");
+        super::fixture::write_body(dir.path(), "fresh", "window A's work")
+            .expect("expected operation to succeed");
+
+        let stale_copy = inspect_orphan_cleanup(dir.path(), &DraftManifest::default())
+            .expect("inspection should produce a trusted plan");
+        assert_eq!(
+            stale_copy.orphan_bodies.len(),
+            1,
+            "the stale copy nominates it"
+        );
+
+        let plan = inspect_orphan_cleanup_against_persisted(dir.path(), 0)
+            .expect("inspection should produce a trusted plan");
+        assert!(plan.orphan_bodies.is_empty());
+        assert!(plan.missing_body_entries.is_empty());
+    }
+
+    #[test]
+    fn orphan_inspection_against_an_untrusted_persisted_manifest_fails() {
+        let dir = TempDir::new().expect("expected operation to succeed");
+        fixture::create_dir_all(&drafts_dir(dir.path()));
+        fixture::write_text(&manifest_path(dir.path()), "{ not json");
+        assert!(inspect_orphan_cleanup_against_persisted(dir.path(), 0).is_err());
     }
 
     #[test]

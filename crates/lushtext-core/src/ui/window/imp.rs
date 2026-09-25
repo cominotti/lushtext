@@ -279,6 +279,15 @@ pub struct DraftState {
     pub(super) retained_complete_bodies: Cell<usize>,
     /// Peak complete-body count observed by this window.
     pub(super) max_retained_complete_bodies: Cell<usize>,
+    /// This window's identity inside its application's draft journal.
+    pub(super) journal_key: Cell<u64>,
+    /// The draft journal every window of the application shares: the one
+    /// journal lane, draft-id claims, and once-per-process startup restore.
+    /// `None` after dispose left it.
+    pub(super) journal: RefCell<Option<std::rc::Rc<super::drafts::ProcessDraftJournal>>>,
+    /// Draft ids whose autosave this window holds because another window owns
+    /// them, already reported to the user once.
+    pub(super) claim_holds_reported: RefCell<HashSet<String>>,
 }
 
 impl DraftState {
@@ -1097,6 +1106,11 @@ impl ObjectImpl for LushtextWindow {
         self.drafts.first_dirty_autosave_pending.set(false);
         let _ = self.drafts.first_dirty_autosave_timer.invalidate();
         self.drafts.dispose_orphan_cleanup();
+        // Release the journal lane and this window's draft claims so the
+        // application's other windows are not left waiting on a window that
+        // no longer exists. Normally already done when the window left its
+        // application (`window-removed`); idempotent either way.
+        self.obj().leave_process_draft_journal();
         // Chunked snapshots have later GTK slices queued. Cancel before the
         // window's workflow state is torn down so none can resume after dispose.
         if let Some(snapshot) = self.drafts.autosave_snapshot.take() {

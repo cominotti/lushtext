@@ -76,9 +76,11 @@ impl LushtextWindow {
         self.retry_unrestored_copies();
         self.evaluate_preserved_drafts_if_placed();
         let drafts = &self.imp().drafts;
+        // Another window's journal work counts as a mutation in flight: the
+        // lane is process-wide, and a pass started now would race it.
         if autosave_admission(
             drafts.autosave_inflight.get(),
-            drafts.mutation_inflight.get(),
+            drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere(),
             drafts.orphan_cleanup_inflight.get(),
         ) == AutosaveAdmission::MarkPending
         {
@@ -86,8 +88,16 @@ impl LushtextWindow {
             return;
         }
 
+        // Take the lane before collecting: collection assigns each candidate
+        // its mutation intent, which must not be minted for a pass that then
+        // does not run.
+        if !self.take_journal_lane() {
+            self.imp().drafts.autosave_pending.set(true);
+            return;
+        }
         let dirty_tabs = self.collect_dirty_draft_candidates();
         if dirty_tabs.is_empty() {
+            self.return_unused_journal_lane();
             return;
         }
 
@@ -172,7 +182,7 @@ impl LushtextWindow {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                let mut tokens = match window.apply_draft_registration(result, registered) {
+                let mut tokens = match window.apply_draft_registration(result, &registered) {
                     Ok(tokens) => tokens,
                     Err(detail) => {
                         tracing::warn!("Failed to register new draft ids: {detail}");
@@ -217,7 +227,7 @@ impl LushtextWindow {
         let drafts = &self.imp().drafts;
         if autosave_admission(
             drafts.autosave_inflight.get(),
-            drafts.mutation_inflight.get(),
+            drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere(),
             false,
         ) == AutosaveAdmission::MarkPending
         {
@@ -309,6 +319,13 @@ impl LushtextWindow {
                 continue;
             };
             if discarded_draft_ids.contains(&draft_id) {
+                continue;
+            }
+            // The claim backstop: another window of the process owns this
+            // id's draft, so writing here would replace that window's body.
+            if !journal_core::window_may_journal_draft(self.claim_draft_id(&draft_id)) {
+                self.report_draft_claim_hold(&draft_id, editor);
+                restore_blocked += 1;
                 continue;
             }
             // The recovery body for this id has not been restored or
@@ -568,6 +585,7 @@ impl LushtextWindow {
                     // before the close caller observes success or failure.
                     window.imp().drafts.autosave_pending.set(false);
                     window.imp().drafts.mutation_inflight.set(false);
+                    window.release_journal_lane();
                     window.drive_pending_draft_mutations();
                     window.wait_for_draft_mutations_then(move || {
                         on_done(result.map_err(anyhow::Error::from));
@@ -811,6 +829,7 @@ impl LushtextWindow {
         }
         self.imp().drafts.autosave_inflight.set(false);
         self.imp().drafts.mutation_inflight.set(false);
+        self.release_journal_lane();
         self.drive_pending_draft_mutations();
     }
 
@@ -849,7 +868,7 @@ impl LushtextWindow {
     /// back on GTK after every candidate is accepted or classified.
     pub fn flush_dirty_drafts_async<F: FnOnce(Result<()>) + 'static>(&self, on_done: F) {
         if close_flush_must_wait(
-            self.imp().drafts.mutation_inflight.get(),
+            self.imp().drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere(),
             self.imp().drafts.orphan_cleanup_inflight.get(),
             !self.imp().drafts.pending_deletes.borrow().is_empty(),
             self.imp().drafts.restore_inflight_count.get() > 0,
@@ -865,7 +884,8 @@ impl LushtextWindow {
         let (candidates, restore_blocked) = self.collect_close_draft_candidates();
         if restore_blocked > 0 {
             on_done(Err(anyhow::anyhow!(
-                "{restore_blocked} draft restores are still pending; close remains retryable"
+                "{restore_blocked} drafts are still being restored or are owned by another \
+                 window; close remains retryable"
             )));
             return;
         }
@@ -874,6 +894,9 @@ impl LushtextWindow {
             on_done(Ok(()));
             return;
         }
+        // Free a moment ago (`close_flush_must_wait`), and nothing ran since.
+        let taken = self.take_journal_lane();
+        debug_assert!(taken, "the journal lane was checked free just above");
         self.imp().drafts.mutation_inflight.set(true);
         self.register_new_draft_ids_then(candidates, move |window, candidates, refused| {
             window.drive_close_draft_pipeline(

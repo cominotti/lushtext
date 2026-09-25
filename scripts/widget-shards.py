@@ -91,7 +91,7 @@ class Shard:
 MEASURED_IN = "runs 35946276130, 35947171706, 35948158637 (max of the three)"
 SHARDS: dict[str, Shard] = {
     "window": Shard(
-        modules=("window",),
+        modules=("window", "multi_window_drafts"),
         tests=(),
         ci_minutes=11.1,
         measured_in=MEASURED_IN,

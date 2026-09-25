@@ -169,6 +169,7 @@ impl LushtextWindow {
     #[must_use]
     pub fn new(app: &libadwaita::Application) -> Self {
         let window: Self = Object::builder().property("application", app).build();
+        window.join_process_draft_journal(app);
         window.setup_actions();
         window.setup_tab_management();
         window.setup_fullscreen();

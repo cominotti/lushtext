@@ -24,7 +24,7 @@ use gtk4::prelude::*;
 
 use crate::model::draft::{FileDraftRestoreSkip, PreloadedDraftSkip, StaleDraftPreservation};
 use crate::services::draft_service;
-use crate::services::draft_service::journal_core::RestoreEnding;
+use crate::services::draft_service::journal_core::{self, RestoreEnding};
 use crate::services::notifications::{InlineActionNotification, InlineNotificationStyle};
 use crate::ui::editor_page::{
     BufferReplacementOutcome, BufferReplacementRequest, BufferReplacementTicket,
@@ -79,6 +79,13 @@ impl LushtextWindow {
 
     /// Check whether a file-backed editor has restored draft content available.
     pub fn check_draft_on_open(&self, editor: &LushtextEditorPage, path: &Path) {
+        // A draft another window of the process owns stays that window's: a
+        // second copy restored here would be edited and written separately.
+        let draft_id = draft_service::draft_id_for_path(path);
+        if !journal_core::window_may_journal_draft(self.claim_draft_id(&draft_id)) {
+            self.report_draft_claim_hold(&draft_id, editor);
+            return;
+        }
         if self.apply_preloaded_draft_for_path(editor, path) {
             return;
         }

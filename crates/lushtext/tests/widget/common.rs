@@ -510,3 +510,42 @@ pub fn numbered_label_list(
     });
     gtk4::ListView::new(Some(select(model)), Some(factory))
 }
+
+/// Restores the first-dirty autosave debounce to its production 750 ms.
+pub struct FirstDirtyAutosaveDelayReset;
+
+impl Drop for FirstDirtyAutosaveDelayReset {
+    fn drop(&mut self) {
+        lushtext_core::ui::window::set_first_dirty_autosave_delay_for_test(750);
+    }
+}
+
+/// Restores every draft-pipeline test override: the automatic-recovery limit,
+/// the lazy-read, body, manifest, and delete delays, and the injected faults.
+pub struct DraftPipelinePolicyReset;
+
+impl Drop for DraftPipelinePolicyReset {
+    fn drop(&mut self) {
+        use lushtext_core::ui::window::{
+            fail_next_draft_mutations_for_test, set_automatic_draft_limit_for_test,
+            set_draft_manifest_completion_delay_for_test, set_draft_mutation_delays_for_test,
+            set_lazy_draft_read_delay_for_test,
+        };
+        set_automatic_draft_limit_for_test(
+            lushtext_core::services::draft_service::MAX_AUTOMATIC_DRAFT_BYTES,
+        );
+        set_lazy_draft_read_delay_for_test(0);
+        set_draft_mutation_delays_for_test(0, 0, 0);
+        set_draft_manifest_completion_delay_for_test(0);
+        fail_next_draft_mutations_for_test(false, false, false);
+    }
+}
+
+/// Restores the orphan-cleanup start, follow-up, and worker delays.
+pub struct OrphanCleanupPolicyReset;
+
+impl Drop for OrphanCleanupPolicyReset {
+    fn drop(&mut self) {
+        lushtext_core::ui::window::set_orphan_cleanup_delays_for_test(2_000, 30_000, 0);
+    }
+}

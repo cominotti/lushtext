@@ -18,7 +18,7 @@
 //! | Module | Role | Owns |
 //! | --- | --- | --- |
 //! | this file | narrative facade | this narration and the workflow's own entry operations. The 27 stage operations the window calls are declared by the coordination module that owns each stage, not re-exported one-by-one through here |
-//! | `journal` | coordination | the session file: collection, the debounced and synchronous writes, the close-time merge, the startup read-back, and failure state |
+//! | `journal` | coordination | the session file: collection (every window of the application, in creation order), the debounced and synchronous writes (ordered application-wide), the close-time merge, the startup read-back (in the one window that restores for the application), and failure state |
 //! | `admission` | coordination | the bounded-turn runtime, planning permits, turn re-arming, terminal and cancellation |
 //! | `execution` | coordination | mounting one admitted page and settling the final selection |
 //! | [`policy`] | pure policy | the bounded-turn admission policy, plus the journal's pure half: tab identity, the close-time merge, the preload-graph fit, and the recovery summary |

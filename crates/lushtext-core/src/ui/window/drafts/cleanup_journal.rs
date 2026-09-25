@@ -35,6 +35,11 @@ impl LushtextWindow {
     /// Cleanup is skipped when startup recovery did not trust the manifest,
     /// preventing deletion based on unsafe metadata.
     pub(crate) fn schedule_orphan_cleanup(&self, cleanup_allowed: bool) {
+        // One window schedules cleanup for the process: the one that restored
+        // the session (or, after it closed, the first to ask).
+        if !self.owns_process_orphan_cleanup() {
+            return;
+        }
         let drafts = &self.imp().drafts;
         drafts.orphan_cleanup_failure_streak.set(0);
         drafts.orphan_cleanup_pending_offset.set(None);
@@ -70,19 +75,30 @@ impl LushtextWindow {
             drafts.dispose_orphan_cleanup();
             return;
         }
-        if drafts.mutation_inflight.get() {
+        // Any window's journal work holds the lane cleanup needs: cleanup
+        // must never run inside another window's register → write → commit
+        // pass or deletion either.
+        if drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere() {
             self.arm_orphan_cleanup_follow_up(
                 manifest_offset,
                 policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL,
             );
             return;
         }
-        if drafts.orphan_cleanup_inflight.replace(true) {
+        if drafts.orphan_cleanup_inflight.get() {
             drafts
                 .orphan_cleanup_pending_offset
                 .set(Some(manifest_offset));
             return;
         }
+        if !self.take_journal_lane() {
+            self.arm_orphan_cleanup_follow_up(
+                manifest_offset,
+                policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL,
+            );
+            return;
+        }
+        drafts.orphan_cleanup_inflight.set(true);
         {
             drafts.orphan_cleanup_workers_started.set(
                 drafts
@@ -95,14 +111,14 @@ impl LushtextWindow {
                 .set(drafts.orphan_cleanup_workers_high_water.get().max(1));
         }
         let data_dir = json_store::data_dir();
-        // Clone GTK-owned state before dispatch so the worker receives plain
-        // owned data and never borrows through the window's interior mutability.
-        let manifest = self.imp().drafts.manifest.borrow().clone();
         spawn_blocking_then(
             self.clone(),
             move || {
                 delay_orphan_cleanup_worker_for_test();
-                draft_service::inspect_orphan_cleanup_from(&data_dir, &manifest, manifest_offset)
+                // Inspect against the latest persisted manifest, loaded under
+                // its write lock, not this window's copy: another window of the
+                // process may have committed since that copy was adopted.
+                draft_service::inspect_orphan_cleanup_against_persisted(&data_dir, manifest_offset)
                     .map(|plan| {
                         let mut outcome = draft_service::execute_orphan_cleanup(&data_dir, plan);
                         // Drop the full manifest before crossing back to GTK; the
@@ -121,6 +137,7 @@ impl LushtextWindow {
             },
             move |window, result| {
                 window.imp().drafts.orphan_cleanup_inflight.set(false);
+                window.release_journal_lane();
                 let follow_up = match result {
                     Ok(result) => {
                         let OrphanCleanupUiResult {
@@ -133,6 +150,7 @@ impl LushtextWindow {
                             &mut window.imp().drafts.manifest.borrow_mut(),
                             &committed_by_id,
                         );
+                        window.mirror_orphan_removals_to_peers(&committed_by_id);
                         if !outcome.failures.is_empty() {
                             let message = grouped_orphan_cleanup_failure_message(&outcome.failures);
                             tracing::warn!("{message}");

@@ -14,6 +14,7 @@ use gtk_lush_tasks::spawn_blocking_then;
 use gtk4::prelude::*;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, PreferencesGroupExt};
 
+use crate::services::draft_service::journal_core::StartupRestore;
 use crate::services::{app_data_leftovers, format_upgrade, json_store};
 use crate::ui::status_bar::MessageKind;
 
@@ -147,7 +148,12 @@ impl LushtextWindow {
         self.imp().sidebar.load_workspaces();
         self.refresh_workspace_scope_consumers();
         self.flush_pending_activation_opens();
-        self.load_session_and_drafts();
+        // Once per process: a later window restoring the same session would
+        // open the same draft ids in two windows.
+        match self.claim_startup_restore() {
+            StartupRestore::RestoreSession => self.load_session_and_drafts(),
+            StartupRestore::StartEmpty => self.adopt_peer_draft_records(),
+        }
         self.start_autosave_timer();
         sweep_app_data_leftovers_once();
     }

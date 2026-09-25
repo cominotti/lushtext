@@ -27,7 +27,7 @@
 //! | this file | narrative facade | this narration, the workflow's own entry operations, and the test-seam surface. The 34 stage operations the window calls are declared by the coordination module that owns each stage, not re-exported one-by-one through here |
 //! | `journal` | coordination | the manifest and bodies, the mutation-serialization gate, tombstones, and deletes |
 //! | `cleanup_journal` | coordination | stage order C: orphan cleanup, the journal's own maintenance, qualified by the stage order it serves |
-//! | `admission` | coordination | preload demotion, the one-at-a-time lazy restore queue, disposal reservations, restore accounting |
+//! | `admission` | coordination | the application's one journal lane, draft-id claims, once-per-process startup restore and cleanup ownership, manifest mirroring across windows, session-save ordering; preload demotion, the one-at-a-time lazy restore queue, disposal reservations, restore accounting |
 //! | `autosave_execution` | coordination | the autosave and close-flush pipelines: collect, snapshot, write, commit |
 //! | `restore_execution` | coordination | installing a recovered body and its inline alerts |
 //! | `retirement` | coordination | handing leftover eager preload bodies to a worker while keeping the compact markers restore still needs |
@@ -44,9 +44,11 @@
 //! 1. **A clean tab becomes dirty**, arming a 750 ms first-dirty timer — sooner
 //!    than the always-running 5 s tick, because brand-new unsaved work is the
 //!    most valuable and least protected.
-//! 2. **The tick admits, or marks pending.** With the lane already owned it sets
-//!    a flag and returns; it does **not** queue, so a burst of ticks during one
-//!    long pass cannot fan out.
+//! 2. **The tick admits, or marks pending.** With the lane already owned — by
+//!    this window or, since the lane is one per application, by **another
+//!    window's** pass, deletion, or cleanup — it sets a flag and returns; it
+//!    does **not** queue, so a burst of ticks during one long pass cannot fan
+//!    out. A tick also holds (and says so once) any id another window claims.
 //! 3. **Collect candidates.** `policy::draft_candidate_is_eligible` decides.
 //!    Its `installation_incomplete` term is a data-safety guard, not an
 //!    optimisation: a cancelled load installation empties the buffer and clears
@@ -98,24 +100,28 @@
 //! ## Stage order C: orphan cleanup
 //!
 //! 11. **Two seconds after restore**, release eager preloads and begin — but only
-//!     if startup **trusted** the manifest. Cleanup deletes user content, so
-//!     untrusted metadata refuses outright rather than guessing.
-//! 12. **Inspect, then execute on a worker** under the manifest write lock, with
-//!     the manifest reloaded, the same `TargetWriteGuard` atomic replacement uses
-//!     acquired, and the **inode rechecked before deleting** — because manifest
-//!     serialization alone is insufficient: an autosave may finish replacing the
-//!     body before it acquires the manifest lock.
-//! 13. **Merge exact fingerprints only**, never replace live state, so an
-//!     autosave accepted while the worker ran survives.
+//!     if startup **trusted** the manifest, and only in the one window that
+//!     restored the session. Cleanup deletes user content, so untrusted
+//!     metadata refuses outright rather than guessing.
+//! 12. **Inspect, then execute on a worker** once the application's lane is
+//!     free: inspection reads the **persisted** manifest under its write lock,
+//!     not this window's copy; execution reloads it, acquires the same
+//!     `TargetWriteGuard` atomic replacement uses, and **rechecks the inode
+//!     before deleting** — because manifest serialization alone is
+//!     insufficient: an autosave may finish replacing the body before it
+//!     acquires the manifest lock.
+//! 13. **Merge exact fingerprints only**, in every window's copy, never replace
+//!     live state, so an autosave accepted while the worker ran survives.
 //! 14. **Continue or back off**, per `policy::orphan_cleanup_follow_up`.
 //!
 //! ## Where control leaves, and where it comes back
 //!
-//! Twenty deferred inversions, where the census recorded seven worker
+//! Twenty-one deferred inversions, where the census recorded seven worker
 //! handoffs. The ten it missed are timers, polls, capacity wakeups, chunked
 //! snapshots, and the replacement terminal; three more arrived in
 //! formal-verification phase 0 (registration, preserve-first delete, and the
-//! unrestored-body preservation worker):
+//! unrestored-body preservation worker), and one with the application-wide
+//! journal lane (the cross-window wakeup):
 //!
 //! - **A1/A2, two timers.** The first-dirty `SupersedingTimer` and the 5 s
 //!   repeating tick both resume in `autosave_execution`'s `autosave_tick`.
@@ -140,6 +146,10 @@
 //!   if its intent is still current. For a stale draft the same worker preserves
 //!   the body first and publishes the destination warning on completion.
 //! - **C11/C14, two cleanup timers** and **C12, the cleanup worker** — three more.
+//! - **The cross-window wakeup.** Releasing the lane queues one idle that calls
+//!   `drive_pending_draft_mutations` on every window of the application while
+//!   the lane stays free: that is where a pass or deletion another window's work
+//!   held off resumes. A waiting cleanup resumes from its own follow-up timer.
 //!
 //! ## State this workflow shares with others
 //!
@@ -147,7 +157,9 @@
 //! | --- | --- |
 //! | `session.close_safety_inflight`, `session.close_safety_bypass` | **genuinely shared** with `WFR-SESSION-RESTORE`: one close-safety pass runs this workflow's flush and the session save together, and the bypass releases the final close only after both. Both project them; neither owns them |
 //! | the session file, `collect_session` | owned by `WFR-SESSION-RESTORE`. Called on every manifest commit, because the manifest records which session tabs a draft belongs to |
-//! | `drafts.manifest`, `manifest_authority`, `preloaded` | **owned here.** The session workflow's startup read produces them and hands them over through `adopt_startup_draft_records`, one named operation rather than three field writes from another workflow's file |
+//! | `drafts.manifest`, `manifest_authority`, `preloaded` | **owned here.** The session workflow's startup read produces them and hands them over through `adopt_startup_draft_records`, one named operation rather than three field writes from another workflow's file. Every commit, authority change, and cleanup removal is mirrored into the other windows' copies (`adopt_peer_draft_manifest`) |
+//! | `ProcessDraftJournal` (`admission`) | **owned here, shared by every window of the application**: the journal lane, draft-id claims, which window restored the session and schedules cleanup, and session-save ordering. The per-window `mutation_inflight` / `orphan_cleanup_inflight` flags are its projections |
+//! | `ui/window/documents.rs` duplicate-path detection | owned by the document-load workflow; it asks the other windows of the application before opening, and presents the owner's tab (`journal_core::draft_open_decision`) |
 //! | `ui/window/startup_data.rs` — the startup format-upgrade gate | **owned by neither** this row nor session restore. Its census home is `WFR-NOTES-BOOKMARKS`; it *calls* `start_autosave_timer` |
 //! | `imp().load.installation_incomplete` | owned by migrated `WFR-DOCUMENT-LOAD`, read through its `has_incomplete_load_installation()` operation. This is the data-safety guard in stage 3 |
 //! | `ui/editor_page/buffer_replacement/` | called through `replace_buffer_bounded` to install a recovered body; its session, guard, and terminal are not this workflow's |
@@ -312,6 +324,7 @@ pub(super) fn attach_draft_body_disposal_probe(
     owner
 }
 
+pub(crate) use admission::ProcessDraftJournal;
 /// Re-export for the window imp's state group.
 pub(super) use policy::{DraftMutationIntent, DraftMutationOrder};
 pub(crate) use seams::{DraftRestoreTicket, PendingPreservation};

@@ -52,6 +52,10 @@ impl LushtextWindow {
         &self,
         mut commit: draft_service::DraftManifestCommit,
     ) {
+        // Every other window of the process adopts the same committed
+        // manifest, so none acts on an entry this commit retired or lacks one
+        // it added.
+        self.mirror_draft_manifest_to_peers(&commit.manifest, commit.authority);
         let drafts = &self.imp().drafts;
         let order = drafts.mutation_order.borrow();
         let mut tombstones = drafts.delete_tombstones.borrow_mut();
@@ -76,6 +80,35 @@ impl LushtextWindow {
     pub(super) fn reject_draft_manifest_authority(&self, authority: DraftManifestAuthority) {
         self.imp().drafts.manifest_authority.set(authority);
         self.imp().drafts.dispose_orphan_cleanup();
+        self.mirror_draft_authority_to_peers(authority);
+    }
+
+    /// Adopt a manifest another window of the process just adopted, minus
+    /// this window's own tombstones, with its authority.
+    ///
+    /// Orphan cleanup is scheduled here only when this window is the one that
+    /// schedules it for the process.
+    pub(super) fn adopt_peer_draft_manifest(
+        &self,
+        mut manifest: crate::model::draft::DraftManifest,
+        authority: DraftManifestAuthority,
+    ) {
+        let drafts = &self.imp().drafts;
+        {
+            let order = drafts.mutation_order.borrow();
+            let mut tombstones = drafts.delete_tombstones.borrow_mut();
+            tombstones.retain(|_, intent| order.is_current(intent));
+            manifest
+                .drafts
+                .retain(|entry| !tombstones.contains_key(entry.draft_id.as_str()));
+        }
+        let became_trusted =
+            !drafts.manifest_authority.get().is_trusted() && authority.is_trusted();
+        drafts.manifest_authority.set(authority);
+        *drafts.manifest.borrow_mut() = manifest;
+        if became_trusted && self.owns_process_orphan_cleanup() {
+            self.schedule_orphan_cleanup(true);
+        }
     }
 
     /// Adopt the outcome of one write-ahead registration.
@@ -88,7 +121,7 @@ impl LushtextWindow {
     pub(super) fn apply_draft_registration(
         &self,
         result: std::result::Result<draft_service::DraftRegistration, DraftManifestFailure>,
-        registered: Vec<DraftEntry>,
+        registered: &[DraftEntry],
     ) -> std::result::Result<Vec<draft_service::RegisteredDraft>, String> {
         match result {
             Ok(mut registration) => {
@@ -99,9 +132,11 @@ impl LushtextWindow {
                     }
                     draft_service::DraftRegistration::Additive { authority, .. } => {
                         self.reject_draft_manifest_authority(authority);
-                        let mut manifest = self.imp().drafts.manifest.borrow_mut();
-                        for entry in registered {
-                            manifest.insert_if_absent(entry);
+                        for window in self.process_windows() {
+                            let mut manifest = window.imp().drafts.manifest.borrow_mut();
+                            for entry in registered {
+                                manifest.insert_if_absent(entry.clone());
+                            }
                         }
                     }
                 }
@@ -208,9 +243,46 @@ impl LushtextWindow {
         authority: DraftManifestAuthority,
         preloaded: crate::ui::plain_disposal::DisposalOwned<HashMap<String, PreloadedDraftRestore>>,
     ) {
+        // A window that started without restoring holds only the copy it
+        // adopted at construction; the restoring window's records are the
+        // process's.
+        self.mirror_draft_manifest_to_peers(&manifest, authority);
         *self.imp().drafts.manifest.borrow_mut() = manifest;
         self.imp().drafts.manifest_authority.set(authority);
         *self.imp().drafts.preloaded.borrow_mut() = preloaded;
+    }
+
+    /// Tell the user, once per draft id, that this editor's changes are not
+    /// autosaved here because another window owns the id's draft.
+    pub(super) fn report_draft_claim_hold(&self, draft_id: &str, editor: &LushtextEditorPage) {
+        if !self
+            .imp()
+            .drafts
+            .claim_holds_reported
+            .borrow_mut()
+            .insert(draft_id.to_string())
+        {
+            return;
+        }
+        self.publish_status_message(
+            &format!(
+                "\u{201c}{}\u{201d} is also open in another window, which keeps its recovery \
+                 draft; changes made here are not autosaved until that window closes it.",
+                editor.title()
+            ),
+            NotificationSeverity::Warning,
+        );
+    }
+
+    /// Start a window that does not restore the session: adopt the draft
+    /// records another window of the process already holds, so this window's
+    /// journal decisions start from the process's manifest and authority.
+    /// When the restoring window's own startup read lands later, it mirrors
+    /// its records here too.
+    pub(crate) fn adopt_peer_draft_records(&self) {
+        if let Some((manifest, authority)) = self.peer_draft_manifest() {
+            self.adopt_peer_draft_manifest(manifest, authority);
+        }
     }
 
     /// Write all dirty drafts synchronously during window close.
@@ -231,6 +303,7 @@ impl LushtextWindow {
     pub fn flush_dirty_drafts(&self) -> Result<()> {
         if self.imp().drafts.mutation_inflight.get()
             || self.imp().drafts.orphan_cleanup_inflight.get()
+            || self.journal_lane_held_elsewhere()
         {
             anyhow::bail!("draft persistence is already in progress");
         }
@@ -327,7 +400,7 @@ impl LushtextWindow {
                     std::slice::from_ref(&entry),
                 )
                 .map_err(DraftManifestFailure::from);
-                match self.apply_draft_registration(result, vec![entry]) {
+                match self.apply_draft_registration(result, std::slice::from_ref(&entry)) {
                     Ok(mut tokens) => token = tokens.pop(),
                     Err(detail) => {
                         registration_errors.push(format!("{draft_id}: {detail}"));
@@ -545,6 +618,12 @@ impl LushtextWindow {
     /// A draft whose restore is still pending was never shown to the user; a
     /// save or discard of its tab then deletes it only after preserving it.
     pub fn delete_draft_by_id(&self, draft_id: &str) {
+        // Never delete a body another window of the process owns: that
+        // window's editor still holds, or has accepted, the work in it.
+        if !journal_core::window_may_journal_draft(self.claim_draft_id(draft_id)) {
+            tracing::info!("Kept draft {draft_id}: another window owns it");
+            return;
+        }
         let preservation_queued = self
             .imp()
             .drafts
@@ -612,14 +691,23 @@ impl LushtextWindow {
     pub(super) fn drive_pending_draft_mutations(&self) {
         if self.imp().drafts.mutation_inflight.get()
             || self.imp().drafts.orphan_cleanup_inflight.get()
+            || self.journal_lane_held_elsewhere()
         {
+            // Another window holds the lane: its release wakes this window.
             return;
         }
-        let Some(intent) = self.imp().drafts.pending_deletes.borrow_mut().pop_front() else {
+        if self.imp().drafts.pending_deletes.borrow().is_empty() {
             let rerun = self.imp().drafts.autosave_pending.replace(false);
             if rerun {
                 self.autosave_tick();
             }
+            return;
+        }
+        if !self.take_journal_lane() {
+            return;
+        }
+        let Some(intent) = self.imp().drafts.pending_deletes.borrow_mut().pop_front() else {
+            self.return_unused_journal_lane();
             return;
         };
         self.imp()
@@ -772,6 +860,7 @@ impl LushtextWindow {
                         }
                     }
                     window.imp().drafts.mutation_inflight.set(false);
+                    window.release_journal_lane();
                     window.drive_pending_draft_mutations();
                 }
             },
