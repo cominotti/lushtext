@@ -111,7 +111,6 @@ SHARDS: dict[str, Shard] = {
             "editor_memory_eviction",
             "file_tree_item",
             "focus_mode",
-            "gtk_axioms",
             "gtk_lush_adoption",
             "markdown_preview",
             "open_popover",

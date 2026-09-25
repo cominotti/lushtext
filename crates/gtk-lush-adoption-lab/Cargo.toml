@@ -10,6 +10,7 @@ rust-version.workspace = true
 gio = { workspace = true }
 glib = { workspace = true }
 gtk4 = { workspace = true }
+gtk-lush-axioms = { workspace = true }
 gtk-lush-proof-harness = { workspace = true }
 gtk-lush-proof-spine = { workspace = true }
 gtk-lush-settle = { workspace = true }
@@ -19,6 +20,15 @@ gtk-lush-viewport = { workspace = true }
 gtk-lush-widgets = { workspace = true }
 libadwaita = { workspace = true }
 serde_json = { workspace = true }
+
+# The GTK axiom probe runner: one isolated child process per catalogued probe,
+# under a private `mutter --headless` session (`make gtk-axioms`). It needs a
+# compositor, so `.config/nextest.toml` excludes it and `make
+# gtk-lush-adoption-lab` builds only the lab's library and binary.
+[[test]]
+name = "axiom_probes"
+path = "tests/axiom_probes.rs"
+harness = false
 
 [lints]
 workspace = true

@@ -35,6 +35,11 @@ spikes for `gtk4-rs` and Kooha.
   registry. The harness should not mutate process environment for consumers.
 - `gtk-lush-proof-spine`: keep GTK-free provider traits and bounded value
   objects. No transport, D-Bus, command, or app-state ownership is added.
+- `gtk-lush-axioms` (2026-09-24): keep the static catalogue, the
+  `Observation` / `Verdict` value, and one `probe_aNN()` per pinnable axiom.
+  Fixtures are public only because the samples share them; the crate's bounded
+  main-context wait stays private test tooling, and the probe runner stays in
+  the adoption lab rather than behind a harness dev-dependency.
 
 ## Rejected Overreach
 

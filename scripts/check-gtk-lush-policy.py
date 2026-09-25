@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FAMILY_ROOT = REPO_ROOT / "crates" / "gtk-lush"
 CARGO_PROOF_TOOL_MEMBER = "crates/cargo-gtk-proof"
 EXPECTED_MEMBERS = {
+    "axioms": "gtk-lush-axioms",
     "proof-harness": "gtk-lush-proof-harness",
     "proof-spine": "gtk-lush-proof-spine",
     "signals": "gtk-lush-signals",

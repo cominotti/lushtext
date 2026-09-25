@@ -184,9 +184,13 @@ by an isolated widget probe.
 **Status: complete (K2, 2026-09-23).** The ledger, A1–A13 with statements,
 dependent designs, and pinning status, now lives at
 [`.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`](../../.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md)
-and is no longer duplicated here. New isolated probes in
-`crates/lushtext/tests/widget/gtk_axioms.rs` pin the four previously unpinned
-axioms against real GTK 4.22:
+and is no longer duplicated here. Isolated probes pinned the four previously
+unpinned axioms against real GTK 4.22 (first in LushText's widget binary; since
+`extract-gtk-lush-axiom-samples`, 2026-09-24, in the GTK Lush family crate
+`gtk-lush-axioms`, which added probes for A1, A2, A3, A4, A6, and A7, one
+interactive/`--check` sample per probe, `make gtk-axioms` in CI, and
+`make check-gtk-axioms` keeping ledger and crate in agreement; the four moved
+probes measured identical values before and after the move):
 
 - A5 `test_axiom_a5_zero_height_allocation_rewrites_the_hosts_adjustment` —
   a zero-height `GtkListView` rewrote a published value of 1200 to 34 and the
@@ -198,6 +202,22 @@ axioms against real GTK 4.22:
 - A13 `test_axiom_a13_an_in_layout_scroll_does_not_schedule_a_relayout` — the
   same outer move re-allocates a re-slicing widget from an idle, and does not
   from inside its `size_allocate`.
+
+The new probes also measured two behaviours the ledger did not record
+(2026-09-24, GTK 4.22.5 and the GNOME 50 SDK's 4.22.2):
+
+- **A1's cap is 205, not 202.** `GtkListView` realized rows 0–204 both at rest
+  and in a viewport needing 294 rows; the ledger's "200 + 2" was imprecise. The
+  first host `set_value` past the realized rows is also not followed: the list
+  keeps its old anchor and maps no row until the next `value-changed`.
+  Recorded, not asserted, because no design relies on it.
+- **A7's alignment is not confined to `[0, 1]`.** After a host `set_value`, the
+  list re-derived its value along `value = anchor − align × page` with
+  align −4.42, so a 100 px page change moved it 442 px. That contradicts A8's
+  "a settle is bounded by the correction that caused it" as a GTK guarantee:
+  A8 stays an envelope assumption of the slice-bin model, to be revisited by
+  `extend-closed-loop-geometry-verification`, whose A14–A18 probes are written
+  in `gtk-lush-axioms`.
 
 A8 is backed by the phase-0 instrumentation (39 requests, 0 settles, no
 `Defer` across 48 tests) and recorded as not isolable by a probe; A10 and A12

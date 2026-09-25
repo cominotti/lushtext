@@ -36,14 +36,14 @@
 
 ## 3. Adwaita axioms for the breakpoint loop
 
-- [ ] 3.1 Write isolated probes in `crates/lushtext/tests/widget/gtk_axioms.rs`, using pure Adwaita fixtures and no LushText or GTK Lush widget, for the candidate axioms A14–A18 in design D6:
+- [ ] 3.1 Write isolated probes and samples in the `gtk-lush-axioms` crate (`crates/gtk-lush/axioms/src/probes/aNN.rs` plus `examples/aNN_<slug>.rs`, following the crate README's "Adding an axiom"), using pure Adwaita fixtures and no LushText or GTK Lush widget, for the candidate axioms A14–A18 in design D6:
   - condition units and text-scale dependence;
   - `set_condition` re-evaluation timing;
   - setter apply and unapply ordering, and what is restored;
   - `AdwOverlaySplitView` sidebar allocation, and the effect of `show-sidebar`/`collapsed` on the toplevel allocation;
   - the effect of breakpoints on the window minimum width.
-  Each probe passes headless.
-- [ ] 3.2 Add ledger rows A14–A18 to `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`. Write each statement from its probe's observation, with its dependent designs and pin (or the reason it is not isolable), and extend the "Envelope use" section for the breakpoint model.
+  Each probe passes headless under `make gtk-axioms`, five times in isolation.
+- [ ] 3.2 Add ledger rows A14–A18 to `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md` and matching `gtk-lush-axioms` catalogue entries (`probe: None` with the row's reason when not isolable). Write each statement from its probe's observation, with its dependent designs, pin, "Verified against" (copied from the printed observation), and "Sample", and extend the "Envelope use" section for the breakpoint model. Review the A7/A8 settle envelope against the A7 probe's measured 4.42 px-per-pixel settle. `make check-gtk-axioms` passes.
 
 ## 4. Pure shell reconciliation plan
 

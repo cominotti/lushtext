@@ -14,6 +14,7 @@ in-tree `0.0.0` APIs for LushText's stable internal platform:
 - `gtk-lush-widgets`
 - `gtk-lush-proof-harness`
 - `gtk-lush-proof-spine`
+- `gtk-lush-axioms`
 
 The companion `cargo-gtk-proof` binary is a workspace proof tool under
 `crates/cargo-gtk-proof`, not a GTK Lush family crate. It may consume proof
@@ -38,4 +39,5 @@ make gtk-lush-doctests
 make gtk-lush-examples
 make gtk-lush-msrv
 make gtk-lush-api-advisory
+make gtk-axioms
 ```

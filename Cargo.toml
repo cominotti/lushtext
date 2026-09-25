@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cargo-gtk-proof",
     "crates/gtk-lush-adoption-lab",
+    "crates/gtk-lush/axioms",
     "crates/gtk-lush/proof-harness",
     "crates/gtk-lush/proof-spine",
     "crates/gtk-lush/settle",
@@ -27,6 +28,7 @@ rust-version = "1.96.0"
 
 [workspace.dependencies]
 # Internal crates
+gtk-lush-axioms = { path = "crates/gtk-lush/axioms" }
 gtk-lush-settle = { path = "crates/gtk-lush/settle" }
 gtk-lush-signals = { path = "crates/gtk-lush/signals" }
 gtk-lush-tasks = { path = "crates/gtk-lush/tasks" }

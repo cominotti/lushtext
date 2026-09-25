@@ -32,7 +32,7 @@ Use this skill when the real question is "what contract is GTK, Libadwaita, or G
 5. If it involves adaptive layouts, split views, header bars, toolbars, breakpoints, or page navigation, read [references/libadwaita-adaptive-surfaces.md](references/libadwaita-adaptive-surfaces.md).
 6. If it involves GtkSourceView editor features such as marks, gutters, annotations, hover providers, completion, style schemes, or text-buffer projections, use [references/official-sources.md](references/official-sources.md) to confirm both the GtkSourceView source contract and the Rust binding feature gate.
 7. If it involves parentage, mapping, visibility, disposal, or object ownership, read [references/lifecycle-and-ownership.md](references/lifecycle-and-ownership.md).
-8. If a geometry design or verification model relies on a GTK behaviour (list virtualization, adjustment clamping, scroll-request delivery, relayout scheduling), read [references/gtk-axiom-ledger.md](references/gtk-axiom-ledger.md): cite the axiom id, and add an entry plus a probe when the behaviour is not listed.
+8. If a geometry design or verification model relies on a GTK behaviour (list virtualization, adjustment clamping, scroll-request delivery, relayout scheduling), read [references/gtk-axiom-ledger.md](references/gtk-axiom-ledger.md): cite the axiom id, and add an entry plus a probe when the behaviour is not listed. Probes and their runnable samples live in `crates/gtk-lush/axioms/` (`gtk-lush-axioms`; its README's "Adding an axiom"); `make gtk-axiom-sample AXIOM=<id>` shows one on a desktop, `make gtk-axioms` checks them all headless.
 9. When the docs are too high-level, use [references/official-sources.md](references/official-sources.md) to jump to the exact upstream source file and function.
 
 ## GTK Lush Mapping
@@ -90,5 +90,5 @@ reshaped GTK Lush contract, also use `gtk-lush-stewardship`.
 - [references/containers-lists-and-factories.md](references/containers-lists-and-factories.md): `GtkListView`, `GtkSignalListItemFactory`, `GtkTreeListModel`, selection, reuse, and scroll integration
 - [references/builder-templates-actions-css-accessibility.md](references/builder-templates-actions-css-accessibility.md): Builder XML, composite templates, actions, focus, CSS nodes, and accessibility metadata
 - [references/libadwaita-adaptive-surfaces.md](references/libadwaita-adaptive-surfaces.md): `AdwBreakpoint`, `AdwNavigationSplitView`, `AdwToolbarView`, `AdwViewStack`, and adaptive chrome behavior
-- [references/gtk-axiom-ledger.md](references/gtk-axiom-ledger.md): the normative ledger of GTK behaviours geometry designs and Kani envelopes rely on, each pinned by an isolated headless probe
+- [references/gtk-axiom-ledger.md](references/gtk-axiom-ledger.md): the normative ledger of GTK behaviours geometry designs and Kani envelopes rely on, each pinned by an isolated headless probe in `gtk-lush-axioms` or recording why it cannot be
 - [references/warnings-and-criticals.md](references/warnings-and-criticals.md): high-signal warning atlas with upstream source paths and likely invariant violations

@@ -16,7 +16,9 @@ paths:
 - LushText may consume in-tree GTK Lush internal-platform crates
   (`gtk-lush-signals`, `gtk-lush-settle`, `gtk-lush-tasks`,
   `gtk-lush-viewport`, `gtk-lush-widgets`, `gtk-lush-proof-harness`, and
-  `gtk-lush-proof-spine`) through workspace path dependencies. GTK Lush
+  `gtk-lush-proof-spine`) through workspace path dependencies;
+  `gtk-lush-axioms` (GTK axiom probes and samples) is consumed only by the
+  adoption lab's probe runner. GTK Lush
   family crates must remain leaf crates and must not depend on LushText or on
   each other at runtime.
 

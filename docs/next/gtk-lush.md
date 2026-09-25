@@ -223,6 +223,47 @@ The headless verification toolchain, split into:
   are versioned and validated; a non-LushText harness example compiles without
   importing LushText.
 
+### 4.7 `gtk-lush-axioms`
+
+Added by `extract-gtk-lush-axiom-samples` (2026-09-24), a functional in-tree
+`0.0.0` leaf depending on `gtk4`, `glib`, and `libadwaita` only — the first
+family crate to use Libadwaita, so the MSRV and API-advisory CI jobs install
+`libadwaita-devel`. It makes the GTK axiom ledger
+(`.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`)
+observable without building LushText:
+
+- a catalogue of every ledger id (`AxiomId`, `Axiom`, `catalogue()`), where
+  `probe: Option<fn() -> Observation>` makes "a pinnable entry without a
+  probe" unrepresentable;
+- probes returning an `Observation` — a `Verdict` (`Holds`, `Violated`,
+  `FixtureInvalid` for a failed control step), every measured value, and the
+  running toolkit versions, encoded as one JSON line — for A1, A2, A3, A4, A5,
+  A6, A7, A9, A11, and A13;
+- one sample per probe under `examples/`, interactive by default and a
+  headless verdict with `--check` (refused with exit 77 outside a private
+  headless session).
+
+The probe runner is the adoption lab's `axiom_probes` test, on
+`gtk-lush-proof-harness`, because a family crate may not depend on the harness
+(maintainer decision: no GOVERNANCE exception). `make gtk-axioms` runs it and
+every sample in the CI `GTK Axioms` job; `make check-gtk-axioms` keeps the
+ledger and the crate in agreement; `make gtk-axioms-runtimes` (local only)
+reruns the samples inside installed GNOME SDKs. The toolkit-update procedure
+runs `make gtk-axioms` first on any GTK or Libadwaita change
+(`.agents/rules/build.md`, "GTK Axioms and Toolkit Updates").
+
+Runtime spike (2026-09-25, D6, time-boxed): building inside the GNOME 50 SDK
+with the `rust-stable` 25.08 extension and running every `--check` against a
+host headless Mutter through `flatpak run --socket=wayland` works — GTK 4.22.2
+/ Libadwaita 1.9.0, every probe holding with values identical to the host's
+4.22.5 / 1.9.3 — so it became `make gtk-axioms-runtimes`. The GNOME nightly SDK
+(`org.gnome.Sdk//master`) was **not** checked: only the nightly *Platform* is
+installed on the development host, and installing the SDK modifies the user's
+Flatpak installation, which the session was not authorized to do. The target
+skips it with a message until it is installed. Next: A14–A18 from
+`extend-closed-loop-geometry-verification` land here, and that change reviews
+the A7 probe's measured 4.42 px-per-pixel settle against the A8 envelope.
+
 Deliberately **not** in the family: anything covered by Libadwaita, anything
 that owns app state, theming systems, and one-off LushText domain widgets.
 

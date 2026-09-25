@@ -155,6 +155,7 @@ jobs:
         run: |
           dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
+            libadwaita-devel \
             gcc \
             git
 
@@ -182,6 +183,7 @@ jobs:
         run: |
           dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
+            libadwaita-devel \
             gcc \
             git \
             openssl-devel
@@ -213,6 +215,41 @@ jobs:
         with:
           name: gtk-lush-public-api
           path: target/gtk-lush-public-api
+
+  gtk-axioms:
+    # Every gtk-lush-axioms probe (one isolated child each, under the
+    # gtk-lush-proof-harness private compositor) and every sample's --check,
+    # headless. A failing probe after a toolkit change is an axiom change:
+    # review the ledger row and its dependent designs before editing a probe.
+    name: GTK Axioms
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gcc \
+            git \
+            mutter \
+            dbus-daemon \
+            python3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-gtk-axioms
+
+      - name: Run GTK axiom probes and sample checks
+        run: make gtk-axioms
 
   property-tests:
     name: Property Tests

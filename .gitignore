@@ -34,6 +34,7 @@ _build/
 /build/gtk-proof/
 /build/live-run/
 /build/gtk-lush-adoption/
+/build/gtk-axioms/
 /build/proof-corpus/
 /build/smoke/
 # Local-only formal-evaluation tools and run logs (scripts/formal-evaluation.sh).

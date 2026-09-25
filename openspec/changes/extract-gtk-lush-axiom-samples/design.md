@@ -165,7 +165,7 @@ session, so the `--check` path cannot rot unnoticed.
 Keeping it out of the other lanes:
 
 - `.config/nextest.toml` also excludes `binary(=axiom_probes)`;
-- `make gtk-lush-adoption-lab` narrows from `--all-targets` to `--lib --bins`,
+- `make gtk-lush-adoption-lab` narrows from `--all-targets` to `--bins` (the lab has no library target),
   because it runs in the job without `mutter`;
 - Clippy still lints the target through `--all-targets`.
 

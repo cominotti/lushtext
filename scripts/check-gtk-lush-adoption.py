@@ -16,6 +16,7 @@ FAMILY_ROOT = REPO_ROOT / "crates" / "gtk-lush"
 LAB_MEMBER = "crates/gtk-lush-adoption-lab"
 MATRIX_PATH = REPO_ROOT / "docs" / "gtk-lush-adoption" / "matrix.toml"
 EXPECTED_PACKAGES = {
+    "gtk-lush-axioms",
     "gtk-lush-signals",
     "gtk-lush-settle",
     "gtk-lush-tasks",

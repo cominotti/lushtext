@@ -366,3 +366,44 @@ Exceptions: none.
 Publication posture: these are functional in-tree `0.0.0` APIs for LushText.
 They are not stable external dependencies, and no `0.1.0` release may proceed
 until a future approved publication track satisfies the dormant gates above.
+
+### 2026-09-24 — Axiom Crate Audit (`extract-gtk-lush-axiom-samples`)
+
+Scope: a new functional in-tree `0.0.0` family crate, `gtk-lush-axioms`,
+holding a catalogue of every GTK axiom ledger id, isolated probes for A1, A2,
+A3, A4, A5, A6, A7, A9, A11, and A13 (four of them moved unchanged out of
+LushText's widget-test binary), and one interactive/`--check` sample per
+probe. The headless probe runner is a test target of the adoption lab.
+
+- [x] No ownership of GTK control flow. A probe presents its fixture in a
+      plain `AdwWindow`, drives the default main context with a small bounded
+      wait (sleep, then drain ready sources; realization waits at most 5 s),
+      closes the window, and returns. Spinning the main context here is test
+      tooling, as it is in `gtk-lush-proof-harness`, confined to the probe
+      call; the crate installs no main loop, no application, and no
+      long-lived source. The samples use a stock `AdwApplication`.
+- [x] No view DSL. Fixtures and samples are ordinary gtk-rs widget code.
+- [x] No state, message, or component system. The crate exposes a static
+      catalogue, a result value (`Observation` / `Verdict`), and fixture
+      builders.
+- [x] Leaf crates only. `gtk-lush-axioms` depends on `gtk4`, `glib`, and
+      `libadwaita` only, in every dependency section. The probe runner, which
+      needs `gtk-lush-proof-harness`, lives in `gtk-lush-adoption-lab`
+      (`tests/axiom_probes.rs`), outside the family, so no exception is
+      needed; the maintainer chose this over a governed dev-dependency
+      exception.
+- [x] Adwaita remains authoritative. The probes observe GTK and Adwaita
+      behaviour; they reimplement none of it.
+- [x] Pixels and contracts over claims. Each probe records every measured
+      value and the running toolkit versions; `make gtk-axioms` runs every
+      probe and sample headless in CI; `make check-gtk-axioms` keeps the
+      ledger, catalogue, probes, and samples in agreement. The moved probes
+      measured identical values before and after the move on GTK 4.22.5 /
+      Libadwaita 1.9.3.
+
+Exceptions: none.
+
+Publication posture: a functional in-tree `0.0.0` API on the dormant
+publication track, like the rest of the family. This is the first family crate
+that depends on Libadwaita, so the MSRV and API-advisory CI jobs now install
+`libadwaita-devel`.

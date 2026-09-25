@@ -57,8 +57,10 @@ still needs a heavier tool.
   - split-view allocation, and how breakpoints affect the window's minimum
     width.
 
-  Each entry is pinned by an isolated headless probe in `gtk_axioms.rs`, or
-  records why it cannot be.
+  Each entry is pinned by an isolated headless probe in the GTK Lush family
+  crate `gtk-lush-axioms` (a catalogue entry, `src/probes/aNN.rs`, and an
+  interactive/`--check` sample `examples/aNN_<slug>.rs`, run by
+  `make gtk-axioms`), or records why it cannot be.
 - **Unbounded slice-bin results, attempted in Kani.** Two attempts:
   1. Kani loop contracts (`#[kani::loop_invariant]`, `#[kani::loop_decreases]`,
      `-Z loop-contracts`, experimental). They target "rest persists and spaced
@@ -114,7 +116,8 @@ None.
   - `crates/lushtext-core/src/ui/window/geometry/`: `policy.rs` gains the pure
     reconciliation plan; `execution.rs` applies it; a new `#[cfg(kani)]`
     `kani_proofs.rs`.
-  - `crates/lushtext/tests/widget/{gtk_axioms,gtk_lush_adoption,workspace_tree_virtualization}.rs`
+  - `crates/gtk-lush/axioms/` (catalogue entries, probes, and samples for
+    A14–A18); `crates/lushtext/tests/widget/{gtk_lush_adoption,workspace_tree_virtualization}.rs`
     and the shell-geometry widget tests.
 - **Tooling:** `scripts/kani-shards.py` (new shards and per-shard flags),
   `.github/workflows/kani.yml` (reads the table), `Makefile` `kani`.

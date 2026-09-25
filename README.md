@@ -481,9 +481,14 @@ Cargo workspace:
   stable external dependencies. `gtk-lush-widgets::ViewportSliceBin` is what
   keeps the workspace sidebar's file tree virtualized inside the sidebar
   scroller, so directories of any size render every row instead of stopping
-  at `GtkListView`'s 200-widget realized cap.
+  at `GtkListView`'s 200-widget realized cap. `gtk-lush-axioms` holds an
+  isolated probe and a runnable sample for each GTK behaviour those designs
+  rely on (the GTK axiom ledger), so each belief about GTK can be watched on a
+  desktop (`make gtk-axiom-sample AXIOM=<id>`) and checked headless
+  (`make gtk-axioms`) without building LushText.
 - `crates/gtk-lush-adoption-lab` - maintained second-consumer GTK app for GTK
-  Lush adoption validation.
+  Lush adoption validation; its `axiom_probes` test runs every
+  `gtk-lush-axioms` probe under a private headless compositor.
 - `crates/cargo-gtk-proof` - workspace visual proof tool outside the GTK Lush
   family.
 - `workspace-hack` - generated cargo-hakari crate for unified dependency
@@ -630,7 +635,14 @@ make gtk-lush-doctests
 make gtk-lush-examples
 make gtk-lush-msrv
 make gtk-lush-api-advisory
+make gtk-axioms                        # every GTK axiom probe + sample --check, headless
+make gtk-axiom-sample AXIOM=A9         # watch one axiom on your desktop (CHECK=1: headless verdict)
+make gtk-axioms-runtimes               # local only: rerun the samples inside installed GNOME SDKs
 ```
+
+On any GTK or Libadwaita version change, run `make gtk-axioms` first: a failing
+probe is an axiom change to review against its dependent designs before
+anything else (`.agents/rules/build.md`, "GTK Axioms and Toolkit Updates").
 
 ## Testing and Proof
 

@@ -1,0 +1,28 @@
+[package]
+name = "gtk-lush-axioms"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Isolated probes and runnable samples for the GTK behaviours gtk-rs geometry code relies on"
+readme = "README.md"
+repository = "https://github.com/cominotti/lushtext"
+keywords = ["gtk", "gtk4", "libadwaita", "testing"]
+categories = ["gui", "development-tools::testing"]
+include = [
+    "Cargo.toml",
+    "CHANGELOG.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "README.md",
+    "examples/**",
+    "src/**",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+glib = { workspace = true }
+gtk4 = { workspace = true }
+libadwaita = { workspace = true }

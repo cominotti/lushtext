@@ -2,7 +2,7 @@
 # See: https://nexte.st/docs/configuration/
 
 [profile.default]
-default-filter = "not binary(=widget)"
+default-filter = "not binary(=widget) and not binary(=axiom_probes)"
 slow-timeout = { period = "30s", terminate-after = 4 }
 
 [profile.property]
@@ -14,3 +14,8 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # binary's self-supervised headless path under plain Cargo. Keep it outside
 # nextest's default run so `make test` does not duplicate widget coverage or
 # shard it into many compositor sessions.
+#
+# The gtk-lush-axioms probe runner (`gtk-lush-adoption-lab`'s `axiom_probes`)
+# self-supervises into its own private compositor in the same way; it runs
+# through `make gtk-axioms` and the CI `gtk-axioms` job, never in this lane,
+# which has no `mutter`.

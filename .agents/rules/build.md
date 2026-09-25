@@ -606,6 +606,41 @@ invariant; tighten the generator or use the deep lane.
   with `kani::assume` clauses citing ledger axiom ids from
   `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`.
 
+## GTK Axioms and Toolkit Updates
+
+The ledger's isolated probes live in the GTK Lush family crate
+`gtk-lush-axioms` (`crates/gtk-lush/axioms/`), one sample per probe under its
+`examples/`. The probe runner is the `axiom_probes` test of
+`gtk-lush-adoption-lab` (family crates may not depend on
+`gtk-lush-proof-harness`), so `.config/nextest.toml` excludes
+`binary(=axiom_probes)` and `make gtk-lush-adoption-lab` runs `--bins`.
+
+```
+make gtk-axioms                          # every probe + every sample --check, private headless Mutter (CI job `GTK Axioms`)
+make gtk-axiom-sample AXIOM=A9           # interactive sample on the current desktop, for a person to watch
+make gtk-axiom-sample AXIOM=A9 CHECK=1   # that sample's headless verdict (exit 0 holds, 1 violated, 2 fixture invalid)
+make gtk-axioms-runtimes                 # LOCAL ONLY: sample checks inside each installed GNOME SDK (50, nightly)
+make check-gtk-axioms                    # (in check-policy) ledger, catalogue, probes, samples agree
+```
+
+A sample's `--check` refuses with exit 77 unless `GTK_LUSH_AXIOMS_HEADLESS=1`,
+which only the headless wrapper sets, so it never flashes windows on a live
+desktop. `make gtk-axioms` also fails on any `Gtk-`/`GLib-`/`Adwaita-`
+warning or critical in the probe or sample output.
+
+**Toolkit-update procedure (the upgrade alarm).** On any GTK or Libadwaita
+version change — the CI Fedora container image, the GNOME SDK floor in the
+Flatpak manifest, the Snap `core26` platform — run `make gtk-axioms` **first**,
+before any other work. A failing probe is an axiom change under the ledger's
+rule: revisit the ledger entry, its dependent designs, and every verification
+envelope that cites the id (the Kani `kani::assume` clauses) before editing any
+probe, and never adjust a probe to match the new behaviour first. Then copy the
+printed `gtk`/`adw` versions into the rows' "Verified against", with where they
+ran. Before a new GNOME runtime becomes the floor, run
+`make gtk-axioms-runtimes GTK_AXIOMS_RUNTIMES="org.gnome.Sdk//<next>"` against
+it; it builds inside each SDK (the gtk-rs feature flags bind a binary to its
+SDK), installs nothing, and skips an SDK that is not installed.
+
 ## Fuzzing
 
 - Framework: `cargo-fuzz`, isolated under `fuzz/`
@@ -920,7 +955,7 @@ Meson wraps Cargo for installed and Flatpak builds:
 
 All CI jobs use container images because `ubuntu-latest` ships GTK 4.14, but this repo targets the GNOME 50 platform family (GTK 4.22, Libadwaita 1.9).
 
-- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `Widget Shard Table`, `Widget Tests (<shard>)`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, workflow-timeout policy, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; each widget shard runs through `scripts/widget-shards.py run <shard>`, which calls `scripts/run-widget-tests.sh --headless --retries 1 -- --exact <the shard's tests>`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
+- `.github/workflows/ci.yml` — split `Lint`, `Non-widget Tests`, `GTK Axioms` (`make gtk-axioms`: every `gtk-lush-axioms` probe and sample `--check` under private headless Mutter), `Widget Shard Table`, `Widget Tests (<shard>)`, `Bench Compile`, and `Dependency Policy` jobs. The Fedora 44 container jobs cover rustfmt, all-targets/all-features Clippy, the filesystem-boundary audit, workflow-timeout policy, Blueprint template drift/contract validation, the rustdoc lint gate, non-widget tests, widget tests, and benchmark compilation; each widget shard runs through `scripts/widget-shards.py run <shard>`, which calls `scripts/run-widget-tests.sh --headless --retries 1 -- --exact <the shard's tests>`, which wraps the same `mutter --headless` Wayland path GNOME GTK CI uses while filtering known-benign headless-session noise. The runner defaults to `GSK_RENDERER=cairo` so headless containers do not emit Mesa/EGL GPU-probe warnings, but callers may override the renderer for explicit renderer debugging. Two retry layers serve different failures: the custom harness in `crates/lushtext/tests/widget.rs` retries each **test** once in a fresh process and reports a recovered transient loudly as `ok (FLAKY: passed on attempt N)` plus a stderr `FLAKY:` warning, while `--retries 1` reruns the **whole suite** in a brand-new Mutter + dbus session. Both nets exist to keep CI moving and to make flakes visible, not to excuse them — a `FLAKY` line is a blocker to investigate per `preexisting-blockers.md`, not accepted noise. Shared widget wait helpers (`wait_until`/`flush_events`/`flush_after_delay`/`present_window`) live once in `tests/widget/common.rs`; `wait_until` polls and drains all ready main-loop sources (which is required to dispatch `spawn_blocking_then`'s low-priority idle completion), and async/realization waits use generous (≥5–10s) budgets so they do not flake under load. The `Dependency Policy` job runs `cargo deny check advisories bans sources licenses`.
 - Widget shards: the suite (1,292 tests) run serially in one job took 15–30 minutes on the shared runner and was cancelled at the cap, so CI runs it as one `Widget Tests (<shard>)` matrix job per shard of `scripts/widget-shards.py`, the single source of truth for membership (a `Widget Shard Table` job builds the matrix from `widget-shards.py github-outputs`, which re-runs the check). A test is owned by the shard naming it explicitly, else by the shard listing its module (its `tests/widget/<module>.rs` file stem); there is no catch-all, so a **new widget module file must be added to a shard** or `make check-widget-shards` (in `make check-policy`) fails, as it does for a module or name in two shards, a stale entry, or an explicit name its own shard already owns by module. New tests in an existing module join that module's shard with no edit. The check discovers tests statically with the same rule `crates/lushtext/build.rs` registers them by; each shard job cross-checks that discovery against the compiled binary's `--list` and fails on any difference, then fails unless the harness's `running N tests` equals the shard's count, so the shards provably sum to the full suite. Each shard records `ci_minutes` and `measured_in` (the largest widget-step wall time, build included, across at least two CI runs; developer timing does not count), and the check fails when a shard is unmeasured or over 20 minutes, leaving 10 of the 30-minute `timeout-minutes` ceiling for setup and runner noise. Every shard job runs in measurement mode and uploads `widget-measure-<shard>` (wall time, status, counts, per-test durations) plus a job-summary table. When a shard nears the margin, move a module or one slow test by name to another shard; never raise `timeout-minutes` (the hard ceiling `scripts/check-workflow-timeouts.py` enforces) and never shrink a threshold-sized test. `make test` and `make test-widget` still run the whole suite in one session; `make test-widget-shard WIDGET_SHARD=<shard>` reproduces one CI shard. `scripts/run-widget-tests.sh` streams the sanitized harness output through `tee` while it runs, so a cancelled job still shows how far its shard got.
 - `.github/workflows/ci.yml` also has a separate `Property Tests` job that runs `make test-prop` with the `property-tests` feature enabled. Keep that lane separate from the default non-widget and mutation jobs.
 - `.github/workflows/kani.yml` — `make kani` lane in measurement mode, one `scripts/kani-shards.py` shard per matrix job, matrix and pinned `KANI_VERSION` derived from the script and Makefile by a `shards` job (Fedora 44 container, `timeout-minutes: 30`). Pull requests and pushes to `main` run only the shards the table gates `pull-request` (`widgets-geometry` and `core-geometry-policies`); schedule and dispatch run every shard.

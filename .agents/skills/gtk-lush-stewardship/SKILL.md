@@ -32,6 +32,9 @@ already owns the pattern:
 - zero-min clipping and render-hold/capture overlays -> `gtk-lush-widgets`
 - widget harness and proof value objects -> `gtk-lush-proof-harness` and
   `gtk-lush-proof-spine`
+- an isolated probe or runnable sample of a GTK behaviour a design relies on
+  (a GTK axiom ledger entry) -> `gtk-lush-axioms`; its runner is the adoption
+  lab's `axiom_probes` test
 - visual proof schemas, corpus replay, policy, and same-session proof ->
   `cargo-gtk-proof`
 

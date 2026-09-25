@@ -67,6 +67,7 @@ shape:
 | Widget | Widget and real-window behavior, including workflow-level UI regressions | `crates/lushtext/tests/widget.rs` and `crates/lushtext/tests/widget/*.rs` | Private headless Mutter only | `make test-widget` |
 | Automation docs drift | Exported action, D-Bus, snapshot, readiness, automation-client, and helper-flag documentation contract | `docs/automation.md`, `docs/automation-reference.md`, `scripts/check-automation-docs.py` | No | `make check-automation-docs` |
 | Automation client self-test | Reusable D-Bus helper parser, typed action parameters, statuses, and artifact summaries | `scripts/lushtext-automation.py` | No | `make automation-client-self-test` |
+| GTK axioms | Isolated probes of the GTK/Adwaita behaviours geometry designs rely on (ledger A1–A13), plus one interactive/`--check` sample per probe | `crates/gtk-lush/axioms/` (probes, samples) and `crates/gtk-lush-adoption-lab/tests/axiom_probes.rs` (runner) | Private headless Mutter only | `make gtk-axioms` |
 | Visual smoke | Rendered desktop screenshots and compositor/session artifacts | `scripts/run-visual-smoke.sh` | Yes | `make visual-smoke` |
 | Visual geometry smoke | Same-process before/after screenshots with protected-region pixel comparisons, pixel anchors, and bounded geometry snapshots | `scripts/visual-geometry-smoke.py` | Yes | `make visual-geometry-smoke` |
 | Portal/sandbox smoke | Confined Flatpak/Snap runtime diagnostics and skip-aware package checks | `scripts/run-portal-sandbox-smoke.sh` | Host-dependent | `make portal-sandbox-smoke` |
@@ -78,6 +79,27 @@ already belong in the widget harness, especially when they can be expressed by
 constructing a real `LushtextWindow` and waiting for observable state changes.
 Use `docs/end-user-coverage.md` for the current lane ownership map before
 creating another broad harness.
+
+## GTK Axiom Probes And The Toolkit-Update Alarm
+
+A belief about GTK that a design depends on is a ledger axiom
+(`.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`),
+and its isolated probe lives in `gtk-lush-axioms`, not in LushText's widget
+binary. A probe records a control step (`FixtureInvalid` when the fixture never
+reached the state) before its axiom step (`Violated`), and every value it read,
+so its JSON observation line shows how GTK moved. The LushText consumer tests
+that depend on an axiom stay in the widget binary as the other half of the
+evidence. To add one, follow the crate README's "Adding an axiom"; rerun the new
+probe five times in isolation
+(`cargo test -p gtk-lush-adoption-lab --test axiom_probes -- --exact <name>`).
+
+**On any GTK or Libadwaita version change** (CI Fedora image, GNOME SDK
+floor, Snap platform), run `make gtk-axioms` first. A failing probe is an
+axiom change: review the ledger row, its dependent designs, and every
+`kani::assume` citing the id before touching the probe; never make the probe
+match the new behaviour first. Copy the printed versions into "Verified
+against". Before the next runtime becomes the floor, run
+`make gtk-axioms-runtimes` against its SDK (local only; installs nothing).
 
 ## Boundary with gtk4-libadwaita-internals
 

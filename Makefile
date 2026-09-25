@@ -64,6 +64,10 @@
 #   make gtk-lush-examples - Compile standalone GTK Lush adoption examples
 #   make gtk-lush-msrv - Check GTK Lush family crates with the declared MSRV
 #   make gtk-lush-api-advisory - Run advisory semver/public-API checks for GTK Lush crates
+#   make gtk-axioms - Run every gtk-lush-axioms probe and sample --check under private headless Mutter
+#   make gtk-axiom-sample AXIOM=<id> [CHECK=1] - Open one axiom sample (CHECK=1: headless verdict)
+#   make gtk-axioms-runtimes - LOCAL ONLY: rerun sample checks inside installed GNOME SDKs (50, nightly)
+#   make check-gtk-axioms - Keep the GTK axiom ledger, catalogue, probes, and samples in agreement
 #   make automation-client-self-test - Validate the reusable D-Bus automation CLI helper
 #   make check-agent-skills - validate maintained skill contracts and metadata
 #   make check-agent-docs - validate agent rules/skills guidance plus filesystem policy
@@ -85,7 +89,7 @@
 #   make help        - Show available targets
 
 .PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani check-kani-shards formal-evaluation check-widget-shards test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
-       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
+       check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
        flathub-manifest verify-flathub-manifest verify-flathub-domain \
@@ -120,8 +124,8 @@ FORMAT_UPGRADE_TEST_VERSION ?= 999
 COMMAND_PALETTE_NOTES_MANUAL_HOME ?=
 COMMAND_PALETTE_NOTES_QUERY ?= palette
 
-GTK_LUSH_PACKAGES := -p gtk-lush-signals -p gtk-lush-settle -p gtk-lush-tasks -p gtk-lush-viewport -p gtk-lush-widgets -p gtk-lush-proof-harness -p gtk-lush-proof-spine
-GTK_LUSH_CRATES := crates/gtk-lush/signals crates/gtk-lush/settle crates/gtk-lush/tasks crates/gtk-lush/viewport crates/gtk-lush/widgets crates/gtk-lush/proof-harness crates/gtk-lush/proof-spine
+GTK_LUSH_PACKAGES := -p gtk-lush-axioms -p gtk-lush-signals -p gtk-lush-settle -p gtk-lush-tasks -p gtk-lush-viewport -p gtk-lush-widgets -p gtk-lush-proof-harness -p gtk-lush-proof-spine
+GTK_LUSH_CRATES := crates/gtk-lush/axioms crates/gtk-lush/signals crates/gtk-lush/settle crates/gtk-lush/tasks crates/gtk-lush/viewport crates/gtk-lush/widgets crates/gtk-lush/proof-harness crates/gtk-lush/proof-spine
 GTK_LUSH_ADOPTION_LAB_PACKAGE := -p gtk-lush-adoption-lab
 GTK_LUSH_STOCK_FIXTURES := fixtures/gtk-lush-adoption/stock-settle
 GTK_LUSH_MSRV ?= 1.96.0
@@ -605,9 +609,35 @@ gtk-lush-adoption-matrix:
 	@echo "Checking GTK Lush adoption matrix and evidence..."
 	./scripts/check-gtk-lush-adoption.py
 
+# --bins, not --all-targets: the lab's axiom_probes test target needs a
+# private headless compositor, which `make gtk-axioms` provides.
 gtk-lush-adoption-lab:
 	@echo "Testing GTK Lush adoption lab..."
-	cargo test $(GTK_LUSH_ADOPTION_LAB_PACKAGE) --all-targets
+	cargo test $(GTK_LUSH_ADOPTION_LAB_PACKAGE) --bins
+
+# The gtk-lush-axioms probe binary (one isolated test per probed axiom) and
+# every sample's --check, all under a private `mutter --headless` session;
+# never the live desktop.
+gtk-axioms:
+	@echo "Running GTK axiom probes and sample checks headless..."
+	./scripts/run-gtk-axioms.sh all
+
+# One sample: interactive on the current desktop session by default (for a
+# person to watch), or its headless verdict with CHECK=1.
+gtk-axiom-sample:
+	@test -n "$(AXIOM)" || { echo "usage: make gtk-axiom-sample AXIOM=<id> [CHECK=1]" >&2; exit 2; }
+	./scripts/run-gtk-axioms.sh sample "$(AXIOM)" $(if $(filter 1,$(CHECK)),--check,)
+
+# LOCAL ONLY: rerun every sample --check against the toolkit of each installed
+# GNOME SDK (default 50 and nightly), before that toolkit becomes the floor.
+# Never a prerequisite of check, test, or any CI job; installs nothing.
+gtk-axioms-runtimes:
+	./scripts/run-gtk-axioms.sh runtimes $(GTK_AXIOMS_RUNTIMES)
+
+check-gtk-axioms:
+	@echo "Checking the GTK axiom ledger against gtk-lush-axioms..."
+	./scripts/check-gtk-axioms.py --self-test
+	./scripts/check-gtk-axioms.py
 
 gtk-lush-stock-fixtures:
 	@echo "Checking stock GTK Lush adoption fixtures..."
@@ -667,7 +697,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-kani-shards check-widget-shards check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and
@@ -930,6 +960,10 @@ help:
 	@echo "  gtk-lush-examples Compile GTK Lush standalone examples"
 	@echo "  gtk-lush-msrv Check GTK Lush family crates with GTK_LUSH_MSRV"
 	@echo "  gtk-lush-api-advisory Run advisory semver/public-API checks"
+	@echo "  gtk-axioms       Run every GTK axiom probe and sample --check headless"
+	@echo "  gtk-axiom-sample Open one axiom sample: AXIOM=<id> [CHECK=1]"
+	@echo "  gtk-axioms-runtimes LOCAL ONLY: sample checks inside installed GNOME SDKs"
+	@echo "  check-gtk-axioms Keep the axiom ledger, catalogue, probes, and samples in agreement"
 	@echo "  automation-client-self-test Validate the reusable D-Bus automation CLI helper"
 	@echo "  visual-smoke Real-session screenshot smoke under headless Mutter"
 	@echo "  visual-geometry-smoke Rust same-session visual invariant proof"

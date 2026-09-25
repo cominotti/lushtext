@@ -294,9 +294,20 @@ from what its probe observes:
 - **A18:** how breakpoints lower the window's minimum width, and what happens
   below the smallest breakpoint's minimum.
 
-Probes go in `crates/lushtext/tests/widget/gtk_axioms.rs`, using pure Adwaita
-fixtures only. If a behaviour cannot be isolated, for example because it
-depends on the compositor, the row says why.
+Probes go in the GTK Lush family crate `gtk-lush-axioms`
+(`crates/gtk-lush/axioms/`, created by `extract-gtk-lush-axiom-samples`), using
+pure Adwaita fixtures only: a catalogue entry in `src/catalogue.rs`, a probe
+`src/probes/aNN.rs` returning an `Observation`, and a sample
+`examples/aNN_<slug>.rs` that builds the same fixture (the crate README's
+"Adding an axiom"). `make gtk-axioms` runs them headless and
+`make check-gtk-axioms` keeps them in agreement with the ledger. If a behaviour
+cannot be isolated, for example because it depends on the compositor, the
+catalogue entry has no probe and the row says why.
+
+The A7 probe of that change measured `GtkListView` moving its value 4.42 px
+per pixel of page change when its anchor alignment lies outside `[0, 1]` (the
+ledger's A8 row). The slice-bin settle bound this change's models assume (A7,
+A8) must be reviewed against that measurement.
 
 ### D7. Counterexamples: fix when reachable, else record
 

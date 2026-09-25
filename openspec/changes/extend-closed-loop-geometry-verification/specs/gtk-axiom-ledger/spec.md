@@ -20,10 +20,10 @@ minimum the ledger SHALL cover:
 - **Minimum width.** How the set of breakpoints affects the window's minimum
   width.
 
-Each entry SHALL be pinned by an isolated headless probe in
-`crates/lushtext/tests/widget/gtk_axioms.rs`, a minimal Adwaita fixture that
-uses no LushText or GTK Lush widget. If an entry cannot be pinned, it SHALL
-record why. Each entry's statement SHALL be written from what its probe
+Each entry SHALL be pinned by an isolated headless probe in the
+`gtk-lush-axioms` crate, a minimal Adwaita fixture that uses no LushText or GTK
+Lush widget, with a `gtk-lush-axioms` catalogue entry and sample. If an entry
+cannot be pinned, it SHALL record why. Each entry's statement SHALL be written from what its probe
 observes, not from belief.
 
 #### Scenario: Breakpoint axioms gain probes
