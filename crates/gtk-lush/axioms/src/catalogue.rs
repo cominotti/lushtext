@@ -129,10 +129,17 @@ const CATALOGUE: &[Axiom] = &[
     },
     Axiom {
         id: AxiomId::new(10),
-        name: "a10_rows_near_focus_stay_realized_unmapped",
-        statement: "rows around focus and selection stay realized but unmapped when off screen",
-        dependent_designs: &["rendered-row tests count mapped rows only"],
-        probe: None,
+        name: "a10_mapped_rows_are_not_necessarily_on_screen",
+        statement: "mapped does not mean drawn on screen: a GtkListView maps rows whose bounds \
+                    lie wholly outside its own allocation, one row past the bottom edge at rest \
+                    and one past each edge when its value falls on a row boundary (a host \
+                    set_value to a row top, scroll_to, a focus scroll_to), so a rendered-row \
+                    assertion must intersect each mapped row's bounds with the viewport",
+        dependent_designs: &[
+            "rendered-row widget tests count mapped rows intersecting the outer viewport \
+             (drawn_labels in workspace_tree_virtualization)",
+        ],
+        probe: Some(probes::probe_a10),
     },
     Axiom {
         id: AxiomId::new(11),
@@ -244,6 +251,37 @@ const CATALOGUE: &[Axiom] = &[
         ],
         probe: Some(probes::probe_a18),
     },
+    Axiom {
+        id: AxiomId::new(19),
+        name: "a19_viewport_notifies_after_allocating_its_child",
+        statement: "GtkViewport freezes property notification on its adjustments for its \
+                    whole size_allocate and thaws it only after allocating its child, while \
+                    the value-changed of a clamp in gtk_adjustment_configure fires at once: \
+                    value-changed precedes the child's allocation, and notify::page-size and \
+                    notify::value follow it inside the same layout phase, so a queue_allocate \
+                    issued from notify::page-size for a widget inside the viewport is not \
+                    served in that frame",
+        dependent_designs: &[
+            "ViewportSliceBin::rebind_outer re-slices on notify::page-size from an idle \
+             instead of queueing inside layout",
+        ],
+        probe: Some(probes::probe_a19),
+    },
+    Axiom {
+        id: AxiomId::new(20),
+        name: "a20_a_value_announced_before_allocation_strays_the_anchor",
+        statement: "a value-changed a GtkListView receives before it has been allocated at \
+                    the new value (a host set_value) leaves its scroll anchor far from the \
+                    view, with an alignment outside [0, 1], so a later page change re-derives \
+                    the value along a steep line; the same value re-announced once after the \
+                    list was allocated there anchors it with an alignment in [0, 1]",
+        dependent_designs: &[
+            "ViewportSliceBin::size_allocate re-announces the value after the child's \
+             allocation whenever its publish changed the value",
+            "the anchor_stray ghost of the Kani slice loop (gtk-lush-widgets kani_proofs.rs)",
+        ],
+        probe: Some(probes::probe_a20),
+    },
 ];
 
 #[cfg(test)]
@@ -258,8 +296,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a18() {
-        for number in 1..=18 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a20() {
+        for number in 1..=20 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }

@@ -98,7 +98,7 @@ pub fn probe_a01() -> Observation {
         let mapped = mapped_rows(&scrolled);
         recorder.measure("scrolled_value", hosted.adjustment.value());
         // Not checked against the cap: rows kept for focus (row 0 here) stay
-        // realized beside the visible range, which is A10's statement.
+        // realized, unmapped, beside the visible range (recorded by A10).
         recorder.measure("scrolled_realized_rows", scrolled.len());
         recorder.measure("scrolled_mapped_rows", mapped);
         if let Some((low, high)) = range {

@@ -72,7 +72,9 @@ println!("{}", observation.to_json_line());
 ## Adding an axiom
 
 The breakpoint work (`extend-closed-loop-geometry-verification`) added
-A14–A18 this way; every later axiom follows the same steps.
+A14–A18 this way, and A19–A20 followed; every later axiom follows the same
+steps. Rewriting an unpinned axiom from measurement (as A10 was) keeps its
+id, gives it a probe, and renames its catalogue entry to the new statement.
 
 1. **Ledger row.** Add the row to the ledger table with the next unused id
    (ids are never reused), its statement, and its dependent designs.

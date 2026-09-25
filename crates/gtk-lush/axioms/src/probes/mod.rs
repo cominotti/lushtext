@@ -16,6 +16,7 @@ pub(crate) mod a05;
 pub(crate) mod a06;
 pub(crate) mod a07;
 pub(crate) mod a09;
+pub(crate) mod a10;
 pub(crate) mod a11;
 pub(crate) mod a13;
 pub(crate) mod a14;
@@ -23,6 +24,8 @@ pub(crate) mod a15;
 pub(crate) mod a16;
 pub(crate) mod a17;
 pub(crate) mod a18;
+pub(crate) mod a19;
+pub(crate) mod a20;
 pub(crate) mod adaptive;
 
 use gtk4::prelude::*;
@@ -37,6 +40,7 @@ pub use a05::probe_a05;
 pub use a06::probe_a06;
 pub use a07::probe_a07;
 pub use a09::probe_a09;
+pub use a10::probe_a10;
 pub use a11::probe_a11;
 pub use a13::probe_a13;
 pub use a14::probe_a14;
@@ -44,6 +48,8 @@ pub use a15::probe_a15;
 pub use a16::probe_a16;
 pub use a17::probe_a17;
 pub use a18::probe_a18;
+pub use a19::probe_a19;
+pub use a20::probe_a20;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

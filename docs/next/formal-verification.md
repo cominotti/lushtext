@@ -220,8 +220,14 @@ The new probes also measured two behaviours the ledger did not record
   in `gtk-lush-axioms`.
 
 A8 is backed by the phase-0 instrumentation (39 requests, 0 settles, no
-`Defer` across 48 tests) and recorded as not isolable by a probe; A10 and A12
-record why they are not pinned separately.
+`Defer` across 48 tests) and recorded as not isolable by a probe; A12 records
+why it is not pinned. A10 was rewritten from measurement on 2026-09-25 and now
+has its own probe: its old statement ("off-screen rows stay realized but
+unmapped") hid that a `GtkListView` also **maps** rows wholly outside its own
+allocation, so rendered-row tests intersect mapped rows with the viewport. The
+same change pinned A19 (a `GtkViewport` notifies `page-size` only after
+allocating its child) and A20 (a host `set_value` leaves the list's anchor
+outside `[0, 1]` until the value is re-announced after allocation).
 
 ### Phase 2 — Kani lane
 

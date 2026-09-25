@@ -32,3 +32,17 @@
   `AdwBreakpointBin` allocated at an exact width), `fixtures::SplitViewFixture`,
   `fixtures::set_text_scale`, and `FixedHost::set_child_width`; the values each
   probe drives them with are under `fixtures::a14` … `fixtures::a18`.
+- A10 rewritten from measurement and given a probe and sample: a
+  `GtkListView` maps rows wholly outside its own allocation (one past the
+  bottom at rest, one past each edge at a row-aligned value, after
+  `scroll_to`, and after a focus scroll), so `mapped` does not mean drawn.
+  Its catalogue name is now `a10_mapped_rows_are_not_necessarily_on_screen`.
+- A19 (`GtkViewport` emits `notify::page-size` / `notify::value` only after
+  allocating its child, while a clamp's `value-changed` precedes it, so a
+  `queue_allocate` from the notify is not served in that frame) and A20 (a
+  host `set_value` leaves the list's scroll anchor outside `[0, 1]`; the
+  value re-announced after allocation anchors it at the view's edge), with
+  probes and samples. New fixtures: `fixtures::AllocationProbe` and
+  `fixtures::ViewportOrder` (with `ViewportEvent`, `QueuedFromNotify`),
+  `fixtures::a20::reannounce_value`, and the values under `fixtures::a10`,
+  `fixtures::a19`, and `fixtures::a20`.

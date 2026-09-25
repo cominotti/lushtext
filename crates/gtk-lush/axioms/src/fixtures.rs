@@ -4,10 +4,11 @@
 //!
 //! A sample builds exactly the fixture its probe measures, so what a person
 //! watches on screen is what CI checks. Nothing here depends on a LushText or
-//! GTK Lush widget: the only custom widget, [`FixedHost`], allocates its one
-//! child at a chosen height with no transform. That is the only way to hand a
+//! GTK Lush widget: the custom widgets are [`FixedHost`], which allocates its
+//! one child at a chosen size with no transform — the only way to hand a
 //! `GtkListView` an exact allocation (zero included) without a container whose
-//! own policy would be under test too.
+//! own policy would be under test too — and [`AllocationProbe`] (A19), a
+//! childless widget that logs when it is allocated.
 //!
 //! The breakpoint and split-view fixtures (A14–A18) are pure Libadwaita:
 //! [`BreakpointFixture`] is an `AdwBreakpointBin` that a [`FixedHost`]
@@ -25,6 +26,7 @@ pub use crate::probes::a04::EmissionSites;
 pub use crate::probes::a06::{INSET_CLASS, InsetStyle};
 pub use crate::probes::a13::ReslicingHost;
 pub use crate::probes::a17::SplitViewFixture;
+pub use crate::probes::a19::{AllocationProbe, QueuedFromNotify, ViewportEvent, ViewportOrder};
 pub use crate::probes::adaptive::{
     BASE_XFT_DPI, BIN_MIN_WIDTH, BreakpointFixture, ORIGINAL_LABEL, max_width_sp, set_text_scale,
     xft_dpi_for_scale,
@@ -50,6 +52,12 @@ pub mod a07 {
 /// The values the A9 probe drives its fixture with, for its sample.
 pub mod a09 {
     pub use crate::probes::a09::{NUDGE, TARGET_ROW};
+}
+/// The values the A10 probe drives its fixture with, for its sample.
+pub mod a10 {
+    pub use crate::probes::a10::{
+        ALIGNED_ROW, FOCUS_ROW, SCROLL_AWAY, SCROLL_TO_ROW, UNALIGNED_VALUE,
+    };
 }
 /// The values the A13 probe drives its fixture with, for its sample.
 pub mod a13 {
@@ -77,6 +85,18 @@ pub mod a17 {
 /// The values the A18 probe drives its fixture with, for its sample.
 pub mod a18 {
     pub use crate::probes::a18::{BELOW_BOTH_WIDTH, BETWEEN_WIDTH, NARROW_SP, WIDE_SP};
+}
+
+/// The values the A19 probe drives its fixture with, for its sample.
+pub mod a19 {
+    pub use crate::probes::a19::{
+        CONTENT_HEIGHT, GROWN_HEIGHT, RESTING_HEIGHT, SHRUNK_HEIGHT, VIEWPORT_WIDTHS,
+    };
+}
+
+/// The values the A20 probe drives its fixture with, for its sample.
+pub mod a20 {
+    pub use crate::probes::a20::{SHRUNK_PAGE, TARGET_ROWS, reannounce_value};
 }
 
 /// Height every probe row requests, so row geometry is predictable.
