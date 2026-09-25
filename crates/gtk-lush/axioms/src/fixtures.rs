@@ -74,8 +74,10 @@ pub mod a15 {
 /// The values the A16 probe drives its fixture with, for its sample.
 pub mod a16 {
     pub use crate::probes::a16::{
-        APPLIED_LABEL, CONDITION_SP, NARROW_WIDTH, WIDE_WIDTH, WRITE_BEFORE_ADDING_THE_SETTER,
-        WRITE_WHILE_APPLIED,
+        APPLIED_LABEL, CONDITION_SP, DOUBLED_TEXT_SCALE, INNER_SP, INNER_VALUE, INSIDE_BOTH_WIDTH,
+        NARROW_WIDTH, OUTER_ONLY_WIDTH, OUTER_SP, OUTER_VALUE, OUTSIDE_BOTH_WIDTH,
+        RESCALE_REST_WIDTH, WIDE_WIDTH, WRITE_BEFORE_ADDING_BOTH_SETTERS,
+        WRITE_BEFORE_ADDING_THE_SETTER, WRITE_WHILE_APPLIED,
     };
 }
 /// The values the A17 probe drives its fixture with, for its sample.

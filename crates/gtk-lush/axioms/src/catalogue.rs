@@ -210,7 +210,13 @@ const CATALOGUE: &[Axiom] = &[
                     child is allocated once at the new width with the old values and sees the \
                     new ones one frame later; unapply restores the value the property held \
                     when add_setter was called, discarding every later application write, \
-                    including one made while the breakpoint was applied",
+                    including one made while the breakpoint was applied; when the current \
+                    breakpoint switches directly between two breakpoints that both set the same \
+                    property (by width or by text scale alone), the outgoing unapply fires with \
+                    the property still at its value, one notify carries the incoming value (even \
+                    an equal one), then the incoming apply fires, so the property ends at the \
+                    incoming value and the add-time value is never observable in between; \
+                    leaving both still restores the add-time value",
         dependent_designs: &[
             "the breakpoint-loop Kani model (ui/window/geometry/kani_proofs.rs)",
             "sync_secondary_surfaces writes properties_layout_view layout-name, which the \
