@@ -25,7 +25,7 @@
 
 ## 5. CI
 
-- [ ] 5.1 Add a `gtk-axioms` job to `.github/workflows/ci.yml` (Fedora 44 container, `gtk4-devel`, `libadwaita-devel`, `mutter`, `dbus-daemon`, a `timeout-minutes` under 30) running `make gtk-axioms`. Add `libadwaita-devel` to the `gtk-lush-msrv` and `gtk-lush-api-advisory` jobs. Run `make check-workflow-timeouts`, and confirm the new job and both changed jobs pass on the pull request.
+- [x] 5.1 Add a `gtk-axioms` job to `.github/workflows/ci.yml` (Fedora 44 container, `gtk4-devel`, `libadwaita-devel`, `mutter`, `dbus-daemon`, a `timeout-minutes` under 30) running `make gtk-axioms`. Add `libadwaita-devel` to the `gtk-lush-msrv` and `gtk-lush-api-advisory` jobs. Run `make check-workflow-timeouts`, and confirm the new job and both changed jobs pass on the pull request.
 
 ## 6. Upgrade alarm
 
