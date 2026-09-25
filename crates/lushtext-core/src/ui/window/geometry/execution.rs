@@ -44,9 +44,9 @@ use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 use super::super::imp::PREVIEW_LAYOUT_EDITOR;
 use super::policy::{
     self, AdaptiveShellInputs, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
-    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation,
-    WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout, properties_breakpoint_condition,
-    workspace_breakpoint_condition,
+    PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, RenderedShellState,
+    ShellReconciliation, ShellWrite, WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout,
+    plan_shell_reconciliation, properties_breakpoint_condition, workspace_breakpoint_condition,
 };
 use crate::ui::markdown_preview::PREVIEW_MIN_WIDTH_SP;
 
@@ -194,14 +194,25 @@ pub(in crate::ui::window) fn install_split_view_breakpoints(window: &super::Lush
         ))
         .expect("valid properties breakpoint condition"),
     );
-    properties_bp.add_setter(
-        window
-            .imp()
-            .properties_layout_view
-            .upcast_ref::<glib::Object>(),
-        "layout-name",
-        Some(&PropertiesPresentation::Sheet.layout_name().to_value()),
-    );
+    // The breakpoint triggers the reconciliation instead of carrying a
+    // `layout-name` setter, so the plan is the property's only writer. A setter
+    // was a second writer with a different predicate: under text scaling it
+    // applied where the policy keeps the pane (A14), and on unapply it restored
+    // the install-time value over the reconciliation's write (A16), so one
+    // allocation flipped the layout and back (`shell_loop_layout_setter_flaps`).
+    // The signals run inside the bin's allocation, where the setter ran.
+    let window_weak = window.downgrade();
+    properties_bp.connect_apply(move |_| {
+        if let Some(window) = window_weak.upgrade() {
+            sync_secondary_surfaces(&window);
+        }
+    });
+    let window_weak = window.downgrade();
+    properties_bp.connect_unapply(move |_| {
+        if let Some(window) = window_weak.upgrade() {
+            sync_secondary_surfaces(&window);
+        }
+    });
     window
         .imp()
         .properties_breakpoint
@@ -232,6 +243,19 @@ pub(in crate::ui::window) fn install_split_view_breakpoints(window: &super::Lush
         window.imp().open_button_stack.upcast_ref::<glib::Object>(),
         "visible-child-name",
         Some(&"narrow".to_value()),
+    );
+    // Only the last added matching breakpoint applies (ledger A18), so where
+    // this one matches it displaces the workspace breakpoint. Every width it
+    // matches (400sp) also matches the workspace's 860sp, so it collapses the
+    // workspace too; without this, a text scale of 1.6 or more uncollapsed the
+    // workspace at the narrowest windows.
+    open_button_bp.add_setter(
+        window
+            .imp()
+            .workspace_split_view
+            .upcast_ref::<glib::Object>(),
+        "collapsed",
+        Some(&true.to_value()),
     );
     window.add_breakpoint(open_button_bp);
 }
@@ -377,12 +401,68 @@ pub(in crate::ui::window) fn set_workspace_sidebar_preset(
     sync_split_view_widths(window, current_window_width(window));
 }
 
-pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::LushtextWindow) {
-    let max_width =
-        derive_adaptive_shell_layout(adaptive_shell_inputs(window)).properties_breakpoint_max_width;
-    if window.imp().properties_breakpoint_max_width.get() == max_width {
-        return;
+/// Read what the shell renders now, for the reconciliation plan.
+fn rendered_shell_state(window: &super::LushtextWindow) -> RenderedShellState {
+    let imp = window.imp();
+    RenderedShellState {
+        presentation: properties_presentation(window),
+        compact_surface: imp.secondary_surfaces.compact_surface.get(),
+        workspace_shows_sidebar: imp.workspace_split_view.shows_sidebar(),
+        properties_shows_sidebar: imp.properties_split_view.shows_sidebar(),
+        sheet_open: imp.properties_bottom_sheet.is_open(),
     }
+}
+
+/// Plan the reconciliation of the rendered shell with the current intent.
+fn current_reconciliation(window: &super::LushtextWindow) -> ShellReconciliation {
+    plan_shell_reconciliation(
+        rendered_shell_state(window),
+        derive_adaptive_shell_layout(adaptive_shell_inputs(window)),
+        window.imp().properties_breakpoint_max_width.get(),
+    )
+}
+
+/// Apply one planned write, unless the value already holds.
+///
+/// The recheck is not a second decision: a `layout-name` write notifies
+/// synchronously, and its handler reconciles the whole shell before this plan's
+/// remaining writes run, so by then they may already hold.
+fn apply_shell_write(window: &super::LushtextWindow, write: ShellWrite) {
+    let imp = window.imp();
+    match write {
+        ShellWrite::LayoutName(presentation) => {
+            if properties_presentation(window) != presentation {
+                imp.properties_layout_view
+                    .set_layout_name(presentation.layout_name());
+            }
+        }
+        ShellWrite::CompactSurface(surface) => {
+            if imp.secondary_surfaces.compact_surface.get() != surface {
+                imp.secondary_surfaces.compact_surface.set(surface);
+            }
+        }
+        ShellWrite::WorkspaceShowSidebar(show) => {
+            if imp.workspace_split_view.shows_sidebar() != show {
+                imp.workspace_split_view.set_show_sidebar(show);
+            }
+        }
+        ShellWrite::PropertiesShowSidebar(show) => {
+            if imp.properties_split_view.shows_sidebar() != show {
+                imp.properties_split_view.set_show_sidebar(show);
+            }
+        }
+        ShellWrite::SheetOpen(open) => {
+            if imp.properties_bottom_sheet.is_open() != open {
+                imp.properties_bottom_sheet.set_open(open);
+            }
+        }
+    }
+}
+
+pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::LushtextWindow) {
+    let Some(max_width) = current_reconciliation(window).reinstall_threshold else {
+        return;
+    };
     let condition =
         libadwaita::BreakpointCondition::parse(&properties_breakpoint_condition(max_width))
             .expect("valid properties breakpoint condition");
@@ -395,47 +475,17 @@ pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::Lushtext
 pub(in crate::ui::window) fn sync_secondary_surfaces(window: &super::LushtextWindow) {
     let imp = window.imp();
     let layout = derive_adaptive_shell_layout(adaptive_shell_inputs(window));
-    let compact = layout.properties_presentation == PropertiesPresentation::Sheet;
-    let was_workspace_visible = imp.workspace_split_view.shows_sidebar();
+    let rendered = rendered_shell_state(window);
+    let plan =
+        plan_shell_reconciliation(rendered, layout, imp.properties_breakpoint_max_width.get());
+    let was_workspace_visible = rendered.workspace_shows_sidebar;
     let was_properties_visible = window.rendered_document_properties_visible();
     let focus_in_workspace = focus_is_within(window, imp.sidebar.upcast_ref::<gtk4::Widget>());
     let focus_in_properties =
         focus_is_within(window, imp.properties_panel.upcast_ref::<gtk4::Widget>());
 
-    if properties_presentation(window) != layout.properties_presentation {
-        imp.properties_layout_view
-            .set_layout_name(layout.properties_presentation.layout_name());
-    }
-
-    if !compact {
-        imp.secondary_surfaces.compact_surface.set(None);
-    } else if imp.secondary_surfaces.compact_surface.get() != layout.compact_surface {
-        imp.secondary_surfaces
-            .compact_surface
-            .set(layout.compact_surface);
-    }
-
-    if imp.workspace_split_view.shows_sidebar() != layout.render_workspace {
-        imp.workspace_split_view
-            .set_show_sidebar(layout.render_workspace);
-    }
-
-    if compact {
-        if imp.properties_split_view.shows_sidebar() {
-            imp.properties_split_view.set_show_sidebar(false);
-        }
-        if imp.properties_bottom_sheet.is_open() != layout.render_properties {
-            imp.properties_bottom_sheet
-                .set_open(layout.render_properties);
-        }
-    } else {
-        if imp.properties_bottom_sheet.is_open() {
-            imp.properties_bottom_sheet.set_open(false);
-        }
-        if imp.properties_split_view.shows_sidebar() != layout.render_properties {
-            imp.properties_split_view
-                .set_show_sidebar(layout.render_properties);
-        }
+    for write in plan.surface_writes().into_iter().flatten() {
+        apply_shell_write(window, write);
     }
 
     window.sync_secondary_surface_action_states();

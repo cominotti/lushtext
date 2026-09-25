@@ -14,6 +14,10 @@
 //! on screen and it can only be right if its band is. It has no GTK dependency
 //! so it can be unit- and property-tested directly.
 
+/// The smallest band a child with content is allocated: one logical pixel, so
+/// content entirely off screen is never allocated zero height (ledger A5).
+const MIN_BAND_HEIGHT: f64 = 1.0;
+
 /// The band of content, in logical pixels, that the child should be allocated.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewportSlice {
@@ -37,8 +41,8 @@ pub struct ViewportSlice {
 ///   correctly; a positive value trades that precision for fewer row
 ///   realizations while scrolling.
 ///
-/// When the content fits the viewport, the whole content is returned at offset
-/// zero.
+/// Content the viewport shows whole is returned whole at offset zero; content
+/// it shows in part gets only that part, however short the content is.
 ///
 /// # Domain
 ///
@@ -68,27 +72,26 @@ pub fn viewport_slice(
         0.0
     };
 
-    if content_height <= viewport_height {
-        return ViewportSlice {
-            top: 0.0,
-            height: content_height,
-        };
-    }
-
-    // Chrome the host draws *above* this content eats into the viewport, so the
-    // content has less of it than `viewport_height` to occupy. The child sizes
-    // its own `scroll_to` and keyboard-focus decisions from the allocation it is
-    // given, so a band wider than what shows makes it believe rows are on
-    // screen while they sit below the fold.
+    // The child decides from its own allocation whether a row is on screen
+    // (`scroll_to`, keyboard focus), so its band is exactly the part of the
+    // content the viewport shows: chrome the host draws above this content
+    // is deducted at the top, and content the viewport has scrolled past, or
+    // not yet reached, at the bottom. A band wider than what shows makes the
+    // child believe rows are on screen that are not, and it then never asks
+    // for them: a `scroll_to` of a row inside a scrolled-past band was a
+    // no-op.
     //
-    // Only the top side is deducted. Shrinking the band at the bottom edge too
-    // would be symmetric but wrong in practice: it collapses to nothing once
-    // the content has scrolled past, and a zero-height allocation makes
-    // `GtkListView` rewrite the adjustment this container owns, which reads as
-    // a scroll request and starts the very fight this module exists to avoid.
+    // The band never collapses to nothing, though. A zero-height allocation
+    // makes `GtkListView` rewrite the adjustment this container owns (ledger
+    // A5), which reads as a scroll request; content entirely off screen keeps
+    // a one-pixel band at the edge nearest the viewport instead, so the child
+    // still sees that its rows are not visible.
     let visible_top = viewport_top.max(0.0);
-    let visible_height = (viewport_height + viewport_top.min(0.0)).max(0.0);
-    let height = (visible_height + 2.0 * overscan).min(content_height);
+    let visible_bottom = (viewport_top + viewport_height).min(content_height);
+    let visible_height = (visible_bottom - visible_top).max(0.0);
+    let height = (visible_height + 2.0 * overscan)
+        .max(MIN_BAND_HEIGHT.min(content_height))
+        .min(content_height);
     let top = (visible_top - overscan).clamp(0.0, content_height - height);
     ViewportSlice { top, height }
 }
@@ -97,12 +100,20 @@ pub fn viewport_slice(
 /// `height` pixels: `(top, height)`, with `0 <= top` and
 /// `top + height <= max(height, 0)` for every input, finite or not.
 ///
+/// The band is at least `min_band` pixels tall (as far as the widget allows)
+/// and stays at the slice's edge when the floor widens it. The bin passes its
+/// child's learned content-box inset plus one, so the page the child works in
+/// is never zero (ledger A5, A6) even where [`viewport_slice`] returns its
+/// one-pixel off-screen band.
+///
 /// A scrollable child's vertical minimum is its content height; GTK exempts
 /// `GtkScrollable` widgets from the under-allocation check for exactly this
 /// reason, so the band may legitimately be smaller than `height`.
-pub(crate) fn whole_pixel_band(slice: ViewportSlice, height: i32) -> (i32, i32) {
+pub(crate) fn whole_pixel_band(slice: ViewportSlice, height: i32, min_band: i32) -> (i32, i32) {
     let height = height.max(0);
-    let band_height = whole_pixels(slice.height).min(height);
+    let band_height = whole_pixels(slice.height)
+        .max(min_band.clamp(0, height))
+        .min(height);
     let band_top = whole_pixels(slice.top).clamp(0, height - band_height);
     (band_top, band_height)
 }
@@ -129,13 +140,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn content_shorter_than_viewport_is_returned_whole() {
-        let slice = viewport_slice(120.0, 665.0, 300.0, 100.0);
+    fn content_shown_whole_is_returned_whole() {
+        let slice = viewport_slice(-120.0, 665.0, 300.0, 100.0);
         assert_eq!(
             slice,
             ViewportSlice {
                 top: 0.0,
                 height: 300.0
+            }
+        );
+    }
+
+    #[test]
+    fn short_content_shown_in_part_only_gets_the_part_that_shows() {
+        // A 300px section whose first 120px have scrolled above the viewport.
+        let slice = viewport_slice(120.0, 665.0, 300.0, 0.0);
+        assert_eq!(
+            slice,
+            ViewportSlice {
+                top: 120.0,
+                height: 180.0
             }
         );
     }
@@ -181,32 +205,47 @@ mod tests {
     }
 
     #[test]
-    fn slice_clamps_at_the_bottom_of_the_content() {
+    fn a_content_end_inside_the_viewport_only_gets_the_visible_remainder() {
+        // The viewport shows the last 86px of the content and whatever the
+        // host draws below it; the band is those 86px, not a full viewport
+        // reaching 579px above the viewport top.
         let slice = viewport_slice(11_400.0, 665.0, 11_486.0, 0.0);
-        assert_eq!(slice.top, 11_486.0 - 665.0);
-        assert_eq!(slice.height, 665.0);
+        assert_eq!(slice.top, 11_400.0);
+        assert_eq!(slice.height, 86.0);
     }
 
     #[test]
-    fn content_scrolled_past_the_viewport_still_gets_a_full_band() {
+    fn content_off_screen_keeps_a_one_pixel_band_at_its_nearest_edge() {
         // Never zero: a zero-height allocation makes the child rewrite the
         // adjustment this container owns, which would read as a scroll request.
         let above = viewport_slice(20_000.0, 665.0, 11_486.0, 0.0);
-        assert_eq!(above.height, 665.0);
-        assert_eq!(above.top, 11_486.0 - 665.0);
+        assert_eq!(above.height, 1.0);
+        assert_eq!(above.top, 11_486.0 - 1.0);
         let below = viewport_slice(-20_000.0, 665.0, 11_486.0, 0.0);
-        assert_eq!(below.height, 0.0);
+        assert_eq!(below.height, 1.0);
         assert_eq!(below.top, 0.0);
     }
 
     #[test]
     fn whole_pixel_band_rounds_and_stays_inside_the_widget() {
-        let band = |top, height, widget| whole_pixel_band(ViewportSlice { top, height }, widget);
+        let band = |top, height, widget| whole_pixel_band(ViewportSlice { top, height }, widget, 0);
         assert_eq!(band(10.4, 99.6, 500), (10, 100));
         assert_eq!(band(480.0, 100.0, 500), (400, 100));
         assert_eq!(band(0.0, 900.0, 500), (0, 500));
         assert_eq!(band(f64::NAN, f64::INFINITY, 500), (0, 500));
         assert_eq!(band(-5.0, -5.0, -10), (0, 0));
+    }
+
+    #[test]
+    fn the_band_floor_keeps_an_off_screen_band_at_its_edge() {
+        let band = |top, height, floor| whole_pixel_band(ViewportSlice { top, height }, 500, floor);
+        // A one-pixel band at the content end widens upward to the floor.
+        assert_eq!(band(499.0, 1.0, 11), (489, 11));
+        // At the content start it widens downward.
+        assert_eq!(band(0.0, 1.0, 11), (0, 11));
+        // A floor never exceeds the widget, and a band above it is untouched.
+        assert_eq!(band(0.0, 1.0, 900), (0, 500));
+        assert_eq!(band(100.0, 300.0, 11), (100, 300));
     }
 
     #[test]

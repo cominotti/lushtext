@@ -18,9 +18,10 @@
 //! | Module | Role |
 //! | --- | --- |
 //! | `mod.rs` (this file) | narrative facade |
-//! | `policy.rs` | pure policy — the effective-fraction arithmetic, the preset clamp, the properties presentation choice, and the derived breakpoint threshold |
+//! | `policy.rs` | pure policy — the effective-fraction arithmetic, the preset clamp, the properties presentation choice, the derived breakpoint threshold, and the reconciliation plan (`plan_shell_reconciliation`) |
 //! | `execution.rs` | coordination (`execution`) — restore, breakpoint installation, and allocation-time reconciliation |
 //! | `evidence.rs` | evidence surface (`test-utils`-gated; production reads live state directly) |
+//! | `kani_proofs.rs` | verification (`cfg(kani)`): the breakpoint-loop model over the real policy and plan |
 //!
 //! The GTK adapter halves that stay behind are **deliberate**, not residue:
 //! `ui/window/imp.rs` keeps the `size_allocate` vfunc (a subclass override GTK
@@ -64,6 +65,9 @@ pub(super) mod execution;
 
 #[cfg(feature = "test-utils")]
 pub mod evidence;
+
+#[cfg(kani)]
+mod kani_proofs;
 
 use glib::object::ObjectExt;
 use glib::subclass::prelude::ObjectSubclassIsExt;

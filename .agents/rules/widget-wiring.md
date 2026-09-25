@@ -208,13 +208,33 @@ When a custom container hosts a `GtkScrollable` child and owns its adjustments
   against the unclamped viewport top — that part was right — and apply it from
   an idle: moving an outer adjustment from inside a layout pass does not
   reliably schedule another layout.
-- Deduct chrome drawn above the child from the band you allocate it. A child
-  decides for itself whether a row is on screen, from its own allocation, so a
-  band taller than the visible area makes it place revealed rows behind that
-  chrome. Do not deduct at the bottom edge as well: the band then collapses to
-  nothing once the content scrolls past, and a zero-height allocation makes
-  `GtkListView` rewrite the adjustment the container owns, which reads as a
-  request and restarts the fight.
+- Allocate the child exactly the band the viewport shows: deduct chrome drawn
+  above the child at the top **and** content the viewport has scrolled past at
+  the bottom. A child decides for itself whether a row is on screen, from its
+  own allocation, so a band taller than the visible area makes it place
+  revealed rows behind chrome, and a band left at a scrolled-past edge makes a
+  `scroll_to` of one of its rows a no-op. Never let the band reach zero: a
+  zero-height allocation makes `GtkListView` rewrite the adjustment the
+  container owns (ledger A5), which reads as a request. Keep one pixel plus the
+  child's learned inset at the nearest edge when nothing shows.
+- **Anchor forwarded requests.** Record the outer value a batch's first request
+  was measured against and have the idle set `anchor + accumulated delta`, not
+  add the delta to the outer's current value: several containers sharing one
+  outer scroller measure in the same frame against the same value, and adding
+  lands the outer at the sum. Keep accumulating within one container's batch.
+- **Re-announce a value you moved.** A `value-changed` a `GtkListView` sees
+  before it is allocated at the new value leaves its scroll anchor stray (ledger
+  A20); emit `value-changed` once more after `child.allocate(...)` whenever the
+  publish changed the value, or a later page change (window resize) re-derives
+  the value along that stray line.
+- Treat a divergence as a settle, and write it back, when it cannot be a
+  request: after a publish that emitted `value-changed` (it dropped any pending
+  `scroll_to`, ledger A9), or after a page or content-height change the
+  container made under an anchor it set. Forwarding it scrolls the outer on a
+  resize.
+- Re-slice on an outer `notify::page-size` from an idle: `GtkViewport` delivers
+  it after it has allocated its child (ledger A19), and an allocation queued
+  there is still pending when the frame is drawn.
 - Never re-queue an allocation when the outer adjustment refused to move
   (`set_value` clamps and emits nothing); that is the loop guard.
 - Report the child's full content as the container's natural height, and as its

@@ -15,6 +15,7 @@ use crate::common::{
     ensure_gtk_init, find_descendant, first_label, fixture, flush_after_delay, flush_events,
     force_layout, mapped_list_rows, mapped_row_with_label, placement_relative_to, present_window,
     realized_list_rows, row_straddling_bottom, sample_placements, test_window, wait_until,
+    wait_until_or_false,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -249,6 +250,25 @@ fn inside_outer_viewport(sidebar: &LushtextSidebar, widget: &gtk4::Widget) -> bo
     })
 }
 
+/// Labels of the section's rows GTK maps **and** draws inside the outer
+/// viewport, at least in part. A mapped row is not necessarily on screen
+/// (ledger A10): `GtkListView` maps rows it allocates outside its own band,
+/// and a slice bin keeps its band allocated after the outer scroller has moved
+/// past it, so "the last row is rendered" must be checked against the
+/// viewport, not against the realized or mapped set.
+fn drawn_labels(sidebar: &LushtextSidebar, section: &LushtextWorkspaceSection) -> BTreeSet<String> {
+    let outer = &*sidebar.imp().outer_scrolled_window;
+    let viewport = f64::from(outer.height());
+    mapped_list_rows(&section.imp().file_tree_view)
+        .filter(|row| {
+            row.compute_bounds(outer).is_some_and(|bounds| {
+                f64::from(bounds.y() + bounds.height()) > 0.0 && f64::from(bounds.y()) < viewport
+            })
+        })
+        .filter_map(|row| row_label(&row).map(|label| label.text().to_string()))
+        .collect()
+}
+
 fn assert_last_row_rendered(
     section: &LushtextWorkspaceSection,
     sidebar: &LushtextSidebar,
@@ -256,10 +276,10 @@ fn assert_last_row_rendered(
 ) {
     scroll_outer_to_bottom(sidebar);
     let last = file_name(count - 1);
-    let labels = rendered_labels(section);
+    let labels = drawn_labels(sidebar, section);
     assert!(
         labels.contains(&last),
-        "last row {last} must be rendered after scrolling to the bottom; rendered {} rows, last rendered {:?}",
+        "last row {last} must be drawn in the viewport after scrolling to the bottom; drawn {} rows, last drawn {:?}",
         labels.len(),
         labels.iter().next_back()
     );
@@ -364,7 +384,7 @@ fn test_thousand_rows_keep_realized_widgets_bounded_and_range_exact() {
         );
         assert!(rendered < GTK_LIST_VIEW_REALIZED_CAP);
     }
-    assert!(rendered_labels(&tree.section).contains(&file_name(999)));
+    assert!(drawn_labels(&tree.sidebar, &tree.section).contains(&file_name(999)));
     // The outer range is exact: the slice bin advertises every model row's
     // height even though the list view itself is allocated only the slice.
     // Rows are laid out at a fixed pitch (row height plus list spacing); the
@@ -449,17 +469,29 @@ fn test_two_sections_each_above_the_cap_render_completely() {
         expand_path(section, root, &root.join("nested"));
     }
     scroll_outer_to_bottom(&sidebar);
-    assert!(rendered_labels(&sections[1]).contains(&file_name(249)));
-    // The first section's last row sits above the second section: scroll it in.
-    let first_last_index =
-        tree_index_for_path(&sections[0], &first.join("nested").join(file_name(249)))
-            .expect("first last row index");
+    assert!(drawn_labels(&sidebar, &sections[1]).contains(&file_name(249)));
+    // The first section sits above the viewport: ask for a row near its end
+    // and it must be drawn, not merely realized. (The row covering the
+    // one-pixel band an off-screen bin keeps at its edge, here the last one,
+    // is the recorded edge-row residual: GTK treats a row that covers its
+    // whole view as already visible. See the programme record, phase 3.)
+    let near_last_index =
+        tree_index_for_path(&sections[0], &first.join("nested").join(file_name(248)))
+            .expect("first section's second-to-last row index");
     sections[0]
         .imp()
         .file_tree_view
-        .scroll_to(first_last_index, gtk4::ListScrollFlags::NONE, None);
-    flush_after_delay(Duration::from_millis(300));
-    assert!(rendered_labels(&sections[0]).contains(&file_name(249)));
+        .scroll_to(near_last_index, gtk4::ListScrollFlags::NONE, None);
+    let drawn_both = || {
+        let drawn = drawn_labels(&sidebar, &sections[0]);
+        drawn.contains(&file_name(248)) && drawn.contains(&file_name(249))
+    };
+    wait_until_or_false(Duration::from_secs(5), drawn_both);
+    let drawn = drawn_labels(&sidebar, &sections[0]);
+    assert!(
+        drawn.contains(&file_name(248)) && drawn.contains(&file_name(249)),
+        "a row requested in a section above the viewport must be scrolled on screen; drawn {drawn:?}"
+    );
     assert!(
         sidebar.imp().workspace_filter_dropdown.is_mapped(),
         "the fixed workspace-scope row stays visible while sections scroll"
@@ -582,7 +614,7 @@ fn test_pending_selection_survives_a_batched_refresh_while_scrolled_to_the_end()
         "outer value must be clamped after the refresh"
     );
     scroll_outer_to_bottom(&tree.sidebar);
-    assert!(rendered_labels(&tree.section).contains(&file_name(299)));
+    assert!(drawn_labels(&tree.sidebar, &tree.section).contains(&file_name(299)));
     drop(tree.window);
 }
 
@@ -630,7 +662,7 @@ fn test_focus_folder_on_a_large_directory_keeps_the_last_entry_reachable() {
     flush_after_delay(Duration::from_millis(500));
     assert!(tree.section.imp().drilldown_header_box.is_visible());
     scroll_outer_to_bottom(&tree.sidebar);
-    assert!(rendered_labels(&tree.section).contains(&file_name(299)));
+    assert!(drawn_labels(&tree.sidebar, &tree.section).contains(&file_name(299)));
     drop(tree.window);
 }
 
@@ -697,7 +729,7 @@ fn test_continuous_outer_scrolling_stays_stable() {
     // realized after a fast drag; it must not grow past that.
     assert!(rendered_rows(&tree.section).len() <= GTK_LIST_VIEW_REALIZED_CAP + 8);
     scroll_outer_to_bottom(&tree.sidebar);
-    assert!(rendered_labels(&tree.section).contains(&file_name(999)));
+    assert!(drawn_labels(&tree.sidebar, &tree.section).contains(&file_name(999)));
     drop(tree.window);
 }
 
@@ -1378,5 +1410,45 @@ fn test_a_row_clipped_at_the_slice_edge_is_still_revealed_and_the_sidebar_then_r
         inside_outer_viewport(&tree.sidebar, &row),
         "{label} must be fully inside the viewport after the request"
     );
+    drop(tree.window);
+}
+
+#[test]
+fn test_a_sidebar_height_change_after_scrolling_keeps_the_scroll_position() {
+    // A window resize changes the sidebar's viewport height. The file tree
+    // re-derives its value from its scroll anchor against the new page (ledger
+    // A7); forwarded as a request, that scrolled the sidebar 9 px here (4664 px
+    // in the GTK Lush adoption lab on maximize). GTK4 cannot shrink a
+    // presented window, so the outer scroller's own height is pinned instead.
+    let tree = large_tree(&[("nested", 1_000)], 800);
+    expand_path(&tree.section, &tree.root, &tree.root.join("nested"));
+    let adjustment = outer_adjustment(&tree.sidebar);
+    let outer = &*tree.sidebar.imp().outer_scrolled_window;
+    for (scroll, height) in [(9_000.0, 400), (20_000.0, 560)] {
+        scroll_outer_to(&tree.sidebar, scroll);
+        flush_after_delay(Duration::from_millis(400));
+        let before = adjustment.value();
+        let top = fully_visible_labels(&tree.sidebar, &tree.section)
+            .first()
+            .cloned();
+        outer.set_vexpand(false);
+        outer.set_valign(gtk4::Align::Start);
+        outer.set_propagate_natural_height(true);
+        outer.set_min_content_height(height);
+        outer.set_max_content_height(height);
+        flush_after_delay(Duration::from_millis(600));
+        assert!(
+            (adjustment.value() - before).abs() < 1.0,
+            "a sidebar height change must not scroll it: {before} -> {} (viewport {height} px)",
+            adjustment.value()
+        );
+        assert_eq!(
+            fully_visible_labels(&tree.sidebar, &tree.section)
+                .first()
+                .cloned(),
+            top,
+            "the row at the top of the sidebar must stay there"
+        );
+    }
     drop(tree.window);
 }

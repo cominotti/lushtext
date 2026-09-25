@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Fixed two `ViewportSliceBin`s in one outer scroller landing the outer at the
+  sum of their deltas when both forwarded a request in the same frame, where
+  neither request was honoured. The forwarding idle now moves the outer to the
+  outer value the batch was measured against plus its accumulated delta, so the
+  last applied request wins; a single bin's accumulated requests are unchanged.
+  A user scroll made between a request and its idle (under one frame) is now
+  overridden rather than added to. Found by a Kani harness, reproduced by a
+  failing adoption-lab test first.
+- Fixed a window resize (or maximize) scrolling the outer scroller after any
+  outer scroll: the child's re-derived value was forwarded as a request (a
+  4664 px jump on maximize in the adoption lab, 9 px in the LushText sidebar).
+  The bin now re-announces the value after the child's allocation whenever it
+  moved it, so the child's anchor lands inside its view, and writes back a
+  divergence that cannot be a request (after an emitting publish, or after a
+  page or content-height change it made under an anchor it set). A `scroll_to`
+  applied in the very frame of such a resize is erased (recorded residual).
+- Fixed a `scroll_to` of a row in a band the viewport has scrolled past being a
+  no-op: the band now shrinks at the bottom edge too, to what the viewport
+  shows, and keeps one pixel plus the child's inset when nothing shows (a full
+  viewport's band until a non-zero page has revealed the inset). The one row
+  covering that pixel is a recorded residual.
+- Fixed the bin re-slicing late, with GTK printing `Trying to snapshot
+  GtkLushViewportSliceBin ... without a current allocation`, when the outer
+  viewport's height changed: `GtkViewport` delivers `notify::page-size` after it
+  has allocated its child, inside layout, so the bin now re-slices from an
+  idle.
+
 - `viewport_slice`, `classify_child_scroll`, and `outer_scroll_request` now
   state the input domain of their guarantees. They never panic for any `f64`;
   slice containment, coverage of the visible intersection, and exact request

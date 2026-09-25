@@ -81,15 +81,37 @@ proptest! {
     }
 
     #[test]
-    fn content_shorter_than_the_viewport_is_returned_whole(
-        viewport_top in -MAX_CONTENT..MAX_CONTENT,
+    fn content_the_viewport_shows_whole_is_returned_whole(
         viewport_height in 0.0..MAX_VIEWPORT,
         fraction in 0.0..1.0f64,
+        position in 0.0..1.0f64,
         overscan in 0.0..MAX_OVERSCAN,
     ) {
         let content_height = viewport_height * fraction;
+        // The viewport starts anywhere from the content top up to where the
+        // content still ends inside it.
+        let viewport_top = -(viewport_height - content_height) * position;
         let slice = viewport_slice(viewport_top, viewport_height, content_height, overscan);
         prop_assert_eq!(slice, ViewportSlice { top: 0.0, height: content_height });
+    }
+
+    #[test]
+    fn the_band_is_the_visible_intersection_without_overscan(
+        viewport_top in -MAX_CONTENT..MAX_CONTENT,
+        viewport_height in 0.0..MAX_VIEWPORT,
+        content_height in 1.0..MAX_CONTENT,
+    ) {
+        // Without overscan the child's band is exactly what shows (or one
+        // pixel at the nearest edge when nothing does), so the child never
+        // believes an off-screen row is visible.
+        let slice = viewport_slice(viewport_top, viewport_height, content_height, 0.0);
+        match intersection(viewport_top, viewport_height, content_height) {
+            Some((start, end)) if end - start >= 1.0 => {
+                prop_assert!((slice.top - start).abs() < 1e-6 && (slice.top + slice.height - end).abs() < 1e-6,
+                    "slice {slice:?} is not the intersection {start}..{end}");
+            }
+            _ => prop_assert!((slice.height - 1.0f64.min(content_height)).abs() < 1e-6, "slice {slice:?}"),
+        }
     }
 
     #[test]

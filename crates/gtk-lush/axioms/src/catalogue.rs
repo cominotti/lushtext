@@ -104,17 +104,26 @@ const CATALOGUE: &[Axiom] = &[
         id: AxiomId::new(7),
         name: "a07_value_is_rederived_from_the_anchor",
         statement: "the child re-derives its value from its scroll anchor when page or upper \
-                    change: value = anchor position − align × page, with align not confined \
-                    to [0, 1]",
-        dependent_designs: &["the settle bound (reconfigure_shift) in classify_child_scroll"],
+                    change: value = anchor position − align × page; after a host moves the \
+                    value the align is not confined to [0, 1], after scroll_to it is",
+        dependent_designs: &[
+            "classify_child_scroll_in_frame writes back a settle under a published anchor",
+            "the anchor model of the Kani slice loop",
+            "the settle bound (reconfigure_shift) in classify_child_scroll",
+        ],
         probe: Some(probes::probe_a07),
     },
     Axiom {
         id: AxiomId::new(8),
         name: "a08_a_settle_is_bounded_by_its_correction",
-        statement: "a settle is bounded by the geometry correction that caused it, and does not \
-                    survive into a stable-geometry frame",
-        dependent_designs: &["ChildScrollDecision::Defer", "the learning-frame residual"],
+        statement: "a settle the child makes as a consequence of its own geometry correction is \
+                    bounded by that correction, and does not survive into a stable-geometry \
+                    frame; page changes the host makes are A7's, not this bound's",
+        dependent_designs: &[
+            "ChildScrollDecision::Defer",
+            "the learning-frame residual",
+            "the child's own estimate settle in the Kani slice loop",
+        ],
         probe: None,
     },
     Axiom {

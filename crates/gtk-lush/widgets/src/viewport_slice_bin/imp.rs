@@ -16,7 +16,8 @@ use gtk4::subclass::prelude::*;
 use gtk4::{glib, graphene, gsk};
 
 use crate::scroll_request::{
-    ADJUSTMENT_EPSILON, ChildScrollDecision, classify_child_scroll, outer_scroll_request,
+    ADJUSTMENT_EPSILON, ChildAnchorFacts, ChildScrollDecision, classify_child_scroll_in_frame,
+    outer_scroll_request,
 };
 use crate::single_child::replace_child;
 use crate::slice_geometry::{viewport_slice, whole_pixel_band};
@@ -46,8 +47,15 @@ pub struct ViewportSliceBin {
     /// Unclamped top of the outer viewport relative to this bin's content at
     /// the last allocation; negative when the bin starts below the viewport.
     viewport_top: Cell<f64>,
+    /// The outer scroller's value `viewport_top` was measured against.
+    measured_outer_value: Cell<f64>,
     /// Outer scroll delta requested by the child and not yet applied.
     pending_outer_delta: Cell<f64>,
+    /// The outer value the pending batch's first delta was measured against.
+    /// The idle moves the outer to this anchor plus the pending delta, so two
+    /// bins that measured their requests against the same outer value do not
+    /// add them up: the later idle's absolute move wins.
+    pending_outer_anchor: Cell<f64>,
     /// True while an idle to apply `pending_outer_delta` is scheduled.
     outer_request_scheduled: Cell<bool>,
     /// A divergence the last allocation could not classify, as the offset the
@@ -61,6 +69,15 @@ pub struct ViewportSliceBin {
     /// publishes must be expressed there or the child overwrites it every
     /// frame and re-derives its value against a different page.
     content_inset: Cell<f64>,
+    /// True while the child's scroll anchor was last set by a value this bin
+    /// wrote (a publish that changed the value, or a write-back) rather than
+    /// by a request the child made. Such an anchor may lie far from the view
+    /// (ledger A7), so a page change the bin makes can move the child's value
+    /// arbitrarily; see `classify_child_scroll_in_frame`.
+    child_anchor_published: Cell<bool>,
+    /// True once a non-zero page has shown the child's inset, so
+    /// `content_inset` is exact rather than a guess of zero.
+    content_inset_known: Cell<bool>,
     /// Allocations this bin has run with a child. A count that grows while
     /// nothing moves is a layout loop.
     pub(super) allocation_count: Cell<u64>,
@@ -88,10 +105,14 @@ impl ObjectSubclass for ViewportSliceBin {
             allocating: Cell::new(false),
             published_offset: Cell::new(0.0),
             viewport_top: Cell::new(0.0),
+            measured_outer_value: Cell::new(0.0),
             pending_outer_delta: Cell::new(0.0),
+            pending_outer_anchor: Cell::new(0.0),
             outer_request_scheduled: Cell::new(false),
             deferred: Cell::new(None),
             content_inset: Cell::new(0.0),
+            child_anchor_published: Cell::new(false),
+            content_inset_known: Cell::new(false),
             allocation_count: Cell::new(0),
             correction_count: Cell::new(0),
         }
@@ -189,6 +210,7 @@ impl WidgetImpl for ViewportSliceBin {
         self.outer.replace(None);
         // The theme may differ under the next root; relearn the inset there.
         self.content_inset.set(0.0);
+        self.content_inset_known.set(false);
         self.obj().queue_resize();
         self.parent_unroot();
     }
@@ -242,13 +264,25 @@ impl WidgetImpl for ViewportSliceBin {
         let content_height = f64::from(height.max(0));
         let (viewport_top, viewport_height) = self.visible_band().unwrap_or((0.0, content_height));
         self.viewport_top.set(viewport_top);
+        if let Some(outer) = self.outer_scrolled_window() {
+            self.measured_outer_value.set(outer.vadjustment().value());
+        }
         let slice = viewport_slice(
             viewport_top,
             viewport_height,
             content_height,
             self.overscan.get(),
         );
-        let (slice_top, slice_height) = whole_pixel_band(slice, height);
+        // Never hand the child a zero page (ledger A5): once the inset is
+        // known the band is at least that inset plus one pixel tall. Until a
+        // page has revealed it, a full viewport's band keeps the page real, so
+        // the inset is learned exactly in one allocation.
+        let min_band = if self.content_inset_known.get() {
+            whole_pixel_floor(self.content_inset.get()) + 1
+        } else {
+            whole_pixel_floor(viewport_height)
+        };
+        let (slice_top, slice_height) = whole_pixel_band(slice, height, min_band);
 
         self.allocation_count.set(self.allocation_count.get() + 1);
         self.allocating.set(true);
@@ -259,12 +293,28 @@ impl WidgetImpl for ViewportSliceBin {
         let held_value = deferred
             .filter(|held| (held.published - f64::from(slice_top)).abs() < ADJUSTMENT_EPSILON)
             .map(|held| held.child_value);
+        let held_before = (
+            self.vadjustment.value(),
+            self.vadjustment.page_size(),
+            self.vadjustment.upper(),
+        );
         self.publish_slice_offset(
             f64::from(slice_top),
             content_height,
             f64::from(slice_height),
             held_value,
         );
+        // What this publish did to the child: a changed value emitted
+        // `value-changed`, which re-anchors the child on the value the bin
+        // wrote (and drops any pending request, ledger A9); a changed page or
+        // upper makes the child re-derive its value from that anchor (A7).
+        let moved = |before: f64, after: f64| (after - before).abs() >= ADJUSTMENT_EPSILON;
+        let emitted = moved(held_before.0, self.vadjustment.value());
+        let bin_reconfigured = moved(held_before.1, self.vadjustment.page_size())
+            || moved(held_before.2, self.vadjustment.upper());
+        if emitted {
+            self.child_anchor_published.set(true);
+        }
         let transform = gsk::Transform::new()
             .translate(&graphene::Point::new(0.0, pixel_coordinate(slice_top)));
         // A `GtkScrollable` child may rewrite the geometry this bin just
@@ -274,6 +324,17 @@ impl WidgetImpl for ViewportSliceBin {
         let upper_before = self.vadjustment.upper();
         let page_before = self.vadjustment.page_size();
         child.allocate(width, slice_height, -1, Some(transform));
+        if emitted {
+            // The publish's `value-changed` reached the child before it was
+            // allocated at the new value, which leaves its anchor far from the
+            // view (ledger A20). Now that it is allocated there, announce the
+            // value once more so it re-anchors on the row at the view's edge;
+            // otherwise a later page change moves the value by the offset's
+            // share of the change, and a `scroll_to` of a row taller than a
+            // small band keeps that stray alignment. `allocating` still holds,
+            // so this bin's own handler ignores the emission.
+            self.vadjustment.emit_by_name::<()>("value-changed", &[]);
+        }
         let page_shift = (self.vadjustment.page_size() - page_before).abs();
         let reconfigure_shift = (self.vadjustment.upper() - upper_before)
             .abs()
@@ -290,6 +351,13 @@ impl WidgetImpl for ViewportSliceBin {
             self.content_inset.set(learned);
             self.obj().queue_allocate();
         }
+        // The first non-zero page reveals the inset; the band floor now
+        // follows it, so lay out once more, as for a learned inset.
+        if self.vadjustment.page_size() >= ADJUSTMENT_EPSILON
+            && !self.content_inset_known.replace(true)
+        {
+            self.obj().queue_allocate();
+        }
 
         // Only a value that differs from the one just published is a request
         // to show a different band. A value that is neither is a settle: the
@@ -302,10 +370,26 @@ impl WidgetImpl for ViewportSliceBin {
         // republishes anyway.
         let settled = self.vadjustment.value();
         let published = self.published_offset.get();
-        match classify_child_scroll(published, settled, viewport_top, reconfigure_shift) {
-            ChildScrollDecision::Request(delta) => self.follow_child_request(delta),
+        let facts = ChildAnchorFacts {
+            emitted,
+            anchor_published: self.child_anchor_published.get(),
+            bin_reconfigured,
+        };
+        match classify_child_scroll_in_frame(
+            published,
+            settled,
+            viewport_top,
+            reconfigure_shift,
+            facts,
+        ) {
+            ChildScrollDecision::Request(delta) => {
+                // The child moved itself: its anchor is now its own.
+                self.child_anchor_published.set(false);
+                self.follow_child_request(delta);
+            }
             ChildScrollDecision::Settle if !inset_changed => {
                 self.correction_count.set(self.correction_count.get() + 1);
+                self.child_anchor_published.set(true);
                 self.vadjustment.set_value(published);
             }
             ChildScrollDecision::Defer if !inset_changed => {
@@ -338,6 +422,16 @@ struct DeferredDivergence {
     child_value: f64,
 }
 
+/// The smallest whole number of pixels covering `inset`, which is a learned
+/// CSS inset and so small and non-negative.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a CSS inset is a few pixels; the saturating cast is the intent"
+)]
+fn whole_pixel_floor(inset: f64) -> i32 {
+    inset.ceil().max(0.0) as i32
+}
+
 /// Convert a whole-pixel offset to the `f32` graphene coordinate space.
 #[expect(
     clippy::cast_precision_loss,
@@ -359,7 +453,10 @@ impl ViewportSliceBin {
                     scrollable.set_hadjustment(None::<&gtk4::Adjustment>);
                 }
                 // A new child has its own inset; relearn from its first page.
+                // Its anchor is its own until the bin writes a value into it.
                 self.content_inset.set(0.0);
+                self.content_inset_known.set(false);
+                self.child_anchor_published.set(false);
             },
             |new_child| {
                 if let Some(scrollable) = new_child.dynamic_cast_ref::<gtk4::Scrollable>() {
@@ -407,9 +504,18 @@ impl ViewportSliceBin {
             }
         });
         let on_page = adjustment.connect_page_size_notify(move |_| {
-            if let Some(bin) = bin.upgrade() {
-                bin.queue_allocate();
-            }
+            // `GtkViewport` thaws its adjustments' notifications only after it
+            // has allocated its child, so this runs inside layout, after this
+            // bin's allocation for the frame (ledger A19). Queued here, the
+            // allocation would be pending while the frame is drawn, which GTK
+            // reports as a snapshot without a current allocation; re-slice
+            // from an idle instead, after the frame.
+            let bin = bin.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(bin) = bin.upgrade() {
+                    bin.queue_allocate();
+                }
+            });
         });
         self.outer_handlers
             .replace(Some((adjustment, vec![on_value, on_page])));
@@ -496,6 +602,7 @@ impl ViewportSliceBin {
             self.viewport_top.get(),
             0.0,
         ) {
+            self.child_anchor_published.set(false);
             self.follow_child_request(delta);
         }
     }
@@ -520,9 +627,27 @@ impl ViewportSliceBin {
     /// clamps to `[lower, upper - page_size]` and emits nothing for an
     /// unchanged value, so a request the outer scroller cannot honour ends
     /// there instead of re-queuing an allocation.
+    ///
+    /// The idle's move is **anchored**: the first request of a batch records
+    /// the outer value its `viewport_top` was measured against, and the idle
+    /// sets `anchor + pending` rather than adding `pending` to whatever the
+    /// outer holds by then. Several bins sharing one outer scroller measure
+    /// their requests in the same frame against the same outer value; adding
+    /// each delta to the value the previous bin's idle already moved would
+    /// land the outer at the sum, where no request is honoured. Anchored, the
+    /// later idle's absolute move wins, the superseded bin re-slices from the
+    /// new value like any scroll, and its dropped `scroll_to` (ledger A9) is
+    /// not re-issued. Requests one bin accumulates before its idle runs keep
+    /// adding up within the batch: replacing that with the latest request
+    /// regressed keyboard traversal. A user scroll made between a request and
+    /// its idle (less than one frame) is overridden rather than added to.
     fn follow_child_request(&self, delta: f64) {
         if self.outer.borrow().is_none() {
             return;
+        }
+        if !self.outer_request_scheduled.get() {
+            self.pending_outer_anchor
+                .set(self.measured_outer_value.get());
         }
         self.pending_outer_delta
             .set(self.pending_outer_delta.get() + delta);
@@ -540,8 +665,8 @@ impl ViewportSliceBin {
             let Some(outer) = imp.outer_scrolled_window() else {
                 return;
             };
-            let adjustment = outer.vadjustment();
-            adjustment.set_value(adjustment.value() + delta);
+            let anchor = imp.pending_outer_anchor.get();
+            outer.vadjustment().set_value(anchor + delta);
         });
     }
 }

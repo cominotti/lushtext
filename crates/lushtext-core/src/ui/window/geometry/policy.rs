@@ -76,6 +76,7 @@ pub enum SecondarySurface {
 
 /// Adaptive presentation currently used for document properties.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub(in crate::ui::window) enum PropertiesPresentation {
     /// Properties render as the right sidebar of the inner split view.
     Pane,
@@ -288,6 +289,129 @@ pub(in crate::ui::window) fn derive_adaptive_shell_layout(
         compact_surface,
         render_workspace,
         render_properties,
+    }
+}
+
+/// What the shell currently renders, as the reconciliation plan reads it.
+///
+/// `compact_surface` is the same window state [`AdaptiveShellInputs`] carries:
+/// the adapter reads one `Cell` for both, so a caller hands in the slot the
+/// layout was derived from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub(in crate::ui::window) struct RenderedShellState {
+    /// `properties_layout_view.layout-name`.
+    pub(in crate::ui::window) presentation: PropertiesPresentation,
+    /// The surface currently holding the compact slot.
+    pub(in crate::ui::window) compact_surface: Option<SecondarySurface>,
+    /// `workspace_split_view.show-sidebar`.
+    pub(in crate::ui::window) workspace_shows_sidebar: bool,
+    /// `properties_split_view.show-sidebar`.
+    pub(in crate::ui::window) properties_shows_sidebar: bool,
+    /// `properties_bottom_sheet.open`.
+    pub(in crate::ui::window) sheet_open: bool,
+}
+
+/// One write the reconciliation plan asks the adapter to make.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui::window) enum ShellWrite {
+    /// Set `properties_layout_view.layout-name`.
+    LayoutName(PropertiesPresentation),
+    /// Hand the compact slot to a surface, or clear it.
+    CompactSurface(Option<SecondarySurface>),
+    /// Set `workspace_split_view.show-sidebar`.
+    WorkspaceShowSidebar(bool),
+    /// Set `properties_split_view.show-sidebar`.
+    PropertiesShowSidebar(bool),
+    /// Set `properties_bottom_sheet.open`.
+    SheetOpen(bool),
+}
+
+/// The writes that bring the rendered shell to one derived layout.
+///
+/// Each field is `Some` only when the rendered value differs from the target,
+/// so a settled shell yields an empty plan. The breakpoint threshold is part of
+/// the same decision: `reinstall_threshold` is `Some` only when the integer
+/// threshold moved, which is what keeps `AdwBreakpoint::set_condition` off the
+/// animation-frame path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui::window) struct ShellReconciliation {
+    /// New `layout-name`, when the presentation changes.
+    pub(in crate::ui::window) layout_name: Option<PropertiesPresentation>,
+    /// New compact slot, when it changes.
+    pub(in crate::ui::window) compact_surface: Option<Option<SecondarySurface>>,
+    /// New workspace `show-sidebar`.
+    pub(in crate::ui::window) workspace_show_sidebar: Option<bool>,
+    /// New properties-pane `show-sidebar`.
+    pub(in crate::ui::window) properties_show_sidebar: Option<bool>,
+    /// New sheet `open`.
+    pub(in crate::ui::window) sheet_open: Option<bool>,
+    /// New breakpoint threshold, when the installed one is stale.
+    pub(in crate::ui::window) reinstall_threshold: Option<i32>,
+    /// The target presentation, which fixes the order of the two properties writes.
+    presentation: PropertiesPresentation,
+}
+
+impl ShellReconciliation {
+    /// The surface writes in the order the adapter applies them: layout name,
+    /// compact slot, workspace, then the two properties hosts. The host being
+    /// left closes before the host being entered opens: the sheet presentation
+    /// closes the pane first, the pane presentation closes the sheet first.
+    pub(in crate::ui::window) fn surface_writes(&self) -> [Option<ShellWrite>; 5] {
+        let pane = self
+            .properties_show_sidebar
+            .map(ShellWrite::PropertiesShowSidebar);
+        let sheet = self.sheet_open.map(ShellWrite::SheetOpen);
+        let (first, second) = match self.presentation {
+            PropertiesPresentation::Sheet => (pane, sheet),
+            PropertiesPresentation::Pane => (sheet, pane),
+        };
+        [
+            self.layout_name.map(ShellWrite::LayoutName),
+            self.compact_surface.map(ShellWrite::CompactSurface),
+            self.workspace_show_sidebar
+                .map(ShellWrite::WorkspaceShowSidebar),
+            first,
+            second,
+        ]
+    }
+
+    /// Whether the plan asks for nothing: the shell already renders its layout.
+    #[cfg(any(test, kani))]
+    pub(in crate::ui::window) fn is_settled(&self) -> bool {
+        self.reinstall_threshold.is_none() && self.surface_writes().iter().all(Option::is_none)
+    }
+}
+
+/// Plan the writes that reconcile the rendered shell with one derived layout.
+///
+/// The sheet presentation keeps the properties pane closed and opens the sheet
+/// exactly when properties render; the pane presentation keeps the sheet closed
+/// and shows the pane exactly when properties render. Outside the sheet the
+/// compact slot is clear, because the layout's slot is `None` there. Focus
+/// restoration is not decided here: it reads the focus chain, so it stays in
+/// execution.
+pub(in crate::ui::window) fn plan_shell_reconciliation(
+    rendered: RenderedShellState,
+    layout: AdaptiveShellLayout,
+    installed_threshold: i32,
+) -> ShellReconciliation {
+    let sheet = layout.properties_presentation == PropertiesPresentation::Sheet;
+    let changed = |current: bool, target: bool| (current != target).then_some(target);
+    ShellReconciliation {
+        layout_name: (rendered.presentation != layout.properties_presentation)
+            .then_some(layout.properties_presentation),
+        compact_surface: (rendered.compact_surface != layout.compact_surface)
+            .then_some(layout.compact_surface),
+        workspace_show_sidebar: changed(rendered.workspace_shows_sidebar, layout.render_workspace),
+        properties_show_sidebar: changed(
+            rendered.properties_shows_sidebar,
+            !sheet && layout.render_properties,
+        ),
+        sheet_open: changed(rendered.sheet_open, sheet && layout.render_properties),
+        reinstall_threshold: (installed_threshold != layout.properties_breakpoint_max_width)
+            .then_some(layout.properties_breakpoint_max_width),
+        presentation: layout.properties_presentation,
     }
 }
 
@@ -836,5 +960,294 @@ mod tests {
             share.of_sp,
             1800 - effective_workspace_sidebar_width_sp(input)
         );
+    }
+
+    // --- Characterization of the allocation-time reconciliation ----------------
+    //
+    // `execution::sync_properties_breakpoint` and `execution::sync_secondary_surfaces`
+    // used to decide and apply in the same code. These tests were written first,
+    // against the reference below, which transliterates those two functions'
+    // branches as they stood before `plan_shell_reconciliation` moved the
+    // decision here; they now check the plan against the same expected writes,
+    // and `the_plan_matches_the_pre_extraction_branches_everywhere` checks the
+    // plan against the reference exhaustively. A write is recorded only when it
+    // changes the value, which is what the guarded setters do (the one unguarded
+    // write, clearing the compact slot outside the sheet, set a `Cell` and had no
+    // effect when the slot was already clear).
+
+    type Rendered = RenderedShellState;
+    use ShellWrite as Write;
+
+    /// The plan's threshold decision, checked against the reference.
+    fn reinstall(input: AdaptiveShellInputs, installed: i32) -> Option<i32> {
+        let rendered = Rendered {
+            compact_surface: input.compact_surface,
+            ..NOTHING_SHOWN
+        };
+        let planned =
+            plan_shell_reconciliation(rendered, derive_adaptive_shell_layout(input), installed)
+                .reinstall_threshold;
+        assert_eq!(planned, reference_reinstall(input, installed));
+        planned
+    }
+
+    /// The plan's ordered surface writes, checked against the reference.
+    fn surface_writes(rendered: Rendered, input: AdaptiveShellInputs) -> Vec<Write> {
+        let planned: Vec<Write> =
+            plan_shell_reconciliation(rendered, derive_adaptive_shell_layout(input), 0)
+                .surface_writes()
+                .into_iter()
+                .flatten()
+                .collect();
+        assert_eq!(planned, reference_surface_writes(rendered, input));
+        planned
+    }
+
+    /// `sync_properties_breakpoint`: reinstall only when the integer threshold moved.
+    fn reference_reinstall(input: AdaptiveShellInputs, installed: i32) -> Option<i32> {
+        let max_width = derive_adaptive_shell_layout(input).properties_breakpoint_max_width;
+        (installed != max_width).then_some(max_width)
+    }
+
+    /// `sync_secondary_surfaces`, branch for branch, in its write order.
+    fn reference_surface_writes(rendered: Rendered, input: AdaptiveShellInputs) -> Vec<Write> {
+        // Both read the same `Cell`, so a test must hand in the same slot twice.
+        assert_eq!(rendered.compact_surface, input.compact_surface);
+        let layout = derive_adaptive_shell_layout(input);
+        let compact = layout.properties_presentation == PropertiesPresentation::Sheet;
+        let mut writes = Vec::new();
+        if rendered.presentation != layout.properties_presentation {
+            writes.push(Write::LayoutName(layout.properties_presentation));
+        }
+        if !compact {
+            if rendered.compact_surface.is_some() {
+                writes.push(Write::CompactSurface(None));
+            }
+        } else if rendered.compact_surface != layout.compact_surface {
+            writes.push(Write::CompactSurface(layout.compact_surface));
+        }
+        if rendered.workspace_shows_sidebar != layout.render_workspace {
+            writes.push(Write::WorkspaceShowSidebar(layout.render_workspace));
+        }
+        if compact {
+            if rendered.properties_shows_sidebar {
+                writes.push(Write::PropertiesShowSidebar(false));
+            }
+            if rendered.sheet_open != layout.render_properties {
+                writes.push(Write::SheetOpen(layout.render_properties));
+            }
+        } else {
+            if rendered.sheet_open {
+                writes.push(Write::SheetOpen(false));
+            }
+            if rendered.properties_shows_sidebar != layout.render_properties {
+                writes.push(Write::PropertiesShowSidebar(layout.render_properties));
+            }
+        }
+        writes
+    }
+
+    const NOTHING_SHOWN: Rendered = Rendered {
+        presentation: PropertiesPresentation::Pane,
+        compact_surface: None,
+        workspace_shows_sidebar: false,
+        properties_shows_sidebar: false,
+        sheet_open: false,
+    };
+
+    const WIDE_BOTH_SHOWN: Rendered = Rendered {
+        presentation: PropertiesPresentation::Pane,
+        compact_surface: None,
+        workspace_shows_sidebar: true,
+        properties_shows_sidebar: true,
+        sheet_open: false,
+    };
+
+    const COMPACT_SHEET_OPEN: Rendered = Rendered {
+        presentation: PropertiesPresentation::Sheet,
+        compact_surface: Some(SecondarySurface::DocumentProperties),
+        workspace_shows_sidebar: false,
+        properties_shows_sidebar: false,
+        sheet_open: true,
+    };
+
+    #[test]
+    fn characterization_wide_width_shows_both_requested_panes() {
+        let wide = input(1800);
+        assert_eq!(
+            surface_writes(NOTHING_SHOWN, wide),
+            [
+                Write::WorkspaceShowSidebar(true),
+                Write::PropertiesShowSidebar(true)
+            ]
+        );
+        // The Comfy workspace consumes 360 sp, so the threshold is 1350.
+        assert_eq!(reinstall(wide, 932), Some(1350));
+        assert_eq!(reinstall(wide, 1350), None);
+        // Already rendered: nothing to write.
+        assert!(surface_writes(WIDE_BOTH_SHOWN, wide).is_empty());
+    }
+
+    #[test]
+    fn characterization_medium_compact_width_hands_the_slot_to_properties() {
+        let medium = input(1200);
+        assert_eq!(
+            surface_writes(WIDE_BOTH_SHOWN, medium),
+            [
+                Write::LayoutName(PropertiesPresentation::Sheet),
+                Write::CompactSurface(Some(SecondarySurface::DocumentProperties)),
+                Write::WorkspaceShowSidebar(false),
+                // The sheet branch closes the pane before opening the sheet.
+                Write::PropertiesShowSidebar(false),
+                Write::SheetOpen(true),
+            ]
+        );
+        assert_eq!(reinstall(medium, 1350), None);
+        let settled = AdaptiveShellInputs {
+            compact_surface: COMPACT_SHEET_OPEN.compact_surface,
+            ..medium
+        };
+        assert!(surface_writes(COMPACT_SHEET_OPEN, settled).is_empty());
+    }
+
+    #[test]
+    fn characterization_widening_from_the_sheet_closes_it_before_the_pane_opens() {
+        let wide = AdaptiveShellInputs {
+            compact_surface: COMPACT_SHEET_OPEN.compact_surface,
+            ..input(1800)
+        };
+        assert_eq!(
+            surface_writes(COMPACT_SHEET_OPEN, wide),
+            [
+                Write::LayoutName(PropertiesPresentation::Pane),
+                Write::CompactSurface(None),
+                Write::WorkspaceShowSidebar(true),
+                // The pane branch closes the sheet before showing the pane.
+                Write::SheetOpen(false),
+                Write::PropertiesShowSidebar(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn characterization_collapsed_width_keeps_an_explicit_workspace_slot() {
+        let mut collapsed = input(800);
+        collapsed.compact_surface = Some(SecondarySurface::Workspace);
+        // At or below the workspace breakpoint the workspace consumes no width,
+        // so the threshold falls to its floor.
+        assert_eq!(reinstall(collapsed, 1350), Some(932));
+        // The user has just chosen the workspace for the compact slot while the
+        // properties sheet is still open.
+        let workspace_chosen = Rendered {
+            compact_surface: Some(SecondarySurface::Workspace),
+            ..COMPACT_SHEET_OPEN
+        };
+        assert_eq!(
+            surface_writes(workspace_chosen, collapsed),
+            [Write::WorkspaceShowSidebar(true), Write::SheetOpen(false)]
+        );
+        // Without an explicit choice the requested properties take the slot and
+        // the collapsed workspace stays hidden.
+        let passive = input(800);
+        assert_eq!(
+            surface_writes(NOTHING_SHOWN, passive),
+            [
+                Write::LayoutName(PropertiesPresentation::Sheet),
+                Write::CompactSurface(Some(SecondarySurface::DocumentProperties)),
+                Write::SheetOpen(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn characterization_focus_mode_hides_both_surfaces_and_relaxes_the_threshold() {
+        let mut focus = input(1800);
+        focus.focus_mode_active = true;
+        assert_eq!(
+            surface_writes(WIDE_BOTH_SHOWN, focus),
+            [
+                Write::WorkspaceShowSidebar(false),
+                Write::PropertiesShowSidebar(false)
+            ]
+        );
+        // Focus Mode stops the workspace consuming width.
+        assert_eq!(reinstall(focus, 1350), Some(932));
+        // In a compact Focus Mode window the sheet presentation stays but closes.
+        let mut compact_focus = input(900);
+        compact_focus.focus_mode_active = true;
+        compact_focus.compact_surface = COMPACT_SHEET_OPEN.compact_surface;
+        assert_eq!(
+            surface_writes(COMPACT_SHEET_OPEN, compact_focus),
+            [Write::SheetOpen(false)]
+        );
+    }
+
+    #[test]
+    fn the_plan_matches_the_pre_extraction_branches_everywhere() {
+        // Every rendered state (2 x 3 x 2 x 2 x 2), every preset, every intent,
+        // at widths straddling each threshold, and an installed threshold that is
+        // both stale and current.
+        let slots = [
+            None,
+            Some(SecondarySurface::Workspace),
+            Some(SecondarySurface::DocumentProperties),
+        ];
+        let widths = [
+            640, 860, 861, 931, 932, 933, 1243, 1244, 1350, 1351, 1456, 1457, 2560,
+        ];
+        let mut checked = 0u32;
+        for presentation in [PropertiesPresentation::Pane, PropertiesPresentation::Sheet] {
+            for compact_surface in slots {
+                for bits in 0u8..8 {
+                    let rendered = Rendered {
+                        presentation,
+                        compact_surface,
+                        workspace_shows_sidebar: bits & 1 != 0,
+                        properties_shows_sidebar: bits & 2 != 0,
+                        sheet_open: bits & 4 != 0,
+                    };
+                    for window_width in widths {
+                        for workspace_preset in WorkspaceSidebarWidthPreset::ALL {
+                            for intent in 0u8..8 {
+                                let input = AdaptiveShellInputs {
+                                    window_width,
+                                    workspace_preset,
+                                    workspace_requested_visible: intent & 1 != 0,
+                                    properties_requested_visible: intent & 2 != 0,
+                                    compact_surface,
+                                    focus_mode_active: intent & 4 != 0,
+                                };
+                                let _ = surface_writes(rendered, input);
+                                let threshold = derive_adaptive_shell_layout(input)
+                                    .properties_breakpoint_max_width;
+                                let _ = reinstall(input, threshold);
+                                let _ = reinstall(input, threshold + 1);
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 3 * 8 * 13 * 3 * 8);
+    }
+
+    #[test]
+    fn a_settled_plan_is_empty_and_a_stale_one_is_not() {
+        let wide = input(1800);
+        let layout = derive_adaptive_shell_layout(wide);
+        let settled = plan_shell_reconciliation(WIDE_BOTH_SHOWN, layout, 1350);
+        assert!(settled.is_settled());
+        assert!(settled.surface_writes().iter().all(Option::is_none));
+        // A stale threshold alone makes the plan unsettled.
+        let stale = plan_shell_reconciliation(WIDE_BOTH_SHOWN, layout, 1349);
+        assert_eq!(stale.reinstall_threshold, Some(1350));
+        assert!(!stale.is_settled());
+        // So does a single stale surface.
+        let hidden = Rendered {
+            workspace_shows_sidebar: false,
+            ..WIDE_BOTH_SHOWN
+        };
+        assert!(!plan_shell_reconciliation(hidden, layout, 1350).is_settled());
     }
 }

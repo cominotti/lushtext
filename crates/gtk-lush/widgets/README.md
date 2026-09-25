@@ -43,6 +43,38 @@ content away and pin itself to the top. `outer_scroll_request` is the
 request-only projection of `classify_child_scroll`, which returns the whole
 `ChildScrollDecision`: rest, request, settle, or defer.
 
+The band is what the viewport shows of the content, at the bottom edge as well
+as the top: a band reaching past what shows makes the child believe off-screen
+rows are visible, so a `scroll_to` of one of them never asks for anything.
+Content entirely off screen keeps a band one pixel (plus the child's inset)
+tall at its nearest edge, never zero, because a zero-height allocation makes a
+`GtkListView` rewrite the adjustment the bin owns; until a non-zero page has
+revealed the child's inset, a full viewport's band stands in, so the inset is
+learned in one allocation. The one row covering that pixel is a known residual:
+GTK treats a row that covers its whole view as already visible.
+
+Forwarding is anchored. The first request of a batch records the outer value
+its distance was measured against, and the idle moves the outer to that anchor
+plus the batch's accumulated distance. Several bins sharing one outer scroller
+measure their requests in the same frame against the same outer value, so
+adding each distance to wherever the previous bin's idle left the outer would
+land at their sum, where no request is honoured; anchored, the last applied
+request wins and the others' bins re-slice from it. Requests one bin makes
+before its idle runs still accumulate. A user scroll made in the idle's
+window (under one frame) is overridden rather than added to.
+
+The child's own scroll anchor matters too. When the bin moves the child's
+value it announces it once more after the child's allocation, because a
+`value-changed` a `GtkListView` sees before it is allocated at the new value
+leaves its anchor far from the view, and a later page change (a window resize)
+would then move the value by a share of the whole offset. And a divergence the
+child shows in an allocation whose publish emitted `value-changed`, or in one
+where the bin changed the page or content height under an anchor the bin set,
+is written back rather than forwarded: it cannot be a request (the emission
+dropped any pending `scroll_to`), and forwarding it scrolls the outer on a
+resize. A `scroll_to` applied in the very frame of such a page change, after an
+outer scroll, is therefore erased — a recorded residual.
+
 Neither function panics for any `f64`. Their geometric guarantees — the slice
 lies inside the content and covers the visible intersection, and a honoured
 request lands exactly on the child's value — hold on the whole-pixel domain GTK

@@ -436,6 +436,56 @@ fn test_adoption_slice_bin_still_forwards_a_child_scroll_request() {
     drop(fixture.window);
 }
 
+#[test]
+fn test_adoption_two_slice_bins_requesting_in_one_turn_do_not_add_up() {
+    // Two bins in one scroller each forward a child request measured against
+    // the same outer value. Their idles run one after the other, so if each
+    // adds its delta to the outer value the other already moved, the outer
+    // lands at the sum and neither request is honoured. "Last applied wins":
+    // the second list's row must end up on screen, and both bins must rest.
+    let fixture = SliceAdoptionFixture::present(2);
+    let outer = fixture.adjustment();
+    // Rest with the boundary between the two sections mid-viewport, so both
+    // bins show rows and both can request (A5).
+    let boundary = fixture
+        .top_of(&fixture.headers[1])
+        .expect("the second header is allocated");
+    outer.set_value(boundary - f64::from(fixture.scroller.height()) / 2.0);
+    flush_after_delay(Duration::from_millis(400));
+    let resting = outer.value();
+    // One row far above the first bin's band and one below the second's.
+    let (row_a, row_b) = (250, 40);
+    fixture.lists[0].scroll_to(row_a, gtk4::ListScrollFlags::NONE, None);
+    fixture.lists[1].scroll_to(row_b, gtk4::ListScrollFlags::NONE, None);
+    wait_until(Duration::from_secs(5), || {
+        (outer.value() - resting).abs() > SCROLL_TOLERANCE
+    });
+    let values = fixture.settled_values(8);
+    let label_b = format!("row {row_b:04}");
+    let row = mapped_row_with_label(&fixture.lists[1], &label_b);
+    assert!(
+        row.as_ref().is_some_and(|row| fixture.fully_visible(row)),
+        "the last-applied request ({label_b} of the second bin) must be honoured; the outer \
+         scroller settled at {values:?}, bounds {:?}",
+        row.and_then(|row| row.compute_bounds(&fixture.scroller))
+    );
+    assert!(
+        values
+            .iter()
+            .all(|value| (value - values[0]).abs() < SCROLL_TOLERANCE),
+        "simultaneous requests must come to rest; saw {values:?}"
+    );
+    let counts = |bin: &ViewportSliceBin| (bin.allocation_count(), bin.correction_count());
+    let before: Vec<_> = fixture.bins.iter().map(counts).collect();
+    flush_after_delay(Duration::from_millis(400));
+    let after: Vec<_> = fixture.bins.iter().map(counts).collect();
+    assert_eq!(
+        before, after,
+        "both bins must stop allocating and correcting at rest"
+    );
+    drop(fixture.window);
+}
+
 impl SliceAdoptionFixture {
     fn selection(&self, section: usize) -> gtk4::SingleSelection {
         self.lists[section]
@@ -942,4 +992,104 @@ fn test_adoption_slice_bin_honours_a_request_made_while_the_child_reconfigures()
          (allocations, corrections) {counts:?}"
     );
     drop(window);
+}
+
+// --- ViewportSliceBin: a viewport height change after an outer scroll --------
+//
+// When the bin publishes a new offset, the value-changed it emits re-anchors
+// the list, and GTK 4.22 was measured leaving that anchor far from the view
+// with an alignment outside [0, 1] (ledger A7). Nothing re-anchors it while
+// the outer scroller rests, so a later change of the page alone — the window
+// was resized or maximized — makes the list re-derive its value along that
+// line: after scrolling 3000 px, growing the viewport from 600 to 1600 px
+// moved the list's value 4664 px. The bin must not forward that settle as a
+// request: the outer scroller belongs to the user.
+
+/// Pin the fixture's outer viewport to `height` pixels, as a window resize
+/// would, without resizing the presented window (GTK4 cannot shrink one).
+fn set_viewport_height(fixture: &SliceAdoptionFixture, height: i32) {
+    fixture.scroller.set_vexpand(false);
+    fixture.scroller.set_valign(gtk4::Align::Start);
+    fixture.scroller.set_propagate_natural_height(true);
+    fixture.scroller.set_min_content_height(height);
+    fixture.scroller.set_max_content_height(height);
+}
+
+#[test]
+fn test_adoption_slice_bin_keeps_the_outer_still_when_the_viewport_height_changes() {
+    let fixture = SliceAdoptionFixture::present_with(1, true);
+    set_viewport_height(&fixture, 600);
+    flush_after_delay(Duration::from_millis(400));
+    let outer = fixture.adjustment();
+    for (scroll, height) in [(3000.0, 450), (7000.0, 700), (1000.0, 520)] {
+        outer.set_value(scroll);
+        flush_after_delay(Duration::from_millis(400));
+        let before = outer.value();
+        let top_row = fixture.fully_visible_labels(0).first().cloned();
+        set_viewport_height(&fixture, height);
+        let values = fixture.settled_values(6);
+        assert!(
+            values
+                .iter()
+                .all(|value| (value - before).abs() < SCROLL_TOLERANCE),
+            "a viewport height change must not scroll the outer: it rested at {before} and then \
+             moved to {values:?} (viewport {height} px)"
+        );
+        assert_eq!(
+            fixture.fully_visible_labels(0).first().cloned(),
+            top_row,
+            "the row at the top of the viewport must stay there across the height change"
+        );
+    }
+    drop(fixture.window);
+}
+
+// --- ViewportSliceBin: a request in a bin the viewport has scrolled past -----
+//
+// The child decides from its own band whether a row is on screen. A bin whose
+// content the viewport has left used to keep a full viewport-height band at
+// its edge, so its child believed that band's rows were visible and a
+// `scroll_to` of one of them was a no-op. The band is now what shows, or one
+// pixel at the nearest edge; the row covering that pixel is the recorded
+// edge-row residual (GTK treats a row that covers its whole view as visible).
+
+#[test]
+fn test_adoption_slice_bin_honours_a_request_in_a_bin_scrolled_past() {
+    let fixture = SliceAdoptionFixture::present(2);
+    let outer = fixture.adjustment();
+    outer.set_value(outer.upper() - outer.page_size());
+    flush_after_delay(Duration::from_millis(400));
+    assert!(
+        fixture.fully_visible_labels(0).is_empty(),
+        "the first bin must be scrolled past for this check"
+    );
+    let row = SLICE_ADOPTION_ROWS - 12;
+    fixture.lists[0].scroll_to(row, gtk4::ListScrollFlags::NONE, None);
+    let label = format!("row {row:04}");
+    let drawn = wait_until_or_false(Duration::from_secs(5), || {
+        mapped_row_with_label(&fixture.lists[0], &label)
+            .is_some_and(|row| fixture.fully_visible(&row))
+    });
+    assert!(
+        drawn,
+        "{label} of the scrolled-past bin must be scrolled on screen; the outer is at {}",
+        outer.value()
+    );
+    // Once the band is on screen again the child may re-derive its value
+    // against the taller page and the bin forwards that too (A7); the row
+    // must stay on screen and the loop must come to rest.
+    flush_after_delay(Duration::from_millis(400));
+    let values = fixture.settled_values(6);
+    assert!(
+        values
+            .iter()
+            .all(|value| (value - values[0]).abs() < SCROLL_TOLERANCE),
+        "the request must come to rest; saw {values:?}"
+    );
+    assert!(
+        mapped_row_with_label(&fixture.lists[0], &label)
+            .is_some_and(|row| fixture.fully_visible(&row)),
+        "{label} must still be on screen at rest"
+    );
+    drop(fixture.window);
 }

@@ -166,6 +166,67 @@ pub fn classify_child_scroll(
     }
 }
 
+/// What the bin knows about how its child's scroll anchor was last set, and
+/// whether the allocation being classified moved the child's geometry on the
+/// bin's own initiative. Crate-private: the public [`classify_child_scroll`]
+/// keeps its contract; [`classify_child_scroll_in_frame`] refines it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ChildAnchorFacts {
+    /// Publishing this allocation's offset changed the value the child held,
+    /// so the adjustment emitted `value-changed` before the child allocated.
+    pub(crate) emitted: bool,
+    /// The child's anchor was last set by a value the bin wrote (a publish or
+    /// a write-back), not by a request the child made itself.
+    pub(crate) anchor_published: bool,
+    /// Publishing this allocation changed the page or upper the child held.
+    pub(crate) bin_reconfigured: bool,
+}
+
+/// [`classify_child_scroll`] refined by where the child's anchor came from.
+///
+/// A divergence is written back ([`ChildScrollDecision::Settle`]) instead of
+/// being forwarded or deferred when it cannot be a request:
+///
+/// * the publish **emitted** `value-changed` in this allocation, and a
+///   `GtkListBase` drops any pending `scroll_to` on a `value-changed` (ledger
+///   A9), so nothing the child does in this allocation is a request; or
+/// * the child's anchor was set by a value the **bin** wrote and the bin then
+///   changed the page or upper it hands the child. A `GtkListView` re-derives
+///   its value from its anchor on a page change (A7), and after a host moves
+///   its value that anchor's alignment is not confined to `[0, 1]`: GTK 4.22
+///   was measured moving the value 4.42 px per pixel of page change, and a
+///   viewport grown from 600 to 1600 px after an outer scroll of 3000 px
+///   moved it 4664 px. Such a settle is unbounded by any correction the child
+///   made itself (`reconfigure_shift` is zero: the bin changed the page), so
+///   the magnitude rule of [`classify_child_scroll`] reads it as a request
+///   and the outer scroller jumps.
+///
+/// An anchor the child set itself (`scroll_to`, keyboard focus) keeps the
+/// ordinary rule, so a request applied in an allocation whose band height the
+/// bin also changed is still forwarded.
+#[must_use]
+pub(crate) fn classify_child_scroll_in_frame(
+    published_offset: f64,
+    child_value: f64,
+    viewport_top: f64,
+    reconfigure_shift: f64,
+    facts: ChildAnchorFacts,
+) -> ChildScrollDecision {
+    let decision = classify_child_scroll(
+        published_offset,
+        child_value,
+        viewport_top,
+        reconfigure_shift,
+    );
+    let cannot_be_a_request = facts.emitted || (facts.anchor_published && facts.bin_reconfigured);
+    match decision {
+        ChildScrollDecision::Request(_) | ChildScrollDecision::Defer if cannot_be_a_request => {
+            ChildScrollDecision::Settle
+        }
+        other => other,
+    }
+}
+
 /// What [`crate::ViewportSliceBin`] does with the value its child left in the
 /// bin-owned adjustment after an allocation; see [`classify_child_scroll`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -365,5 +426,59 @@ mod tests {
             outer_scroll_request(0.0, 10.0, f64::NEG_INFINITY, 0.0),
             None
         );
+    }
+
+    #[test]
+    fn a_divergence_after_an_emitting_publish_is_written_back() {
+        let facts = ChildAnchorFacts {
+            emitted: true,
+            ..ChildAnchorFacts::default()
+        };
+        assert_eq!(
+            classify_child_scroll_in_frame(2946.0, 7610.0, 2946.0, 0.0, facts),
+            ChildScrollDecision::Settle
+        );
+        assert_eq!(
+            classify_child_scroll_in_frame(2946.0, 2950.0, 2946.0, 10.0, facts),
+            ChildScrollDecision::Settle
+        );
+    }
+
+    #[test]
+    fn a_page_change_under_a_published_anchor_is_a_settle_not_a_request() {
+        let facts = ChildAnchorFacts {
+            emitted: false,
+            anchor_published: true,
+            bin_reconfigured: true,
+        };
+        // Measured: a 600 -> 1600 px viewport after a 3000 px outer scroll.
+        assert_eq!(
+            classify_child_scroll_in_frame(2946.0, 7610.0, 2946.0, 0.0, facts),
+            ChildScrollDecision::Settle
+        );
+    }
+
+    #[test]
+    fn a_request_anchored_by_the_child_keeps_the_ordinary_rule() {
+        for facts in [
+            ChildAnchorFacts::default(),
+            ChildAnchorFacts {
+                bin_reconfigured: true,
+                ..ChildAnchorFacts::default()
+            },
+            ChildAnchorFacts {
+                anchor_published: true,
+                ..ChildAnchorFacts::default()
+            },
+        ] {
+            assert_eq!(
+                classify_child_scroll_in_frame(274.0, 602.0, 274.0, 0.0, facts),
+                classify_child_scroll(274.0, 602.0, 274.0, 0.0)
+            );
+            assert_eq!(
+                classify_child_scroll_in_frame(274.0, 274.0, 274.0, 0.0, facts),
+                ChildScrollDecision::Rest
+            );
+        }
     }
 }
