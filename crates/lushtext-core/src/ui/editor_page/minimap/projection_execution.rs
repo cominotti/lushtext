@@ -36,7 +36,7 @@ use super::policy::{
     fit_native_slider_to_source_map_bounds, fit_projected_bounds, line_bottom_in_target,
     line_top_in_target, marker_lane_width, marker_lane_x, marker_rgba, markers_from_lines,
     modified_line_mark_samples, native_slider_estimate_from_inputs,
-    source_map_editor_height_ratio_from_heights, wide_editor_slider_offset_class,
+    wide_editor_slider_offset_class,
 };
 use crate::config::keys;
 use crate::ui::status_bar::MessageKind;
@@ -316,7 +316,7 @@ pub(super) fn sync_source_map_geometry(
 
 /// Apply the pure-tested wide-editor threshold to the native slider correction class.
 fn sync_wide_editor_slider_offset(source_map: &sourceview5::Map, source_view: &sourceview5::View) {
-    if wide_editor_slider_offset_class(source_map_editor_height_ratio(source_map, source_view))
+    if wide_editor_slider_offset_class(source_map_editor_document_heights(source_map, source_view))
         .is_some()
     {
         source_map.add_css_class(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS);
@@ -325,18 +325,18 @@ fn sync_wide_editor_slider_offset(source_map: &sourceview5::Map, source_view: &s
     }
 }
 
-/// Read live GTK document heights and project them into the tested ratio helper.
-fn source_map_editor_height_ratio(
+/// Read live GTK document heights, as `(editor, source map)`, for the tested ratio policy.
+fn source_map_editor_document_heights(
     source_map: &sourceview5::Map,
     source_view: &sourceview5::View,
-) -> Option<f64> {
+) -> Option<(i32, i32)> {
     let buffer = source_map.buffer();
     let end_iter = buffer.end_iter();
     let editor_document_height =
         document_height_from_line_span_of(source_view.iter_location(&end_iter))?;
     let source_map_document_height =
         document_height_from_line_span_of(source_map.iter_location(&end_iter))?;
-    source_map_editor_height_ratio_from_heights(editor_document_height, source_map_document_height)
+    Some((editor_document_height, source_map_document_height))
 }
 
 /// Nudge GTK into validating the source map's first and last line geometry.
@@ -616,7 +616,9 @@ pub(super) fn draw_marker_strip(
         let x = marker_lane_x(width, lane_width);
         let (red, green, blue, alpha) = marker_rgba(marker.kind, dark);
         cr.set_source_rgba(red, green, blue, alpha);
-        cr.rectangle(x, marker.top, lane_width, marker.height());
+        // Cairo takes a height; the policy hands over edges, so the one
+        // subtraction of two fractional widget coordinates happens here.
+        cr.rectangle(x, marker.top, lane_width, marker.bottom - marker.top);
         let _ = cr.fill();
     }
 }
@@ -873,5 +875,66 @@ mod milli_tests {
         assert_eq!(gtk_f64_to_milli(-1.25), -1_250);
         assert_eq!(gtk_f64_to_milli(f64::NAN), 0);
         assert_eq!(gtk_f64_to_milli(f64::INFINITY), 0);
+    }
+}
+
+#[cfg(test)]
+mod wide_editor_ratio_tests {
+    use proptest::prelude::*;
+
+    use super::super::policy::source_map_exceeds_wide_editor_ratio;
+
+    /// The `f64` form the exact comparison replaced (the ratio of the two
+    /// heights against `0.20`), kept as the reference here because the policy
+    /// module denies the float arithmetic it needs.
+    fn legacy_exceeds(editor_document_height: i32, source_map_document_height: i32) -> bool {
+        if editor_document_height <= 0 || source_map_document_height <= 0 {
+            return false;
+        }
+        let ratio = f64::from(source_map_document_height) / f64::from(editor_document_height);
+        ratio.is_finite() && ratio > 0.20
+    }
+
+    #[test]
+    fn exact_comparison_matches_the_f64_ratio_densely() {
+        for editor in -2..=3_000 {
+            for source_map in -2..=1_000 {
+                assert_eq!(
+                    source_map_exceeds_wide_editor_ratio(editor, source_map),
+                    legacy_exceeds(editor, source_map),
+                    "editor {editor}, source map {source_map}"
+                );
+            }
+        }
+        // Every exact one-fifth pair and its neighbours, across the i32 range.
+        for source_map in (1..=i32::MAX / 5).step_by(4_093) {
+            let editor = source_map * 5;
+            for (e, m) in [
+                (editor, source_map),
+                (editor - 1, source_map),
+                (editor + 1, source_map),
+            ] {
+                assert_eq!(
+                    source_map_exceeds_wide_editor_ratio(e, m),
+                    legacy_exceeds(e, m),
+                    "editor {e}, source map {m}"
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20_000))]
+
+        #[test]
+        fn exact_comparison_matches_the_f64_ratio_everywhere(
+            editor in any::<i32>(),
+            source_map in any::<i32>(),
+        ) {
+            prop_assert_eq!(
+                source_map_exceeds_wide_editor_ratio(editor, source_map),
+                legacy_exceeds(editor, source_map)
+            );
+        }
     }
 }

@@ -47,7 +47,7 @@ pub(crate) fn baseline_delay_ms() -> u64 {
 #[must_use]
 pub(crate) fn take_baseline_failure() -> bool {
     BASELINE_FAILURES
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
             remaining.checked_sub(1)
         })
         .is_ok()

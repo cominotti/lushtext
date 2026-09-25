@@ -2732,7 +2732,7 @@ fn assert_top_minimap_reflow_invariants(
             "projected marker should remain inside the marker strip after reflow: {bounds:?}, {geometry:?}"
         );
         assert!(
-            bounds.height() > 0.0,
+            bounds.bottom > bounds.top,
             "projected marker should have positive height: {bounds:?}"
         );
     }

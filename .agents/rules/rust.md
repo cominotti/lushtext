@@ -132,9 +132,11 @@ criteria formerly stated here — cross-cutting eligibility, the seam value-obje
 rule, and the `#[expect(clippy::too_many_arguments)]` exemption for domain catalog
 construction — now live there, so an older citation of *this* file for one of them
 resolves in one hop. The same file holds the whole-pixel geometry policy rule
-(`#![deny(clippy::float_arithmetic)]` in pure geometry and budget policy
-modules, fractional values admitted only by a reasoned function-level
-`#[expect]`), enforced by Clippy and `make check-workflow-boundaries`.
+(`#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]` in pure
+geometry and budget policy modules; the pair as `deny`, with fractional values
+admitted only by a reasoned `#[expect]` directly on the function, in a module
+with a recorded admission ceiling), and its table of protected modules, enforced
+by Clippy and `make check-workflow-boundaries`.
 
 ## Coordination Vocabulary
 
@@ -300,7 +302,7 @@ production policy.
 - The workspace Clippy table is curated lint-by-lint after cleanup. Broad groups such as `clippy::restriction`, `clippy::pedantic`, `clippy::nursery`, and `clippy::cargo` are advisory discovery inputs only; do not enable them wholesale as blocking policy.
 - Rust 1.96 Clippy lints `manual_option_zip`, `manual_pop_if`, `manual_noop_waker`, `manual_midpoint`, `unchecked_time_subtraction`, `decimal_literal_representation`, `case_sensitive_file_extension_comparisons`, `significant_drop_tightening`, `needless_collect`, `redundant_clone`, `derive_partial_eq_without_eq`, `wildcard_imports`, and `debug_assert_with_mut_call` are denied in the workspace lint table. Prefer the standard helpers those lints point to instead of hand-rolled equivalents. In particular, execute mutations before `debug_assert!` and assert only the captured result so release builds cannot elide required state changes.
 - `make lint-advisory` runs broad Clippy, selected design-smell Clippy, selected numeric Clippy, and selected rustc probes. Every current category is classified in `scripts/lint-advisory-policy.toml` as `blocking_candidate`, `must_stay_zero`, `accepted_advisory`, `generated_code_noise`, or `resolved_policy_exception`; refresh that policy only after fixing, promoting, or intentionally classifying new output.
-- No `clippy.toml` is currently checked in because this review found no globally safe disallowed method/type ban that applies across backend, fixture, generated, test, and build-support paths without broad suppressions. Add `clippy.toml` only when a future globally safe ban can include reason and replacement metadata. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
+- The root `clippy.toml` holds exactly one policy: the whole-pixel `disallowed-methods` list (float methods that do arithmetic by call — `mul_add`, `powi`, `powf`, `sqrt`, `div_euclid`, `rem_euclid`, `recip`, `hypot`, `midpoint` — for `f64` and `f32`, each with a reason). It is not a global ban: `[workspace.lints.clippy]` sets `disallowed_methods = "allow"`, and only the whole-pixel policy modules raise it (`#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]`, or `deny`), with the module list held path-aware by rule 10 of `make check-workflow-boundaries` and the "Whole-pixel geometry policy" table in `workflow-convention.md`. Do not add a second list to `clippy.toml` unless it is globally safe (reason and replacement metadata, no broad suppressions in backend, fixture, generated, test, or build-support code); a new list would inherit the workspace `allow` and silently check nothing. Path-sensitive rules such as filesystem-boundary ownership stay in `scripts/check-filesystem-boundary.sh`, where backend, fixture, build-support, and approved engine-adapter exceptions can be expressed by path.
 
 ## Modern Rust Idioms
 

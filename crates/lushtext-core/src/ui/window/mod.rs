@@ -26,7 +26,7 @@ mod drafts;
 mod editor_focus;
 mod editor_memory_eviction;
 mod encoding;
-mod focus_mode;
+pub(crate) mod focus_mode;
 mod geometry;
 // gtk-rs keeps the private GObject subclass implementation in `imp.rs`; this
 // public module exposes the safe wrapper and workflow methods callers use.

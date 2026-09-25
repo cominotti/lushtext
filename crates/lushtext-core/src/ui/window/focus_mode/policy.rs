@@ -13,7 +13,7 @@
 //! This module imports no toolkit crate, which is what keeps it inside the
 //! `ui/**/policy.rs` mutation scope.
 
-#![deny(clippy::float_arithmetic)]
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 /// Pointer distance from the top edge that reveals the Focus Mode affordance.
 ///
@@ -99,6 +99,53 @@ pub fn timed_hide_hides_affordance(affordance_contains_focus: bool) -> bool {
 #[must_use]
 pub fn preview_takes_readable_column(focus_mode_active: bool, preview_only_mode: bool) -> bool {
     focus_mode_active && preview_only_mode
+}
+
+/// Smallest inner margin kept while focused.
+///
+/// Twenty-four pixels gives narrow windows visible breathing room without
+/// stealing enough width to make wrapped prose feel cramped.
+pub const MIN_FOCUS_MARGIN: i32 = 24;
+
+/// Pango units per logical pixel (`pango::SCALE`).
+///
+/// Restated here because this module imports no toolkit crate; the adapter in
+/// `ui/editor_page/focus_mode.rs` asserts it equals `gtk4::pango::SCALE`, so the
+/// two cannot drift.
+pub const PANGO_UNITS_PER_PIXEL: i32 = 1024;
+
+/// Symmetric readable-column margin for one text surface, in whole pixels.
+///
+/// `approximate_char_width` is Pango's own integer measure, in Pango units
+/// ([`PANGO_UNITS_PER_PIXEL`] per pixel), passed straight through so no
+/// fraction of a pixel is ever formed. The margin is half of what the target
+/// column (the character width times `target_columns`, clamped to 60–120)
+/// leaves of the width, rounded down, then kept between
+/// [`MIN_FOCUS_MARGIN`] and a third of the width. A non-positive width or
+/// character width yields the minimum.
+///
+/// Equal, for every `i32` width, `i32` character width, and `u32` column count,
+/// to the `f64` form it replaced (which divided the character width by
+/// `pango::SCALE` first); the adapter's tests pin the two together.
+#[must_use]
+pub fn readable_column_margin(
+    allocated_width: i32,
+    approximate_char_width: i32,
+    target_columns: u32,
+) -> i32 {
+    let width = allocated_width.max(0);
+    if width <= 0 || approximate_char_width <= 0 {
+        return MIN_FOCUS_MARGIN;
+    }
+
+    let scale = i64::from(PANGO_UNITS_PER_PIXEL);
+    let target_width = i64::from(approximate_char_width) * i64::from(target_columns.clamp(60, 120));
+    // floor((width - target / scale) / 2), all in Pango units.
+    let available_margin = (i64::from(width) * scale - target_width).div_euclid(2 * scale);
+    // At most width / 2, so it fits back into `i32`.
+    let margin = i32::try_from(available_margin.max(i64::from(MIN_FOCUS_MARGIN)))
+        .unwrap_or(MIN_FOCUS_MARGIN);
+    margin.min(width.saturating_div(3).max(MIN_FOCUS_MARGIN))
 }
 
 /// Whether persistent shell chrome is visible for this Focus Mode state.
@@ -215,6 +262,37 @@ mod tests {
         assert!(!preview_takes_readable_column(true, false));
         assert!(!preview_takes_readable_column(false, true));
         assert!(!preview_takes_readable_column(false, false));
+    }
+
+    #[test]
+    fn the_readable_column_is_half_the_leftover_width_rounded_down() {
+        // 8 px characters (8192 Pango units) at 80 columns is a 640 px column.
+        assert_eq!(readable_column_margin(1_000, 8 * 1024, 80), 180);
+        // 180.5 rounds down.
+        assert_eq!(readable_column_margin(1_001, 8 * 1024, 80), 180);
+        // A fractional character width stays exact: 7.5 px * 80 = 600 px.
+        assert_eq!(readable_column_margin(1_000, 7 * 1024 + 512, 80), 200);
+    }
+
+    #[test]
+    fn the_readable_column_margin_stays_between_its_floor_and_a_third() {
+        assert_eq!(readable_column_margin(0, 8 * 1024, 80), MIN_FOCUS_MARGIN);
+        assert_eq!(readable_column_margin(-5, 8 * 1024, 80), MIN_FOCUS_MARGIN);
+        assert_eq!(readable_column_margin(1_000, 0, 80), MIN_FOCUS_MARGIN);
+        assert_eq!(readable_column_margin(1_000, -1, 80), MIN_FOCUS_MARGIN);
+        // A column wider than the surface keeps the floor.
+        assert_eq!(readable_column_margin(400, 8 * 1024, 80), MIN_FOCUS_MARGIN);
+        // 1 px characters at 60 columns would leave 120 px, capped at 300 / 3.
+        assert_eq!(readable_column_margin(300, 1024, 60), 100);
+        // Column counts clamp to 60..=120.
+        assert_eq!(
+            readable_column_margin(2_000, 8 * 1024, 10),
+            readable_column_margin(2_000, 8 * 1024, 60)
+        );
+        assert_eq!(
+            readable_column_margin(2_000, 8 * 1024, 500),
+            readable_column_margin(2_000, 8 * 1024, 120)
+        );
     }
 
     #[test]

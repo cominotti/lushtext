@@ -31,7 +31,7 @@
 //! one bounded slice at a time from a live buffer cursor without ever copying
 //! the document.
 
-#![deny(clippy::float_arithmetic)]
+#![deny(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 use std::time::Duration;
 
@@ -57,7 +57,10 @@ pub(super) const MINIMAP_TOP_CONTENT_MARGIN: i32 = 5;
 /// geometry and add a small slider-only correction. This is intentionally a
 /// binary one-pixel correction: if future visual fixtures flap at this boundary,
 /// use hysteresis or a stepped offset ladder rather than nudging the threshold.
-pub(super) const MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD: f64 = 0.20;
+///
+/// The threshold is one fifth (0.20), held as its denominator so the comparison
+/// in [`source_map_exceeds_wide_editor_ratio`] is exact integer arithmetic.
+pub(super) const MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR: i64 = 5;
 /// CSS class for the wide-editor native slider top-edge correction.
 pub(super) const MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS: &str =
     "minimap-wide-editor-slider-offset";
@@ -197,18 +200,6 @@ pub struct MinimapMarkerBounds {
     pub bottom: f64,
 }
 
-impl MinimapMarkerBounds {
-    /// Height in marker-strip widget coordinates.
-    #[must_use]
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "marker-strip coordinates are GTK widget coordinates, fractional under scaling"
-    )]
-    pub fn height(&self) -> f64 {
-        self.bottom - self.top
-    }
-}
-
 /// Current projected bounds for a minimap visual rectangle.
 ///
 /// Coordinates are relative to the caller-provided target widget and may
@@ -315,19 +306,22 @@ pub(crate) struct MinimapNativeSliderDiagnostics {
     pub first_content_row: Option<MinimapProjectedBounds>,
 }
 
-/// Compute the source-map/editor ratio, returning `None` for unusable geometry.
-#[expect(
-    clippy::float_arithmetic,
-    reason = "a ratio of two widget heights is inherently fractional"
-)]
-pub(super) fn source_map_editor_height_ratio_from_heights(
+/// Whether the source map is more than one fifth as tall as the editor document.
+///
+/// `map / editor > 1/5` exactly, as `map * 5 > editor` in `i64`, so no ratio is
+/// formed; unusable (non-positive) geometry is never wide. For every pair of
+/// `i32` heights this agrees with the `f64` ratio compared against `0.20` that
+/// it replaced: the two could disagree only for a true ratio within a few ulps
+/// (about 10^-17) of one fifth, and a ratio of two `i32` values that is not
+/// exactly one fifth differs from it by at least 1 / (5 * 2^31), about 10^-10.
+pub(super) fn source_map_exceeds_wide_editor_ratio(
     editor_document_height: i32,
     source_map_document_height: i32,
-) -> Option<f64> {
-    if editor_document_height <= 0 || source_map_document_height <= 0 {
-        return None;
-    }
-    Some(f64::from(source_map_document_height) / f64::from(editor_document_height))
+) -> bool {
+    editor_document_height > 0
+        && source_map_document_height > 0
+        && i64::from(source_map_document_height) * MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR
+            > i64::from(editor_document_height)
 }
 
 /// Return a finite adjustment's absolute distance from its lower bound.
@@ -369,9 +363,13 @@ pub(super) fn fitting_source_map_page_size(
 }
 
 /// Choose the CSS class that compensates the native slider at the wide-editor threshold.
-pub(super) fn wide_editor_slider_offset_class(ratio: Option<f64>) -> Option<&'static str> {
-    ratio
-        .is_some_and(|ratio| ratio.is_finite() && ratio > MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD)
+pub(super) fn wide_editor_slider_offset_class(
+    document_heights: Option<(i32, i32)>,
+) -> Option<&'static str> {
+    document_heights
+        .is_some_and(|(editor, source_map)| {
+            source_map_exceeds_wide_editor_ratio(editor, source_map)
+        })
         .then_some(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS)
 }
 
@@ -749,6 +747,10 @@ fn target_y_from_widget_y(map_y_in_target: f64, widget_y: i32) -> f64 {
     clippy::float_arithmetic,
     reason = "GTK widget coordinates are fractional; the minimum-height domain is stated above"
 )]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "f64::midpoint of two fractional widget coordinates, overflow-free before the clamp"
+)]
 fn expanded_to_min_height(
     top: f64,
     bottom: f64,
@@ -1006,7 +1008,7 @@ mod tests {
         assert_eq!(MINIMAP_LONG_LINE_MARK_CAP, 2_000);
         assert_eq!(MINIMAP_MARKER_MIN_HEIGHT, 2.0);
         assert_eq!(MINIMAP_TOP_CONTENT_MARGIN, 5);
-        assert_eq!(MINIMAP_WIDE_EDITOR_RATIO_THRESHOLD, 0.20);
+        assert_eq!(MINIMAP_WIDE_EDITOR_RATIO_DENOMINATOR, 5);
         assert_eq!(MINIMAP_VIEWPORT_HORIZONTAL_OUTSET, 13);
         assert_eq!(MINIMAP_REFLOW_SETTLE_DEBOUNCE, Duration::from_millis(150));
         assert_eq!(MINIMAP_REFLOW_REVEAL_DELAY, Duration::from_millis(800));
@@ -1043,23 +1045,23 @@ mod tests {
     }
 
     #[test]
-    fn test_source_map_editor_height_ratio_from_heights_tracks_ratio() {
-        assert_eq!(
-            source_map_editor_height_ratio_from_heights(1_000, 200),
-            Some(0.2)
-        );
-        assert_eq!(
-            source_map_editor_height_ratio_from_heights(6_000, 1_800),
-            Some(0.3)
-        );
+    fn test_source_map_exceeds_wide_editor_ratio_is_strict() {
+        // Exactly one fifth is not wide; one pixel more is.
+        assert!(!source_map_exceeds_wide_editor_ratio(1_000, 200));
+        assert!(source_map_exceeds_wide_editor_ratio(1_000, 201));
+        assert!(!source_map_exceeds_wide_editor_ratio(1_001, 200));
+        assert!(source_map_exceeds_wide_editor_ratio(6_000, 1_800));
+        // No overflow at the extremes.
+        assert!(source_map_exceeds_wide_editor_ratio(i32::MAX, i32::MAX));
+        assert!(!source_map_exceeds_wide_editor_ratio(i32::MAX, 1));
     }
 
     #[test]
-    fn test_source_map_editor_height_ratio_from_heights_rejects_unusable_geometry() {
-        assert_eq!(source_map_editor_height_ratio_from_heights(0, 200), None);
-        assert_eq!(source_map_editor_height_ratio_from_heights(1_000, 0), None);
-        assert_eq!(source_map_editor_height_ratio_from_heights(-1, 200), None);
-        assert_eq!(source_map_editor_height_ratio_from_heights(1_000, -1), None);
+    fn test_source_map_exceeds_wide_editor_ratio_rejects_unusable_geometry() {
+        assert!(!source_map_exceeds_wide_editor_ratio(0, 200));
+        assert!(!source_map_exceeds_wide_editor_ratio(1_000, 0));
+        assert!(!source_map_exceeds_wide_editor_ratio(-1, 200));
+        assert!(!source_map_exceeds_wide_editor_ratio(1_000, -1));
     }
 
     #[test]
@@ -1165,30 +1167,25 @@ mod tests {
 
     #[test]
     fn test_wide_editor_slider_offset_class_uses_strict_threshold() {
-        assert_eq!(wide_editor_slider_offset_class(Some(0.199_999)), None);
-        assert_eq!(wide_editor_slider_offset_class(Some(0.20)), None);
         assert_eq!(
-            wide_editor_slider_offset_class(Some(0.200_001)),
+            wide_editor_slider_offset_class(Some((1_000_000, 199_999))),
+            None
+        );
+        assert_eq!(
+            wide_editor_slider_offset_class(Some((1_000_000, 200_000))),
+            None
+        );
+        assert_eq!(
+            wide_editor_slider_offset_class(Some((1_000_000, 200_001))),
             Some(MINIMAP_WIDE_EDITOR_SLIDER_OFFSET_CLASS)
         );
     }
 
     #[test]
-    fn test_wide_editor_slider_offset_class_rejects_missing_or_nonfinite_ratio() {
+    fn test_wide_editor_slider_offset_class_rejects_missing_or_unusable_heights() {
         assert_eq!(wide_editor_slider_offset_class(None), None);
-        assert_eq!(wide_editor_slider_offset_class(Some(f64::NAN)), None);
-        assert_eq!(wide_editor_slider_offset_class(Some(f64::INFINITY)), None);
-    }
-
-    #[test]
-    fn test_marker_bounds_height_uses_bottom_minus_top() {
-        let bounds = MinimapMarkerBounds {
-            kind: MinimapMarkerKind::Search,
-            top: 3.25,
-            bottom: 11.75,
-        };
-
-        assert_eq!(bounds.height(), 8.5);
+        assert_eq!(wide_editor_slider_offset_class(Some((0, 200))), None);
+        assert_eq!(wide_editor_slider_offset_class(Some((1_000, 0))), None);
     }
 
     #[test]
@@ -1703,7 +1700,6 @@ mod tests {
         assert_eq!(bounds.kind, MinimapMarkerKind::LongLine);
         assert_eq!(bounds.top, 25.0);
         assert_eq!(bounds.bottom, 55.0);
-        assert_eq!(bounds.height(), 30.0);
     }
 
     #[test]

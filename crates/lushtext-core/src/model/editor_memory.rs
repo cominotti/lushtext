@@ -6,7 +6,7 @@
 //! recently-used selection, hysteresis, and protected-work behavior fully
 //! deterministic without retaining widgets or reading document text.
 
-#![deny(clippy::float_arithmetic)]
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
 

@@ -12,7 +12,7 @@
 //! GTK-free; `policy/kani_proofs.rs` proves its one-third bound and the 1 sp
 //! floor that wins below 3 sp.
 
-#![deny(clippy::float_arithmetic)]
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 #[cfg(kani)]
 mod kani_proofs;

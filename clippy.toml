@@ -1,0 +1,30 @@
+# Clippy configuration for the whole workspace.
+#
+# `disallowed-methods` backs the whole-pixel geometry policy rule (see the
+# "Whole-pixel geometry policy" section of `.agents/rules/workflow-convention.md`).
+# `clippy::float_arithmetic` sees only the operators `+ - * / %`, so these float
+# methods, which do the same arithmetic by method call, would otherwise escape
+# it. The lint is set to "allow" workspace-wide in the root `Cargo.toml`: it
+# bites only in the modules that raise it with
+# `#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]` (or `deny`),
+# so it constrains the whole-pixel policies and nothing else.
+disallowed-methods = [
+    { path = "f64::mul_add", reason = "fused multiply-add is float arithmetic; whole-pixel policies use integers" },
+    { path = "f32::mul_add", reason = "fused multiply-add is float arithmetic; whole-pixel policies use integers" },
+    { path = "f64::powi", reason = "a float power is float arithmetic; whole-pixel policies use integers" },
+    { path = "f32::powi", reason = "a float power is float arithmetic; whole-pixel policies use integers" },
+    { path = "f64::powf", reason = "a float power is float arithmetic; whole-pixel policies use integers" },
+    { path = "f32::powf", reason = "a float power is float arithmetic; whole-pixel policies use integers" },
+    { path = "f64::sqrt", reason = "a float root is float arithmetic; whole-pixel policies use integers" },
+    { path = "f32::sqrt", reason = "a float root is float arithmetic; whole-pixel policies use integers" },
+    { path = "f64::div_euclid", reason = "float division by method call; use integer div_euclid on whole pixels" },
+    { path = "f32::div_euclid", reason = "float division by method call; use integer div_euclid on whole pixels" },
+    { path = "f64::rem_euclid", reason = "float remainder by method call; use integer rem_euclid on whole pixels" },
+    { path = "f32::rem_euclid", reason = "float remainder by method call; use integer rem_euclid on whole pixels" },
+    { path = "f64::recip", reason = "a float reciprocal is float division; whole-pixel policies use integers" },
+    { path = "f32::recip", reason = "a float reciprocal is float division; whole-pixel policies use integers" },
+    { path = "f64::hypot", reason = "a float hypotenuse is float arithmetic; whole-pixel policies use integers" },
+    { path = "f32::hypot", reason = "a float hypotenuse is float arithmetic; whole-pixel policies use integers" },
+    { path = "f64::midpoint", reason = "a float midpoint is float arithmetic; `manual_midpoint` pushes here, so it is named" },
+    { path = "f32::midpoint", reason = "a float midpoint is float arithmetic; `manual_midpoint` pushes here, so it is named" },
+]

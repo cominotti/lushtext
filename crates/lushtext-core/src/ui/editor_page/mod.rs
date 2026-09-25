@@ -56,7 +56,7 @@ pub use buffer_replacement::{
 #[cfg(feature = "test-utils")]
 pub use buffer_replacement::{BufferReplacementEvidence, BufferReplacementTestOutcome};
 pub(crate) use buffer_replacement::{BufferReplacementOutcome, BufferReplacementRequest};
-pub(crate) use focus_mode::{approximate_char_width, readable_column_margin};
+pub(crate) use focus_mode::approximate_char_width_pango_units;
 pub use imp::{EditorLoadState, PendingWarningAction};
 pub use load::{LoadEvidence, LoadInstallPhase, LoadOutcome};
 #[cfg(feature = "test-utils")]

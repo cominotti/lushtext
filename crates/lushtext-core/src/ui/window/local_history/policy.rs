@@ -13,7 +13,7 @@
 //! `crate::model::buffer_replacement` owns it, and forking a shared limit would
 //! let it drift while both copies still read as correct.
 
-#![deny(clippy::float_arithmetic)]
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 use std::path::PathBuf;
 
@@ -303,26 +303,38 @@ pub(super) fn format_snapshot_meta(origin: LocalHistorySnapshotOrigin, byte_len:
 }
 
 /// Format a byte count for a browse row.
+///
+/// One decimal place of a KiB or MiB, rounded half to even exactly as `{:.1}`
+/// rounds the exact quotient, formed in integer tenths so no float is involved.
+/// Identical to the `f64` form it replaced (`{:.1}` of `byte_len as f64 / unit`)
+/// for every size below 2^53 bytes (8 PiB); above that the old form rounded the
+/// size itself to `f64` first, and this one stays exact.
 #[must_use]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "Snapshot sizes are displayed to one decimal place, where f64 precision is ample"
-)]
-#[expect(
-    clippy::float_arithmetic,
-    reason = "a size shown to one decimal place of a MiB or KiB is inherently fractional"
-)]
 pub(super) fn format_bytes(byte_len: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
 
     if byte_len >= MIB {
-        format!("{:.1} MB", byte_len as f64 / MIB as f64)
+        format!("{} MB", one_decimal_place(byte_len, MIB))
     } else if byte_len >= KIB {
-        format!("{:.1} KB", byte_len as f64 / KIB as f64)
+        format!("{} KB", one_decimal_place(byte_len, KIB))
     } else {
         format!("{byte_len} B")
     }
+}
+
+/// `byte_len / unit` to one decimal place, ties to even.
+fn one_decimal_place(byte_len: u64, unit: u64) -> String {
+    let unit = u128::from(unit);
+    let scaled = u128::from(byte_len) * 10;
+    let tenths = scaled / unit;
+    let twice_remainder = (scaled % unit) * 2;
+    let tenths = if twice_remainder > unit || (twice_remainder == unit && tenths % 2 == 1) {
+        tenths + 1
+    } else {
+        tenths
+    };
+    format!("{}.{}", tenths / 10, tenths % 10)
 }
 
 #[cfg(test)]
@@ -537,6 +549,77 @@ mod tests {
         assert_eq!(format_bytes(1024), "1.0 KB");
         assert_eq!(format_bytes(1024 * 1024 - 1), "1024.0 KB");
         assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn byte_formatting_rounds_ties_to_even_like_the_float_form() {
+        // 1280 B is exactly 1.25 KiB: `{:.1}` gave "1.2", so must this.
+        assert_eq!(format_bytes(1280), "1.2 KB");
+        // 1.35 KiB is not a tie (1382.4 B); 1.375 KiB = 1408 B rounds up.
+        assert_eq!(format_bytes(1408), "1.4 KB");
+        // 1.75 KiB = 1792 B is a tie that rounds up to the even 1.8.
+        assert_eq!(format_bytes(1792), "1.8 KB");
+        // 1.25 MiB is a MiB tie.
+        assert_eq!(format_bytes(1_310_720), "1.2 MB");
+        assert_eq!(format_bytes(u64::MAX), "17592186044416.0 MB");
+    }
+
+    /// The exact value the replaced `f64` form formatted, formed without float
+    /// arithmetic: `byte_len / 2^shift` is a dyadic rational, so its decimal
+    /// expansion (`remainder * 5^shift` over `10^shift`) is finite, and parsing it
+    /// yields the very `f64` that `byte_len as f64 / 2^shift as f64` produced for
+    /// every `byte_len` below 2^53. Formatting that value with the same `{:.1}`
+    /// reproduces the replaced implementation.
+    fn legacy_one_decimal_place(byte_len: u64, shift: u32, digits: usize) -> String {
+        let whole = byte_len >> shift;
+        let remainder = u128::from(byte_len & ((1u64 << shift) - 1));
+        let fraction = remainder * 5u128.pow(shift);
+        let exact: f64 = format!("{whole}.{fraction:0>digits$}")
+            .parse()
+            .unwrap_or_else(|_| unreachable!("a decimal expansion always parses"));
+        format!("{exact:.1}")
+    }
+
+    fn legacy_format_bytes(byte_len: u64) -> String {
+        if byte_len >= 1 << 20 {
+            format!("{} MB", legacy_one_decimal_place(byte_len, 20, 20))
+        } else if byte_len >= 1 << 10 {
+            format!("{} KB", legacy_one_decimal_place(byte_len, 10, 10))
+        } else {
+            format!("{byte_len} B")
+        }
+    }
+
+    #[test]
+    fn integer_byte_formatting_matches_the_float_form_densely() {
+        // Every size up to 2 MiB, which covers each KiB tie, then the first
+        // 65,536 MiB ties (a tenth-of-a-MiB tie is an odd multiple of 256 KiB)
+        // and their neighbours.
+        for byte_len in 0..=2 * 1024 * 1024 {
+            assert_eq!(
+                format_bytes(byte_len),
+                legacy_format_bytes(byte_len),
+                "{byte_len} B"
+            );
+        }
+        for tie in ((1u64 << 18)..).step_by(1 << 19).take(1 << 16) {
+            for byte_len in [tie - 1, tie, tie + 1] {
+                assert_eq!(
+                    format_bytes(byte_len),
+                    legacy_format_bytes(byte_len),
+                    "{byte_len} B"
+                );
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn integer_byte_formatting_matches_the_float_form_below_2_53(
+            byte_len in 0u64..(1u64 << 53),
+        ) {
+            proptest::prop_assert_eq!(format_bytes(byte_len), legacy_format_bytes(byte_len));
+        }
     }
 
     fn periodic_ticket() -> PeriodicCaptureTicket {

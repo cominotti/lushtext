@@ -295,7 +295,17 @@ has been declared and a migrated row's facade exceeds it; **when the count of
 externally reachable `*_for_test` declarations exceeds the figure recorded under
 the matrix's `### Externally reachable test-seam ceiling`**, which ratchets the
 shadow introspection API
-the evidence surfaces retired; or when the programme record's slot ledger in
+the evidence surfaces retired; **when a whole-pixel geometry policy module (rule
+10) lacks its `forbid` or `deny` of `clippy::float_arithmetic` and
+`clippy::disallowed_methods`, when it or a child file lowers either lint in a
+way Clippy's `allow_attributes` does not see (an inner or `cfg_attr`
+attribute, or an `expect` on an `impl` or `mod`), when its count of
+`expect`-admitted functions exceeds its recorded ceiling, or when the
+convention's whole-pixel table disagrees with the script** (the rule and the
+table are normative in the "Whole-pixel geometry policy" section of
+[`.agents/rules/workflow-convention.md`](./workflow-convention.md); the float
+methods it bans live in the root `clippy.toml`, allowed workspace-wide and
+raised only by those modules); or when the programme record's slot ledger in
 `docs/next/workflow-readability.md` disagrees with the matrix about which
 workflows are migrated. The programme is closed, so that record is frozen except
 its deferral inventory, which may be appended; the matrix row is what a change

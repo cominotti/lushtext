@@ -69,13 +69,20 @@ Ten mechanical guarantees, all derived from
    parent does not gate it, or that has no parent module file, is a finding.
 10. Whole-pixel geometry policy: every module in `WHOLE_PIXEL_POLICY_MODULES`,
    and every `policy.rs` under a directory in `GEOMETRY_ROLE_HOMES` (so a new
-   one is covered without an edit here), carries the inner attribute
-   `#![deny(clippy::float_arithmetic)]`, which `make check`'s Clippy then
-   enforces. A genuinely fractional value is admitted only by a narrow
-   `#[expect(clippy::float_arithmetic, reason = "...")]` on its function: an
-   `allow` of the lint, a module-wide `expect`, or an `expect` without a
-   `reason` in such a module is a finding. A listed module missing from the
-   tree is a finding at the real-tree entry point, so a rename cannot drop it.
+   one is covered without an edit here), is protected. A module whose recorded
+   ceiling of admitted functions is 0 carries the literal inner attribute
+   `#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]`, which
+   nothing beneath it can lower; one that still admits fractional functions
+   carries the pair as `deny`. Matched on comment- and literal-stripped code,
+   in the module and its child files (`x.rs` -> `x/**/*.rs`, less a gated
+   `kani_proofs.rs`), any attribute that lowers either lint or a group holding
+   one (`allow`, `warn`, `cfg_attr`, an inner `expect`, or an `expect` on
+   anything but a `fn`), a `#[path]` remap, or an `include!` is a finding, as
+   is a count of `expect`-admitted functions above the module's ceiling. At the
+   real-tree entry point a listed module missing from the tree is a finding, so
+   a rename cannot drop it, and so is any disagreement between the list and the
+   table in the "Whole-pixel geometry policy" section of
+   `.agents/rules/workflow-convention.md`.
 """
 
 from __future__ import annotations
@@ -503,51 +510,294 @@ def kani_harness_findings(root: Path) -> list[str]:
 
 
 # Rule 10. The pure geometry and budget policies take and return whole pixels
-# wherever the value is not inherently fractional; the compiler holds that line
-# (`clippy::float_arithmetic`, denied module-wide) and this list holds the
-# compiler to every module that must carry it. See the "Whole-pixel geometry
-# policy" section of `.agents/rules/workflow-convention.md`. Escape hatches are
-# the workspace Clippy lints' job, not this rule's: `allow_attributes` rejects
-# any `allow` of the lint and `allow_attributes_without_reason` an `expect`
-# without a reason (root `Cargo.toml`), so only the module-wide `expect`, which
-# both lints accept, is checked here.
-WHOLE_PIXEL_POLICY_MODULES = (
-    "ui/window/geometry/policy.rs",
-    "ui/editor_page/minimap/policy.rs",
-    "ui/markdown_preview/policy.rs",
-    "ui/sidebar/width_preset.rs",
-    "model/editor_memory.rs",
-    "ui/window/local_history/policy.rs",
-    "ui/window/focus_mode/policy.rs",
-)
+# wherever the value is not inherently fractional. The compiler holds that line
+# and this rule holds the compiler to every module that must carry it. See the
+# "Whole-pixel geometry policy" section of `.agents/rules/workflow-convention.md`.
+#
+# Each entry maps a module (relative to `crates/lushtext-core/src`) to its
+# ceiling of function-level admissions: the number of
+# `#[expect(clippy::float_arithmetic | clippy::disallowed_methods, ...)]`
+# attributes it and its child files may carry. A ceiling of 0 means the module
+# needs no admission, so it must carry the literal
+# `#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]`, which no
+# attribute anywhere beneath it can lower (rustc rejects it, E0453). A module
+# that still admits fractional functions carries the same pair as `deny`, and
+# this rule is then the only thing standing between it and a lint-lowering
+# attribute that Clippy's own gates miss: `allow_attributes` ignores inner
+# attributes and `cfg_attr`, and neither it nor `allow_attributes_without_reason`
+# notices a reasoned `expect` on an `impl`, a `mod`, or a whole child file. The
+# convention's "Whole-pixel geometry policy" table must list exactly these
+# modules and ceilings (checked below); raising a ceiling is a reviewed edit to
+# both. Only excess fails, as for the `*_for_test` ceiling.
+WHOLE_PIXEL_POLICY_MODULES: dict[str, int] = {
+    "ui/window/geometry/policy.rs": 0,
+    "ui/editor_page/minimap/policy.rs": 10,
+    "ui/markdown_preview/policy.rs": 0,
+    "ui/sidebar/width_preset.rs": 0,
+    "model/editor_memory.rs": 0,
+    "ui/window/local_history/policy.rs": 0,
+    "ui/window/focus_mode/policy.rs": 0,
+}
 # Role homes whose `policy.rs` files hold geometry decisions: any `policy.rs`
-# beneath them, present or future, must carry the deny too.
+# beneath them, present or future, is protected too, with a ceiling of 0 (so it
+# must forbid) unless the list above names it.
 GEOMETRY_ROLE_HOMES = (
     "ui/window/geometry",
     "ui/editor_page/minimap",
     "ui/markdown_preview",
 )
-FLOAT_ARITHMETIC_DENY_RE = re.compile(
-    r"^#!\[(?:deny|forbid)\(clippy::float_arithmetic\)\]", re.MULTILINE
+CONVENTION_PATH = REPO_ROOT / ".agents/rules/workflow-convention.md"
+WHOLE_PIXEL_SECTION_HEADING = "### Whole-pixel geometry policy"
+WHOLE_PIXEL_TABLE_ROW_RE = re.compile(
+    r"^\|\s*`([^`]+)`\s*\|\s*`?(forbid|deny)`?\s*\|\s*(\d+)\s*\|"
 )
-FLOAT_ARITHMETIC_INNER_EXPECT_RE = re.compile(r"#!\[expect\([^\]]*clippy::float_arithmetic")
+# The two lints a protected module raises, spelled as its top attribute must.
+WHOLE_PIXEL_LINTS = ("clippy::float_arithmetic", "clippy::disallowed_methods")
+# Any lint name whose level change reaches either lint: the lints themselves
+# (and `disallowed_method`, the renamed alias rustc still honours), the
+# `restriction` group `float_arithmetic` belongs to, the `style` group
+# `disallowed_methods` belongs to, `all` (which contains `style`), and
+# `blanket_clippy_restriction_lints`, which a group-level expect needs beside it.
+WHOLE_PIXEL_LOWERING_LINT_RE = re.compile(
+    r"clippy::(?:float_arithmetic|disallowed_methods?|restriction|"
+    r"blanket_clippy_restriction_lints|style|all)\b"
+)
+ATTRIBUTE_START_RE = re.compile(r"#\s*(!)?\s*\[")
+ATTRIBUTE_NAME_RE = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_:]*)")
+# What may follow an admitting `expect` before the item it admits: more outer
+# attributes (skipped separately), then a function's qualifiers and `fn`.
+FN_ITEM_RE = re.compile(
+    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?"
+    r"(?:(?:const|async|unsafe|safe|default|extern(?:\s*\"\")?)\s+)*fn\b"
+)
+TOP_LEVEL_INNER_ATTRIBUTE_RE = re.compile(r"^#!\[\s*(forbid|deny)\s*\(([^\]]*)\)\s*\]", re.MULTILINE)
+INCLUDE_MACRO_RE = re.compile(r"\binclude!\s*\(")
 
 
-def whole_pixel_policy_modules(root: Path) -> list[Path]:
-    """Return the listed whole-pixel modules plus every geometry `policy.rs`."""
+def strip_rust_comments_and_strings(text: str) -> str:
+    """Blank out comments and literals, keeping every newline and offset.
+
+    Unlike `code_lines`, this lexes nested block comments, raw strings, and
+    character literals (so `'"'` does not open a string), because rule 10 must
+    not be satisfied by an attribute written inside a comment, nor misled by one
+    written inside a literal.
+    """
+    out = list(text)
+    length = len(text)
+
+    def blank(start: int, end: int) -> None:
+        for index in range(start, min(end, length)):
+            if out[index] != "\n":
+                out[index] = " "
+
+    index = 0
+    while index < length:
+        char = text[index]
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = length if end < 0 else end
+            blank(index, end)
+            index = end
+        elif text.startswith("/*", index):
+            depth = 0
+            cursor = index
+            while cursor < length:
+                if text.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif text.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                    if depth == 0:
+                        break
+                else:
+                    cursor += 1
+            blank(index, cursor)
+            index = cursor
+        elif char in "rb" and re.match(r"(?:br|rb|r)(#*)\"", text[index:index + 260]) and (
+            index == 0 or not (text[index - 1].isalnum() or text[index - 1] == "_")
+        ):
+            match = re.match(r"(?:br|rb|r)(#*)\"", text[index:])
+            assert match is not None
+            closing = '"' + match.group(1)
+            end = text.find(closing, index + match.end())
+            end = length if end < 0 else end + len(closing)
+            blank(index + 1, end - 1)
+            index = end
+        elif char == '"':
+            cursor = index + 1
+            while cursor < length and text[cursor] != '"':
+                cursor += 2 if text[cursor] == "\\" else 1
+            blank(index + 1, cursor)
+            index = cursor + 1
+        elif char == "'":
+            # A character literal, or a lifetime/label (left alone).
+            if text.startswith("'\\", index):
+                end = text.find("'", index + 2)
+                end = length if end < 0 else end + 1
+                blank(index + 1, end - 1)
+                index = end
+            elif index + 2 < length and text[index + 2] == "'":
+                blank(index + 1, index + 2)
+                index += 3
+            else:
+                index += 1
+        else:
+            index += 1
+    return "".join(out)
+
+
+@dataclass(frozen=True)
+class RustAttribute:
+    """One `#[...]` or `#![...]` attribute found in comment-stripped code."""
+
+    line: int
+    inner: bool
+    name: str
+    body: str
+    end: int
+
+
+def rust_attributes(code: str) -> list[RustAttribute]:
+    """Return every attribute in comment- and literal-stripped `code`."""
+    attributes: list[RustAttribute] = []
+    for match in ATTRIBUTE_START_RE.finditer(code):
+        depth = 1
+        cursor = match.end()
+        while cursor < len(code) and depth:
+            if code[cursor] == "[":
+                depth += 1
+            elif code[cursor] == "]":
+                depth -= 1
+            cursor += 1
+        body = code[match.end() : cursor - 1]
+        name_match = ATTRIBUTE_NAME_RE.match(body)
+        attributes.append(
+            RustAttribute(
+                line=code.count("\n", 0, match.start()) + 1,
+                inner=match.group(1) is not None,
+                name=name_match.group(1) if name_match else "",
+                body=re.sub(r"\s+", "", body),
+                end=cursor,
+            )
+        )
+    return attributes
+
+
+def admitted_fn_position(code: str, position: int) -> int | None:
+    """Return where the `fn` after the attribute ending at `position` starts, if it is one.
+
+    Further outer attributes are skipped, so two `expect`s on one function
+    resolve to the same position and count as one admission.
+    """
+    while True:
+        rest = code[position:]
+        start = ATTRIBUTE_START_RE.match(rest.lstrip())
+        if start is None or start.group(1) is not None:
+            break
+        position += len(rest) - len(rest.lstrip()) + start.end()
+        depth = 1
+        while position < len(code) and depth:
+            if code[position] == "[":
+                depth += 1
+            elif code[position] == "]":
+                depth -= 1
+            position += 1
+    match = FN_ITEM_RE.match(code, position)
+    return match.end() if match else None
+
+
+def whole_pixel_policy_modules(root: Path) -> dict[Path, int]:
+    """Return every protected module with its function-level admission ceiling."""
     core = root / CORE_SRC
-    modules = {core / path for path in WHOLE_PIXEL_POLICY_MODULES}
+    modules = {core / path: ceiling for path, ceiling in WHOLE_PIXEL_POLICY_MODULES.items()}
     for home in GEOMETRY_ROLE_HOMES:
         directory = core / home
         if directory.is_dir():
-            modules.update(directory.rglob(POLICY_MODULE_NAME))
-    return sorted(modules)
+            for path in directory.rglob(POLICY_MODULE_NAME):
+                modules.setdefault(path, 0)
+    return dict(sorted(modules.items()))
+
+
+def whole_pixel_child_files(module: Path) -> list[Path]:
+    """Return the module's child files (`x.rs` -> `x/**/*.rs`), less gated Kani harnesses."""
+    directory = module.parent if module.name == "mod.rs" else module.with_suffix("")
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path
+        for path in directory.rglob("*.rs")
+        if path != module and not is_gated_kani_harness(path)
+    )
+
+
+def whole_pixel_attribute_findings(relative_path: str, code: str) -> tuple[list[str], int]:
+    """Return lint-lowering findings for one file and its count of admitted functions."""
+    findings: list[str] = []
+    admitted_functions: set[int] = set()
+    for attribute in rust_attributes(code):
+        where = f"{relative_path}:{attribute.line}"
+        if attribute.name == "path":
+            findings.append(
+                f"{where} remaps a module with `#[path]`; a whole-pixel module's children "
+                "must live in its own child directory, where this rule scans them"
+            )
+            continue
+        if WHOLE_PIXEL_LOWERING_LINT_RE.search(attribute.body) is None:
+            continue
+        if attribute.name in {"deny", "forbid"}:
+            continue
+        if attribute.name == "cfg_attr":
+            findings.append(
+                f"{where} changes a whole-pixel lint level through `cfg_attr`; admit a "
+                "fractional function with a plain function-level `#[expect]` instead"
+            )
+        elif attribute.name in {"allow", "warn"}:
+            findings.append(
+                f"{where} lowers a whole-pixel lint with `{attribute.name}`; admit a "
+                "fractional function with a function-level `#[expect(..., reason = ...)]`"
+            )
+        elif attribute.name == "expect" and attribute.inner:
+            findings.append(
+                f"{where} expects a whole-pixel lint module-wide; put the expectation on "
+                "the function that needs it"
+            )
+        elif attribute.name == "expect" and admitted_fn_position(code, attribute.end) is None:
+            findings.append(
+                f"{where} expects a whole-pixel lint on an item that is not a function "
+                "(an `impl`, `mod`, `trait`, statement, or expression); put the "
+                "expectation on the one function that computes the fractional value"
+            )
+        elif attribute.name == "expect":
+            position = admitted_fn_position(code, attribute.end)
+            assert position is not None
+            admitted_functions.add(position)
+        else:
+            findings.append(
+                f"{where} names a whole-pixel lint in an unrecognised `{attribute.name}` "
+                "attribute"
+            )
+    if INCLUDE_MACRO_RE.search(code):
+        findings.append(
+            f"{relative_path} uses `include!`, whose text this rule cannot scan"
+        )
+    return findings, len(admitted_functions)
+
+
+def whole_pixel_top_attribute(code: str) -> str | None:
+    """Return `forbid` or `deny` when the file raises both whole-pixel lints at top level."""
+    for match in TOP_LEVEL_INNER_ATTRIBUTE_RE.finditer(code):
+        lints = {lint.strip() for lint in re.sub(r"\s+", "", match.group(2)).split(",")}
+        if all(lint in lints for lint in WHOLE_PIXEL_LINTS):
+            return match.group(1)
+    return None
 
 
 def whole_pixel_findings(root: Path, *, real_tree: bool) -> list[str]:
-    """Return findings for geometry policy modules that do not deny float arithmetic."""
+    """Return findings for whole-pixel policy modules and their child files."""
     findings: list[str] = []
-    for path in whole_pixel_policy_modules(root):
+    lints = ", ".join(WHOLE_PIXEL_LINTS)
+    for path, ceiling in whole_pixel_policy_modules(root).items():
         relative_path = display_path(path) if root == REPO_ROOT else str(path.relative_to(root))
         if not path.is_file():
             if real_tree:
@@ -556,16 +806,84 @@ def whole_pixel_findings(root: Path, *, real_tree: bool) -> list[str]:
                     "update the list when a geometry policy moves"
                 )
             continue
-        text = path.read_text(encoding="utf-8")
-        if FLOAT_ARITHMETIC_DENY_RE.search(text) is None:
+        code = strip_rust_comments_and_strings(path.read_text(encoding="utf-8"))
+        level = whole_pixel_top_attribute(code)
+        if ceiling == 0 and level != "forbid":
             findings.append(
-                f"{relative_path} is a whole-pixel geometry policy module but lacks "
-                "`#![deny(clippy::float_arithmetic)]`"
+                f"{relative_path} is a whole-pixel policy module needing no admission but "
+                f"lacks `#![forbid({lints})]`"
             )
-        if FLOAT_ARITHMETIC_INNER_EXPECT_RE.search(text) is not None:
+        elif ceiling > 0 and level is None:
             findings.append(
-                f"{relative_path} expects clippy::float_arithmetic module-wide; "
-                "put the expectation on the function that needs it"
+                f"{relative_path} is a whole-pixel policy module but lacks "
+                f"`#![deny({lints})]`"
+            )
+        file_findings, admissions = whole_pixel_attribute_findings(relative_path, code)
+        findings.extend(file_findings)
+        for child in whole_pixel_child_files(path):
+            child_relative = (
+                display_path(child) if root == REPO_ROOT else str(child.relative_to(root))
+            )
+            child_code = strip_rust_comments_and_strings(child.read_text(encoding="utf-8"))
+            child_findings, child_admissions = whole_pixel_attribute_findings(
+                child_relative, child_code
+            )
+            findings.extend(child_findings)
+            admissions += child_admissions
+        if admissions > ceiling:
+            findings.append(
+                f"{relative_path} admits {admissions} functions with a whole-pixel `expect`, "
+                f"above its recorded ceiling of {ceiling}. Make a function whole-pixel "
+                "instead; or, deliberately, raise the ceiling in WHOLE_PIXEL_POLICY_MODULES "
+                "and the convention's whole-pixel table together"
+            )
+    return findings
+
+
+def parse_whole_pixel_table(text: str) -> dict[str, tuple[str, int]] | None:
+    """Read the convention's whole-pixel table, or None when it is absent."""
+    in_section = False
+    rows: dict[str, tuple[str, int]] = {}
+    for line in text.splitlines():
+        if line.startswith("#"):
+            if in_section and rows:
+                break
+            in_section = line.strip() == WHOLE_PIXEL_SECTION_HEADING
+            continue
+        if not in_section:
+            continue
+        match = WHOLE_PIXEL_TABLE_ROW_RE.match(line.strip())
+        if match:
+            rows[match.group(1)] = (match.group(2), int(match.group(3)))
+    return rows or None
+
+
+def whole_pixel_ledger_findings(convention_path: Path) -> list[str]:
+    """Return findings when the convention's whole-pixel table disagrees with the script."""
+    where = display_path(convention_path)
+    if not convention_path.is_file():
+        return [f"missing workflow convention: {where}"]
+    table = parse_whole_pixel_table(convention_path.read_text(encoding="utf-8"))
+    if table is None:
+        return [
+            f"{where}: the `{WHOLE_PIXEL_SECTION_HEADING}` section declares no module table "
+            "(`| `path` | `forbid` or `deny` | ceiling |`)"
+        ]
+    findings: list[str] = []
+    for path, ceiling in WHOLE_PIXEL_POLICY_MODULES.items():
+        expected = ("forbid" if ceiling == 0 else "deny", ceiling)
+        if path not in table:
+            findings.append(f"{where}: the whole-pixel table omits `{path}`, which rule 10 protects")
+        elif table[path] != expected:
+            findings.append(
+                f"{where}: the whole-pixel table records `{path}` as {table[path][0]} / "
+                f"{table[path][1]}, but rule 10 enforces {expected[0]} / {expected[1]}"
+            )
+    for path in table:
+        if path not in WHOLE_PIXEL_POLICY_MODULES:
+            findings.append(
+                f"{where}: the whole-pixel table lists `{path}`, which WHOLE_PIXEL_POLICY_MODULES "
+                "does not protect"
             )
     return findings
 
@@ -1507,6 +1825,8 @@ def check_tree(
     findings.extend(unclassified_pure_module_findings(root))
     findings.extend(kani_harness_findings(root))
     findings.extend(whole_pixel_findings(root, real_tree=require_seam_ceiling))
+    if require_seam_ceiling:
+        findings.extend(whole_pixel_ledger_findings(root / CONVENTION_PATH.relative_to(REPO_ROOT)))
 
     if not matrix_path.is_file():
         findings.append(f"missing workflow readability matrix: {display_path(matrix_path)}")
@@ -1587,6 +1907,287 @@ def build_fixture(
     matrix = root / "docs/workflow-readability-matrix.md"
     write(matrix, MATRIX_HEADER + matrix_body + budget_section + roles)
     return matrix, root / ".cargo/mutants.toml"
+
+
+# --- Rule 10 self-test fixtures ---------------------------------------------
+#
+# One table so every escape the rule closes is named once, and so the same
+# fixtures can be replayed against an older revision of this script to show
+# each case failing first. `files` maps paths under `crates/lushtext-core/src`
+# to contents; `finding` is whether rule 10 must report it.
+
+WHOLE_PIXEL_FORBID = "#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]\n"
+WHOLE_PIXEL_DENY = "#![deny(clippy::float_arithmetic, clippy::disallowed_methods)]\n"
+WHOLE_PIXEL_DENY_MODULE = "ui/editor_page/minimap/policy.rs"
+WHOLE_PIXEL_FORBID_MODULE = "ui/window/geometry/policy.rs"
+WHOLE_PIXEL_REASONED_FN = (
+    '#[expect(clippy::float_arithmetic, reason = "a widget coordinate is fractional")]\n'
+    "pub fn half(value: f64) -> f64 { value / 2.0 }\n"
+)
+
+
+@dataclass(frozen=True)
+class WholePixelCase:
+    """One rule-10 fixture and whether it must be a finding."""
+
+    name: str
+    files: dict[str, str]
+    finding: bool
+    real_tree: bool = False
+
+
+def whole_pixel_cases() -> list[WholePixelCase]:
+    """Return every rule-10 fixture, passing and failing."""
+    deny_module = WHOLE_PIXEL_DENY_MODULE
+    deny_children = deny_module[: -len(".rs")]
+    forbid_module = WHOLE_PIXEL_FORBID_MODULE
+    new_home_policy = GEOMETRY_ROLE_HOMES[0] + "/nested/policy.rs"
+
+    def deny(body: str, **children: str) -> dict[str, str]:
+        files = {deny_module: "//! Pure.\n\n" + WHOLE_PIXEL_DENY + body}
+        files.update({f"{deny_children}/{name}.rs": text for name, text in children.items()})
+        return files
+
+    fns = "".join(
+        f'#[expect(clippy::float_arithmetic, reason = "fractional {n}")]\n'
+        f"pub fn f{n}(v: f64) -> f64 {{ v / 2.0 }}\n"
+        for n in range(WHOLE_PIXEL_POLICY_MODULES[deny_module] + 1)
+    )
+    at_ceiling = fns[: fns.rindex("#[expect")]
+    return [
+        # Passing shapes.
+        WholePixelCase("a forbidding module passes", {forbid_module: "//! Pure.\n" + WHOLE_PIXEL_FORBID}, False),
+        WholePixelCase("a denying module with a reasoned fn-level expect passes", deny(WHOLE_PIXEL_REASONED_FN), False),
+        WholePixelCase(
+            "an expect on a method, a const fn, and through other attributes passes",
+            deny(
+                "impl Span {\n"
+                '    #[expect(clippy::float_arithmetic, reason = "a fractional height")]\n'
+                "    #[must_use]\n"
+                "    pub(crate) const fn height(&self) -> f64 { self.b - self.a }\n"
+                "}\n"
+            ),
+            False,
+        ),
+        WholePixelCase(
+            "two expects on one function count as one admission",
+            deny(
+                at_ceiling[: at_ceiling.rindex("pub fn")]
+                + '#[expect(clippy::disallowed_methods, reason = "f64::midpoint")]\n'
+                + at_ceiling[at_ceiling.rindex("pub fn") :]
+            ),
+            False,
+        ),
+        WholePixelCase("admissions at the ceiling pass", deny(at_ceiling), False),
+        WholePixelCase(
+            "a gated Kani harness child is not scanned",
+            deny(
+                "#[cfg(kani)]\nmod kani_proofs;\n",
+                kani_proofs='#![allow(clippy::float_arithmetic, reason = "harness")]\n',
+            ),
+            False,
+        ),
+        WholePixelCase("a new geometry policy.rs that forbids passes", {new_home_policy: "//! Pure.\n" + WHOLE_PIXEL_FORBID}, False),
+        WholePixelCase("fixtures without the listed modules pass off the real tree", {"model/other.rs": "pub fn ok() {}\n"}, False),
+        WholePixelCase(
+            "attributes inside literals are ignored",
+            deny('pub const S: &str = "#![allow(clippy::float_arithmetic)]";\npub const C: char = \'"\';\n'),
+            False,
+        ),
+        # Findings: missing or wrong top attribute.
+        WholePixelCase("a listed module without the attribute", {forbid_module: "//! Pure.\npub fn ok() {}\n"}, True),
+        WholePixelCase("a module needing no admission that only denies", {forbid_module: "//! Pure.\n" + WHOLE_PIXEL_DENY}, True),
+        WholePixelCase(
+            "a forbid only inside a line comment",
+            {forbid_module: "//! Pure.\n// " + WHOLE_PIXEL_FORBID},
+            True,
+        ),
+        WholePixelCase(
+            "a deny only inside a block comment",
+            {deny_module: "//! Pure.\n/*\n" + WHOLE_PIXEL_DENY + "*/\npub fn ok() {}\n"},
+            True,
+        ),
+        WholePixelCase(
+            "a deny of float arithmetic without disallowed_methods",
+            {deny_module: "//! Pure.\n#![deny(clippy::float_arithmetic)]\n"},
+            True,
+        ),
+        WholePixelCase("a new geometry policy.rs without the attribute", {new_home_policy: "//! Pure.\npub fn ok() {}\n"}, True),
+        WholePixelCase("a listed module missing from the real tree", {"model/other.rs": "pub fn ok() {}\n"}, True, real_tree=True),
+        # Findings: lint-lowering attributes the workspace Clippy lints miss.
+        WholePixelCase(
+            "a module-level inner allow",
+            deny('#![allow(clippy::float_arithmetic, reason = "x")]\n'),
+            True,
+        ),
+        WholePixelCase(
+            "a module-wide expect",
+            deny('#![expect(clippy::float_arithmetic, reason = "x")]\n'),
+            True,
+        ),
+        WholePixelCase(
+            "a reasoned expect on an impl block",
+            deny(
+                '#[expect(clippy::float_arithmetic, reason = "x")]\n'
+                "impl Span {\n    pub fn height(&self) -> f64 { self.b - self.a }\n}\n"
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a reasoned expect on a `mod x;` line",
+            deny(
+                '#[expect(clippy::float_arithmetic, reason = "x")]\nmod helpers;\n',
+                helpers="pub fn half(v: f64) -> f64 { v / 2.0 }\n",
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a reasoned expect on an inline mod",
+            deny(
+                '#[expect(clippy::float_arithmetic, reason = "x")]\n'
+                "mod inner {\n    pub fn half(v: f64) -> f64 { v / 2.0 }\n}\n"
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a reasoned expect on a statement",
+            deny(
+                "pub fn half(v: f64) -> f64 {\n"
+                '    #[expect(clippy::float_arithmetic, reason = "x")]\n'
+                "    let h = v / 2.0;\n    h\n}\n"
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a module-level inner allow in an inline mod",
+            deny(
+                "pub mod inner {\n"
+                '    #![allow(clippy::float_arithmetic, reason = "x")]\n'
+                "    pub fn half(v: f64) -> f64 { v / 2.0 }\n}\n"
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a cfg_attr allow",
+            deny('#![cfg_attr(all(), allow(clippy::float_arithmetic, reason = "x"))]\n'),
+            True,
+        ),
+        WholePixelCase(
+            "a cfg_attr expect on a function",
+            deny(
+                '#[cfg_attr(all(), expect(clippy::float_arithmetic, reason = "x"))]\n'
+                "pub fn half(v: f64) -> f64 { v / 2.0 }\n"
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a group-level expect of restriction",
+            deny(
+                "#![expect(clippy::restriction, clippy::blanket_clippy_restriction_lints, "
+                'reason = "x")]\n'
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "an allow of the style group, which holds disallowed_methods",
+            deny('#[allow(clippy::style, reason = "x")]\npub fn mid(a: f64, b: f64) -> f64 { f64::midpoint(a, b) }\n'),
+            True,
+        ),
+        WholePixelCase(
+            "a warn of float arithmetic",
+            deny('#![warn(clippy::float_arithmetic)]\n'),
+            True,
+        ),
+        WholePixelCase(
+            "a child file that expects the lint module-wide",
+            deny(
+                "mod helpers;\n",
+                helpers='#![expect(clippy::float_arithmetic, reason = "x")]\npub fn half(v: f64) -> f64 { v / 2.0 }\n',
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a child file of a forbidding module that allows the lint",
+            {
+                forbid_module: "//! Pure.\n" + WHOLE_PIXEL_FORBID + "mod helpers;\n",
+                forbid_module[: -len(".rs")] + "/helpers.rs": '#![allow(clippy::float_arithmetic, reason = "x")]\n',
+            },
+            True,
+        ),
+        WholePixelCase("admissions above the ceiling", deny(fns), True),
+        WholePixelCase(
+            "child-file admissions count toward the ceiling",
+            deny(
+                at_ceiling + "mod helpers;\n",
+                helpers=WHOLE_PIXEL_REASONED_FN,
+            ),
+            True,
+        ),
+        WholePixelCase(
+            "a module remapped with #[path]",
+            deny('#[path = "../elsewhere.rs"]\nmod helpers;\n'),
+            True,
+        ),
+        WholePixelCase("an include! of unscanned text", deny('include!("../elsewhere.rs");\n'), True),
+    ]
+
+
+def run_whole_pixel_case(case: WholePixelCase, findings_of) -> list[str]:
+    """Return what `findings_of(root, real_tree=...)` reports for one fixture."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for relative, content in case.files.items():
+            write(root / CORE_SRC / relative, content)
+        return findings_of(root, real_tree=case.real_tree)
+
+
+def whole_pixel_self_test_failures() -> list[tuple[str, str]]:
+    """Return `(case, problem)` for every rule-10 fixture the rule gets wrong."""
+    failures: list[tuple[str, str]] = []
+    for case in whole_pixel_cases():
+        findings = run_whole_pixel_case(case, whole_pixel_findings)
+        if case.finding and not findings:
+            failures.append((case.name, "expected a finding, got none"))
+        if not case.finding and findings:
+            failures.append((case.name, f"expected no finding, got {findings}"))
+
+    table_header = (
+        f"{WHOLE_PIXEL_SECTION_HEADING}\n\n| Module | Level | Admitted functions (ceiling) |\n"
+        "| --- | --- | --- |\n"
+    )
+
+    def table(rows: dict[str, int]) -> str:
+        return table_header + "".join(
+            f"| `{path}` | `{'forbid' if ceiling == 0 else 'deny'}` | {ceiling} |\n"
+            for path, ceiling in rows.items()
+        )
+
+    def ledger(text: str | None) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "workflow-convention.md"
+            if text is not None:
+                path.write_text(text, encoding="utf-8")
+            return whole_pixel_ledger_findings(path)
+
+    exact = dict(WHOLE_PIXEL_POLICY_MODULES)
+    if ledger(table(exact)):
+        failures.append(("an agreeing whole-pixel table", f"got {ledger(table(exact))}"))
+    first = next(iter(exact))
+    for name, rows in [
+        ("a table omitting a protected module", {k: v for k, v in exact.items() if k != first}),
+        ("a table with a different ceiling", {**exact, WHOLE_PIXEL_DENY_MODULE: 99}),
+        ("a table listing an unprotected module", {**exact, "model/other.rs": 0}),
+    ]:
+        if not ledger(table(rows)):
+            failures.append((name, "expected a finding, got none"))
+    wrong_level = table(exact).replace(f"| `{first}` | `forbid` |", f"| `{first}` | `deny` |")
+    if not ledger(wrong_level):
+        failures.append(("a table with the wrong level", "expected a finding, got none"))
+    if not ledger("# Convention\n\nNo table.\n"):
+        failures.append(("a convention without the table", "expected a finding, got none"))
+    if not ledger(None):
+        failures.append(("a missing convention", "expected a finding, got none"))
+    return failures
 
 
 def run_self_test() -> None:
@@ -2814,36 +3415,8 @@ def run_self_test() -> None:
                 if "kani_proofs.rs" in f
             ]
 
-    deny = "#![deny(clippy::float_arithmetic)]\n"
-    expect_ok = (
-        '#[expect(clippy::float_arithmetic, reason = "a widget coordinate is fractional")]\n'
-        "pub fn half(value: f64) -> f64 { value / 2.0 }\n"
-    )
-
-    def whole_pixel_case(
-        relative: str, content: str, *, real_tree: bool = False
-    ) -> list[str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write(root / CORE_SRC / relative, content)
-            return whole_pixel_findings(root, real_tree=real_tree)
-
-    listed = WHOLE_PIXEL_POLICY_MODULES[0]
-    if whole_pixel_case(listed, "//! Pure.\n\n" + deny + expect_ok):
-        raise AssertionError("expected a denying module with a reasoned fn-level expect to pass")
-    if not whole_pixel_case(listed, "//! Pure.\npub fn ok() {}\n"):
-        raise AssertionError("expected a listed module without the deny to be a finding")
-    new_home_policy = GEOMETRY_ROLE_HOMES[0] + "/nested/policy.rs"
-    if not whole_pixel_case(new_home_policy, "//! Pure.\npub fn ok() {}\n"):
-        raise AssertionError("expected a new policy.rs under a geometry role home without the deny to be a finding")
-    if whole_pixel_case(new_home_policy, "//! Pure.\n" + deny):
-        raise AssertionError("expected a new geometry policy.rs with the deny to pass")
-    if not whole_pixel_case(listed, deny + "#![expect(clippy::float_arithmetic, reason = \"x\")]\n"):
-        raise AssertionError("expected a module-wide expect to be a finding")
-    if not whole_pixel_case("model/other.rs", "pub fn ok() {}\n", real_tree=True):
-        raise AssertionError("expected a missing listed module to be a finding at the real-tree entry point")
-    if whole_pixel_case("model/other.rs", "pub fn ok() {}\n"):
-        raise AssertionError("expected fixtures without the listed modules to pass when not required")
+    for name, message in whole_pixel_self_test_failures():
+        raise AssertionError(f"whole-pixel self-test `{name}`: {message}")
 
     home_gated = home_harness_findings("#[cfg(kani)]\nmod kani_proofs;\n")
     if home_gated:

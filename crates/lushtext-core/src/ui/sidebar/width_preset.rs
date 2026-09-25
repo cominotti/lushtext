@@ -20,7 +20,7 @@
 //! Its three consumers are `ui/preferences/imp.rs`,
 //! `ui/window/geometry/policy.rs`, and `ui/window/geometry/execution.rs`.
 
-#![deny(clippy::float_arithmetic)]
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 #[cfg(kani)]
 mod kani_proofs;

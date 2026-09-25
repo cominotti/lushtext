@@ -10,14 +10,9 @@ use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
 
 use crate::config::keys;
+use crate::ui::window::focus_mode::policy::readable_column_margin;
 
 use super::LushtextEditorPage;
-
-/// Smallest inner margin kept while focused.
-///
-/// Twenty-four pixels gives narrow windows visible breathing room without
-/// stealing enough width to make wrapped prose feel cramped.
-const MIN_FOCUS_MARGIN: i32 = 24;
 
 /// Opacity for the text-origin guide.
 ///
@@ -30,28 +25,6 @@ const TEXT_ORIGIN_GUIDE_ALPHA: f64 = 0.22;
 /// A single pixel keeps the marker readable on ordinary displays while avoiding
 /// a heavy boundary that would make Focus Mode feel more technical than calm.
 const TEXT_ORIGIN_GUIDE_WIDTH: f64 = 1.0;
-
-/// Calculate symmetric readable-column margins for one text surface.
-#[must_use]
-pub fn readable_column_margin(
-    allocated_width: i32,
-    approximate_char_width: f64,
-    target_columns: u32,
-) -> i32 {
-    let width = allocated_width.max(0);
-    if width <= 0 || approximate_char_width <= 0.0 {
-        return MIN_FOCUS_MARGIN;
-    }
-
-    let target_width = approximate_char_width * f64::from(target_columns.clamp(60, 120));
-    let available_margin = ((f64::from(width) - target_width) / 2.0).floor();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "GTK widget widths and text margins live in i32 pixel coordinates"
-    )]
-    let margin = available_margin.max(f64::from(MIN_FOCUS_MARGIN)) as i32;
-    margin.min(width.saturating_div(3).max(MIN_FOCUS_MARGIN))
-}
 
 impl LushtextEditorPage {
     /// Create the non-interactive drawing layer used for the Focus Mode text-origin guide.
@@ -207,7 +180,7 @@ impl LushtextEditorPage {
 
         let margin = readable_column_margin(
             self.source_view().width(),
-            approximate_char_width(self.source_view().upcast_ref::<gtk4::Widget>()),
+            approximate_char_width_pango_units(self.source_view().upcast_ref::<gtk4::Widget>()),
             state.target_columns.get(),
         );
         self.source_view().set_left_margin(margin);
@@ -330,12 +303,87 @@ fn text_origin_guide_geometry(
     ))
 }
 
-/// Measure the approximate character width for a GTK text surface.
+/// Measure the approximate character width for a GTK text surface, in Pango units.
 ///
-/// Pango reports widths in scaled integer units, so callers get ordinary pixel
-/// units that can be fed into the shared readable-column calculation.
-pub(crate) fn approximate_char_width(widget: &gtk4::Widget) -> f64 {
+/// Pango's own integer measure (`pango::SCALE` units per pixel) is passed
+/// through unconverted, so the whole-pixel readable-column policy never has to
+/// form a fraction of a pixel.
+pub(crate) fn approximate_char_width_pango_units(widget: &gtk4::Widget) -> i32 {
     let context = widget.pango_context();
     let metrics = context.metrics(None, None);
-    f64::from(metrics.approximate_char_width()) / f64::from(gtk4::pango::SCALE)
+    metrics.approximate_char_width()
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use crate::ui::window::focus_mode::policy::{
+        MIN_FOCUS_MARGIN, PANGO_UNITS_PER_PIXEL, readable_column_margin,
+    };
+
+    /// The `f64` form the whole-pixel policy replaced, kept verbatim as the
+    /// reference: it lives here because it needs the float arithmetic the
+    /// policy module forbids. Its character width was the Pango measure
+    /// divided by `pango::SCALE`, which is what the adapter used to pass.
+    fn legacy_readable_column_margin(
+        allocated_width: i32,
+        approximate_char_width_pango: i32,
+        target_columns: u32,
+    ) -> i32 {
+        let approximate_char_width =
+            f64::from(approximate_char_width_pango) / f64::from(gtk4::pango::SCALE);
+        let width = allocated_width.max(0);
+        if width <= 0 || approximate_char_width <= 0.0 {
+            return MIN_FOCUS_MARGIN;
+        }
+
+        let target_width = approximate_char_width * f64::from(target_columns.clamp(60, 120));
+        let available_margin = ((f64::from(width) - target_width) / 2.0).floor();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "GTK widget widths and text margins live in i32 pixel coordinates"
+        )]
+        let margin = available_margin.max(f64::from(MIN_FOCUS_MARGIN)) as i32;
+        margin.min(width.saturating_div(3).max(MIN_FOCUS_MARGIN))
+    }
+
+    #[test]
+    fn the_policy_scale_is_pangos() {
+        assert_eq!(PANGO_UNITS_PER_PIXEL, gtk4::pango::SCALE);
+    }
+
+    #[test]
+    fn integer_margin_matches_the_f64_form_over_a_dense_domain() {
+        // Every width a window realistically has, character widths from a
+        // fraction of a pixel to sixteen pixels in steps finer than a
+        // hundredth of a pixel, and column counts on and around the clamp.
+        for target_columns in [0, 59, 60, 61, 72, 80, 100, 119, 120, 121, u32::MAX] {
+            for width in -2..=2_600 {
+                for char_width in (-3..=16 * 1024).step_by(9) {
+                    assert_eq!(
+                        readable_column_margin(width, char_width, target_columns),
+                        legacy_readable_column_margin(width, char_width, target_columns),
+                        "width {width}, char width {char_width} Pango units, {target_columns} columns"
+                    );
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20_000))]
+
+        #[test]
+        fn integer_margin_matches_the_f64_form_everywhere(
+            width in any::<i32>(),
+            char_width in any::<i32>(),
+            target_columns in any::<u32>(),
+        ) {
+            prop_assert_eq!(
+                readable_column_margin(width, char_width, target_columns),
+                legacy_readable_column_margin(width, char_width, target_columns)
+            );
+        }
+    }
 }

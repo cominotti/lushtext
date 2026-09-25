@@ -176,43 +176,81 @@ A pure geometry or budget policy takes and returns **whole pixels** (integers)
 and does no floating-point arithmetic; the GTK adapter converts to `f64` once,
 at the widget or split-view boundary: a split-view fraction, for example, is a
 whole-sp width divided once in the adapter (`geometry::execution::split_fraction`),
-never computed in the policy. A value the policy genuinely decides in fractional
-terms — a GTK widget coordinate or scroll-adjustment value that is fractional
-under scaling — stays `f64`, and
-the function that computes it states its domain in its rustdoc (and, where a
-spec covers it, in the spec), as the slice-bin geometry does.
+never computed in the policy, and a Pango measure is passed through in Pango
+units rather than divided into pixels first
+(`focus_mode::policy::readable_column_margin`). A value the policy genuinely
+decides in fractional terms — a GTK widget coordinate or scroll-adjustment value
+that is fractional under scaling — stays `f64`, and the function that computes
+it states its domain in its rustdoc (and, where a spec covers it, in the spec),
+as the slice-bin geometry does.
 
-Two layers enforce it (maintainer decision, `extend-kani-to-pure-policies`):
+Two layers enforce it (maintainer decisions, `extend-kani-to-pure-policies`):
 
-- **The compiler.** Each such module carries `#![deny(clippy::float_arithmetic)]`
-  directly after its module documentation, so `make check`'s Clippy fails on any
-  float arithmetic it does not admit. A fractional value is admitted only by a
-  narrow `#[expect(clippy::float_arithmetic, reason = "...")]` on the one
-  function that computes it, whose reason names the fractional value and its
-  domain; never a module-wide `allow` or `expect`. The `expect` also fails once
-  the function stops doing float arithmetic, so an admission cannot outlive its
-  cause.
-- **The policy check.** `make check-workflow-boundaries` (rule 10) fails when a
-  module in `WHOLE_PIXEL_POLICY_MODULES` or any `policy.rs` under a directory in
+- **The compiler.** A module that needs no fractional value carries
+  `#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]` directly
+  after its module documentation. `forbid` cannot be lowered by anything beneath
+  it — an `allow` or `expect` on an item, an inner attribute in a child module
+  or child file, or a `cfg_attr` is a compile error (E0453) — so `make check`'s
+  Clippy fails on any float arithmetic in it. `clippy::float_arithmetic` sees
+  only the operators; `clippy::disallowed_methods`, configured in the root
+  `clippy.toml` and allowed everywhere else by `[workspace.lints.clippy]`, adds
+  the float methods that do the same arithmetic by call (`mul_add`, `powi`,
+  `powf`, `sqrt`, `div_euclid`, `rem_euclid`, `recip`, `hypot`, `midpoint`, for
+  `f64` and `f32`). A module that still admits fractional functions carries the
+  same pair as `deny`, and admits each one only by a narrow
+  `#[expect(clippy::float_arithmetic, reason = "...")]` (plus
+  `clippy::disallowed_methods` where it calls one) **directly on the one
+  function** that computes it, whose reason names the fractional value and its
+  domain. The `expect` also fails once the function stops doing float
+  arithmetic, so an admission cannot outlive its cause.
+- **The policy check.** `make check-workflow-boundaries` (rule 10) protects
+  every module in the table below and every `policy.rs` under
   `GEOMETRY_ROLE_HOMES` (`ui/window/geometry/`, `ui/editor_page/minimap/`,
-  `ui/markdown_preview/`) lacks the deny or expects the lint module-wide. An
-  `allow` of the lint, or an `expect` without a reason, is left to the
-  workspace Clippy lints `allow_attributes` and
-  `allow_attributes_without_reason`. A new geometry `policy.rs` in
-  those homes is covered with no edit; a geometry policy elsewhere is added to
-  the list in the same change.
+  `ui/markdown_preview/`), which is protected at ceiling 0 with no edit. It
+  reads comment- and literal-stripped code, so an attribute inside a comment
+  counts for nothing. It fails when a ceiling-0 module lacks the literal
+  `forbid` pair or a `deny` module lacks the `deny` pair; when the module or any
+  of its child files (`x.rs` → `x/**/*.rs`, `policy.rs` → `policy/**/*.rs`,
+  except a `cfg(kani)`-gated `kani_proofs.rs`) changes the level of either lint,
+  of the `restriction`, `style`, or `all` groups, or of
+  `blanket_clippy_restriction_lints` through an `allow`, a `warn`, a
+  `cfg_attr`, an inner `expect`, or an `expect` on anything but a `fn` (an
+  `impl`, a `mod` or `mod x;` line, a `trait`, a statement); when it remaps a
+  child with `#[path]` or pulls text in with `include!`; when the number of
+  functions admitted by an `expect` exceeds the module's recorded ceiling; and
+  when this table disagrees with the script's `WHOLE_PIXEL_POLICY_MODULES`.
+  Clippy's own `allow_attributes` does not cover these: it ignores inner
+  attributes and `cfg_attr`, and neither it nor
+  `allow_attributes_without_reason` notices a reasoned `expect` on an `impl`,
+  a `mod`, or a whole child file. A geometry policy outside the three homes is
+  added to the table and the script in the same change.
 
-The listed modules are `ui/window/geometry/policy.rs`,
-`ui/editor_page/minimap/policy.rs`, `ui/markdown_preview/policy.rs`,
-`ui/sidebar/width_preset.rs`, `model/editor_memory.rs`, and — applied
-retroactively to the two other migrated workflows whose policy holds geometry —
-`ui/window/local_history/policy.rs` (viewer geometry) and
-`ui/window/focus_mode/policy.rs` (the top-edge reveal band). The
+The protected modules, their level, and their ceiling of admitted functions.
+Only excess fails; a ceiling is lowered when a function becomes whole-pixel,
+and raising one is a reviewed edit to this table and the script together:
+
+| Module | Level | Admitted functions (ceiling) |
+| --- | --- | --- |
+| `ui/window/geometry/policy.rs` | `forbid` | 0 |
+| `ui/editor_page/minimap/policy.rs` | `deny` | 10 |
+| `ui/markdown_preview/policy.rs` | `forbid` | 0 |
+| `ui/sidebar/width_preset.rs` | `forbid` | 0 |
+| `model/editor_memory.rs` | `forbid` | 0 |
+| `ui/window/local_history/policy.rs` | `forbid` | 0 |
+| `ui/window/focus_mode/policy.rs` | `forbid` | 0 |
+
+The last two apply the rule retroactively to the other migrated workflows whose
+policy holds geometry: the local-history viewer geometry and size display, and
+Focus Mode's reveal band and readable-column margin. The minimap's ten are GTK
+widget and adjustment coordinates (projected-bounds edges, the native-slider
+estimate and fit, the adjustment distance and fitting page size, the
+target-relative line offset, the minimum-height expansion, and the two marker
+lane functions, whose fractional lane shares are a visible design choice). The
 `gtk-lush-widgets` slice geometry (`slice_geometry.rs`, `scroll_request.rs`) is
 **deliberately not listed**: every function in both modules is arithmetic on
-`GtkAdjustment` values, which are fractional under smooth scrolling, so a deny
-there would be satisfied only by an `expect` on every function and would enforce
-nothing; their whole-pixel domain is stated and Kani-proved instead.
+`GtkAdjustment` values, which are fractional under smooth scrolling, so the
+lints there would be satisfied only by an `expect` on every function and would
+enforce nothing; their whole-pixel domain is stated and Kani-proved instead.
 
 ## Evidence surfaces
 

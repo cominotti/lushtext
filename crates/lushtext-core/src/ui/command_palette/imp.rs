@@ -18,7 +18,6 @@ use crate::ui::command_palette::item::PaletteItem;
 use crate::ui::command_palette::policy;
 use crate::ui::command_palette::query_execution::PaletteQueryRequest;
 use crate::ui::plain_disposal::DisposalOwned;
-use glib::prelude::*;
 use gtk_lush_settle::Debounce;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;

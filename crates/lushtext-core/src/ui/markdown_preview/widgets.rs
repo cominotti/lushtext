@@ -26,7 +26,8 @@ use gtk4::prelude::*;
 
 use crate::services::markdown_render::MarkdownRenderState;
 use crate::ui::accessibility;
-use crate::ui::editor_page::{approximate_char_width, readable_column_margin};
+use crate::ui::editor_page::approximate_char_width_pango_units;
+use crate::ui::window::focus_mode::policy::readable_column_margin;
 
 use super::LushtextMarkdownPreview;
 use super::seams::{EmbeddedBlockLayout, RenderedEmbed};
@@ -58,7 +59,7 @@ impl LushtextMarkdownPreview {
         if active {
             let margin = readable_column_margin(
                 text_view.width(),
-                approximate_char_width(text_view.upcast_ref::<gtk4::Widget>()),
+                approximate_char_width_pango_units(text_view.upcast_ref::<gtk4::Widget>()),
                 target_columns,
             );
             text_view.set_left_margin(margin);

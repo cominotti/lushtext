@@ -34,7 +34,7 @@
 //! sweep in seven subdirectories, four of them role homes no predicate has ever
 //! protected.
 
-#![deny(clippy::float_arithmetic)]
+#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]
 
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 

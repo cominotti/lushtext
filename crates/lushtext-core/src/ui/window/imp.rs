@@ -42,7 +42,6 @@ use crate::ui::search_panel::LushtextSearchPanel;
 use crate::ui::sidebar::LushtextSidebar;
 use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 use crate::ui::status_bar::{LushtextStatusBar, MessageKind};
-use glib::prelude::*;
 use gtk_lush_settle::{Debounce, SettleBurst, SupersedingTimer};
 use gtk_lush_widgets::ClipBin;
 use gtk4::prelude::*;

@@ -497,7 +497,7 @@ fn assert_marker_bounds_within_source_content(
             "{kind:?} marker should remain inside strip height {strip_height}, got {bound:?}"
         );
         assert!(
-            bound.height() > 0.0,
+            bound.bottom > bound.top,
             "{kind:?} marker should have positive height: {bound:?}"
         );
     }

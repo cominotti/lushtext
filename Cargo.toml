@@ -136,6 +136,13 @@ manual_pop_if                 = "deny"
 manual_noop_waker             = "deny"
 manual_midpoint               = "deny"
 
+# --- Whole-pixel geometry policy ---
+# `clippy.toml` names the float methods that do arithmetic by method call. The
+# lint is allowed everywhere and raised only by the whole-pixel policy modules'
+# own `#![forbid(clippy::float_arithmetic, clippy::disallowed_methods)]` (or
+# `deny`), so it constrains those modules and nothing else.
+disallowed_methods            = "allow"
+
 # --- Idiomatic Rust ---
 redundant_closure_for_method_calls = "deny"
 implicit_clone                     = "deny"

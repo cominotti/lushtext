@@ -48,7 +48,7 @@ impl Drop for WorkspaceScanPermit {
 
 pub(super) fn try_acquire_workspace_scan_permit() -> Option<WorkspaceScanPermit> {
     let admitted = ACTIVE_WORKSPACE_SCAN_TASKS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
             (active < WORKSPACE_SCAN_TASK_LIMIT).then_some(active + 1)
         })
         .ok()?;
