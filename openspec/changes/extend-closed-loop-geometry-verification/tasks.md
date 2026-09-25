@@ -91,7 +91,7 @@
 
 ## 8. Outcome gate and lane budget
 
-- [ ] 8.1 Run `make kani` for every shard and confirm that each shard's local time leaves headroom under the 30-minute CI cap (the target is under about 20 minutes). Narrow a domain (and record it) or split a shard otherwise. Dispatch `kani.yml` once and record the runner times, where runner access allows.
+- [x] 8.1 Run `make kani` for every shard and confirm that each shard's local time leaves headroom under the 30-minute CI cap (the target is under about 20 minutes). Narrow a domain (and record it) or split a shard otherwise. Dispatch `kani.yml` once and record the runner times, where runner access allows.
 - [x] 8.2 Record the outcomes of both unbounded attempts in `docs/next/formal-verification.md` phase 3. Rewrite §2 "Lean is dormant" and the "Dormant: Lean" section of `docs/next/formal-verification-next.md`: Lean is re-discussed only if **both** Kani attempts fail **and** an unbounded claim is needed (for example GTK Lush publication), and only by a recorded maintainer decision.
 
 ## 9. Documentation sync and gates
@@ -106,5 +106,5 @@
   - the viewport-slice design note (anchored forwarding, and why within-bin accumulation stays);
   - the adaptive document-properties design note (the reconciliation plan and the Kani model).
   Add the anchored-forwarding rule to `.agents/rules/widget-wiring.md`, and any new testing pitfall to the `gtk-testing` skill references.
-- [ ] 9.4 Run `make check`, `make test`, `make test-widget`, `make check-kani-shards`, the GTK Lush lanes from 2.8, and `make visual-geometry-smoke` (shell geometry invariants unchanged). All pass with no new warnings in the widget-lane output.
-- [ ] 9.5 Run `openspec validate extend-closed-loop-geometry-verification --strict`. It is valid.
+- [x] 9.4 Run `make check`, `make test`, `make test-widget`, `make check-kani-shards`, the GTK Lush lanes from 2.8, and `make visual-geometry-smoke` (shell geometry invariants unchanged). All pass with no new warnings in the widget-lane output.
+- [x] 9.5 Run `openspec validate extend-closed-loop-geometry-verification --strict`. It is valid.

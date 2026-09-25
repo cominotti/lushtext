@@ -648,7 +648,13 @@ claim were made. Kani 0.68.0 / CBMC 6.11.0, this toolbox, times per harness
 from one `cargo kani` run of the final model while other lanes shared the
 machine. The anchor model made the slice-loop shards slower, so they are split
 into six (`widgets-slice-loop-rest`, `-rest-three`, `-requests`,
-`-requests-two`, `-pairs`, `-unbounded`) to stay inside the runner margins:
+`-requests-two`, `-pairs`, `-unbounded`) to stay inside the runner margins.
+Measured on `ubuntu-latest` in dispatched runs 36136602024 and 36139028016
+(max of the two, minutes / peak GiB): rest 11.8 / 1.7, rest-three 13.2 / 1.7,
+requests 7.1 / 1.7, requests-two 14.8 / 1.7, pairs 14.7 / 2.0, unbounded
+14.4 / 1.7, `core-shell-geometry` 10.9 / 2.6; every older shard stayed inside
+its recorded figure (`core-journal-and-write` 20.4, `core-geometry-policies`
+13.4). Local times per harness:
 
 | Harness | Scope | Result | Time |
 |---|---|---|---|

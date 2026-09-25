@@ -115,13 +115,10 @@ RESAMPLED_IN = (
     "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757261, "
     "36059814296, 36061831286 (max of the seven)"
 )
-# A new shard's placeholder budget until the first dispatched kani.yml run is
-# recorded (the precedent of `extend-kani-to-pure-policies`); `check` accepts it
-# only while it stays inside the margins, and it is replaced by measured figures
-# before the change lands.
-PROVISIONAL = "PROVISIONAL placeholder until the first dispatched run is recorded"
-PROVISIONAL_MINUTES = 20.0
-PROVISIONAL_PEAK_GIB = 4.0
+# The shards extend-closed-loop-geometry-verification added or re-split come from
+# two dispatched runs on the final form of the change (max of the two, rounded
+# up); both runs also re-measured every older shard inside its recorded figure.
+CLOSED_LOOP_MEASURED_IN = "runs 36136602024, 36139028016 (max of the two)"
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -148,9 +145,9 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_rests_with_two_bins",
         ),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=11.8,
+        ci_peak_gib=1.7,
+        measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     # The anchor model of extend-closed-loop-geometry-verification made the
     # three-bin rest and two-bin request harnesses too slow to share a job.
@@ -158,9 +155,9 @@ SHARDS: dict[str, Shard] = {
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_rests_with_three_bins",),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=13.2,
+        ci_peak_gib=1.7,
+        measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     "widgets-slice-loop-requests": Shard(
         "gtk-lush-widgets",
@@ -171,17 +168,17 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_two_reconfiguring_",
         ),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=7.1,
+        ci_peak_gib=1.7,
+        measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     "widgets-slice-loop-requests-two": Shard(
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_honours_a_request_with_two_bins",),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=14.8,
+        ci_peak_gib=1.7,
+        measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     "widgets-slice-loop-pairs": Shard(
         "gtk-lush-widgets",
@@ -191,9 +188,9 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_bin_decision_",
         ),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=14.7,
+        ci_peak_gib=2.0,
+        measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     "widgets-slice-loop-unbounded": Shard(
         "gtk-lush-widgets",
@@ -205,9 +202,9 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_request_coinciding_",
         ),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=14.4,
+        ci_peak_gib=1.7,
+        measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
     "core-journal-and-write": Shard(
         "lushtext-core",
@@ -255,9 +252,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("ui::window::geometry::kani_proofs::shell_loop_",),
         gate="scheduled",
-        ci_minutes=PROVISIONAL_MINUTES,
-        ci_peak_gib=PROVISIONAL_PEAK_GIB,
-        measured_in=PROVISIONAL,
+        ci_minutes=10.9,
+        ci_peak_gib=2.6,
+        measured_in=CLOSED_LOOP_MEASURED_IN,
     ),
 }
 
