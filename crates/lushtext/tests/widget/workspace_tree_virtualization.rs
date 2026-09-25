@@ -1434,6 +1434,9 @@ fn test_a_sidebar_height_change_after_scrolling_keeps_the_scroll_position() {
         outer.set_vexpand(false);
         outer.set_valign(gtk4::Align::Start);
         outer.set_propagate_natural_height(true);
+        // Lift the old maximum first: GTK rejects a minimum above the current
+        // maximum, and a growing height would be one.
+        outer.set_max_content_height(-1);
         outer.set_min_content_height(height);
         outer.set_max_content_height(height);
         flush_after_delay(Duration::from_millis(600));
@@ -1448,6 +1451,45 @@ fn test_a_sidebar_height_change_after_scrolling_keeps_the_scroll_position() {
                 .cloned(),
             top,
             "the row at the top of the sidebar must stay there"
+        );
+    }
+    drop(tree.window);
+}
+
+/// Maximizing and unmaximizing the window while the sidebar is scrolled deep
+/// into a large tree keeps every sidebar widget allocated when it is drawn.
+///
+/// Unmaximizing changes the outer viewport's height, so the slice bin re-slices
+/// from an idle a frame later, and the window's breakpoint transitions land in
+/// that same frame. The re-slice reached the bin through
+/// `gtk_widget_ensure_allocate`, because its section and `sections_box` kept
+/// their sizes; the new band moved the list's anchor, the list rebound rows,
+/// and their resize left those two ancestors (and, after the bin's post-
+/// allocation re-announcement, the list itself) marked for allocation until
+/// the frame clock's next layout pass. `AdwBreakpointBin` snapshots its child
+/// inside its own allocation when its breakpoint changes, which found
+/// `sections_box` without a current allocation: a `Gtk-WARNING` the widget
+/// runner fails on.
+#[test]
+fn test_maximize_round_trip_while_scrolled_keeps_the_sidebar_allocated() {
+    let tree = large_tree(&[("nested", 1_000)], 800);
+    let target = tree.root.join("nested");
+    expand_path(&tree.section, &tree.root, &target);
+    for value in [9_000.0, 20_000.0] {
+        scroll_outer_to(&tree.sidebar, value);
+        flush_after_delay(Duration::from_millis(500));
+        tree.window.maximize();
+        flush_after_delay(Duration::from_millis(1_500));
+        tree.window.unmaximize();
+        flush_after_delay(Duration::from_millis(1_500));
+        let sections_box = tree.sidebar.imp().sections_box.get();
+        assert!(
+            sections_box.width() > 0 && sections_box.height() > 0,
+            "the sections box must hold a real allocation after the round trip"
+        );
+        assert!(
+            !rendered_labels(&tree.section).is_empty(),
+            "the scrolled tree must still render rows after the round trip"
         );
     }
     drop(tree.window);

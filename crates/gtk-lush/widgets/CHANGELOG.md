@@ -23,6 +23,11 @@
   shows, and keeps one pixel plus the child's inset when nothing shows (a full
   viewport's band until a non-zero page has revealed the inset). The one row
   covering that pixel is a recorded residual.
+- Fixed GTK printing `Trying to snapshot GtkBox ... without a current
+  allocation` for the bin's ancestors when a window resize landed a re-slice in
+  the frame of a breakpoint change: a re-slice now marks the ancestor chain for
+  allocation, and the bin allocates its child once more after it re-announces
+  or writes back a value, so it returns with its child allocated.
 - Fixed the bin re-slicing late, with GTK printing `Trying to snapshot
   GtkLushViewportSliceBin ... without a current allocation`, when the outer
   viewport's height changed: `GtkViewport` delivers `notify::page-size` after it

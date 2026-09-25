@@ -155,7 +155,7 @@ impl ObjectImpl for ViewportSliceBin {
                 let overscan = value.get::<f64>().expect("overscan must be a double");
                 if (self.overscan.get() - overscan).abs() > f64::EPSILON {
                     self.overscan.set(overscan.max(0.0));
-                    self.obj().queue_allocate();
+                    self.queue_reslice(None);
                     self.obj().notify("overscan");
                 }
             }
@@ -323,7 +323,7 @@ impl WidgetImpl for ViewportSliceBin {
         // value may have settled as a consequence (see `scroll_request`).
         let upper_before = self.vadjustment.upper();
         let page_before = self.vadjustment.page_size();
-        child.allocate(width, slice_height, -1, Some(transform));
+        child.allocate(width, slice_height, -1, Some(transform.clone()));
         if emitted {
             // The publish's `value-changed` reached the child before it was
             // allocated at the new value, which leaves its anchor far from the
@@ -375,6 +375,7 @@ impl WidgetImpl for ViewportSliceBin {
             anchor_published: self.child_anchor_published.get(),
             bin_reconfigured,
         };
+        let mut wrote_back = false;
         match classify_child_scroll_in_frame(
             published,
             settled,
@@ -391,6 +392,7 @@ impl WidgetImpl for ViewportSliceBin {
                 self.correction_count.set(self.correction_count.get() + 1);
                 self.child_anchor_published.set(true);
                 self.vadjustment.set_value(published);
+                wrote_back = true;
             }
             ChildScrollDecision::Defer if !inset_changed => {
                 self.deferred.set(Some(DeferredDivergence {
@@ -409,6 +411,19 @@ impl WidgetImpl for ViewportSliceBin {
             | ChildScrollDecision::Defer => {}
         }
         self.allocating.set(false);
+        // The re-announcement and the write-back reach the child after its
+        // allocation, and a `GtkListView` realizes and rebinds rows for the
+        // anchor they set, which leaves it (and every ancestor GTK only walked
+        // through) marked for allocation until the frame clock's next layout
+        // pass. A snapshot taken before that pass -- `AdwBreakpointBin` takes
+        // one inside its own allocation -- then draws the list without a
+        // current allocation. Allocate it again here, so this bin returns with
+        // its child allocated. `allocating` is already released, exactly as in
+        // the next pass that allocation used to wait for: a value the child
+        // moves to on its own is still a request (`child_adjustment_moved`).
+        if emitted || wrote_back {
+            child.allocate(width, slice_height, -1, Some(transform));
+        }
     }
 }
 
@@ -495,11 +510,19 @@ impl ViewportSliceBin {
 
         let adjustment = outer.vadjustment();
         let bin = self.obj().downgrade();
+        let scroller = outer.downgrade();
         let on_value = adjustment.connect_value_changed({
             let bin = bin.clone();
             move |_| {
+                // This can run inside layout (`GtkViewport` clamps its value
+                // while it allocates), where only widgets below the viewport's
+                // running allocation may be marked, so the chain stops at the
+                // outer scroller. Outside layout the viewport queues its own
+                // allocation, which puts it on the full path above the chain.
                 if let Some(bin) = bin.upgrade() {
-                    bin.queue_allocate();
+                    let scroller = scroller.upgrade();
+                    bin.imp()
+                        .queue_reslice(scroller.as_ref().map(Cast::upcast_ref));
                 }
             }
         });
@@ -509,17 +532,55 @@ impl ViewportSliceBin {
             // bin's allocation for the frame (ledger A19). Queued here, the
             // allocation would be pending while the frame is drawn, which GTK
             // reports as a snapshot without a current allocation; re-slice
-            // from an idle instead, after the frame.
+            // from an idle instead, after the frame. The idle runs outside
+            // layout, so the whole ancestor chain may be marked.
             let bin = bin.clone();
             glib::idle_add_local_once(move || {
                 if let Some(bin) = bin.upgrade() {
-                    bin.queue_allocate();
+                    bin.imp().queue_reslice(None);
                 }
             });
         });
         self.outer_handlers
             .replace(Some((adjustment, vec![on_value, on_page])));
         self.obj().queue_resize();
+    }
+
+    /// Queue a re-slice: an allocation of this bin that its own size did not
+    /// ask for, so GTK reaches it through `gtk_widget_ensure_allocate` from
+    /// ancestors whose allocation is unchanged too.
+    ///
+    /// Such an allocation publishes a new band, which moves the child's scroll
+    /// anchor, and a `GtkListView` realizes and rebinds rows for the new anchor
+    /// right there. Those rows queue a resize that climbs every ancestor. An
+    /// ancestor whose `size_allocate` is running clears it on return, but one
+    /// GTK only walked through (`ensure_allocate`) keeps it until the frame
+    /// clock's next layout pass. Anything that snapshots its subtree before that
+    /// pass then finds an ancestor without a current allocation, and GTK warns
+    /// "Trying to snapshot ... without a current allocation": `AdwBreakpointBin`
+    /// snapshots its child inside its own allocation when its breakpoint
+    /// changes, and a window resize can land that in the frame of a re-slice.
+    ///
+    /// Marking the ancestors for allocation as well puts each of them on the
+    /// full path, so the resize the rows queue lands only on widgets that are
+    /// being allocated. The chain is marked up to `stop` (exclusive), or to the
+    /// root when `stop` is `None`, which is safe only outside layout: during
+    /// layout an ancestor GTK has already walked past would itself be left
+    /// marked. A `stop` that is not an ancestor marks this bin alone.
+    fn queue_reslice(&self, stop: Option<&gtk4::Widget>) {
+        let bin: gtk4::Widget = self.obj().clone().upcast();
+        if stop.is_some_and(|stop| !bin.is_ancestor(stop)) {
+            bin.queue_allocate();
+            return;
+        }
+        let mut current = Some(bin);
+        while let Some(widget) = current {
+            if stop == Some(&widget) {
+                break;
+            }
+            widget.queue_allocate();
+            current = widget.parent();
+        }
     }
 
     fn disconnect_outer(&self) {

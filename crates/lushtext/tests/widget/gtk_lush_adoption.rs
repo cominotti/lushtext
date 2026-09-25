@@ -1011,6 +1011,9 @@ fn set_viewport_height(fixture: &SliceAdoptionFixture, height: i32) {
     fixture.scroller.set_vexpand(false);
     fixture.scroller.set_valign(gtk4::Align::Start);
     fixture.scroller.set_propagate_natural_height(true);
+    // Lift the old maximum first: GTK rejects a minimum above the current
+    // maximum, and a growing height would be one.
+    fixture.scroller.set_max_content_height(-1);
     fixture.scroller.set_min_content_height(height);
     fixture.scroller.set_max_content_height(height);
 }

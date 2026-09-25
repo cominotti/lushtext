@@ -161,12 +161,11 @@ fn request_landing_fails_for_general_f64() {
 /// landing lemma is proved above on whole pixels
 /// (`request_lands_exactly_on_whole_pixels`).
 ///
-/// The child's value follows its scroll anchor (ledger A7): the row edge it
-/// keeps at a fixed fraction of its page, so the value is
-/// `anchor − (anchor − value₀) × page / page₀`. A `value-changed` the child
-/// sees before it is allocated at the new value (the bin's publish) leaves
-/// that anchor stray, at any row of the content (A20), and a re-derivation
-/// against another page then lands anywhere; one it sees after (the bin's
+/// The child's value follows its scroll anchor (ledger A7), the row edge it
+/// keeps at a fixed fraction of its page. A `value-changed` the child sees
+/// before it is allocated at the new value (the bin's publish) leaves that
+/// anchor stray, at any row of the content (A20), and a re-derivation against
+/// another page then lands anywhere; one it sees after (the bin's
 /// re-announcement, a write-back) or a request (A4) anchors it on a row edge
 /// inside its view. An emitting publish drops any pending request (A9).
 ///
@@ -179,8 +178,13 @@ fn request_landing_fails_for_general_f64() {
 ///   settle stays within its correction, A8);
 /// - a held (deferred) settle handed back with nothing moving re-anchors on the
 ///   published offset (A8's second half, modelled literally);
-/// - re-derivation truncates toward zero where GTK rounds a `double`; the
-///   difference is at most one pixel and only on a page change.
+/// - an anchor inside the view (after a request or a post-allocation
+///   announcement) keeps the child's value on a page change. GTK moves it by
+///   up to the page change times an alignment in [0, 1] (A7; the padded
+///   clipped-row widget test forwards −7 px of it after a reveal near the
+///   header), so claims about the frames after such a page change are the
+///   model's, not GTK's; only a stray anchor's unbounded re-derivation is
+///   modelled.
 mod slice_loop {
     use crate::scroll_request::{
         ChildAnchorFacts, ChildScrollDecision, classify_child_scroll,
@@ -224,8 +228,9 @@ mod slice_loop {
         pub upper: i32,
         /// Ghost of the child's scroll anchor (A7): the row edge it keeps at a
         /// fixed fraction of its page, the value it held when anchored, and
-        /// the page it was anchored at. The child re-derives its value as
-        /// `anchor_pos - (anchor_pos - anchor_value) * page / anchor_page`.
+        /// the page it was anchored at; a stray anchor re-derives the value
+        /// anywhere on another page, any other keeps it (see the module
+        /// documentation for that narrowing).
         pub anchor_pos: i32,
         pub anchor_value: i32,
         pub anchor_page: i32,
@@ -287,10 +292,11 @@ mod slice_loop {
         pub outer: i32,
         pub viewport: i32,
         pub bins: [Bin; N],
-        /// Classify with the anchor facts (`classify_child_scroll_in_frame`,
-        /// what the bin ships) or with the magnitude rule alone
-        /// (`classify_child_scroll`, the pre-fix bin), for the pinned
-        /// counterexample.
+        /// Run the bin as it ships (it re-announces a value it moved after the
+        /// child's allocation and classifies with
+        /// `classify_child_scroll_in_frame`) or as it was before
+        /// `extend-closed-loop-geometry-verification` (neither), for the
+        /// pinned counterexample.
         pub anchor_facts: bool,
         /// Content above the first bin's header and below the last bin (the
         /// bin-independence harnesses place one bin at any origin in any
@@ -457,15 +463,18 @@ mod slice_loop {
             // alignment is unconfined, so the value may land anywhere in the
             // child's range (clamped below); an anchor the child set itself
             // follows the line exactly.
-            let derived = if child_page == bin.anchor_page || bin.anchor_pos == bin.anchor_value {
-                bin.anchor_value
-            } else if bin.anchor_stray {
+            // A7: a stray anchor (A20) re-derives the value anywhere once the
+            // page differs from the one it was set at. An anchor the child set
+            // itself, or one set after its allocation, keeps its alignment in
+            // [0, 1], so a page change moves the value by at most that change;
+            // the model narrows that to no move at all (recorded in the module
+            // documentation and the programme record).
+            let derived = if bin.anchor_stray && child_page != bin.anchor_page {
                 let anywhere = reaction.stray_value;
                 kani::assume((-MAX_CONTENT..=2 * MAX_CONTENT).contains(&anywhere));
                 anywhere
             } else {
-                bin.anchor_pos
-                    - (bin.anchor_pos - bin.anchor_value) * child_page / bin.anchor_page.max(1)
+                bin.anchor_value
             };
             let child_value = match reaction.request {
                 Some(target) => {
@@ -500,21 +509,26 @@ mod slice_loop {
                 None => {
                     // The anchor's line now passes through the value just
                     // derived at this page, so an allocation at the same page
-                    // derives it again (GTK re-derives deterministically); an
-                    // estimate correction moves the anchor row with it.
-                    bin.anchor_pos += reaction.settle;
-                    bin.anchor_value = derived + reaction.settle;
+                    // derives it again (GTK re-derives deterministically). An
+                    // estimate correction (A8) moves the content under the
+                    // anchor; the model keeps the anchor at the value the child
+                    // ends on, at the same offset from it, rather than carrying
+                    // an out-of-range settle into later frames.
+                    let value = clamp(derived + reaction.settle, 0, child_upper - child_page);
+                    let offset = bin.anchor_pos - bin.anchor_value;
+                    bin.anchor_value = value;
+                    bin.anchor_pos = value + offset;
                     bin.anchor_page = child_page;
-                    clamp(derived + reaction.settle, 0, child_upper - child_page)
+                    value
                 }
             };
             bin.page = child_page;
             bin.upper = child_upper;
-            if emitted {
+            if emitted && anchor_facts {
                 // The bin announces the value again now that the child is
                 // allocated at it (`ViewportSliceBin::size_allocate`): A20
                 // re-anchors on the row at the view's edge, alignment within
-                // [0, 1].
+                // [0, 1]. The pre-fix bin did not.
                 reanchor_in_view(bin, child_value, child_page, reaction.view_anchors[0]);
             }
             let learned = (height - child_page).max(0);
@@ -721,10 +735,7 @@ fn slice_loop_rests_with_three_bins() {
     assert_loop_rests::<3>();
 }
 
-/// Whether bin `index`'s band landed on `target`, or still shows the row the
-/// request anchored the child on (A7: when the band height changes after the
-/// request lands, the child re-derives its value to keep that row at its
-/// fraction of the page, and the bin forwards that too), or stopped at the end
+/// Whether bin `index`'s band landed on `target`, or stopped at the end
 /// of the bin's content (A11 on the child's own range: the rows asked for are
 /// then all on screen), or the outer scroller is clamped at an end (A11) — and
 /// the child holds that band offset, so no `value-changed` erases it (A9).
@@ -737,9 +748,7 @@ fn request_is_honoured<const N: usize>(
     let top = band_top(model, index);
     let clamped = model.outer == 0 || model.outer == model.outer_max();
     let at_content_end = top == bin.upper - bin.page;
-    let anchor_row_shown =
-        !bin.anchor_published && (top..=top + bin.page).contains(&bin.anchor_pos);
-    (top == target || anchor_row_shown || at_content_end || clamped) && bin.child == top
+    (top == target || at_content_end || clamped) && bin.child == top
 }
 
 /// Request fidelity and bounded liveness: after rest, a child request beyond
@@ -938,8 +947,8 @@ fn slice_loop_two_simultaneous_requests_do_not_add_up() {
 /// maximize, 40..=200 px either way) and every bin re-allocates; returns
 /// whether, two frames later, the outer scroller is where it was, the loop is
 /// at rest, and every child holds its band offset. With `anchor_facts` the
-/// bin classifies as it ships (`classify_child_scroll_in_frame`); without,
-/// by the magnitude rule alone.
+/// bin runs as it ships (re-announcing a value it moved, and classifying with
+/// `classify_child_scroll_in_frame`); without, as it was before (neither).
 fn viewport_resize_leaves_the_outer_alone<const N: usize>(anchor_facts: bool) -> bool {
     let mut model = slice_loop::Loop::<N>::any();
     model.anchor_facts = anchor_facts;
@@ -971,8 +980,8 @@ fn slice_loop_viewport_resize_leaves_the_outer_alone() {
     assert!(viewport_resize_leaves_the_outer_alone::<1>(true));
 }
 
-/// Counterexample kept on purpose: classified by the magnitude rule alone,
-/// the settle a published anchor makes when the viewport height changes is
+/// Counterexample kept on purpose: without re-announcing and classified by
+/// the magnitude rule alone, the settle a stray anchor makes when the viewport height changes is
 /// forwarded as a request and the outer scroller jumps. This is the pre-fix
 /// bin; real GTK reproduces it (4664 px on maximize in the adoption lab).
 #[kani::proof]
