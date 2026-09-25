@@ -2,9 +2,7 @@
 
 ## Purpose
 Define how users choose workspace sidebar width and how the selected preset becomes an adaptive, persistent, clamped layout policy across normal and ultrawide windows.
-
 ## Requirements
-
 ### Requirement: Workspace sidebar width selection lives in Preferences
 The system SHALL expose workspace sidebar width selection in `Preferences > Workspace` as a single-choice preference with exactly three options: `Small`, `Comfy`, and `Large`. The selected option MUST reflect the active workspace sidebar preset, and changing the selection MUST apply the new preset immediately.
 
@@ -27,15 +25,17 @@ The system SHALL keep workspace sidebar width selection in Preferences only. The
 - **THEN** the sidebar does not show a fixed footer row containing `Small`, `Comfy`, or `Large` controls
 
 ### Requirement: Workspace sidebar presets use adaptive clamped widths
-The system SHALL compute the visible workspace sidebar width from the selected preset using a preset-specific hint fraction and preset-specific minimum and maximum widths in scale-independent pixels (`sp`). The preset policies MUST be:
+The system SHALL compute the visible workspace sidebar width from the selected preset using a preset-specific hint percentage and preset-specific minimum and maximum widths in whole scale-independent pixels (`sp`). The preset policies MUST be:
 
 - `Small`: hint `20%`, minimum `220sp`, maximum `280sp`
 - `Comfy`: hint `30%`, minimum `280sp`, maximum `360sp`
 - `Large`: hint `40%`, minimum `340sp`, maximum `440sp`
 
-The visible width MUST be calculated as:
+The visible width MUST be calculated in whole sp, with the product floored:
 
-`clamp(window_width_sp * hint_fraction, min_width_sp, max_width_sp)`
+`clamp(floor(window_width_sp * hint_percent / 100), min_width_sp, max_width_sp)`
+
+The width policy SHALL do no floating-point arithmetic; the split-view fraction the window needs (the visible width divided by the window width, capped at 1) SHALL be formed once, in the GTK adapter.
 
 #### Scenario: Comfy keeps the current default-window feel
 - **WHEN** the main window width is `1200sp` and the selected preset is `Comfy`
@@ -55,8 +55,12 @@ The visible width MUST be calculated as:
 - **THEN** the visible workspace sidebar width is `440sp`
 - **AND** the workspace sidebar does not expand to `560sp`
 
+#### Scenario: A fractional product is floored to whole sp
+- **WHEN** the main window width is `1001sp` and the selected preset is `Comfy`
+- **THEN** the visible workspace sidebar width is `300sp`
+
 ### Requirement: Adaptive sidebar widths remain deterministic and persistent
-The system SHALL persist the selected workspace sidebar preset across launches. Existing stored sidebar-width values that do not exactly match a supported preset MUST resolve to the nearest supported preset before the adaptive width policy is applied.
+The system SHALL persist the selected workspace sidebar preset across launches. Existing stored sidebar-width values that do not exactly match a supported preset MUST resolve to the nearest supported preset before the adaptive width policy is applied, by comparison only: a value below `0.25` resolves to `Small`, a value above `0.35` resolves to `Large`, and a value from `0.25` to `0.35` inclusive resolves to `Comfy`, so a value exactly at a midpoint resolves to `Comfy`. A stored value that is not finite (NaN or infinite) MUST resolve to the default preset, `Comfy`.
 
 #### Scenario: Selected preset is restored on restart
 - **WHEN** the user selects a workspace sidebar width preset, closes the app, and reopens it
@@ -67,6 +71,10 @@ The system SHALL persist the selected workspace sidebar preset across launches. 
 - **WHEN** an existing installation restores a stored workspace sidebar width value of `0.25`
 - **THEN** the app resolves that value to the `Comfy` preset
 - **AND** the workspace sidebar applies the `Comfy` adaptive width policy
+
+#### Scenario: A non-finite stored value falls back to the default
+- **WHEN** the stored workspace sidebar width value is NaN or negative infinity
+- **THEN** the app resolves it to the `Comfy` preset rather than to `Large`
 
 ### Requirement: Dependent split-view math uses the effective sidebar width
 The system SHALL derive the workspace split-view fraction, the right properties-pane fraction adjustments, and the properties-pane breakpoint guard from the workspace sidebar's effective visible width after adaptive clamping, rather than from the preset's unclamped hint fraction alone.
@@ -79,3 +87,34 @@ The system SHALL derive the workspace split-view fraction, the right properties-
 #### Scenario: Changing the preset recalculates the right-pane guard
 - **WHEN** the user changes the workspace sidebar width preset while the properties pane is available in the same window shell
 - **THEN** the properties-pane width calculation and breakpoint guard recalculate from the newly effective workspace sidebar width
+
+### Requirement: Preset clamps and round-trips are machine-checked
+The project SHALL keep Kani harnesses over `WorkspaceSidebarWidthPreset`. For
+every preset and every `i32` window width (a width of zero or less counts as 1
+sp), they SHALL prove:
+
+- `clamped_width_sp` equals `clamp(floor(max(window_width, 1) * hint_percent /
+  100), min_width_sp, max_width_sp)`, in whole sp;
+- `clamped_width_sp` lies within the preset's minimum and maximum;
+- `clamped_width_sp` never decreases as the window width grows;
+- the integer hint percentage equals the stored hint fraction times 100.
+
+For every preset they SHALL also prove that `from_index(index())` and
+`from_fraction(fraction())` return that preset, and that `from_index` of any
+value from 3 up returns nothing. For every non-finite value, `from_fraction`
+SHALL return the default preset; for finite values it SHALL never resolve to a
+narrower preset as the stored value grows, SHALL resolve each midpoint to
+`Comfy`, and, for every stored value of magnitude at most 2, SHALL pick a
+preset at least as near as any other. A property test SHALL check the
+comparison form against the nearest-delta form it replaced. The split-view
+fraction formed in the GTK adapter SHALL be tested to be finite and in (0, 1]
+for every preset and `i32` window width.
+
+#### Scenario: Clamp stays within preset bounds
+- **WHEN** the harness explores every `i32` window width for every preset
+- **THEN** the visible width is never below the preset minimum or above its maximum
+
+#### Scenario: Round-trip is exact
+- **WHEN** a preset is stored as its hint fraction and read back
+- **THEN** the same preset is restored
+
