@@ -59,14 +59,20 @@ pub(crate) struct Presented {
 }
 
 impl Presented {
-    /// Present `content` in a plain `AdwWindow` with no application.
-    fn new(content: &impl IsA<gtk4::Widget>) -> Self {
-        let (width, height) = FIXTURE_WINDOW_SIZE;
+    /// Present `content` in a plain `AdwWindow` of `size` with no
+    /// application.
+    fn new(content: &impl IsA<gtk4::Widget>, (width, height): (i32, i32)) -> Self {
         let window = libadwaita::Window::builder()
             .default_width(width)
             .default_height(height)
             .content(content)
             .build();
+        Self::present(window)
+    }
+
+    /// Present `window`, which the probe built itself, and wait for it to
+    /// receive a size.
+    fn present(window: libadwaita::Window) -> Self {
         window.present();
         let realized = wait_until(REALIZE_BUDGET, || window.width() > 0 && window.height() > 0);
         settle(POLL_INTERVAL);
@@ -81,9 +87,38 @@ impl Presented {
         content: &impl IsA<gtk4::Widget>,
         check: &'static str,
     ) -> Result<Self, Stop> {
-        let shown = Self::new(content);
+        let shown = Self::new(content, FIXTURE_WINDOW_SIZE);
         recorder.control(shown.realized, check)?;
         Ok(shown)
+    }
+
+    /// [`Presented::checked`] in a window of `size` rather than the default.
+    pub(crate) fn checked_sized(
+        recorder: &mut Recorder,
+        content: &impl IsA<gtk4::Widget>,
+        size: (i32, i32),
+        check: &'static str,
+    ) -> Result<Self, Stop> {
+        let shown = Self::new(content, size);
+        recorder.control(shown.realized, check)?;
+        Ok(shown)
+    }
+
+    /// Present `window`, a window the probe configured itself (breakpoints,
+    /// size request), as a control step named `check`.
+    pub(crate) fn checked_window(
+        recorder: &mut Recorder,
+        window: libadwaita::Window,
+        check: &'static str,
+    ) -> Result<Self, Stop> {
+        let shown = Self::present(window);
+        recorder.control(shown.realized, check)?;
+        Ok(shown)
+    }
+
+    /// The presented window.
+    pub(crate) fn window(&self) -> &libadwaita::Window {
+        &self.window
     }
 }
 

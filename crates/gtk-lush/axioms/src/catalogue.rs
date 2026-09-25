@@ -165,6 +165,85 @@ const CATALOGUE: &[Axiom] = &[
         ],
         probe: Some(probes::probe_a13),
     },
+    Axiom {
+        id: AxiomId::new(14),
+        name: "a14_max_width_sp_is_scaled_px_and_inclusive",
+        statement: "an AdwBreakpoint condition max-width: N sp matches a width w in px (the \
+                    width the breakpoint bin or window is allocated) exactly when \
+                    w ≤ N × text scale, the text scale being gtk-xft-dpi / (96 × 1024) (unset \
+                    counts as 1.0): the edge is inclusive and the widest matching width is \
+                    floor(N × scale), and a text-scale change alone re-evaluates it at the \
+                    allocation that follows",
+        dependent_designs: &[
+            "the breakpoint-loop Kani model (ui/window/geometry/kani_proofs.rs)",
+            "properties_breakpoint_condition and workspace_breakpoint_condition compare a px \
+             window width against whole-sp thresholds (ui/window/geometry/policy.rs)",
+        ],
+        probe: Some(probes::probe_a14),
+    },
+    Axiom {
+        id: AxiomId::new(15),
+        name: "a15_set_condition_applies_a_frame_later",
+        statement: "AdwBreakpoint::set_condition on an installed breakpoint re-evaluates \
+                    nothing synchronously: current-breakpoint, apply/unapply, and the setters \
+                    change only at the bin allocation set_condition schedules by itself, in the \
+                    next frame, and the child sees the new values in the frame after that",
+        dependent_designs: &[
+            "the breakpoint-loop Kani model (ui/window/geometry/kani_proofs.rs)",
+            "sync_properties_breakpoint re-tunes the properties breakpoint with set_condition \
+             from size_allocate (ui/window/geometry/execution.rs)",
+        ],
+        probe: Some(probes::probe_a15),
+    },
+    Axiom {
+        id: AxiomId::new(16),
+        name: "a16_setters_lag_a_frame_and_restore_the_add_time_value",
+        statement: "setters are applied and unapplied inside the breakpoint bin's allocation \
+                    after it has allocated its child for that frame, so across a resize the \
+                    child is allocated once at the new width with the old values and sees the \
+                    new ones one frame later; unapply restores the value the property held \
+                    when add_setter was called, discarding every later application write, \
+                    including one made while the breakpoint was applied",
+        dependent_designs: &[
+            "the breakpoint-loop Kani model (ui/window/geometry/kani_proofs.rs)",
+            "sync_secondary_surfaces writes properties_layout_view layout-name, which the \
+             properties breakpoint's setter also owns (ui/window/geometry/execution.rs)",
+        ],
+        probe: Some(probes::probe_a16),
+    },
+    Axiom {
+        id: AxiomId::new(17),
+        name: "a17_split_view_sidebar_is_a_clamped_fraction",
+        statement: "AdwOverlaySplitView allocates its sidebar fraction × split width clamped \
+                    to [min-sidebar-width, max-sidebar-width] in sidebar-width-unit (sp by \
+                    default, so the bounds scale with the text), raised to the sidebar's own \
+                    minimum; collapsed, the overlaid sidebar is max-sidebar-width wide and the \
+                    content takes the whole width; toggling show-sidebar or collapsed changes \
+                    the split view's minimum but not the toplevel window's width",
+        dependent_designs: &[
+            "the breakpoint-loop Kani model (ui/window/geometry/kani_proofs.rs)",
+            "split_fraction and the sp min/max sidebar widths the shell sets \
+             (ui/window/geometry/execution.rs)",
+        ],
+        probe: Some(probes::probe_a17),
+    },
+    Axiom {
+        id: AxiomId::new(18),
+        name: "a18_breakpoints_lower_the_minimum_and_the_last_match_wins",
+        statement: "without breakpoints a window's minimum width is its content's even under a \
+                    smaller width-request; with a breakpoint installed it is the \
+                    width-request, and a window asked narrower is allocated the request; where \
+                    several breakpoints match (below the smallest max-width condition all of \
+                    them do) only the last one added applies, and the others' setters are \
+                    unapplied",
+        dependent_designs: &[
+            "the breakpoint-loop Kani model (ui/window/geometry/kani_proofs.rs)",
+            "install_split_view_breakpoints adds the properties, workspace, then Open-button \
+             breakpoints under the window's width-request of 640 \
+             (ui/window/geometry/execution.rs, resources/ui/window.blp)",
+        ],
+        probe: Some(probes::probe_a18),
+    },
 ];
 
 #[cfg(test)]
@@ -179,8 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a13() {
-        for number in 1..=13 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a18() {
+        for number in 1..=18 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }

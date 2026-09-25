@@ -19,3 +19,16 @@
 - The probe runner is the `axiom_probes` test of `gtk-lush-adoption-lab`, run
   by `make gtk-axioms`, because a family crate may not depend on
   `gtk-lush-proof-harness`.
+- Probes and samples for the Adwaita behaviours the adaptive-shell breakpoint
+  loop relies on (`extend-closed-loop-geometry-verification`), pure Libadwaita
+  fixtures only: A14 (`max-width: N sp` matches `px ≤ N × text scale`,
+  inclusive), A15 (`set_condition` applies a frame later, at an allocation it
+  schedules itself), A16 (setters change after the bin allocated its child, and
+  an unapply restores the value from `add_setter` time), A17
+  (`AdwOverlaySplitView` sidebar width is a clamped fraction in sp; toggling it
+  never changes the window width), and A18 (a breakpoint makes the window's
+  minimum its `width-request`; only the last-added matching breakpoint
+  applies). New shared fixtures: `fixtures::BreakpointFixture` (an
+  `AdwBreakpointBin` allocated at an exact width), `fixtures::SplitViewFixture`,
+  `fixtures::set_text_scale`, and `FixedHost::set_child_width`; the values each
+  probe drives them with are under `fixtures::a14` … `fixtures::a18`.

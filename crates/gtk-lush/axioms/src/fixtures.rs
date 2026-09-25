@@ -8,6 +8,11 @@
 //! child at a chosen height with no transform. That is the only way to hand a
 //! `GtkListView` an exact allocation (zero included) without a container whose
 //! own policy would be under test too.
+//!
+//! The breakpoint and split-view fixtures (A14–A18) are pure Libadwaita:
+//! [`BreakpointFixture`] is an `AdwBreakpointBin` that a [`FixedHost`]
+//! allocates at an exact width, and [`SplitViewFixture`] an
+//! `AdwOverlaySplitView` with a label on each side.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -19,6 +24,11 @@ pub use crate::probes::a03::ViewportedHost;
 pub use crate::probes::a04::EmissionSites;
 pub use crate::probes::a06::{INSET_CLASS, InsetStyle};
 pub use crate::probes::a13::ReslicingHost;
+pub use crate::probes::a17::SplitViewFixture;
+pub use crate::probes::adaptive::{
+    BASE_XFT_DPI, BIN_MIN_WIDTH, BreakpointFixture, ORIGINAL_LABEL, max_width_sp, set_text_scale,
+    xft_dpi_for_scale,
+};
 pub use crate::probes::row_stride;
 
 /// The values the A1 probe drives its fixture with, for its sample.
@@ -44,6 +54,29 @@ pub mod a09 {
 /// The values the A13 probe drives its fixture with, for its sample.
 pub mod a13 {
     pub use crate::probes::a13::{IDLE_MOVE, IN_LAYOUT_MOVE};
+}
+/// The values the A14 probe drives its fixture with, for its sample.
+pub mod a14 {
+    pub use crate::probes::a14::{APPLIED_LABEL, CONDITION_SP, RESCALE_WIDTH, TEXT_SCALES};
+}
+/// The values the A15 probe drives its fixture with, for its sample.
+pub mod a15 {
+    pub use crate::probes::a15::{APPLIED_LABEL, NARROW_SP, REST_WIDTH, WIDE_SP};
+}
+/// The values the A16 probe drives its fixture with, for its sample.
+pub mod a16 {
+    pub use crate::probes::a16::{
+        APPLIED_LABEL, CONDITION_SP, NARROW_WIDTH, WIDE_WIDTH, WRITE_BEFORE_ADDING_THE_SETTER,
+        WRITE_WHILE_APPLIED,
+    };
+}
+/// The values the A17 probe drives its fixture with, for its sample.
+pub mod a17 {
+    pub use crate::probes::a17::{SCALED_TEXT, SIDEBAR_REQUEST, WINDOW_WIDTH};
+}
+/// The values the A18 probe drives its fixture with, for its sample.
+pub mod a18 {
+    pub use crate::probes::a18::{BELOW_BOTH_WIDTH, BETWEEN_WIDTH, NARROW_SP, WIDE_SP};
 }
 
 /// Height every probe row requests, so row geometry is predictable.
@@ -71,6 +104,7 @@ mod imp {
     pub struct FixedHost {
         pub child: RefCell<Option<gtk4::Widget>>,
         pub child_height: Cell<i32>,
+        pub child_width: Cell<Option<i32>>,
         pub allocations: Cell<u32>,
         pub allocating_child: Cell<bool>,
         pub reported: Cell<Option<(i32, i32)>>,
@@ -109,7 +143,8 @@ mod imp {
             }
             if let Some(child) = self.child.borrow().as_ref() {
                 self.allocating_child.set(true);
-                child.allocate(width, self.child_height.get(), -1, None);
+                let child_width = self.child_width.get().unwrap_or(width);
+                child.allocate(child_width, self.child_height.get(), -1, None);
                 self.allocating_child.set(false);
             }
         }
@@ -117,7 +152,8 @@ mod imp {
 }
 
 gtk4::glib::wrapper! {
-    /// Allocates its one child at a fixed height, and counts allocations.
+    /// Allocates its one child at a fixed height (and, when a probe sets one,
+    /// a fixed width), and counts allocations.
     ///
     /// It measures `0 × 0` unless a probe gives it a vertical minimum and
     /// natural size, so by default it never passes its child's size requests
@@ -144,6 +180,19 @@ impl FixedHost {
     pub fn set_child_height(&self, height: i32) {
         self.imp().child_height.set(height);
         self.queue_allocate();
+    }
+
+    /// Allocate the child `width` pixels wide from the next allocation on,
+    /// whatever width the host itself receives.
+    pub fn set_child_width(&self, width: i32) {
+        self.imp().child_width.set(Some(width));
+        self.queue_allocate();
+    }
+
+    /// The width the child is allocated, when a probe fixed it.
+    #[must_use]
+    pub fn child_width(&self) -> Option<i32> {
+        self.imp().child_width.get()
     }
 
     /// The height the child is allocated.

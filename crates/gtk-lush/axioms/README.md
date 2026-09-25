@@ -71,8 +71,8 @@ println!("{}", observation.to_json_line());
 
 ## Adding an axiom
 
-The breakpoint work (`extend-closed-loop-geometry-verification`) adds A14–A18
-this way; every later axiom follows the same steps.
+The breakpoint work (`extend-closed-loop-geometry-verification`) added
+A14–A18 this way; every later axiom follows the same steps.
 
 1. **Ledger row.** Add the row to the ledger table with the next unused id
    (ids are never reused), its statement, and its dependent designs.
@@ -87,7 +87,8 @@ this way; every later axiom follows the same steps.
    `control` steps (the fixture reached the state; failure is
    `FixtureInvalid`) followed by `axiom` steps (the behaviour holds; failure
    is `Violated`), and `measure` every value before a step checks it. Build
-   fixtures from `fixtures` (`HostedList`, `FixedHost`, …); present them with
+   fixtures from `fixtures` (`HostedList`, `FixedHost`, `BreakpointFixture`,
+   `SplitViewFixture`, …); present them with
    `session::Presented::checked`, and wait with `session::settle`, never an
    unbounded loop. A fixture a sample also needs is `pub` and re-exported from
    `fixtures`, and the values the probe drives it with (rows, moves, pages)
