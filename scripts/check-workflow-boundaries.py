@@ -531,7 +531,7 @@ def kani_harness_findings(root: Path) -> list[str]:
 # both. Only excess fails, as for the `*_for_test` ceiling.
 WHOLE_PIXEL_POLICY_MODULES: dict[str, int] = {
     "ui/window/geometry/policy.rs": 0,
-    "ui/editor_page/minimap/policy.rs": 10,
+    "ui/editor_page/minimap/policy.rs": 8,
     "ui/markdown_preview/policy.rs": 0,
     "ui/sidebar/width_preset.rs": 0,
     "model/editor_memory.rs": 0,

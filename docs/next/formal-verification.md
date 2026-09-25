@@ -474,6 +474,12 @@ triaged like a failing test:
   (identical for every `i32` input). The minimap's marker lane widths stay
   fractional and admitted; making them whole-pixel would change what is drawn,
   so it is recorded as a maintainer option. No harnessed function changed.
+  **Option taken (2026-09-25, `integer-minimap-marker-lanes`):**
+  `marker_lane_width` and `marker_lane_x` now return whole pixels, rounded to
+  the nearest pixel (8 / 7 / 5 / 4 px lanes on the 8 px strip, at most 0.44 px
+  from the fractional edges), with the one `f64` conversion at the cairo call
+  in `projection_execution.rs`; both admissions are gone and the minimap's
+  ceiling is **8**.
 
 Mutation scope (`make mutants-list`, 5,919 → 5,919 mutants): `ui/markdown_preview/policy.rs`
 177 → 188, a **gain from zero** (the clamp had 0 mutants in

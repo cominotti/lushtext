@@ -604,7 +604,7 @@ pub(super) fn draw_marker_strip(
     width: i32,
     height: i32,
 ) {
-    let width = f64::from(width.max(1));
+    let width = width.max(1);
     let dark = libadwaita::StyleManager::default().is_dark();
     let Some(source_map) = editor.imp().minimap.source_map.borrow().as_ref().cloned() else {
         return;
@@ -617,8 +617,14 @@ pub(super) fn draw_marker_strip(
         let (red, green, blue, alpha) = marker_rgba(marker.kind, dark);
         cr.set_source_rgba(red, green, blue, alpha);
         // Cairo takes a height; the policy hands over edges, so the one
-        // subtraction of two fractional widget coordinates happens here.
-        cr.rectangle(x, marker.top, lane_width, marker.bottom - marker.top);
+        // subtraction of two fractional widget coordinates happens here. The
+        // lane is whole-pixel and becomes `f64` only at this cairo call.
+        cr.rectangle(
+            f64::from(x),
+            marker.top,
+            f64::from(lane_width),
+            marker.bottom - marker.top,
+        );
         let _ = cr.fill();
     }
 }

@@ -899,26 +899,33 @@ pub(super) fn fit_projected_bounds(
     })
 }
 
-#[expect(
-    clippy::float_arithmetic,
-    reason = "a lane is a fractional share of the strip width"
-)]
-pub(super) fn marker_lane_width(kind: MinimapMarkerKind, total_width: f64) -> f64 {
-    let ratio = match kind {
-        MinimapMarkerKind::Bookmark => 1.0,
-        MinimapMarkerKind::Search => 0.82,
-        MinimapMarkerKind::Modified => 0.64,
-        MinimapMarkerKind::LongLine => 0.46,
+/// Width in whole pixels of one marker kind's lane in the right-anchored strip.
+///
+/// Each kind keeps a nested percentage of the strip width (bookmark 100%,
+/// search 82%, modified 64%, long line 46%), rounded to the nearest whole pixel
+/// with ties rounded up, and never narrower than two pixels. Rounding to the
+/// nearest pixel is the integer scheme closest to the fractional lanes it
+/// replaced (8 / 6.56 / 5.12 / 3.68 px on the 8 px strip become 8 / 7 / 5 / 4,
+/// at most 0.44 px from each fractional edge), and it keeps each lane's edges
+/// on the pixel grid so cairo fills them without anti-aliased seams. The
+/// two-pixel floor applies below a 3 px strip, where it exceeds the strip just
+/// as the fractional floor did.
+pub(super) fn marker_lane_width(kind: MinimapMarkerKind, total_width: i32) -> i32 {
+    let percent: i64 = match kind {
+        MinimapMarkerKind::Bookmark => 100,
+        MinimapMarkerKind::Search => 82,
+        MinimapMarkerKind::Modified => 64,
+        MinimapMarkerKind::LongLine => 46,
     };
-    (total_width * ratio).max(2.0)
+    // `|total * percent| <= 2^31 * 100`, so the product cannot overflow `i64`,
+    // and the rounded share lies between zero and `total`, so it fits `i32`.
+    let rounded = (i64::from(total_width) * percent + 50).div_euclid(100);
+    i32::try_from(rounded).unwrap_or(total_width).max(2)
 }
 
-#[expect(
-    clippy::float_arithmetic,
-    reason = "the strip width and lane width are fractional widget sizes"
-)]
-pub(super) fn marker_lane_x(total_width: f64, lane_width: f64) -> f64 {
-    total_width - lane_width
+/// Left edge in whole pixels of a lane anchored to the strip's right edge.
+pub(super) fn marker_lane_x(total_width: i32, lane_width: i32) -> i32 {
+    total_width.saturating_sub(lane_width)
 }
 
 pub(super) fn marker_rgba(kind: MinimapMarkerKind, dark: bool) -> (f64, f64, f64, f64) {
@@ -2337,11 +2344,26 @@ mod tests {
 
     #[test]
     fn test_marker_lane_widths_are_nested_with_two_pixel_floor() {
-        assert_eq!(marker_lane_width(MinimapMarkerKind::Bookmark, 10.0), 10.0);
-        assert!((marker_lane_width(MinimapMarkerKind::Search, 10.0) - 8.2).abs() < 1e-12);
-        assert!((marker_lane_width(MinimapMarkerKind::Modified, 10.0) - 6.4).abs() < 1e-12);
-        assert!((marker_lane_width(MinimapMarkerKind::LongLine, 10.0) - 4.6).abs() < 1e-12);
-        assert_eq!(marker_lane_x(10.0, 4.6), 5.4);
+        // The shipped 8 px strip: 8 / 6.56 / 5.12 / 3.68 px round to 8 / 7 / 5 / 4.
+        let strip = MINIMAP_MARKER_STRIP_WIDTH;
+        let expected = [
+            (MinimapMarkerKind::Bookmark, 8, 0),
+            (MinimapMarkerKind::Search, 7, 1),
+            (MinimapMarkerKind::Modified, 5, 3),
+            (MinimapMarkerKind::LongLine, 4, 4),
+        ];
+        for (kind, width, x) in expected {
+            assert_eq!(marker_lane_width(kind, strip), width, "{kind:?}");
+            assert_eq!(marker_lane_x(strip, width), x, "{kind:?}");
+        }
+
+        assert_eq!(marker_lane_width(MinimapMarkerKind::Bookmark, 10), 10);
+        assert_eq!(marker_lane_width(MinimapMarkerKind::Search, 10), 8);
+        assert_eq!(marker_lane_width(MinimapMarkerKind::Modified, 10), 6);
+        assert_eq!(marker_lane_width(MinimapMarkerKind::LongLine, 10), 5);
+        assert_eq!(marker_lane_x(10, 5), 5);
+        // A tie rounds up: 25 * 82% = 20.5 px.
+        assert_eq!(marker_lane_width(MinimapMarkerKind::Search, 25), 21);
 
         for kind in [
             MinimapMarkerKind::Bookmark,
@@ -2349,7 +2371,41 @@ mod tests {
             MinimapMarkerKind::Modified,
             MinimapMarkerKind::LongLine,
         ] {
-            assert_eq!(marker_lane_width(kind, 1.0), 2.0);
+            assert_eq!(marker_lane_width(kind, 1), 2);
+            assert_eq!(marker_lane_width(kind, i32::MIN), 2);
+            assert!(marker_lane_width(kind, i32::MAX) > 2);
+        }
+    }
+
+    #[test]
+    fn test_marker_lanes_round_to_nearest_and_stay_nested_inside_the_strip() {
+        let kinds = [
+            (MinimapMarkerKind::Bookmark, 100i64),
+            (MinimapMarkerKind::Search, 82),
+            (MinimapMarkerKind::Modified, 64),
+            (MinimapMarkerKind::LongLine, 46),
+        ];
+        // From 4 px up every share rounds to at least two pixels, so the floor
+        // never overrides the nearest pixel (at 3 px the long-line lane's
+        // 1.38 px is floored to 2, covered above).
+        for strip in 4..=4096i32 {
+            let mut previous = strip;
+            for (kind, percent) in kinds {
+                let width = marker_lane_width(kind, strip);
+                let x = marker_lane_x(strip, width);
+                // Nearest whole pixel to `strip * percent / 100`, in hundredths.
+                let error = (i64::from(width) * 100 - i64::from(strip) * percent).abs();
+                assert!(error <= 50, "{kind:?} at {strip}: {width}");
+                assert!((2..=strip).contains(&width), "{kind:?} at {strip}: {width}");
+                assert!(width <= previous, "{kind:?} at {strip} is not nested");
+                assert_eq!(
+                    x + width,
+                    strip,
+                    "{kind:?} at {strip} leaves the right edge"
+                );
+                assert!(x >= 0, "{kind:?} at {strip}: x {x}");
+                previous = width;
+            }
         }
     }
 

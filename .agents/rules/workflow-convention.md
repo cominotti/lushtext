@@ -232,7 +232,7 @@ and raising one is a reviewed edit to this table and the script together:
 | Module | Level | Admitted functions (ceiling) |
 | --- | --- | --- |
 | `ui/window/geometry/policy.rs` | `forbid` | 0 |
-| `ui/editor_page/minimap/policy.rs` | `deny` | 10 |
+| `ui/editor_page/minimap/policy.rs` | `deny` | 8 |
 | `ui/markdown_preview/policy.rs` | `forbid` | 0 |
 | `ui/sidebar/width_preset.rs` | `forbid` | 0 |
 | `model/editor_memory.rs` | `forbid` | 0 |
