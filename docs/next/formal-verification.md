@@ -1181,7 +1181,7 @@ step, window opens and closes, crashes and restarts) **PROVED** S1–S4 plus one
 owning window per draft id. See the table below.
 
 Local figures (Kani 0.68.0 / CBMC 6.11.0, one toolbox, `make kani KANI_MEASURE=…`;
-runner figures are recorded in `scripts/kani-shards.py` from dispatched runs):
+runner figures below come from dispatched `kani.yml` runs 36172512752 and 36180356173):
 
 | Harness | Bounds | Result | Time | Peak |
 |---|---|---|---|---|
@@ -1216,7 +1216,10 @@ from 500.8 s to 194 s.
 **Shards.** The new harness is the `core-multi-window` shard. The two L1
 harnesses moved out of `core-journal-and-write` into a new
 `core-journal-liveness` shard, because the lane made them too slow to share it
-(split before any other fit, per `.agents/rules/build.md`).
+(split before any other fit, per `.agents/rules/build.md`). Runner budgets (max of the two runs): `core-journal-and-write` 10.2 min /
+2.6 GiB (was 21.2 min / 8.3 GiB), `core-journal-liveness` 14.5 min / 4.8 GiB,
+`core-second-writer` 6.6 min / 2.7 GiB (was 17.4 min / 8.9 GiB),
+`core-multi-window` 8.0 min / 2.7 GiB; every shard of both runs passed.
 
 ### Phase 5 — Crash-atomicity of durable_write (Kani)
 
