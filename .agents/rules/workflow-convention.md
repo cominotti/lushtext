@@ -195,8 +195,10 @@ Two layers enforce it (maintainer decision, `extend-kani-to-pure-policies`):
 - **The policy check.** `make check-workflow-boundaries` (rule 10) fails when a
   module in `WHOLE_PIXEL_POLICY_MODULES` or any `policy.rs` under a directory in
   `GEOMETRY_ROLE_HOMES` (`ui/window/geometry/`, `ui/editor_page/minimap/`,
-  `ui/markdown_preview/`) lacks the deny, allows the lint, expects it
-  module-wide, or expects it without a reason. A new geometry `policy.rs` in
+  `ui/markdown_preview/`) lacks the deny or expects the lint module-wide. An
+  `allow` of the lint, or an `expect` without a reason, is left to the
+  workspace Clippy lints `allow_attributes` and
+  `allow_attributes_without_reason`. A new geometry `policy.rs` in
   those homes is covered with no edit; a geometry policy elsewhere is added to
   the list in the same change.
 

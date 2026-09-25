@@ -506,7 +506,11 @@ def kani_harness_findings(root: Path) -> list[str]:
 # wherever the value is not inherently fractional; the compiler holds that line
 # (`clippy::float_arithmetic`, denied module-wide) and this list holds the
 # compiler to every module that must carry it. See the "Whole-pixel geometry
-# policy" section of `.agents/rules/workflow-convention.md`.
+# policy" section of `.agents/rules/workflow-convention.md`. Escape hatches are
+# the workspace Clippy lints' job, not this rule's: `allow_attributes` rejects
+# any `allow` of the lint and `allow_attributes_without_reason` an `expect`
+# without a reason (root `Cargo.toml`), so only the module-wide `expect`, which
+# both lints accept, is checked here.
 WHOLE_PIXEL_POLICY_MODULES = (
     "ui/window/geometry/policy.rs",
     "ui/editor_page/minimap/policy.rs",
@@ -526,9 +530,7 @@ GEOMETRY_ROLE_HOMES = (
 FLOAT_ARITHMETIC_DENY_RE = re.compile(
     r"^#!\[(?:deny|forbid)\(clippy::float_arithmetic\)\]", re.MULTILINE
 )
-FLOAT_ARITHMETIC_ALLOW_RE = re.compile(r"#!?\[allow\([^\]]*clippy::float_arithmetic")
 FLOAT_ARITHMETIC_INNER_EXPECT_RE = re.compile(r"#!\[expect\([^\]]*clippy::float_arithmetic")
-FLOAT_ARITHMETIC_EXPECT_RE = re.compile(r"#\[expect\((.*?)\)\]", re.DOTALL)
 
 
 def whole_pixel_policy_modules(root: Path) -> list[Path]:
@@ -542,13 +544,13 @@ def whole_pixel_policy_modules(root: Path) -> list[Path]:
     return sorted(modules)
 
 
-def whole_pixel_findings(root: Path, *, require_listed: bool) -> list[str]:
+def whole_pixel_findings(root: Path, *, real_tree: bool) -> list[str]:
     """Return findings for geometry policy modules that do not deny float arithmetic."""
     findings: list[str] = []
     for path in whole_pixel_policy_modules(root):
         relative_path = display_path(path) if root == REPO_ROOT else str(path.relative_to(root))
         if not path.is_file():
-            if require_listed:
+            if real_tree:
                 findings.append(
                     f"{relative_path} is listed in WHOLE_PIXEL_POLICY_MODULES but does not exist; "
                     "update the list when a geometry policy moves"
@@ -560,23 +562,11 @@ def whole_pixel_findings(root: Path, *, require_listed: bool) -> list[str]:
                 f"{relative_path} is a whole-pixel geometry policy module but lacks "
                 "`#![deny(clippy::float_arithmetic)]`"
             )
-        if FLOAT_ARITHMETIC_ALLOW_RE.search(text) is not None:
-            findings.append(
-                f"{relative_path} allows clippy::float_arithmetic; admit a fractional value "
-                "with a function-level `#[expect(clippy::float_arithmetic, reason = ...)]`"
-            )
         if FLOAT_ARITHMETIC_INNER_EXPECT_RE.search(text) is not None:
             findings.append(
                 f"{relative_path} expects clippy::float_arithmetic module-wide; "
                 "put the expectation on the function that needs it"
             )
-        for match in FLOAT_ARITHMETIC_EXPECT_RE.finditer(text):
-            if "clippy::float_arithmetic" in match.group(1) and "reason" not in match.group(1):
-                line = text.count("\n", 0, match.start()) + 1
-                findings.append(
-                    f"{relative_path}:{line} expects clippy::float_arithmetic without a "
-                    "`reason` naming the fractional value and its domain"
-                )
     return findings
 
 
@@ -1516,7 +1506,7 @@ def check_tree(
     # a missing matrix must not silently disarm the discovery half.
     findings.extend(unclassified_pure_module_findings(root))
     findings.extend(kani_harness_findings(root))
-    findings.extend(whole_pixel_findings(root, require_listed=require_seam_ceiling))
+    findings.extend(whole_pixel_findings(root, real_tree=require_seam_ceiling))
 
     if not matrix_path.is_file():
         findings.append(f"missing workflow readability matrix: {display_path(matrix_path)}")
@@ -2831,12 +2821,12 @@ def run_self_test() -> None:
     )
 
     def whole_pixel_case(
-        relative: str, content: str, *, require_listed: bool = False
+        relative: str, content: str, *, real_tree: bool = False
     ) -> list[str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(root / CORE_SRC / relative, content)
-            return whole_pixel_findings(root, require_listed=require_listed)
+            return whole_pixel_findings(root, real_tree=real_tree)
 
     listed = WHOLE_PIXEL_POLICY_MODULES[0]
     if whole_pixel_case(listed, "//! Pure.\n\n" + deny + expect_ok):
@@ -2848,15 +2838,9 @@ def run_self_test() -> None:
         raise AssertionError("expected a new policy.rs under a geometry role home without the deny to be a finding")
     if whole_pixel_case(new_home_policy, "//! Pure.\n" + deny):
         raise AssertionError("expected a new geometry policy.rs with the deny to pass")
-    if not whole_pixel_case(listed, deny + "#![allow(clippy::float_arithmetic)]\n"):
-        raise AssertionError("expected a module-wide allow to be a finding")
-    if not whole_pixel_case(listed, deny + "#[allow(clippy::float_arithmetic)]\nfn f() {}\n"):
-        raise AssertionError("expected a function-level allow to be a finding")
     if not whole_pixel_case(listed, deny + "#![expect(clippy::float_arithmetic, reason = \"x\")]\n"):
         raise AssertionError("expected a module-wide expect to be a finding")
-    if not whole_pixel_case(listed, deny + "#[expect(clippy::float_arithmetic)]\nfn f() {}\n"):
-        raise AssertionError("expected an expect without a reason to be a finding")
-    if not whole_pixel_case("model/other.rs", "pub fn ok() {}\n", require_listed=True):
+    if not whole_pixel_case("model/other.rs", "pub fn ok() {}\n", real_tree=True):
         raise AssertionError("expected a missing listed module to be a finding at the real-tree entry point")
     if whole_pixel_case("model/other.rs", "pub fn ok() {}\n"):
         raise AssertionError("expected fixtures without the listed modules to pass when not required")

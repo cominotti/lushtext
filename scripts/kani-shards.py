@@ -105,7 +105,10 @@ MEASURED_IN = "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757
 # core-second-writer 17.4) the figure was raised to the larger value.
 POLICY_MEASURED_IN = "runs 36052583128, 36054671084, 36059814296, 36061831286 (max of the four)"
 GEOMETRY_POLICY_MEASURED_IN = "runs 36059814296, 36061831286 (max of the two, final whole-pixel form)"
-RESAMPLED_IN = MEASURED_IN.replace(" (max of the five)", ", 36059814296, 36061831286 (max of the seven)")
+RESAMPLED_IN = (
+    "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757261, "
+    "36059814296, 36061831286 (max of the seven)"
+)
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",

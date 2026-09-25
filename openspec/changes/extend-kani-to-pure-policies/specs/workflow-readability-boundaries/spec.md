@@ -16,12 +16,14 @@ The rule SHALL be enforced in two layers:
   arithmetic; a fractional value SHALL be admitted only by a
   `#[expect(clippy::float_arithmetic, reason = "...")]` on the one function
   that computes it, and never by an `allow` of the lint or a module-wide
-  `expect`;
+  `expect`; an `allow` of the lint, and an `expect` without a reason, are
+  already refused by the workspace Clippy lints `allow_attributes` and
+  `allow_attributes_without_reason`;
 - `make check-workflow-boundaries` SHALL fail when a module in its declared
   whole-pixel list, or any `policy.rs` under a declared geometry role home
   (`ui/window/geometry/`, `ui/editor_page/minimap/`, `ui/markdown_preview/`),
-  lacks that attribute, allows the lint, expects it module-wide, or expects it
-  without a reason, and when a listed module no longer exists. Its self-test
+  lacks that attribute or expects the lint module-wide (which both workspace
+  lints accept), and when a listed module no longer exists. Its self-test
   SHALL cover each of these cases.
 
 The declared whole-pixel list SHALL contain at least
@@ -41,5 +43,9 @@ retroactively, the other migrated policies that hold geometry decisions:
 - **THEN** `make check-workflow-boundaries` fails, naming the module
 
 #### Scenario: A module-wide escape hatch is refused
-- **WHEN** a listed module allows `clippy::float_arithmetic`, or expects it module-wide or without a reason
+- **WHEN** a listed module expects `clippy::float_arithmetic` module-wide
 - **THEN** `make check-workflow-boundaries` fails, naming the module
+
+#### Scenario: An allow, or a reasonless expect, is refused
+- **WHEN** a listed module allows `clippy::float_arithmetic`, or expects it without a reason
+- **THEN** `make check` fails on the Clippy `allow_attributes` or `allow_attributes_without_reason` error
