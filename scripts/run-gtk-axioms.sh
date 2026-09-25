@@ -24,6 +24,8 @@
 #   scripts/run-gtk-axioms.sh sample <id> --screenshot <png>
 #       The interactive window under a private headless session, captured to
 #       <png> after it settles. Evidence for review only; never committed.
+#   scripts/run-gtk-axioms.sh --self-test
+#       Check the warning classification against known lines, without GTK.
 #
 # Probes and --check samples never touch the developer's live desktop: they run
 # under `dbus-run-session -- mutter --headless`, with the environment of
@@ -35,12 +37,27 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXAMPLES_DIR="$REPO_ROOT/crates/gtk-lush/axioms/examples"
 UNSUPPORTED_HOST_EXIT_CODE=77
 MONITOR="${GTK_AXIOMS_MONITOR:-1280x1024}"
-# Toolkit warnings are defects here, as in the widget lane. The private
-# session's own dbus-daemon and mutter chatter is not ours.
-WARNING_REGEX='(Gtk-CRITICAL|Gtk-WARNING|GLib-CRITICAL|GLib-WARNING|GLib-GObject-(CRITICAL|WARNING)|Adwaita-(CRITICAL|WARNING)|Gdk-(CRITICAL|WARNING)|Gsk-(CRITICAL|WARNING))'
+# Any warning or critical is a defect here, as in the widget lane, whatever
+# process or log domain printed it: a GLib-style "** (prog:pid): WARNING **"
+# from a helper (xdg-dbus-proxy logs as "(process:pid)", with no domain), a
+# Broken pipe, or a runtime directory the session could not remove all fail the
+# lane. The private session's own mutter and dbus-daemon chatter is not ours;
+# BENIGN_NOISE_REGEX names exactly those lines, taken from the widget runner's
+# list of what the same headless session prints on the hosts and CI images.
+WARNING_REGEX='(WARNING|CRITICAL|Broken pipe|cannot remove|^MESA: error:)'
+BENIGN_NOISE_REGEX='(^dbus-daemon\[[0-9]+\]: |^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. |^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$)'
+
+# An SDK sandbox gets no D-Bus proxy and no document portal: the sample checks
+# need neither, and each is a Flatpak-side helper racing a sample's exit. With
+# the session bus proxied, every sample's GIO gvfs client connects through the
+# sandbox's xdg-dbus-proxy, which intermittently logged "Error writing
+# credentials to socket: Error sending message: Broken pipe" when a sample
+# exited mid-handshake; the document portal left its FUSE mount in the private
+# runtime directory, which then could not be removed.
+SANDBOX_FLAGS=(--no-session-bus --no-a11y-bus --no-documents-portal)
 
 usage() {
-    sed -n '4,26p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '4,28p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_command() {
@@ -128,12 +145,53 @@ run_headless() {
 scan_warnings() {
     local log_file="$1"
     local found
-    found="$(grep -E "$WARNING_REGEX" "$log_file" || true)"
+    found="$(grep -E "$WARNING_REGEX" "$log_file" | grep -Ev "$BENIGN_NOISE_REGEX" || true)"
     if [[ -n "$found" ]]; then
         printf '%s\n' "$found" >&2
-        echo "Error: unexpected toolkit warnings while running GTK axiom probes." >&2
+        echo "Error: unexpected warnings while running GTK axiom probes." >&2
         return 1
     fi
+}
+
+# The benign session lines must pass, and every defect class must fail,
+# including the ones seen from the SDK sandbox's helpers.
+self_test() {
+    local log_file line
+    log_file="$(mktemp)"
+    local benign=(
+        'libmutter-Message: 02:16:19.694: Running Mutter (using mutter 50.4) as a Wayland display server'
+        '** Message: 02:16:19.858: Obtained a high priority EGL context'
+        "dbus-daemon[3411502]: [session uid=1000 pid=3411502 pidfd=5] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1"
+        '(mutter:582): mutter-WARNING **: 09:42:29.034: Failed to acquire org.freedesktop.locale1 proxy: Could not connect: No such file or directory'
+        '{"axiom":"A1","verdict":"holds","measured":{},"gtk":"4.22.2","adw":"1.9.0"}'
+    )
+    local defects=(
+        '** (process:3411594): WARNING **: 02:16:21.611: Error writing credentials to socket: Error sending message: Broken pipe'
+        "rm: cannot remove '/tmp/gtk-axioms-zcE6Sm/doc': Is a directory"
+        'Gdk-Message: 02:16:21.611: Error flushing display: Broken pipe'
+        '(a01_realized_rows_are_capped:12): Gtk-CRITICAL **: 02:16:21.611: gtk_widget_snapshot_child: assertion failed'
+        '(process:12): GLib-GIO-WARNING **: 02:16:21.611: Error creating IO channel'
+        '(process:12): Adwaita-WARNING **: 02:16:21.611: unknown style class'
+        '(mutter:582): mutter-WARNING **: 09:42:29.034: an unlisted compositor warning'
+    )
+    local failed=0
+    printf '%s\n' "${benign[@]}" >"$log_file"
+    if ! scan_warnings "$log_file"; then
+        echo "Error: GTK axiom warning self-test rejected benign session output." >&2
+        failed=1
+    fi
+    for line in "${defects[@]}"; do
+        printf '%s\n' "$line" >"$log_file"
+        if scan_warnings "$log_file" >/dev/null 2>&1; then
+            echo "Error: GTK axiom warning self-test accepted: $line" >&2
+            failed=1
+        fi
+    done
+    rm -f "$log_file"
+    if [[ "$failed" -ne 0 ]]; then
+        return 1
+    fi
+    echo "GTK axiom warning classification self-test passed."
 }
 
 # Run "$@" with its output teed to the log file $1, failing on a nonzero exit
@@ -261,7 +319,7 @@ run_runtimes() {
         local slug="${ref##*//}"
         local target="target/gtk-axioms-sdk-${slug}"
         echo "==> $ref: building the samples inside the SDK ($target)"
-        if ! flatpak run --command=bash --filesystem=home --share=network "$ref" -c \
+        if ! flatpak run --command=bash --filesystem=home --share=network "${SANDBOX_FLAGS[@]}" "$ref" -c \
             "source /usr/lib/sdk/rust-stable/enable.sh && cd '$REPO_ROOT' && CARGO_TARGET_DIR='$target' cargo build -p gtk-lush-axioms --examples --quiet"; then
             echo "FAILED: $ref could not build the samples." >&2
             failed=1
@@ -277,7 +335,7 @@ run_runtimes() {
         # One sandbox per SDK runs every sample, each still its own process.
         if ! check_samples "$LOG_DIR/runtime-${slug}.log" \
             flatpak run --command=bash --filesystem=home --socket=wayland --nosocket=x11 \
-            "${env_flags[@]}" "$ref"; then
+            "${SANDBOX_FLAGS[@]}" "${env_flags[@]}" "$ref"; then
             echo "FAILED: sample checks on $ref." >&2
             failed=1
         fi
@@ -299,6 +357,7 @@ main() {
             [[ $# -ge 1 ]] || { usage >&2; exit 2; }
             run_sample "$@"
             ;;
+        --self-test) self_test ;;
         -h | --help) usage ;;
         *)
             usage >&2

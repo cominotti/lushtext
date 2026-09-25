@@ -625,8 +625,23 @@ make check-gtk-axioms                    # (in check-policy) ledger, catalogue, 
 
 A sample's `--check` refuses with exit 77 unless `GTK_LUSH_AXIOMS_HEADLESS=1`,
 which only the headless wrapper sets, so it never flashes windows on a live
-desktop. `make gtk-axioms` also fails on any `Gtk-`/`GLib-`/`Adwaita-`
-warning or critical in the probe or sample output.
+desktop. `scripts/run-gtk-axioms.sh` fails the lane on **any** `WARNING`,
+`CRITICAL`, `Broken pipe`, `cannot remove`, or `MESA: error:` line in the probe
+or sample output, whatever process printed it, except the private session's own
+`dbus-daemon` / `libmutter-Message` / EGL lines and the three mutter warnings
+its `BENIGN_NOISE_REGEX` names (taken from the widget runner's list). Matching
+only `Gtk-`/`GLib-`/`Adwaita-` prefixes missed helper processes, which log with
+no domain: `make gtk-axioms-runtimes` passed while the SDK sandbox's
+`xdg-dbus-proxy` printed
+`** (process:N): WARNING **: Error writing credentials to socket: Error sending message: Broken pipe`
+(a sample's gvfs client exiting mid-handshake) and the session could not remove
+the document portal's `doc` mount from its runtime directory. The runtimes lane
+therefore runs every SDK sandbox, build and checks alike, with
+`--no-session-bus --no-a11y-bus --no-documents-portal` (`SANDBOX_FLAGS`): the
+samples need no D-Bus, and without the proxy and portal neither race exists.
+`./scripts/run-gtk-axioms.sh --self-test` (in `make check-gtk-axioms`) asserts
+the benign lines pass and each defect class, those two included, fails; add a
+case there when a new class appears rather than widening the benign list.
 
 **Toolkit-update procedure (the upgrade alarm).** On any GTK or Libadwaita
 version change — the CI Fedora container image, the GNOME SDK floor in the

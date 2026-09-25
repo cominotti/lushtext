@@ -638,6 +638,7 @@ check-gtk-axioms:
 	@echo "Checking the GTK axiom ledger against gtk-lush-axioms..."
 	./scripts/check-gtk-axioms.py --self-test
 	./scripts/check-gtk-axioms.py
+	./scripts/run-gtk-axioms.sh --self-test
 
 gtk-lush-stock-fixtures:
 	@echo "Checking stock GTK Lush adoption fixtures..."
