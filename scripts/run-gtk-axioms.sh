@@ -40,7 +40,7 @@ MONITOR="${GTK_AXIOMS_MONITOR:-1280x1024}"
 WARNING_REGEX='(Gtk-CRITICAL|Gtk-WARNING|GLib-CRITICAL|GLib-WARNING|GLib-GObject-(CRITICAL|WARNING)|Adwaita-(CRITICAL|WARNING)|Gdk-(CRITICAL|WARNING)|Gsk-(CRITICAL|WARNING))'
 
 usage() {
-    sed -n '4,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '4,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_command() {
@@ -50,17 +50,22 @@ require_command() {
     fi
 }
 
+# The one list of the samples' headless environment: exported on the host,
+# passed as --env flags into an SDK sandbox. A caller's GSK_RENDERER wins.
+HEADLESS_ENV=(
+    GTK_LUSH_AXIOMS_HEADLESS=1
+    NO_AT_BRIDGE=1
+    GTK_A11Y=none
+    ADW_DISABLE_PORTAL=1
+    GDK_DEBUG=no-portals
+    GTK_USE_PORTAL=0
+    GTK_IM_MODULE=gtk-im-context-simple
+    "GSK_RENDERER=${GSK_RENDERER:-cairo}"
+    GDK_BACKEND=wayland
+)
+
 export_headless_env() {
-    export GTK_LUSH_AXIOMS_HEADLESS=1
-    export NO_AT_BRIDGE=1
-    export GTK_A11Y=none
-    export ADW_DISABLE_PORTAL=1
-    export GDK_DEBUG=no-portals
-    export GTK_USE_PORTAL=0
-    export GTK_IM_MODULE=gtk-im-context-simple
-    : "${GSK_RENDERER:=cairo}"
-    export GSK_RENDERER
-    export GDK_BACKEND=wayland
+    export "${HEADLESS_ENV[@]}"
     unset DISPLAY WAYLAND_DISPLAY
 }
 
@@ -86,8 +91,14 @@ all_examples() {
     find "$EXAMPLES_DIR" -maxdepth 1 -name 'a[0-9][0-9]_*.rs' -printf '%f\n' | sed 's/\.rs$//' | sort
 }
 
+# Build the named example, or every example with no argument, and record the
+# target directory that example_binary reads.
 build_examples() {
-    cargo build -p gtk-lush-axioms --examples --quiet
+    local targets=(--examples)
+    if [[ $# -gt 0 ]]; then
+        targets=(--example "$1")
+    fi
+    cargo build -p gtk-lush-axioms "${targets[@]}" --quiet
     TARGET_DIR="$(target_dir)"
 }
 
@@ -125,58 +136,79 @@ scan_warnings() {
     fi
 }
 
+# Run "$@" with its output teed to the log file $1, failing on a nonzero exit
+# or on a toolkit warning in the log.
+run_logged() {
+    local log_file="$1"
+    shift
+    local status
+    set +e
+    "$@" 2>&1 | tee "$log_file"
+    status="${PIPESTATUS[0]}"
+    set -e
+    if [[ "$status" -ne 0 ]]; then
+        return "$status"
+    fi
+    scan_warnings "$log_file"
+}
+
+# Run every sample binary with --check, one after another, inside whatever
+# runs this script: the host session or an SDK sandbox.
+SAMPLE_CHECK_LOOP='
+    failed=0
+    for binary in "$@"; do
+        code=0
+        "$binary" --check || code=$?
+        if [ "$code" -ne 0 ]; then
+            echo "FAILED: $(basename "$binary") --check exited $code" >&2
+            failed=1
+        fi
+    done
+    exit "$failed"
+'
+
+# Run the sample checks through "$@" (a command that ends where the loop's
+# arguments begin), logged to $1, and require one observation per binary in
+# SAMPLE_BINARIES.
+check_samples() {
+    local log_file="$1"
+    shift
+    if ! run_logged "$log_file" run_headless "$@" -c "$SAMPLE_CHECK_LOOP" gtk-axiom-samples \
+        "${SAMPLE_BINARIES[@]}"; then
+        echo "Error: at least one sample --check did not hold." >&2
+        return 1
+    fi
+    local checked
+    checked="$(grep -c '^{"axiom"' "$log_file" || true)"
+    if [[ "$checked" -ne "${#SAMPLE_BINARIES[@]}" ]]; then
+        echo "Error: expected ${#SAMPLE_BINARIES[@]} sample observations, saw $checked." >&2
+        return 1
+    fi
+}
+
 run_all() {
     LOG_DIR="$(mktemp -d)"
     trap 'rm -rf "$LOG_DIR"' EXIT
-    local log_dir="$LOG_DIR"
     export_headless_env
 
-    echo "==> Probe binary (gtk-lush-adoption-lab axiom_probes)"
-    local status
-    set +e
-    cargo test -p gtk-lush-adoption-lab --test axiom_probes 2>&1 | tee "$log_dir/probes.log"
-    status="${PIPESTATUS[0]}"
-    set -e
-    if [[ "$status" -ne 0 ]]; then
-        echo "Error: the probe binary failed (exit $status)." >&2
-        return "$status"
-    fi
-    scan_warnings "$log_dir/probes.log"
-
-    echo "==> Sample --check runs"
+    # Build the samples first so a sample that does not compile fails before
+    # the probe run rather than after it.
     build_examples
-    local binaries=()
+    SAMPLE_BINARIES=()
     local example
     while IFS= read -r example; do
-        binaries+=("$(example_binary "$example")")
+        SAMPLE_BINARIES+=("$(example_binary "$example")")
     done < <(all_examples)
-    set +e
-    run_headless bash -c '
-        failed=0
-        for binary in "$@"; do
-            code=0
-            "$binary" --check || code=$?
-            if [ "$code" -ne 0 ]; then
-                echo "FAILED: $(basename "$binary") --check exited $code" >&2
-                failed=1
-            fi
-        done
-        exit "$failed"
-    ' gtk-axiom-samples "${binaries[@]}" 2>&1 | tee "$log_dir/samples.log"
-    status="${PIPESTATUS[0]}"
-    set -e
-    if [[ "$status" -ne 0 ]]; then
-        echo "Error: at least one sample --check did not hold." >&2
-        return "$status"
-    fi
-    scan_warnings "$log_dir/samples.log"
-    local checked
-    checked="$(grep -c '^{"axiom"' "$log_dir/samples.log" || true)"
-    if [[ "$checked" -ne "${#binaries[@]}" ]]; then
-        echo "Error: expected ${#binaries[@]} sample observations, saw $checked." >&2
+
+    echo "==> Probe binary (gtk-lush-adoption-lab axiom_probes)"
+    if ! run_logged "$LOG_DIR/probes.log" cargo test -p gtk-lush-adoption-lab --test axiom_probes; then
+        echo "Error: the probe binary failed." >&2
         return 1
     fi
-    echo "GTK axioms: probe binary passed; ${#binaries[@]} sample checks held."
+
+    echo "==> Sample --check runs"
+    check_samples "$LOG_DIR/samples.log" bash
+    echo "GTK axioms: probe binary passed; ${#SAMPLE_BINARIES[@]} sample checks held."
 }
 
 run_sample() {
@@ -184,7 +216,7 @@ run_sample() {
     local mode="${2:-}"
     local example
     example="$(example_for "$id")"
-    build_examples
+    build_examples "$example"
     local binary
     binary="$(example_binary "$example")"
     case "$mode" in
@@ -211,22 +243,15 @@ run_sample() {
     esac
 }
 
-# The flatpak --env flags that mirror export_headless_env inside a sandbox.
-flatpak_env_flags() {
-    printf '%s\n' --env=GTK_LUSH_AXIOMS_HEADLESS=1 --env=NO_AT_BRIDGE=1 --env=GTK_A11Y=none \
-        --env=ADW_DISABLE_PORTAL=1 --env=GDK_DEBUG=no-portals --env=GTK_USE_PORTAL=0 \
-        --env=GSK_RENDERER=cairo --env=GTK_IM_MODULE=gtk-im-context-simple \
-        --env=GDK_BACKEND=wayland
-}
-
 run_runtimes() {
     require_command flatpak
     local refs=("$@")
     if [[ ${#refs[@]} -eq 0 ]]; then
         refs=(org.gnome.Sdk//50 org.gnome.Sdk//master)
     fi
-    local env_flags=()
-    mapfile -t env_flags < <(flatpak_env_flags)
+    LOG_DIR="$(mktemp -d)"
+    trap 'rm -rf "$LOG_DIR"' EXIT
+    local env_flags=("${HEADLESS_ENV[@]/#/--env=}")
     local failed=0 ran=0 ref
     for ref in "${refs[@]}"; do
         if ! flatpak info "$ref" >/dev/null 2>&1; then
@@ -242,30 +267,18 @@ run_runtimes() {
             failed=1
             continue
         fi
-        local binaries=()
+        SAMPLE_BINARIES=()
         local example
         while IFS= read -r example; do
-            binaries+=("$REPO_ROOT/$target/debug/examples/$example")
+            SAMPLE_BINARIES+=("$REPO_ROOT/$target/debug/examples/$example")
         done < <(all_examples)
         echo "==> $ref: sample --check runs against the SDK's toolkit"
         unset DISPLAY WAYLAND_DISPLAY
-        if ! run_headless bash -c '
-            ref="$1"; shift
-            flags=()
-            while [ "$1" != "--" ]; do flags+=("$1"); shift; done
-            shift
-            failed=0
-            for binary in "$@"; do
-                code=0
-                flatpak run --command="$binary" --filesystem=home --socket=wayland --nosocket=x11 \
-                    "${flags[@]}" "$ref" --check || code=$?
-                if [ "$code" -ne 0 ]; then
-                    echo "FAILED: $(basename "$binary") --check exited $code on $ref" >&2
-                    failed=1
-                fi
-            done
-            exit "$failed"
-        ' gtk-axiom-runtimes "$ref" "${env_flags[@]}" -- "${binaries[@]}"; then
+        # One sandbox per SDK runs every sample, each still its own process.
+        if ! check_samples "$LOG_DIR/runtime-${slug}.log" \
+            flatpak run --command=bash --filesystem=home --socket=wayland --nosocket=x11 \
+            "${env_flags[@]}" "$ref"; then
+            echo "FAILED: sample checks on $ref." >&2
             failed=1
         fi
         ran=$((ran + 1))

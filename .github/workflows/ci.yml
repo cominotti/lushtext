@@ -246,7 +246,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fedora-44-gtk-axioms
+          shared-key: fedora-44
 
       - name: Run GTK axiom probes and sample checks
         run: make gtk-axioms

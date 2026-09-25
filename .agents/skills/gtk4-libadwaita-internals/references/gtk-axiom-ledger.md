@@ -27,8 +27,9 @@ Rules:
   application, stays inside those conditions.
 - **The ledger, the catalogue, the probes and the samples agree.**
   `make check-gtk-axioms` (in `make check-policy`) fails when an id is in one
-  and not the other, a probed entry lacks its probe function or sample, a
-  sample names an unknown axiom, a row claims a probe the catalogue lacks (or
+  and not the other, a probed entry lacks its sample or names a probe for
+  another id (the build already rejects a missing probe function), a sample
+  names an unknown axiom, a row claims a probe the catalogue lacks (or
   omits one it has), or a "Pinned by" cell names the retired LushText-hosted
   probes. Adding an axiom: see the crate README.
 - **A probe that fails after a toolkit update is an axiom change**, reviewed as

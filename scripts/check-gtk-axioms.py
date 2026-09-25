@@ -5,11 +5,11 @@
 #
 # The ledger markdown is normative; the crate makes each belief observable.
 # This check fails when they drift: a ledger id with no catalogue entry (or
-# the reverse), a probed entry without its sample or probe function, a sample
-# naming an unknown axiom, a ledger row that claims a probe the catalogue does
-# not have (or omits one it has), a row missing its "Verified against" or
-# "Sample" cell, or a "Pinned by" cell that still names the retired
-# LushText-hosted probes (`gtk_axioms::`).
+# the reverse), a probed entry without its sample or whose probe is named for
+# another id, a sample naming an unknown axiom, a ledger row that claims a
+# probe the catalogue does not have (or omits one it has), a row missing its
+# "Verified against" or "Sample" cell, or a "Pinned by" cell that still names
+# the retired LushText-hosted probes (`gtk_axioms::`).
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LEDGER = REPO_ROOT / ".agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md"
 CRATE = REPO_ROOT / "crates/gtk-lush/axioms"
 CATALOGUE = CRATE / "src/catalogue.rs"
-PROBES = CRATE / "src/probes"
 EXAMPLES = CRATE / "examples"
 
 REQUIRED_COLUMNS = ("Id", "Axiom", "Dependent designs", "Pinned by", "Verified against", "Sample")
@@ -107,12 +106,7 @@ def parse_catalogue(text: str, errors: list[str]) -> dict[int, CatalogueEntry]:
     return entries
 
 
-def check(
-    ledger_text: str,
-    catalogue_text: str,
-    probe_sources: dict[str, str],
-    example_stems: set[str],
-) -> list[str]:
+def check(ledger_text: str, catalogue_text: str, example_stems: set[str]) -> list[str]:
     errors: list[str] = []
     rows = parse_ledger(ledger_text, errors)
     entries = parse_catalogue(catalogue_text, errors)
@@ -133,16 +127,15 @@ def check(
         prefix = f"a{number:02d}_"
         if not entry.name.startswith(prefix):
             errors.append(f"A{number}: catalogue name {entry.name!r} must start with {prefix!r}")
-        row = rows.get(number)
+        # rustc already rejects a catalogue probe that does not exist, so the
+        # name check is enough to keep `probe_aNN` in step with the id.
         if entry.probe is not None:
             expected_probe = f"probe_a{number:02d}"
             if entry.probe != expected_probe:
                 errors.append(f"A{number}: catalogue probe {entry.probe} must be {expected_probe}")
-            source = probe_sources.get(f"a{number:02d}.rs", "")
-            if f"pub fn {expected_probe}(" not in source:
-                errors.append(f"A{number}: src/probes/a{number:02d}.rs does not define {expected_probe}")
             if entry.name not in example_stems:
                 errors.append(f"A{number}: probed entry has no sample examples/{entry.name}.rs")
+        row = rows.get(number)
         if row is None:
             continue
         claims_probe = PROBE_MARKER in row.pinned_by
@@ -162,14 +155,11 @@ def check(
     return errors
 
 
-def load_tree() -> tuple[str, str, dict[str, str], set[str]]:
-    probe_sources = {path.name: path.read_text(encoding="utf-8") for path in PROBES.glob("a*.rs")}
-    example_stems = {path.stem for path in EXAMPLES.glob("*.rs")}
+def load_tree() -> tuple[str, str, set[str]]:
     return (
         LEDGER.read_text(encoding="utf-8"),
         CATALOGUE.read_text(encoding="utf-8"),
-        probe_sources,
-        example_stems,
+        {path.stem for path in EXAMPLES.glob("*.rs")},
     )
 
 
@@ -195,7 +185,6 @@ GOOD_CATALOGUE = """
     },
 """
 
-GOOD_PROBES = {"a01.rs": "pub fn probe_a01() -> Observation {"}
 GOOD_EXAMPLES = {"a01_one"}
 
 
@@ -209,12 +198,12 @@ def self_test() -> int:
         ("a ledger probe the catalogue lacks", {"catalogue": GOOD_CATALOGUE.replace("Some(probes::probe_a01)", "None")}, "A1: ledger row is pinned by a probe the catalogue does not have"),
         ("a catalogue probe the ledger omits", {"ledger": GOOD_LEDGER.replace("**probe**: `gtk_lush_axioms::probe_a01`", "indirectly")}, "does not say **probe**"),
         ("a Pinned by cell naming the retired probes", {"ledger": GOOD_LEDGER.replace("`gtk_lush_axioms::probe_a01`", "`gtk_axioms::test_axiom_a1`")}, "retired `gtk_axioms::` probes"),
-        ("a probe function that does not exist", {"probes": {}}, "does not define probe_a01"),
+        ("a probe named for another axiom", {"catalogue": GOOD_CATALOGUE.replace("Some(probes::probe_a01)", "Some(probes::probe_a02)")}, "catalogue probe probe_a02 must be probe_a01"),
         ("an empty Verified against cell", {"ledger": GOOD_LEDGER.replace("GTK 4.22.5 / Adw 1.9.3 (host) | `examples", " | `examples")}, "A1: Verified against is empty"),
         ("a probed row whose Sample is wrong", {"ledger": GOOD_LEDGER.replace("`examples/a01_one.rs`", "`examples/a01_other.rs`")}, "A1: Sample must name examples/a01_one.rs"),
         ("an unprobed row without a reason", {"ledger": GOOD_LEDGER.replace("— only approximately true", "—")}, "A2: an unprobed row's Sample must be"),
     ]
-    baseline = check(GOOD_LEDGER, GOOD_CATALOGUE, GOOD_PROBES, GOOD_EXAMPLES)
+    baseline = check(GOOD_LEDGER, GOOD_CATALOGUE, GOOD_EXAMPLES)
     failures: list[str] = []
     if baseline:
         failures.append(f"the good fixture must pass, saw: {baseline}")
@@ -222,7 +211,6 @@ def self_test() -> int:
         errors = check(
             str(overrides.get("ledger", GOOD_LEDGER)),
             str(overrides.get("catalogue", GOOD_CATALOGUE)),
-            overrides.get("probes", GOOD_PROBES),  # type: ignore[arg-type]
             overrides.get("examples", GOOD_EXAMPLES),  # type: ignore[arg-type]
         )
         if not any(expected in error for error in errors):
