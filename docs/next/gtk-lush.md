@@ -260,9 +260,12 @@ host headless Mutter through `flatpak run --socket=wayland` works — GTK 4.22.2
 (`org.gnome.Sdk//master`) was **not** checked: only the nightly *Platform* is
 installed on the development host, and installing the SDK modifies the user's
 Flatpak installation, which the session was not authorized to do. The target
-skips it with a message until it is installed. Next: A14–A18 from
-`extend-closed-loop-geometry-verification` land here, and that change reviews
-the A7 probe's measured 4.42 px-per-pixel settle against the A8 envelope.
+skips it with a message until it is installed. `extend-closed-loop-geometry-verification`
+then landed A14–A20 here, each with a probe and a `--check` sample, and
+rewrote A10 around its own probe, so the crate now probes A1–A7, A9–A11, and
+A13–A20. That change also finished the A7/A8 review: both are reachable, the
+slice-loop Kani model carries an explicit A7 anchor, and A8 bounds only the
+child's own estimate correction.
 
 Deliberately **not** in the family: anything covered by Libadwaita, anything
 that owns app state, theming systems, and one-off LushText domain widgets.
