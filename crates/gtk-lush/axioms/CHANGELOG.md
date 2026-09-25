@@ -54,5 +54,4 @@
   emits `window-removed` before it returns and drops the window from
   `windows()`, but disposes it only when the last strong reference drops,
   once, just before finalization), with a probe and sample. New fixtures:
-  `fixtures::DisposeCountingWindow` and `fixtures::DisposalLog`, and the
-  window size under `fixtures::a21`.
+  `fixtures::DisposeCountingWindow` and `fixtures::DisposalLog`.

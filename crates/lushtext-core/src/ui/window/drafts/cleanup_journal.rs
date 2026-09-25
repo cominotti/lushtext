@@ -78,7 +78,7 @@ impl LushtextWindow {
         // Any window's journal work holds the lane cleanup needs: cleanup
         // must never run inside another window's register → write → commit
         // pass or deletion either.
-        if drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere() {
+        if self.journal_mutation_busy() {
             self.arm_orphan_cleanup_follow_up(
                 manifest_offset,
                 policy::DRAFT_MUTATION_WAIT_POLL_INTERVAL,

@@ -1172,7 +1172,11 @@ application-wide ordering. The model's `process_journal` scope calls the same
 `window-removed` (GTK axiom **A21**: `gtk_window_destroy` removes the window at
 once but disposes it only at the last unref), and keeps the lane while its own
 journal work is in flight; the data-safety audit found that case failing-first
-(`test_a_window_destroyed_mid_pass_holds_the_lane_until_the_pass_ends`).
+(`test_a_window_destroyed_mid_pass_holds_the_lane_until_the_pass_ends`). Once
+it has left, a window that is still alive runs no journal work: every journal
+decision fails closed (it cannot take the lane, claims no draft id, and owns no
+orphan cleanup), so a pending tick or cleanup follow-up cannot run outside the
+lane.
 
 **Result:** `journal_invariants_hold_across_two_windows` (2 ids — one
 file-backed, one untitled — × 2 windows of one process, 3 edits, 8 actions

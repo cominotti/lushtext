@@ -552,6 +552,12 @@ impl LushtextEditorPage {
         self.imp().draft.draft_id.borrow().clone()
     }
 
+    /// Whether this editor's draft id is `draft_id`, without cloning it.
+    #[must_use]
+    pub(crate) fn has_draft_id(&self, draft_id: &str) -> bool {
+        self.imp().draft.draft_id.borrow().as_deref() == Some(draft_id)
+    }
+
     pub fn set_draft_id(&self, id: String) {
         *self.imp().draft.draft_id.borrow_mut() = Some(id);
     }

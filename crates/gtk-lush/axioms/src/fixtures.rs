@@ -109,11 +109,6 @@ pub mod a20 {
     pub use crate::probes::a20::{SHRUNK_PAGE, TARGET_ROWS, reannounce_value};
 }
 
-/// The values the A21 probe drives its fixture with, for its sample.
-pub mod a21 {
-    pub use crate::probes::a21::WINDOW_SIZE;
-}
-
 /// Height every probe row requests, so row geometry is predictable.
 ///
 /// GTK adds the row's own CSS padding on top, so a row is drawn taller than

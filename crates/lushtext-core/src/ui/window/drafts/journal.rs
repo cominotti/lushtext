@@ -48,31 +48,12 @@ use crate::ui::window::LushtextWindow;
 
 impl LushtextWindow {
     /// Accept one trusted manifest commit and reapply compact pending tombstones.
-    pub(super) fn accept_draft_manifest_commit(
-        &self,
-        mut commit: draft_service::DraftManifestCommit,
-    ) {
+    pub(super) fn accept_draft_manifest_commit(&self, commit: draft_service::DraftManifestCommit) {
         // Every other window of the process adopts the same committed
         // manifest, so none acts on an entry this commit retired or lacks one
         // it added.
         self.mirror_draft_manifest_to_peers(&commit.manifest, commit.authority);
-        let drafts = &self.imp().drafts;
-        let order = drafts.mutation_order.borrow();
-        let mut tombstones = drafts.delete_tombstones.borrow_mut();
-        tombstones.retain(|_, intent| order.is_current(intent));
-        commit
-            .manifest
-            .drafts
-            .retain(|entry| !tombstones.contains_key(entry.draft_id.as_str()));
-        drop(tombstones);
-        drop(order);
-        let became_trusted = !self.imp().drafts.manifest_authority.get().is_trusted()
-            && commit.authority.is_trusted();
-        self.imp().drafts.manifest_authority.set(commit.authority);
-        *self.imp().drafts.manifest.borrow_mut() = commit.manifest;
-        if became_trusted {
-            self.schedule_orphan_cleanup(true);
-        }
+        self.adopt_draft_manifest(commit.manifest, commit.authority);
     }
 
     /// Revoke destructive cleanup immediately after a manifest command loses
@@ -83,12 +64,13 @@ impl LushtextWindow {
         self.mirror_draft_authority_to_peers(authority);
     }
 
-    /// Adopt a manifest another window of the process just adopted, minus
-    /// this window's own tombstones, with its authority.
+    /// Adopt a committed manifest, this window's or one another window of the
+    /// process just adopted, minus this window's own tombstones, with its
+    /// authority.
     ///
-    /// Orphan cleanup is scheduled here only when this window is the one that
-    /// schedules it for the process.
-    pub(super) fn adopt_peer_draft_manifest(
+    /// Becoming trusted schedules orphan cleanup, which runs only in the
+    /// window that owns cleanup for the process (`schedule_orphan_cleanup`).
+    pub(super) fn adopt_draft_manifest(
         &self,
         mut manifest: crate::model::draft::DraftManifest,
         authority: DraftManifestAuthority,
@@ -106,7 +88,7 @@ impl LushtextWindow {
             !drafts.manifest_authority.get().is_trusted() && authority.is_trusted();
         drafts.manifest_authority.set(authority);
         *drafts.manifest.borrow_mut() = manifest;
-        if became_trusted && self.owns_process_orphan_cleanup() {
+        if became_trusted {
             self.schedule_orphan_cleanup(true);
         }
     }
@@ -281,7 +263,7 @@ impl LushtextWindow {
     /// its records here too.
     pub(crate) fn adopt_peer_draft_records(&self) {
         if let Some((manifest, authority)) = self.peer_draft_manifest() {
-            self.adopt_peer_draft_manifest(manifest, authority);
+            self.adopt_draft_manifest(manifest, authority);
         }
     }
 
@@ -301,10 +283,7 @@ impl LushtextWindow {
     /// Returns an error when any dirty draft file cannot be written or when
     /// the draft manifest cannot be updated after successful draft writes.
     pub fn flush_dirty_drafts(&self) -> Result<()> {
-        if self.imp().drafts.mutation_inflight.get()
-            || self.imp().drafts.orphan_cleanup_inflight.get()
-            || self.journal_lane_held_elsewhere()
-        {
+        if self.journal_mutation_busy() || self.imp().drafts.orphan_cleanup_inflight.get() {
             anyhow::bail!("draft persistence is already in progress");
         }
         let tab_view = &self.imp().tab_view;
@@ -689,10 +668,7 @@ impl LushtextWindow {
 
     /// Run queued compact deletes only after every earlier body/manifest command.
     pub(super) fn drive_pending_draft_mutations(&self) {
-        if self.imp().drafts.mutation_inflight.get()
-            || self.imp().drafts.orphan_cleanup_inflight.get()
-            || self.journal_lane_held_elsewhere()
-        {
+        if self.journal_mutation_busy() || self.imp().drafts.orphan_cleanup_inflight.get() {
             // Another window holds the lane: its release wakes this window.
             return;
         }

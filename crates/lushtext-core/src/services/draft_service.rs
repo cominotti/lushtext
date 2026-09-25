@@ -2390,12 +2390,7 @@ pub fn inspect_orphan_cleanup_against_persisted(
     let _guard = manifest_write_lock()
         .lock()
         .expect("draft manifest write lock poisoned");
-    let manifest = load_trusted_manifest_for_cleanup(data_dir).map_err(|error| {
-        DraftOrphanCleanupStatusError {
-            path: manifest_path(data_dir),
-            detail: error.to_string(),
-        }
-    })?;
+    let manifest = load_trusted_manifest_for_cleanup(data_dir)?;
     inspect_orphan_cleanup_from(data_dir, &manifest, manifest_offset)
 }
 
@@ -4543,7 +4538,10 @@ mod tests {
         let dir = TempDir::new().expect("expected operation to succeed");
         fixture::create_dir_all(&drafts_dir(dir.path()));
         fixture::write_text(&manifest_path(dir.path()), "{ not json");
-        assert!(inspect_orphan_cleanup_against_persisted(dir.path(), 0).is_err());
+        assert!(matches!(
+            inspect_orphan_cleanup_against_persisted(dir.path(), 0),
+            Err(DraftOrphanCleanupScanError::Manifest(_))
+        ));
     }
 
     #[test]

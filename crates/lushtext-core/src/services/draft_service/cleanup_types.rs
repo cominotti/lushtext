@@ -180,6 +180,9 @@ pub enum DraftOrphanCleanupScanError {
         /// Malformed filename boundary preserved for diagnostics only.
         file_name: String,
     },
+    /// The persisted manifest inspection runs against could not be trusted.
+    #[error(transparent)]
+    Manifest(#[from] DraftOrphanCleanupManifestError),
 }
 
 /// Side-effect-free evidence collected by one bounded orphan inspection pass.

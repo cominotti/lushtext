@@ -273,8 +273,6 @@ pub(crate) struct ProcessDraftJournal {
     cleanup_owner: Cell<Option<JournalWindowKey>>,
     /// Process-wide ordering for session saves from any window.
     session_generation: Cell<u64>,
-    /// Whether the application's `window-removed` handler is connected.
-    watching_removals: Cell<bool>,
 }
 
 thread_local! {
@@ -296,6 +294,16 @@ impl ProcessDraftJournal {
             }
             let journal = Rc::new(Self::default());
             journal.application.set(Some(application));
+            // A destroyed window leaves the application at once (ledger A21)
+            // but is disposed only when its last reference drops, so the
+            // journal is left from `window-removed`, not only from dispose: a
+            // window a caller still references must not keep the lane, its
+            // claims, or its tabs.
+            application.connect_window_removed(|_, window| {
+                if let Some(window) = window.downcast_ref::<LushtextWindow>() {
+                    window.leave_process_draft_journal_unless_busy();
+                }
+            });
             journals.push(Rc::clone(&journal));
             journal
         })
@@ -369,17 +377,6 @@ impl LushtextWindow {
         application: &libadwaita::Application,
     ) {
         let journal = ProcessDraftJournal::of(application.upcast_ref());
-        // A destroyed window leaves the application at once (ledger A21) but
-        // is disposed only when its last reference drops, so the journal is
-        // left from `window-removed`, not only from dispose: a window a caller
-        // still references must not keep the lane, its claims, or its tabs.
-        if !journal.watching_removals.replace(true) {
-            application.connect_window_removed(|_, window| {
-                if let Some(window) = window.downcast_ref::<Self>() {
-                    window.leave_process_draft_journal_unless_busy();
-                }
-            });
-        }
         let key = journal.next_key.get().saturating_add(1);
         journal.next_key.set(key);
         journal.windows.borrow_mut().push((key, self.downgrade()));
@@ -419,28 +416,32 @@ impl LushtextWindow {
         self.leave_process_draft_journal();
     }
 
+    /// The journal this window takes part in; `None` only once it has left
+    /// (every window joins at construction). A window that has left runs no
+    /// more journal work, so every decision below fails closed on `None`: it
+    /// may still be alive (ledger A21), and journal work outside the lane
+    /// could run inside another window's pass.
     fn process_draft_journal(&self) -> Option<Rc<ProcessDraftJournal>> {
         self.imp().drafts.journal.borrow().clone()
     }
 
-    /// Who holds the process's journal lane, as this window sees it.
-    pub(super) fn journal_lane_holder(&self) -> JournalLaneHolder {
-        self.process_draft_journal()
-            .map_or(JournalLaneHolder::Nobody, |journal| {
+    /// Whether journal mutation work may not start now: this window's own
+    /// mutation is in flight, or another window's journal work holds the
+    /// lane. Every admission pre-check uses this one predicate, so none can
+    /// forget the cross-window half.
+    pub(super) fn journal_mutation_busy(&self) -> bool {
+        self.imp().drafts.mutation_inflight.get()
+            || self.process_draft_journal().is_some_and(|journal| {
                 journal.holder(self.imp().drafts.journal_key.get())
+                    == JournalLaneHolder::OtherWindow
             })
-    }
-
-    /// Whether another window's journal work holds the lane right now.
-    pub(super) fn journal_lane_held_elsewhere(&self) -> bool {
-        self.journal_lane_holder() == JournalLaneHolder::OtherWindow
     }
 
     /// Take the lane for journal work, when it is free. Returns whether this
     /// window now holds it; on `false` the caller marks itself pending.
     pub(super) fn take_journal_lane(&self) -> bool {
         let Some(journal) = self.process_draft_journal() else {
-            return true;
+            return false;
         };
         let key = self.imp().drafts.journal_key.get();
         if journal_core::journal_lane_admission(journal.holder(key))
@@ -485,7 +486,7 @@ impl LushtextWindow {
                 .nth_page(index)
                 .child()
                 .downcast_ref::<LushtextEditorPage>()
-                .is_some_and(|editor| editor.draft_id().as_deref() == Some(draft_id))
+                .is_some_and(|editor| editor.has_draft_id(draft_id))
         })
     }
 
@@ -495,7 +496,7 @@ impl LushtextWindow {
     /// it; a claim whose owner no longer has one passes to the asking window.
     pub(super) fn claim_draft_id(&self, draft_id: &str) -> DraftClaim {
         let Some(journal) = self.process_draft_journal() else {
-            return DraftClaim::ThisWindow;
+            return DraftClaim::OtherWindow;
         };
         let key = self.imp().drafts.journal_key.get();
         let owner = journal.claims.borrow().get(draft_id).copied();
@@ -537,7 +538,7 @@ impl LushtextWindow {
     /// first window that asks after the owner closed takes it over.
     pub(super) fn owns_process_orphan_cleanup(&self) -> bool {
         let Some(journal) = self.process_draft_journal() else {
-            return true;
+            return false;
         };
         let key = self.imp().drafts.journal_key.get();
         if let Some(owner) = journal.cleanup_owner.get() {
@@ -548,6 +549,13 @@ impl LushtextWindow {
         }
     }
 
+    /// Every other live window of this window's journal, in creation order.
+    fn journal_peers(&self) -> Vec<Self> {
+        self.process_draft_journal()
+            .map(|journal| journal.peers(self.imp().drafts.journal_key.get()))
+            .unwrap_or_default()
+    }
+
     /// Mirror a manifest this window just adopted into every other window's
     /// copy, minus each window's own tombstones, with its authority.
     pub(super) fn mirror_draft_manifest_to_peers(
@@ -555,11 +563,8 @@ impl LushtextWindow {
         manifest: &DraftManifest,
         authority: DraftManifestAuthority,
     ) {
-        let Some(journal) = self.process_draft_journal() else {
-            return;
-        };
-        for peer in journal.peers(self.imp().drafts.journal_key.get()) {
-            peer.adopt_peer_draft_manifest(manifest.clone(), authority);
+        for peer in self.journal_peers() {
+            peer.adopt_draft_manifest(manifest.clone(), authority);
         }
     }
 
@@ -568,10 +573,7 @@ impl LushtextWindow {
         &self,
         committed_by_id: &HashMap<String, draft_service::DraftEntryFingerprint>,
     ) {
-        let Some(journal) = self.process_draft_journal() else {
-            return;
-        };
-        for peer in journal.peers(self.imp().drafts.journal_key.get()) {
+        for peer in self.journal_peers() {
             draft_service::merge_committed_orphan_removals(
                 &mut peer.imp().drafts.manifest.borrow_mut(),
                 committed_by_id,
@@ -581,10 +583,7 @@ impl LushtextWindow {
 
     /// Mirror a revoked authority into every other window.
     pub(super) fn mirror_draft_authority_to_peers(&self, authority: DraftManifestAuthority) {
-        let Some(journal) = self.process_draft_journal() else {
-            return;
-        };
-        for peer in journal.peers(self.imp().drafts.journal_key.get()) {
+        for peer in self.journal_peers() {
             peer.imp().drafts.manifest_authority.set(authority);
             if !authority.is_trusted() {
                 peer.imp().drafts.dispose_orphan_cleanup();
@@ -595,16 +594,12 @@ impl LushtextWindow {
     /// A manifest copy and authority from a window that already has one, for
     /// a window that starts without restoring the session.
     pub(super) fn peer_draft_manifest(&self) -> Option<(DraftManifest, DraftManifestAuthority)> {
-        let journal = self.process_draft_journal()?;
-        journal
-            .peers(self.imp().drafts.journal_key.get())
-            .first()
-            .map(|peer| {
-                (
-                    peer.imp().drafts.manifest.borrow().clone(),
-                    peer.imp().drafts.manifest_authority.get(),
-                )
-            })
+        self.journal_peers().first().map(|peer| {
+            (
+                peer.imp().drafts.manifest.borrow().clone(),
+                peer.imp().drafts.manifest_authority.get(),
+            )
+        })
     }
 
     /// Every live window of the process, in creation order.

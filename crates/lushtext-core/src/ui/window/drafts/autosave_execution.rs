@@ -80,7 +80,7 @@ impl LushtextWindow {
         // lane is process-wide, and a pass started now would race it.
         if autosave_admission(
             drafts.autosave_inflight.get(),
-            drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere(),
+            self.journal_mutation_busy(),
             drafts.orphan_cleanup_inflight.get(),
         ) == AutosaveAdmission::MarkPending
         {
@@ -227,7 +227,7 @@ impl LushtextWindow {
         let drafts = &self.imp().drafts;
         if autosave_admission(
             drafts.autosave_inflight.get(),
-            drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere(),
+            self.journal_mutation_busy(),
             false,
         ) == AutosaveAdmission::MarkPending
         {
@@ -868,7 +868,7 @@ impl LushtextWindow {
     /// back on GTK after every candidate is accepted or classified.
     pub fn flush_dirty_drafts_async<F: FnOnce(Result<()>) + 'static>(&self, on_done: F) {
         if close_flush_must_wait(
-            self.imp().drafts.mutation_inflight.get() || self.journal_lane_held_elsewhere(),
+            self.journal_mutation_busy(),
             self.imp().drafts.orphan_cleanup_inflight.get(),
             !self.imp().drafts.pending_deletes.borrow().is_empty(),
             self.imp().drafts.restore_inflight_count.get() > 0,

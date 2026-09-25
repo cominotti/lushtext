@@ -152,13 +152,13 @@ fn test_one_windows_cleanup_keeps_another_windows_registered_entry() {
     // while A's body write is still pending.
     set_orphan_cleanup_delays_for_test(0, 1, 0);
     let second = process.open_window();
-    while process.first.draft_evidence().autosave_inflight && body_of(&draft_id).is_none() {
+    wait_until(JOURNAL_BUDGET, || {
         assert!(
             manifest_lists(&draft_id),
             "window B's cleanup retired the entry window A registered before its body write"
         );
-        flush_after_delay(Duration::from_millis(10));
-    }
+        !(process.first.draft_evidence().autosave_inflight && body_of(&draft_id).is_none())
+    });
     wait_until(JOURNAL_BUDGET, || {
         journal_idle(&process.first) && journal_idle(&second)
     });

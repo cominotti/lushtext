@@ -435,7 +435,7 @@ impl<S: Scope, const IDS: usize, const W: usize, const P: usize> Journal<S, IDS,
     /// The acting window adopts the persisted manifest, minus the ids it is
     /// deleting (its tombstones): `accept_draft_manifest_commit`, and in the
     /// process-journal scope every other window of the process too
-    /// (`adopt_peer_draft_manifest`), with the same authority.
+    /// (`adopt_draft_manifest`), with the same authority.
     fn accept_commit(&mut self, trusted: bool) {
         let entry = self.entry;
         let mirror = S::PROCESS_JOURNAL;

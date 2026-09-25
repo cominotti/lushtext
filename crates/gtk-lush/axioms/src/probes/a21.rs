@@ -24,7 +24,7 @@ use crate::session::{REALIZE_BUDGET, flush_events, wait_until};
 use crate::{AxiomId, Observation};
 
 /// The size the fixture window is presented at.
-pub const WINDOW_SIZE: (i32, i32) = (240, 160);
+const WINDOW_SIZE: (i32, i32) = (240, 160);
 
 /// What happened to one [`DisposeCountingWindow`]: how many times its
 /// `dispose` ran, and whether (and after how many disposals) it was
@@ -117,7 +117,7 @@ gtk4::glib::wrapper! {
 }
 
 impl DisposeCountingWindow {
-    /// A window of [`WINDOW_SIZE`] that records into `log`.
+    /// A window of the probe's fixed `WINDOW_SIZE` that records into `log`.
     #[must_use]
     pub fn new(log: &DisposalLog) -> Self {
         let window: Self = gtk4::glib::Object::new();
