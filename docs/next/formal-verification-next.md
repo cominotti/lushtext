@@ -44,7 +44,7 @@ change adopts it.
 |---|---|---|---|
 | 1 | `harden-kani-lane-and-draft-token` (**implemented 2026-09-23**) | N1 (measure the shards on runners, geometry shard in the PR gate) and N5 (both fixture modules gated). **Done**; figures in the programme record, phase 2 | — |
 | 2 | `extend-kani-to-pure-policies` (**implemented 2026-09-24**) | N2. `clamped_preview_width` keeps its floor, and the exception is stated in the spec. The sidebar-width `NaN` bug is fixed failing-first. **Done**; results, the second defect it found (an infinite native-slider height), and the three new shards are in the programme record, phase 2 | 1 |
-| 3 | `verify-multi-window-draft-journal` | N4, first half: window actors against process actors in the journal machine | 1 |
+| 3 | `verify-multi-window-draft-journal` (**implemented 2026-09-25**) | N4, first half: window actors against process actors in the journal machine. **Done**; the two-window harness, its counterexamples, and the per-application journal coordinator that fixes them are in the programme record, phase 4 | 1 |
 | 4 | `extend-closed-loop-geometry-verification` (**implemented 2026-09-25**) | **Done**; results in the programme record, phase 3. N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
 | 5 | `measure-proof-strength-with-mutation` | N9. The harness-file mutant exclusion is owned by change 1 | 1 |
 | 6 | `bound-draft-set-aside-retention` | Fix first: the E1 set-aside naming defect (a body counts as kept only under a byte-identical copy; Kani K9). Then N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
@@ -123,10 +123,15 @@ preserved). It may need new ledger axioms for `AdwBreakpoint` and
 
 K8 is about two processes. Two narrower cases need no inter-process lock:
 
-- **Multi-window.** Cleanup gating is per window. Widget tests create several
-  windows, and a future "new window" action would make this reachable. Add a
-  second window to the journal machine, in the same process with a shared
-  target guard, and fix whatever it finds.
+- **Multi-window.** **Done** (`verify-multi-window-draft-journal`): Kani
+  found the per-window journal lane, per-window startup restore and cleanup,
+  and per-window duplicate-path detection unsafe with two windows of one
+  process; failing-first multi-window widget tests reproduced each, and one
+  journal coordinator per application fixes them (proved). What follows was
+  the candidate as ranked: cleanup gating is per window. Widget tests create
+  several windows, and a future "new window" action would make this
+  reachable. Add a second window to the journal machine, in the same process
+  with a shared target guard, and fix whatever it finds.
 - **Simultaneous requests from two bins.** **Done**
   (`extend-closed-loop-geometry-verification`): Kani confirmed the double
   count, a failing-first adoption-lab test reproduced it, and anchored
@@ -278,7 +283,7 @@ oscillate" within stated per-bin bounds. Lean therefore stays dormant.
 
 ```
 N1 ✓ measured, geometry shard PR-gated ─► N2 ✓ more pure policies ─► N3 breakpoint loop
-N5 ✓ token airtight ─► N4 multi-window + two-bin requests
+N5 ✓ token airtight ─► N4 ✓ multi-window + ✓ two-bin requests
 N9 mutation × proofs (N1 is done, so any time now)
 N11 after N4 (multi-window; N5 is done); N6, N7 only on their triggers; N8, N10 opportunistic
 ```

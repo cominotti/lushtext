@@ -195,6 +195,59 @@ expected fix is that session collection for save and reconciliation unions
 every window of the process. Otherwise the audit's finding is recorded in the
 deferral inventory, with the reasoning.
 
+### D7. Decisions taken during implementation
+
+- **Per application, not per process.** The coordinator
+  (`ui/window/drafts/admission.rs`, `ProcessDraftJournal`) is keyed by the
+  `GApplication` a window is built with. Production has one application per
+  process, so the two coincide; the widget suite builds many applications in
+  one process, one per test, and each must start with its own journal and its
+  own "already restored" flag.
+- **Every window's manifest copy is mirrored.** A commit, an authority
+  revocation, an additive registration, and a cleanup removal accepted in one
+  window are applied to every other window's copy (minus that window's own
+  tombstones). Without it the process lane is not enough: a window whose copy
+  still lists an entry another window's cleanup removed skips registration
+  (`registration_required` is false for a trusted, listed id) and writes a body
+  no entry describes.
+- **One window schedules cleanup.** The window that restored the session owns
+  orphan-cleanup scheduling for the application; when it closes, the first
+  window whose schedule request arrives takes it over. Cleanup inspects the
+  persisted manifest under its write lock (`inspect_orphan_cleanup_against_persisted`).
+- **D6 was a reachable defect and is fixed.** A second window's session save
+  wrote only its own tabs (or was dropped, because each window ordered saves by
+  its own debounce counter), so the first window's untitled draft was never
+  offered at the next startup. Every session save and every draft
+  reconciliation now carries every window's tabs in creation order, and saves
+  are ordered by one application-wide generation.
+- **Session restore is excluded from the open redirect.** Its caller owns the
+  page it returns, and it runs in one window per application; the claim
+  backstop covers any second editor it could still produce.
+- **Lane release on dispose.** A window disposed while its journal work is in
+  flight releases the lane at dispose. Its in-flight worker still finishes, but
+  no later stage of that pass runs (every continuation needs the window), and
+  close always waits for the lane to drain first, so only a window destroyed
+  without its close flow can reach it; recorded in the deferral inventory.
+
+- **Seven actions, not eight (D5).** The two-window harness proved at eight
+  actions (646.6 s) but peaked at 15.3 GB with the default solver, over the
+  12 GiB runner margin; kissat held 3.1 GB but took 1724 s, over the 25-minute
+  margin, and minisat was slower still. One harness cannot be split, so the
+  bound is seven actions (287 s, 2.7 GB), stated in the harness and in the
+  programme record, which also keeps the eight-action proof as a local result.
+- **No `should_panic` pin for the baseline.** Every counterexample was fixed,
+  so task 3.5 requires none; a pin of the per-window baseline needs six
+  actions and cost 14.6 GB (default solver) or 923 s (kissat). The baseline
+  scope stays in the model so the recorded trace can be re-run, and each
+  counterexample is pinned by a failing-first widget test.
+- **The model got cheaper, not weaker.** Kani 0.68 spent most of the extended
+  model's time in symbolic execution of iterator chains and of an S1 check
+  that nested two symbolic-bound loops. Plain index loops, an S1 check that
+  is one mask test over the union of every holder's ancestor set (equivalent
+  by construction), and scope branches folded at compile time took the
+  single-window harness from 2691 s / 22 GB to 364 s / under 5 GB at the same
+  bounds.
+
 ## Risks / Trade-offs
 
 - [Model state explosion makes the harness exceed CI memory or time] →

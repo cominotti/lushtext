@@ -250,6 +250,11 @@ allocation, so rendered-row tests intersect mapped rows with the viewport. The
 same change pinned A19 (a `GtkViewport` notifies `page-size` only after
 allocating its child) and A20 (a host `set_value` leaves the list's anchor
 outside `[0, 1]` until the value is re-announced after allocation).
+Phase 4's multi-window journal (`verify-multi-window-draft-journal`) added A21:
+`gtk_window_destroy` emits the application's `window-removed` before it returns
+but does not dispose a window another strong reference keeps alive, so a
+window leaves the process draft journal on `window-removed`, and dispose's
+leave is an idempotent second path.
 
 ### Phase 2 — Kani lane
 
@@ -977,7 +982,9 @@ The state machine is the journal's decision core, extracted out of the service
 and GTK coordination and used by them, so the harness checks production logic.
 It is not a separate model. L1 becomes bounded: "clean within k steps".
 
-Known unmodelled assumption: one process and one window per data directory.
+Known unmodelled assumption: one process per data directory (A6). The "one
+window" half was dropped by `verify-multi-window-draft-journal`; see the
+multi-window subsection below.
 
 **Status: complete (K3, 2026-09-23, `consolidate-formal-verification-on-kani`).**
 The decision core is `crates/lushtext-core/src/services/draft_service/journal_core.rs`
@@ -1084,6 +1091,132 @@ follow-up change to open if that use is ever reported. The harness stays as a
 `should_panic` pin, run at 6 actions after both startups (500.8 s, about
 9 GB, which a CI runner holds; the body-without-entry counterexample is still
 found): the day it passes, A6 is no longer needed and this record changes.
+
+#### Multi-window — two windows of one process (`verify-multi-window-draft-journal`)
+
+**Status: complete (2026-09-25).** The journal model now names its two kinds of
+actor. A **window** holds its editors, manifest copy and authority, restore
+holds, tombstones, in-flight journal work, and cleanup candidates. A
+**process** holds one or two windows plus what production makes process-wide:
+the manifest write lock and target guard (every model action runs under both),
+and the draft journal coordinator. Processes share only the disk; K8 is two
+processes of one window each. Each step swaps the acting process and window
+into slot 0, so no access inside a step has a symbolic array index.
+
+**The extended single-window model (design D2).** Before any second window,
+the model gained the **journal lane** (a registration → write → commit pass,
+a deletion, and a cleanup inspect/execute each hold it), **missing-body entry
+removal** in cleanup (revalidated by fingerprint against the persisted
+manifest), **one untitled id** (no registration; a reconciling commit rebuilds
+its entry), a window's manifest copy refreshed from every commit it accepts,
+and `Open` / `CloseWindow` / `OpenWindow`. Commit now accepts whatever its
+generation carried, as production does, instead of also requiring the body to
+still be the one written (only the lane guarantees that). It **proved** with
+no single-window counterexample, so task 1.3 was not needed.
+
+**What the two-window baseline found.** Against production as it stood (lane,
+startup restore, cleanup scheduling, duplicate-path detection, and every
+manifest copy per window), Kani failed "a body was written without an entry"
+within six actions after the first startup (321 s, 14.6 GB). Concrete playback
+decodes it as:
+
+1. the previous session left an entry for file id 0 with no body; window A's
+   startup restores the tab, and A's trusted copy lists the entry;
+2. A edits id 0;
+3. window B opens and runs its own startup restore;
+4. B's orphan cleanup inspects: the entry has no body, so it is a
+   missing-body candidate, and B holds only **its own** lane;
+5. A's autosave pass starts: A's copy lists the entry and is trusted, so
+   `registration_required` is false and A gets the body-write token directly;
+6. B's cleanup executes and removes the entry, from disk and from B's copy
+   only;
+7. A writes the body: a body no entry describes (a crash here leaves an
+   unregistered body; A's later commit re-adds the entry).
+
+Reproduced failing-first by
+`multi_window_drafts::test_a_stale_manifest_copy_never_skips_registration_after_another_windows_cleanup`
+("window A wrote a body no manifest entry describes", on the shipped tree).
+The widget suite reproduced four more failing-first, each a hypothesis of the
+proposal or of design D6, with two windows over one `GApplication`:
+
+- `test_one_windows_cleanup_keeps_another_windows_registered_entry` — B's
+  cleanup retired the entry A's write-ahead registration had just added,
+  before A's body write;
+- `test_one_windows_cleanup_keeps_another_windows_uncommitted_untitled_body`
+  — A's cleanup deleted the untitled body B had written and not yet committed,
+  and B's commit then accepted a draft whose body was gone;
+- `test_a_second_window_does_not_restore_the_session_again` — a second window
+  restored the session's draft-backed tab again;
+- `test_the_same_file_opened_in_two_windows_keeps_one_editor` — a second
+  window opened its own editor for a file (and draft id) another window had
+  open;
+- `test_a_session_save_from_one_window_keeps_the_other_windows_tabs` (D6) — a
+  session save from one window dropped the other window's untitled tab, so
+  the next startup would never offer that draft.
+
+**The fix: one journal per application** (`ui/window/drafts/admission.rs`,
+`ProcessDraftJournal`). One journal lane for every window's registration,
+body-write pass, deletion, and cleanup pass (`journal_core::journal_lane_admission`;
+a window finding it held marks itself pending and is woken from an idle when it
+frees); every commit, authority change, additive registration, and cleanup
+removal mirrored into every window's manifest copy; cleanup inspecting the
+persisted manifest under its lock (`inspect_orphan_cleanup_against_persisted`)
+and scheduled by one window; once-per-application startup restore
+(`journal_core::startup_restore`, a later window starts empty with the
+application's copy); an open of a file another window has open presents that
+window (`journal_core::draft_open_decision`), with a claim backstop that holds
+a second editor's autosave, restore, and deletion (`window_may_journal_draft`);
+session saves and reconciliations carrying every window's tabs with one
+application-wide ordering. The model's `process_journal` scope calls the same
+`journal_core` functions. A window leaves the journal on the application's
+`window-removed` (GTK axiom **A21**: `gtk_window_destroy` removes the window at
+once but disposes it only at the last unref), and keeps the lane while its own
+journal work is in flight; the data-safety audit found that case failing-first
+(`test_a_window_destroyed_mid_pass_holds_the_lane_until_the_pass_ends`).
+
+**Result:** `journal_invariants_hold_across_two_windows` (2 ids — one
+file-backed, one untitled — × 2 windows of one process, 3 edits, 8 actions
+after the first startup (7 in the lane, see below), a fault possible on every
+step, window opens and closes, crashes and restarts) **PROVED** S1–S4 plus one
+owning window per draft id. See the table below.
+
+Local figures (Kani 0.68.0 / CBMC 6.11.0, one toolbox, `make kani KANI_MEASURE=…`;
+runner figures are recorded in `scripts/kani-shards.py` from dispatched runs):
+
+| Harness | Bounds | Result | Time | Peak |
+|---|---|---|---|---|
+| `journal_invariants_hold_under_crashes` | 1 window; 2 file-backed + 1 untitled id; 8 actions | PROVED (no single-window counterexample) | 344 s | < 5 GB |
+| `a_dirty_editor_becomes_clean_without_faults` | L1 at k = 7, after the lane drains (≤ 3 steps, asserted) | PROVED | 311 s | 4.7 GB |
+| `a_dirty_editor_may_need_seven_steps` | L1 at k = 6 | `should_panic`: k = 7 still tight | 318 s | 4.7 GB |
+| `journal_invariants_hold_across_two_windows` | 2 windows × 1 file-backed + 1 untitled id; 7 actions | PROVED | 306 s | 2.5 GB |
+| the same at **8** actions (design D5's bound) | local only | PROVED | 647 s | 15.3 GB (kissat: 1724 s, 3.1 GB) |
+| baseline scope (per-window coordinator), 6 actions | not in the lane | FAILS: a body written without an entry | 321 s | 14.6 GB (kissat: 923 s, 2.3 GB) |
+| `a_second_writer_breaks_the_journal_invariants` (K8) | 2 processes × 1 window, 3 file-backed ids, 6 actions | `should_panic`, unchanged | 194 s (was 500.8 s) | 2.6 GB |
+
+**Bound reduction, recorded (the small-scope hypothesis).** Design D5 asked for
+eight actions. Eight proved, but at 15.3 GB with the default solver (over the
+12 GiB runner margin) and 1724 s with kissat (over the 25-minute margin);
+minisat was slower still, and a single harness cannot be split. The lane runs
+**seven** actions; the claim is S1–S4 plus one owning window per id for every
+seven-action sequence, and the eight-action proof stands as a local result.
+The baseline counterexample needs six actions, so it is not pinned as a
+`should_panic` harness (it would cost 14.6 GB or 15 minutes for a defect every
+failing-first widget test above already pins); `TwoWindowBaselineScope` stays
+in the model so the trace can be re-run.
+
+**The model got cheaper, not weaker.** Adding the lane first took the
+single-window harness from 487 s / 8 GB to 2691 s / 22 GB. CBMC spent most of
+it in symbolic execution of iterator chains and of an S1 check that nested two
+symbolic-bound loops. Plain index loops, an S1 check that is one mask test over
+the union of every holder's ancestor set (equivalent by construction: a content
+is recoverable exactly when some holder's ancestor set contains it), and scope
+branches folded at compile time brought it to 344 s at the same bounds, and K8
+from 500.8 s to 194 s.
+
+**Shards.** The new harness is the `core-multi-window` shard. The two L1
+harnesses moved out of `core-journal-and-write` into a new
+`core-journal-liveness` shard, because the lane made them too slow to share it
+(split before any other fit, per `.agents/rules/build.md`).
 
 ### Phase 5 — Crash-atomicity of durable_write (Kani)
 
@@ -1205,7 +1338,16 @@ Next candidates after the Kani consolidation are ranked in
   one data directory (phase 4, K8); accepted with documentation because a
   unique `GApplication` makes that need two D-Bus sessions of one user. The
   follow-up, if ever reported, is an inter-process data-directory lock. The
-  target guard is process-local, and cleanup gating is per window.
+  target guard and the draft journal coordinator are process-local (one
+  journal per application since `verify-multi-window-draft-journal`, which
+  made cleanup gating, startup restore, and duplicate-path detection
+  per application instead of per window).
+- `verify-multi-window-draft-journal`: a window **destroyed without its close
+  flow** while it holds the journal lane keeps the lane until its in-flight
+  work completes (A21); if its last reference drops first, dispose releases
+  the lane while that worker may still be writing. Every production close goes
+  through the close flow, which waits for the lane to drain, so this needs a
+  programmatic `destroy()` of a window with journal work in flight.
 - NFS rename-retransmit misclassification (`BeforeRename` while the new bytes
   are live).
 - suid/sgid are cleared by `fchown` after `fchmod`. This is documented as
