@@ -26,6 +26,7 @@ pub(crate) mod a17;
 pub(crate) mod a18;
 pub(crate) mod a19;
 pub(crate) mod a20;
+pub(crate) mod a21;
 pub(crate) mod adaptive;
 
 use gtk4::prelude::*;
@@ -51,6 +52,7 @@ pub use a17::probe_a17;
 pub use a18::probe_a18;
 pub use a19::probe_a19;
 pub use a20::probe_a20;
+pub use a21::probe_a21;
 
 /// Settle after an adjustment or height change, before reading it back.
 pub(crate) const LAYOUT_SETTLE: Duration = Duration::from_millis(200);

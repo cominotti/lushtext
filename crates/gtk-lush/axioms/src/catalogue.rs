@@ -297,6 +297,23 @@ const CATALOGUE: &[Axiom] = &[
         ],
         probe: Some(probes::probe_a20),
     },
+    Axiom {
+        id: AxiomId::new(21),
+        name: "a21_destroy_removes_a_window_but_the_last_unref_disposes_it",
+        statement: "gtk_window_destroy on a window of a registered GtkApplication emits the \
+                    application's window-removed for it before destroy returns, after which \
+                    the window has no application and windows() no longer lists it; it does \
+                    not dispose the window while another strong reference is alive (dispose \
+                    has not run and a WeakRef still upgrades), and dispose runs only when the \
+                    last strong reference drops, just before finalization",
+        dependent_designs: &[
+            "LushtextWindow leaves the process draft journal (ProcessDraftJournal: the lane, \
+             its draft-id claims, orphan-cleanup ownership) from the application's \
+             window-removed handler, with dispose's leave an idempotent second path \
+             (ui/window/drafts/admission.rs)",
+        ],
+        probe: Some(probes::probe_a21),
+    },
 ];
 
 #[cfg(test)]
@@ -311,8 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a20() {
-        for number in 1..=20 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a21() {
+        for number in 1..=21 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }

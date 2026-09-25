@@ -265,7 +265,10 @@ then landed A14–A20 here, each with a probe and a `--check` sample, and
 rewrote A10 around its own probe, so the crate now probes A1–A7, A9–A11, and
 A13–A20. That change also finished the A7/A8 review: both are reachable, the
 slice-loop Kani model carries an explicit A7 anchor, and A8 bounds only the
-child's own estimate correction.
+child's own estimate correction. `verify-multi-window-draft-journal` then added
+A21, the first non-geometry axiom: `gtk_window_destroy` removes a window from
+its application (`window-removed`) at once but disposes it only when the last
+strong reference drops, so the crate probes A1–A7, A9–A11, and A13–A21.
 
 Deliberately **not** in the family: anything covered by Libadwaita, anything
 that owns app state, theming systems, and one-off LushText domain widgets.

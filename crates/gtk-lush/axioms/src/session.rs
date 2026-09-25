@@ -19,7 +19,7 @@ use crate::observation::{Recorder, Stop};
 const FIXTURE_WINDOW_SIZE: (i32, i32) = (400, 600);
 /// How long a probe waits for its window to realize before calling the
 /// fixture invalid. Generous: realization is scheduling-dependent.
-const REALIZE_BUDGET: Duration = Duration::from_secs(5);
+pub(crate) const REALIZE_BUDGET: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// Settle time after the window first has a size, matching the old in-app
 /// probes so their measured values stay comparable.

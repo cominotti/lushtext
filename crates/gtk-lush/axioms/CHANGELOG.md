@@ -50,3 +50,9 @@
   row against its list's allocation, shared by the A10 and A20 probes and the
   A10 sample; `APPLIED_LABEL` is one constant re-exported by `fixtures::a14`,
   `a15`, and `a16`.
+- A21 (`gtk_window_destroy` on a window of a registered `GtkApplication`
+  emits `window-removed` before it returns and drops the window from
+  `windows()`, but disposes it only when the last strong reference drops,
+  once, just before finalization), with a probe and sample. New fixtures:
+  `fixtures::DisposeCountingWindow` and `fixtures::DisposalLog`, and the
+  window size under `fixtures::a21`.

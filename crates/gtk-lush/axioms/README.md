@@ -17,8 +17,9 @@ evidence for this crate is tracked in `docs/gtk-lush-adoption/`.
 ## What an axiom is
 
 An axiom is one precise statement about GTK, `GtkListBase`, `GtkScrollable`,
-or Adwaita that a geometry design depends on — for example "a zero-height
-allocation makes a `GtkListView` rewrite the adjustment its host owns" (A5).
+or Adwaita that a geometry or lifecycle design depends on — for example "a
+zero-height allocation makes a `GtkListView` rewrite the adjustment its host
+owns" (A5).
 The normative list, with the dependent designs and pinning status of each, is
 LushText's ledger,
 `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`.
@@ -72,9 +73,10 @@ println!("{}", observation.to_json_line());
 ## Adding an axiom
 
 The breakpoint work (`extend-closed-loop-geometry-verification`) added
-A14–A18 this way, and A19–A20 followed; every later axiom follows the same
-steps. Rewriting an unpinned axiom from measurement (as A10 was) keeps its
-id, gives it a probe, and renames its catalogue entry to the new statement.
+A14–A18 this way, A19–A20 followed, and A21 (the first window-lifecycle
+axiom) after them; every later axiom follows the same steps. Rewriting an
+unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
+and renames its catalogue entry to the new statement.
 
 1. **Ledger row.** Add the row to the ledger table with the next unused id
    (ids are never reused), its statement, and its dependent designs.

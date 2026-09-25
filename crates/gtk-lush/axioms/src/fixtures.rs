@@ -14,6 +14,10 @@
 //! [`BreakpointFixture`] is an `AdwBreakpointBin` that a [`FixedHost`]
 //! allocates at an exact width, and [`SplitViewFixture`] an
 //! `AdwOverlaySplitView` with a label on each side.
+//!
+//! The lifecycle fixture (A21) is [`DisposeCountingWindow`], a plain
+//! `GtkWindow` that records each `dispose` and its finalization in a
+//! [`DisposalLog`] that outlives it.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -27,6 +31,7 @@ pub use crate::probes::a06::{INSET_CLASS, InsetStyle};
 pub use crate::probes::a13::ReslicingHost;
 pub use crate::probes::a17::SplitViewFixture;
 pub use crate::probes::a19::{AllocationProbe, QueuedFromNotify, ViewportEvent, ViewportOrder};
+pub use crate::probes::a21::{DisposalLog, DisposeCountingWindow};
 pub use crate::probes::adaptive::{
     BASE_XFT_DPI, BIN_MIN_WIDTH, BreakpointFixture, ORIGINAL_LABEL, max_width_sp, set_text_scale,
     xft_dpi_for_scale,
@@ -102,6 +107,11 @@ pub mod a19 {
 /// The values the A20 probe drives its fixture with, for its sample.
 pub mod a20 {
     pub use crate::probes::a20::{SHRUNK_PAGE, TARGET_ROWS, reannounce_value};
+}
+
+/// The values the A21 probe drives its fixture with, for its sample.
+pub mod a21 {
+    pub use crate::probes::a21::WINDOW_SIZE;
 }
 
 /// Height every probe row requests, so row geometry is predictable.
