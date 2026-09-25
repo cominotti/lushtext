@@ -20,6 +20,8 @@ change adopts it.
     (crash atomicity and classification soundness).
 
   The lane takes about 40 minutes and runs in five CI shards from one table.
+  (Since then: 74 harnesses in seven shards after N1/N2, and 92 in ten after
+  `extend-closed-loop-geometry-verification`.)
 - **Kani found real defects, not only confirmed designs.**
   - Model checking the journal found a draft-loss path: a lazy restore whose
     file vanished released the autosave hold, and the next autosave or Discard
@@ -43,7 +45,7 @@ change adopts it.
 | 1 | `harden-kani-lane-and-draft-token` (**implemented 2026-09-23**) | N1 (measure the shards on runners, geometry shard in the PR gate) and N5 (both fixture modules gated). **Done**; figures in the programme record, phase 2 | — |
 | 2 | `extend-kani-to-pure-policies` (**implemented 2026-09-24**) | N2. `clamped_preview_width` keeps its floor, and the exception is stated in the spec. The sidebar-width `NaN` bug is fixed failing-first. **Done**; results, the second defect it found (an infinite native-slider height), and the three new shards are in the programme record, phase 2 | 1 |
 | 3 | `verify-multi-window-draft-journal` | N4, first half: window actors against process actors in the journal machine | 1 |
-| 4 | `extend-closed-loop-geometry-verification` | N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
+| 4 | `extend-closed-loop-geometry-verification` (**implemented 2026-09-25**) | **Done**; results in the programme record, phase 3. N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
 | 5 | `measure-proof-strength-with-mutation` | N9. The harness-file mutant exclusion is owned by change 1 | 1 |
 | 6 | `bound-draft-set-aside-retention` | Fix first: the E1 set-aside naming defect (a body counts as kept only under a byte-identical copy; Kani K9). Then N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
 | 7 | `add-sidebar-visual-proof-scenario` | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check | — |
@@ -56,7 +58,9 @@ Only two candidates wait for a trigger, and neither has a proposal. N6
 residuals) waits for a variable-height consumer.
 
 Lean is re-discussed only if **both** in-Kani attempts in change 4 fail **and**
-an unbounded claim is actually needed.
+an unbounded claim is actually needed, by a recorded maintainer decision. Change
+4 made both: the compositional attempt succeeded within stated bounds, so
+Lean stays dormant.
 
 ## 3. Ranked candidates, in order of value
 
@@ -101,6 +105,12 @@ geometry had their own history of visual bugs.
 
 ### N3. Model-check the adaptive-shell breakpoint loop
 
+**Done** (`extend-closed-loop-geometry-verification`, 2026-09-25): the pure
+`plan_shell_reconciliation`, a Kani step model citing A14–A18, and two
+failing-first fixes (the properties layout setter flapped; the Open-button
+breakpoint uncollapsed the workspace at large text scales). Programme record,
+phase 3.
+
 The breakpoint loop runs: allocated width → layout → breakpoint → allocated
 width. It is the second closed feedback loop in the shell, and the programme
 record already names it as the natural follow-on to K4. The pattern is the
@@ -117,9 +127,10 @@ K8 is about two processes. Two narrower cases need no inter-process lock:
   windows, and a future "new window" action would make this reachable. Add a
   second window to the journal machine, in the same process with a shared
   target guard, and fix whatever it finds.
-- **Simultaneous requests from two bins.** Every bin computes its request
-  against the same pre-move outer value, so two requests in one frame add up.
-  The K4 model can show this directly.
+- **Simultaneous requests from two bins.** **Done**
+  (`extend-closed-loop-geometry-verification`): Kani confirmed the double
+  count, a failing-first adoption-lab test reproduced it, and anchored
+  forwarding fixed it (proved).
 
 ### N5. Make the draft-registration token airtight
 
@@ -253,9 +264,15 @@ measured them on T1 (the durable write), T2 (the two-process journal), and T3
 
 ### Dormant: Lean
 
-Lean returns only if a claim genuinely needs to be unbounded. The likeliest
-case is "any number of bins" as evidence if GTK Lush publication reopens
-(`docs/next/gtk-lush.md`).
+Lean is re-discussed only if **both** in-Kani attempts at an unbounded claim
+fail — Kani loop contracts, and a compositional argument (small harnesses plus
+a written proof note) — **and** an unbounded claim is actually needed, for
+example "any number of bins" as evidence if GTK Lush publication reopens
+(`docs/next/gtk-lush.md`), and then only by a recorded maintainer decision.
+For the slice loop, `extend-closed-loop-geometry-verification` made both
+attempts: loop contracts failed on resources (programme record, phase 3), and
+the bin-independence argument carried "any number of bins rests and does not
+oscillate" within stated per-bin bounds. Lean therefore stays dormant.
 
 ## 4. Suggested order
 

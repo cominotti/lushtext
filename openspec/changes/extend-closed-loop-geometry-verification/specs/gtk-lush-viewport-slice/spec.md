@@ -76,3 +76,46 @@ evidence for an unbounded claim.
 #### Scenario: A failed attempt is not overstated
 - **WHEN** an attempt does not verify
 - **THEN** no rustdoc, spec, README or programme-record text claims the unbounded property on its strength
+
+### Requirement: A viewport height change never scrolls the outer scroller
+After the outer scroller has moved, a change of the outer viewport's height (a
+window resize or maximize) SHALL NOT move the outer scroller. The bin SHALL
+announce a value it moved the child to once more after the child's allocation,
+so the child anchors inside its view (ledger A20), and SHALL write back, never
+forward, a divergence the child shows in an allocation whose publish emitted
+`value-changed` (ledger A9: no request can follow it) or in which the bin
+changed the page or content height under an anchor the bin set (ledger A7).
+The decision SHALL be a crate-private pure function beside
+`classify_child_scroll`, whose public contract is unchanged. A child request
+applied in the very allocation of such a page change is erased; this residual
+SHALL be pinned by a `should_panic` Kani harness and recorded.
+
+#### Scenario: Maximize after an outer scroll
+- **WHEN** the outer scroller has been scrolled and the window is then resized or maximized
+- **THEN** the outer value and the row at the top of the viewport are unchanged once allocations stop
+
+#### Scenario: The pre-fix rule is pinned
+- **WHEN** the Kani slice loop classifies with the magnitude rule alone after a viewport height change
+- **THEN** a harness finds the outer scroller moved, and it is kept as a `should_panic` counterexample
+
+### Requirement: The band is what the viewport shows
+The band a bin allocates its child SHALL be the part of its content the outer
+viewport shows, deducted at the bottom edge as at the top, plus any overscan.
+Content entirely off screen SHALL keep a band one pixel plus the child's
+learned inset tall at its nearest edge, never zero (ledger A5). A request for a
+row of a bin the viewport has scrolled past, other than the row covering that
+pixel (a recorded residual), SHALL be honoured.
+
+#### Scenario: A request in a scrolled-past bin
+- **WHEN** a child `scroll_to`s a row near the end of a bin the viewport has scrolled past
+- **THEN** the outer scroller brings that row on screen and comes to rest
+
+### Requirement: An outer page change re-slices outside layout
+The bin SHALL NOT queue its allocation from the outer adjustment's
+`notify::page-size`, which `GtkViewport` delivers after it has allocated its
+child (ledger A19); it SHALL re-slice from an idle, so GTK never draws the bin
+with an allocation pending.
+
+#### Scenario: No stale allocation on maximize
+- **WHEN** the window is maximized or unmaximized while a sidebar with slice bins is scrolled
+- **THEN** GTK prints no `Trying to snapshot ... without a current allocation` warning for a slice bin

@@ -68,3 +68,25 @@ written before the move SHALL pass unchanged after it.
 #### Scenario: Extraction preserves behaviour
 - **WHEN** the reconciliation decision moves into `policy.rs`
 - **THEN** the existing shell-geometry widget tests and the new characterization tests pass unchanged, and allocation-time sync still performs no settings write
+
+### Requirement: The reconciliation plan is the only writer of the properties layout
+The properties breakpoint SHALL NOT carry a setter for the properties layout
+name. Its `apply` and `unapply` signals SHALL run the shell reconciliation, so
+the pure plan is the only writer of `layout-name`. A setter restores its
+add-time value on unapply (ledger A16) and, under text scaling, disagrees with
+the policy's px-against-sp comparison (ledger A14), so two writers made one
+allocation change the layout twice.
+
+#### Scenario: Large text does not flip the pane
+- **WHEN** the text scale is 1.25 and the window is 1500 px wide
+- **THEN** the properties layout does not change during an allocation at a fixed width
+
+### Requirement: Every breakpoint that narrows the shell collapses the workspace
+Because only the last-added matching breakpoint applies (ledger A18), every
+breakpoint whose condition implies the workspace breakpoint's SHALL also set the
+workspace split view `collapsed`, so switching between them at a fixed width
+never uncollapses the workspace.
+
+#### Scenario: Doubled text scale at the minimum width
+- **WHEN** the text scale is 2.0 and the window is 700 px wide, and the text scale then switches between 2.0 and 1.5
+- **THEN** the workspace split view stays collapsed throughout

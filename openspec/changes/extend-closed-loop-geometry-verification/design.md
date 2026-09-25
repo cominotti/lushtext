@@ -410,6 +410,46 @@ If a harness exceeds the budget, first narrow its domain and record the
 domain; only then split a shard. The phase-3 table in the programme record
 gains each harness's result and time.
 
+### D11. Found while revisiting the A7/A8 settle envelope
+
+The axiom-samples change left A8 ("a settle is bounded by the correction that
+caused it") contradicted by the A7 probe (4.42 px of value per pixel of page
+change after a host move). Reviewing it against real consumers found three
+defects in `ViewportSliceBin`, each reproduced by a failing widget test first:
+
+1. **A viewport height change scrolls the outer.** The bin's publish is a host
+   move: the child sees `value-changed` before it is allocated at the new
+   value and keeps a stray anchor (A20). A later page-only change (window
+   resize, maximize) re-derives the value along that anchor's line, and the
+   bin forwards it as a request because the child corrected nothing itself
+   (`reconfigure_shift` is zero). Measured: 4664 px on maximize in the
+   adoption lab, 9 px in the LushText sidebar. Fix, model-checked first:
+   re-announce the value after the child's allocation whenever the publish
+   moved it (A20: the child then anchors inside its view), and write back,
+   never forward, a divergence after an emitting publish (A9) or after a page
+   or upper change the bin made under an anchor it set — a crate-private
+   `classify_child_scroll_in_frame`, so the public `classify_child_scroll`
+   contract is unchanged. Residual, pinned `should_panic`: a request applied in
+   the very allocation of such a page change is erased.
+2. **A request in a scrolled-past bin is a no-op.** The band never shrank at
+   the bottom edge, so a bin the viewport had left still showed its child a
+   full viewport of its last rows, and `scroll_to` of one of them asked for
+   nothing (hidden by rendered-row tests that counted realized rows; A10 is
+   corrected: mapped does not mean on screen). The band is now what shows, and
+   one pixel plus the learned inset at the nearest edge when nothing does
+   (never zero, A5). Residual: the one row covering that pixel.
+3. **A late re-slice on an outer page change.** `GtkViewport` delivers
+   `notify::page-size` after allocating its child (A19), so the bin's
+   `queue_allocate` from that handler was left pending while the frame was
+   drawn (`Trying to snapshot GtkLushViewportSliceBin ... without a current
+   allocation`). The bin now re-slices from an idle.
+
+The Kani model's child now carries an explicit A7 anchor, stray at any row
+after a publish (A20) and re-deriving the value anywhere on another page;
+an anchor inside the view (after a request or a post-allocation announcement)
+is assumed to keep the value (a recorded narrowing); the settle bounded by A8
+is only the child's own estimate correction.
+
 ## Risks / Trade-offs
 
 - **[Risk] Loop contracts are experimental and may not accept the model**

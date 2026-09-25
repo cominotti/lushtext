@@ -7,7 +7,10 @@ and the K5, K7, and K8 candidates of
 [`formal-verification-evolution.md`](./formal-verification-evolution.md) were
 carried by the OpenSpec change `consolidate-formal-verification-on-kani`
 (2026-09-23), and each phase below records its posture and every proof result.
-Decided by the maintainer on 2026-09-23.
+Decided by the maintainer on 2026-09-23. `extend-closed-loop-geometry-verification`
+(2026-09-25) extended phase 3 (two-bin requests, the A7/A8 envelope revisited
+against real consumers, the adaptive-shell breakpoint loop, and both in-Kani
+unbounded attempts); the lane is now 92 harnesses in twelve shards.
 
 ## 1. Motivation
 
@@ -83,10 +86,16 @@ What this gives up:
 Kani runs no real threads. That does not matter here, because interleavings
 are modelled as nondeterministic choice in a sequential model.
 
-**Lean is dormant.** It returns only if a claim genuinely needs to be
-unbounded, for example "any number of bins" as evidence for publishing GTK
-Lush, and only by a recorded maintainer decision. No other specification
-language is planned.
+**Lean is dormant.** An unbounded claim is first attempted inside Kani, twice:
+with Kani's loop contracts, and with a compositional argument (small harnesses
+plus a written proof note that extends a bounded proof to any size). Lean, or
+any other tool, is re-discussed only if **both** attempts fail **and** an
+unbounded claim is actually needed (for example "any number of bins" as
+evidence for publishing GTK Lush), and only by a recorded maintainer decision.
+`extend-closed-loop-geometry-verification` made both attempts for the slice
+loop (phase 3): loop contracts failed on resources, and the compositional
+argument carried the claim within stated per-bin bounds, so no other tool is
+proposed. No other specification language is planned.
 
 Tool facts as of September 2026:
 
@@ -94,6 +103,19 @@ Tool facts as of September 2026:
   pin. In the phase-0 spike, `cargo kani -p gtk-lush-widgets` compiled next to
   the 1.96 pin in 31 s.
 - Kani function contracts and loop contracts are still experimental.
+- Loop contracts in the pinned Kani 0.68.0 (checked 2026-09-25 against its
+  `docs/src/reference/experimental/loop-contracts.md` at tag `kani-0.68.0` and
+  by compiling harnesses with the installed 0.68.0 / CBMC 6.11.0): they need
+  `-Z loop-contracts` on the command line and
+  `#![feature(stmt_expr_attributes, proc_macro_hygiene)]` on the crate (under
+  `cfg_attr(kani, ...)`), and provide `#[kani::loop_invariant(..)]`,
+  `#[kani::loop_decreases(..)]` (integer measures only; struct-field
+  projections and multi-dimensional measures are known-broken, as is combining
+  it with `loop_modifies`), `#[kani::loop_modifies(..)]`, and `on_entry(..)` /
+  `prev(..)`, on `while`, `loop`, and `for` over ranges, arrays, slices, and
+  common iterator adaptors (not `while let`). Loop modifies are inferred by
+  alias analysis. A shard enables the flag through its `kani_flags` entry in
+  `scripts/kani-shards.py`, which no other shard receives.
 - Harnesses live in GTK-free code behind `#[cfg(kani)]`.
 
 **Measured on 2026-09-24.** The OpenSpec change
@@ -521,10 +543,11 @@ which workspace test runs still satisfy.
   else.
 - `core-geometry-policies` measured 13.6 minutes at most on the final form, within
   the 15-minute pull-request margin, so it joins `widgets-geometry` in the
-  pull-request gate (design D7). It is **not** a required check: the ruleset
-  `main: Kani geometry proofs required` still names only
-  `Kani Proof Harnesses (widgets-geometry)`, and adding this one is a
-  maintainer decision.
+  pull-request gate (design D7). It was not a required check at first; on
+  2026-09-25 the maintainer approved making it one, and the ruleset
+  `main: Kani geometry proofs required` (id `23911547`, integration `15368`,
+  admins bypass) now requires **both** `Kani Proof Harnesses (widgets-geometry)`
+  and `Kani Proof Harnesses (core-geometry-policies)`.
 - Runs C and D also re-measured the older shards on the runner.
   `core-journal-and-write` reached 21.12 minutes (recorded 20.9) and
   `core-second-writer` 17.39 (recorded 17.3), with no change to their
@@ -618,9 +641,315 @@ consumer, so no failing-first widget test can be written for either:
   request made while a settle is held would wait one more allocation; that
   trade-off and a real-GTK failing-first test are what adopting it needs.
 
-Still open from this phase's plan: simultaneous requests from two bins in one
-frame (the concurrent-request double-count; the harnesses above issue one
-request at a time) and the adaptive-shell breakpoint loop.
+**Extended by `extend-closed-loop-geometry-verification` (2026-09-25).** The
+two items this phase left open are closed, the A7/A8 settle envelope was
+revisited against real consumers, and both in-Kani attempts at an unbounded
+claim were made. Kani 0.68.0 / CBMC 6.11.0, this toolbox, times per harness
+from one `cargo kani` run of the final model while other lanes shared the
+machine. The anchor model made the slice-loop shards slower, so they are split
+into six (`widgets-slice-loop-rest`, `-rest-three`, `-requests`,
+`-requests-two`, `-pairs`, `-unbounded`) to stay inside the runner margins:
+
+| Harness | Scope | Result | Time |
+|---|---|---|---|
+| `slice_loop_two_simultaneous_requests_do_not_add_up` | N=2, both bins request in one frame (A4, A5) | counterexample on the pre-fix model (outer at the sum); PROVED with anchored forwarding | 442 s |
+| `slice_loop_viewport_resize_leaves_the_outer_alone` | N=1, rest, then any viewport height 40–200 px | PROVED | 61 s |
+| `slice_loop_forwarding_a_published_anchor_settle_moves_the_outer` | the same on the pre-fix bin | `should_panic`: the outer jumps | 100 s |
+| `slice_loop_request_coinciding_with_a_resize_is_erased` | a request in the frame of a resize | `should_panic`: the recorded residual | 42 s |
+| `slice_bin_allocation_touches_only_its_own_bin` | L1, L2 | PROVED | 35 s |
+| `slice_bin_decision_depends_only_on_its_own_inputs` | L3 | PROVED | 89 s |
+| `slice_bin_rests_from_any_origin` | L4, up to 400 px above and below | PROVED | 37 s |
+| `slice_bin_rests_after_any_outer_jump` | L4 | PROVED | 55 s |
+| `slice_bin_honours_a_request_from_any_origin` | L4 | PROVED | 250 s |
+| `slice_loop_rests_with_{one,two,three}_bins` | as K4, on the anchor model | PROVED | 67 / 339 / 577 s |
+| `slice_loop_honours_a_request_with_{one,two}_bin(s)` | as K4 | PROVED | 170 / 617 s |
+| `slice_loop_learning_frame_*`, `slice_loop_{one,two}_reconfiguring_*` | as K4 | unchanged (proof / `should_panic` residuals) | 40 / 19, 15 / 27 s |
+
+**Two bins requesting in one frame (N4, second half).** Predicted by code
+reading and confirmed by Kani on the pre-fix model: every bin measures its
+request against the same pre-move outer value, and each idle added its delta to
+the value the previous bin's idle had already moved, so the outer landed at
+`outer₀ + d_A + d_B`. Concrete playback: viewport 40, bin contents 90 and 84,
+outer 147; bin 0 asks for value 1 (δ −126), bin 1 for 8 (δ −9); the outer landed
+at 12 = 147 − 126 − 9 instead of bin 1's 138. Failing first in real GTK:
+`gtk_lush_adoption::test_adoption_two_slice_bins_requesting_in_one_turn_do_not_add_up`
+(two bins with the boundary mid-viewport, `scroll_to` in both lists in one turn:
+the outer settled at 6855 and the second list's row was off screen). The fix
+(design D2), model-checked first: the first request of a batch records the outer
+value it was measured against and the idle sets `anchor + pending`. Within-bin
+accumulation is unchanged. With it the harness is a proof and every earlier
+slice-loop harness kept its result on that model (two-bin 284 s; one/two/three-bin
+rest 54/192/515 s; one/two-bin request 109/474 s; learning-frame 39/19 s;
+reconfiguring 27/26 s). LushText path: `scan_execution.rs` calls
+`select_and_scroll_to` from a per-section timeout, so two sections refreshed in
+one turn can each request; no existing test-utils surface drives two sections'
+refreshes into one turn without a new seam, so the adoption-lab fixture (a real
+GTK Lush consumer) is the reproduction (task 2.4).
+
+**The A7/A8 settle envelope, revisited.** The A7 probe had measured 4.42 px of
+value per pixel of page change after a host move, contradicting A8's "a settle
+is bounded by the correction that caused it", which K4 used as an envelope.
+Instrumenting the 118 slice-bin widget tests headless (every allocation's
+published offset, the child's value, the page and upper before and after the
+child's allocation, and the decision) gave 1 115 allocations, 39 requests, 217
+child-corrected allocations whose every divergence lay within the correction,
+and **no page change at a non-zero offset in the whole suite**: the A7
+amplification needs a host page change after a host move, which the suite never
+made. Targeted experiments made it: after any outer scroll of 100–7000 px, a
+600 → 450 px viewport moved the adoption-lab list's value by ≈ 25 % of the
+offset (−6 … −1760 px), a maximize after a 3000 px scroll moved it +4664 px, and a
+CSS inset change mid-content moved it −79 px for a 24 px correction; in
+LushText's sidebar a 665 → 400 px change after a 9000 px scroll moved it 9 px.
+The bin forwarded each as a request, so the outer scroller jumped. **Verdict:
+reachable in real consumers**, through the bin's own page changes: its publish
+is a host move whose `value-changed` the list sees before it is allocated at the
+new value, which leaves the anchor stray (A20, pinned by a probe), and a later
+page-only change re-derives the value along it while `reconfigure_shift` is zero.
+
+The model was widened to what GTK does where it matters: the child carries an
+explicit anchor (A7), stray after a publish (A20), and a stray anchor
+re-derives the value **anywhere** in the child's range once the page differs
+from the one it was set at; the A8 bound applies only to the child's own
+estimate correction. One narrowing is recorded: an anchor inside the view
+(after a request or a post-allocation announcement) is assumed to keep the
+value on a page change, where GTK moves it by up to the page change times an
+alignment in `[0, 1]`. A first form modelled that move exactly
+(`P − (P − v₀) × page / page₀`); its symbolic division tripled the slice-loop
+times (the two-bin request harness took 61 minutes) and three harnesses then
+failed only on that interplay, so the frames after such a page change are the
+model's claims, not GTK's (the padded clipped-row widget test forwards −7 px of
+it after a reveal near the header, and comes to rest).
+On the pre-fix classification the widened model finds the jump
+(`slice_loop_forwarding_a_published_anchor_settle_moves_the_outer`, kept as a
+`should_panic` counterexample). Failing first in real GTK:
+`gtk_lush_adoption::test_adoption_slice_bin_keeps_the_outer_still_when_the_viewport_height_changes`
+(3000 → 2256 at a 450 px viewport) and, in LushText,
+`workspace_tree_virtualization::test_a_sidebar_height_change_after_scrolling_keeps_the_scroll_position`.
+The fix, model-checked first
+(`slice_loop_viewport_resize_leaves_the_outer_alone`): the bin re-announces the
+value after the child's allocation whenever its publish moved it (A20: the list
+then anchors inside its view; this alone left a +5 px drift), and the
+crate-private `classify_child_scroll_in_frame` writes back, never forwards, a
+divergence after an emitting publish (A9: no request can follow it) or after a
+page/upper change the bin made under an anchor it set. The public
+`classify_child_scroll` contract is unchanged. **New residual, pinned**
+(`slice_loop_request_coinciding_with_a_resize_is_erased`, `should_panic`): a
+child request applied in the very allocation of such a page change is erased.
+Reachability: it needs a `scroll_to` in the exact frame of a window resize after
+an outer scroll; no test or user flow was found that does it. Candidate fix if
+it matters: re-anchor before the child's allocation instead, which needs the
+list's own rows to be realized at the new value first.
+
+Two more defects surfaced on the way, each failing first:
+
+- **A request in a scrolled-past bin was a no-op.** The band never shrank at the
+  bottom edge, so a bin the viewport had left still showed its child a full
+  viewport of its last rows, and `scroll_to` of one of them asked for nothing.
+  Rendered-row tests had hidden it by counting realized rows; A10 was wrong
+  (mapped does not mean drawn; now pinned by a probe), and last-row assertions
+  now intersect mapped rows with the viewport (`drawn_labels`). Failing first:
+  `workspace_tree_virtualization::test_two_sections_each_above_the_cap_render_completely`
+  (hardened) and
+  `gtk_lush_adoption::test_adoption_slice_bin_honours_a_request_in_a_bin_scrolled_past`.
+  Fix: the band is what shows at both edges, one pixel plus the learned inset at
+  the nearest edge when nothing does (never zero, A5), and a full viewport's band
+  until a non-zero page has revealed the inset (otherwise an off-screen bin
+  learned its inset one pixel per frame). **Residual:** the one row covering that
+  pixel — GTK's `scroll_to` treats a row that covers its whole view as already
+  visible. It is GTK scroll logic, outside the model's adversarial child, so it
+  is recorded here and in the widget CHANGELOG rather than pinned by a harness.
+- **A late re-slice on an outer page change.** `GtkViewport` delivers
+  `notify::page-size` after allocating its child (A19, pinned by a probe), so
+  the bin's `queue_allocate` from that handler was pending while the frame was
+  drawn (`Trying to snapshot GtkLushViewportSliceBin ... without a current
+  allocation` on maximize in `workspace_tree_virtualization`). The bin now
+  re-slices from an idle.
+
+- **A snapshot without a current allocation on maximize.** Maximizing and
+  unmaximizing a LushText window with the sidebar scrolled printed `Trying to
+  snapshot GtkBox ... without a current allocation` for the sidebar's
+  `sections_box` (found by the A7/A8 experiments; the window's own
+  allocation-time writes were ruled out by elimination). A re-slice reaches the
+  bin through `gtk_widget_ensure_allocate`, because its ancestors keep their
+  sizes; the new band moves the list's anchor, the list rebinds rows, and their
+  resize leaves ancestors GTK only walked through marked until the next layout
+  pass, while `AdwBreakpointBin` snapshots its child inside its own allocation
+  when its breakpoint changes. Failing first:
+  `workspace_tree_virtualization::test_maximize_round_trip_while_scrolled_keeps_the_sidebar_allocated`.
+  Fix: a re-slice marks the ancestor chain for allocation (to the outer
+  scroller inside layout, to the root outside), and the bin allocates its child
+  once more after a re-announcement or write-back, so it returns with the child
+  allocated.
+
+**Unbounded attempt 1: loop contracts — failed on resources.**
+`slice_loop_rest_persists_for_any_number_of_frames` (`while kani::any()` over
+resting frames, invariant "the rested model is unchanged") and
+`slice_loop_spaced_requests_stay_honoured_for_any_number_of_requests` (body:
+one admissible request plus two resting frames; invariant: the rest set R — at
+rest, the child and the published offset on the band top, the inset learned, the
+anchor inside the view — plus `on_entry` equalities for the geometry) compiled
+under `-Z loop-contracts` with the crate features above. Kani accepted both
+contracts; CBMC did not finish either:
+
+- rest persists, whole-struct invariant (`model == rested`): after 20 s of
+  symbolic execution, 8 109 VCCs (517 after simplification) and 502 s of SSA
+  conversion, "CBMC appears to have run out of memory";
+- rest persists, field-wise invariant (to avoid the derived comparison's own
+  loop): 7 502 VCCs (517 after simplification), then "Solver ran out of memory
+  during propositional reduction" under a 25 GB address-space cap;
+- spaced requests: symbolic execution had not finished after 80 minutes.
+
+The inductive step havocs the whole model, so the encoded body of `frame` is
+the fully symbolic step (arbitrary geometry, anchors, and the anchor division)
+rather than the constrained one the bounded harnesses see. Stronger invariants
+constraining every field, `loop_modifies` restricted to the bins, or a smaller
+per-bin domain are the untried workarounds. The two harnesses are not in the
+lane (a failing harness cannot be), and no claim rests on them. Their text, for
+rerunning the attempt:
+
+```rust
+#[kani::proof]
+#[kani::unwind(4)]
+fn slice_loop_rest_persists_for_any_number_of_frames() {
+    let mut model = slice_loop::Loop::<1>::any();
+    model.frame(slice_loop::resting_child);
+    model.frame(slice_loop::resting_child);
+    kani::assume(model.at_rest());
+    let (outer, child, published) = (model.outer, model.bins[0].child, model.bins[0].published);
+    #[kani::loop_invariant(
+        !model.bins[0].needs_allocation && !model.bins[0].idle_scheduled
+            && model.bins[0].deferred.is_none() && model.outer == outer
+            && model.bins[0].child == child && model.bins[0].published == published
+    )]
+    while kani::any::<bool>() {
+        model.frame(slice_loop::resting_child);
+    }
+    assert!(model.outer == outer && model.bins[0].child == child);
+}
+```
+
+(the spaced-requests form wraps one admissible request and two resting frames
+in the same `while kani::any()`, with the rest set R and `on_entry` equalities
+for the viewport, content, and inset as the invariant.)
+
+**Unbounded attempt 2: bin independence — the claim carried within bounds.**
+The argument (design D9), with the harnesses it rests on. Content heights are
+fixed (the A12 envelope), and every step is the model's, so the claims hold on
+its per-bin domain: content 0–400 px, inset 0–10 px, viewport 40–200 px, up to
+400 px of other content above and below a bin (L4), whole pixels.
+
+- **L1, frame locality** (`slice_bin_allocation_touches_only_its_own_bin`):
+  allocating bin `i` changes no other bin and not the outer value, from any
+  state two bins reach in a frame with reconfiguring children.
+- **L2, single writer** (same harness, ghost `outer_writes`): only the
+  forwarding idle writes the outer value.
+- **L3, locality of the decision**
+  (`slice_bin_decision_depends_only_on_its_own_inputs`): bin 1's allocation is
+  a function of its own state, its viewport top (`outer − origin`), and the
+  viewport height; a model whose other bin differs and whose outer differs by
+  the same amount as the origin gives bin 1 the same state (its request anchor,
+  an absolute outer value, shifted by exactly that amount).
+- **L4, one bin anywhere** (`slice_bin_rests_from_any_origin`,
+  `slice_bin_rests_after_any_outer_jump`,
+  `slice_bin_honours_a_request_from_any_origin`): one bin at any origin in any
+  outer range rests within two frames without moving the outer, rests again
+  within two frames at an arbitrary jumped outer value, and honours a request.
+- **L5, simultaneous requests** (`slice_loop_two_simultaneous_requests_do_not_add_up`):
+  two requests in one frame end at the last applied one. With anchored idles
+  every forwarding idle of a frame performs an absolute `set_value(anchor +
+  delta)` from the same anchor, so k simultaneous requests reduce to the last
+  applied one by induction over the FIFO idles.
+
+**Composition.** With no request, no idle runs (a bin forwards only on a
+divergence, and by L4 a resting bin has none), so by L2 the outer value is
+constant; by L1 and L3 each bin then evolves exactly as a one-bin loop with a
+constant viewport top, which L4 covers: **any number of bins rests within two
+frames and never oscillates**. A request, or a user scroll, is an outer jump
+for every other bin (L1–L3), which L4 covers again; the requester's own outcome
+is L4's request harness, and several requests in one frame reduce to the last
+by L5. **Not covered:** the recorded residuals (learning frame, two consecutive
+reconfiguring allocations, a request coinciding with a resize, the off-screen
+edge row); geometry outside the per-bin domain; and an outer jump that arrives
+while a bin is still settling (L4 jumps from rest; the bounded two- and
+three-bin harnesses cover interleavings only at their own size). The claim is
+"any number of bins within the per-bin bounds", not "any geometry".
+
+
+#### The adaptive-shell breakpoint loop (N3)
+
+The shell's second closed loop — allocated width → derived layout →
+properties breakpoint threshold and Adwaita breakpoint state → rendered
+surfaces → allocated width — now has a Kani step model,
+`crates/lushtext-core/src/ui/window/geometry/kani_proofs.rs`
+(`extend-closed-loop-geometry-verification`, design D4/D5). It drives
+production logic: the reconciliation decision `sync_secondary_surfaces` and
+`sync_properties_breakpoint` used to make and apply in one place is now the
+pure `plan_shell_reconciliation(RenderedShellState, AdaptiveShellLayout,
+installed_threshold) -> ShellReconciliation` in `geometry/policy.rs`
+(integer-only, no toolkit imports; `execution.rs` applies its writes in the old
+order, and focus restoration stays there). Five characterization tests written
+before the move, plus an exhaustive check of the plan against the
+pre-extraction branches over 14 976 combinations, and the 80 shell-geometry
+widget tests pinned it as behaviour-preserving; `cargo mutants` on `policy.rs`:
+80 mutants, 69 caught, 11 unviable, 0 missed (66 predate the plan; the matrix's
+old 81 was the `f64` form). The model calls the real
+`derive_adaptive_shell_layout` and `plan_shell_reconciliation`, mirrors
+`size_allocate`, the settle completion, and the notify handlers for
+`layout-name`, workspace `show-sidebar`, and `collapsed`, and restricts Adwaita
+only by clauses citing the new axioms A14–A18 (all pinned by probes):
+
+- A14: `max-width: N sp` holds iff the allocated width in px ≤ N × s,
+  inclusive, s = `gtk-xft-dpi` / 98304 from {1, 1.25, 1.5, 2};
+- A15: `set_condition` does nothing synchronously; conditions are
+  re-evaluated in the allocation it schedules;
+- A16: setters apply inside the bin's allocation, after its child's; unapply
+  restores the add-time value; a direct switch between two breakpoints setting
+  one property runs unapply-old, one write of the new value, apply-new (never
+  the add-time value in between);
+- A17: `show-sidebar` and `collapsed` never change the toplevel width;
+- A18: the window minimum is its `width-request` (640 px) and only the
+  last-added matching breakpoint applies (LushText adds properties, workspace,
+  then the Open-button one).
+
+Local run, Kani 0.68.0 / CBMC 6.11.0, one CBMC at a time: 474 s wall, peak
+2.65 GiB.
+
+| Harness | Domain | Result | Time |
+|---|---|---|---|
+| `shell_loop_settles_at_a_stable_width` | widths 640–2560 px, every preset, intent, and compact slot, s ∈ {1, 1.25, 1.5, 2}, cached threshold 0–4096, arbitrary start, 3 allocations and a settle | PROVED: fixed point, and one more allocation changes nothing | 48.7 s |
+| `shell_loop_sweep_does_not_flap` | 3 monotone widths either way from rest, 4 allocations | PROVED | 82.5 s |
+| `shell_loop_preserves_requested_visibility` | compact width then wide, from rest | PROVED | 39.0 s |
+| `shell_loop_layout_agrees_with_policy_at_rest` | as settles | PROVED | 43.5 s |
+| `shell_loop_allocation_never_persists` | from rest, one allocation | PROVED: the settings-write ghost stays 0 | 12.5 s |
+| `shell_loop_workspace_collapses_with_its_breakpoint` | as settles | PROVED | 31.0 s |
+| `shell_loop_layout_is_stable_under_its_own_compact_slot` | step lemma | PROVED | 0.7 s |
+| `shell_loop_layout_setter_flaps` | the pre-fix properties setter | `should_panic`: flaps | 145.0 s |
+| `shell_loop_open_button_breakpoint_uncollapsed_the_workspace` | the pre-fix Open-button breakpoint | `should_panic`: uncollapses | 31.9 s |
+
+Every required `kani::cover!` is reached: pane↔sheet transition, compact slot
+handed to properties, collapsed workspace, threshold reinstall (and the
+Open-button breakpoint current). Two counterexamples, both reachable in real
+GTK, were fixed failing-first:
+
+1. **The properties layout setter flapped.** Under text scale (the
+   `(T, T·s]` px band), and at scale 1 when the workspace breakpoint took over
+   and the setter's add-time `pane` was restored, one allocation changed
+   `layout-name` twice. Failing first:
+   `shell_geometry::test_large_text_breakpoint_never_flips_the_pane_to_the_sheet`
+   (Large Text, 1500 px). Fix: the properties breakpoint has no setter; its
+   `apply`/`unapply` signals run `sync_secondary_surfaces`, so the plan is the
+   only writer.
+2. **The Open-button breakpoint uncollapsed the workspace** at text scale ≥ 1.6
+   at the narrowest windows (A18: only the last-added matching breakpoint
+   applies). Failing first:
+   `shell_geometry::test_doubled_text_scale_keeps_the_workspace_collapsed_at_the_minimum_width`
+   (scale 2, 700 px, then switching 2.0 → 1.5 → 2.0 at a fixed width). Fix: the
+   Open-button breakpoint also sets `collapsed = true` (every width matching
+   400 sp matches 860 sp).
+
+Not fixed, recorded in the deferral inventory: the policy still compares px
+against sp, so it and the breakpoint conditions agree only at text scale 1; with
+fix 1 this no longer affects the loop.
 
 ### Phase 4 — Draft journal model (Kani)
 
@@ -953,5 +1282,18 @@ Next candidates after the Kani consolidation are ranked in
   confirmed, so no confirmed-other body is removed, but the window between
   that re-check and the removal is unguarded. No failing sequence is known;
   take it up with a design for acquiring the guard inside `place()`.
+- Slice-bin residuals added by `extend-closed-loop-geometry-verification`
+  (phase 3): a child request applied in the very allocation in which a window
+  resize changes the band, after an outer scroll, is written back and erased
+  (pinned `should_panic`); and the one row covering the one-pixel band an
+  off-screen bin keeps cannot be revealed by `scroll_to`, because GTK treats a
+  row that covers its whole view as visible (outside the model; recorded in the
+  widgets CHANGELOG). The earlier "simultaneous requests from two bins" gap is
+  closed (anchored forwarding, proved).
+- The adaptive-shell policy compares the window's px width against whole-sp
+  thresholds, so under text scaling it and Adwaita's `max-width: N sp`
+  conditions (A14) agree only at scale 1. Since the properties breakpoint lost
+  its setter (phase 3, N3) this no longer makes the loop flap; converting the
+  width to sp is the open text-scale follow-up.
 - `cargo-gtk-proof` has no sidebar or slice-bin scenario. The screenshot lane
   is waiting on a `reveal-workspace-path` automation action.
