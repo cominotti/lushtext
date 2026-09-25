@@ -34,14 +34,13 @@ fn build(ui: &support::SampleUi) {
             });
         }
     }
-    let bin = fixture.bin;
     ui.set_readout(move || {
         let dpi = gtk4::Settings::default().map_or(-1, |settings| settings.gtk_xft_dpi());
-        let applied = bin.current_breakpoint().as_ref() == Some(&breakpoint);
+        let applied = fixture.is_current(&breakpoint);
         format!(
             "gtk-xft-dpi {dpi} (base {BASE_XFT_DPI})   bin width {} px   max-width: \
              {CONDITION_SP}sp applied: {applied}",
-            bin.width()
+            fixture.bin.width()
         )
     });
 }

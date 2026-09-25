@@ -20,7 +20,7 @@ use crate::scroll_request::{
     outer_scroll_request,
 };
 use crate::single_child::replace_child;
-use crate::slice_geometry::{viewport_slice, whole_pixel_band};
+use crate::slice_geometry::{band_floor, viewport_slice, whole_pixel_band};
 
 /// Private widget state for `GtkLushViewportSliceBin`.
 pub struct ViewportSliceBin {
@@ -49,15 +49,12 @@ pub struct ViewportSliceBin {
     viewport_top: Cell<f64>,
     /// The outer scroller's value `viewport_top` was measured against.
     measured_outer_value: Cell<f64>,
-    /// Outer scroll delta requested by the child and not yet applied.
-    pending_outer_delta: Cell<f64>,
-    /// The outer value the pending batch's first delta was measured against.
-    /// The idle moves the outer to this anchor plus the pending delta, so two
-    /// bins that measured their requests against the same outer value do not
-    /// add them up: the later idle's absolute move wins.
-    pending_outer_anchor: Cell<f64>,
-    /// True while an idle to apply `pending_outer_delta` is scheduled.
-    outer_request_scheduled: Cell<bool>,
+    /// The batch of outer scroll requests the child made and an idle has yet
+    /// to apply; `Some` exactly while that idle is scheduled.
+    pending_outer: Cell<Option<PendingOuterMove>>,
+    /// True while an idle re-slice for an outer page change is scheduled, so
+    /// several page notifications in one turn schedule one re-slice.
+    page_reslice_scheduled: Cell<bool>,
     /// A divergence the last allocation could not classify, as the offset the
     /// bin had published then and the value the child chose. The next
     /// allocation hands the child its own value back instead of the offset,
@@ -106,9 +103,8 @@ impl ObjectSubclass for ViewportSliceBin {
             published_offset: Cell::new(0.0),
             viewport_top: Cell::new(0.0),
             measured_outer_value: Cell::new(0.0),
-            pending_outer_delta: Cell::new(0.0),
-            pending_outer_anchor: Cell::new(0.0),
-            outer_request_scheduled: Cell::new(false),
+            pending_outer: Cell::new(None),
+            page_reslice_scheduled: Cell::new(false),
             deferred: Cell::new(None),
             content_inset: Cell::new(0.0),
             child_anchor_published: Cell::new(false),
@@ -277,11 +273,11 @@ impl WidgetImpl for ViewportSliceBin {
         // known the band is at least that inset plus one pixel tall. Until a
         // page has revealed it, a full viewport's band keeps the page real, so
         // the inset is learned exactly in one allocation.
-        let min_band = if self.content_inset_known.get() {
-            whole_pixel_floor(self.content_inset.get()) + 1
-        } else {
-            whole_pixel_floor(viewport_height)
-        };
+        let learned_inset = self
+            .content_inset_known
+            .get()
+            .then(|| whole_pixels_up(self.content_inset.get()));
+        let min_band = band_floor(learned_inset, whole_pixels_up(viewport_height));
         let (slice_top, slice_height) = whole_pixel_band(slice, height, min_band);
 
         self.allocation_count.set(self.allocation_count.get() + 1);
@@ -293,11 +289,9 @@ impl WidgetImpl for ViewportSliceBin {
         let held_value = deferred
             .filter(|held| (held.published - f64::from(slice_top)).abs() < ADJUSTMENT_EPSILON)
             .map(|held| held.child_value);
-        let held_before = (
-            self.vadjustment.value(),
-            self.vadjustment.page_size(),
-            self.vadjustment.upper(),
-        );
+        let value_before = self.vadjustment.value();
+        let page_before = self.vadjustment.page_size();
+        let upper_before = self.vadjustment.upper();
         self.publish_slice_offset(
             f64::from(slice_top),
             content_height,
@@ -308,21 +302,22 @@ impl WidgetImpl for ViewportSliceBin {
         // `value-changed`, which re-anchors the child on the value the bin
         // wrote (and drops any pending request, ledger A9); a changed page or
         // upper makes the child re-derive its value from that anchor (A7).
+        // A `GtkScrollable` child may rewrite the geometry this bin just
+        // configured -- a `GtkListView` substitutes its own content-box numbers
+        // -- so the published page and upper are also the baseline for how far
+        // the child's allocation moves them, which bounds how far the value may
+        // have settled as a consequence (see `scroll_request`).
+        let page_published = self.vadjustment.page_size();
+        let upper_published = self.vadjustment.upper();
         let moved = |before: f64, after: f64| (after - before).abs() >= ADJUSTMENT_EPSILON;
-        let emitted = moved(held_before.0, self.vadjustment.value());
-        let bin_reconfigured = moved(held_before.1, self.vadjustment.page_size())
-            || moved(held_before.2, self.vadjustment.upper());
+        let emitted = moved(value_before, self.vadjustment.value());
+        let bin_reconfigured =
+            moved(page_before, page_published) || moved(upper_before, upper_published);
         if emitted {
             self.child_anchor_published.set(true);
         }
         let transform = gsk::Transform::new()
             .translate(&graphene::Point::new(0.0, pixel_coordinate(slice_top)));
-        // A `GtkScrollable` child may rewrite the geometry this bin just
-        // configured -- a `GtkListView` substitutes its own content-box numbers
-        // -- so capture it first: how far the geometry moved bounds how far the
-        // value may have settled as a consequence (see `scroll_request`).
-        let upper_before = self.vadjustment.upper();
-        let page_before = self.vadjustment.page_size();
         child.allocate(width, slice_height, -1, Some(transform.clone()));
         if emitted {
             // The publish's `value-changed` reached the child before it was
@@ -335,8 +330,8 @@ impl WidgetImpl for ViewportSliceBin {
             // so this bin's own handler ignores the emission.
             self.vadjustment.emit_by_name::<()>("value-changed", &[]);
         }
-        let page_shift = (self.vadjustment.page_size() - page_before).abs();
-        let reconfigure_shift = (self.vadjustment.upper() - upper_before)
+        let page_shift = (self.vadjustment.page_size() - page_published).abs();
+        let reconfigure_shift = (self.vadjustment.upper() - upper_published)
             .abs()
             .max(page_shift);
 
@@ -383,11 +378,7 @@ impl WidgetImpl for ViewportSliceBin {
             reconfigure_shift,
             facts,
         ) {
-            ChildScrollDecision::Request(delta) => {
-                // The child moved itself: its anchor is now its own.
-                self.child_anchor_published.set(false);
-                self.follow_child_request(delta);
-            }
+            ChildScrollDecision::Request(delta) => self.follow_child_request(delta),
             ChildScrollDecision::Settle if !inset_changed => {
                 self.correction_count.set(self.correction_count.get() + 1);
                 self.child_anchor_published.set(true);
@@ -427,6 +418,18 @@ impl WidgetImpl for ViewportSliceBin {
     }
 }
 
+/// Outer scroll requests one bin accumulated before its idle applies them.
+#[derive(Clone, Copy)]
+struct PendingOuterMove {
+    /// The outer value the batch's first request was measured against. The
+    /// idle moves the outer to this anchor plus `delta`, so two bins that
+    /// measured their requests against the same outer value do not add them
+    /// up: the later idle's absolute move wins.
+    anchor: f64,
+    /// The requests' summed delta.
+    delta: f64,
+}
+
 /// A child value the bin left in place because the allocation that produced
 /// it also moved the child's geometry; see `ViewportSliceBin::deferred`.
 #[derive(Clone, Copy)]
@@ -437,14 +440,14 @@ struct DeferredDivergence {
     child_value: f64,
 }
 
-/// The smallest whole number of pixels covering `inset`, which is a learned
-/// CSS inset and so small and non-negative.
+/// The smallest whole number of pixels covering a non-negative `length` (a
+/// learned CSS inset or the viewport height); negative lengths give zero.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "a CSS inset is a few pixels; the saturating cast is the intent"
+    reason = "a CSS inset or viewport height fits an i32; the saturating cast is the intent"
 )]
-fn whole_pixel_floor(inset: f64) -> i32 {
-    inset.ceil().max(0.0) as i32
+fn whole_pixels_up(length: f64) -> i32 {
+    length.ceil().max(0.0) as i32
 }
 
 /// Convert a whole-pixel offset to the `f32` graphene coordinate space.
@@ -534,9 +537,16 @@ impl ViewportSliceBin {
             // reports as a snapshot without a current allocation; re-slice
             // from an idle instead, after the frame. The idle runs outside
             // layout, so the whole ancestor chain may be marked.
+            let Some(strong) = bin.upgrade() else {
+                return;
+            };
+            if strong.imp().page_reslice_scheduled.replace(true) {
+                return;
+            }
             let bin = bin.clone();
             glib::idle_add_local_once(move || {
                 if let Some(bin) = bin.upgrade() {
+                    bin.imp().page_reslice_scheduled.set(false);
                     bin.imp().queue_reslice(None);
                 }
             });
@@ -663,7 +673,6 @@ impl ViewportSliceBin {
             self.viewport_top.get(),
             0.0,
         ) {
-            self.child_anchor_published.set(false);
             self.follow_child_request(delta);
         }
     }
@@ -703,31 +712,35 @@ impl ViewportSliceBin {
     /// regressed keyboard traversal. A user scroll made between a request and
     /// its idle (less than one frame) is overridden rather than added to.
     fn follow_child_request(&self, delta: f64) {
+        // The child moved itself: its anchor is now its own.
+        self.child_anchor_published.set(false);
         if self.outer.borrow().is_none() {
             return;
         }
-        if !self.outer_request_scheduled.get() {
-            self.pending_outer_anchor
-                .set(self.measured_outer_value.get());
-        }
-        self.pending_outer_delta
-            .set(self.pending_outer_delta.get() + delta);
-        if self.outer_request_scheduled.replace(true) {
+        if let Some(batch) = self.pending_outer.get() {
+            self.pending_outer.set(Some(PendingOuterMove {
+                delta: batch.delta + delta,
+                ..batch
+            }));
             return;
         }
+        self.pending_outer.set(Some(PendingOuterMove {
+            anchor: self.measured_outer_value.get(),
+            delta,
+        }));
         let bin = self.obj().downgrade();
         glib::idle_add_local_once(move || {
             let Some(bin) = bin.upgrade() else {
                 return;
             };
             let imp = bin.imp();
-            imp.outer_request_scheduled.set(false);
-            let delta = imp.pending_outer_delta.replace(0.0);
+            let Some(batch) = imp.pending_outer.take() else {
+                return;
+            };
             let Some(outer) = imp.outer_scrolled_window() else {
                 return;
             };
-            let anchor = imp.pending_outer_anchor.get();
-            outer.vadjustment().set_value(anchor + delta);
+            outer.vadjustment().set_value(batch.anchor + batch.delta);
         });
     }
 }

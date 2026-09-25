@@ -13,9 +13,9 @@
 use crate::common::{
     RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
     ensure_gtk_init, find_descendant, first_label, fixture, flush_after_delay, flush_events,
-    force_layout, mapped_list_rows, mapped_row_with_label, placement_relative_to, present_window,
-    realized_list_rows, row_straddling_bottom, sample_placements, test_window, wait_until,
-    wait_until_or_false,
+    force_layout, mapped_list_rows, mapped_row_with_label, pin_scroller_height,
+    placement_relative_to, present_window, realized_list_rows, row_straddling_bottom,
+    sample_placements, test_window, wait_until, wait_until_or_false,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -1431,14 +1431,7 @@ fn test_a_sidebar_height_change_after_scrolling_keeps_the_scroll_position() {
         let top = fully_visible_labels(&tree.sidebar, &tree.section)
             .first()
             .cloned();
-        outer.set_vexpand(false);
-        outer.set_valign(gtk4::Align::Start);
-        outer.set_propagate_natural_height(true);
-        // Lift the old maximum first: GTK rejects a minimum above the current
-        // maximum, and a growing height would be one.
-        outer.set_max_content_height(-1);
-        outer.set_min_content_height(height);
-        outer.set_max_content_height(height);
+        pin_scroller_height(outer, height);
         flush_after_delay(Duration::from_millis(600));
         assert!(
             (adjustment.value() - before).abs() < 1.0,

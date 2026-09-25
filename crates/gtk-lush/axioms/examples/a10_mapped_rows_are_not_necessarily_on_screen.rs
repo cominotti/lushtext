@@ -14,22 +14,21 @@ use gtk_lush_axioms::AxiomId;
 use gtk_lush_axioms::fixtures::a10::{
     ALIGNED_ROW, FOCUS_ROW, SCROLL_AWAY, SCROLL_TO_ROW, UNALIGNED_VALUE,
 };
-use gtk_lush_axioms::fixtures::{HostedList, ROWS, realized_rows, row_index, row_stride};
+use gtk_lush_axioms::fixtures::{
+    HostedList, ROWS, RowPlacement, realized_rows, row_index, row_placement, row_stride,
+};
 use gtk4::prelude::*;
 
 /// Mapped rows, those intersecting the list's allocation, and the rest.
 fn describe(list: &gtk4::ListView) -> String {
-    let height = f64::from(list.height());
     let mut mapped = 0;
     let mut outside = Vec::new();
     for row in realized_rows(list).iter().filter(|row| row.is_mapped()) {
         mapped += 1;
-        if let Some(bounds) = row.compute_bounds(list) {
-            let top = f64::from(bounds.y());
-            if top + f64::from(bounds.height()) <= 0.0 || top >= height {
-                let index = row_index(row).map_or_else(|| "?".to_owned(), |i| i.to_string());
-                outside.push(format!("{index}@{top}"));
-            }
+        if let Some(RowPlacement::Above(top) | RowPlacement::Below(top)) = row_placement(row, list)
+        {
+            let index = row_index(row).map_or_else(|| "?".to_owned(), |i| i.to_string());
+            outside.push(format!("{index}@{top}"));
         }
     }
     format!(

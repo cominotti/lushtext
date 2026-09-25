@@ -28,7 +28,8 @@ use libadwaita::prelude::*;
 
 use super::LAYOUT_SETTLE;
 use super::adaptive::{
-    ALLOCATION_BUDGET, AllocationSight, BreakpointFixture, SettingsOverride, SignalSite,
+    ALLOCATION_BUDGET, APPLIED_LABEL, AllocationSight, BreakpointFixture, SettingsOverride,
+    SignalSite, describe_sights,
 };
 use crate::observation::{Recorder, Stop};
 use crate::session::{Presented, settle, wait_until};
@@ -40,8 +41,6 @@ pub const CONDITION_SP: i32 = 600;
 pub const WIDE_WIDTH: i32 = 700;
 /// A width inside it.
 pub const NARROW_WIDTH: i32 = 500;
-/// The value the breakpoint's setter writes.
-pub const APPLIED_LABEL: &str = "applied";
 /// The value the property holds when the setter is added.
 pub const WRITE_BEFORE_ADDING_THE_SETTER: &str = "written before adding the setter";
 /// The value the application writes after the setter is added, before the
@@ -131,18 +130,6 @@ struct Leg<'a> {
     to_value: &'a str,
 }
 
-/// A `max-width: <sp>sp` breakpoint whose one setter writes `value` into
-/// `label`.
-fn max_width_setter(sp: i32, label: &gtk4::Label, value: &str) -> libadwaita::Breakpoint {
-    let breakpoint = libadwaita::Breakpoint::new(libadwaita::BreakpointCondition::new_length(
-        libadwaita::BreakpointConditionLengthType::MaxWidth,
-        f64::from(sp),
-        libadwaita::LengthUnit::Sp,
-    ));
-    breakpoint.add_setter(label, "label", Some(&value.to_value()));
-    breakpoint
-}
-
 /// Two nested breakpoints on one fixture whose setters both write its label,
 /// with every apply, unapply, and label notification logged.
 struct NestedPair {
@@ -155,13 +142,22 @@ struct NestedPair {
 impl NestedPair {
     /// Build the pair, the bin allocated `width` pixels wide, the outer
     /// setter writing `outer_value` and the inner one `inner_value`.
-    fn new(width: i32, outer_value: &str, inner_value: &str) -> Self {
+    fn new(
+        recorder: &mut Recorder,
+        width: i32,
+        outer_value: &str,
+        inner_value: &str,
+    ) -> Result<Self, Stop> {
         let fixture = BreakpointFixture::new(width);
         fixture.label.set_text(WRITE_BEFORE_ADDING_BOTH_SETTERS);
-        let outer = max_width_setter(OUTER_SP, &fixture.label, outer_value);
-        let inner = max_width_setter(INNER_SP, &fixture.label, inner_value);
-        fixture.bin.add_breakpoint(outer.clone());
-        fixture.bin.add_breakpoint(inner.clone());
+        let outer = recorder.require(
+            fixture.add_max_width_breakpoint(OUTER_SP, outer_value),
+            "control: the condition parses",
+        )?;
+        let inner = recorder.require(
+            fixture.add_max_width_breakpoint(INNER_SP, inner_value),
+            "control: the condition parses",
+        )?;
         let log = Rc::new(RefCell::new(Vec::new()));
         for (breakpoint, name) in [(&outer, "outer"), (&inner, "inner")] {
             for unapply in [false, true] {
@@ -187,12 +183,12 @@ impl NestedPair {
                 .borrow_mut()
                 .push(format!("notify[{}]", label.text()));
         });
-        Self {
+        Ok(Self {
             fixture,
             outer,
             inner,
             log,
-        }
+        })
     }
 
     /// Which breakpoint is current: `outer`, `inner`, or `none`.
@@ -290,7 +286,7 @@ fn switch_pair(
     )?;
     settings.set_text_scale(1000);
 
-    let by_width = NestedPair::new(OUTER_ONLY_WIDTH, outer_value, inner_value);
+    let by_width = NestedPair::new(recorder, OUTER_ONLY_WIDTH, outer_value, inner_value)?;
     let shown = Presented::checked(
         recorder,
         &by_width.fixture.host,
@@ -307,7 +303,7 @@ fn switch_pair(
     })?;
     drop(shown);
 
-    let by_scale = NestedPair::new(RESCALE_REST_WIDTH, outer_value, inner_value);
+    let by_scale = NestedPair::new(recorder, RESCALE_REST_WIDTH, outer_value, inner_value)?;
     let _shown = Presented::checked(
         recorder,
         &by_scale.fixture.host,
@@ -341,11 +337,7 @@ struct Crossing {
 impl Crossing {
     /// The sights as `label@frame` entries, for the observation.
     fn describe(&self) -> String {
-        self.sights
-            .iter()
-            .map(|sight| format!("{}@{}", sight.label, sight.frame))
-            .collect::<Vec<_>>()
-            .join(" | ")
+        describe_sights(&self.sights)
     }
 
     /// Whether the signal fired inside the bin's allocation, after the child

@@ -97,10 +97,9 @@ fn build(ui: &support::SampleUi) {
         });
     }
 
-    let (bin, top_label) = (single.bin, single.label);
     let (pair_bin, pair_label) = (pair.bin, pair.label);
     ui.set_readout(move || {
-        let applied = bin.current_breakpoint().as_ref() == Some(&breakpoint);
+        let applied = single.is_current(&breakpoint);
         let current = match pair_bin.current_breakpoint() {
             Some(current) if current == outer => "outer",
             Some(current) if current == inner => "inner",
@@ -109,8 +108,8 @@ fn build(ui: &support::SampleUi) {
         format!(
             "top: bin width {} px   applied: {applied}   label: {}\nbottom: bin width {} px   \
              current: {current}   label: {}\nlog: {}",
-            bin.width(),
-            top_label.text(),
+            single.bin.width(),
+            single.label.text(),
             pair_bin.width(),
             pair_label.text(),
             log.borrow().join(" | ")

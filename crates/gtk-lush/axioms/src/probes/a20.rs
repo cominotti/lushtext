@@ -20,7 +20,7 @@
 use gtk4::prelude::*;
 
 use super::{LAYOUT_SETTLE, row_stride, same_value};
-use crate::fixtures::{HostedList, LIST_HEIGHT, ROWS, realized_rows};
+use crate::fixtures::{HostedList, LIST_HEIGHT, ROWS, RowPlacement, realized_rows, row_placement};
 use crate::observation::{Recorder, Stop};
 use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
@@ -74,15 +74,10 @@ fn run(recorder: &mut Recorder, row: u32, reannounce: bool) -> Result<Run, Stop>
         settle(LAYOUT_SETTLE);
     }
     let moved_value = hosted.adjustment.value();
-    let height = f64::from(hosted.list.height());
     let mapped_in_view = realized_rows(&hosted.list)
         .iter()
         .filter(|widget| widget.is_mapped())
-        .filter_map(|widget| widget.compute_bounds(&hosted.list))
-        .filter(|bounds| {
-            let top = f64::from(bounds.y());
-            top + f64::from(bounds.height()) > 0.0 && top < height
-        })
+        .filter(|widget| row_placement(widget, &hosted.list) == Some(RowPlacement::InView))
         .count();
     recorder.control(
         same_value(moved_value, target) && mapped_in_view > 0,

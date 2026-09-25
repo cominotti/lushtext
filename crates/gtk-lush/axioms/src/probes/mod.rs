@@ -30,6 +30,7 @@ pub(crate) mod adaptive;
 
 use gtk4::prelude::*;
 
+use std::fmt::Display;
 use std::time::Duration;
 
 pub use a01::probe_a01;
@@ -67,4 +68,21 @@ pub(crate) fn same_value(left: f64, right: f64) -> bool {
 #[must_use]
 pub fn row_stride(adjustment: &gtk4::Adjustment, rows: u32) -> f64 {
     adjustment.upper() / f64::from(rows)
+}
+
+/// The frame counter of `widget`'s frame clock, or `-1` without one.
+pub(crate) fn frame_of(widget: &impl IsA<gtk4::Widget>) -> i64 {
+    widget
+        .frame_clock()
+        .map_or(-1, |clock| clock.frame_counter())
+}
+
+/// `entries` joined with ` | `, the separator every probe's event and
+/// allocation logs use in their observations.
+pub(crate) fn join_entries<T: Display>(entries: impl IntoIterator<Item = T>) -> String {
+    entries
+        .into_iter()
+        .map(|entry| entry.to_string())
+        .collect::<Vec<_>>()
+        .join(" | ")
 }

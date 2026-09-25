@@ -17,7 +17,7 @@
 use gtk4::prelude::*;
 
 use super::{LAYOUT_SETTLE, SCROLL_SETTLE, row_stride};
-use crate::fixtures::{HostedList, ROWS, realized_rows, row_index};
+use crate::fixtures::{HostedList, ROWS, RowPlacement, realized_rows, row_index, row_placement};
 use crate::observation::{Recorder, Stop};
 use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
@@ -49,7 +49,6 @@ struct MappedRows {
 impl MappedRows {
     /// Read the mapped rows of `list` against its own allocation.
     fn read(list: &gtk4::ListView) -> Self {
-        let height = f64::from(list.height());
         let mut read = Self {
             mapped: 0,
             intersecting: 0,
@@ -59,18 +58,18 @@ impl MappedRows {
         };
         for row in realized_rows(list).iter().filter(|row| row.is_mapped()) {
             read.mapped += 1;
-            let Some(bounds) = row.compute_bounds(list) else {
-                continue;
+            let (top, above) = match row_placement(row, list) {
+                None => continue,
+                Some(RowPlacement::InView) => {
+                    read.intersecting += 1;
+                    continue;
+                }
+                Some(RowPlacement::Above(top)) => (top, true),
+                Some(RowPlacement::Below(top)) => (top, false),
             };
-            let top = f64::from(bounds.y());
-            let bottom = top + f64::from(bounds.height());
-            if bottom > 0.0 && top < height {
-                read.intersecting += 1;
-                continue;
-            }
             let index = row_index(row).map_or_else(|| "?".to_owned(), |index| index.to_string());
             read.outside.push(format!("{index}@{top}"));
-            if bottom <= 0.0 {
+            if above {
                 read.outside_above += 1;
             } else {
                 read.outside_below += 1;

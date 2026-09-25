@@ -18,6 +18,7 @@ use std::time::Duration;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
+use super::{frame_of, join_entries};
 use crate::fixtures::FixedHost;
 use crate::session::wait_until;
 
@@ -25,6 +26,8 @@ use crate::session::wait_until;
 pub const BASE_XFT_DPI: i32 = 96 * 1024;
 /// The label the setter target shows before any breakpoint applies.
 pub const ORIGINAL_LABEL: &str = "original";
+/// The value the A14–A16 probes' breakpoint setter writes.
+pub const APPLIED_LABEL: &str = "applied";
 /// The minimum width the probe bin requests. `AdwBreakpointBin` needs an
 /// explicit minimum size, and every probe allocates it at least this wide.
 pub const BIN_MIN_WIDTH: i32 = 100;
@@ -48,8 +51,14 @@ pub const fn xft_dpi_for_scale(scale_permille: i32) -> i32 {
 /// Does nothing when there is no default settings object.
 pub fn set_text_scale(scale_permille: i32) {
     if let Some(settings) = gtk4::Settings::default() {
-        settings.set_gtk_xft_dpi(xft_dpi_for_scale(scale_permille));
+        write_text_scale(&settings, scale_permille);
     }
+}
+
+/// Write `settings`' text scale (`gtk-xft-dpi`), in permille: the one writer
+/// behind [`set_text_scale`] and [`SettingsOverride::set_text_scale`].
+fn write_text_scale(settings: &gtk4::Settings, scale_permille: i32) {
+    settings.set_gtk_xft_dpi(xft_dpi_for_scale(scale_permille));
 }
 
 /// Overrides of the default `GtkSettings` a probe needs, reset to the
@@ -85,7 +94,7 @@ impl SettingsOverride {
     /// Set the text scale, in permille.
     pub(crate) fn set_text_scale(&self, scale_permille: i32) {
         if let Some(settings) = self.settings.as_ref() {
-            settings.set_gtk_xft_dpi(xft_dpi_for_scale(scale_permille));
+            write_text_scale(settings, scale_permille);
             self.text_scale.set(true);
         }
     }
@@ -125,7 +134,7 @@ pub fn max_width_sp(sp: i32) -> String {
 }
 
 /// Parse `max-width: <sp>sp`. The string is well formed by construction.
-fn max_width_condition(sp: i32) -> Option<libadwaita::BreakpointCondition> {
+pub(crate) fn max_width_condition(sp: i32) -> Option<libadwaita::BreakpointCondition> {
     libadwaita::BreakpointCondition::parse(&max_width_sp(sp)).ok()
 }
 
@@ -154,11 +163,13 @@ pub(crate) struct AllocationSight {
     pub frame: i64,
 }
 
-/// The frame counter of `widget`'s frame clock, or `-1` without one.
-fn frame_of(widget: &impl IsA<gtk4::Widget>) -> i64 {
-    widget
-        .frame_clock()
-        .map_or(-1, |clock| clock.frame_counter())
+/// The sights as `label@frame` entries, for an observation.
+pub(crate) fn describe_sights(sights: &[AllocationSight]) -> String {
+    join_entries(
+        sights
+            .iter()
+            .map(|sight| format!("{}@{}", sight.label, sight.frame)),
+    )
 }
 
 /// The A14–A16 and A18 fixture: an `AdwBreakpointBin` that a [`FixedHost`]

@@ -118,6 +118,14 @@ pub(crate) fn whole_pixel_band(slice: ViewportSlice, height: i32, min_band: i32)
     (band_top, band_height)
 }
 
+/// The `min_band` the bin passes to [`whole_pixel_band`]: its child's
+/// content-box inset plus one pixel once a page has revealed that inset, so the
+/// page the child works in is never zero (ledger A5), and a whole viewport
+/// until then, so the first page is real and shows the inset exactly.
+pub(crate) fn band_floor(learned_inset: Option<i32>, viewport_height: i32) -> i32 {
+    learned_inset.map_or(viewport_height, |inset| inset.saturating_add(1))
+}
+
 /// Round a logical-pixel length to whole pixels for GTK allocation.
 #[expect(
     clippy::cast_possible_truncation,
@@ -246,6 +254,13 @@ mod tests {
         // A floor never exceeds the widget, and a band above it is untouched.
         assert_eq!(band(0.0, 1.0, 900), (0, 500));
         assert_eq!(band(100.0, 300.0, 11), (100, 300));
+    }
+
+    #[test]
+    fn the_band_floor_is_the_learned_inset_plus_one_or_the_whole_viewport() {
+        assert_eq!(band_floor(None, 665), 665);
+        assert_eq!(band_floor(Some(10), 665), 11);
+        assert_eq!(band_floor(Some(i32::MAX), 665), i32::MAX);
     }
 
     #[test]

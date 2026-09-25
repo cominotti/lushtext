@@ -43,7 +43,7 @@ use crate::ui::sidebar::width_preset::WorkspaceSidebarWidthPreset;
 
 use super::super::imp::PREVIEW_LAYOUT_EDITOR;
 use super::policy::{
-    self, AdaptiveShellInputs, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
+    self, AdaptiveShellInputs, AdaptiveShellLayout, OPEN_BUTTON_BREAKPOINT_MAX_WIDTH_SP,
     PROPERTIES_SIDEBAR_MIN_WIDTH_SP, PaneShare, PropertiesPresentation, RenderedShellState,
     ShellReconciliation, ShellWrite, WORKSPACE_SIDEBAR_MIN_WIDTH_SP, derive_adaptive_shell_layout,
     plan_shell_reconciliation, properties_breakpoint_condition, workspace_breakpoint_condition,
@@ -201,18 +201,15 @@ pub(in crate::ui::window) fn install_split_view_breakpoints(window: &super::Lush
     // the install-time value over the reconciliation's write (A16), so one
     // allocation flipped the layout and back (`shell_loop_layout_setter_flaps`).
     // The signals run inside the bin's allocation, where the setter ran.
-    let window_weak = window.downgrade();
-    properties_bp.connect_apply(move |_| {
-        if let Some(window) = window_weak.upgrade() {
-            sync_secondary_surfaces(&window);
+    let reconcile = |window_weak: glib::WeakRef<super::LushtextWindow>| {
+        move |_: &libadwaita::Breakpoint| {
+            if let Some(window) = window_weak.upgrade() {
+                sync_secondary_surfaces(&window);
+            }
         }
-    });
-    let window_weak = window.downgrade();
-    properties_bp.connect_unapply(move |_| {
-        if let Some(window) = window_weak.upgrade() {
-            sync_secondary_surfaces(&window);
-        }
-    });
+    };
+    properties_bp.connect_apply(reconcile(window.downgrade()));
+    properties_bp.connect_unapply(reconcile(window.downgrade()));
     window
         .imp()
         .properties_breakpoint
@@ -413,13 +410,19 @@ fn rendered_shell_state(window: &super::LushtextWindow) -> RenderedShellState {
     }
 }
 
-/// Plan the reconciliation of the rendered shell with the current intent.
-fn current_reconciliation(window: &super::LushtextWindow) -> ShellReconciliation {
-    plan_shell_reconciliation(
-        rendered_shell_state(window),
-        derive_adaptive_shell_layout(adaptive_shell_inputs(window)),
+/// Plan the reconciliation of the rendered shell with the current intent,
+/// alongside the rendered state and layout the plan was derived from.
+fn current_reconciliation(
+    window: &super::LushtextWindow,
+) -> (RenderedShellState, AdaptiveShellLayout, ShellReconciliation) {
+    let rendered = rendered_shell_state(window);
+    let layout = derive_adaptive_shell_layout(adaptive_shell_inputs(window));
+    let plan = plan_shell_reconciliation(
+        rendered,
+        layout,
         window.imp().properties_breakpoint_max_width.get(),
-    )
+    );
+    (rendered, layout, plan)
 }
 
 /// Apply one planned write, unless the value already holds.
@@ -460,7 +463,7 @@ fn apply_shell_write(window: &super::LushtextWindow, write: ShellWrite) {
 }
 
 pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::LushtextWindow) {
-    let Some(max_width) = current_reconciliation(window).reinstall_threshold else {
+    let Some(max_width) = current_reconciliation(window).2.reinstall_threshold else {
         return;
     };
     let condition =
@@ -474,10 +477,7 @@ pub(in crate::ui::window) fn sync_properties_breakpoint(window: &super::Lushtext
 
 pub(in crate::ui::window) fn sync_secondary_surfaces(window: &super::LushtextWindow) {
     let imp = window.imp();
-    let layout = derive_adaptive_shell_layout(adaptive_shell_inputs(window));
-    let rendered = rendered_shell_state(window);
-    let plan =
-        plan_shell_reconciliation(rendered, layout, imp.properties_breakpoint_max_width.get());
+    let (rendered, layout, plan) = current_reconciliation(window);
     let was_workspace_visible = rendered.workspace_shows_sidebar;
     let was_properties_visible = window.rendered_document_properties_visible();
     let focus_in_workspace = focus_is_within(window, imp.sidebar.upcast_ref::<gtk4::Widget>());

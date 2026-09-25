@@ -11,7 +11,9 @@
 use gtk4::prelude::*;
 
 use super::LAYOUT_SETTLE;
-use super::adaptive::{ALLOCATION_BUDGET, AllocationSight, BreakpointFixture, ORIGINAL_LABEL};
+use super::adaptive::{
+    ALLOCATION_BUDGET, APPLIED_LABEL, BreakpointFixture, ORIGINAL_LABEL, describe_sights,
+};
 use crate::observation::Recorder;
 use crate::session::{Presented, settle, wait_until};
 use crate::{AxiomId, Observation};
@@ -22,8 +24,6 @@ pub const REST_WIDTH: i32 = 700;
 pub const NARROW_SP: i32 = 600;
 /// The condition that does.
 pub const WIDE_SP: i32 = 800;
-/// The setter value the breakpoint writes.
-pub const APPLIED_LABEL: &str = "applied";
 
 /// Probe A15. See the module documentation.
 #[must_use]
@@ -81,7 +81,7 @@ pub fn probe_a15() -> Observation {
         let widen_child_saw = widen_sights.first().cloned();
         recorder.measure("widen_call_frame", widen_call_frame);
         recorder.measure("widen_apply_frame", applies.get().frame);
-        recorder.measure("widen_child_allocations", describe(&widen_sights));
+        recorder.measure("widen_child_allocations", describe_sights(&widen_sights));
 
         // Narrow it back so it no longer matches.
         let _ = fixture.take_seen_at_allocation();
@@ -111,7 +111,7 @@ pub fn probe_a15() -> Observation {
         let narrow_child_saw = narrow_sights.first().cloned();
         recorder.measure("narrow_call_frame", narrow_call_frame);
         recorder.measure("narrow_unapply_frame", unapplies.get().frame);
-        recorder.measure("narrow_child_allocations", describe(&narrow_sights));
+        recorder.measure("narrow_child_allocations", describe_sights(&narrow_sights));
 
         recorder.axiom(
             !sync_current && sync_applies == 0 && sync_label == ORIGINAL_LABEL,
@@ -151,13 +151,4 @@ pub fn probe_a15() -> Observation {
              restored value in the frame after that",
         )
     })
-}
-
-/// The sights as `label@frame` entries, for the observation.
-fn describe(sights: &[AllocationSight]) -> String {
-    sights
-        .iter()
-        .map(|sight| format!("{}@{}", sight.label, sight.frame))
-        .collect::<Vec<_>>()
-        .join(" | ")
 }

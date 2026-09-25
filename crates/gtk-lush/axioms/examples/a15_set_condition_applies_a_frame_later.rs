@@ -14,7 +14,6 @@ use std::rc::Rc;
 use gtk_lush_axioms::AxiomId;
 use gtk_lush_axioms::fixtures::BreakpointFixture;
 use gtk_lush_axioms::fixtures::a15::{APPLIED_LABEL, NARROW_SP, REST_WIDTH, WIDE_SP};
-use libadwaita::prelude::*;
 
 fn build(ui: &support::SampleUi) {
     let fixture = BreakpointFixture::new(REST_WIDTH);
@@ -25,22 +24,20 @@ fn build(ui: &support::SampleUi) {
     let at_return = Rc::new(RefCell::new(String::from("—")));
     for sp in [WIDE_SP, NARROW_SP] {
         let breakpoint = breakpoint.clone();
-        let bin = fixture.bin.clone();
+        let fixture = fixture.clone();
         let at_return = at_return.clone();
         ui.add_control(&format!("set_condition(max-width: {sp}sp)"), move || {
             BreakpointFixture::set_max_width(&breakpoint, sp);
-            let applied = bin.current_breakpoint().as_ref() == Some(&breakpoint);
+            let applied = fixture.is_current(&breakpoint);
             at_return.replace(format!("max-width: {sp}sp → applied at return: {applied}"));
         });
     }
-    let bin = fixture.bin.clone();
-    let label = fixture.label;
     ui.set_readout(move || {
-        let applied = bin.current_breakpoint().as_ref() == Some(&breakpoint);
+        let applied = fixture.is_current(&breakpoint);
         format!(
             "{}   now applied: {applied}   setter target: {}",
             at_return.borrow(),
-            label.text()
+            fixture.label.text()
         )
     });
 }

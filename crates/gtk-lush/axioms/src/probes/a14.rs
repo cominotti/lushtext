@@ -13,7 +13,9 @@ use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
 use super::LAYOUT_SETTLE;
-use super::adaptive::{BreakpointFixture, SettingsOverride, max_width_sp, xft_dpi_for_scale};
+use super::adaptive::{
+    APPLIED_LABEL, BreakpointFixture, SettingsOverride, max_width_condition, xft_dpi_for_scale,
+};
 use crate::observation::{Recorder, Stop};
 use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
@@ -27,8 +29,6 @@ pub const TEXT_SCALES: [i32; 3] = [1000, 1250, 1500];
 pub(crate) const SEARCH_LOW: i32 = 200;
 /// The widest width the bisection starts from (the breakpoint does not).
 pub(crate) const SEARCH_HIGH: i32 = 2_000;
-/// The setter value the breakpoint writes.
-pub const APPLIED_LABEL: &str = "applied";
 /// The width the text-scale re-evaluation step rests at: unapplied at 1.0
 /// (601 px), applied at 1.25 (751.25 px).
 pub const RESCALE_WIDTH: i32 = 700;
@@ -65,7 +65,7 @@ fn window_applies_at(recorder: &mut Recorder, width: i32) -> Result<(bool, i32),
         .height_request(WINDOW_MIN)
         .content(&gtk4::Label::new(Some("window breakpoint")))
         .build();
-    let Ok(condition) = libadwaita::BreakpointCondition::parse(&max_width_sp(CONDITION_SP)) else {
+    let Some(condition) = max_width_condition(CONDITION_SP) else {
         recorder.control(false, "control: the condition parses")?;
         return Ok((false, 0));
     };

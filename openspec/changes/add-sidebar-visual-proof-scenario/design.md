@@ -64,7 +64,7 @@ Reveal readiness needs to know that the bin's forwarded request has been applied
 - *Counting frames:* nondeterministic under a loaded headless compositor, which is the flake class `preexisting-blockers.md` forbids.
 - *Polling the outer adjustment for stability:* passes during the gap between request and idle.
 
-A read-only `ViewportSliceBin::outer_request_pending()` (backed by the existing `outer_request_scheduled` cell) gives the exact state. It is a small, governed GTK Lush API addition: API snapshot, CHANGELOG, and an adoption-lab test. The reveal terminates `revealed` once all of these hold on one frame-clock tick:
+A read-only `ViewportSliceBin::outer_request_pending()` (backed by the existing `pending_outer` cell, `Some` exactly while the idle is scheduled) gives the exact state. It is a small, governed GTK Lush API addition: API snapshot, CHANGELOG, and an adoption-lab test. The reveal terminates `revealed` once all of these hold on one frame-clock tick:
 
 - the row is mapped;
 - the row is inside the outer viewport;

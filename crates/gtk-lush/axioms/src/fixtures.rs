@@ -65,20 +65,23 @@ pub mod a13 {
 }
 /// The values the A14 probe drives its fixture with, for its sample.
 pub mod a14 {
-    pub use crate::probes::a14::{APPLIED_LABEL, CONDITION_SP, RESCALE_WIDTH, TEXT_SCALES};
+    pub use crate::probes::a14::{CONDITION_SP, RESCALE_WIDTH, TEXT_SCALES};
+    pub use crate::probes::adaptive::APPLIED_LABEL;
 }
 /// The values the A15 probe drives its fixture with, for its sample.
 pub mod a15 {
-    pub use crate::probes::a15::{APPLIED_LABEL, NARROW_SP, REST_WIDTH, WIDE_SP};
+    pub use crate::probes::a15::{NARROW_SP, REST_WIDTH, WIDE_SP};
+    pub use crate::probes::adaptive::APPLIED_LABEL;
 }
 /// The values the A16 probe drives its fixture with, for its sample.
 pub mod a16 {
     pub use crate::probes::a16::{
-        APPLIED_LABEL, CONDITION_SP, DOUBLED_TEXT_SCALE, INNER_SP, INNER_VALUE, INSIDE_BOTH_WIDTH,
-        NARROW_WIDTH, OUTER_ONLY_WIDTH, OUTER_SP, OUTER_VALUE, OUTSIDE_BOTH_WIDTH,
-        RESCALE_REST_WIDTH, WIDE_WIDTH, WRITE_BEFORE_ADDING_BOTH_SETTERS,
-        WRITE_BEFORE_ADDING_THE_SETTER, WRITE_WHILE_APPLIED,
+        CONDITION_SP, DOUBLED_TEXT_SCALE, INNER_SP, INNER_VALUE, INSIDE_BOTH_WIDTH, NARROW_WIDTH,
+        OUTER_ONLY_WIDTH, OUTER_SP, OUTER_VALUE, OUTSIDE_BOTH_WIDTH, RESCALE_REST_WIDTH,
+        WIDE_WIDTH, WRITE_BEFORE_ADDING_BOTH_SETTERS, WRITE_BEFORE_ADDING_THE_SETTER,
+        WRITE_WHILE_APPLIED,
     };
+    pub use crate::probes::adaptive::APPLIED_LABEL;
 }
 /// The values the A17 probe drives its fixture with, for its sample.
 pub mod a17 {
@@ -338,6 +341,34 @@ pub fn realized_rows(list: &gtk4::ListView) -> Vec<gtk4::Widget> {
 pub fn row_index(row: &gtk4::Widget) -> Option<u32> {
     let label = row.first_child().and_downcast::<gtk4::Label>()?;
     label.text().strip_prefix("row ")?.parse().ok()
+}
+
+/// Where a row widget lies against its list's own allocation, vertically.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RowPlacement {
+    /// Its bounds intersect `[0, height)` of the list: the row is in view.
+    InView,
+    /// Wholly above the allocation, with its top in list coordinates.
+    Above(f64),
+    /// Wholly below the allocation, with its top in list coordinates.
+    Below(f64),
+}
+
+/// Where `row`, a row widget of `list`, lies against the list's allocation,
+/// or `None` when GTK cannot compute its bounds relative to the list.
+#[must_use]
+pub fn row_placement(row: &gtk4::Widget, list: &gtk4::ListView) -> Option<RowPlacement> {
+    let height = f64::from(list.height());
+    let bounds = row.compute_bounds(list)?;
+    let top = f64::from(bounds.y());
+    let bottom = top + f64::from(bounds.height());
+    Some(if bottom > 0.0 && top < height {
+        RowPlacement::InView
+    } else if bottom <= 0.0 {
+        RowPlacement::Above(top)
+    } else {
+        RowPlacement::Below(top)
+    })
 }
 
 /// The lowest and highest row index among `rows`.

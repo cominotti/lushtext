@@ -15,7 +15,7 @@
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
 
-use super::adaptive::{BreakpointFixture, max_width_sp};
+use super::adaptive::{BreakpointFixture, max_width_condition};
 use crate::observation::{Recorder, Stop};
 use crate::session::Presented;
 use crate::{AxiomId, Observation};
@@ -64,9 +64,7 @@ fn content_window(
         window.set_height_request(WINDOW_HEIGHT / 2);
     }
     if breakpoint {
-        let Ok(condition) =
-            libadwaita::BreakpointCondition::parse(&max_width_sp(WINDOW_CONDITION_SP))
-        else {
+        let Some(condition) = max_width_condition(WINDOW_CONDITION_SP) else {
             recorder.control(false, "control: the condition parses")?;
             return Ok((window, content));
         };

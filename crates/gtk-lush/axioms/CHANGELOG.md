@@ -46,3 +46,7 @@
   `fixtures::ViewportOrder` (with `ViewportEvent`, `QueuedFromNotify`),
   `fixtures::a20::reannounce_value`, and the values under `fixtures::a10`,
   `fixtures::a19`, and `fixtures::a20`.
+- `fixtures::RowPlacement` and `fixtures::row_placement` classify a mapped
+  row against its list's allocation, shared by the A10 and A20 probes and the
+  A10 sample; `APPLIED_LABEL` is one constant re-exported by `fixtures::a14`,
+  `a15`, and `a16`.

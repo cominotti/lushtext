@@ -190,7 +190,7 @@ mod slice_loop {
         ChildAnchorFacts, ChildScrollDecision, classify_child_scroll,
         classify_child_scroll_in_frame,
     };
-    use crate::slice_geometry::{viewport_slice, whole_pixel_band};
+    use crate::slice_geometry::{band_floor, viewport_slice, whole_pixel_band};
 
     /// Height of the chrome (a section header) above every bin.
     pub const HEADER: i32 = 20;
@@ -322,41 +322,46 @@ mod slice_loop {
         bin.anchor_stray = false;
     }
 
+    impl Bin {
+        /// A fresh bin with any content and true inset the model admits.
+        pub fn any() -> Self {
+            let content: i32 = kani::any();
+            let true_inset: i32 = kani::any();
+            kani::assume((0..=MAX_CONTENT).contains(&content));
+            kani::assume((0..=MAX_INSET).contains(&true_inset));
+            // A6: the child's content box lies inside what it measures, so
+            // its reported height is at least its inset.
+            kani::assume(content >= true_inset);
+            Bin {
+                content,
+                true_inset,
+                inset: 0,
+                inset_known: false,
+                published: 0,
+                child: 0,
+                deferred: None,
+                deferred_settle: false,
+                pending: 0,
+                request_anchor: 0,
+                idle_scheduled: false,
+                needs_allocation: true,
+                page: 0,
+                upper: 0,
+                // A fresh list is anchored on its first row at alignment 0.
+                anchor_pos: 0,
+                anchor_value: 0,
+                anchor_page: 0,
+                anchor_stray: false,
+                anchor_published: false,
+            }
+        }
+    }
+
     impl<const N: usize> Loop<N> {
         pub fn any() -> Self {
             let viewport: i32 = kani::any();
             kani::assume((40..=200).contains(&viewport));
-            let bins = [(); N].map(|()| {
-                let content: i32 = kani::any();
-                let true_inset: i32 = kani::any();
-                kani::assume((0..=MAX_CONTENT).contains(&content));
-                kani::assume((0..=MAX_INSET).contains(&true_inset));
-                // A6: the child's content box lies inside what it measures, so
-                // its reported height is at least its inset.
-                kani::assume(content >= true_inset);
-                Bin {
-                    content,
-                    true_inset,
-                    inset: 0,
-                    inset_known: false,
-                    published: 0,
-                    child: 0,
-                    deferred: None,
-                    deferred_settle: false,
-                    pending: 0,
-                    request_anchor: 0,
-                    idle_scheduled: false,
-                    needs_allocation: true,
-                    page: 0,
-                    upper: 0,
-                    // A fresh list is anchored on its first row at alignment 0.
-                    anchor_pos: 0,
-                    anchor_value: 0,
-                    anchor_page: 0,
-                    anchor_stray: false,
-                    anchor_published: false,
-                }
-            });
+            let bins = [(); N].map(|()| Bin::any());
             let mut model = Self {
                 outer: 0,
                 viewport,
@@ -388,25 +393,28 @@ mod slice_loop {
             (upper - self.viewport).max(0)
         }
 
+        /// The band `(top, height)` bin `index` is allocated at the current
+        /// outer value, as the widget computes it.
+        pub fn band(&self, index: usize) -> (i32, i32) {
+            let bin = &self.bins[index];
+            let slice = viewport_slice(
+                f64::from(self.outer - self.origin(index)),
+                f64::from(self.viewport),
+                f64::from(bin.content),
+                0.0,
+            );
+            let min_band = band_floor(bin.inset_known.then_some(bin.inset), self.viewport);
+            whole_pixel_band(slice, bin.content, min_band)
+        }
+
         /// One `size_allocate` of bin `index`, mirroring the widget.
         pub fn allocate(&mut self, index: usize, reaction: Reaction) -> ChildScrollDecision {
             let outer = self.outer;
             let anchor_facts = self.anchor_facts;
             let viewport_top = outer - self.origin(index);
+            let (top, height) = self.band(index);
             let bin = &mut self.bins[index];
             bin.needs_allocation = false;
-            let slice = viewport_slice(
-                f64::from(viewport_top),
-                f64::from(self.viewport),
-                f64::from(bin.content),
-                0.0,
-            );
-            let min_band = if bin.inset_known {
-                bin.inset + 1
-            } else {
-                self.viewport
-            };
-            let (top, height) = whole_pixel_band(slice, bin.content, min_band);
             let held = bin
                 .deferred
                 .take()
@@ -457,12 +465,6 @@ mod slice_loop {
             // A8, for the child's own estimate correction only: moving its
             // rows moves its value by no more than the correction.
             kani::assume(reaction.settle.abs() <= reconfigure_shift);
-            // A7: the value on the line through the anchor. At the page the
-            // anchor was set at, or with the anchor row at the view's edge
-            // (alignment 0), the line is flat. Otherwise a published anchor's
-            // alignment is unconfined, so the value may land anywhere in the
-            // child's range (clamped below); an anchor the child set itself
-            // follows the line exactly.
             // A7: a stray anchor (A20) re-derives the value anywhere once the
             // page differs from the one it was set at. An anchor the child set
             // itself, or one set after its allocation, keeps its alignment in
@@ -672,19 +674,7 @@ mod slice_loop {
 
 /// Where bin `index` of `model` is allocated its band, as the widget computes it.
 fn band_top<const N: usize>(model: &slice_loop::Loop<N>, index: usize) -> i32 {
-    let bin = model.bins[index];
-    let slice = viewport_slice(
-        f64::from(model.outer - model.origin(index)),
-        f64::from(model.viewport),
-        f64::from(bin.content),
-        0.0,
-    );
-    let min_band = if bin.inset_known {
-        bin.inset + 1
-    } else {
-        model.viewport
-    };
-    whole_pixel_band(slice, bin.content, min_band).0
+    model.band(index).0
 }
 
 /// Fixed point at rest, no oscillation, and render fidelity for `N` bins: with
@@ -1148,7 +1138,7 @@ fn slice_bin_decision_depends_only_on_its_own_inputs() {
     let mut b = a;
     let content: i32 = kani::any();
     kani::assume((0..=a.bins[0].content + MAX_BELOW).contains(&content));
-    b.bins[0] = slice_loop::Loop::<2>::any().bins[0];
+    b.bins[0] = slice_loop::Bin::any();
     b.bins[0].content = content;
     let shift = b.origin(1) - a.origin(1);
     b.outer = a.outer + shift;

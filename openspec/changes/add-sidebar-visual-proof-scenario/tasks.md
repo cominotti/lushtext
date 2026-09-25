@@ -17,7 +17,7 @@
 ## 2. Slice-bin evidence accessor (GTK Lush)
 
 - [ ] 2.1 Add a failing adoption-lab widget test (`gtk_lush_adoption.rs`) and a LushText widget test. Both assert `ViewportSliceBin::outer_request_pending()` is true between a forwarded `scroll_to` and its idle, false after it, and false at rest across repeated allocations.
-- [ ] 2.2 Implement the read-only accessor over the existing `outer_request_scheduled` cell, with rustdoc matching `allocation_count()`/`correction_count()`. Update the widgets crate CHANGELOG and README and the public-API snapshot.
+- [ ] 2.2 Implement the read-only accessor over the existing `pending_outer` cell (`is_some()`), with rustdoc matching `allocation_count()`/`correction_count()`. Update the widgets crate CHANGELOG and README and the public-API snapshot.
 - [ ] 2.3 Run `make check-gtk-lush-policy`, `make gtk-lush-public-api-advisory`, `make gtk-lush-doctests`, and `make gtk-lush-adoption-lab`, and confirm 2.1 passes.
 
 ## 3. Reveal resolution and coordination (WFR-WORKSPACE-TREE)

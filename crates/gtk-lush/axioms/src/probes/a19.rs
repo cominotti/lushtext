@@ -28,7 +28,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use super::{LAYOUT_SETTLE, same_value};
+use super::{LAYOUT_SETTLE, frame_of, join_entries, same_value};
 use crate::fixtures::FixedHost;
 use crate::observation::{Recorder, Stop};
 use crate::session::{Presented, settle};
@@ -179,13 +179,6 @@ impl AllocationProbe {
     pub fn allocations(&self) -> u32 {
         self.imp().allocations.get()
     }
-}
-
-/// The frame counter of `widget`'s frame clock, or `-1` without one.
-fn frame_of(widget: &impl IsA<gtk4::Widget>) -> i64 {
-    widget
-        .frame_clock()
-        .map_or(-1, |clock| clock.frame_counter())
 }
 
 /// A queue issued from `notify::page-size` and what became of it.
@@ -418,11 +411,7 @@ fn position(events: &[ViewportEvent], predicate: impl Fn(&ViewportEvent) -> bool
 }
 
 fn describe(events: &[ViewportEvent]) -> String {
-    events
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" | ")
+    join_entries(events)
 }
 
 /// Probe A19. See the module documentation.

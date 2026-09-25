@@ -9,8 +9,9 @@ use std::time::Duration;
 use crate::common::{
     RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
     ensure_gtk_init, first_label, flush_after_delay, flush_events, force_layout, mapped_list_rows,
-    mapped_row_with_label, numbered_label_list, placement_relative_to, present_window,
-    row_straddling_bottom, sample_placements, test_application, wait_until, wait_until_or_false,
+    mapped_row_with_label, numbered_label_list, pin_scroller_height, placement_relative_to,
+    present_window, row_straddling_bottom, sample_placements, test_application, wait_until,
+    wait_until_or_false,
 };
 use gtk_lush_tasks::{FreshnessToken, spawn_blocking_then};
 use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
@@ -1005,23 +1006,10 @@ fn test_adoption_slice_bin_honours_a_request_made_while_the_child_reconfigures()
 // moved the list's value 4664 px. The bin must not forward that settle as a
 // request: the outer scroller belongs to the user.
 
-/// Pin the fixture's outer viewport to `height` pixels, as a window resize
-/// would, without resizing the presented window (GTK4 cannot shrink one).
-fn set_viewport_height(fixture: &SliceAdoptionFixture, height: i32) {
-    fixture.scroller.set_vexpand(false);
-    fixture.scroller.set_valign(gtk4::Align::Start);
-    fixture.scroller.set_propagate_natural_height(true);
-    // Lift the old maximum first: GTK rejects a minimum above the current
-    // maximum, and a growing height would be one.
-    fixture.scroller.set_max_content_height(-1);
-    fixture.scroller.set_min_content_height(height);
-    fixture.scroller.set_max_content_height(height);
-}
-
 #[test]
 fn test_adoption_slice_bin_keeps_the_outer_still_when_the_viewport_height_changes() {
     let fixture = SliceAdoptionFixture::present_with(1, true);
-    set_viewport_height(&fixture, 600);
+    pin_scroller_height(&fixture.scroller, 600);
     flush_after_delay(Duration::from_millis(400));
     let outer = fixture.adjustment();
     for (scroll, height) in [(3000.0, 450), (7000.0, 700), (1000.0, 520)] {
@@ -1029,7 +1017,7 @@ fn test_adoption_slice_bin_keeps_the_outer_still_when_the_viewport_height_change
         flush_after_delay(Duration::from_millis(400));
         let before = outer.value();
         let top_row = fixture.fully_visible_labels(0).first().cloned();
-        set_viewport_height(&fixture, height);
+        pin_scroller_height(&fixture.scroller, height);
         let values = fixture.settled_values(6);
         assert!(
             values

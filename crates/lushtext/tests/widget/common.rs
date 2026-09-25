@@ -313,6 +313,20 @@ pub fn placement_relative_to(
     })
 }
 
+/// Pin `scroller`'s own height to `height` pixels. GTK4 cannot shrink a
+/// presented window, so a test that needs a smaller or larger viewport pins
+/// the scroller instead of resizing the window.
+pub fn pin_scroller_height(scroller: &gtk4::ScrolledWindow, height: i32) {
+    scroller.set_vexpand(false);
+    scroller.set_valign(gtk4::Align::Start);
+    scroller.set_propagate_natural_height(true);
+    // Lift the old maximum first: GTK rejects a minimum above the current
+    // maximum, and a growing height would be one.
+    scroller.set_max_content_height(-1);
+    scroller.set_min_content_height(height);
+    scroller.set_max_content_height(height);
+}
+
 /// Run a layout pass now rather than waiting for the compositor to deliver a
 /// frame: `flush_after_delay` alone only pumps the main loop, and the queued
 /// allocation runs on the next headless frame tick.

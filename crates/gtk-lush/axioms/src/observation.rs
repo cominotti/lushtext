@@ -207,13 +207,24 @@ impl Recorder {
         self.step(holds, check, Verdict::Violated)
     }
 
+    /// A control step on a value the fixture needs: `Some` passes it
+    /// through, `None` fails the step and the fixture is invalid.
+    pub(crate) fn require<T>(&mut self, value: Option<T>, check: &'static str) -> Result<T, Stop> {
+        value.ok_or_else(|| self.stop(check, Verdict::FixtureInvalid))
+    }
+
     fn step(&mut self, holds: bool, check: &'static str, failure: Verdict) -> Result<(), Stop> {
         if holds {
             Ok(())
         } else {
-            self.measure("failed_check", check);
-            Err(Stop(failure))
+            Err(self.stop(check, failure))
         }
+    }
+
+    /// Record `check` as the failed step and stop with `failure`.
+    fn stop(&mut self, check: &'static str, failure: Verdict) -> Stop {
+        self.measure("failed_check", check);
+        Stop(failure)
     }
 }
 
