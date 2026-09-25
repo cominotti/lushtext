@@ -75,6 +75,11 @@ class Shard:
     wall time and peak resident memory on the CI runner, the larger of the
     measured runs, and `measured_in` names the runs they came from. Timing from
     a developer machine does not count as a measurement.
+
+    `kani_flags` are extra `cargo kani` arguments for this shard only, the one
+    place an experimental Kani feature (for example `-Z loop-contracts`) is
+    enabled: `run` appends them to this shard's command and no other, and
+    `github-outputs` exports them per shard so the workflow can show them.
     """
 
     package: str
@@ -83,6 +88,7 @@ class Shard:
     ci_minutes: float | None
     ci_peak_gib: float | None
     measured_in: str
+    kani_flags: tuple[str, ...] = ()
 
     def owns(self, package: str, harness: str) -> bool:
         return self.package == package and any(f in harness for f in self.filters)
@@ -109,6 +115,13 @@ RESAMPLED_IN = (
     "runs 35920992670, 35923346671, 35925626107, 35927734943, 35930757261, "
     "36059814296, 36061831286 (max of the seven)"
 )
+# A new shard's placeholder budget until the first dispatched kani.yml run is
+# recorded (the precedent of `extend-kani-to-pure-policies`); `check` accepts it
+# only while it stays inside the margins, and it is replaced by measured figures
+# before the change lands.
+PROVISIONAL = "PROVISIONAL placeholder until the first dispatched run is recorded"
+PROVISIONAL_MINUTES = 20.0
+PROVISIONAL_PEAK_GIB = 4.0
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -143,11 +156,37 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_learning_frame_",
             "kani_proofs::slice_loop_one_reconfiguring_",
             "kani_proofs::slice_loop_two_reconfiguring_",
+            "kani_proofs::slice_loop_viewport_resize_",
+            "kani_proofs::slice_loop_forwarding_a_published_",
+            "kani_proofs::slice_loop_request_coinciding_",
         ),
         gate="scheduled",
         ci_minutes=16.8,
         ci_peak_gib=1.8,
         measured_in=MEASURED_IN,
+    ),
+    "widgets-slice-loop-pairs": Shard(
+        "gtk-lush-widgets",
+        (
+            "kani_proofs::slice_loop_two_simultaneous_",
+            "kani_proofs::slice_bin_allocation_",
+            "kani_proofs::slice_bin_decision_",
+        ),
+        gate="scheduled",
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
+    ),
+    "widgets-slice-loop-unbounded": Shard(
+        "gtk-lush-widgets",
+        (
+            "kani_proofs::slice_bin_rests_",
+            "kani_proofs::slice_bin_honours_",
+        ),
+        gate="scheduled",
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
     ),
     "core-journal-and-write": Shard(
         "lushtext-core",
@@ -190,6 +229,14 @@ SHARDS: dict[str, Shard] = {
         ci_minutes=13.6,
         ci_peak_gib=2.2,
         measured_in=GEOMETRY_POLICY_MEASURED_IN,
+    ),
+    "core-shell-geometry": Shard(
+        "lushtext-core",
+        ("ui::window::geometry::kani_proofs::shell_loop_",),
+        gate="scheduled",
+        ci_minutes=PROVISIONAL_MINUTES,
+        ci_peak_gib=PROVISIONAL_PEAK_GIB,
+        measured_in=PROVISIONAL,
     ),
 }
 
@@ -255,6 +302,11 @@ def check(found: dict[str, list[str]], unowned: list[Path]) -> list[str]:
             if not any(prefix in name for name in found.get(shard.package, [])):
                 problems.append(f"shard {shard_name} prefix {prefix} matches no harness")
     return problems
+
+
+def shard_flags_output(shards: dict[str, Shard]) -> str:
+    """The `shard-flags` GitHub output: each shard's own extra Kani flags."""
+    return f"shard-flags={json.dumps({name: list(shard.kani_flags) for name, shard in shards.items()})}"
 
 
 def budget_problems(shards: dict[str, Shard]) -> list[str]:
@@ -356,13 +408,21 @@ def summary_markdown(records: list[dict[str, object]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def shard_command(shards: dict[str, Shard], shard: str, target_dir: str) -> list[str]:
+    """The `cargo kani` command for one shard: its package, its harness
+    filters, and its own `kani_flags`, which no other shard receives."""
+    record = shards[shard]
+    command = ["cargo", "kani", "-p", record.package, "--target-dir", target_dir, *record.kani_flags]
+    for prefix in record.filters:
+        command += ["--harness", prefix]
+    return command
+
+
 def run(shard_names: list[str], target_dir: str, measure: str | None = None) -> int:
     records: list[dict[str, object]] = []
     result = 0
     for shard in shard_names:
-        command = ["cargo", "kani", "-p", SHARDS[shard].package, "--target-dir", target_dir]
-        for prefix in SHARDS[shard].filters:
-            command += ["--harness", prefix]
+        command = shard_command(SHARDS, shard, target_dir)
         print(f"Running Kani shard {shard}: {' '.join(command)}", flush=True)
         if measure is None:
             status = subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
@@ -449,6 +509,18 @@ def self_test() -> None:
     for label, shard in cases.items():
         assert budget_problems({label: shard}), f"budget self-test {label} should fail"
 
+    # Per-shard Kani flags reach their own shard's command and no other.
+    flagged = {
+        "plain": good,
+        "contracts": replace(good, filters=("g",), kani_flags=("-Z", "loop-contracts")),
+    }
+    plain = shard_command(flagged, "plain", "target/kani")
+    contracts = shard_command(flagged, "contracts", "target/kani")
+    assert "loop-contracts" not in plain and "-Z" not in plain, plain
+    assert contracts[:8] == ["cargo", "kani", "-p", "p", "--target-dir", "target/kani", "-Z", "loop-contracts"], contracts
+    assert contracts[-2:] == ["--harness", "g"], contracts
+    assert shard_flags_output(flagged) == 'shard-flags={"plain": [], "contracts": ["-Z", "loop-contracts"]}'
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -491,6 +563,7 @@ def main() -> int:
         pr_shards = [shard_name for shard_name, shard in SHARDS.items() if shard.gate == "pull-request"]
         print(f"pr-shards={json.dumps(pr_shards)}")
         print(f"kani-version={kani_version()}")
+        print(shard_flags_output(SHARDS))
         return 0
     if args.shard == "all":
         return run(list(SHARDS), args.target_dir, args.measure)
