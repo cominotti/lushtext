@@ -562,7 +562,7 @@ WHOLE_PIXEL_LOWERING_LINT_RE = re.compile(
     r"clippy::(?:float_arithmetic|disallowed_methods?|restriction|"
     r"blanket_clippy_restriction_lints|style|all)\b"
 )
-ATTRIBUTE_START_RE = re.compile(r"#\s*(!)?\s*\[")
+ATTRIBUTE_START_RE = re.compile(r"#\s*(?:(!)\s*)?\[")
 ATTRIBUTE_NAME_RE = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_:]*)")
 # What may follow an admitting `expect` before the item it admits: more outer
 # attributes (skipped separately), then a function's qualifiers and `fn`.
