@@ -11,19 +11,26 @@ use std::process::ExitCode;
 
 use gtk_lush_axioms::AxiomId;
 use gtk_lush_axioms::fixtures::ReslicingHost;
+use gtk_lush_axioms::fixtures::a13::{IDLE_MOVE, IN_LAYOUT_MOVE};
 use gtk4::prelude::*;
 
 fn build(ui: &support::SampleUi) {
     let fixture = ReslicingHost::new();
     ui.set_fixture(&fixture.scroller);
     let outer = fixture.scroller.vadjustment();
-    ui.add_control("Move outer to 250 from an idle", move || {
-        outer.set_value(250.0);
-    });
+    ui.add_control(
+        &format!("Move outer to {IDLE_MOVE} from an idle"),
+        move || {
+            outer.set_value(IDLE_MOVE);
+        },
+    );
     let in_layout = fixture.clone();
-    ui.add_control("Move outer to 500 inside the next allocation", move || {
-        drop(in_layout.move_outer_inside_next_allocation(500.0));
-    });
+    ui.add_control(
+        &format!("Move outer to {IN_LAYOUT_MOVE} inside the next allocation"),
+        move || {
+            drop(in_layout.move_outer_inside_next_allocation(IN_LAYOUT_MOVE));
+        },
+    );
     let outer = fixture.scroller.vadjustment();
     ui.add_control("Back to the top", move || {
         outer.set_value(0.0);

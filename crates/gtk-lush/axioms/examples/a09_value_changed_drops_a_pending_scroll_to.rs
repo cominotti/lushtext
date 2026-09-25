@@ -11,22 +11,20 @@ use std::process::ExitCode;
 
 use gtk_lush_axioms::AxiomId;
 use gtk_lush_axioms::fixtures::HostedList;
+use gtk_lush_axioms::fixtures::a09::{NUDGE, TARGET_ROW};
 use gtk4::prelude::*;
-
-const TARGET_ROW: u32 = 200;
-const NUDGE: f64 = 10.0;
 
 fn build(ui: &support::SampleUi) {
     let hosted = HostedList::new();
     ui.set_fixture(&hosted.host);
     let list = hosted.list.clone();
-    ui.add_control("scroll_to row 200", move || {
+    ui.add_control(&format!("scroll_to row {TARGET_ROW}"), move || {
         list.scroll_to(TARGET_ROW, gtk4::ListScrollFlags::NONE, None);
     });
     let list = hosted.list.clone();
     let adjustment = hosted.adjustment.clone();
     ui.add_control(
-        "scroll_to row 200, nudged 10 px before it applies",
+        &format!("scroll_to row {TARGET_ROW}, nudged {NUDGE} px before it applies"),
         move || {
             list.scroll_to(TARGET_ROW, gtk4::ListScrollFlags::NONE, None);
             adjustment.set_value(adjustment.value() + NUDGE);

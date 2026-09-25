@@ -11,7 +11,6 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::Duration;
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -20,6 +19,32 @@ pub use crate::probes::a03::ViewportedHost;
 pub use crate::probes::a04::EmissionSites;
 pub use crate::probes::a06::{INSET_CLASS, InsetStyle};
 pub use crate::probes::a13::ReslicingHost;
+pub use crate::probes::row_stride;
+
+/// The values the A1 probe drives its fixture with, for its sample.
+pub mod a01 {
+    pub use crate::probes::a01::{SCROLLED_ROW, TALL_VIEWPORT};
+}
+/// The values the A4 probe drives its fixture with, for its sample.
+pub mod a04 {
+    pub use crate::probes::a04::{FAR_ROW, FOCUS_ROW};
+}
+/// The values the A5 probe drives its fixture with, for its sample.
+pub mod a05 {
+    pub use crate::probes::a05::PUBLISHED_VALUE;
+}
+/// The values the A7 probe drives its fixture with, for its sample.
+pub mod a07 {
+    pub use crate::probes::a07::{BOTTOM_ANCHORED_ROW, HOST_VALUE_ROW, PAGE_SWEEP};
+}
+/// The values the A9 probe drives its fixture with, for its sample.
+pub mod a09 {
+    pub use crate::probes::a09::{NUDGE, TARGET_ROW};
+}
+/// The values the A13 probe drives its fixture with, for its sample.
+pub mod a13 {
+    pub use crate::probes::a13::{IDLE_MOVE, IN_LAYOUT_MOVE};
+}
 
 /// Height every probe row requests, so row geometry is predictable.
 ///
@@ -31,12 +56,6 @@ pub const ROW_HEIGHT: i32 = 30;
 pub const ROWS: u32 = 400;
 /// Height the host gives the list in the resting state.
 pub const LIST_HEIGHT: i32 = 300;
-/// Default size of the window a probe presents its fixture in.
-pub const FIXTURE_WINDOW_SIZE: (i32, i32) = (400, 600);
-
-/// How long a probe waits for its window to realize before calling the
-/// fixture invalid. Generous: realization is scheduling-dependent.
-pub(crate) const REALIZE_BUDGET: Duration = Duration::from_secs(5);
 
 mod imp {
     use std::cell::{Cell, RefCell};
@@ -100,9 +119,9 @@ mod imp {
 gtk4::glib::wrapper! {
     /// Allocates its one child at a fixed height, and counts allocations.
     ///
-    /// It measures `0 × 0` unless [`FixedHost::report_vertical_size`] gives it
-    /// a vertical minimum and natural size, so by default it never passes its
-    /// child's size requests on to its parent.
+    /// It measures `0 × 0` unless a probe gives it a vertical minimum and
+    /// natural size, so by default it never passes its child's size requests
+    /// on to its parent.
     pub struct FixedHost(ObjectSubclass<imp::FixedHost>)
         @extends gtk4::Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
@@ -134,7 +153,7 @@ impl FixedHost {
     }
 
     /// Report `minimum` and `natural` as this host's vertical size request.
-    pub fn report_vertical_size(&self, minimum: i32, natural: i32) {
+    pub(crate) fn report_vertical_size(&self, minimum: i32, natural: i32) {
         self.imp().reported.set(Some((minimum, natural)));
         self.queue_resize();
     }
@@ -146,21 +165,19 @@ impl FixedHost {
     }
 
     /// Whether the host is inside its child's `allocate` call right now.
-    #[must_use]
-    pub fn is_allocating_child(&self) -> bool {
+    pub(crate) fn is_allocating_child(&self) -> bool {
         self.imp().allocating_child.get()
     }
 
     /// Run `hook` inside every later `size_allocate`, before the child.
-    pub fn set_during_allocation(&self, hook: impl Fn() + 'static) {
+    pub(crate) fn set_during_allocation(&self, hook: impl Fn() + 'static) {
         self.imp().during_allocation.replace(Some(Box::new(hook)));
     }
 }
 
 /// A `GtkListView` of `rows` labels `row 0000`, `row 0001`, …, each
 /// requesting [`ROW_HEIGHT`], with no selection.
-#[must_use]
-pub fn numbered_list(rows: u32) -> gtk4::ListView {
+fn numbered_list(rows: u32) -> gtk4::ListView {
     let strings: Vec<String> = (0..rows).map(|index| format!("row {index:04}")).collect();
     let model = gtk4::StringList::new(&strings.iter().map(String::as_str).collect::<Vec<_>>());
     let factory = gtk4::SignalListItemFactory::new();
@@ -213,12 +230,6 @@ impl HostedList {
             list,
             adjustment,
         }
-    }
-
-    /// Count emissions of `value-changed` on the adjustment from now on.
-    #[must_use]
-    pub fn count_value_changes(&self) -> Rc<Cell<u32>> {
-        count_value_changes(&self.adjustment)
     }
 }
 

@@ -9,6 +9,7 @@ mod support;
 use std::process::ExitCode;
 
 use gtk_lush_axioms::AxiomId;
+use gtk_lush_axioms::fixtures::a04::{FAR_ROW, FOCUS_ROW};
 use gtk_lush_axioms::fixtures::{EmissionSites, HostedList};
 use gtk4::prelude::*;
 
@@ -17,12 +18,12 @@ fn build(ui: &support::SampleUi) {
     ui.set_fixture(&hosted.host);
     let sites = EmissionSites::watch(&hosted.adjustment, &hosted.host);
     let list = hosted.list.clone();
-    ui.add_control("scroll_to row 200", move || {
-        list.scroll_to(200, gtk4::ListScrollFlags::NONE, None);
+    ui.add_control(&format!("scroll_to row {FAR_ROW}"), move || {
+        list.scroll_to(FAR_ROW, gtk4::ListScrollFlags::NONE, None);
     });
     let list = hosted.list.clone();
-    ui.add_control("Focus row 20", move || {
-        list.scroll_to(20, gtk4::ListScrollFlags::FOCUS, None);
+    ui.add_control(&format!("Focus row {FOCUS_ROW}"), move || {
+        list.scroll_to(FOCUS_ROW, gtk4::ListScrollFlags::FOCUS, None);
     });
     let adjustment = hosted.adjustment;
     ui.set_readout(move || {

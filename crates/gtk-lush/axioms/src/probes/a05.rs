@@ -8,21 +8,24 @@
 use gtk4::prelude::*;
 
 use super::{LAYOUT_SETTLE, same_value};
-use crate::fixtures::{HostedList, LIST_HEIGHT};
+use crate::fixtures::{HostedList, LIST_HEIGHT, count_value_changes};
 use crate::observation::Recorder;
 use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
 
 /// The value the host publishes before the zero-height allocation.
-pub(crate) const PUBLISHED_VALUE: f64 = 1_200.0;
+pub const PUBLISHED_VALUE: f64 = 1_200.0;
 
 /// Probe A5. See the module documentation.
 #[must_use]
 pub fn probe_a05() -> Observation {
     Recorder::run(AxiomId::new(5), |recorder| {
         let hosted = HostedList::new();
-        let shown = Presented::new(&hosted.host);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let _shown = Presented::checked(
+            recorder,
+            &hosted.host,
+            "control: the fixture window realizes",
+        )?;
         recorder.measure("upper", hosted.adjustment.upper());
         recorder.control(
             hosted.adjustment.upper() > f64::from(LIST_HEIGHT),
@@ -39,7 +42,7 @@ pub fn probe_a05() -> Observation {
             "control: a resting list at a positive height keeps the published value",
         )?;
 
-        let emissions = hosted.count_value_changes();
+        let emissions = count_value_changes(&hosted.adjustment);
         recorder.measure("page_before", hosted.adjustment.page_size());
         hosted.host.set_child_height(0);
         settle(LAYOUT_SETTLE);
@@ -47,7 +50,7 @@ pub fn probe_a05() -> Observation {
         recorder.measure("page_after", hosted.adjustment.page_size());
         recorder.measure("value_changed_emissions", emissions.get());
         recorder.axiom(
-            hosted.adjustment.page_size().abs() < f64::EPSILON,
+            same_value(hosted.adjustment.page_size(), 0.0),
             "A5: the zero-height list publishes a zero page",
         )?;
         recorder.axiom(

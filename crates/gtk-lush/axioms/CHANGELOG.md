@@ -5,8 +5,9 @@
 - First functional in-tree pre-publication implementation: the axiom
   catalogue (`AxiomId`, `Axiom`, `catalogue()`, `find()`), the `Observation`
   / `Verdict` result with a dependency-free one-line JSON encoder, the shared
-  pure-GTK fixtures (`fixtures::FixedHost`, `HostedList`, and the per-axiom
-  fixtures), and probes for A1, A2, A3, A4, A5, A6, A7, A9, A11, and A13.
+  pure-GTK fixtures (`fixtures::FixedHost`, `HostedList`, the per-axiom
+  fixtures, and the values each probe drives them with under
+  `fixtures::aNN`), and probes for A1, A2, A3, A4, A5, A6, A7, A9, A11, and A13.
 - The A5, A9, A11, and A13 probes moved here from LushText's widget-test
   binary with their steps unchanged; their measured values are identical on
   GTK 4.22.5 / Libadwaita 1.9.3. The fixture GType is renamed

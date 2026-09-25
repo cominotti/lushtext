@@ -30,7 +30,7 @@ pub fn probe_a11() -> Observation {
         adjustment.set_value(-5.0);
         recorder.measure("set_value_minus_5_gives", adjustment.value());
         recorder.axiom(
-            adjustment.value().abs() < f64::EPSILON,
+            same_value(adjustment.value(), 0.0),
             "A11: set_value clamps -5 to lower = 0",
         )?;
         adjustment.set_value(1_000.0);

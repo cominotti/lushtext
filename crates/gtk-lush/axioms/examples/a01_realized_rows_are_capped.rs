@@ -11,11 +11,11 @@ mod support;
 use std::process::ExitCode;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::{HostedList, LIST_HEIGHT, realized_rows, row_index_range};
+use gtk_lush_axioms::fixtures::a01::{SCROLLED_ROW, TALL_VIEWPORT};
+use gtk_lush_axioms::fixtures::{
+    HostedList, LIST_HEIGHT, ROWS, realized_rows, row_index_range, row_stride,
+};
 use gtk4::prelude::*;
-
-const TALL_VIEWPORT: i32 = 10_000;
-const FAR_ROW: f64 = 300.0;
 
 fn build(ui: &support::SampleUi) {
     let hosted = HostedList::new();
@@ -25,19 +25,18 @@ fn build(ui: &support::SampleUi) {
         .build();
     ui.set_fixture(&scroller);
     let host = hosted.host.clone();
-    ui.add_control("Tall viewport (10 000 px)", move || {
+    ui.add_control(&format!("Tall viewport ({TALL_VIEWPORT} px)"), move || {
         host.set_child_height(TALL_VIEWPORT);
         host.set_size_request(-1, TALL_VIEWPORT);
     });
     let host = hosted.host.clone();
-    ui.add_control("Resting viewport (300 px)", move || {
+    ui.add_control(&format!("Resting viewport ({LIST_HEIGHT} px)"), move || {
         host.set_child_height(LIST_HEIGHT);
         host.set_size_request(-1, -1);
     });
     let adjustment = hosted.adjustment.clone();
-    ui.add_control("Jump to row 300", move || {
-        let stride = adjustment.upper() / f64::from(gtk_lush_axioms::fixtures::ROWS);
-        adjustment.set_value(FAR_ROW * stride);
+    ui.add_control(&format!("Jump to row {SCROLLED_ROW}"), move || {
+        adjustment.set_value(f64::from(SCROLLED_ROW) * row_stride(&adjustment, ROWS));
     });
     let adjustment = hosted.adjustment.clone();
     ui.add_control("Nudge 1 px", move || {

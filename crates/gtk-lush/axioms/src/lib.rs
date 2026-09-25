@@ -49,7 +49,7 @@ mod session;
 use std::fmt;
 
 pub use catalogue::{Axiom, catalogue, find};
-pub use observation::{Observation, Verdict, adw_version, gtk_version};
+pub use observation::{Observation, Verdict};
 pub use probes::*;
 
 /// The stable id of one ledger axiom, displayed `A1`, `A2`, ….

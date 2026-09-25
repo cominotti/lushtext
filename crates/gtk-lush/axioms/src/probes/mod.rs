@@ -47,6 +47,7 @@ pub(crate) fn same_value(left: f64, right: f64) -> bool {
 /// The drawn height of one probe row: the list's content height over its
 /// row count. Rows are drawn taller than they request (CSS padding), so a
 /// probe derives positions from this rather than from `ROW_HEIGHT`.
-pub(crate) fn row_stride(adjustment: &gtk4::Adjustment, rows: u32) -> f64 {
+#[must_use]
+pub fn row_stride(adjustment: &gtk4::Adjustment, rows: u32) -> f64 {
     adjustment.upper() / f64::from(rows)
 }

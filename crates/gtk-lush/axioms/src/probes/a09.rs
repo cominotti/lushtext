@@ -14,9 +14,9 @@ use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
 
 /// The row the probe asks the list to scroll to.
-pub(crate) const TARGET_ROW: u32 = 200;
+pub const TARGET_ROW: u32 = 200;
 /// How far the probe nudges the adjustment before the next allocation.
-pub(crate) const NUDGE: f64 = 10.0;
+pub const NUDGE: f64 = 10.0;
 
 /// The value at which `TARGET_ROW` is at least in view, computed from the
 /// requested row height as the original probe did. Rows draw taller than
@@ -35,8 +35,11 @@ pub fn probe_a09() -> Observation {
 
         // Control: with no intervening emission the request is applied.
         let honoured = HostedList::new();
-        let shown = Presented::new(&honoured.host);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let shown = Presented::checked(
+            recorder,
+            &honoured.host,
+            "control: the fixture window realizes",
+        )?;
         honoured
             .list
             .scroll_to(TARGET_ROW, gtk4::ListScrollFlags::NONE, None);
@@ -49,9 +52,9 @@ pub fn probe_a09() -> Observation {
         drop(shown);
 
         let dropped = HostedList::new();
-        let shown = Presented::new(&dropped.host);
-        recorder.control(
-            shown.realized(),
+        let _shown = Presented::checked(
+            recorder,
+            &dropped.host,
             "control: the second fixture window realizes",
         )?;
         dropped

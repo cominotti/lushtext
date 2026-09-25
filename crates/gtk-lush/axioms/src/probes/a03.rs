@@ -8,7 +8,7 @@
 
 use gtk4::prelude::*;
 
-use super::LAYOUT_SETTLE;
+use super::{LAYOUT_SETTLE, same_value};
 use crate::fixtures::FixedHost;
 use crate::observation::Recorder;
 use crate::session::{Presented, settle};
@@ -62,8 +62,11 @@ impl Default for ViewportedHost {
 pub fn probe_a03() -> Observation {
     Recorder::run(AxiomId::new(3), |recorder| {
         let fixture = ViewportedHost::new();
-        let shown = Presented::new(&fixture.scroller);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let _shown = Presented::checked(
+            recorder,
+            &fixture.scroller,
+            "control: the fixture window realizes",
+        )?;
         let Some(viewport) = fixture.viewport.clone() else {
             return recorder.control(false, "control: the scroller wraps the host in a viewport");
         };
@@ -95,7 +98,7 @@ pub fn probe_a03() -> Observation {
             "A3: under the default policy the viewport allocates the child its minimum",
         )?;
         recorder.axiom(
-            (default_upper - f64::from(REPORTED_MINIMUM)).abs() < f64::EPSILON,
+            same_value(default_upper, f64::from(REPORTED_MINIMUM)),
             "A3: the scroller's range is the child's minimum, not its natural height",
         )
     })

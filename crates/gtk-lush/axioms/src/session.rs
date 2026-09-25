@@ -13,8 +13,13 @@ use std::time::{Duration, Instant};
 
 use gtk4::prelude::*;
 
-use crate::fixtures::{FIXTURE_WINDOW_SIZE, REALIZE_BUDGET};
+use crate::observation::{Recorder, Stop};
 
+/// Default size of the window a probe presents its fixture in.
+const FIXTURE_WINDOW_SIZE: (i32, i32) = (400, 600);
+/// How long a probe waits for its window to realize before calling the
+/// fixture invalid. Generous: realization is scheduling-dependent.
+const REALIZE_BUDGET: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// Settle time after the window first has a size, matching the old in-app
 /// probes so their measured values stay comparable.
@@ -55,7 +60,7 @@ pub(crate) struct Presented {
 
 impl Presented {
     /// Present `content` in a plain `AdwWindow` with no application.
-    pub(crate) fn new(content: &impl IsA<gtk4::Widget>) -> Self {
+    fn new(content: &impl IsA<gtk4::Widget>) -> Self {
         let (width, height) = FIXTURE_WINDOW_SIZE;
         let window = libadwaita::Window::builder()
             .default_width(width)
@@ -69,9 +74,16 @@ impl Presented {
         Self { window, realized }
     }
 
-    /// Whether the window received a size within the realization budget.
-    pub(crate) const fn realized(&self) -> bool {
-        self.realized
+    /// Present `content` as a control step named `check`: the fixture is
+    /// invalid unless the window receives a size within the budget.
+    pub(crate) fn checked(
+        recorder: &mut Recorder,
+        content: &impl IsA<gtk4::Widget>,
+        check: &'static str,
+    ) -> Result<Self, Stop> {
+        let shown = Self::new(content);
+        recorder.control(shown.realized, check)?;
+        Ok(shown)
     }
 }
 

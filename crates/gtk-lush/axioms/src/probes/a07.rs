@@ -16,19 +16,19 @@
 use gtk4::prelude::*;
 
 use super::{LAYOUT_SETTLE, SCROLL_SETTLE, row_stride, same_value};
-use crate::fixtures::{HostedList, LIST_HEIGHT, ROWS};
+use crate::fixtures::{HostedList, LIST_HEIGHT, ROWS, count_value_changes};
 use crate::observation::Recorder;
 use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
 
 /// The page heights the host sweeps through, starting from [`LIST_HEIGHT`].
-pub(crate) const PAGE_SWEEP: [i32; 3] = [250, 200, 150];
+pub const PAGE_SWEEP: [i32; 3] = [250, 200, 150];
 /// The page height the bottom-anchored list shrinks to.
 pub(crate) const SHRUNK_HEIGHT: i32 = 200;
 /// The row the probe anchors at the bottom edge.
-pub(crate) const BOTTOM_ANCHORED_ROW: u32 = 200;
+pub const BOTTOM_ANCHORED_ROW: u32 = 200;
 /// The row the host moves the value to before the sweep.
-pub(crate) const HOST_VALUE_ROW: u32 = 40;
+pub const HOST_VALUE_ROW: u32 = 40;
 /// A value re-derived at an integer page may round by up to a pixel.
 pub(crate) const ROUNDING: f64 = 1.5;
 
@@ -37,8 +37,11 @@ pub(crate) const ROUNDING: f64 = 1.5;
 pub fn probe_a07() -> Observation {
     Recorder::run(AxiomId::new(7), |recorder| {
         let swept = HostedList::new();
-        let shown = Presented::new(&swept.host);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let shown = Presented::checked(
+            recorder,
+            &swept.host,
+            "control: the fixture window realizes",
+        )?;
         let stride = row_stride(&swept.adjustment, ROWS);
         recorder.measure("row_stride", stride);
         let host_value = f64::from(HOST_VALUE_ROW) * stride;
@@ -80,9 +83,9 @@ pub fn probe_a07() -> Observation {
         drop(shown);
 
         let bottom = HostedList::new();
-        let shown = Presented::new(&bottom.host);
-        recorder.control(
-            shown.realized(),
+        let _shown = Presented::checked(
+            recorder,
+            &bottom.host,
             "control: the second fixture window realizes",
         )?;
         bottom
@@ -95,7 +98,7 @@ pub fn probe_a07() -> Observation {
             bottom_value > 0.0,
             "control: scroll_to a row below the view scrolls down",
         )?;
-        let emissions = bottom.count_value_changes();
+        let emissions = count_value_changes(&bottom.adjustment);
         bottom.host.set_child_height(SHRUNK_HEIGHT);
         settle(LAYOUT_SETTLE);
         recorder.measure(

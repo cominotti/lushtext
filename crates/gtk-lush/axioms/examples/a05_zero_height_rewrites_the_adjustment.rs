@@ -9,23 +9,24 @@ mod support;
 use std::process::ExitCode;
 
 use gtk_lush_axioms::AxiomId;
-use gtk_lush_axioms::fixtures::{HostedList, LIST_HEIGHT};
+use gtk_lush_axioms::fixtures::a05::PUBLISHED_VALUE;
+use gtk_lush_axioms::fixtures::{HostedList, LIST_HEIGHT, count_value_changes};
 use gtk4::prelude::*;
 
 fn build(ui: &support::SampleUi) {
     let hosted = HostedList::new();
     ui.set_fixture(&hosted.host);
-    let emissions = hosted.count_value_changes();
+    let emissions = count_value_changes(&hosted.adjustment);
     let adjustment = hosted.adjustment.clone();
-    ui.add_control("Publish value 1200", move || {
-        adjustment.set_value(1_200.0);
+    ui.add_control(&format!("Publish value {PUBLISHED_VALUE}"), move || {
+        adjustment.set_value(PUBLISHED_VALUE);
     });
     let host = hosted.host.clone();
     ui.add_control("Allocate zero height", move || {
         host.set_child_height(0);
     });
     let host = hosted.host.clone();
-    ui.add_control("Restore 300 px", move || {
+    ui.add_control(&format!("Restore {LIST_HEIGHT} px"), move || {
         host.set_child_height(LIST_HEIGHT);
     });
     let adjustment = hosted.adjustment.clone();

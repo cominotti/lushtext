@@ -47,12 +47,6 @@ impl Verdict {
     }
 }
 
-impl fmt::Display for Verdict {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
 /// One probe run: its verdict, what it measured, and where it ran.
 ///
 /// A probe records every value it reads, not only the ones its verdict turns
@@ -74,8 +68,8 @@ pub struct Observation {
 
 impl Observation {
     /// The value measured under `key`, if the probe recorded one.
-    #[must_use]
-    pub fn measured_value(&self, key: &str) -> Option<&str> {
+    #[cfg(test)]
+    fn measured_value(&self, key: &str) -> Option<&str> {
         self.measured
             .iter()
             .find(|(name, _)| *name == key)
@@ -131,12 +125,7 @@ fn push_json_string(out: &mut String, text: &str) {
 }
 
 /// The running GTK version, `major.minor.micro`.
-///
-/// # Panics
-///
-/// Panics when GTK is not initialized on the calling thread.
-#[must_use]
-pub fn gtk_version() -> String {
+fn gtk_version() -> String {
     format!(
         "{}.{}.{}",
         gtk4::major_version(),
@@ -146,12 +135,7 @@ pub fn gtk_version() -> String {
 }
 
 /// The running Libadwaita version, `major.minor.micro`.
-///
-/// # Panics
-///
-/// Panics when GTK is not initialized on the calling thread.
-#[must_use]
-pub fn adw_version() -> String {
+fn adw_version() -> String {
     format!(
         "{}.{}.{}",
         libadwaita::major_version(),
@@ -288,7 +272,7 @@ mod tests {
         assert_eq!(Verdict::Holds.exit_code(), 0);
         assert_eq!(Verdict::Violated.exit_code(), 1);
         assert_eq!(Verdict::FixtureInvalid.exit_code(), 2);
-        assert_eq!(Verdict::FixtureInvalid.to_string(), "fixture-invalid");
+        assert_eq!(Verdict::FixtureInvalid.as_str(), "fixture-invalid");
     }
 
     #[test]

@@ -18,8 +18,11 @@ use crate::{AxiomId, Observation};
 pub fn probe_a02() -> Observation {
     Recorder::run(AxiomId::new(2), |recorder| {
         let hosted = HostedList::new();
-        let shown = Presented::new(&hosted.host);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let _shown = Presented::checked(
+            recorder,
+            &hosted.host,
+            "control: the fixture window realizes",
+        )?;
         let content = hosted.adjustment.upper();
         let stride = row_stride(&hosted.adjustment, ROWS);
         recorder.measure("content_height", content);

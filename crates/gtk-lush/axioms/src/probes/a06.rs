@@ -7,7 +7,7 @@
 
 use gtk4::prelude::*;
 
-use super::LAYOUT_SETTLE;
+use super::{LAYOUT_SETTLE, same_value};
 use crate::fixtures::{HostedList, LIST_HEIGHT};
 use crate::observation::Recorder;
 use crate::session::{Presented, settle};
@@ -64,12 +64,15 @@ pub fn probe_a06() -> Observation {
         let style = InsetStyle::install();
         recorder.control(style.display.is_some(), "control: a default display exists")?;
         let hosted = HostedList::new();
-        let shown = Presented::new(&hosted.host);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let _shown = Presented::checked(
+            recorder,
+            &hosted.host,
+            "control: the fixture window realizes",
+        )?;
         recorder.measure("allocation", LIST_HEIGHT);
         recorder.measure("unpadded_page", hosted.adjustment.page_size());
         recorder.control(
-            (hosted.adjustment.page_size() - f64::from(LIST_HEIGHT)).abs() < f64::EPSILON,
+            same_value(hosted.adjustment.page_size(), f64::from(LIST_HEIGHT)),
             "control: an unpadded list publishes its whole allocation as its page",
         )?;
 
@@ -80,11 +83,17 @@ pub fn probe_a06() -> Observation {
         recorder.measure("padded_page", hosted.adjustment.page_size());
         recorder.measure("padded_content_height", hosted.list.height());
         recorder.axiom(
-            (hosted.adjustment.page_size() - f64::from(LIST_HEIGHT - inset)).abs() < f64::EPSILON,
+            same_value(
+                hosted.adjustment.page_size(),
+                f64::from(LIST_HEIGHT - inset),
+            ),
             "A6: a padded list publishes allocation minus inset as its page",
         )?;
         recorder.axiom(
-            (hosted.adjustment.page_size() - f64::from(hosted.list.height())).abs() < f64::EPSILON,
+            same_value(
+                hosted.adjustment.page_size(),
+                f64::from(hosted.list.height()),
+            ),
             "A6: the published page is the list's content-box height",
         )
     })

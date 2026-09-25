@@ -88,9 +88,11 @@ this way; every later axiom follows the same steps.
    `FixtureInvalid`) followed by `axiom` steps (the behaviour holds; failure
    is `Violated`), and `measure` every value before a step checks it. Build
    fixtures from `fixtures` (`HostedList`, `FixedHost`, …); present them with
-   `session::Presented`, and wait with `session::settle`, never an unbounded
-   loop. A fixture a sample also needs is `pub` and re-exported from
-   `fixtures`.
+   `session::Presented::checked`, and wait with `session::settle`, never an
+   unbounded loop. A fixture a sample also needs is `pub` and re-exported from
+   `fixtures`, and the values the probe drives it with (rows, moves, pages)
+   are `pub` constants re-exported from `fixtures::aNN`, so the sample shows
+   exactly what the probe measures.
 4. **Sample.** Create `examples/aNN_<slug>.rs` — the file stem is the
    catalogue `name` — with `mod support;` and
    `support::run(AxiomId::new(NN), build)`, where `build` calls

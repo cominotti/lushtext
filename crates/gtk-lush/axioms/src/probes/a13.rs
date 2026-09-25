@@ -21,9 +21,9 @@ use crate::{AxiomId, Observation};
 /// Height of the tall host inside the scroller.
 pub(crate) const TALL_CONTENT: i32 = 4_000;
 /// The outer move made from outside layout (the control).
-pub(crate) const IDLE_MOVE: f64 = 250.0;
+pub const IDLE_MOVE: f64 = 250.0;
 /// The outer move made from inside the host's allocation (the axiom).
-pub(crate) const IN_LAYOUT_MOVE: f64 = 500.0;
+pub const IN_LAYOUT_MOVE: f64 = 500.0;
 
 /// The A13 fixture: a tall [`FixedHost`] inside a scroller, re-allocated on
 /// every outer `value-changed` the way the slice bin re-slices.
@@ -83,8 +83,11 @@ impl Default for ReslicingHost {
 pub fn probe_a13() -> Observation {
     Recorder::run(AxiomId::new(13), |recorder| {
         let fixture = ReslicingHost::new();
-        let shown = Presented::new(&fixture.scroller);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let _shown = Presented::checked(
+            recorder,
+            &fixture.scroller,
+            "control: the fixture window realizes",
+        )?;
         let outer = fixture.scroller.vadjustment();
 
         // Control: the same move from outside layout re-allocates the host.

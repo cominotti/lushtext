@@ -18,13 +18,13 @@ use crate::session::{Presented, settle};
 use crate::{AxiomId, Observation};
 
 /// The row the probe scrolls down to.
-pub(crate) const FAR_ROW: u32 = 200;
+pub const FAR_ROW: u32 = 200;
 /// The row the probe then focuses, back near the top.
-pub(crate) const FOCUS_ROW: u32 = 20;
+pub const FOCUS_ROW: u32 = 20;
 
 /// Counts `value-changed` emissions, and how many came while the host was
 /// allocating its child.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct EmissionSites {
     total: Rc<Cell<u32>>,
     inside_allocation: Rc<Cell<u32>>,
@@ -35,7 +35,10 @@ impl EmissionSites {
     /// allocation state at the moment it fires.
     #[must_use]
     pub fn watch(adjustment: &gtk4::Adjustment, host: &FixedHost) -> Self {
-        let sites = Self::default();
+        let sites = Self {
+            total: Rc::default(),
+            inside_allocation: Rc::default(),
+        };
         let counted = sites.clone();
         let weak_host = host.downgrade();
         adjustment.connect_value_changed(move |_| {
@@ -70,8 +73,11 @@ impl EmissionSites {
 pub fn probe_a04() -> Observation {
     Recorder::run(AxiomId::new(4), |recorder| {
         let hosted = HostedList::new();
-        let shown = Presented::new(&hosted.host);
-        recorder.control(shown.realized(), "control: the fixture window realizes")?;
+        let _shown = Presented::checked(
+            recorder,
+            &hosted.host,
+            "control: the fixture window realizes",
+        )?;
         let stride = row_stride(&hosted.adjustment, ROWS);
         recorder.measure("row_stride", stride);
 
