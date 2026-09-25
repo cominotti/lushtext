@@ -1437,6 +1437,13 @@ Next candidates after the Kani consolidation are ranked in
   confirmed, so no confirmed-other body is removed, but the window between
   that re-check and the removal is unguarded. No failing sequence is known;
   take it up with a design for acquiring the guard inside `place()`.
+- `verify-multi-window-draft-journal` follow-up: the per-application
+  journal's claim resolution and cleanup-ownership decisions live in
+  `ui/window/drafts/admission.rs`. The Kani multi-window model re-states them
+  in the harness instead of calling production. Moving them into
+  `journal_core` would make the two-window harness check the shipped
+  decisions, as it already does for the journal decisions. It needs the
+  harness adapted and `core-multi-window` re-measured.
 - Slice-bin residuals added by `extend-closed-loop-geometry-verification`
   (phase 3): a child request applied in the very allocation in which a window
   resize changes the band, after an outer scroll, is written back and erased
