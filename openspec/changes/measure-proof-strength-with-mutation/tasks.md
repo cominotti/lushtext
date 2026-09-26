@@ -7,50 +7,50 @@ recorded figures are present, then mark the tasks done without re-editing
 `.cargo/mutants.toml`. Tasks 1.4–1.5 stay here only if that change did not
 already add an equivalent `cfg(kani)` declaration check.
 
-- [ ] 1.1 Record the "before" figures from the tool. Save the output of
+- [x] 1.1 Record the "before" figures from the tool. Save the output of
   `cargo mutants --list --workspace` as the before list, and record from it:
   - the total (6,001 at 170212d9);
   - the per-file counts;
   - the 171 harness-file mutants (138 in `draft_service/kani_proofs.rs`,
     33 in `write_protocol/kani_proofs.rs`).
-- [ ] 1.2 Add `crates/**/kani_proofs.rs` and `crates/**/kani_proofs/**` to
+- [x] 1.2 Add `crates/**/kani_proofs.rs` and `crates/**/kani_proofs/**` to
   `exclude_globs` in `.cargo/mutants.toml`, with a comment that explains the
   `cfg(kani)` reason.
-- [ ] 1.3 Re-list and diff against 1.1. Verify all of the following:
+- [x] 1.3 Re-list and diff against 1.1. Verify all of the following:
   - the total drops by exactly the harness population;
   - no listed name matches `kani_proofs`;
   - every production file's count is unchanged.
 
   Record the figures in `docs/mutation-testing.md`, under Scope.
-- [ ] 1.4 Extend `scripts/kani-shards.py check` so that every file named
+- [x] 1.4 Extend `scripts/kani-shards.py check` so that every file named
   `kani_proofs.rs`, or under a `kani_proofs/` directory, is declared behind
   `#[cfg(kani)]`. Add self-test cases for this.
-- [ ] 1.5 Confirm the check fails first. Temporarily remove the `#[cfg(kani)]`
+- [x] 1.5 Confirm the check fails first. Temporarily remove the `#[cfg(kani)]`
   from one `mod kani_proofs;` declaration and confirm the check fails; then
   restore it. Confirm `make check-policy` passes.
 
 ## 2. Oracle table and baseline
 
-- [ ] 2.1 Add the `ORACLES` table (design D2) to `scripts/kani-shards.py`,
+- [x] 2.1 Add the `ORACLES` table (design D2) to `scripts/kani-shards.py`,
   covering the four modules. Give each harness its recorded seconds from the
   programme record and a `ci` or `local` tier. Record
   `a_second_writer_breaks_the_journal_invariants` as "not an oracle", with
   its reason.
-- [ ] 2.2 Extend `check`, with self-test cases:
+- [x] 2.2 Extend `check`, with self-test cases:
   - every oracle harness resolves to exactly one discovered harness;
   - every oracle module exists;
   - every harness file's checked module is listed or marked
     "not an oracle".
 
   Confirm it fails first by misspelling one oracle harness.
-- [ ] 2.3 Add an `oracle <module> [--tier ci|all]` subcommand that prints the
+- [x] 2.3 Add an `oracle <module> [--tier ci|all]` subcommand that prints the
   ordered exact harness names.
-- [ ] 2.4 Establish how Kani 0.68 reports an unsatisfiable `kani::cover!`:
+- [x] 2.4 Establish how Kani 0.68 reports an unsatisfiable `kani::cover!`:
   1. Write a throwaway harness in the scratchpad with a deliberately
      unsatisfiable cover.
   2. Record the exit status and the result-line format.
   3. Choose exit-status or line-parsing vacuity detection accordingly.
-- [ ] 2.5 Measure the costs on the unmutated tree:
+- [x] 2.5 Measure the costs on the unmutated tree:
   - the incremental `cargo kani` compile cost C for `gtk-lush-widgets` and
     for `lushtext-core`, after a one-line touch of each module;
   - the per-harness seconds of every oracle harness.
@@ -59,7 +59,7 @@ already add an equivalent `cfg(kani)` declaration check.
 
 ## 3. Proof-strength driver
 
-- [ ] 3.1 Write `scripts/proof-strength.py`, implementing design D1, D3, and
+- [x] 3.1 Write `scripts/proof-strength.py`, implementing design D1, D3, and
   D4:
   - the `list`, `baseline`, `run`, and `report` subcommands;
   - disposable worktree creation and reuse;
@@ -71,7 +71,7 @@ already add an equivalent `cfg(kani)` declaration check.
   - the six outcome classes;
   - per-mutant JSON results keyed by revision and table hash;
   - `--shard k/n`.
-- [ ] 3.2 Add a `--self-test` that runs without Kani. It covers:
+- [x] 3.2 Add a `--self-test` that runs without Kani. It covers:
   - diff application and restore on a fixture file;
   - the floor post-filter;
   - outcome classification from canned Kani output (verified, failed,
@@ -88,7 +88,7 @@ already add an equivalent `cfg(kani)` declaration check.
   - the join on mutant name.
 
   Measure its wall time per module.
-- [ ] 3.4 Add the Makefile targets `proof-strength` and `proof-strength-list`,
+- [x] 3.4 Add the Makefile targets `proof-strength` and `proof-strength-list`,
   with `PROOF_STRENGTH_MODULE`, `PROOF_STRENGTH_TIER`, `PROOF_STRENGTH_SHARD`,
   and `PROOF_STRENGTH_ARM`. Reuse the `KANI_VERSION` guard from `make kani`,
   and add both targets to `.PHONY` and `make help`.

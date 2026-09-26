@@ -21,6 +21,7 @@
 #   make fuzz-smoke  - Run bounded fuzz smoke against temporary corpus copies
 #   make fuzz-operation-smoke - Run bounded structured operation fuzz smoke
 #   make kani        - Run every Kani proof harness (requires the pinned Kani)
+#   make proof-strength - Kani mutation oracle vs the tests arm (local, resumable)
 #   make formal-evaluation - LOCAL ONLY: rerun the Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 #   make test-widget - Widget tests under the private headless runner
 #   make test-widget-headless - Widget tests under mutter --headless
@@ -88,7 +89,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani check-kani-shards formal-evaluation check-widget-shards test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani proof-strength proof-strength-list check-kani-shards formal-evaluation check-widget-shards test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -150,6 +151,15 @@ KANI_TARGET_DIR ?= target/kani
 # Measurement mode: a JSON path makes `make kani` record each shard's wall time,
 # peak memory, and per-harness verification time (`kani-shards.py run --measure`).
 KANI_MEASURE ?=
+# Proof-strength lane (scripts/proof-strength.py): Kani harnesses as a mutation
+# oracle, beside cargo-mutants' tests arm. LOCAL by default; see
+# docs/mutation-testing.md. MODULE is an ORACLES path of scripts/kani-shards.py
+# or `all`; TIER `ci` runs only the cheap harnesses; SHARD is k/n; ARM is
+# tests, kani, or both.
+PROOF_STRENGTH_MODULE ?= all
+PROOF_STRENGTH_TIER ?= all
+PROOF_STRENGTH_SHARD ?=
+PROOF_STRENGTH_ARM ?= both
 
 # Quint vs TLA+ evaluation (docs/next/formal-verification-quint-vs-tlaplus.md).
 # LOCAL ONLY and disposable: not a prerequisite of check, check-policy, test,
@@ -302,14 +312,30 @@ fuzz-smoke:
 # `should_panic` harnesses count as passing only when Kani finds their
 # documented counterexample.
 kani:
-	@set -eu; \
-	installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^Kani Rust Verifier \([0-9.]*\).*/\1/p' | head -n 1 || true); \
+	@set -eu; $(KANI_VERSION_GUARD); \
+	./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
+
+# The pinned-Kani guard shared by the Kani and proof-strength lanes.
+KANI_VERSION_GUARD = installed=$$(cargo kani --version 2>/dev/null | sed -n 's/^Kani Rust Verifier \([0-9.]*\).*/\1/p' | head -n 1 || true); \
 	if [ "$$installed" != "$(KANI_VERSION)" ]; then \
-		echo "make kani needs Kani $(KANI_VERSION) (found: $${installed:-none})." >&2; \
+		echo "$@ needs Kani $(KANI_VERSION) (found: $${installed:-none})." >&2; \
 		echo "Install it with: cargo install --locked kani-verifier --version $(KANI_VERSION) && cargo kani setup" >&2; \
 		exit 1; \
-	fi; \
-	./scripts/kani-shards.py run "$(KANI_SHARD)" --target-dir "$(KANI_TARGET_DIR)" $(if $(KANI_MEASURE),--measure "$(KANI_MEASURE)")
+	fi
+
+# Proof strength: apply each mutant of a Kani-checked module in a disposable
+# worktree, run its oracle harnesses cheapest first, run cargo-mutants over the
+# same module, and report the kill rates of both arms joined on mutant name.
+# Resumable; one Kani run at a time.
+proof-strength:
+	@set -eu; $(KANI_VERSION_GUARD); \
+	./scripts/proof-strength.py measure --module "$(PROOF_STRENGTH_MODULE)" --tier "$(PROOF_STRENGTH_TIER)" \
+		--arm "$(PROOF_STRENGTH_ARM)" $(if $(PROOF_STRENGTH_SHARD),--shard "$(PROOF_STRENGTH_SHARD)")
+
+# The proof-strength population (mutants, floor, oracle scope, harness order),
+# without verifying anything.
+proof-strength-list:
+	./scripts/proof-strength.py list --module "$(PROOF_STRENGTH_MODULE)" --tier "$(PROOF_STRENGTH_TIER)"
 
 # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models under
 # formal/evaluation/ with the tool versions the report records. Tools install
@@ -322,6 +348,7 @@ formal-evaluation:
 check-kani-shards:
 	@echo "Checking the Kani shard table..."
 	./scripts/kani-shards.py check --self-test
+	./scripts/proof-strength.py --self-test
 
 # Every widget test belongs to exactly one CI shard of scripts/widget-shards.py,
 # each shard measured within its budget; static discovery, no build needed.
@@ -984,6 +1011,8 @@ help:
 	@echo ""
 	@echo "Formal verification (explicit lane):"
 	@echo "  kani         Run every Kani proof harness with the pinned Kani version"
+	@echo "  proof-strength Kani harnesses as a mutation oracle beside the tests arm (PROOF_STRENGTH_MODULE/TIER/SHARD/ARM)"
+	@echo "  proof-strength-list List the proof-strength mutant population without verifying"
 	@echo "  formal-evaluation LOCAL ONLY: rerun the Quint vs TLA+ evaluation (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)"
 	@echo ""
 	@echo "Mutation targets:"

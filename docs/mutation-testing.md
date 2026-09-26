@@ -41,6 +41,28 @@ choosers, and live allocation behavior belong in
 `scripts/run-widget-tests.sh`, where the harness owns Mutter, D-Bus, renderer
 settings, retries, and warning filtering.
 
+### Harness code is excluded, measured from the tool
+
+Kani harness modules are verification code: each is declared
+`#[cfg(kani)] mod kani_proofs;`, so the test builds cargo-mutants runs never
+compile it and every mutant in it would be reported as missed.
+`exclude_globs` removes `crates/**/kani_proofs.rs` and
+`crates/**/kani_proofs/**` by name. The exclusion is proved from the tool, not
+from the config: at `848f94f8` (`measure-proof-strength-with-mutation`),
+`cargo mutants --list --workspace` gives **6,378** mutants with both globs
+removed from a copy of the config and **5,972** with them, a drop of exactly
+the **406** harness-file mutants (297 in `services/draft_service/kani_proofs.rs`,
+56 in `model/editor_memory/kani_proofs.rs`, 33 in
+`services/filesystem/write_protocol/kani_proofs.rs`, 20 in
+`services/draft_service/set_aside_retention/kani_proofs.rs`; the `ui/**`
+harnesses sit outside `examine_globs` already). No listed name contains
+`kani_proofs`, and every production file's count is identical in both lists.
+The directory glob matches nothing yet (it removes 0); it keeps a harness
+module's future child files out of scope, and `make check-kani-shards` requires
+every `kani_proofs/` directory to sit beside the `cfg(kani)`-gated
+`kani_proofs.rs` that declares it (rule 9 of `make check-workflow-boundaries`
+checks that gate).
+
 ## Local Setup
 
 Install the tools once:
@@ -79,6 +101,56 @@ and timeout behavior. `mutants-diff` creates a diff against `origin/main` when
 no diff file is supplied and filters mutants to changed hunks. `mutants-full`
 runs the configured deterministic scope and can be sharded with `MUTANTS_SHARD`.
 `mutants-list` prints the configured candidates without running tests.
+
+### Proof strength (Kani as the oracle)
+
+cargo-mutants can only use `cargo test` or nextest as its oracle, so the
+Kani-checked modules have a second lane, `scripts/proof-strength.py`, which
+applies each mutant itself and runs the module's Kani harnesses against it.
+The mutant-to-harness table is `ORACLES` in `scripts/kani-shards.py`, beside
+the shard table, and `make check-kani-shards` checks it.
+
+```sh
+make proof-strength-list                                   # population, floor, harness order; verifies nothing
+make proof-strength                                        # every oracle module, both arms, then the report
+make proof-strength PROOF_STRENGTH_MODULE=crates/lushtext-core/src/services/filesystem/write_protocol.rs
+make proof-strength PROOF_STRENGTH_TIER=ci                 # the cheap harnesses only
+make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
+./scripts/proof-strength.py report --markdown build/proof-strength.md
+./scripts/proof-strength.py clean                          # remove the disposable worktree
+```
+
+- **Isolation.** Every mutant is applied in the disposable detached worktree
+  `target/proof-strength/wt` at the committed revision (`--rev`, default
+  `HEAD`), never in the developer tree, so uncommitted edits are neither
+  mutated nor checked. Commit first to measure them.
+- **Population.** Both arms list through the repository config with
+  `examine_globs` narrowed to the one module, so the calibrated `exclude_re`
+  entries apply and the whole-scope field-deletion floor (reported separately,
+  from a `--re` listing) is not run. An oracle may be scoped to named functions
+  (`functions` in `ORACLES`) when its harnesses cover only part of a large
+  module; the rest is counted as outside the oracle, not as survivors.
+- **Kani arm.** Harnesses run cheapest first and stop at the first failure;
+  cheap harnesses share one `cargo kani` invocation. Each harness has a
+  timeout of three times its baseline seconds (at least a minute). A harness
+  whose baseline symbol table does not name the mutated function is skipped,
+  because its program is unchanged (never for a constant or a `const fn`).
+  Classes: killed (with `should_panic` kills flagged), vacuity (a baseline
+  cover became unsatisfiable), timeout, unviable, and survived. Only killed
+  counts as a kill.
+- **Tests arm.** cargo-mutants over the same module with
+  `lushtext-core/property-tests` enabled (the default lane omits it, but the
+  property suites are the tests-side counterpart of the proofs), two jobs.
+- **Resume.** One JSON result per mutant under
+  `target/proof-strength/results/<rev>/`; a restart with the same revision and
+  oracle entry skips finished mutants. A `ci`-tier survivor is re-opened by an
+  `all`-tier run, which runs only the harnesses it has not met.
+- **Cost.** The Kani arm runs one CBMC at a time and never overlaps the tests
+  arm. The `local` tier (the slice-loop, shell-loop, editor-memory, and
+  journal harnesses) can cost tens of minutes per surviving mutant and stays
+  local-only. The first measurement is in progress; its figures, triage, and
+  the lane-placement decision will be recorded in a "Proof strength (N9)"
+  section of `docs/next/formal-verification.md`.
 
 ## Local Parallelism
 
@@ -422,11 +494,13 @@ Classify each survivor:
   Increase `MUTANTS_TIMEOUT` only when the test is legitimately slow and stable.
 
 Verification and fixture code is out of scope by name, not by survivor:
-`crates/**/kani_proofs.rs` (Kani harness modules, compiled only under
-`cfg(kani)`, so no build cargo-mutants runs compiles them and no test can kill
-their mutants) and the two fixture modules, `services/filesystem/fixture.rs`
-and `services/draft_service/fixture.rs`. Excluding them removed 172 mutants
-(6,001 to 5,829): 171 in harness code and 1 in the draft-body fixture.
+`crates/**/kani_proofs.rs` and `crates/**/kani_proofs/**` (Kani harness
+modules and their child files, compiled only under `cfg(kani)`, so no build
+cargo-mutants runs compiles them and no test can kill their mutants) and the
+two fixture modules, `services/filesystem/fixture.rs` and
+`services/draft_service/fixture.rs`. When first added, excluding them removed
+172 mutants (6,001 to 5,829): 171 in harness code and 1 in the draft-body
+fixture. See Scope for the current harness figures.
 
 Do not silence a survivor just because the current test suite misses it. The
 preferred ratchet is tests first, small deterministic extraction second, narrow
@@ -441,6 +515,11 @@ documented exclusion last.
 - `cargo bench -p lushtext-core --features test-utils --no-run` still compile-checks performance
   harnesses without requiring a full benchmark run.
 - `cargo fmt`, Clippy, rustdoc lints, and `cargo deny` keep their existing roles.
+
+- `make kani` proves the Kani harnesses; `make proof-strength` measures how
+  much of each Kani-checked module those proofs pin, by running the same
+  mutants against the harnesses and against the tests. It is a measurement
+  lane, not a gate: no kill-rate threshold fails a build.
 
 Mutation testing answers a narrower question: if deterministic production logic
 is changed in small ways, do the tests catch it?
