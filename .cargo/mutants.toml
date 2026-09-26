@@ -96,8 +96,16 @@ exclude_globs = [
     # filesystem/write_protocol/kani_proofs.rs), pure noise hiding real
     # survivors. The name is mandatory for harness modules (see
     # `.agents/rules/build.md`, Formal Verification), so this glob cannot drift
-    # when a new harness is added.
+    # when a new harness is added. The directory form covers a harness module's
+    # own child files (`kani_proofs/model.rs` beside `kani_proofs.rs`); none exist
+    # yet, so it removes 0 mutants today, and `make check-kani-shards` requires
+    # every such directory to sit beside the gated `kani_proofs.rs`. Re-measured
+    # at 848f94f8 (measure-proof-strength-with-mutation): the harness files now
+    # generate 406 mutants (297 draft_service, 56 editor_memory, 33
+    # write_protocol, 20 set_aside_retention); the list is 6,378 without these
+    # globs and 5,972 with them, and every production file's count is unchanged.
     "crates/**/kani_proofs.rs",
+    "crates/**/kani_proofs/**",
 ]
 
 exclude_re = [
