@@ -81,6 +81,12 @@ struct Disk {
     durable_entry: Entry,
     /// A `RemoveTemp` failed, leaving the temp for the startup sweep.
     removal_failed: bool,
+    /// `CreateTemp` actions the protocol asked for.
+    temp_name_attempts: u8,
+    /// Every `CreateTemp` answered `AlreadyExists`: every name was taken.
+    every_temp_name_taken: bool,
+    /// Every backend action so far answered `Done`.
+    every_step_done: bool,
 }
 
 /// A durable write shell mutant, to show which step a property rests on.
@@ -99,6 +105,9 @@ impl Disk {
             live_entry: Entry::Previous,
             durable_entry: Entry::Previous,
             removal_failed: false,
+            temp_name_attempts: 0,
+            every_temp_name_taken: true,
+            every_step_done: true,
         }
     }
 
@@ -108,9 +117,12 @@ impl Disk {
     fn execute(&mut self, action: WriteAction, shell: Shell) -> StepOutcome {
         let outcome: StepOutcome = kani::any();
         let done = outcome == StepOutcome::Done;
+        self.every_step_done &= done;
         match action {
             WriteAction::ProbeMetadata => self.probed = done,
             WriteAction::CreateTemp => {
+                self.temp_name_attempts += 1;
+                self.every_temp_name_taken &= outcome == StepOutcome::AlreadyExists;
                 // `AlreadyExists` is someone else's name: nothing is ours.
                 if done {
                     // A write creates one temp at a time: a failure after
@@ -244,6 +256,10 @@ fn run_write(shell: Shell) -> Option<(WriteClass, Disk)> {
         }
         let outcome = disk.execute(action, shell);
         disk.assert_new_bytes_are_never_wider();
+        assert!(
+            disk.temp_name_attempts <= MAX_TEMP_NAME_ATTEMPTS,
+            "a write tried more temp names than MAX_TEMP_NAME_ATTEMPTS"
+        );
         (protocol, action) = protocol.step(outcome);
     }
     panic!("the write did not finish within WRITE_STEPS actions");
@@ -262,7 +278,11 @@ fn a_crash_never_tears_the_destination() {
 /// Classification soundness: `BeforeRename` means the previous bytes are
 /// still the destination, `AfterRename` that the new bytes are, and `Success`
 /// that they are durably. A failed write leaves no temp behind unless its
-/// removal failed, and the sweep owns that leftover.
+/// removal failed, and the sweep owns that leftover. A write whose every
+/// backend action succeeded is a `Success`, and a write that found every temp
+/// name taken gave up only after trying all `MAX_TEMP_NAME_ATTEMPTS` of them
+/// (both added by `measure-proof-strength-with-mutation`, whose mutants showed
+/// the classification and the retry bound were otherwise unconstrained).
 #[kani::proof]
 #[kani::unwind(17)]
 fn every_classification_describes_the_destination() {
@@ -272,6 +292,23 @@ fn every_classification_describes_the_destination() {
     kani::cover!(class == WriteClass::Success, "a write succeeds");
     kani::cover!(class == WriteClass::AfterRename, "a directory sync fails");
     kani::cover!(disk.removal_failed, "a temp removal fails");
+    kani::cover!(
+        disk.temp_name_attempts == MAX_TEMP_NAME_ATTEMPTS,
+        "a write tries every temp name"
+    );
+    if disk.every_step_done {
+        assert_eq!(
+            class,
+            WriteClass::Success,
+            "a write with no failure did not succeed"
+        );
+    }
+    if disk.temp_name_attempts > 0 && disk.every_temp_name_taken {
+        assert_eq!(
+            disk.temp_name_attempts, MAX_TEMP_NAME_ATTEMPTS,
+            "a write gave up on taken temp names before trying all of them"
+        );
+    }
     match class {
         WriteClass::BeforeRename => {
             assert_eq!(disk.visible(), Content::Old);
@@ -311,6 +348,7 @@ fn skipping_the_temp_sync_tears_the_destination() {
 fn a_move_removes_its_source_only_after_the_copy_is_durable() {
     let mut source_present = true;
     let mut destination_durable = false;
+    let mut every_step_succeeded = true;
     let (mut protocol, mut action) = MoveProtocol::start();
     for _ in 0..TRANSFER_STEPS {
         assert!(
@@ -325,12 +363,17 @@ fn a_move_removes_its_source_only_after_the_copy_is_durable() {
             MoveAction::SyncSourceDir => {}
             MoveAction::Finish(done) => {
                 kani::cover!(done, "a move completes");
+                assert_eq!(
+                    done, every_step_succeeded,
+                    "a move reported the wrong completion"
+                );
                 if !done && !destination_durable {
                     assert!(source_present, "a failed move removed its source");
                 }
                 return;
             }
         }
+        every_step_succeeded &= succeeded;
         (protocol, action) = protocol.step(succeeded);
     }
     panic!("the move did not finish");
@@ -346,6 +389,7 @@ fn a_completed_rename_synced_every_directory_it_mutated() {
     let mut renamed = false;
     let mut source_synced = false;
     let mut destination_synced = false;
+    let mut every_step_succeeded = true;
     for _ in 0..TRANSFER_STEPS {
         let succeeded: bool = kani::any();
         match action {
@@ -357,6 +401,10 @@ fn a_completed_rename_synced_every_directory_it_mutated() {
                     done && cross_directory,
                     "a cross-directory rename completes"
                 );
+                assert_eq!(
+                    done, every_step_succeeded,
+                    "a rename reported the wrong completion"
+                );
                 if done {
                     assert!(renamed && source_synced);
                     assert!(!cross_directory || destination_synced);
@@ -364,6 +412,7 @@ fn a_completed_rename_synced_every_directory_it_mutated() {
                 return;
             }
         }
+        every_step_succeeded &= succeeded;
         (protocol, action) = protocol.step(succeeded);
     }
     panic!("the rename did not finish");

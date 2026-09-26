@@ -406,6 +406,7 @@ ORACLES: dict[str, Oracle] = {
             _h(_RETENTION + "set_aside_retention_bound_and_notice_never_plan_a_deletion", 0.19, "ci"),
             _h(_RETENTION + "set_aside_retention_deleting_every_body_breaks_r2", 1.28, "ci"),
             _h(_RETENTION + "set_aside_retention_deletes_only_confirmed_bodies", 2.6, "ci"),
+            _h(_RETENTION + "set_aside_retention_notice_follows_the_bound_and_its_rate_limit", 1121.23, "local"),
         ),
     ),
     "crates/lushtext-core/src/services/filesystem/write_protocol.rs": Oracle(
