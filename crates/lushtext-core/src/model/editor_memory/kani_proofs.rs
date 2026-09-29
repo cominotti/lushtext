@@ -100,9 +100,18 @@ fn selected(decision: &EditorMemoryBudgetDecision, editor_id: usize) -> bool {
 
 /// An evicted editor's estimate is the bookkeeping figure; a loaded editor's
 /// is at least its known file size and at least four bytes per character,
-/// saturating rather than wrapping.
+/// saturating rather than wrapping. The policy's figures are the documented
+/// ones (256 MiB budget, 90 % low water, 4 KiB bookkeeping): every other
+/// harness is parametric in them, so without this their mutants survived every
+/// harness (`measure-proof-strength-with-mutation`).
 #[kani::proof]
 fn estimate_is_bookkeeping_when_evicted_and_floored_by_file_size_otherwise() {
+    assert_eq!(EDITOR_MEMORY_UPPER_BUDGET_BYTES, 256 * 1024 * 1024);
+    assert_eq!(
+        EDITOR_MEMORY_LOWER_WATER_BYTES,
+        256 * 1024 * 1024 * 90 / 100
+    );
+    assert_eq!(EVICTED_EDITOR_BOOKKEEPING_BYTES, 4 * 1024);
     let characters: u64 = kani::any();
     let known: Option<u64> = kani::any();
     let evicted: bool = kani::any();
