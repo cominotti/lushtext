@@ -492,9 +492,11 @@ def outer_run(args: argparse.Namespace) -> int:
         str(SCRIPT_PATH),
         *child_cli_args(args, "internal-run"),
     ]
-    with manifest.step("launch private D-Bus session", "launch", artifacts=[log_path]):
-        with log_path.open("w", encoding="utf-8") as log:
-            result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+    with (
+        manifest.step("launch private D-Bus session", "launch", artifacts=[log_path]),
+        log_path.open("w", encoding="utf-8") as log,
+    ):
+        result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
 
     if result.returncode != 0:
         tail_log(log_path, 160, sys.stderr)
@@ -585,9 +587,11 @@ def internal_run(args: argparse.Namespace) -> int:
         *child_cli_args(args, "mutter-child"),
     ]
     log_path = artifact_dir / "logs/mutter-child.log"
-    with manifest.step("launch headless Mutter compositor", "launch", artifacts=[log_path]):
-        with log_path.open("w", encoding="utf-8") as log:
-            result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+    with (
+        manifest.step("launch headless Mutter compositor", "launch", artifacts=[log_path]),
+        log_path.open("w", encoding="utf-8") as log,
+    ):
+        result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
     print(log_path.read_text(encoding="utf-8", errors="replace"))
     if result.returncode != 0:
         manifest.complete("failed", reason=f"mutter child exited with status {result.returncode}")
