@@ -689,6 +689,24 @@ def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | No
 # --- tests arm ----------------------------------------------------------------
 
 
+# cargo-mutants builds the mutated package alone before testing, and cargo
+# rejects `--features lushtext-core/...` for a build that does not select
+# lushtext-core. A package whose tests-side evidence lives in lushtext-core (the
+# viewport-slice property suites) therefore names its test packages instead of
+# testing the whole workspace: itself and every workspace crate that depends on
+# it (`cargo tree -i gtk-lush-widgets`).
+TEST_PACKAGES = {"gtk-lush-widgets": ("gtk-lush-widgets", "lushtext-core", "lushtext")}
+
+
+def test_scope(package: str) -> list[str]:
+    if package not in TEST_PACKAGES:
+        return ["--test-workspace=true"]
+    scope = ["--test-workspace=false"]
+    for name in TEST_PACKAGES[package]:
+        scope += ["--test-package", name]
+    return scope
+
+
 def tests_dir(rev: str, module: str) -> Path:
     return RESULTS / rev / "tests" / module_slug(module)
 
@@ -713,7 +731,7 @@ def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
         "--config",
         str(derived_config(worktree, module)),
         "--workspace",
-        "--test-workspace=true",
+        *test_scope(oracle.package),
         "--test-tool",
         "nextest",
         "--no-shuffle",
