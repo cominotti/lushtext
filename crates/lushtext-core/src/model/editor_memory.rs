@@ -567,9 +567,21 @@ mod tests {
         assert_eq!(ledger.protected_bytes(), 0);
         assert!(ledger.remove(1).is_none());
 
+        assert!(!ledger.contains(1), "a removed record is no longer tracked");
+        assert!(!ledger.is_empty());
+
         ledger.reconcile([page(7, 30, 3, false), page(9, 40, 4, true)]);
         assert_eq!(ledger.len(), 2);
         assert!(ledger.contains(7));
+        assert!(
+            !ledger.contains(2),
+            "reconciliation drops records it was not given"
+        );
+        assert_eq!(
+            ledger.snapshot(),
+            vec![page(7, 30, 3, false), page(9, 40, 4, true)],
+            "the snapshot copies every record, in identity order"
+        );
         assert_eq!(ledger.total_bytes(), 70);
         assert_eq!(ledger.protected_bytes(), 30);
     }
