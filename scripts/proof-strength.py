@@ -60,6 +60,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 STATE = REPO_ROOT / "target/proof-strength"
 WORKTREE = STATE / "wt"
 RESULTS = STATE / "results"
+# `touch target/proof-strength/STOP` stops a run cleanly between mutants.
+STOP_FILE = STATE / "STOP"
 FEATURES = "lushtext-core/property-tests"
 # Harnesses whose recorded seconds sum to at most this share one `cargo kani`
 # invocation (one compile) with `--fail-fast`; each costlier harness runs alone,
@@ -629,6 +631,9 @@ def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | No
         name = mutant["name"]
         if finished(rev, module, name, tier):
             continue
+        if STOP_FILE.exists():
+            print(f"proof-strength: {STOP_FILE} exists; stopping before the next mutant", flush=True)
+            raise SystemExit(3)
         prior = None
         path = result_path(rev, module, name)
         if path.exists():
