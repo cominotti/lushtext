@@ -279,6 +279,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_divergence_of_exactly_epsilon_is_a_request_not_a_rest_or_a_deferral() {
+        // Requests are never smaller than ADJUSTMENT_EPSILON, so a divergence of
+        // exactly that much is the smallest request, not a rest; and with no
+        // reconfiguration shift there is nothing to defer. The proof-strength
+        // lane found both boundaries unconstrained (the Kani harnesses run on
+        // whole pixels, where no divergence equals 0.5).
+        assert_eq!(
+            classify_child_scroll(0.0, ADJUSTMENT_EPSILON, 0.0, 0.0),
+            ChildScrollDecision::Request(ADJUSTMENT_EPSILON)
+        );
+    }
+
+    #[test]
     fn a_bin_resting_at_its_published_offset_never_asks_to_scroll() {
         // The regression this module exists for: every one of these positions
         // is a resting bin, and the differing `viewport_top` values are the
