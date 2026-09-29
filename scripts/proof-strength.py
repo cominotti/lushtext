@@ -692,18 +692,15 @@ def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | No
 # cargo-mutants builds the mutated package alone before testing, and cargo
 # rejects `--features lushtext-core/...` for a build that does not select
 # lushtext-core. A package whose tests-side evidence lives in lushtext-core (the
-# viewport-slice property suites) therefore names its test packages instead of
-# testing the whole workspace: itself and every workspace crate that depends on
-# it (`cargo tree -i gtk-lush-widgets`).
-TEST_PACKAGES = {"gtk-lush-widgets": ("gtk-lush-widgets", "lushtext-core", "lushtext")}
+# viewport-slice property suites) therefore adds `--package lushtext-core` to
+# every cargo invocation; the test phase still runs the whole workspace.
+EXTRA_PACKAGES = {"gtk-lush-widgets": ("lushtext-core",)}
 
 
 def test_scope(package: str) -> list[str]:
-    if package not in TEST_PACKAGES:
-        return ["--test-workspace=true"]
-    scope = ["--test-workspace=false"]
-    for name in TEST_PACKAGES[package]:
-        scope += ["--test-package", name]
+    scope = ["--test-workspace=true"]
+    for name in EXTRA_PACKAGES.get(package, ()):
+        scope.append(f"--cargo-arg=--package={name}")
     return scope
 
 
@@ -884,7 +881,7 @@ def markdown(rows: list[dict], rev: str, versions: dict) -> str:
     for row in rows:
         floor = "n/a" if row["floor"] is None else row["floor"]
         lines.append(
-            f"| `{row['module'].split('/src/')[-1]}` | {row['mutants']} | {floor} | {row['outside_scope']} "
+            f"| `{row['module'].split('/src/')[-1]}` (`{row.get('rev', rev)[:8]}`) | {row['mutants']} | {floor} | {row['outside_scope']} "
             f"| {row['kani_unviable']} / {row['tests_unviable']} | {row['tests_only']} "
             f"| {row['kani_only']} ({row['kani_only_should_panic']}) | {row['both']} | {row['either']} "
             f"| {row['vacuity']} | {row['kani_timeouts']} | {row['kani_survivors']} |"
@@ -1050,6 +1047,7 @@ def main() -> int:
     parser.add_argument("--rev", default="HEAD")
     parser.add_argument("--mutant", help="run: only this mutant name")
     parser.add_argument("--markdown", help="report: also write the Markdown table here")
+    parser.add_argument("--module-rev", action="append", default=[], metavar="MODULE=REV", help="report: results revision of one module")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -1081,7 +1079,19 @@ def main() -> int:
         for module in modules:
             run_tests(worktree, rev, module, args.shard)
     if args.command in ("report", "measure"):
-        rows = [module_report(rev, module, population(worktree, module)) for module in modules]
+        # A module's results may live at an earlier revision whose checked
+        # module source is identical (only harness files changed since):
+        # `--module-rev MODULE=REV`. The report refuses a revision whose
+        # module source differs from the one listed.
+        module_revs = dict(item.split("=", 1) for item in args.module_rev)
+        rows = []
+        for module in modules:
+            module_rev = resolve_rev(module_revs.get(module, rev))
+            if subprocess.run(["git", "diff", "--quiet", module_rev, rev, "--", module], cwd=REPO_ROOT).returncode:
+                raise SystemExit(f"proof-strength: {module} differs between {module_rev[:8]} and {rev[:8]}")
+            row = module_report(module_rev, module, population(worktree, module))
+            row["rev"] = module_rev
+            rows.append(row)
         text = markdown(rows, rev, {"kani": load_baseline(rev).get("kani_version"), "cargo_mutants": cargo_mutants_version()})
         print(text)
         if args.markdown:
