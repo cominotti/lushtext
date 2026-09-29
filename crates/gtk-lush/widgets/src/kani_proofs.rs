@@ -16,9 +16,10 @@
 //! confront them.
 
 use crate::scroll_request::{
-    ADJUSTMENT_EPSILON, ChildScrollDecision, classify_child_scroll, outer_scroll_request,
+    ADJUSTMENT_EPSILON, ChildAnchorFacts, ChildScrollDecision, classify_child_scroll,
+    classify_child_scroll_in_frame, outer_scroll_request,
 };
-use crate::slice_geometry::{ViewportSlice, viewport_slice, whole_pixel_band};
+use crate::slice_geometry::{ViewportSlice, band_floor, viewport_slice, whole_pixel_band};
 
 /// The largest overscan the whole-pixel domain admits.
 const MAX_OVERSCAN: i32 = 4096;
@@ -57,6 +58,29 @@ fn whole_pixel_band_stays_inside_the_widget() {
     let (top, band) = whole_pixel_band(slice, height, min_band);
     assert!(top >= 0 && band >= 0);
     assert!(i64::from(top) + i64::from(band) <= i64::from(height.max(0)));
+}
+
+/// A whole-pixel slice that already fits the widget and is at least the
+/// floor tall is allocated as it is, and the floor the bin passes is the
+/// learned inset plus one, or a whole viewport before any inset is known.
+/// Added by `measure-proof-strength-with-mutation`: containment alone held for
+/// a band of `(0, 0)` and for any rounding of the slice, so those mutants of
+/// `whole_pixel_band`, `whole_pixels`, and `band_floor` survived the geometry
+/// tier.
+#[kani::proof]
+fn whole_pixel_band_keeps_a_whole_pixel_slice() {
+    let (top, band, height, min_band): (i32, i32, i32, i32) =
+        (kani::any(), kani::any(), kani::any(), kani::any());
+    kani::assume(top >= 0 && band >= 0 && min_band >= 0 && min_band <= band);
+    kani::assume(i64::from(top) + i64::from(band) <= i64::from(height));
+    let slice = ViewportSlice {
+        top: f64::from(top),
+        height: f64::from(band),
+    };
+    assert_eq!(whole_pixel_band(slice, height, min_band), (top, band));
+    let (viewport, inset): (i32, i32) = (kani::any(), kani::any());
+    assert_eq!(band_floor(None, viewport), viewport);
+    assert_eq!(band_floor(Some(inset), viewport), inset.saturating_add(1));
 }
 
 /// On whole pixels the slice lies inside the content.
@@ -118,6 +142,66 @@ fn requests_are_at_least_epsilon() {
     if let Some(delta) = outer_scroll_request(published, child, viewport_top, shift) {
         assert!(delta.abs() >= ADJUSTMENT_EPSILON);
     }
+}
+
+/// The documented rules of the resting classification, on whole pixels with a
+/// `u16` reconfiguration shift: non-finite inputs rest; no divergence from the
+/// published offset rests; a divergence within a positive shift is deferred;
+/// any other divergence requests the distance from the viewport top, or
+/// settles when that distance is zero. The in-frame refinement turns a request
+/// or a deferral into a settle exactly when the anchor facts say it cannot be
+/// a request, and changes nothing else. Added by
+/// `measure-proof-strength-with-mutation`: the geometry tier only bounded
+/// requests, so the defer and settle arms and every in-frame mutant survived
+/// it.
+#[kani::proof]
+fn requests_are_classified_by_the_documented_rules() {
+    let (published, child, viewport_top) = (any_pixel(), any_pixel(), any_pixel());
+    let shift = f64::from(kani::any::<u16>());
+    let divergence = child - published;
+    let decision = classify_child_scroll(published, child, viewport_top, shift);
+    if divergence == 0.0 {
+        assert!(matches!(decision, ChildScrollDecision::Rest));
+    } else if shift > 0.0 && divergence.abs() <= shift {
+        assert!(matches!(decision, ChildScrollDecision::Defer));
+    } else if child == viewport_top {
+        assert!(matches!(decision, ChildScrollDecision::Settle));
+    } else {
+        assert_eq!(decision, ChildScrollDecision::Request(child - viewport_top));
+    }
+    let not_finite = if kani::any() { f64::NAN } else { f64::INFINITY };
+    let which: u8 = kani::any();
+    let (p, c, v) = match which % 3 {
+        0 => (not_finite, child, viewport_top),
+        1 => (published, not_finite, viewport_top),
+        _ => (published, child, not_finite),
+    };
+    assert!(matches!(
+        classify_child_scroll(p, c, v, shift),
+        ChildScrollDecision::Rest
+    ));
+
+    let facts = ChildAnchorFacts {
+        emitted: kani::any(),
+        anchor_published: kani::any(),
+        bin_reconfigured: kani::any(),
+    };
+    let cannot_be_a_request = facts.emitted || (facts.anchor_published && facts.bin_reconfigured);
+    let in_frame = classify_child_scroll_in_frame(published, child, viewport_top, shift, facts);
+    match decision {
+        ChildScrollDecision::Request(_) | ChildScrollDecision::Defer if cannot_be_a_request => {
+            assert!(matches!(in_frame, ChildScrollDecision::Settle));
+        }
+        _ => assert_eq!(in_frame, decision),
+    }
+    kani::cover!(
+        matches!(decision, ChildScrollDecision::Defer),
+        "a divergence within the shift is deferred"
+    );
+    kani::cover!(
+        matches!(decision, ChildScrollDecision::Settle),
+        "a divergence onto the viewport top settles"
+    );
 }
 
 /// On whole pixels a honoured request lands exactly: after the outer scroller
