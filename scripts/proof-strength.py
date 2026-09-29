@@ -75,9 +75,40 @@ COMPILE_ALLOWANCE = 900.0
 TESTS_TIMEOUT = 300
 # Peak resident set (KiB) of each `cargo kani` run since the last reset.
 PEAKS: list[int] = []
-TESTS_JOBS = 2
+TESTS_JOBS = 1
+# Memory discipline for a shared host: wait until this much memory is
+# available before each Kani run or tests arm, and cap each Kani run's
+# address space (0 disables either).
+MIN_AVAILABLE_GIB = float(os.environ.get("PROOF_STRENGTH_MIN_AVAILABLE_GIB", "14"))
+MEMORY_LIMIT_GIB = float(os.environ.get("PROOF_STRENGTH_MEMORY_LIMIT_GIB", "12"))
 TESTS_BUILD_JOBS = 8
 TESTS_THREADS = 8
+
+
+def available_gib() -> float:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) / 1024 / 1024
+    return float("inf")
+
+
+def wait_for_memory() -> None:
+    """Block until the host has `MIN_AVAILABLE_GIB` available."""
+    announced = False
+    while MIN_AVAILABLE_GIB and available_gib() < MIN_AVAILABLE_GIB:
+        if not announced:
+            print(f"proof-strength: waiting for {MIN_AVAILABLE_GIB:g} GiB available ({available_gib():.1f} now)", flush=True)
+            announced = True
+        time.sleep(30)
+
+
+def limit_memory() -> None:
+    """preexec_fn: cap the child's address space at `MEMORY_LIMIT_GIB`."""
+    if MEMORY_LIMIT_GIB:
+        import resource
+
+        limit = int(MEMORY_LIMIT_GIB * 1024**3)
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 
 def load_shards():
@@ -373,7 +404,15 @@ def run_kani(
     with open(log, "w", encoding="utf-8") as handle:
         handle.write(" ".join(command) + "\n")
         handle.flush()
-        child = subprocess.Popen(command, cwd=worktree, stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
+        wait_for_memory()
+        child = subprocess.Popen(
+            command,
+            cwd=worktree,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            preexec_fn=limit_memory,
+        )
 
         def kill() -> None:
             expired.set()
@@ -472,11 +511,13 @@ def baseline(worktree: Path, rev: str, modules: list[str], tier: str) -> dict:
                     bucket.append(harness)
     for package, harnesses in by_package.items():
         print(f"proof-strength: codegen for {package} (reachability)", flush=True)
+        wait_for_memory()
         subprocess.run(
             ["cargo", "kani", "-p", package, "--target-dir", str(worktree / "target/kani"), "--only-codegen"],
             cwd=worktree,
             check=True,
             stdout=subprocess.DEVNULL,
+            preexec_fn=limit_memory,
         )
         reach = {h.name: reach_tokens(worktree, package, h.name) for h in harnesses}
         for group in batches(sorted(harnesses, key=lambda h: h.seconds), package):
@@ -701,6 +742,7 @@ def run_tests(worktree: Path, rev: str, module: str, shard: str | None) -> None:
         "finished": False,
     }
     meta_path.write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
+    wait_for_memory()
     print(f"proof-strength: tests arm for {module}", flush=True)
     start = time.monotonic()
     status = subprocess.run(command, cwd=REPO_ROOT, env=env, check=False).returncode
@@ -766,7 +808,14 @@ def module_report(rev: str, module: str, pop: Population) -> dict:
     }
 
     def kani_class(n: str) -> str | None:
-        return kani[n]["class"] if n in kani else None
+        """A mutant no harness reaches is skipped without a compile; when the
+        tests arm found it does not build, it is unviable, not a survivor."""
+        if n not in kani:
+            return None
+        record = kani[n]
+        if record["class"] == "survived" and not record.get("ran") and tests.get(n) == "Unviable":
+            return "unviable"
+        return record["class"]
 
     kani_kill = {n for n in names if kani_class(n) == "killed"}
     tests_kill = {n for n in names if tests.get(n) == "CaughtMutant"}
