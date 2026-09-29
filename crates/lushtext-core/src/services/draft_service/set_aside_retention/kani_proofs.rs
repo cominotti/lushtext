@@ -146,6 +146,14 @@ fn set_aside_retention_bound_and_notice_never_plan_a_deletion() {
 /// `measure-proof-strength-with-mutation`: R4 only states that these decisions
 /// are total, so every mutant of `bound_status`, `notice_due`, and their growth
 /// test survived every harness.
+///
+/// Domain: the bound is checked for every `u64` count and size. The growth
+/// test is checked against the spec's `now * 4 >= last * 5` for totals below
+/// 2^16 and at the `u64::MAX` edge, where the `u128` widening matters. Proving
+/// the two arithmetic forms equal for every `u64` pair took 1121 s, over the
+/// shard's runner margin, and a CBMC multiplier-equivalence query is the part
+/// that does not scale; below 2^16 already separates every operator and
+/// constant mutant of `grown_materially`.
 #[kani::proof]
 fn set_aside_retention_notice_follows_the_bound_and_its_rate_limit() {
     assert_eq!(SOFT_BOUND_BODIES, 100);
@@ -165,25 +173,65 @@ fn set_aside_retention_notice_follows_the_bound_and_its_rate_limit() {
         assert_eq!(status, BoundStatus::Within);
     }
     assert_eq!(bound_status(None), BoundStatus::Unknown);
+    let reviewed: bool = kani::any();
+    let over = by_count || by_bytes;
+    assert_eq!(notice_due(Some(current), None, reviewed), over && !reviewed);
+    assert!(!notice_due(None, Some(current), false));
 
+    // The rate limit, on the small domain: a size over the bound scales a
+    // 16-bit value by 2^16, which keeps the ratio and reaches past 256 MiB.
     let grown = |last: u64, now: u64| now > last && u128::from(now) * 4 >= u128::from(last) * 5;
-    let last = SetAsideTotals {
-        count: kani::any(),
-        bytes: kani::any(),
+    let small = |shift: u32| {
+        let value: u16 = kani::any();
+        u64::from(value) << shift
+    };
+    let now = SetAsideTotals {
+        count: small(0),
+        bytes: small(16),
         complete: kani::any(),
     };
-    let over = by_count || by_bytes;
-    let reviewed: bool = kani::any();
-    assert_eq!(notice_due(Some(current), None, reviewed), over && !reviewed);
+    let last = SetAsideTotals {
+        count: small(0),
+        bytes: small(16),
+        complete: kani::any(),
+    };
+    let over = bound_status(Some(now)) != BoundStatus::Within;
     assert_eq!(
-        notice_due(Some(current), Some(last), reviewed),
-        over && !reviewed && (grown(last.count, current.count) || grown(last.bytes, current.bytes))
+        notice_due(Some(now), Some(last), reviewed),
+        over && !reviewed && (grown(last.count, now.count) || grown(last.bytes, now.bytes))
     );
-    assert!(!notice_due(None, Some(last), false));
     kani::cover!(
-        over && grown(last.count, current.count),
-        "a grown area is due again"
+        over && grown(last.count, now.count),
+        "a grown count is due again"
     );
+    kani::cover!(
+        over && !grown(last.count, now.count) && grown(last.bytes, now.bytes),
+        "a grown size alone is due again"
+    );
+
+    // The u64 edge: growth to u64::MAX from four fifths of it is due, and
+    // from one more than that is not; no product overflows.
+    let edge = |count: u64| SetAsideTotals {
+        count,
+        bytes: 0,
+        complete: true,
+    };
+    let four_fifths = u64::MAX / 5 * 4;
+    assert!(notice_due(
+        Some(edge(u64::MAX)),
+        Some(edge(four_fifths)),
+        false
+    ));
+    assert!(!notice_due(
+        Some(edge(u64::MAX)),
+        Some(edge(four_fifths + 1)),
+        false
+    ));
+    assert!(!notice_due(
+        Some(edge(u64::MAX)),
+        Some(edge(u64::MAX)),
+        false
+    ));
 }
 
 /// A decision that deletes every body once the user decided anything,
