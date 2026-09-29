@@ -970,6 +970,32 @@ mod tests {
         }
     }
 
+    /// A source map whose bottom edge overflows to infinity is rejected, not
+    /// fitted into an unbounded range. The proof-strength lane found this
+    /// guard unconstrained by every harness and test (the harnesses stay far
+    /// below `f64::MAX`).
+    #[test]
+    fn native_slider_fit_rejects_a_source_map_whose_bottom_overflows() {
+        // Both of the map's fields are finite, but `y + height` is not; a
+        // slider inside it would otherwise be fitted against an unbounded range.
+        let raw = MinimapProjectedBounds {
+            x: 0.0,
+            y: f64::MAX / 2.0,
+            width: 8.0,
+            height: f64::MAX / 4.0,
+        };
+        let source_map = MinimapProjectedBounds {
+            x: 0.0,
+            y: f64::MAX / 2.0,
+            width: 8.0,
+            height: f64::MAX,
+        };
+        assert_eq!(
+            fit_native_slider_to_source_map_bounds(raw, source_map),
+            None
+        );
+    }
+
     /// The wider-domain companion of the Kani harness
     /// `min_height_expansion_reaches_the_minimum_on_small_whole_pixels`, which
     /// CBMC can finish only up to 2^8: sampled whole pixels up to 2^20 and

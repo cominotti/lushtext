@@ -295,6 +295,16 @@ exclude_re = [
     # all, and the remaining boundary mutants in that function are its
     # reject-outside and non-empty guards, which the co-located edge-touching and
     # zero-minimum tests kill.
+    # Equivalent in `fit_native_slider_to_source_map_bounds` (found by the
+    # proof-strength lane, surviving both the Kani harnesses and the tests):
+    # weakening the early `!source_map_bounds.y.is_finite()` or
+    # `!source_map_bounds.height.is_finite()` rejection lets only a map whose
+    # `y + height` is then non-finite through, and the very next guard
+    # (`!upper.is_finite()`) rejects exactly that map. That later guard's own
+    # `|| with &&` mutant is NOT equivalent and is killed by
+    # `native_slider_fit_rejects_a_source_map_whose_bottom_overflows`.
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:490:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
+    "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:491:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_to_min_height",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace > with >= in expanded_to_min_height",
 ]

@@ -166,6 +166,14 @@ const COMFY_LARGE_MIDPOINT: f64 = 0.35;
 mod tests {
     use super::WorkspaceSidebarWidthPreset;
 
+    /// The picker labels are the documented preset names. The proof-strength
+    /// lane found `label` unconstrained by every harness and test.
+    #[test]
+    fn preset_labels_are_the_preset_names() {
+        let labels = WorkspaceSidebarWidthPreset::ALL.map(WorkspaceSidebarWidthPreset::label);
+        assert_eq!(labels, ["Small", "Comfy", "Large"]);
+    }
+
     #[test]
     fn presets_and_midpoints_resolve_by_comparison() {
         use WorkspaceSidebarWidthPreset::{Comfy, Large, Small};
