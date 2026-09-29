@@ -133,6 +133,7 @@ If a test is flaky because the assertion is built on the wrong GTK mental model,
   artifacts and skip clearly when the host lacks required desktop, portal,
   accessibility, packaging, or benchmark support.
 - The widget harness supports `--list --format terse`, which matters for CI and nextest-style discovery.
+- Temporary files: the harness parent gives each child attempt its own empty `TMPDIR` inside one per-run `lushtext-test-<pid>-<random>` root and removes it when the child exits, so tests use `std::env::temp_dir()` / `tempfile` / `fixture` freely and a crashing child cannot leak. Test lanes run under `scripts/with-temp-scope.sh`, which fails with `TEMP-LEAK:` if a run leaves anything in its private `TMPDIR`; a `TEMP-LEAK` is a defect to fix at its owner, never to allowlist. See "Temporary Files" in `.agents/rules/build.md`.
 
 ## Test Seams And Evidence Surfaces
 
@@ -218,13 +219,15 @@ Prefer `make test-widget-headless` or `scripts/run-widget-tests.sh --headless` o
 The underlying headless invocation is:
 
 ```bash
-export XDG_RUNTIME_DIR="$(mktemp -d)"
 export GDK_BACKEND=wayland
 export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
-dbus-run-session -- \
+scripts/with-temp-scope.sh --session-runtime widget -- \
+  dbus-run-session -- \
   mutter --headless --wayland --no-x11 --virtual-monitor 2560x1600 -- \
     cargo test --test widget
 ```
+
+`--session-runtime` provides the short private `XDG_RUNTIME_DIR` and removes it only once the session's activated services (notably `xdg-document-portal` and its `doc/` FUSE mount) have exited; removing it straight after `dbus-run-session` returns leaks it.
 
 Do not add or use a live-display/native widget mode. If a behavior only reproduces on the human's desktop, switch to `gtk-agentic-debugging` and keep that separate from the widget harness.
 

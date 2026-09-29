@@ -39,8 +39,11 @@ pub fn ensure_gtk_init() {
         // GTK startup and before any background worker threads are spawned.
         unsafe { std::env::set_var("GSETTINGS_BACKEND", "memory") };
         // Isolate session/draft I/O from the user's real data directory.
-        // PID-based naming prevents nextest's parallel test processes from
-        // interfering with each other via shared session files.
+        // The harness parent hands every child attempt its own empty `TMPDIR`
+        // inside one per-run root and removes it when the child exits, so this
+        // directory never outlives the test even when the child crashes. The
+        // PID keeps the name unique when a child is launched by hand outside
+        // the harness; the parent's startup sweep reclaims such leftovers.
         let test_data_dir =
             std::env::temp_dir().join(format!("lushtext-test-{}", std::process::id()));
         let _ = fs_mutate::remove_dir_all_if_exists(&test_data_dir);

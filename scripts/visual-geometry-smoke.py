@@ -429,8 +429,12 @@ def run_case_outer(case_json: Path, case_dir: Path, case: dict[str, Any]) -> dic
         "--case-json",
         str(case_json),
     ]
-    with log_path.open("w", encoding="utf-8") as log:
-        completed = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        with log_path.open("w", encoding="utf-8") as log:
+            completed = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+    finally:
+        # Outside the artifact tree, so removed on every exit path.
+        cleanup = mutter.cleanup_runtime_root(runtime_root, case_dir)
 
     manifest_path = case_dir / "scenario-manifest.json"
     if completed.returncode != 0 and not manifest_path.exists():
@@ -441,7 +445,6 @@ def run_case_outer(case_json: Path, case_dir: Path, case: dict[str, Any]) -> dic
             "workflow-failure",
             f"visual geometry runner exited {completed.returncode}",
         )
-    cleanup = mutter.cleanup_runtime_root(runtime_root, case_dir)
     (case_dir / "runtime-dir-status.txt").write_text(
         f"path={runtime_dir}\ncleanup={cleanup}\nreturncode={completed.returncode}\n",
         encoding="utf-8",

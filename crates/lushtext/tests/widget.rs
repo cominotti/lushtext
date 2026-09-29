@@ -22,6 +22,7 @@ include!(concat!(env!("OUT_DIR"), "/widget_test_registry.rs"));
 const CHILD_TEST_ENV: &str = "LUSHTEXT_WIDGET_CHILD";
 const HEADLESS_RUNNER_ENV: &str = "LUSHTEXT_WIDGET_HEADLESS_RUNNER";
 const HEADLESS_MONITOR_ENV: &str = "LUSHTEXT_WIDGET_HEADLESS_MONITOR";
+const WIDGET_RUN_SCRATCH_PREFIX: &str = "lushtext-test-";
 const DEFAULT_HEADLESS_MONITOR: &str = gtk_lush_proof_harness::DEFAULT_HEADLESS_MONITOR;
 
 fn configure_widget_test_environment() {
@@ -60,7 +61,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = HarnessConfig::new(CHILD_TEST_ENV, HEADLESS_RUNNER_ENV, HEADLESS_MONITOR_ENV)
         .with_default_headless_monitor(DEFAULT_HEADLESS_MONITOR)
-        .with_runner_label("LushText widget tests");
+        .with_runner_label("LushText widget tests")
+        // Earlier builds leaked one `lushtext-test-<pid>` directory per child;
+        // sharing that prefix lets the harness's startup sweep reclaim them.
+        .with_run_scratch_prefix(WIDGET_RUN_SCRATCH_PREFIX);
     let tests: Vec<RegisteredTest> = all_widget_tests()
         .into_iter()
         .map(|(name, test_fn)| RegisteredTest::new(name, test_fn))

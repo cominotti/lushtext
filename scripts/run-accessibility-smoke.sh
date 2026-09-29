@@ -984,7 +984,7 @@ RECENT_FIXTURE_ROOT=""
 # trap must belong to this shell, not a subshell that would delete it at once.
 ensure_recent_fixture_root() {
     if [[ -z "$RECENT_FIXTURE_ROOT" ]]; then
-        RECENT_FIXTURE_ROOT="$(mktemp -d /tmp/lt-a11y-recent-XXXXXX)"
+        RECENT_FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/lt-a11y-recent-XXXXXX")"
         trap 'rm -rf -- "$RECENT_FIXTURE_ROOT"' EXIT
     fi
 }

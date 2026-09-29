@@ -88,7 +88,7 @@
 #   make clean       - Clean build artifacts
 #   make help        - Show available targets
 
-.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani check-kani-shards formal-evaluation check-widget-shards test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
+.PHONY: fmt build build-debug run run-format-upgrade-manual-test run-format-upgrade-newer-manual-test run-format-upgrade-older-manual-test run-command-palette-notes-manual-test refresh-dock-icon clear-lushtext-xdg test test-unit test-int test-prop test-prop-deep fuzz-list fuzz-corpus-replay fuzz-smoke fuzz-operation-smoke kani check-kani-shards formal-evaluation check-widget-shards check-temp-scope test-widget test-widget-headless test-widget-shard test-search-retirement-release test-workspace-row-states automation-smoke builder-diagnostics-smoke command-palette-notes-smoke visual-smoke visual-geometry-smoke visual-geometry-oracle-smoke editor-glyph-live-smoke crash-recovery-smoke portal-sandbox-smoke accessibility-smoke performance-smoke end-user-smoke mutants-smoke mutants-diff mutants-full mutants-list \
        check-fmt check-clippy check-filesystem-boundary check-blueprint check-ui-template-contract lint-blueprint check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy check-terminology check-gtk-lush-adoption gtk-lush-adoption-lab gtk-lush-stock-fixtures gtk-lush-adoption-matrix gtk-lush-doctests gtk-lush-examples gtk-lush-msrv gtk-lush-api-advisory gtk-lush-semver-advisory gtk-lush-public-api-advisory gtk-axioms gtk-axiom-sample gtk-axioms-runtimes check-gtk-axioms automation-client-self-test check-policy lint-advisory sonar-local check check-agent-skills check-agent-docs check-automation-docs pre-commit dev-tools install-git-hooks clean help \
        blueprint-generate \
        meson-build meson-test flatpak-deps flatpak flatpak-install cargo-sources verify-flatpak-identity test-flatpak-identity-verifier test-dev-desktop-staging \
@@ -102,22 +102,26 @@
 
 # Test runner: prefer cargo-nextest for non-widget tests. Widget tests always
 # go through the shared runner so native and headless execution stay aligned.
+# Every test lane runs under TEMP_SCOPE: a private TMPDIR that is removed
+# afterwards and fails the lane if a test left a temporary entry behind in it
+# (see the temporary-file rule in .agents/rules/build.md).
+TEMP_SCOPE := ./scripts/with-temp-scope.sh
 HAS_NEXTEST := $(shell command -v cargo-nextest 2>/dev/null && echo 1)
 ifdef HAS_NEXTEST
-CARGO_TEST_NON_WIDGET = cargo nextest run --workspace
-CARGO_TEST_UNIT       = cargo nextest run --workspace --lib
-CARGO_TEST_INT        = cargo nextest run --workspace --test integration
+CARGO_TEST_NON_WIDGET = $(TEMP_SCOPE) nextest -- cargo nextest run --workspace
+CARGO_TEST_UNIT       = $(TEMP_SCOPE) nextest -- cargo nextest run --workspace --lib
+CARGO_TEST_INT        = $(TEMP_SCOPE) nextest -- cargo nextest run --workspace --test integration
 else
-CARGO_TEST_NON_WIDGET = cargo test --workspace --lib --bins --test integration
-CARGO_TEST_UNIT       = cargo test --workspace --lib
-CARGO_TEST_INT        = cargo test --workspace --test integration
+CARGO_TEST_NON_WIDGET = $(TEMP_SCOPE) cargo-test -- cargo test --workspace --lib --bins --test integration
+CARGO_TEST_UNIT       = $(TEMP_SCOPE) cargo-test -- cargo test --workspace --lib
+CARGO_TEST_INT        = $(TEMP_SCOPE) cargo-test -- cargo test --workspace --test integration
 endif
 CARGO_TEST_WIDGET          = ./scripts/run-widget-tests.sh --headless
 CARGO_TEST_WIDGET_HEADLESS = ./scripts/run-widget-tests.sh --headless --retries 1
 CARGO_TEST_SEARCH_RETIREMENT_RELEASE = CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false ./scripts/run-widget-tests.sh --headless -- --exact search_panel::test_search_retirement_categories_release_actual_ownership_over_bounded_turns
 CARGO_TEST_WORKSPACE_ROW_STATES = ./scripts/run-widget-tests.sh --headless --retries 1 -- workspace_row_state
-CARGO_TEST_PROP           = cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
-CARGO_TEST_FUZZ_CORPUS_REPLAY = cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
+CARGO_TEST_PROP           = $(TEMP_SCOPE) property -- cargo nextest run -p lushtext-core --features property-tests --test properties --profile property
+CARGO_TEST_FUZZ_CORPUS_REPLAY = $(TEMP_SCOPE) fuzz-replay -- cargo test -p lushtext-core --features fuzzing --test fuzz_corpus_replay
 PROPTEST_DEEP_CASES ?= 512
 FORMAT_UPGRADE_TEST_HOME ?=
 FORMAT_UPGRADE_TEST_VERSION ?= 999
@@ -325,6 +329,12 @@ check-kani-shards:
 
 # Every widget test belongs to exactly one CI shard of scripts/widget-shards.py,
 # each shard measured within its budget; static discovery, no build needed.
+# The temporary-file scope every test lane runs under: leak detection, scope
+# removal, session runtime release, and the stale-root sweep.
+check-temp-scope:
+	@echo "Checking the temporary-file scope..."
+	$(TEMP_SCOPE) --self-test
+
 check-widget-shards:
 	@echo "Checking the widget shard table..."
 	./scripts/widget-shards.py check --self-test
@@ -395,15 +405,15 @@ command-palette-notes-smoke: build-debug
 # cleanly when host desktop-capture dependencies are unavailable.
 visual-smoke: build-debug
 	@echo "Running visual smoke lane..."
-	./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual"
+	$(TEMP_SCOPE) visual -- ./scripts/run-visual-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual"
 
 visual-geometry-smoke: build-debug
 	@echo "Running same-session visual geometry invariant lane..."
-	cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
+	$(TEMP_SCOPE) vg -- cargo run -q -p cargo-gtk-proof -- run --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
 
 visual-geometry-oracle-smoke: build-debug
 	@echo "Running Python visual geometry oracle diagnostics..."
-	cargo run -q -p cargo-gtk-proof -- run --oracle python --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
+	$(TEMP_SCOPE) vg-oracle -- cargo run -q -p cargo-gtk-proof -- run --oracle python --artifact-dir "$(SMOKE_ARTIFACT_DIR)/visual-geometry-python-oracle" --scenario-dir scripts/visual-geometry-scenarios --binary "$(PWD)/target/debug/lushtext"
 
 # Exact live-typing repro for active-line bracket clipping. This uses Xvfb and
 # key events so it catches the bug before Enter/focus changes can repair pixels.
@@ -421,7 +431,7 @@ crash-recovery-smoke: build-debug
 	@echo "Building the crash-kill-points smoke binary..."
 	cargo build -p lushtext --features crash-kill-points --target-dir target/crash-kill-points
 	@echo "Running crash recovery smoke lane..."
-	./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery" \
+	$(TEMP_SCOPE) crash-recovery -- ./scripts/run-crash-recovery-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/crash-recovery" \
 		--kill-point-binary "$(PWD)/target/crash-kill-points/debug/lushtext"
 
 # Confined runtime smoke for available Flatpak/Snap paths. This records runtime
@@ -434,7 +444,7 @@ portal-sandbox-smoke:
 # bridge enabled so accessible-name and focus automation can be verified.
 accessibility-smoke: build-debug
 	@echo "Running accessibility smoke lane..."
-	./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility"
+	$(TEMP_SCOPE) accessibility -- ./scripts/run-accessibility-smoke.sh --artifact-dir "$(SMOKE_ARTIFACT_DIR)/accessibility"
 
 BENCH_REPORT_OUT_DIR ?= docs/benchmarks
 SMOKE_ARTIFACT_DIR ?= build/smoke
@@ -698,7 +708,7 @@ gtk-lush-public-api-advisory:
 gtk-lush-api-advisory: gtk-lush-semver-advisory gtk-lush-public-api-advisory
 
 # Aggregate policy target for fast audits that sit beside rustfmt and Clippy.
-check-policy: check-filesystem-boundary check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
+check-policy: check-filesystem-boundary check-temp-scope check-kani-shards check-widget-shards check-gtk-axioms check-blueprint check-automation-docs check-flatpak-permissions check-end-user-smoke-workflow check-workflow-timeouts check-workflow-boundaries check-accessibility-policy check-visual-proof-policy check-gtk-lush-policy gtk-lush-adoption-matrix automation-client-self-test check-terminology
 
 # Workspace folder-set terminology guard.
 # Runs in the local gate as well as CI because it scans resources, docs, and

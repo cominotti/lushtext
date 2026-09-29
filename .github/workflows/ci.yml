@@ -127,7 +127,9 @@ jobs:
         run: curl -LsSf "https://get.nexte.st/${CARGO_NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Run non-widget tests
-        run: cargo nextest run --workspace
+        # The temp scope fails the step if a test leaves a temporary entry
+        # behind (see the temporary-file rule in .agents/rules/build.md).
+        run: ./scripts/with-temp-scope.sh nextest -- cargo nextest run --workspace
 
       - name: Run GTK Lush doctests
         run: make gtk-lush-doctests

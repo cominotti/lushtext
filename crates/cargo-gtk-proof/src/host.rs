@@ -39,6 +39,14 @@ impl HostProbeReport {
 }
 
 /// Isolated directories used by one visual proof run.
+///
+/// When the artifact directory is too deep for a Unix socket path, the runtime
+/// directory falls back to a short `lt-proof-<pid>-<hash>` directory in the
+/// system temp dir. That directory is outside the artifact tree, so the layout
+/// owns it: dropping the layout removes it on every return path, including the
+/// `?` early returns between preparation and the explicit post-session
+/// [`RuntimeLayout::cleanup_runtime_dir`]. A process killed outright leaves it
+/// behind, which the next preparation's sweep reclaims once the PID is gone.
 #[derive(Debug)]
 pub(crate) struct RuntimeLayout {
     root: PathBuf,
@@ -46,6 +54,21 @@ pub(crate) struct RuntimeLayout {
     data_dir: PathBuf,
     config_dir: PathBuf,
     cache_dir: PathBuf,
+    owns_temp_runtime_dir: bool,
+}
+
+/// Prefix of the short runtime directory used for deep artifact paths.
+const TEMP_RUNTIME_PREFIX: &str = "lt-proof-";
+
+/// Minimum idle age before a dead process's short runtime directory is swept.
+const STALE_TEMP_RUNTIME_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+impl Drop for RuntimeLayout {
+    fn drop(&mut self) {
+        if self.owns_temp_runtime_dir {
+            let _ = fs::remove_dir_all(&self.runtime_dir);
+        }
+    }
 }
 
 impl RuntimeLayout {
@@ -53,6 +76,10 @@ impl RuntimeLayout {
     pub(crate) fn prepare(artifact_dir: &Path) -> Result<Self, String> {
         let root = absolute_for_hash(&artifact_dir.join("runtime"))?;
         let runtime_dir = runtime_dir_for_artifact(artifact_dir, &root)?;
+        let owns_temp_runtime_dir = !runtime_dir.starts_with(&root);
+        if owns_temp_runtime_dir {
+            sweep_stale_temp_runtime_dirs(&std::env::temp_dir());
+        }
         let data_dir = root.join("data");
         let config_dir = root.join("config");
         let cache_dir = root.join("cache");
@@ -60,14 +87,17 @@ impl RuntimeLayout {
             fs::create_dir_all(dir)
                 .map_err(|error| format!("cannot create runtime dir {}: {error}", dir.display()))?;
         }
-        restrict_runtime_dir(&runtime_dir)?;
-        Ok(Self {
+        // Build the owner first so a failure below still removes the directory.
+        let layout = Self {
             root,
             runtime_dir,
             data_dir,
             config_dir,
             cache_dir,
-        })
+            owns_temp_runtime_dir,
+        };
+        restrict_runtime_dir(&layout.runtime_dir)?;
+        Ok(layout)
     }
 
     fn report(&self) -> RuntimeLayoutReport {
@@ -349,7 +379,77 @@ fn runtime_dir_for_artifact(artifact_dir: &Path, root: &Path) -> Result<PathBuf,
     let mut hasher = DefaultHasher::new();
     absolute_for_hash(artifact_dir)?.hash(&mut hasher);
     let hash = hasher.finish();
-    Ok(std::env::temp_dir().join(format!("lt-proof-{}-{hash:016x}", std::process::id())))
+    Ok(std::env::temp_dir().join(format!(
+        "{TEMP_RUNTIME_PREFIX}{}-{hash:016x}",
+        std::process::id()
+    )))
+}
+
+/// Remove `lt-proof-<pid>-<hash>` directories left by processes that died.
+///
+/// Only real directories owned by the current user, whose PID no longer exists
+/// and which have been idle for [`STALE_TEMP_RUNTIME_MIN_AGE`], are removed;
+/// without procfs nothing is.
+fn sweep_stale_temp_runtime_dirs(temp_dir: &Path) {
+    if !Path::new("/proc/self").exists() {
+        return;
+    }
+    let Some(owner) = current_uid() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(temp_dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(TEMP_RUNTIME_PREFIX))
+            .and_then(|rest| rest.split_once('-'))
+            .map(|(pid, _)| pid)
+            .filter(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == std::process::id() || Path::new("/proc").join(pid.to_string()).exists() {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let idle = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .unwrap_or_default();
+        if metadata.is_dir()
+            && uid_of(&metadata) == Some(owner)
+            && idle >= STALE_TEMP_RUNTIME_MIN_AGE
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+#[cfg(unix)]
+fn uid_of(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(metadata.uid())
+}
+
+#[cfg(not(unix))]
+fn uid_of(_metadata: &fs::Metadata) -> Option<u32> {
+    None
+}
+
+/// The current user's uid, read from the owner of this process's procfs entry.
+fn current_uid() -> Option<u32> {
+    fs::metadata("/proc/self")
+        .ok()
+        .and_then(|metadata| uid_of(&metadata))
 }
 
 fn absolute_for_hash(path: &Path) -> Result<PathBuf, String> {
@@ -454,6 +554,60 @@ mod tests {
             "long artifact paths should use a short temp runtime dir"
         );
         assert!(layout.data_dir.starts_with(&long_case_dir));
+
+        let short_runtime_dir = layout.runtime_dir.clone();
+        assert!(short_runtime_dir.is_dir());
+        drop(layout);
+        assert!(
+            !short_runtime_dir.exists(),
+            "the short temp runtime dir must not outlive its layout"
+        );
+    }
+
+    #[test]
+    fn artifact_local_runtime_dir_is_left_to_the_artifact_tree() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let layout = RuntimeLayout::prepare(tempdir.path()).expect("runtime layout");
+        let runtime_dir = layout.runtime_dir.clone();
+        drop(layout);
+
+        assert!(
+            runtime_dir.is_dir(),
+            "artifact-local dirs stay with artifacts"
+        );
+    }
+
+    #[test]
+    fn sweep_removes_only_idle_dead_temp_runtime_dirs() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let backdate = |path: &Path| {
+            fs::File::open(path)
+                .expect("open dir")
+                .set_modified(
+                    std::time::SystemTime::now()
+                        .checked_sub(2 * STALE_TEMP_RUNTIME_MIN_AGE)
+                        .expect("past time"),
+                )
+                .expect("backdate");
+        };
+        let dead = tempdir.path().join("lt-proof-4000000000-0e1c2cf12bfa745e");
+        let fresh = tempdir.path().join("lt-proof-4000000001-0e1c2cf12bfa745e");
+        let own = tempdir
+            .path()
+            .join(format!("lt-proof-{}-0e1c2cf12bfa745e", std::process::id()));
+        let unrelated = tempdir.path().join("lt-proofs-4000000000-x");
+        for dir in [&dead, &fresh, &own, &unrelated] {
+            fs::create_dir(dir).expect("fixture dir");
+        }
+        for dir in [&dead, &own, &unrelated] {
+            backdate(dir);
+        }
+
+        sweep_stale_temp_runtime_dirs(tempdir.path());
+
+        assert!(!dead.exists(), "idle dead-PID dir is swept");
+        assert!(fresh.is_dir() && own.is_dir() && unrelated.is_dir());
     }
 
     #[test]

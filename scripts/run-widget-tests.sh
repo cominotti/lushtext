@@ -3,12 +3,27 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMP_SCOPE="$SCRIPT_DIR/with-temp-scope.sh"
+
+# Paths this script itself creates outside the scoped TMPDIR (the warning-scan
+# log), removed on every exit path, including SIGINT and SIGTERM.
+OWNED_TEMP_PATHS=()
+remove_owned_temp_paths() {
+    if (( ${#OWNED_TEMP_PATHS[@]} > 0 )); then
+        rm -rf -- "${OWNED_TEMP_PATHS[@]}"
+    fi
+}
+trap remove_owned_temp_paths EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 RETRIES=0
 MONITOR="2560x1600"
 TEST_ARGS=()
 SELF_TEST=false
 UNSUPPORTED_HOST_EXIT_CODE=77
-BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|^\(xdg-desktop-portal-gtk:[0-9]+\): xdg-desktop-portal-gtk-WARNING \*\*: ([0-9:.]+: )?error: Could not connect: No such file or directory$|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|rm: cannot remove '\''/tmp/.*/doc'\'': Is a directory$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$|.*WARNING: Glycin running without sandbox\.$)'
+BENIGN_WIDGET_NOISE_REGEX='(dbus-daemon\[[0-9]+\]: .*org\.(freedesktop\.(portal|impl\.portal\.|systemd1)|a11y\.Bus)|\(/usr/libexec/xdg-desktop-portal:.*WARNING \*\*:|\*\* \(xdg-desktop-portal-gtk:.*WARNING \*\*:|^\(xdg-desktop-portal-gtk:[0-9]+\): xdg-desktop-portal-gtk-WARNING \*\*: ([0-9:.]+: )?error: Could not connect: No such file or directory$|Gtk-CRITICAL \*\*: .*org\.a11y\.atspi\.Registry|Gdk-Message: .*Broken pipe$|^libmutter-Message:|^\*\* Message: .*Obtained a high priority EGL context$|^\*\* \(mutter:[0-9]+\): WARNING \*\*: ([0-9:.]+: )?Skipping layers 1\.\.n of your pipeline since the first layer is sliced\. We don'\''t currently support any multi-texturing with sliced textures but assume layer 0 is the most important to keep$|^\(mutter:[0-9]+\): mutter-WARNING \*\*: .*Failed to acquire org\.freedesktop\.locale1 proxy: Could not connect: No such file or directory$|^\(mutter:[0-9]+\): libmutter-WARNING \*\*: .*Failed to connect to colord daemon: Could not connect: No such file or directory$|.*WARNING: Glycin running without sandbox\.$)'
 # Cargo diagnostics spell this as a standalone `warning:` token. Requiring a
 # line/whitespace boundary keeps `--list` output such as `...visible_warning:
 # test` from being mistaken for a toolkit or compiler warning.
@@ -25,7 +40,8 @@ Options:
   --headless    Always run under `mutter --headless`.
   --retries N   Retry the full harness up to N times after the first failure.
   --monitor WxH Virtual monitor size for headless runs (default: 2560x1600).
-  --self-test   Verify warning classification without launching GTK.
+  --self-test   Verify warning classification and the temporary-file scope
+                without launching GTK.
   -h, --help    Show this help text.
 
 Arguments after `--` are passed to the widget test binary, for example:
@@ -92,11 +108,13 @@ self_test_warning_classification() {
     fi
 
     echo "Widget warning classification self-test passed."
+    "$TEMP_SCOPE" --self-test
 }
 
 run_with_widget_log() {
     local log_file
     log_file="$(mktemp)"
+    OWNED_TEMP_PATHS+=("$log_file")
     local status=0
     # `tee` keeps the full unfiltered capture that the warning classification
     # scan below reads, while the sanitized stream reaches the caller's
@@ -117,17 +135,19 @@ run_headless() {
     require_command dbus-run-session
     require_command mutter
 
-    local runtime_dir
-    runtime_dir="$(mktemp -d)"
     local status
     if (
-        export XDG_RUNTIME_DIR="$runtime_dir"
         export GDK_BACKEND=wayland
         export LUSHTEXT_WIDGET_HEADLESS_RUNNER=1
         export LUSHTEXT_WIDGET_HEADLESS_MONITOR="$MONITOR"
         export_widget_test_env
         unset DISPLAY WAYLAND_DISPLAY
+        # The temp scope gives the whole harness a private TMPDIR and a short
+        # private XDG_RUNTIME_DIR, releases the runtime directory only once
+        # the session's services have exited, and fails the run if any test
+        # process left a temporary entry behind.
         run_with_widget_log \
+            "$TEMP_SCOPE" --session-runtime widget -- \
             dbus-run-session -- \
             mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- \
             cargo test -p lushtext --test widget -- "${TEST_ARGS[@]}"
@@ -136,7 +156,6 @@ run_headless() {
     else
         status=$?
     fi
-    rm -rf "$runtime_dir"
     return "$status"
 }
 

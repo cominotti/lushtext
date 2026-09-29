@@ -664,6 +664,11 @@ risks that the widget harness cannot honestly prove, use the smoke lanes in
 automation, crash-recovery, portal/sandbox, accessibility, and performance
 smoke coverage.
 
+Every test lane runs under `scripts/with-temp-scope.sh`, which gives it a
+private `TMPDIR`, removes it afterwards, and fails the run with `TEMP-LEAK:` if
+anything was left behind; the widget harness additionally gives each per-test
+child process its own temporary directory and removes it when the child exits.
+
 Benchmarks cover performance-sensitive service code such as bounded command
 palette ranking and cancellation, fuzzy search, file indexing, directory
 scanning, save admission, Markdown planning, workspace-search ownership,

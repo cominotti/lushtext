@@ -33,6 +33,9 @@ spikes for `gtk4-rs` and Kooha.
   `cfg(kani)` harnesses are test-like and add no public API.
 - `gtk-lush-proof-harness`: keep caller-owned environment mutation and test
   registry. The harness should not mutate process environment for consumers.
+  The per-run scratch root (2026-09-29) keeps to that: the parent sets each
+  child attempt's `TMPDIR` on the child `Command` only, and the one additive
+  knob is `HarnessConfig::with_run_scratch_prefix`.
 - `gtk-lush-proof-spine`: keep GTK-free provider traits and bounded value
   objects. No transport, D-Bus, command, or app-state ownership is added.
 - `gtk-lush-axioms` (2026-09-24): keep the static catalogue, the

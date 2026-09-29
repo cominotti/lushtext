@@ -19,7 +19,8 @@ Use this crate for the generic mechanics around GTK widget tests:
 
 - self-supervising relaunch into a private `dbus-run-session` +
   `mutter --headless` session;
-- per-test child process isolation;
+- per-test child process isolation, including harness-owned per-test
+  temporary directories;
 - bounded retry and loud flake reporting;
 - list/filter/skip command-line behavior compatible with simple test harnesses;
 - wait helpers that drain the GLib main loop correctly.
@@ -61,6 +62,28 @@ contract before Mutter starts: `GDK_BACKEND=wayland`, the caller-owned headless
 marker, and removal of inherited live `DISPLAY` and `WAYLAND_DISPLAY`.
 Per-test children spawned inside the private Mutter session should inherit that
 session's private Wayland display from the environment.
+
+## Temporary Files
+
+Every selected test runs in its own child process, and the supervising parent
+owns every child's temporary files. It creates one
+`<prefix><pid>-<random>` root in the system temp dir per run (prefix from
+`HarnessConfig::with_run_scratch_prefix`, default
+`DEFAULT_RUN_SCRATCH_PREFIX`), passes each child attempt its own empty
+subdirectory as `TMPDIR`, removes that subdirectory as soon as the child exits,
+and removes the root when the run ends, whether tests passed or failed. Tests
+keep calling `std::env::temp_dir()`, `tempfile`, or GLib's `g_get_tmp_dir()`
+unchanged; a child that panics, aborts, or crashes cannot leak past its
+attempt. Removal happens in the parent after the child exits rather than in the
+child, because worker threads a test leaves behind may still be writing there.
+
+A parent killed outright cannot clean up, so the next run sweeps entries named
+`<prefix><pid>` or `<prefix><pid>-<suffix>` that are real directories owned by
+the current user, whose PID no longer exists, and which have been idle for an
+hour. The headless relaunch's runtime directory follows the same pattern and is
+removed only once no process still uses it as `XDG_RUNTIME_DIR`:
+`dbus-run-session` returns while `xdg-document-portal` still holds its FUSE
+mount on `doc/`, so removing it at once fails and leaks it.
 
 ## Adoption Sketch
 

@@ -3,7 +3,8 @@
 //! Headless GTK proof harness helpers for gtk-rs applications.
 //!
 //! This crate owns the reusable mechanics of a widget-test harness:
-//! private headless Mutter launch, per-test child process isolation,
+//! private headless Mutter launch, per-test child process isolation (with
+//! harness-owned per-test temporary directories),
 //! filter/list handling, bounded retry reporting, and GLib main-loop wait
 //! helpers. Consumer applications keep their own GTK initialization, resource
 //! registration, fixture setup, and test registry generation.
@@ -24,6 +25,8 @@ use std::time::{Duration, Instant};
 
 use glib::prelude::IsA;
 use gtk4::prelude::GtkWindowExt;
+
+mod scratch;
 
 /// Exit code used when the harness itself or a child test fails.
 ///
@@ -51,6 +54,11 @@ pub const DEFAULT_HEADLESS_MONITOR: &str = "2560x1600";
 /// compositor timing transients while still reporting every retry pass as
 /// `FLAKY`.
 pub const DEFAULT_TEST_ATTEMPTS: usize = 2;
+
+/// Default prefix of the per-run scratch root a supervising parent owns.
+///
+/// See [`HarnessConfig::with_run_scratch_prefix`].
+pub const DEFAULT_RUN_SCRATCH_PREFIX: &str = "gtk-lush-proof-run-";
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -97,6 +105,7 @@ pub struct HarnessConfig {
     default_headless_monitor: &'static str,
     test_attempts: usize,
     runner_label: &'static str,
+    run_scratch_prefix: &'static str,
 }
 
 impl HarnessConfig {
@@ -117,6 +126,7 @@ impl HarnessConfig {
             default_headless_monitor: DEFAULT_HEADLESS_MONITOR,
             test_attempts: DEFAULT_TEST_ATTEMPTS,
             runner_label: "widget tests",
+            run_scratch_prefix: DEFAULT_RUN_SCRATCH_PREFIX,
         }
     }
 
@@ -142,6 +152,31 @@ impl HarnessConfig {
     pub const fn with_runner_label(mut self, label: &'static str) -> Self {
         self.runner_label = label;
         self
+    }
+
+    /// Set the name prefix of the per-run scratch root in the system temp dir.
+    ///
+    /// The supervising parent creates one root named
+    /// `<prefix><pid>-<random>` per run, gives every child attempt its own
+    /// empty subdirectory as `TMPDIR`, removes that subdirectory when the
+    /// child exits, and removes the root when the run ends, whether tests
+    /// passed or failed. Before creating its root, the parent also sweeps
+    /// roots under the same prefix, including legacy `<prefix><pid>` names,
+    /// whose owning process is gone and which have been idle for an hour.
+    ///
+    /// Choosing the prefix an application's tests previously used for
+    /// per-process directories lets that sweep reclaim what older builds
+    /// leaked.
+    #[must_use]
+    pub const fn with_run_scratch_prefix(mut self, prefix: &'static str) -> Self {
+        self.run_scratch_prefix = prefix;
+        self
+    }
+
+    /// Return the name prefix of the per-run scratch root.
+    #[must_use]
+    pub const fn run_scratch_prefix(&self) -> &'static str {
+        self.run_scratch_prefix
     }
 
     /// Return the environment variable that names the child test to run.
@@ -285,13 +320,27 @@ fn run_under_headless_compositor(config: &HarnessConfig, args: &[String]) -> Exi
         return ExitCode::from(UNSUPPORTED_HOST_EXIT_CODE);
     }
 
+    // The PID in the name lets a later run's sweep tell a killed session's
+    // runtime directory from a live one; `TempDir` removes it on every return.
     let Ok(runtime_dir) = tempfile::Builder::new()
-        .prefix("gtk-lush-proof-runtime-")
+        .prefix(&format!(
+            "{}{}-",
+            scratch::RUNTIME_DIR_PREFIX,
+            std::process::id()
+        ))
         .tempdir()
     else {
         eprintln!("failed to create private widget-test runtime directory");
         return ExitCode::from(TEST_FAILURE_EXIT_CODE);
     };
+    if let Some(owner) = scratch::owner_uid(runtime_dir.path()) {
+        scratch::sweep_stale_scratch(
+            &std::env::temp_dir(),
+            scratch::RUNTIME_DIR_PREFIX,
+            scratch::PidlessEntries::ReclaimWhenIdle,
+            owner,
+        );
+    }
     let monitor = std::env::var(config.headless_monitor_env())
         .unwrap_or_else(|_| config.default_headless_monitor.to_string());
     let Ok(current_exe) = std::env::current_exe() else {
@@ -320,7 +369,9 @@ fn run_under_headless_compositor(config: &HarnessConfig, args: &[String]) -> Exi
         .env("XDG_RUNTIME_DIR", runtime_dir.path());
     apply_headless_child_environment(&mut command, config);
 
-    match command.status() {
+    let status = command.status();
+    scratch::release_session_runtime_dir(runtime_dir);
+    match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => status_to_exit_code(status.code()),
         Err(error) => {
@@ -400,6 +451,14 @@ fn run_selected_tests(
         eprintln!("failed to find current test executable for child test run");
         return ExitCode::from(TEST_FAILURE_EXIT_CODE);
     };
+    // Dropped on every return below, which removes whatever the children left.
+    let mut run_scratch = match scratch::RunScratch::create(config.run_scratch_prefix()) {
+        Ok(scratch) => scratch,
+        Err(error) => {
+            eprintln!("failed to create the per-run widget-test scratch root: {error}");
+            return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+        }
+    };
     let mut failed = Vec::new();
     let mut flaky = Vec::new();
 
@@ -409,11 +468,20 @@ fn run_selected_tests(
 
         let mut passed_on = None;
         for attempt in 1..=config.attempts() {
+            let attempt_dir = match run_scratch.attempt_dir() {
+                Ok(dir) => dir,
+                Err(error) => {
+                    eprintln!("failed to create a widget-test scratch directory: {error}");
+                    return ExitCode::from(TEST_FAILURE_EXIT_CODE);
+                }
+            };
             let status = Command::new(&current_exe)
                 .env(config.child_test_env(), test.name())
                 .env(config.headless_runner_env(), "1")
+                .env("TMPDIR", &attempt_dir)
                 .args(args)
                 .status();
+            scratch::RunScratch::release_attempt(&attempt_dir);
             if status.is_ok_and(|status| status.success()) {
                 passed_on = Some(attempt);
                 break;

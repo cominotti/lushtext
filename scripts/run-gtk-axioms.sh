@@ -128,18 +128,16 @@ example_binary() {
     printf '%s/debug/examples/%s\n' "$TARGET_DIR" "$1"
 }
 
-# Run "$@" inside a private headless session. The runtime directory is short
-# because Wayland socket paths are length-limited.
+# Run "$@" inside a private headless session. The temp scope provides a short
+# runtime directory (Wayland socket paths are length-limited), removes it only
+# once the session's services have exited, and fails the run if the session
+# left any temporary entry behind.
 run_headless() {
     require_command dbus-run-session
     require_command mutter
-    local runtime_dir
-    runtime_dir="$(mktemp -d /tmp/gtk-axioms-XXXXXX)"
-    local status=0
-    XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- \
-        mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- "$@" || status=$?
-    rm -rf "$runtime_dir"
-    return "$status"
+    "$REPO_ROOT/scripts/with-temp-scope.sh" --session-runtime axioms -- \
+        dbus-run-session -- \
+        mutter --headless --wayland --no-x11 --virtual-monitor "$MONITOR" -- "$@"
 }
 
 scan_warnings() {
@@ -259,7 +257,8 @@ run_all() {
     done < <(all_examples)
 
     echo "==> Probe binary (gtk-lush-adoption-lab axiom_probes)"
-    if ! run_logged "$LOG_DIR/probes.log" cargo test -p gtk-lush-adoption-lab --test axiom_probes; then
+    if ! run_logged "$LOG_DIR/probes.log" "$REPO_ROOT/scripts/with-temp-scope.sh" axiom-probes -- \
+        cargo test -p gtk-lush-adoption-lab --test axiom_probes; then
         echo "Error: the probe binary failed." >&2
         return 1
     fi

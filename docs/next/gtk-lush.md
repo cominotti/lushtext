@@ -207,7 +207,9 @@ The headless verification toolchain, split into:
   slot 7b (`GTK_IM_MODULE=gtk-im-context-simple`), a breaking signature change
   this crate can still take because it has not published; the reason is recorded
   in its CHANGELOG, its README, and `docs/next/persistent-format-hardening.md`
-  S7B-6.
+  S7B-6. Since 2026-09-29 the parent also owns every child's temporary files
+  (one per-run root, a fresh `TMPDIR` per child attempt, a dead-PID sweep),
+  after a one-directory-per-child leak exhausted a tmpfs's inodes.
 - **`gtk-lush-proof-spine`** (optional runtime crate): the readiness/snapshot
   protocol scaffolding — interface versioning, readiness predicates/blockers,
   bounded snapshot envelope — as traits the consumer implements with their own

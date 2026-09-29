@@ -336,6 +336,51 @@ under long artifact paths. Mutter/Wayland socket paths are length-limited, and
 an otherwise-valid smoke can fail before exercising the app if the runtime
 directory path is too deep.
 
+### Temporary Files
+
+Every temporary entry a test, harness, or smoke run creates must be removed by
+its owner on every exit path; a leak is a defect even when each run leaks one
+directory. A child-per-test harness multiplies it: one `lushtext-test-<pid>`
+directory per widget child once accumulated 45,978 directories and exhausted
+`/tmp`'s tmpfs inode table. The rules:
+
+- **One root per run, owned by the supervisor.** The
+  `gtk-lush-proof-harness` parent creates one `<prefix><pid>-<random>` root
+  (`lushtext-test-` for the widget suite), hands every child attempt its own
+  empty subdirectory as `TMPDIR`, removes it when the child exits, and removes
+  the root when the run ends. Tests therefore keep using
+  `std::env::temp_dir()`, `tempfile`, and the filesystem `fixture` helpers
+  unchanged; crashes and aborts cannot leak past the attempt.
+- **Drop guards in Rust, traps in shell, `try`/`finally` in Python.** A temp
+  directory outside an artifact tree (for example `cargo-gtk-proof`'s short
+  `lt-proof-<pid>-<hash>` runtime dir) is owned by a value whose `Drop` removes
+  it, so `?` early returns cannot skip cleanup. Shell scripts register their
+  temp paths with an `EXIT` trap plus `INT`/`TERM` traps; Python drivers remove
+  runtime roots in `finally`, keeping only a listing in the artifacts.
+- **Release session runtime dirs only after the session is gone.**
+  `dbus-run-session` returns before the services its private bus activated have
+  exited, and `xdg-document-portal` still holds its FUSE mount on `doc/`, so an
+  immediate removal fails and leaks the directory. Wait until no process
+  carries the directory as `XDG_RUNTIME_DIR` (the harness and
+  `scripts/with-temp-scope.sh --session-runtime` both do), then remove it. Keep
+  the runtime dir short, as above.
+- **PID-bearing names and a conservative sweep.** Names carry the owning PID
+  after an exact prefix so the next run can reclaim what a SIGKILLed run left:
+  only real directories owned by the current user, whose PID is gone and which
+  have been idle for an hour, are swept (a day for the one legacy PID-less
+  `gtk-lush-proof-runtime-*` form). A live run is never swept.
+- **Every test lane runs under `scripts/with-temp-scope.sh`**, which gives the
+  command a private `TMPDIR`, removes it on every exit, and fails with
+  `TEMP-LEAK:` when anything is left inside it. The check is scoped to its own
+  run, so parallel runs and CI shards cannot blame one another. `make test`,
+  `make test-unit`/`test-int`/`test-prop`, `make fuzz-corpus-replay`,
+  `scripts/run-widget-tests.sh` (so every CI widget shard), the CI non-widget
+  step, `make gtk-axioms`, and the visual-geometry, visual, crash-recovery, and
+  accessibility smoke targets all use it; wrap a new test lane the same way.
+  `make check-temp-scope` (in `make check`) self-tests it. Mutation runs are
+  deliberately not wrapped: a mutant that breaks cleanup must be caught by the
+  tests, not fail the lane.
+
 Use `make builder-diagnostics-smoke` for runtime GtkBuilder diagnostics. The
 target scopes `GTK_DEBUG=builder,builder-objects`, validates standalone
 templates where possible, runs manifest-backed widget probes under headless
