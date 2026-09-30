@@ -619,6 +619,12 @@ comparison of Quint and TLA+ on the same protocols
 `make formal-evaluation`) kept Kani as the only maintained tool; its disposable
 models live in `formal/evaluation/`.
 
+`make proof-strength` measures how much of each Kani-checked module the
+proofs actually pin: it runs cargo-mutants' mutants of the module against its
+Kani harnesses and against the tests, and reports the kill rates of both; see
+[`docs/mutation-testing.md`](docs/mutation-testing.md). It is a local
+measurement lane, not a gate.
+
 Automation surfaces are documented in [`docs/automation.md`](docs/automation.md)
 and [`docs/automation-reference.md`](docs/automation-reference.md). The
 developer/agent client is `scripts/lushtext-automation.py`.
