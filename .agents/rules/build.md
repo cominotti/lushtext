@@ -67,6 +67,8 @@ make performance-smoke # lightweight Criterion performance smoke
 make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode)
 make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
+make proof-strength # LOCAL: Kani harnesses as a mutation oracle beside the cargo-mutants tests arm (PROOF_STRENGTH_MODULE=<path|all>, PROOF_STRENGTH_TIER=ci|all, PROOF_STRENGTH_SHARD=k/n, PROOF_STRENGTH_ARM=tests|kani|both)
+make proof-strength-list # the proof-strength population and harness order, without verifying
 make check-widget-shards # every widget test in exactly one CI shard, each shard measured within 20 minutes (no build needed)
 make check-filesystem-boundary # no disallowed raw filesystem calls/examples
 make check-policy # fast policy audits beside rustfmt and Clippy
@@ -607,6 +609,22 @@ invariant; tighten the generator or use the deep lane.
   decide whether the code, the stated domain, or the envelope is wrong, and
   record the outcome in the programme record. Kani cannot run two jobs on one
   target directory; use a second `--target-dir` for a parallel local run.
+- Proof strength: `ORACLES` in `scripts/kani-shards.py` maps every
+  Kani-checked module (optionally scoped to named functions) to its harnesses,
+  cheapest first, with each harness's measured local seconds and a `ci` or
+  `local` tier; `NOT_ORACLE_HARNESSES` and `NOT_ORACLE_MODULES` name the
+  deliberate exceptions with reasons. `make check-kani-shards` fails when an
+  oracle harness is missing, a harness is in no oracle list and not excepted,
+  or a harness file imports from a module that is neither. A new harness is
+  therefore added to both tables. `make proof-strength` runs the module's
+  mutants against those harnesses in a disposable worktree
+  (`scripts/proof-strength.py`, see `docs/mutation-testing.md`); it waits for
+  14 GiB available memory before each run and caps each Kani run at 12 GiB of
+  address space (`PROOF_STRENGTH_MIN_AVAILABLE_GIB`,
+  `PROOF_STRENGTH_MEMORY_LIMIT_GIB`), and it is a measurement lane, not a
+  gate. A survivor it reports is triaged in the programme record: a real
+  defect is fixed failing-first; a missing property gets an assertion or a
+  harness in the owning shard, re-measured against the shard's budget.
 - Envelopes: a model that treats GTK as nondeterministic constrains it only
   with `kani::assume` clauses citing ledger axiom ids from
   `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`.
