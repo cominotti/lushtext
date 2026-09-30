@@ -55,7 +55,8 @@ use super::journal_core::{
     registration_required, set_aside_name_step, startup_may_retire_stale, startup_restore,
     unapplied_restore_disposition, untrusted_commit_disposition,
 };
-use crate::model::draft::DraftManifestCompleteness;
+use super::journal_core::{BodyOwner, must_preserve_before_replacing, window_may_journal_draft};
+use crate::model::draft::{DraftManifestAuthority, DraftManifestCompleteness};
 
 /// The most draft ids any harness uses.
 const MAX_IDS: usize = 3;
@@ -1552,4 +1553,169 @@ fn journal_set_aside_stamp_only_naming_loses_a_newer_body() {
         }
     }
     set_aside_keeps_what_it_reports(stamp_only);
+}
+
+/// Every journal decision follows the rule its documentation states, for
+/// every input: ownership's safety precedence (unseen work, then a version
+/// conflict, then registration), the window's view of a body, preservation
+/// before any replacement or deletion of unseen or other-version bytes, the
+/// body-write and registration table, the deletion order, commit authority,
+/// the orphan-deletion conditions, the unapplied-restore dispositions, and the
+/// one-journal-per-process decisions.
+///
+/// The crash harnesses above check what these decisions *achieve* over whole
+/// action sequences, but their content model abstracts away which body a
+/// decision protects, so the proof-strength lane found mutants of `ownership`
+/// (`||` with `&&` in the version-conflict test, which drops the preservation
+/// of a stale body) and of `BodyFacts::from_window_view` surviving every one of
+/// them at 20 minutes each (`measure-proof-strength-with-mutation`). This
+/// harness pins the table itself, in about a second.
+#[kani::proof]
+fn journal_decisions_follow_their_documented_rules() {
+    let facts: BodyFacts = kani::any();
+    let owner = ownership(facts);
+    let expected = if !facts.body_present {
+        BodyOwner::Nothing
+    } else if facts.restore_pending {
+        BodyOwner::Unseen
+    } else if facts.backing_stale || facts.entry == EntryState::Superseded {
+        BodyOwner::OtherVersion
+    } else if facts.entry == EntryState::Absent {
+        BodyOwner::Unregistered
+    } else {
+        BodyOwner::Journal
+    };
+    assert_eq!(owner, expected, "ownership left its safety precedence");
+    let preserve = matches!(owner, BodyOwner::Unseen | BodyOwner::OtherVersion);
+    assert_eq!(must_preserve_before_replacing(owner), preserve);
+    assert_eq!(
+        deletion_start(owner),
+        if preserve {
+            DeletionStep::Preserve
+        } else {
+            DeletionStep::DeleteBody
+        }
+    );
+    let needed: bool = kani::any();
+    assert_eq!(
+        body_write_decision(owner, needed),
+        match owner {
+            BodyOwner::Unseen => BodyWriteDecision::Hold,
+            _ if needed => BodyWriteDecision::RegisterFirst,
+            BodyOwner::OtherVersion => BodyWriteDecision::PreserveThenWrite,
+            _ => BodyWriteDecision::Write,
+        }
+    );
+
+    let (registered, pending): (bool, bool) = (kani::any(), kani::any());
+    assert_eq!(
+        BodyFacts::from_window_view(registered, pending),
+        BodyFacts {
+            body_present: registered || pending,
+            entry: if registered {
+                EntryState::Current
+            } else {
+                EntryState::Absent
+            },
+            restore_pending: pending,
+            backing_stale: false,
+        }
+    );
+
+    let (file_backed, known, trusted): (bool, bool, bool) = (kani::any(), kani::any(), kani::any());
+    assert_eq!(
+        registration_required(file_backed, known, trusted),
+        file_backed && (!known || !trusted)
+    );
+    let (required, committed): (bool, bool) = (kani::any(), kani::any());
+    assert_eq!(
+        may_write_after_registration(required, committed),
+        !required || committed
+    );
+    let (insert_only, allowed): (bool, bool) = (kani::any(), kani::any());
+    assert_eq!(
+        untrusted_commit_disposition(insert_only, allowed) == UntrustedCommitDisposition::Additive,
+        insert_only && allowed
+    );
+    assert_eq!(startup_may_retire_stale(trusted), trusted);
+    assert_eq!(
+        startup_restore(trusted) == StartupRestore::StartEmpty,
+        trusted
+    );
+
+    let step: DeletionStep = kani::any();
+    let succeeded: bool = kani::any();
+    assert_eq!(
+        next_deletion_step(step, succeeded),
+        match step {
+            DeletionStep::Preserve if succeeded => DeletionStep::DeleteBody,
+            DeletionStep::DeleteBody if succeeded => DeletionStep::RemoveEntry,
+            DeletionStep::RemoveEntry if succeeded => DeletionStep::Done,
+            DeletionStep::Done => DeletionStep::Done,
+            _ => DeletionStep::Stopped,
+        }
+    );
+
+    let completeness = match kani::any::<u8>() % 3 {
+        0 => DraftManifestCompleteness::Complete,
+        1 => DraftManifestCompleteness::Partial,
+        _ => DraftManifestCompleteness::Failed,
+    };
+    let written: bool = kani::any();
+    assert_eq!(
+        commit_authority(completeness, written),
+        if completeness == DraftManifestCompleteness::Complete && written {
+            DraftManifestAuthority::TRUSTED
+        } else {
+            DraftManifestAuthority::untrusted(completeness)
+        }
+    );
+
+    let cleanup: CleanupFacts = kani::any();
+    let eligible = cleanup.manifest_trusted
+        && cleanup.path_matches
+        && cleanup.entry == CleanupEntryState::Unreferenced
+        && cleanup.write_guard_held;
+    let decision = orphan_body_decision(cleanup);
+    assert_eq!(
+        decision == OrphanBodyDecision::Delete,
+        eligible && cleanup.identity == CleanupBodyIdentity::Inspected,
+        "orphan cleanup deleted outside its conditions"
+    );
+    assert_eq!(
+        decision == OrphanBodyDecision::AlreadyAbsent,
+        eligible && cleanup.identity == CleanupBodyIdentity::Missing
+    );
+
+    let ending: RestoreEnding = kani::any();
+    assert_eq!(
+        unapplied_restore_disposition(ending),
+        match ending {
+            RestoreEnding::Stale => RestoreDisposition::PreserveThenRetire,
+            RestoreEnding::Applied | RestoreEnding::MissingBody => RestoreDisposition::Nothing,
+            _ => RestoreDisposition::PreserveCopy,
+        }
+    );
+
+    let slot: SetAsideSlot = kani::any();
+    assert_eq!(
+        set_aside_name_step(slot),
+        match slot {
+            SetAsideSlot::Free => SetAsideNameStep::Place,
+            SetAsideSlot::SameBody => SetAsideNameStep::AlreadyKept,
+            SetAsideSlot::OtherBody => SetAsideNameStep::NextName,
+        }
+    );
+    let holder: JournalLaneHolder = kani::any();
+    assert_eq!(
+        journal_lane_admission(holder) == JournalLaneAdmission::Admit,
+        holder == JournalLaneHolder::Nobody
+    );
+    let claim: DraftClaim = kani::any();
+    let other = claim == DraftClaim::OtherWindow;
+    assert_eq!(
+        draft_open_decision(claim) == DraftOpenDecision::PresentOwner,
+        other
+    );
+    assert_eq!(window_may_journal_draft(claim), !other);
 }

@@ -216,6 +216,7 @@ SHARDS: dict[str, Shard] = {
         (
             "services::draft_service::kani_proofs::journal_invariants_hold_under_crashes",
             "services::draft_service::kani_proofs::journal_set_aside_",
+            "services::draft_service::kani_proofs::journal_decisions_",
             "services::draft_service::set_aside_retention::kani_proofs::",
             "services::filesystem::write_protocol::kani_proofs::",
         ),
@@ -394,6 +395,7 @@ ORACLES: dict[str, Oracle] = {
     "crates/lushtext-core/src/services/draft_service/journal_core.rs": Oracle(
         _CORE,
         (
+            _h(_JOURNAL + "journal_decisions_follow_their_documented_rules", 0.35, "ci"),
             _h(_JOURNAL + "journal_set_aside_keeps_every_body_it_reports_kept", 4.13, "local"),
             _h(_JOURNAL + "journal_set_aside_stamp_only_naming_loses_a_newer_body", 4.01, "local"),
             _h(_JOURNAL + "a_dirty_editor_becomes_clean_without_faults", 292.41, "local"),
