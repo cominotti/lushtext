@@ -808,6 +808,28 @@ def join_problems(kani: dict[str, dict], metas: list[dict], rev: str) -> list[st
     return problems
 
 
+def production_source(text: str) -> str:
+    """The module text without its top-level `#[cfg(test)] mod … { … }` blocks.
+
+    cargo-mutants never mutates test code, so a test added to a module after
+    its results were recorded leaves every mutant, and both arms' verdicts on
+    the shipped code, unchanged; any other edit makes the results stale.
+    """
+    lines = text.splitlines()
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        if lines[index] == "#[cfg(test)]" and index + 1 < len(lines) and re.match(r"mod \w+ \{$", lines[index + 1]):
+            index += 2
+            while index < len(lines) and lines[index] != "}":
+                index += 1
+            index += 1
+            continue
+        kept.append(lines[index])
+        index += 1
+    return "\n".join(kept)
+
+
 def module_report(rev: str, module: str, pop: Population) -> dict:
     kani: dict[str, dict] = {}
     for path in results_dir(rev, module).glob("*.json"):
@@ -825,6 +847,7 @@ def module_report(rev: str, module: str, pop: Population) -> dict:
         "kani_measured": sum(1 for n in names if n in kani),
         "tests_measured": sum(1 for n in names if n in tests),
         "problems": problems,
+        "kani_version": next((record.get("kani_version") for record in kani.values() if record.get("kani_version")), None),
     }
 
     def kani_class(n: str) -> str | None:
@@ -1020,6 +1043,10 @@ def self_test() -> None:
     kani = {"n": {"name": "n", "rev": "r1", "cargo_mutants_version": "cargo-mutants 27.0.0"}}
     good = [{"rev": "r1", "finished": True, "cargo_mutants_version": "cargo-mutants 27.0.0"}]
     assert join_problems(kani, good, "r1") == []
+    # A test added to a module keeps its recorded results; a code edit does not.
+    shipped = "fn f() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn g() {}\n"
+    assert production_source(shipped) == production_source(shipped.replace("fn t() {}", "fn t() {}\n    fn u() {}"))
+    assert production_source(shipped) != production_source(shipped.replace("fn g() {}", "fn g() { h() }"))
     assert join_problems(kani, [{**good[0], "rev": "r2"}], "r1")
     assert join_problems(kani, [{**good[0], "cargo_mutants_version": "cargo-mutants 28.0.0"}], "r1")
     assert join_problems(kani, [{**good[0], "finished": False}], "r1")
@@ -1087,15 +1114,17 @@ def main() -> int:
         rows = []
         for module in modules:
             module_rev = resolve_rev(module_revs.get(module, rev))
-            if subprocess.run(["git", "diff", "--quiet", module_rev, rev, "--", module], cwd=REPO_ROOT).returncode:
+            if production_source(git("show", f"{module_rev}:{module}")) != production_source(git("show", f"{rev}:{module}")):
                 raise SystemExit(f"proof-strength: {module} differs between {module_rev[:8]} and {rev[:8]}")
             row = module_report(module_rev, module, population(worktree, module))
             row["rev"] = module_rev
             rows.append(row)
-        text = markdown(rows, rev, {"kani": load_baseline(rev).get("kani_version"), "cargo_mutants": cargo_mutants_version()})
+        kani_versions = {row["kani_version"] for row in rows if row.get("kani_version")}
+        text = markdown(rows, rev, {"kani": ", ".join(sorted(kani_versions)) or None, "cargo_mutants": cargo_mutants_version()})
         print(text)
         if args.markdown:
             Path(args.markdown).write_text(text, encoding="utf-8")
+        (RESULTS / rev).mkdir(parents=True, exist_ok=True)
         (RESULTS / rev / "report.json").write_text(json.dumps(rows, indent=1) + "\n", encoding="utf-8")
     return 0
 
