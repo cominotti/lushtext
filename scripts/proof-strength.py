@@ -6,8 +6,8 @@ cargo-mutants generates the mutants but can only use `cargo test` or nextest as
 its oracle, so this driver applies each mutant itself and runs the module's
 Kani harnesses (the `ORACLES` table of `scripts/kani-shards.py`) against it. The
 tests arm is cargo-mutants itself over the same module, and `report` joins the
-two on the mutant name. openspec/changes/measure-proof-strength-with-mutation,
-design D1-D7.
+two on the mutant name. Design D1-D7 of
+openspec/changes/archive/2026-10-10-measure-proof-strength-with-mutation.
 
 Usage:
   scripts/proof-strength.py list     [--module M|all] [--tier ci|all]

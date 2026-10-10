@@ -292,8 +292,8 @@ SHARDS: dict[str, Shard] = {
 }
 
 
-# The Kani mutation oracle (`scripts/proof-strength.py`,
-# openspec/changes/measure-proof-strength-with-mutation). Each Kani-checked
+# The Kani mutation oracle (`scripts/proof-strength.py`, openspec/changes/
+# archive/2026-10-10-measure-proof-strength-with-mutation). Each Kani-checked
 # module maps to the ordered harnesses that check it: `proof-strength.py`
 # applies one mutant of the module at a time and runs these harnesses cheapest
 # first, stopping at the first that fails. `seconds` is the harness's measured
