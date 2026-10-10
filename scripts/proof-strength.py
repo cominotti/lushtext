@@ -301,11 +301,11 @@ def shard_select(names: list[str], shard: str | None) -> set[str]:
 # --- Kani runs ----------------------------------------------------------------
 
 START_RE = re.compile(r"^Checking harness (\S+?)\.\.\.$")
-VERDICT_RE = re.compile(r"^VERIFICATION:- (\S+)(.*)$")
+VERDICT_RE = re.compile(r"^VERIFICATION:- (\S+)")
 TIME_RE = re.compile(r"^Verification Time: ([0-9.]+)s$")
 CHECK_RE = re.compile(r"^Check \d+: (\S+)$")
 STATUS_RE = re.compile(r"^- Status: (\S+)$")
-COMPILE_ERROR_RE = re.compile(r"^error(\[E\d+\])?: |could not compile", re.M)
+COMPILE_ERROR_RE = re.compile(r"(?:^error(?:\[E\d+\])?: )|(?:could not compile)", re.M)
 
 
 @dataclass
@@ -338,7 +338,7 @@ def parse_kani(lines: list[str]) -> list[HarnessRun]:
             continue
         elif match := VERDICT_RE.match(line):
             runs[-1].verdict = match.group(1)
-            runs[-1].detail = match.group(2).strip()
+            runs[-1].detail = line[match.end():].strip()
         elif match := TIME_RE.match(line):
             runs[-1].seconds = float(match.group(1))
         elif line.startswith("CBMC timed out"):
@@ -527,7 +527,7 @@ def baseline(worktree: Path, rev: str, modules: list[str], tier: str) -> dict:
             print(f"proof-strength: baseline {names}", flush=True)
             start = time.monotonic()
             PEAKS.clear()
-            status, runs, output = run_kani(worktree, package, group, RESULTS / rev / "baseline-logs" / f"{slug(names)}.log", baseline=True)
+            status, runs, _ = run_kani(worktree, package, group, RESULTS / rev / "baseline-logs" / f"{slug(names)}.log", baseline=True)
             wall = time.monotonic() - start
             by_name = {run.name: run for run in runs}
             for harness in group:
@@ -970,7 +970,7 @@ def self_test() -> None:
         "VERIFICATION:- SUCCESSFUL",
         "Verification Time: 1.5s",
     )
-    assert verified[0].verified and verified[0].seconds == 1.5
+    assert verified[0].verified and abs(verified[0].seconds - 1.5) < 1e-9
     assert verified[0].covers == {"m::kani_proofs::h.cover.1": "SATISFIED"}
     covers = {"m::kani_proofs::h": {"m::kani_proofs::h.cover.1": "SATISFIED"}}
     assert classify("x", [(0, verified, "")], covers).klass == "survived"
