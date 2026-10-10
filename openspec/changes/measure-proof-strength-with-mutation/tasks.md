@@ -177,5 +177,5 @@ already add an equivalent `cfg(kani)` declaration check.
 - [x] 6.4 Update the `make` target lists in `.agents/rules/build.md`,
   `AGENTS.md` (Build Commands), and `README.md`. If a workflow was added,
   update the CI description in `.agents/rules/build.md` and `AGENTS.md`.
-- [ ] 6.5 Run `make check` and `make test`, then
+- [x] 6.5 Run `make check` and `make test`, then
   `openspec validate measure-proof-strength-with-mutation --strict`.
