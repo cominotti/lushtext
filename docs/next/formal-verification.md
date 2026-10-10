@@ -1335,6 +1335,171 @@ harnesses add about 8 s, so the recorded CI budget (20.9 min) stands. The same c
 listing defect: `set_aside::list` stopped after 256 directory entries before
 sorting, so past 256 bodies it showed an arbitrary subset as the newest.
 
+### Proof strength (N9) — `measure-proof-strength-with-mutation`
+
+**Status: measured and triaged (2026-10-10).** Every Kani-checked module was
+mutated with cargo-mutants and each mutant was run against two oracles: the
+module's Kani harnesses (`scripts/proof-strength.py`, oracle table `ORACLES`
+in `scripts/kani-shards.py`) and the ordinary test suite with property tests
+(the cargo-mutants tests arm). How to run it is in
+[`docs/mutation-testing.md`](../mutation-testing.md), "Proof strength".
+
+- **Tools:** Kani 0.68.0 (CBMC 6.11.0), cargo-mutants 27.0.0; tests arm with
+  `--features lushtext-core/property-tests`, nextest, one job.
+- **Revisions.** Results are keyed by the revision they were measured at. A
+  module is reported at the last revision whose *shipped* source matches the
+  branch tip: `report` compares the module text with its top-level
+  `#[cfg(test)] mod … { … }` blocks removed, because cargo-mutants never
+  mutates test code, so a test added afterwards changes no mutant. Both arms
+  of a module always come from the same revision. The revisions are
+  `848f94f8` (the base), `bdd4ae5b`, `f6ac3cd5`, `570ca136`, and `b8f8ef18`,
+  as listed per row; each later one exists because a harness was added after
+  the earlier run.
+- **Scope.** Each module's own mutants only. The 35–36 whole-scope
+  field-deletion mutants that a name filter also returns (the "floor") are
+  dropped and reported. For the two mixed modules, the oracle is scoped to the
+  functions the harnesses were written for, and the rest is reported as
+  "outside scope", not as survivors (`minimap/policy.rs` 228,
+  `markdown_preview/policy.rs` 183).
+
+Joined per-module table (`target/proof-strength/report.sh`, which runs
+`proof-strength.py report --module-rev …`):
+
+| Module (revision) | Mutants | Floor | Outside scope | Unviable (Kani / tests) | Tests-only kills | Kani-only kills (should_panic) | Both | Either | Vacuity kills | Kani timeouts | Kani survivors |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `gtk-lush/widgets/src/slice_geometry.rs` (`570ca136`) | 33 | n/a | 0 | 1 / 1 | 1 | 0 (0) | 31 | 32 | 0 | 1 | 0 |
+| `gtk-lush/widgets/src/scroll_request.rs` (`570ca136`) | 31 | n/a | 0 | 2 / 2 | 0 | 0 (0) | 27 | 27 | 0 | 0 | 2 |
+| `services/draft_service/journal_core.rs` (`b8f8ef18`) | 51 | 36 | 0 | 18 / 18 | 0 | 1 (0) | 32 | 33 | 0 | 0 | 0 |
+| `services/draft_service/set_aside_retention.rs` (`bdd4ae5b`) | 40 | 36 | 0 | 2 / 2 | 7 | 4 (0) | 27 | 38 | 0 | 0 | 7 |
+| `services/filesystem/write_protocol.rs` (`bdd4ae5b`) | 34 | 36 | 0 | 6 / 15 | 0 | 10 (4) | 18 | 28 | 0 | 0 | 0 |
+| `model/editor_memory.rs` (`f6ac3cd5`) | 50 | 36 | 0 | 5 / 7 | 10 | 7 (0) | 25 | 42 | 0 | 0 | 13 |
+| `ui/window/geometry/policy.rs` (`848f94f8`) | 80 | 36 | 0 | 10 / 10 | 35 | 0 (0) | 35 | 70 | 4 | 0 | 31 |
+| `ui/sidebar/width_preset.rs` (`848f94f8`) | 36 | n/a | 0 | 2 / 2 | 1 | 6 (0) | 25 | 32 | 0 | 0 | 3 |
+| `ui/editor_page/minimap/policy.rs` (`848f94f8`) | 178 | 36 | 228 | 4 / 4 | 71 | 0 (0) | 102 | 173 | 3 | 7 | 62 |
+| `ui/markdown_preview/policy.rs` (`848f94f8`) | 5 | 35 | 183 | 0 / 0 | 0 | 0 (0) | 5 | 5 | 0 | 0 | 0 |
+
+Reading the table:
+
+- **Unviable.** A mutant no harness reaches is skipped without a Kani
+  compile; when the tests arm shows it does not build, it counts as unviable,
+  not as a survivor (`run_deletion -> Default::default()`, the
+  `UserDecision::clone` and `PropertiesPresentation::from_layout_name`
+  `Default` mutants). `write_protocol`'s 15 vs 6 is the reverse: nine
+  `match guard ok with true/false` mutants of `WriteProtocol::step` do not
+  build under the tests arm's lints but do under Kani, which kills all nine
+  (four through `should_panic` harnesses), so they appear as Kani-only kills.
+- **Kani adds.** Kani-only kills: 28 across five modules (`write_protocol`
+  10, `editor_memory` 7, `width_preset` 6, `set_aside_retention` 4,
+  `journal_core` 1). Tests-only kills: 125, of which 106 are in the two GTK
+  geometry/minimap policies, where the harnesses state finiteness,
+  containment, monotonicity and bounds rather than the figures; the module
+  that is all decision table (`journal_core`) and the I/O-free protocol
+  (`write_protocol`) have no tests-only kill at all.
+- **Nothing viable survives both arms at the branch tip.** Every mutant the
+  joined report shows as missed by both arms is killed by a test or harness
+  added in this change (below), or excluded as equivalent.
+- **Cost (local, one CBMC at a time).** Kani-arm verification time per module:
+  `slice_geometry` 44 min, `scroll_request` 11 min, `write_protocol` 8 min,
+  `set_aside_retention` 8 min, `editor_memory` 2.0 h, `journal_core` 5 min
+  (after its decision-table harness; about 20 min per survivor before it),
+  geometry policy 2.7 h, minimap 2.3 h, width presets 6 min, preview 0.4 min,
+  plus one `cargo kani` compile per mutant. Peak CBMC memory 3.9 GiB
+  (`editor_memory`). Tests arm: 3–9 min per module, 37 min for the minimap
+  policy.
+
+#### Harnesses and assertions added (triage class "add harness/assertion")
+
+| Commit | Shard | Kills |
+|---|---|---|
+| `c2b77537` | `core-journal-and-write` | `write_protocol` harnesses assert the temp-name retry bound and the success/completion classification (six `MoveProtocol` and temp-attempt survivors); `set_aside_retention_deletes_only_confirmed_bodies` gains the converse of R2 (`may_delete -> false`); new `set_aside_retention_notice_follows_the_bound_and_its_rate_limit` proves `bound_status` and `notice_due` correct, not only total |
+| `80a5468d` | `core-journal-and-write` | the rate-limit harness bounded from 1121 s to 12.7 s: the bound is still checked for every `u64`; the rate limit for totals below 2^16 (scaled by 2^16) plus `u64::MAX` edge cases, where the `u128` widening matters (stated in its doc comment) |
+| `f6ac3cd5` | `core-memory-policy` | the estimate harness asserts the documented budget, low-water, and bookkeeping figures, whose constant mutants every parametric harness let through |
+| `570ca136` | `widgets-geometry` | `whole_pixel_band_keeps_a_whole_pixel_slice` (3.9 s) and `requests_are_classified_by_the_documented_rules` (53.5 s): containment alone held for a (0, 0) band and bounded only requests |
+| `b8f8ef18` | `core-journal-and-write` | `journal_decisions_follow_their_documented_rules` (0.35 s): every `journal_core` decision against its documented rule for every input. The crash harnesses abstract away which body a decision protects, so `ownership`'s and `BodyFacts::from_window_view`'s `\|\|` with `&&` survived all six journal harnesses at about 20 minutes each; the second is also missed by the tests arm |
+
+Tests added where **both** arms missed (`3e39ef22`, `70da43f8`, each verified
+killed with cargo-mutants): `EditorResidencyLedger::contains -> true`,
+`snapshot -> vec![]`, `is_empty -> true`; `classify_child_scroll` at exactly
+`ADJUSTMENT_EPSILON` (`<` with `<=`, `>` with `>=`; the harnesses are on whole
+pixels, where no divergence equals 0.5); `fit_native_slider_to_source_map_bounds`'s
+`!upper.is_finite()` guard (`||` with `&&` at `:498`, a map whose `y` and
+height are finite but whose sum overflows); `WorkspaceSidebarWidthPreset::label`.
+
+#### Defects found
+
+- **Real defect, fixed failing-first (`cf87540c`):** workspace-search walker
+  threads took their visited-file counts from one `fetch_add` but published
+  them with a plain `store` in scheduling order, so the "Searching X files"
+  progress count could move backwards (seen as an intermittent
+  `progress_counter_tracks_all_visited_files` failure in the tests arm: left 1,
+  right 250). It now only moves forward (`fetch_max`), behind
+  `a_late_published_count_never_moves_progress_backwards`. No defect was found
+  in a Kani-checked module itself.
+- **Lane defects, fixed:** the tests arm of the GTK Lush widget modules failed
+  its baseline because cargo rejects `--features lushtext-core/property-tests`
+  for a build that does not select `lushtext-core` (`aec3d972`); unreached
+  mutants were reported as survivors (`bdd4ae5b`).
+
+#### Equivalent mutants (excluded, `.cargo/mutants.toml`)
+
+`fit_native_slider_to_source_map_bounds`'s `||` with `&&` at `:490:9` and
+`:491:9`: the later finite-sum guard rejects exactly the maps they let
+through. One `exclude_re` each, verified against the tool list (`70da43f8`).
+
+#### Accepted gaps (Kani survivors and timeouts the tests arm kills)
+
+Every remaining Kani survivor and timeout (110 + 8) is killed by the tests
+arm: the behaviour is **constrained by tests, not a proved property**. By
+cluster:
+
+- `set_aside_retention::SetAsideTotals::is_truncated` (7): no harness reaches
+  it; it only words the Data page's summary row, and R1–R4 are about deletion.
+- `editor_memory::EditorResidencyLedger` accessors (`remove -> None`,
+  `reconcile`, `contains`, `total_bytes`, `protected_bytes`, `len`,
+  `is_empty`; 10 left after the tests above): the Kani model trusts the
+  ledger's `BTreeMap` and checks the incremental totals against a
+  recomputation, as recorded in phase 2.
+- `ui/window/geometry/policy.rs` (31): the `PropertiesPresentation` layout
+  names and the two breakpoint condition strings (GTK-facing text whose
+  meaning is Adwaita's parse, pinned by widget and unit tests);
+  `ShellReconciliation::is_settled` (the shell-loop harnesses use their own
+  fixed-point test); and the width figures the harnesses state only as
+  monotone or bounded (`dual_sidebar_window_width_for_center` 12,
+  `desired_properties_width_sp` 2, `properties_inner_split_width`,
+  `effective_workspace_sidebar_width_sp`, `workspace_consumes_width_for_intent`
+  2, `secondary_surface_requested_for_intent` 2, one `derive_adaptive_shell_layout`
+  guard). The four vacuity kills here and three in the minimap show the covers
+  doing their job.
+- `ui/sidebar/width_preset.rs` (`min_width_sp -> 1`): the clamp harness states
+  the bound relative to whatever minimum the preset declares; the figure is
+  pinned by tests.
+- `ui/editor_page/minimap/policy.rs` (62 survivors, 7 timeouts):
+  `native_slider_estimate_from_inputs` (27 + 1 timeout) has only the no-panic
+  harness; the fit functions' input-rejection guard chains
+  (`fit_projected_bounds` 11, `fit_marker_bounds` 10,
+  `fit_native_slider_to_source_map_bounds` 13 + 4 timeouts) are redundant for
+  the proved properties (finite, inside the content band) because a later
+  guard or the clamp still holds them, so only the tests' exact `None` cases
+  see the difference; `expanded_to_min_height`'s two `/ with *` timeouts.
+- `slice_geometry.rs:92:40` (`* with +` in `viewport_slice`): the `ci`
+  harness `slice_covers_the_visible_intersection_on_whole_pixels` times out
+  at three times its baseline. The `local` slice-loop tier was **not run** for
+  it (up to about 65 minutes); the timeout is the design's limit and the
+  tests arm kills it. The widgets' `local` tier was not run at all: the `ci`
+  tier left only this timeout and the two sub-pixel `classify_child_scroll`
+  boundaries, which no whole-pixel slice-loop harness can reach.
+
+#### Lane placement (design D6, task 5)
+
+**Local only; no workflow.** The `ci` tier alone measured about 4 hours of
+Kani time locally (`slice_geometry`, `scroll_request`, `write_protocol`,
+`set_aside_retention`, the minimap and preview policies, width presets, and
+the `ci` half of the shell policy, plus a compile per mutant), which at the
+roughly 1.8× runner slowdown measured for the Kani shards in phase 2 is about
+7 hours on runners: more than twenty 25-minute shards per dispatch, for a
+measurement, not a gate. `make proof-strength` stays local, resumable, and
+sharded (`PROOF_STRENGTH_SHARD`).
+
 Next candidates after the Kani consolidation are ranked in
 [`formal-verification-next.md`](./formal-verification-next.md).
 
@@ -1459,3 +1624,22 @@ Next candidates after the Kani consolidation are ranked in
   width to sp is the open text-scale follow-up.
 - `cargo-gtk-proof` has no sidebar or slice-bin scenario. The screenshot lane
   is waiting on a `reveal-workspace-path` automation action.
+- Proof strength (N9, `measure-proof-strength-with-mutation`): 110 Kani
+  survivors and 8 Kani timeouts are accepted as **constrained by tests, not
+  proved**; the tests arm kills every one. The clusters and reasons are in the
+  "Proof strength (N9)" section above. The largest are the minimap's
+  `native_slider_estimate_from_inputs` (no-panic harness only) and fit-guard
+  chains, the shell policy's width figures (proved monotone and bounded, not
+  equal to their formula), and the editor-memory ledger accessors (the Kani
+  model trusts the `BTreeMap`). Strengthening any of them is a harness
+  addition in its owning shard, re-measured against that shard's budget.
+- Proof strength: the widgets' `local` slice-loop oracle tier was not run, and
+  `slice_geometry.rs:92:40` (`* with +` in `viewport_slice`) is a Kani timeout
+  at three times its `ci` harness's baseline (killed by the tests arm). Run it
+  with `make proof-strength PROOF_STRENGTH_MODULE=crates/gtk-lush/widgets/src/slice_geometry.rs`
+  when a long local window is available.
+- Proof strength: should `slice_geometry.rs` and `scroll_request.rs` join the
+  default `examine_globs`, so ordinary pull-request mutation covers them? A
+  GTK Lush scope decision (`gtk-lush-stewardship`), left open; and whether
+  the `ci` tier should run on the weekly Kani schedule, left open because it
+  needs more than twenty 25-minute shards.

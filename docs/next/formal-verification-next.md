@@ -46,7 +46,7 @@ change adopts it.
 | 2 | `extend-kani-to-pure-policies` (**implemented 2026-09-24**) | N2. `clamped_preview_width` keeps its floor, and the exception is stated in the spec. The sidebar-width `NaN` bug is fixed failing-first. **Done**; results, the second defect it found (an infinite native-slider height), and the three new shards are in the programme record, phase 2 | 1 |
 | 3 | `verify-multi-window-draft-journal` (**implemented 2026-09-25**) | N4, first half: window actors against process actors in the journal machine. **Done**; the two-window harness, its counterexamples, and the per-application journal coordinator that fixes them are in the programme record, phase 4 | 1 |
 | 4 | `extend-closed-loop-geometry-verification` (**implemented 2026-09-25**) | **Done**; results in the programme record, phase 3. N4, second half (two bins requesting in one frame), N3 (breakpoint loop, axioms A14–A18), and the two in-Kani attempts at unbounded claims: loop contracts and bin independence | 1 |
-| 5 | `measure-proof-strength-with-mutation` | N9. The harness-file mutant exclusion is owned by change 1 | 1 |
+| 5 | `measure-proof-strength-with-mutation` (**implemented 2026-10-10**) | N9. The harness-file mutant exclusion is owned by change 1. **Done**; the per-module table, triage, and lane decision are in the programme record, "Proof strength (N9)" | 1 |
 | 6 | `bound-draft-set-aside-retention` | Fix first: the E1 set-aside naming defect (a body counts as kept only under a byte-identical copy; Kani K9). Then N10 set-aside retention: no automatic deletion, a soft bound that asks for review, and the 256-entry listing bug fixed | — |
 | 7 | `add-sidebar-visual-proof-scenario` | N10 sidebar proof: the `reveal-workspace-path` action and the rendered-row pixel check | — |
 | 8 | `apply-verification-altitude-redesigns` | N8, as six groups that can be applied one at a time | 1, 6 |
@@ -182,6 +182,26 @@ Take them up when a change touches that area anyway, not as a campaign.
 
 ### N9. Use proofs as mutation killers
 
+**Done** by `measure-proof-strength-with-mutation` (2026-10-10); see
+[`formal-verification.md`](./formal-verification.md), "Proof strength (N9)".
+Ten Kani-checked modules were mutated and every mutant run against the
+harnesses and against the tests (with property tests). The kill rates showed
+two kinds of module. Where the code is a decision table or an I/O-free
+protocol (`journal_core`, `write_protocol`, `set_aside_retention`,
+`editor_memory`), Kani kills things the tests miss (28 Kani-only kills), and
+the tests' 17 kills Kani misses are all in code no harness reaches (the
+editor-memory ledger accessors and the set-aside truncation flag); the survivors there pointed at
+properties a harness stated too loosely (relative bounds, a trusted map,
+which body a decision protects), and four harness changes closed them. Where
+the code is GTK-facing geometry (the shell, minimap, and slice policies), the
+harnesses prove shape (finite, contained, monotone, bounded) and the tests
+pin figures, so 125 mutants are killed by tests alone and the remaining Kani
+survivors are accepted as constrained by tests. Nothing viable survives both
+arms. The lane found one real defect outside the checked modules (workspace
+search progress could move backwards), fixed failing-first. It stays local:
+its `ci` tier alone is about seven runner hours. What follows is the candidate
+as it was ranked.
+
 Run `cargo-mutants` over the Kani-covered modules (`slice_geometry`,
 `scroll_request`, `journal_core`, `write_protocol`) with the harnesses as the
 test oracle. The result measures how much of each module the proofs pin: a
@@ -284,7 +304,7 @@ oscillate" within stated per-bin bounds. Lean therefore stays dormant.
 ```
 N1 ✓ measured, geometry shard PR-gated ─► N2 ✓ more pure policies ─► N3 breakpoint loop
 N5 ✓ token airtight ─► N4 ✓ multi-window + ✓ two-bin requests
-N9 mutation × proofs (N1 is done, so any time now)
+N9 mutation × proofs (done 2026-10-10)
 N11 after N4 (multi-window; N5 is done); N6, N7 only on their triggers; N8, N10 opportunistic
 ```
 

@@ -117,6 +117,7 @@ make proof-strength PROOF_STRENGTH_MODULE=crates/lushtext-core/src/services/file
 make proof-strength PROOF_STRENGTH_TIER=ci                 # the cheap harnesses only
 make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
 ./scripts/proof-strength.py report --markdown build/proof-strength.md
+./scripts/proof-strength.py report --module-rev <module>=<rev>  # a module measured at an earlier revision
 ./scripts/proof-strength.py clean                          # remove the disposable worktree
 ```
 
@@ -140,7 +141,9 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
   counts as a kill.
 - **Tests arm.** cargo-mutants over the same module with
   `lushtext-core/property-tests` enabled (the default lane omits it, but the
-  property suites are the tests-side counterpart of the proofs), two jobs.
+  property suites are the tests-side counterpart of the proofs), one job.
+  `report` joins the arms on the mutant name and refuses to join across
+  revisions or cargo-mutants versions.
 - **Resume.** One JSON result per mutant under
   `target/proof-strength/results/<rev>/`; a restart with the same revision and
   oracle entry skips finished mutants. A `ci`-tier survivor is re-opened by an
@@ -148,9 +151,19 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
 - **Cost.** The Kani arm runs one CBMC at a time and never overlaps the tests
   arm. The `local` tier (the slice-loop, shell-loop, editor-memory, and
   journal harnesses) can cost tens of minutes per surviving mutant and stays
-  local-only. The first measurement is in progress; its figures, triage, and
-  the lane-placement decision will be recorded in a "Proof strength (N9)"
-  section of `docs/next/formal-verification.md`.
+  local-only. Before each Kani run and each tests arm the driver waits for
+  14 GiB of available memory, and it caps each Kani run at 12 GiB of address
+  space (`PROOF_STRENGTH_MIN_AVAILABLE_GIB`, `PROOF_STRENGTH_MEMORY_LIMIT_GIB`).
+- **Earlier revisions.** `--module-rev MODULE=REV` reports a module from the
+  results of an earlier revision when its shipped source is unchanged since:
+  the check ignores top-level `#[cfg(test)] mod … { … }` blocks, because
+  cargo-mutants never mutates test code. Any other edit refuses the join, so
+  re-measure both arms.
+- **Placement.** Local only, decided from the first measurement
+  (2026-10-10): the `ci` tier alone is about 4 hours of local Kani time,
+  about 7 runner hours, more than twenty 25-minute shards per dispatch. The
+  per-module figures, the triage of every survivor, and the harnesses it led
+  to are in "Proof strength (N9)" in `docs/next/formal-verification.md`.
 
 ## Local Parallelism
 

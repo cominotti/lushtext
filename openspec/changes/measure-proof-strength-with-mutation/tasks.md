@@ -82,7 +82,7 @@ already add an equivalent `cfg(kani)` declaration check.
   - the refusal to join arms across revisions.
 
   Wire it into `make check-kani-shards`.
-- [ ] 3.3 Implement the tests arm (D1 step 4, D5):
+- [x] 3.3 Implement the tests arm (D1 step 4, D5):
   - cargo-mutants over one module with `lushtext-core/property-tests`
     enabled, reading `mutants.out/outcomes.json`;
   - the join on mutant name.
@@ -92,49 +92,58 @@ already add an equivalent `cfg(kani)` declaration check.
   with `PROOF_STRENGTH_MODULE`, `PROOF_STRENGTH_TIER`, `PROOF_STRENGTH_SHARD`,
   and `PROOF_STRENGTH_ARM`. Reuse the `KANI_VERSION` guard from `make kani`,
   and add both targets to `.PHONY` and `make help`.
-- [ ] 3.5 Prove the driver on one real mutant per module:
+- [x] 3.5 Prove the driver on one real mutant per module:
   1. Choose a mutant a harness obviously kills, for example `WriteProtocol::step`
      replaced with `Default::default()`.
   2. Confirm it is classified killed.
   3. Confirm the developer working tree is byte-identical before and after
      (`git status --porcelain` and a checksum of the module).
 
+  Done for every module by the measurement runs; re-proved at `f3d445d3` on
+  `write_protocol.rs:132:42` (`match guard ok with true`, killed by
+  `every_classification_describes_the_destination` in 12.7 s) with
+  `git status --porcelain` and the module's SHA-256 identical before and after.
+
 ## 4. Measure and triage
 
-- [ ] 4.1 Run the baseline, then both arms for `write_protocol.rs` and the
+- [x] 4.1 Run the baseline, then both arms for `write_protocol.rs` and the
   `ci` tiers of `slice_geometry.rs` and `scroll_request.rs`. Save the
   per-mutant results.
-- [ ] 4.2 Run both arms for `journal_core.rs` and for the `local` slice-loop
+- [x] 4.2 Run both arms for `journal_core.rs` and for the `local` slice-loop
   tier of the geometry modules. The only mutants to run in that tier are those
   the `ci` tier did not already kill. Shard this locally as needed, and record
   the wall time and peak memory.
-- [ ] 4.3 Produce the per-module table with `proof-strength.py report`. It
+  `journal_core` both arms at `b8f8ef18` (tests arm 6 min). The `local`
+  slice-loop tier was not run: the `ci` tier left one timeout the tests arm
+  kills (`slice_geometry.rs:92:40`) and two sub-pixel boundaries no whole-pixel
+  harness reaches; recorded in the programme record and its deferral inventory.
+- [x] 4.3 Produce the per-module table with `proof-strength.py report`. It
   shows:
   - mutants, the floor, and unviable;
   - tests-only kills, Kani-only kills (with should_panic kills and vacuity
     kills as sub-counts), and kills by both or either;
   - timeouts and survivors.
-- [ ] 4.4 Triage every Kani survivor and timeout in the order of design D7:
+- [x] 4.4 Triage every Kani survivor and timeout in the order of design D7:
   real defect, then add harness/assertion, then equivalent, then accepted gap.
   List each mutant by name with its class and justification.
-- [ ] 4.5 For each real defect found, first write a test that fails on the
+- [x] 4.5 For each real defect found, first write a test that fails on the
   shipped code, then fix it, and run the relevant data-safety or geometry
   lane. If no defect was found, record that explicitly.
-- [ ] 4.6 For each "add harness/assertion" survivor:
+- [x] 4.6 For each "add harness/assertion" survivor:
   1. Add the assertion or harness in the owning `kani_proofs` module.
   2. Assign any new harness to exactly one shard.
   3. Run `make check-kani-shards`.
   4. Re-run the unmutated shard with `make kani KANI_SHARD=<shard>`, and
      confirm it passes within its budget.
   5. Re-run the driver for that mutant and confirm it is killed.
-- [ ] 4.7 For each equivalent survivor that the tests arm also leaves alive,
+- [x] 4.7 For each equivalent survivor that the tests arm also leaves alive,
   add one narrowly scoped `exclude_re` with a comment. Verify it against a
   generated mutant, following the configuration requirement's
   re-verification rule.
 
 ## 5. Lane placement
 
-- [ ] 5.1 From the measurements in 4.1, decide whether the `ci` tier fits
+- [x] 5.1 From the measurements in 4.1, decide whether the `ci` tier fits
   shards of 25 minutes or less.
   - **If it fits:** add `.github/workflows/proof-strength.yml`:
     `workflow_dispatch` only, a shard matrix, `timeout-minutes: 30`, and the
@@ -142,12 +151,14 @@ already add an equivalent `cfg(kani)` declaration check.
     uploaded as artifacts. Run `make check-workflow-timeouts`.
   - **If it does not fit:** record the local-only decision and the measured
     numbers.
-- [ ] 5.2 If the workflow was added, dispatch it once and record its shard
+- [x] 5.2 If the workflow was added, dispatch it once and record its shard
   times.
+
+  Not applicable: the lane stays local-only (5.1), so no workflow was added.
 
 ## 6. Documentation sync
 
-- [ ] 6.1 Add a "Proof strength (N9)" section to
+- [x] 6.1 Add a "Proof strength (N9)" section to
   `docs/next/formal-verification.md`. It holds:
   - the revision, the Kani and cargo-mutants versions, and the feature set;
   - the per-module table;
@@ -156,14 +167,14 @@ already add an equivalent `cfg(kani)` declaration check.
   - any defects fixed.
 
   Add every accepted gap to the deferral inventory.
-- [ ] 6.2 Mark N9 done in `docs/next/formal-verification-next.md`, with a
+- [x] 6.2 Mark N9 done in `docs/next/formal-verification-next.md`, with a
   pointer to that section and a one-paragraph summary of what the kill rates
   showed.
-- [ ] 6.3 Update `docs/mutation-testing.md`:
+- [x] 6.3 Update `docs/mutation-testing.md`:
   - the harness exclusion and its figures, under Scope;
   - the `proof-strength` commands, under Commands;
   - the relation to the Kani lane, under Relation to Other Gates.
-- [ ] 6.4 Update the `make` target lists in `.agents/rules/build.md`,
+- [x] 6.4 Update the `make` target lists in `.agents/rules/build.md`,
   `AGENTS.md` (Build Commands), and `README.md`. If a workflow was added,
   update the CI description in `.agents/rules/build.md` and `AGENTS.md`.
 - [ ] 6.5 Run `make check` and `make test`, then
