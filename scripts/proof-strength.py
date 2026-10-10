@@ -305,7 +305,7 @@ VERDICT_RE = re.compile(r"^VERIFICATION:- (\S+)")
 TIME_RE = re.compile(r"^Verification Time: ([0-9.]+)s$")
 CHECK_RE = re.compile(r"^Check \d+: (\S+)$")
 STATUS_RE = re.compile(r"^- Status: (\S+)$")
-COMPILE_ERROR_RE = re.compile(r"(?:^error(?:\[E\d+\])?: )|(?:could not compile)", re.M)
+COMPILE_ERROR_RE = re.compile(r"^error(?:\[E\d+\])?: ", re.M)
 
 
 @dataclass
@@ -573,7 +573,7 @@ def classify(name: str, runs_by_batch: list[tuple[int | None, list[HarnessRun], 
             if status is None:
                 outcome.timeouts.append("<compile>")
                 continue
-            if status != 0 and COMPILE_ERROR_RE.search(output):
+            if status != 0 and (COMPILE_ERROR_RE.search(output) or "could not compile" in output):
                 outcome.klass = "unviable"
                 return outcome
             raise RuntimeError(f"cargo kani produced no harness result (status {status})")
