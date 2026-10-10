@@ -1434,9 +1434,11 @@ height are finite but whose sum overflows); `WorkspaceSidebarWidthPreset::label`
   them with a plain `store` in scheduling order, so the "Searching X files"
   progress count could move backwards (seen as an intermittent
   `progress_counter_tracks_all_visited_files` failure in the tests arm: left 1,
-  right 250). It now only moves forward (`fetch_max`), behind
-  `a_late_published_count_never_moves_progress_backwards`. No defect was found
-  in a Kani-checked module itself.
+  right 250). The first fix published with `fetch_max`; the simplification
+  pass then removed the second counter instead: the caller's counter is now
+  the walkers' shared counter, so its one `fetch_add` per file cannot move
+  backwards and there is nothing left to publish out of order. No defect was
+  found in a Kani-checked module itself.
 - **Lane defects, fixed:** the tests arm of the GTK Lush widget modules failed
   its baseline because cargo rejects `--features lushtext-core/property-tests`
   for a build that does not select `lushtext-core` (`bfc3e626`); unreached

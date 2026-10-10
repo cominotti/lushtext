@@ -185,6 +185,10 @@ fn walker_admits_entry(
 }
 
 struct SearchTelemetry {
+    /// The caller's visited-file counter, read by the status bar while the
+    /// search runs. When present it IS the walker threads' shared counter, so
+    /// it must start at zero; one `fetch_add` per file keeps it monotone
+    /// whatever order the threads are scheduled in.
     progress_counter: Option<Arc<AtomicUsize>>,
     completion_flag: Option<Arc<AtomicBool>>,
 }
@@ -257,7 +261,7 @@ fn search_with_plan_and_limits(
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     // Shared counters across walker threads and ordered workspace folders.
     let match_count = Arc::new(AtomicUsize::new(0));
-    let files_visited = Arc::new(AtomicUsize::new(0));
+    let files_visited = progress_counter.unwrap_or_else(|| Arc::new(AtomicUsize::new(0)));
     let fallback_ledger = plan.fallback_identity_required().then(|| {
         Arc::new(Mutex::new(WorkspaceSearchFallbackLedger::new(
             fallback_limits,
@@ -319,7 +323,6 @@ fn search_with_plan_and_limits(
             let matcher = matcher.clone();
             let match_count = match_count.clone();
             let files_visited = files_visited.clone();
-            let progress_counter = progress_counter.clone();
             let fallback_ledger = fallback_ledger.clone();
 
             // Per-thread searcher — reused across all files on this thread.
@@ -364,9 +367,6 @@ fn search_with_plan_and_limits(
 
                 // Report progress every 100 files (best-effort via try_send).
                 let count = files_visited.fetch_add(1, Ordering::Relaxed) + 1;
-                if let Some(counter) = &progress_counter {
-                    publish_progress(counter, count);
-                }
                 if count.is_multiple_of(100) {
                     let _ = tx.try_send(SearchEvent::Progress(count));
                 }
@@ -450,17 +450,6 @@ fn find_match_range(matcher: &grep_regex::RegexMatcher, line: &[u8]) -> std::ops
         Ok(Some(m)) => m.start()..m.end(),
         _ => 0..0,
     }
-}
-
-/// Publish one walker thread's visited-file count to the shared progress
-/// counter, which the status bar reads while the search runs.
-///
-/// Walker threads take their counts from one `fetch_add`, but they publish
-/// them in whatever order they are scheduled, so a plain store could let a
-/// thread that took count 1 overwrite 250 after everyone else finished. The
-/// counter only ever moves forward.
-fn publish_progress(counter: &AtomicUsize, count: usize) {
-    counter.fetch_max(count, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -1224,16 +1213,6 @@ mod tests {
                 "progress count {count} should be a multiple of 100"
             );
         }
-    }
-
-    #[test]
-    fn a_late_published_count_never_moves_progress_backwards() {
-        // Walker threads publish in scheduling order, not count order: the
-        // thread that took count 1 can publish after the one that took 250.
-        let counter = AtomicUsize::new(0);
-        publish_progress(&counter, 250);
-        publish_progress(&counter, 1);
-        assert_eq!(counter.load(Ordering::Relaxed), 250);
     }
 
     #[test]
