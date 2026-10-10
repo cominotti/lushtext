@@ -46,16 +46,16 @@
 //! is a fact of the model rather than an assumption.
 
 use super::journal_core::{
-    BodyFacts, BodyWriteDecision, CleanupBodyIdentity, CleanupEntryState, CleanupFacts,
+    BodyFacts, BodyOwner, BodyWriteDecision, CleanupBodyIdentity, CleanupEntryState, CleanupFacts,
     DeletionStep, DraftClaim, DraftOpenDecision, EntryState, JournalLaneAdmission,
     JournalLaneHolder, OrphanBodyDecision, RestoreDisposition, RestoreEnding, SetAsideNameStep,
     SetAsideSlot, StartupRestore, UntrustedCommitDisposition, body_write_decision,
     commit_authority, deletion_start, draft_open_decision, journal_lane_admission,
-    may_write_after_registration, next_deletion_step, orphan_body_decision, ownership,
-    registration_required, set_aside_name_step, startup_may_retire_stale, startup_restore,
-    unapplied_restore_disposition, untrusted_commit_disposition,
+    may_write_after_registration, must_preserve_before_replacing, next_deletion_step,
+    orphan_body_decision, ownership, registration_required, set_aside_name_step,
+    startup_may_retire_stale, startup_restore, unapplied_restore_disposition,
+    untrusted_commit_disposition, window_may_journal_draft,
 };
-use super::journal_core::{BodyOwner, must_preserve_before_replacing, window_may_journal_draft};
 use crate::model::draft::{DraftManifestAuthority, DraftManifestCompleteness};
 
 /// The most draft ids any harness uses.

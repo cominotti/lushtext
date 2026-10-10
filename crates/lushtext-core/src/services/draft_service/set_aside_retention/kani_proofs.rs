@@ -185,16 +185,12 @@ fn set_aside_retention_notice_follows_the_bound_and_its_rate_limit() {
         let value: u16 = kani::any();
         u64::from(value) << shift
     };
-    let now = SetAsideTotals {
+    let small_totals = || SetAsideTotals {
         count: small(0),
         bytes: small(16),
         complete: kani::any(),
     };
-    let last = SetAsideTotals {
-        count: small(0),
-        bytes: small(16),
-        complete: kani::any(),
-    };
+    let (now, last) = (small_totals(), small_totals());
     let over = bound_status(Some(now)) != BoundStatus::Within;
     assert_eq!(
         notice_due(Some(now), Some(last), reviewed),
