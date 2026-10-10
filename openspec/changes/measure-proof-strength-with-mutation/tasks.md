@@ -99,7 +99,7 @@ already add an equivalent `cfg(kani)` declaration check.
   3. Confirm the developer working tree is byte-identical before and after
      (`git status --porcelain` and a checksum of the module).
 
-  Done for every module by the measurement runs; re-proved at `f3d445d3` on
+  Done for every module by the measurement runs; re-proved at `e35926bc` on
   `write_protocol.rs:132:42` (`match guard ok with true`, killed by
   `every_classification_describes_the_destination` in 12.7 s) with
   `git status --porcelain` and the module's SHA-256 identical before and after.
@@ -113,7 +113,7 @@ already add an equivalent `cfg(kani)` declaration check.
   tier of the geometry modules. The only mutants to run in that tier are those
   the `ci` tier did not already kill. Shard this locally as needed, and record
   the wall time and peak memory.
-  `journal_core` both arms at `b8f8ef18` (tests arm 6 min). The `local`
+  `journal_core` both arms at `71fc2e3a` (tests arm 6 min). The `local`
   slice-loop tier was not run: the `ci` tier left one timeout the tests arm
   kills (`slice_geometry.rs:92:40`) and two sub-pixel boundaries no whole-pixel
   harness reaches; recorded in the programme record and its deferral inventory.

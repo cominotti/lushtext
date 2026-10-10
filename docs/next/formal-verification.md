@@ -1352,9 +1352,11 @@ in `scripts/kani-shards.py`) and the ordinary test suite with property tests
   `#[cfg(test)] mod … { … }` blocks removed, because cargo-mutants never
   mutates test code, so a test added afterwards changes no mutant. Both arms
   of a module always come from the same revision. The revisions are
-  `848f94f8` (the base), `bdd4ae5b`, `f6ac3cd5`, `570ca136`, and `b8f8ef18`,
+  `848f94f8` (the base), `3c9fe91e`, `90507beb`, `c9c8ce55`, and `71fc2e3a`,
   as listed per row; each later one exists because a harness was added after
-  the earlier run.
+  the earlier run. (The runs used the same commits before the branch was
+  rebased onto `e15c0795`; the rebase changed no checked module, so the hashes
+  here are the rebased ones.)
 - **Scope.** Each module's own mutants only. The 35–36 whole-scope
   field-deletion mutants that a name filter also returns (the "floor") are
   dropped and reported. For the two mixed modules, the oracle is scoped to the
@@ -1367,12 +1369,12 @@ Joined per-module table (`target/proof-strength/report.sh`, which runs
 
 | Module (revision) | Mutants | Floor | Outside scope | Unviable (Kani / tests) | Tests-only kills | Kani-only kills (should_panic) | Both | Either | Vacuity kills | Kani timeouts | Kani survivors |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `gtk-lush/widgets/src/slice_geometry.rs` (`570ca136`) | 33 | n/a | 0 | 1 / 1 | 1 | 0 (0) | 31 | 32 | 0 | 1 | 0 |
-| `gtk-lush/widgets/src/scroll_request.rs` (`570ca136`) | 31 | n/a | 0 | 2 / 2 | 0 | 0 (0) | 27 | 27 | 0 | 0 | 2 |
-| `services/draft_service/journal_core.rs` (`b8f8ef18`) | 51 | 36 | 0 | 18 / 18 | 0 | 1 (0) | 32 | 33 | 0 | 0 | 0 |
-| `services/draft_service/set_aside_retention.rs` (`bdd4ae5b`) | 40 | 36 | 0 | 2 / 2 | 7 | 4 (0) | 27 | 38 | 0 | 0 | 7 |
-| `services/filesystem/write_protocol.rs` (`bdd4ae5b`) | 34 | 36 | 0 | 6 / 15 | 0 | 10 (4) | 18 | 28 | 0 | 0 | 0 |
-| `model/editor_memory.rs` (`f6ac3cd5`) | 50 | 36 | 0 | 5 / 7 | 10 | 7 (0) | 25 | 42 | 0 | 0 | 13 |
+| `gtk-lush/widgets/src/slice_geometry.rs` (`c9c8ce55`) | 33 | n/a | 0 | 1 / 1 | 1 | 0 (0) | 31 | 32 | 0 | 1 | 0 |
+| `gtk-lush/widgets/src/scroll_request.rs` (`c9c8ce55`) | 31 | n/a | 0 | 2 / 2 | 0 | 0 (0) | 27 | 27 | 0 | 0 | 2 |
+| `services/draft_service/journal_core.rs` (`71fc2e3a`) | 51 | 36 | 0 | 18 / 18 | 0 | 1 (0) | 32 | 33 | 0 | 0 | 0 |
+| `services/draft_service/set_aside_retention.rs` (`3c9fe91e`) | 40 | 36 | 0 | 2 / 2 | 7 | 4 (0) | 27 | 38 | 0 | 0 | 7 |
+| `services/filesystem/write_protocol.rs` (`3c9fe91e`) | 34 | 36 | 0 | 6 / 15 | 0 | 10 (4) | 18 | 28 | 0 | 0 | 0 |
+| `model/editor_memory.rs` (`90507beb`) | 50 | 36 | 0 | 5 / 7 | 10 | 7 (0) | 25 | 42 | 0 | 0 | 13 |
 | `ui/window/geometry/policy.rs` (`848f94f8`) | 80 | 36 | 0 | 10 / 10 | 35 | 0 (0) | 35 | 70 | 4 | 0 | 31 |
 | `ui/sidebar/width_preset.rs` (`848f94f8`) | 36 | n/a | 0 | 2 / 2 | 1 | 6 (0) | 25 | 32 | 0 | 0 | 3 |
 | `ui/editor_page/minimap/policy.rs` (`848f94f8`) | 178 | 36 | 228 | 4 / 4 | 71 | 0 (0) | 102 | 173 | 3 | 7 | 62 |
@@ -1411,13 +1413,13 @@ Reading the table:
 
 | Commit | Shard | Kills |
 |---|---|---|
-| `c2b77537` | `core-journal-and-write` | `write_protocol` harnesses assert the temp-name retry bound and the success/completion classification (six `MoveProtocol` and temp-attempt survivors); `set_aside_retention_deletes_only_confirmed_bodies` gains the converse of R2 (`may_delete -> false`); new `set_aside_retention_notice_follows_the_bound_and_its_rate_limit` proves `bound_status` and `notice_due` correct, not only total |
-| `80a5468d` | `core-journal-and-write` | the rate-limit harness bounded from 1121 s to 12.7 s: the bound is still checked for every `u64`; the rate limit for totals below 2^16 (scaled by 2^16) plus `u64::MAX` edge cases, where the `u128` widening matters (stated in its doc comment) |
-| `f6ac3cd5` | `core-memory-policy` | the estimate harness asserts the documented budget, low-water, and bookkeeping figures, whose constant mutants every parametric harness let through |
-| `570ca136` | `widgets-geometry` | `whole_pixel_band_keeps_a_whole_pixel_slice` (3.9 s) and `requests_are_classified_by_the_documented_rules` (53.5 s): containment alone held for a (0, 0) band and bounded only requests |
-| `b8f8ef18` | `core-journal-and-write` | `journal_decisions_follow_their_documented_rules` (0.35 s): every `journal_core` decision against its documented rule for every input. The crash harnesses abstract away which body a decision protects, so `ownership`'s and `BodyFacts::from_window_view`'s `\|\|` with `&&` survived all six journal harnesses at about 20 minutes each; the second is also missed by the tests arm |
+| `f627a87f` | `core-journal-and-write` | `write_protocol` harnesses assert the temp-name retry bound and the success/completion classification (six `MoveProtocol` and temp-attempt survivors); `set_aside_retention_deletes_only_confirmed_bodies` gains the converse of R2 (`may_delete -> false`); new `set_aside_retention_notice_follows_the_bound_and_its_rate_limit` proves `bound_status` and `notice_due` correct, not only total |
+| `c499bab4` | `core-journal-and-write` | the rate-limit harness bounded from 1121 s to 12.7 s: the bound is still checked for every `u64`; the rate limit for totals below 2^16 (scaled by 2^16) plus `u64::MAX` edge cases, where the `u128` widening matters (stated in its doc comment) |
+| `90507beb` | `core-memory-policy` | the estimate harness asserts the documented budget, low-water, and bookkeeping figures, whose constant mutants every parametric harness let through |
+| `c9c8ce55` | `widgets-geometry` | `whole_pixel_band_keeps_a_whole_pixel_slice` (3.9 s) and `requests_are_classified_by_the_documented_rules` (53.5 s): containment alone held for a (0, 0) band and bounded only requests |
+| `71fc2e3a` | `core-journal-and-write` | `journal_decisions_follow_their_documented_rules` (0.35 s): every `journal_core` decision against its documented rule for every input. The crash harnesses abstract away which body a decision protects, so `ownership`'s and `BodyFacts::from_window_view`'s `\|\|` with `&&` survived all six journal harnesses at about 20 minutes each; the second is also missed by the tests arm |
 
-Tests added where **both** arms missed (`3e39ef22`, `70da43f8`, each verified
+Tests added where **both** arms missed (`7f90aad6`, `792c97b6`, each verified
 killed with cargo-mutants): `EditorResidencyLedger::contains -> true`,
 `snapshot -> vec![]`, `is_empty -> true`; `classify_child_scroll` at exactly
 `ADJUSTMENT_EPSILON` (`<` with `<=`, `>` with `>=`; the harnesses are on whole
@@ -1427,7 +1429,7 @@ height are finite but whose sum overflows); `WorkspaceSidebarWidthPreset::label`
 
 #### Defects found
 
-- **Real defect, fixed failing-first (`cf87540c`):** workspace-search walker
+- **Real defect, fixed failing-first (`6f8a1145`):** workspace-search walker
   threads took their visited-file counts from one `fetch_add` but published
   them with a plain `store` in scheduling order, so the "Searching X files"
   progress count could move backwards (seen as an intermittent
@@ -1437,14 +1439,14 @@ height are finite but whose sum overflows); `WorkspaceSidebarWidthPreset::label`
   in a Kani-checked module itself.
 - **Lane defects, fixed:** the tests arm of the GTK Lush widget modules failed
   its baseline because cargo rejects `--features lushtext-core/property-tests`
-  for a build that does not select `lushtext-core` (`aec3d972`); unreached
-  mutants were reported as survivors (`bdd4ae5b`).
+  for a build that does not select `lushtext-core` (`bfc3e626`); unreached
+  mutants were reported as survivors (`3c9fe91e`).
 
 #### Equivalent mutants (excluded, `.cargo/mutants.toml`)
 
 `fit_native_slider_to_source_map_bounds`'s `||` with `&&` at `:490:9` and
 `:491:9`: the later finite-sum guard rejects exactly the maps they let
-through. One `exclude_re` each, verified against the tool list (`70da43f8`).
+through. One `exclude_re` each, verified against the tool list (`792c97b6`).
 
 #### Accepted gaps (Kani survivors and timeouts the tests arm kills)
 
