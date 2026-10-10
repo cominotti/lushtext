@@ -1491,6 +1491,21 @@ cluster:
   tier left only this timeout and the two sub-pixel `classify_child_scroll`
   boundaries, which no whole-pixel slice-loop harness can reach.
 
+#### Runner budgets after the new harnesses
+
+Every shard was re-measured by two dispatched `kani.yml` runs on this branch
+(38087161968 and 38088387193; Kani 0.68.0, `ubuntu-latest`). The two changed
+shards: `widgets-geometry` 7.43 / 8.32 min, 1.7 GiB, recorded **8.4 min**
+(still well inside the 15-minute pull-request margin);
+`core-journal-and-write` 10.21 / 11.94 min, 2.5 GiB, recorded **12.0 min**.
+`core-memory-policy` (assertions only) measured 9.45 / 7.68 min, 3.9 GiB,
+inside its recorded 16.2 min / 9.0 GiB. Runner variance raised five unchanged
+shards past their figures, and each now records the larger value:
+`core-journal-liveness` 15.2, `core-multi-window` 8.4,
+`widgets-slice-loop-pairs` 16.1, `widgets-slice-loop-requests-two` 15.2,
+`widgets-slice-loop-requests` 7.6 minutes. Every shard stays under the
+25-minute and 12 GiB margins (`make check-kani-shards`).
+
 #### Lane placement (design D6, task 5)
 
 **Local only; no workflow.** The `ci` tier alone measured about 4 hours of

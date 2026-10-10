@@ -124,6 +124,13 @@ CLOSED_LOOP_MEASURED_IN = "runs 36136602024, 36139028016 (max of the two)"
 # two dispatched runs on the final form of the change (max of the two,
 # rounded up).
 MULTI_WINDOW_MEASURED_IN = "runs 36172512752, 36180356173 (max of the two)"
+# measure-proof-strength-with-mutation changed the harnesses of
+# widgets-geometry and core-journal-and-write (and only added assertions to
+# core-memory-policy), so every shard was re-measured by two dispatched runs.
+# A shard keeps the larger of its earlier figure and those two runs (rounded
+# up); the ones that rose carry this suffix. core-memory-policy measured
+# 9.5 min / 3.9 GiB, inside its recorded figure.
+PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of the two)"
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
         "gtk-lush-widgets",
@@ -139,9 +146,9 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::request_landing_",
         ),
         gate="pull-request",
-        ci_minutes=8.2,
+        ci_minutes=8.4,
         ci_peak_gib=1.8,
-        measured_in=MEASURED_IN,
+        measured_in=MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
     "widgets-slice-loop-rest": Shard(
         "gtk-lush-widgets",
@@ -173,17 +180,17 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_loop_two_reconfiguring_",
         ),
         gate="scheduled",
-        ci_minutes=7.1,
+        ci_minutes=7.6,
         ci_peak_gib=1.7,
-        measured_in=CLOSED_LOOP_MEASURED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
     "widgets-slice-loop-requests-two": Shard(
         "gtk-lush-widgets",
         ("kani_proofs::slice_loop_honours_a_request_with_two_bins",),
         gate="scheduled",
-        ci_minutes=14.8,
+        ci_minutes=15.2,
         ci_peak_gib=1.7,
-        measured_in=CLOSED_LOOP_MEASURED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
     "widgets-slice-loop-pairs": Shard(
         "gtk-lush-widgets",
@@ -193,9 +200,9 @@ SHARDS: dict[str, Shard] = {
             "kani_proofs::slice_bin_decision_",
         ),
         gate="scheduled",
-        ci_minutes=14.7,
+        ci_minutes=16.1,
         ci_peak_gib=2.0,
-        measured_in=CLOSED_LOOP_MEASURED_IN,
+        measured_in=CLOSED_LOOP_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
     "widgets-slice-loop-unbounded": Shard(
         "gtk-lush-widgets",
@@ -221,9 +228,9 @@ SHARDS: dict[str, Shard] = {
             "services::filesystem::write_protocol::kani_proofs::",
         ),
         gate="scheduled",
-        ci_minutes=10.2,
+        ci_minutes=12.0,
         ci_peak_gib=2.6,
-        measured_in=MULTI_WINDOW_MEASURED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
     # verify-multi-window-draft-journal added the journal lane to the model,
     # which made the two L1 harnesses too slow to share the journal shard.
@@ -231,9 +238,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("services::draft_service::kani_proofs::a_dirty_editor_",),
         gate="scheduled",
-        ci_minutes=14.5,
+        ci_minutes=15.2,
         ci_peak_gib=4.8,
-        measured_in=MULTI_WINDOW_MEASURED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
     "core-second-writer": Shard(
         "lushtext-core",
@@ -249,9 +256,9 @@ SHARDS: dict[str, Shard] = {
         "lushtext-core",
         ("services::draft_service::kani_proofs::journal_invariants_hold_across_two_windows",),
         gate="scheduled",
-        ci_minutes=8.0,
+        ci_minutes=8.4,
         ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + PROOF_STRENGTH_RAISED_IN,
     ),
     "core-memory-policy": Shard(
         "lushtext-core",
