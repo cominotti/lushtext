@@ -1449,6 +1449,9 @@ height are finite but whose sum overflows); `WorkspaceSidebarWidthPreset::label`
 `fit_native_slider_to_source_map_bounds`'s `||` with `&&` at `:490:9` and
 `:491:9`: the later finite-sum guard rejects exactly the maps they let
 through. One `exclude_re` each, verified against the tool list (`792c97b6`).
+The checks themselves are not redundant under Kani: the simplification pass
+tried deleting them, and `native_slider_fit_never_panics` failed on the NaN
+that `-inf + inf` then computes, so they stay and the exclusions with them.
 
 #### Accepted gaps (Kani survivors and timeouts the tests arm kills)
 

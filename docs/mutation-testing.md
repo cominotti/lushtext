@@ -128,7 +128,9 @@ make proof-strength PROOF_STRENGTH_ARM=kani PROOF_STRENGTH_SHARD=0/4
 - **Population.** Both arms list through the repository config with
   `examine_globs` narrowed to the one module, so the calibrated `exclude_re`
   entries apply and the whole-scope field-deletion floor (reported separately,
-  from a `--re` listing) is not run. An oracle may be scoped to named functions
+  from a `--re` listing through the unmodified config, and `n/a` when that
+  listing reaches none of the module's own mutants, so cargo-mutants alone
+  decides default-scope membership) is not run. An oracle may be scoped to named functions
   (`functions` in `ORACLES`) when its harnesses cover only part of a large
   module; the rest is counted as outside the oracle, not as survivors.
 - **Kani arm.** Harnesses run cheapest first and stop at the first failure;

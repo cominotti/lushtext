@@ -42,6 +42,7 @@ tests arm runs only after the Kani arm (they never overlap).
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import importlib.util
 import json
@@ -53,6 +54,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -75,8 +77,6 @@ BASELINE_TIMEOUT_FACTOR = 10.0
 # Allowance for the `cargo kani` compile on top of the harness timeouts.
 COMPILE_ALLOWANCE = 900.0
 TESTS_TIMEOUT = 300
-# Peak resident set (KiB) of each `cargo kani` run since the last reset.
-PEAKS: list[int] = []
 TESTS_JOBS = 1
 # Memory discipline for a shared host: wait until this much memory is
 # available before each Kani run or tests arm, and cap each Kani run's
@@ -113,15 +113,15 @@ def limit_memory() -> None:
         resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 
-def load_shards():
-    spec = importlib.util.spec_from_file_location("kani_shards", REPO_ROOT / "scripts/kani-shards.py")
+def load_script(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, REPO_ROOT / "scripts" / filename)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["kani_shards"] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
-KS = load_shards()
+KS = load_script("kani_shards", "kani-shards.py")
 
 
 def git(*args: str, cwd: Path = REPO_ROOT, check: bool = True) -> str:
@@ -136,6 +136,7 @@ def module_slug(module: str) -> str:
     return module.replace("crates/", "").replace("/", "__")
 
 
+@functools.cache
 def table_hash(module: str) -> str:
     """Identity of one module's oracle entry: a changed harness list, order,
     scope, or flag invalidates that module's persisted results."""
@@ -148,16 +149,20 @@ def table_hash(module: str) -> str:
     return slug(json.dumps(payload, sort_keys=True))
 
 
+@functools.cache
 def kani_flags(package: str, harness: str) -> tuple[str, ...]:
     owners = [s for s in KS.SHARDS.values() if s.owns(package, harness)]
     return owners[0].kani_flags if owners else ()
 
 
+@functools.cache
 def cargo_mutants_version() -> str:
     return subprocess.run(["cargo", "mutants", "--version"], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def kani_version() -> str:
+@functools.cache
+def installed_kani_version() -> str:
+    """`cargo kani --version` as installed (`KS.kani_version()` is the pin)."""
     out = subprocess.run(["cargo", "kani", "--version"], capture_output=True, text=True, check=True).stdout
     return out.splitlines()[0].strip()
 
@@ -176,11 +181,13 @@ def ensure_worktree(rev: str, worktree: Path = WORKTREE) -> Path:
         worktree.parent.mkdir(parents=True, exist_ok=True)
         git("worktree", "add", "--detach", str(worktree), rev)
     git("checkout", "--force", "--detach", rev, cwd=worktree)
-    git("checkout", "--", ".", cwd=worktree)
-    dirty = git("status", "--porcelain", "--untracked-files=no", cwd=worktree)
-    if dirty:
-        raise SystemExit(f"proof-strength: worktree {worktree} is not clean:\n{dirty}")
+    assert_clean(worktree, f"worktree {worktree} is not clean")
     return worktree
+
+
+def assert_clean(worktree: Path, problem: str) -> None:
+    if dirty := git("status", "--porcelain", "--untracked-files=no", cwd=worktree):
+        raise SystemExit(f"proof-strength: {problem}:\n{dirty}")
 
 
 def remove_worktree(worktree: Path = WORKTREE) -> None:
@@ -204,8 +211,7 @@ def apply_mutant(worktree: Path, mutant: dict) -> None:
 
 def restore_mutant(worktree: Path, mutant: dict) -> None:
     git("checkout", "--", mutant["file"], cwd=worktree)
-    if git("status", "--porcelain", "--untracked-files=no", cwd=worktree):
-        raise SystemExit(f"proof-strength: restoring {mutant['name']} left the worktree dirty")
+    assert_clean(worktree, f"restoring {mutant['name']} left the worktree dirty")
 
 
 # --- mutant population --------------------------------------------------------
@@ -236,24 +242,8 @@ def list_json(worktree: Path, args: list[str]) -> list[dict]:
     return json.loads(out)
 
 
-def in_default_scope(worktree: Path, module: str) -> bool:
-    text = (worktree / ".cargo/mutants.toml").read_text(encoding="utf-8")
-    import tomllib
-
-    config = tomllib.loads(text)
-    from fnmatch import fnmatch
-
-    def matches(glob: str) -> bool:
-        return fnmatch(module, glob.replace("**/", "*").replace("/**", "/*"))
-
-    return any(matches(g) for g in config.get("examine_globs", [])) and not any(
-        matches(g) for g in config.get("exclude_globs", [])
-    )
-
-
 @dataclass
 class Population:
-    module: str
     mutants: list[dict]
     outside_scope: list[str]
     floor: int | None
@@ -276,16 +266,18 @@ def split_scope(mutants: list[dict], module: str, functions: tuple[str, ...]) ->
     return inside, outside, floor
 
 
+@functools.cache
 def population(worktree: Path, module: str) -> Population:
+    """The module's mutants through the narrowed config, and the floor the
+    repository config adds to them. cargo-mutants decides whether the module is
+    in the default scope: when the repository listing has none of its own
+    mutants, it is not, and the floor is `None`. Cached: every phase of one
+    invocation shares one listing (the worktree is fixed at one revision)."""
     oracle = KS.ORACLES[module]
     listed = list_json(worktree, ["--config", str(derived_config(worktree, module))])
     mutants, outside, _ = split_scope(listed, module, oracle.functions)
-    floor = None
-    if in_default_scope(worktree, module):
-        escaped = re.escape(module)
-        repo_listed = list_json(worktree, ["--re", f"^{escaped}:"])
-        floor = split_scope(repo_listed, module, ())[2]
-    return Population(module, mutants, outside, floor)
+    own, _, floor = split_scope(list_json(worktree, ["--re", f"^{re.escape(module)}:"]), module, ())
+    return Population(mutants, outside, floor if own else None)
 
 
 def shard_select(names: list[str], shard: str | None) -> set[str]:
@@ -300,9 +292,8 @@ def shard_select(names: list[str], shard: str | None) -> set[str]:
 
 # --- Kani runs ----------------------------------------------------------------
 
-START_RE = re.compile(r"^Checking harness (\S+?)\.\.\.$")
-VERDICT_RE = re.compile(r"^VERIFICATION:- (\S+)")
-TIME_RE = re.compile(r"^Verification Time: ([0-9.]+)s$")
+# The harness, verdict, and time lines are `kani-shards.py`'s grammar; only the
+# cover checks and the compile errors are read here alone.
 CHECK_RE = re.compile(r"^Check \d+: (\S+)$")
 STATUS_RE = re.compile(r"^- Status: (\S+)$")
 COMPILE_ERROR_RE = re.compile(r"^error(?:\[E\d+\])?: ", re.M)
@@ -331,15 +322,15 @@ def parse_kani(lines: list[str]) -> list[HarnessRun]:
     check: str | None = None
     for raw in lines:
         line = raw.strip()
-        if match := START_RE.match(line):
+        if match := KS.HARNESS_START_RE.match(line):
             runs.append(HarnessRun(match.group(1)))
             check = None
         elif not runs:
             continue
-        elif match := VERDICT_RE.match(line):
+        elif match := KS.HARNESS_VERDICT_RE.match(line):
             runs[-1].verdict = match.group(1)
             runs[-1].detail = line[match.end():].strip()
-        elif match := TIME_RE.match(line):
+        elif match := KS.HARNESS_TIME_RE.match(line):
             runs[-1].seconds = float(match.group(1))
         elif line.startswith("CBMC timed out"):
             runs[-1].timed_out = True
@@ -378,10 +369,10 @@ def batches(harnesses: list, package: str) -> list[list]:
 
 def run_kani(
     worktree: Path, package: str, harnesses: list, log: Path, baseline: bool = False
-) -> tuple[int | None, list[HarnessRun], str]:
+) -> tuple[int | None, list[HarnessRun], str, int]:
     """One `cargo kani` over `harnesses` with a per-harness timeout and an outer
     wall-clock guard. Returns (exit status or None on the outer timeout, the
-    parsed harness runs, the full output)."""
+    parsed harness runs, the full output, the peak resident set in KiB)."""
     per = max(harness_timeout(h.seconds, baseline) for h in harnesses)
     command = [
         "cargo",
@@ -431,8 +422,7 @@ def run_kani(
         child.returncode = os.waitstatus_to_exitcode(wait_status)
     status: int | None = None if expired.is_set() else child.returncode
     output = log.read_text(encoding="utf-8", errors="replace")
-    PEAKS.append(usage.ru_maxrss)
-    return status, parse_kani(output.splitlines()), output
+    return status, parse_kani(output.splitlines()), output, usage.ru_maxrss
 
 
 # --- reachability -------------------------------------------------------------
@@ -464,7 +454,7 @@ def reach_tokens(worktree: Path, package: str, harness: str) -> set[str] | None:
     return tokens
 
 
-def mutated_token(mutant: dict, source: str | None) -> str | None:
+def mutated_token(mutant: dict, lines: list[str] | None) -> str | None:
     """The identifier a harness must reach for this mutant to change its
     program, or None when the mutant must always be run: a mutant outside any
     function (a constant) or inside a `const fn`, which rustc may evaluate at
@@ -472,9 +462,8 @@ def mutated_token(mutant: dict, source: str | None) -> str | None:
     name = function_name(mutant)
     if not name:
         return None
-    if source is not None:
+    if lines is not None:
         line = mutant["function"]["span"]["start"]["line"]
-        lines = source.splitlines()
         header = " ".join(lines[line - 1 : line + 2]) if 0 < line <= len(lines) else ""
         if re.search(r"\bconst\s+fn\b", header):
             return None
@@ -502,7 +491,7 @@ def baseline(worktree: Path, rev: str, modules: list[str], tier: str) -> dict:
     """Every oracle harness verifies on the unmutated tree; records each one's
     seconds, satisfied covers, and reachable identifiers. Aborts on a failure."""
     record = load_baseline(rev)
-    record["kani_version"] = kani_version()
+    record["kani_version"] = installed_kani_version()
     by_package: dict[str, list] = {}
     for module in modules:
         oracle = KS.ORACLES[module]
@@ -526,8 +515,7 @@ def baseline(worktree: Path, rev: str, modules: list[str], tier: str) -> dict:
             names = ", ".join(h.name.split("::")[-1] for h in group)
             print(f"proof-strength: baseline {names}", flush=True)
             start = time.monotonic()
-            PEAKS.clear()
-            status, runs, _ = run_kani(worktree, package, group, RESULTS / rev / "baseline-logs" / f"{slug(names)}.log", baseline=True)
+            status, runs, _, peak = run_kani(worktree, package, group, RESULTS / rev / "baseline-logs" / f"{slug(names)}.log", baseline=True)
             wall = time.monotonic() - start
             by_name = {run.name: run for run in runs}
             for harness in group:
@@ -542,7 +530,7 @@ def baseline(worktree: Path, rev: str, modules: list[str], tier: str) -> dict:
                     "covers": run.covers,
                     "reach": sorted(reach[harness.name]) if reach[harness.name] is not None else None,
                     "batch_wall_seconds": round(wall, 1),
-                    "batch_peak_gib": round(max(PEAKS, default=0) / 1024 / 1024, 2),
+                    "batch_peak_gib": round(peak / 1024 / 1024, 2),
                 }
             baseline_path(rev).parent.mkdir(parents=True, exist_ok=True)
             baseline_path(rev).write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
@@ -564,11 +552,11 @@ class Outcome:
     timeouts: list[str] = field(default_factory=list)
 
 
-def classify(name: str, runs_by_batch: list[tuple[int | None, list[HarnessRun], str]], covers: dict[str, dict]) -> Outcome:
+def classify(name: str, runs_by_batch: list[tuple[int | None, list[HarnessRun], str, int]], covers: dict[str, dict]) -> Outcome:
     """The mutant's class from its batches' results, in order (design D3)."""
     outcome = Outcome(name, "survived")
     vacuous: str | None = None
-    for status, runs, output in runs_by_batch:
+    for status, runs, output, _ in runs_by_batch:
         if not runs:
             if status is None:
                 outcome.timeouts.append("<compile>")
@@ -604,12 +592,16 @@ def result_path(rev: str, module: str, name: str) -> Path:
     return results_dir(rev, module) / f"{slug(name)}.json"
 
 
-def finished(rev: str, module: str, name: str, tier: str) -> bool:
-    path = result_path(rev, module, name)
+def current_result(path: Path, hash_: str) -> dict | None:
+    """The persisted result, when it was measured under the current oracle entry."""
     if not path.exists():
-        return False
+        return None
     record = json.loads(path.read_text(encoding="utf-8"))
-    if record.get("table_hash") != table_hash(module):
+    return record if record.get("table_hash") == hash_ else None
+
+
+def finished(record: dict | None, tier: str) -> bool:
+    if record is None:
         return False
     # A ci-tier survivor is re-run by an `all`-tier run over the local harnesses.
     return not (tier == "all" and record.get("tier") == "ci" and record["class"] in ("survived", "timeout"))
@@ -617,58 +609,60 @@ def finished(rev: str, module: str, name: str, tier: str) -> bool:
 
 def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | None, only: str | None) -> None:
     oracle = KS.ORACLES[module]
+    hash_ = table_hash(module)
     pop = population(worktree, module)
     base = load_baseline(rev)
     missing = [h.name for h in oracle.ordered(tier) if h.name not in base["harnesses"]]
     if missing:
         raise SystemExit(f"proof-strength: no baseline for {missing}; run `baseline` first")
     covers = {name: entry["covers"] for name, entry in base["harnesses"].items()}
+    reach = {
+        name: None if entry.get("reach") is None else set(entry["reach"]) for name, entry in base["harnesses"].items()
+    }
     selected = shard_select([m["name"] for m in pop.mutants], shard)
     todo = [m for m in pop.mutants if m["name"] in selected and (only is None or m["name"] == only)]
-    source = (worktree / module).read_text(encoding="utf-8")
+    lines = (worktree / module).read_text(encoding="utf-8").splitlines()
     versions = {"kani_version": base["kani_version"], "cargo_mutants_version": cargo_mutants_version()}
     for index, mutant in enumerate(todo, 1):
         name = mutant["name"]
-        if finished(rev, module, name, tier):
+        path = result_path(rev, module, name)
+        prior = current_result(path, hash_)
+        if finished(prior, tier):
             continue
         if STOP_FILE.exists():
             print(f"proof-strength: {STOP_FILE} exists; stopping before the next mutant", flush=True)
             raise SystemExit(3)
-        prior = None
-        path = result_path(rev, module, name)
-        if path.exists():
-            prior = json.loads(path.read_text(encoding="utf-8"))
-        token = mutated_token(mutant, source)
-        harnesses = oracle.ordered(tier)
-        if prior and prior.get("table_hash") == table_hash(module):
-            # Extending a ci-tier survivor: only the harnesses it has not met.
-            harnesses = [h for h in harnesses if h.name not in prior.get("ran", []) + prior.get("skipped_unreached", [])]
+        prior = prior or {}
+        token = mutated_token(mutant, lines)
+        # Extending a ci-tier survivor: only the harnesses it has not met.
+        met = set(prior.get("ran", []) + prior.get("skipped_unreached", []))
         reached, unreached = [], []
-        for harness in harnesses:
-            reach = base["harnesses"][harness.name].get("reach")
-            (unreached if token and reach is not None and token not in reach else reached).append(harness)
+        for harness in oracle.ordered(tier):
+            if harness.name in met:
+                continue
+            tokens = reach[harness.name]
+            (unreached if token and tokens is not None and token not in tokens else reached).append(harness)
         print(f"[{module_slug(module)} {index}/{len(todo)}] {name}", flush=True)
         start = time.monotonic()
-        PEAKS.clear()
         apply_mutant(worktree, mutant)
         try:
             batch_results = []
+            outcome = classify(name, batch_results, covers)
             for group in batches(reached, oracle.package):
                 log = results_dir(rev, module) / "logs" / f"{slug(name)}-{slug(group[0].name)}.log"
-                result = run_kani(worktree, oracle.package, group, log)
-                batch_results.append(result)
-                partial = classify(name, batch_results, covers)
-                if partial.klass in ("killed", "unviable"):
+                batch_results.append(run_kani(worktree, oracle.package, group, log))
+                outcome = classify(name, batch_results, covers)
+                if outcome.klass in ("killed", "unviable"):
                     break
-            outcome = classify(name, batch_results, covers)
         finally:
             restore_mutant(worktree, mutant)
-        outcome.seconds = round(time.monotonic() - start, 1) + (prior or {}).get("seconds", 0.0)
-        outcome.skipped_unreached = [h.name for h in unreached] + (prior or {}).get("skipped_unreached", [])
-        outcome.ran = (prior or {}).get("ran", []) + outcome.ran
-        outcome.timeouts = (prior or {}).get("timeouts", []) + outcome.timeouts
+        outcome.seconds = round(time.monotonic() - start, 1) + prior.get("seconds", 0.0)
+        outcome.skipped_unreached = [h.name for h in unreached] + prior.get("skipped_unreached", [])
+        outcome.ran = prior.get("ran", []) + outcome.ran
+        outcome.timeouts = prior.get("timeouts", []) + outcome.timeouts
         if outcome.klass == "survived" and outcome.timeouts:
             outcome.klass = "timeout"
+        peak_kib = max([peak for *_, peak in batch_results] + [int(prior.get("peak_gib", 0) * 1024 * 1024)])
         record = {
             **{k: v for k, v in asdict(outcome).items() if k != "klass"},
             "class": outcome.klass,
@@ -676,8 +670,8 @@ def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | No
             "rev": rev,
             "module": module,
             "function": function_name(mutant),
-            "table_hash": table_hash(module),
-            "peak_gib": round(max([*PEAKS, int((prior or {}).get("peak_gib", 0) * 1024 * 1024)]) / 1024 / 1024, 2),
+            "table_hash": hash_,
+            "peak_gib": round(peak_kib / 1024 / 1024, 2),
             **versions,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -689,19 +683,17 @@ def run_module(worktree: Path, rev: str, module: str, tier: str, shard: str | No
 # --- tests arm ----------------------------------------------------------------
 
 
-# cargo-mutants builds the mutated package alone before testing, and cargo
-# rejects `--features lushtext-core/...` for a build that does not select
-# lushtext-core. A package whose tests-side evidence lives in lushtext-core (the
-# viewport-slice property suites) therefore adds `--package lushtext-core` to
-# every cargo invocation; the test phase still runs the whole workspace.
-EXTRA_PACKAGES = {"gtk-lush-widgets": ("lushtext-core",)}
-
-
 def test_scope(package: str) -> list[str]:
-    scope = ["--test-workspace=true"]
-    for name in EXTRA_PACKAGES.get(package, ()):
-        scope.append(f"--cargo-arg=--package={name}")
-    return scope
+    """cargo-mutants builds the mutated package alone before testing, and cargo
+    rejects `--features pkg/feature` for a build that does not select `pkg`.
+    Every package `FEATURES` names other than the mutated one (lushtext-core,
+    whose property suites hold the viewport-slice tests-side evidence, for a
+    gtk-lush-widgets module) is therefore added to every cargo invocation; the
+    test phase still runs the whole workspace."""
+    feature_packages = dict.fromkeys(feature.split("/")[0] for feature in FEATURES.split(","))
+    return ["--test-workspace=true"] + [
+        f"--cargo-arg=--package={name}" for name in feature_packages if name != package
+    ]
 
 
 def tests_dir(rev: str, module: str) -> Path:
@@ -860,12 +852,15 @@ def module_report(rev: str, module: str, pop: Population) -> dict:
             return "unviable"
         return record["class"]
 
-    kani_kill = {n for n in names if kani_class(n) == "killed"}
+    kclass = {n: kani_class(n) for n in names}
+    kani_counts = Counter(kclass.values())
+    tests_counts = Counter(tests.get(n) for n in names)
+    kani_kill = {n for n in names if kclass[n] == "killed"}
     tests_kill = {n for n in names if tests.get(n) == "CaughtMutant"}
     row.update(
-        kani_unviable=sum(1 for n in names if kani_class(n) == "unviable"),
-        tests_unviable=sum(1 for n in names if tests.get(n) == "Unviable"),
-        tests_timeouts=sum(1 for n in names if tests.get(n) == "Timeout"),
+        kani_unviable=kani_counts["unviable"],
+        tests_unviable=tests_counts["Unviable"],
+        tests_timeouts=tests_counts["Timeout"],
         tests_only=len(tests_kill - kani_kill),
         kani_only=len(kani_kill - tests_kill),
         kani_only_should_panic=sum(1 for n in kani_kill - tests_kill if kani[n].get("should_panic")),
@@ -874,9 +869,9 @@ def module_report(rev: str, module: str, pop: Population) -> dict:
         either=len(kani_kill | tests_kill),
         kani_kills=len(kani_kill),
         tests_kills=len(tests_kill),
-        vacuity=sum(1 for n in names if kani_class(n) == "vacuity"),
-        kani_timeouts=sum(1 for n in names if kani_class(n) == "timeout"),
-        kani_survivors=sum(1 for n in names if kani_class(n) == "survived"),
+        vacuity=kani_counts["vacuity"],
+        kani_timeouts=kani_counts["timeout"],
+        kani_survivors=kani_counts["survived"],
     )
     row["survivors"] = [
         {
@@ -887,7 +882,7 @@ def module_report(rev: str, module: str, pop: Population) -> dict:
             "tier": kani[n].get("tier"),
         }
         for n in names
-        if kani_class(n) in ("survived", "timeout", "vacuity")
+        if kclass[n] in ("survived", "timeout", "vacuity")
     ]
     return row
 
@@ -973,32 +968,32 @@ def self_test() -> None:
     assert verified[0].verified and abs(verified[0].seconds - 1.5) < 1e-9
     assert verified[0].covers == {"m::kani_proofs::h.cover.1": "SATISFIED"}
     covers = {"m::kani_proofs::h": {"m::kani_proofs::h.cover.1": "SATISFIED"}}
-    assert classify("x", [(0, verified, "")], covers).klass == "survived"
+    assert classify("x", [(0, verified, "", 0)], covers).klass == "survived"
     failed = out("Checking harness m::kani_proofs::h...", "VERIFICATION:- FAILED", "Verification Time: 0.1s")
-    killed = classify("x", [(0, verified, ""), (1, failed, "")], covers)
+    killed = classify("x", [(0, verified, "", 0), (1, failed, "", 0)], covers)
     assert killed.klass == "killed" and killed.harness == "m::kani_proofs::h" and not killed.should_panic
     panicked = out(
         "Checking harness m::kani_proofs::p...",
         "VERIFICATION:- FAILED (encountered no panics, but at least one was expected)",
     )
-    assert classify("x", [(1, panicked, "")], {}).should_panic
+    assert classify("x", [(1, panicked, "", 0)], {}).should_panic
     timed_out = out("Checking harness m::kani_proofs::h...", "CBMC timed out. You may want to rerun", "VERIFICATION:- FAILED")
-    assert classify("x", [(1, timed_out, "")], covers).klass == "timeout"
-    assert classify("x", [(None, [], "")], covers).klass == "timeout"
-    later_kill = classify("x", [(1, timed_out, ""), (1, failed, "")], covers)
+    assert classify("x", [(1, timed_out, "", 0)], covers).klass == "timeout"
+    assert classify("x", [(None, [], "", 0)], covers).klass == "timeout"
+    later_kill = classify("x", [(1, timed_out, "", 0), (1, failed, "", 0)], covers)
     assert later_kill.klass == "killed", later_kill
     compile_error = "error[E0308]: mismatched types\nerror: could not compile `lushtext-core`\n"
-    assert classify("x", [(101, [], compile_error)], covers).klass == "unviable"
+    assert classify("x", [(101, [], compile_error, 0)], covers).klass == "unviable"
     vacuous = out(
         "Checking harness m::kani_proofs::h...",
         "Check 1: m::kani_proofs::h.cover.1",
         "\t - Status: UNSATISFIABLE",
         "VERIFICATION:- SUCCESSFUL",
     )
-    vacuity = classify("x", [(0, vacuous, "")], covers)
+    vacuity = classify("x", [(0, vacuous, "", 0)], covers)
     assert vacuity.klass == "vacuity" and vacuity.harness == "m::kani_proofs::h"
     try:
-        classify("x", [(1, [], "no harness output")], covers)
+        classify("x", [(1, [], "no harness output", 0)], covers)
         raise AssertionError("an unexplained empty run must be an error")
     except RuntimeError:
         pass
@@ -1010,11 +1005,12 @@ def self_test() -> None:
 
     # Reachability skip: never for a constant or a const fn.
     source = "const X: i32 = 1;\npub const fn k() -> i32 {\n    2\n}\nfn g() {}\n"
-    assert mutated_token({"function": None}, source) is None
-    assert mutated_token({"function": {"function_name": "k", "span": {"start": {"line": 2}}}}, source) is None
-    assert mutated_token({"function": {"function_name": "T::g", "span": {"start": {"line": 5}}}}, source) == "g"
+    lines = source.splitlines()
+    assert mutated_token({"function": None}, lines) is None
+    assert mutated_token({"function": {"function_name": "k", "span": {"start": {"line": 2}}}}, lines) is None
+    assert mutated_token({"function": {"function_name": "T::g", "span": {"start": {"line": 5}}}}, lines) == "g"
     impl = {"function": {"function_name": "<impl Clone for U<'_, F>>::clone", "span": {"start": {"line": 5}}}}
-    assert mutated_token(impl, source) == "clone"
+    assert mutated_token(impl, lines) == "clone"
 
     # Shard partition: stable, disjoint, and complete.
     names = [f"m{i}" for i in range(11)]
@@ -1024,20 +1020,21 @@ def self_test() -> None:
 
     # Resume: a finished result with the current table hash is skipped, a stale
     # hash is not, and an all-tier run re-opens a ci-tier survivor.
-    global RESULTS
-    saved = RESULTS
     with tempfile.TemporaryDirectory() as scratch:
-        RESULTS = Path(scratch)
-        module = next(iter(KS.ORACLES))
-        path = result_path("r", module, "n")
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"table_hash": table_hash(module), "class": "killed", "tier": "ci"}))
-        assert finished("r", module, "n", "ci") and finished("r", module, "n", "all")
-        path.write_text(json.dumps({"table_hash": table_hash(module), "class": "survived", "tier": "ci"}))
-        assert finished("r", module, "n", "ci") and not finished("r", module, "n", "all")
+        path = Path(scratch) / "n.json"
+        assert current_result(path, "h") is None and not finished(None, "ci")
+        path.write_text(json.dumps({"table_hash": "h", "class": "killed", "tier": "ci"}))
+        record = current_result(path, "h")
+        assert finished(record, "ci") and finished(record, "all")
+        path.write_text(json.dumps({"table_hash": "h", "class": "survived", "tier": "ci"}))
+        record = current_result(path, "h")
+        assert finished(record, "ci") and not finished(record, "all")
         path.write_text(json.dumps({"table_hash": "stale", "class": "killed", "tier": "ci"}))
-        assert not finished("r", module, "n", "ci")
-    RESULTS = saved
+        assert current_result(path, "h") is None
+
+    # The tests arm selects every feature package other than the mutated one.
+    assert test_scope("lushtext-core") == ["--test-workspace=true"]
+    assert test_scope("gtk-lush-widgets") == ["--test-workspace=true", "--cargo-arg=--package=lushtext-core"]
 
     # The join refuses mismatched revisions and tool versions.
     kani = {"n": {"name": "n", "rev": "r1", "cargo_mutants_version": "cargo-mutants 27.0.0"}}
@@ -1114,7 +1111,9 @@ def main() -> int:
         rows = []
         for module in modules:
             module_rev = resolve_rev(module_revs.get(module, rev))
-            if production_source(git("show", f"{module_rev}:{module}")) != production_source(git("show", f"{rev}:{module}")):
+            if module_rev != rev and production_source(git("show", f"{module_rev}:{module}")) != production_source(
+                git("show", f"{rev}:{module}")
+            ):
                 raise SystemExit(f"proof-strength: {module} differs between {module_rev[:8]} and {rev[:8]}")
             row = module_report(module_rev, module, population(worktree, module))
             row["rev"] = module_rev

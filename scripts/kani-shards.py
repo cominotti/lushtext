@@ -1007,6 +1007,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.self_test:
         self_test()
+    if args.command == "oracle":
+        if args.shard not in ORACLES:
+            print(f"unknown oracle module {args.shard}; known: {', '.join(ORACLES)}", file=sys.stderr)
+            return 2
+        for harness in ORACLES[args.shard].ordered(args.tier):
+            print(harness.name)
+        return 0
     found, unowned = discover()
     if args.command == "list":
         for shard_name, shard in SHARDS.items():
@@ -1020,20 +1027,15 @@ def main() -> int:
             for name in names:
                 print(f"  {name}")
         return 0
-    if args.command == "oracle":
-        if args.shard not in ORACLES:
-            print(f"unknown oracle module {args.shard}; known: {', '.join(ORACLES)}", file=sys.stderr)
-            return 2
-        for harness in ORACLES[args.shard].ordered(args.tier):
-            print(harness.name)
-        return 0
     problems = check(found, unowned)
-    problems += oracle_problems(found, ORACLES, NOT_ORACLE_HARNESSES, NOT_ORACLE_MODULES)
-    problems += harness_tree_problems()
-    # Budgets gate the table (`check`) and the CI matrix (`github-outputs`), not
-    # `run`: a shard over a margin must stay runnable so it can be re-measured.
+    # Budgets and the proof-strength oracle table gate the table (`check`) and
+    # the CI matrix (`github-outputs`), not `run`: a shard over a margin must
+    # stay runnable so it can be re-measured, and the oracle table does not
+    # decide what a shard verifies.
     if args.command in ("check", "github-outputs"):
         problems += budget_problems(SHARDS)
+        problems += oracle_problems(found, ORACLES, NOT_ORACLE_HARNESSES, NOT_ORACLE_MODULES)
+        problems += harness_tree_problems()
     if problems:
         for problem in problems:
             print(f"kani-shards: {problem}", file=sys.stderr)

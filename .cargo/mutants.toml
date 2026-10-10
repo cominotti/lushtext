@@ -98,12 +98,10 @@ exclude_globs = [
     # `.agents/rules/build.md`, Formal Verification), so this glob cannot drift
     # when a new harness is added. The directory form covers a harness module's
     # own child files (`kani_proofs/model.rs` beside `kani_proofs.rs`); none exist
-    # yet, so it removes 0 mutants today, and `make check-kani-shards` requires
-    # every such directory to sit beside the gated `kani_proofs.rs`. Re-measured
-    # at 848f94f8 (measure-proof-strength-with-mutation): the harness files now
-    # generate 406 mutants (297 draft_service, 56 editor_memory, 33
-    # write_protocol, 20 set_aside_retention); the list is 6,378 without these
-    # globs and 5,972 with them, and every production file's count is unchanged.
+    # yet, and `make check-kani-shards` requires every such directory to sit
+    # beside the gated `kani_proofs.rs`. The measured effect of both globs (which
+    # mutants they remove, and that no production file's count changes) is in
+    # docs/mutation-testing.md, "Harness code is excluded, measured from the tool".
     "crates/**/kani_proofs.rs",
     "crates/**/kani_proofs/**",
 ]
@@ -302,7 +300,9 @@ exclude_re = [
     # `y + height` is then non-finite through, and the very next guard
     # (`!upper.is_finite()`) rejects exactly that map. That later guard's own
     # `|| with &&` mutant is NOT equivalent and is killed by
-    # `native_slider_fit_rejects_a_source_map_whose_bottom_overflows`.
+    # `native_slider_fit_rejects_a_source_map_whose_bottom_overflows`. The early
+    # checks stay even so: without them `-inf + inf` computes a NaN sum, which
+    # the Kani no-panic harness `native_slider_fit_never_panics` rejects.
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:490:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:491:9: replace \\|\\| with && in fit_native_slider_to_source_map_bounds",
     "crates/lushtext-core/src/ui/editor_page/minimap/policy\\.rs:.*replace < with <= in expanded_to_min_height",
