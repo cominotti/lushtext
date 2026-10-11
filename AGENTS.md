@@ -58,6 +58,7 @@ src/
 │   ├── session.rs      # SessionTab, SessionData — global session for tab restore
 │   ├── palette.rs      # IndexedFile, CommandDef, CommandCategory, SearchMode, ScoredResult
 │   ├── recent_document.rs # RecentDocumentEntry, RecentDocumentFile, RecentDocumentRow — app-owned recent-document history
+│   ├── responsiveness_budget.rs # The responsiveness budgets as integer microseconds (B_interact 8 ms, B_settle 16 ms, the 120 Hz reference frame, input-to-frame 2 frames, scroll p95 frame gap) plus the float-free stall classification, log2 bucketing and nearest-rank percentile; Kani-proved (`responsiveness_budget/kani_proofs.rs`); later long-line changes cite these constants, never the numbers
 │   ├── draft.rs        # DraftEntry, DraftManifest — draft persistence metadata
 │   ├── note.rs         # RichNoteBody, NoteViewMode — shared note-body primitives
 │   ├── bookmark.rs     # BookmarkId, BookmarkRecord, BookmarkDocument — saved-file line bookmarks
@@ -103,6 +104,7 @@ src/
 │   ├── recovery_metadata.rs # Recovery-aware metadata integrity, quarantine, repair diagnostics, and bounded JSON loading
 │   ├── saved_searches.rs # Named saved search persistence: load/save/add/remove (permanent)
 │   ├── search_backup.rs # Replace All incrementally active per-file undo journal persistence within the safety window
+│   ├── responsiveness_log.rs # Smoke-only (`responsiveness-probes` feature or `cfg(test)`): the probe's JSONL records, the lateness aggregator (late ticks, per-second log2 histogram, top-K), and the bounded never-blocking writer thread
 │   ├── search_history.rs # Search history persistence: load/save/dedup (capped at 20)
 │   ├── session_service.rs
 │   ├── single_flight.rs # Workflow-neutral one-active/one-latest coordinator + cooperative cancellation token shared by palette/notes/bookmark/local-history/workspace search
@@ -142,6 +144,7 @@ src/
     ├── search_panel/    # Workspace search + Replace All, first workflow migrated to the readability role convention, and the first migrated end to end: mod.rs narrative facade, policy.rs pure policy (search single-flight, retirement budget, preview freshness seam), execution.rs + retirement.rs + replace_execution.rs + journal.rs coordination, evidence.rs observation surface, plus imp/history/list_factory/item/results/accessibility called presentation surfaces (no role) and test-utils-only test_policy.rs
     ├── command_palette/ # Ctrl+Shift+P search over files + note records + commands, second workflow migrated to the readability role convention: mod.rs narrative facade narrating both stage orders, policy.rs pure policy (bounded index-update admission, batch selection, mutation-generation arbitration and replay, retirement classification, result navigation, presentation decisions), query_execution.rs + index_admission.rs + index_execution.rs + retirement.rs coordination (the two execution modules are stage-order-qualified because one workflow owns two stage orders needing the same role), evidence.rs observation surface, plus imp/item called presentation surfaces (no role) and test-utils-only test_policy.rs
     ├── plain_disposal.rs # Non-blocking weighted Send-payload destruction with producer-owned latest retry
+    ├── responsiveness_probe.rs # Cross-cutting smoke-only instrumentation (no role): `install()` is an empty inline function unless the `responsiveness-probes` feature is on; then, with `LUSHTEXT_RESPONSIVENESS_LOG` set, a `G_PRIORITY_HIGH` microsecond-ready-time lateness watchdog, frame-clock and capture-phase input stamps, and the `lushtext-probe` input method for `make responsiveness-smoke`
     ├── workspace_visibility.rs # GTK-side reader/writer for the two visibility GSettings keys; builds the model rule once per refresh pass
     ├── open_popover/    # Ctrl+K searchable recent-document Open popover
     ├── properties_panel/ # Right-side document metadata + formatting controls

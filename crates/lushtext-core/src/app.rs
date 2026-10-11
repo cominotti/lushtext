@@ -114,6 +114,8 @@ mod imp {
     impl ApplicationImpl for LushtextApplication {
         fn startup(&self) {
             self.parent_startup();
+            // Smoke-only instrumentation: an empty function in shipped builds.
+            crate::ui::responsiveness_probe::install(&*self.obj());
             crate::ui::theme::load_css();
             crate::ui::theme::register_app_icons();
             crate::ui::theme::register_sourceview_style_schemes();

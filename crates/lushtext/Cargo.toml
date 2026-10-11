@@ -23,6 +23,9 @@ harness = false
 manual-format-upgrade-fixtures = ["lushtext-core/test-utils"]
 # Kill points for `make crash-recovery-smoke`; see `services::kill_point`.
 crash-kill-points = ["lushtext-core/crash-kill-points"]
+# Responsiveness probes for `make responsiveness-smoke`; see
+# `ui::responsiveness_probe`. Built into `target/responsiveness/` only.
+responsiveness-probes = ["lushtext-core/responsiveness-probes"]
 
 [lints]
 workspace = true

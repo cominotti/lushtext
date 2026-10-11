@@ -216,3 +216,40 @@ pub(in crate::services) fn fail_next_rename_cross_device_for_test() {
 pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     durable_write::sync_parent_dir(path)
 }
+
+/// An append-only log for smoke-only measurement evidence (the
+/// `responsiveness-probes` feature's JSONL stream).
+///
+/// Each [`EvidenceAppendLog::append`] is one unbuffered `write` of a whole
+/// record, so a process killed with `SIGKILL` loses at most the record in
+/// flight. It is **not** a durable persistence path: nothing is synced, and no
+/// application data may use it. It exists so measurement code writes through
+/// the filesystem boundary like everything else.
+#[cfg(any(test, feature = "responsiveness-probes"))]
+#[derive(Debug)]
+pub struct EvidenceAppendLog {
+    file: sys::File,
+}
+
+#[cfg(any(test, feature = "responsiveness-probes"))]
+impl EvidenceAppendLog {
+    /// Open `path` for appending, creating it owner-only when absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns the open error.
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        Ok(Self {
+            file: sys::open_append_create(path)?,
+        })
+    }
+
+    /// Append `record` in one write.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write error.
+    pub fn append(&mut self, record: &[u8]) -> std::io::Result<()> {
+        self.file.write_all(record)
+    }
+}

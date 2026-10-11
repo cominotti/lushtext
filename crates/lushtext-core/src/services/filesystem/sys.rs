@@ -40,6 +40,22 @@ pub(in crate::services) fn read_to_string(path: &Path) -> io::Result<String> {
     fs::read_to_string(path)
 }
 
+/// Open `path` for appending, creating it owner-only (`0o600`) when absent.
+///
+/// Measurement evidence only (`write::EvidenceAppendLog`); never a durable
+/// persistence path.
+#[cfg(any(test, feature = "responsiveness-probes"))]
+pub(in crate::services) fn open_append_create(path: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 pub(in crate::services) fn create_new_empty_file(path: &Path) -> io::Result<()> {
     let file = create_temp_file(path, None)?;
     sync_file(&file)

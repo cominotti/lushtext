@@ -36,6 +36,8 @@ pub mod notifications;
 pub mod palette;
 pub mod recent_documents;
 pub mod recovery_metadata;
+#[cfg(any(test, feature = "responsiveness-probes"))]
+pub mod responsiveness_log;
 pub mod saved_searches;
 pub mod search_backup;
 pub mod search_history;
