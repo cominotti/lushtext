@@ -642,7 +642,7 @@ make gtk-lush-doctests
 make gtk-lush-examples
 make gtk-lush-msrv
 make gtk-lush-api-advisory
-make gtk-axioms                        # every GTK axiom probe + sample --check, headless
+make gtk-axioms                        # every GTK axiom probe + sample --check, headless (GTK_LUSH_AXIOMS_INCLUDE_SLOW=0 skips slow probes)
 make gtk-axiom-sample AXIOM=A9         # watch one axiom on your desktop (CHECK=1: headless verdict)
 make gtk-axioms-runtimes               # local only: rerun the samples inside installed GNOME SDKs
 ```
@@ -669,6 +669,16 @@ risks that the widget harness cannot honestly prove, use the smoke lanes in
 [`docs/end-user-coverage.md`](docs/end-user-coverage.md), including visual,
 automation, crash-recovery, portal/sandbox, accessibility, and performance
 smoke coverage.
+
+Responsiveness with long-line documents is measured by `make
+responsiveness-smoke` (`RESPONSIVENESS_TIER=quick|full`): it builds a separate
+measurement binary with the smoke-only `responsiveness-probes` feature into
+`target/responsiveness/` (`make responsiveness-build`), runs it headless on
+synthetic fixtures from `scripts/generate-long-line-fixtures.py`, and reports
+main-loop stalls, frame gaps and input-to-frame latency against the budgets in
+`model/responsiveness_budget.rs`. It runs nightly and on demand, never as a
+pull-request gate, and is not part of `make end-user-smoke`; the measured
+values live in [`docs/next/long-line-documents.md`](docs/next/long-line-documents.md).
 
 Every test lane runs under `scripts/with-temp-scope.sh`, which gives it a
 private `TMPDIR`, removes it afterwards, and fails the run with `TEMP-LEAK:` if

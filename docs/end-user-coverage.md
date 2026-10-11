@@ -33,6 +33,7 @@ a user-facing workflow unverified.
 | Portal and sandbox smoke | `make portal-sandbox-smoke` | Confined Flatpak/Snap state, full-filesystem permission posture, portal/sandbox runtime diagnostics, and host support reporting | No, local, scheduled, or release validation |
 | Accessibility smoke | `make accessibility-smoke` | AT-SPI-enabled focus, accessible metadata, scenario manifests, editor text-interface evidence, and unsupported-host reporting outside the accessibility-disabled widget harness | No, local, scheduled, or release validation |
 | Performance smoke | `make performance-smoke` | Lightweight latency and throughput sanity checks distinct from full Criterion reports | No by default |
+| Responsiveness smoke | `make responsiveness-smoke` | Long-line responsiveness of the real binary: main-loop stall bounds from the smoke-only probe watchdog, frame gaps, input-to-presented-frame latency, probe-IM and AT-SPI costs, fixture digests, storage-stall evidence, and the derived long-line thresholds and budget verdict | No; nightly and manual (`.github/workflows/responsiveness-smoke.yml`), never in `make end-user-smoke` |
 | Full benchmarks | `make bench-report`, `make bench-report-full` | Reviewable Criterion benchmark reports for release and performance-sensitive work | No, release or manual |
 | Mutation testing | `make mutants-smoke`, `make mutants-diff`, `make mutants-full` | Test strength for deterministic model, service, and pure helper code | Diff in PR/scheduled lanes, full manual or scheduled |
 
@@ -230,6 +231,16 @@ they are not default PR gates:
   for smaller hosts.
 - Full fuzz smoke, deep property runs, full mutation, and full benchmark reports
   remain opt-in or scheduled because they are intentionally more expensive.
+- `make responsiveness-smoke` measures long-line responsiveness in a separate
+  measurement build (`responsiveness-probes` feature, `target/responsiveness/`)
+  under a private headless Mutter on at most 16 CPUs from the inherited mask.
+  The nightly workflow runs its `quick` tier per case group as trend evidence
+  only and never fails on a budget; budget verdicts and derived thresholds come
+  from a `full` run on the reference machine, recorded in
+  `docs/next/long-line-documents.md`. It is deliberately outside
+  `make end-user-smoke` and `.github/workflows/end-user-smoke.yml` because of its
+  length; the same nightly workflow also runs `make gtk-axioms` with slow probes
+  included.
 
 GitHub Actions mirrors that split: `.github/workflows/ci.yml` owns the bounded
 pull-request lanes, `.github/workflows/end-user-smoke.yml` runs automation,

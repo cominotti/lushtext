@@ -64,6 +64,9 @@ make crash-recovery-smoke # real-process SIGKILL/relaunch recovery smoke with ar
 make portal-sandbox-smoke # available Flatpak/Snap confinement diagnostics
 make accessibility-smoke # AT-SPI-enabled accessibility smoke
 make performance-smoke # lightweight Criterion performance smoke
+make responsiveness-build # measurement binary with the smoke-only responsiveness-probes feature, into target/responsiveness/
+make responsiveness-smoke # long-line responsiveness lane (RESPONSIVENESS_TIER=quick|full); nightly/manual, not in end-user-smoke
+make check-responsiveness-lane # (in check-policy) fixture generator and lane driver self-tests
 make kani       # every Kani proof harness, requires the pinned Kani version (KANI_SHARD=<shard> for one shard, KANI_MEASURE=<json> for measurement mode)
 make formal-evaluation # LOCAL ONLY: rerun the disposable Quint vs TLA+ evaluation models (FORMAL_EVAL_TARGET=install|versions|t1|t2|t3|all|report-data)
 make check-kani-shards # every Kani harness in exactly one CI shard, each shard measured within its budget (no Kani needed)
@@ -960,6 +963,26 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   migrations, duplicate sidecars, many local-history lineages, and first-dirty
   autosave persistence. It is distinct from full `bench-report` output and
   should stay forgiving enough to avoid routine shared-runner noise.
+- `make responsiveness-smoke` measures long-line responsiveness. It builds a
+  **separate** release binary with the smoke-only `responsiveness-probes`
+  feature into `target/responsiveness/` (`make responsiveness-build`), so
+  `target/debug/lushtext`, which the other smoke lanes use, never carries it;
+  never enable that feature in release, Meson, Flatpak, or Snap builds, which
+  must compile `ui::responsiveness_probe::install` as an empty inline function
+  (a default build carries none of the probe's environment names). The lane
+  generates synthetic fixtures only (`scripts/generate-long-line-fixtures.py`,
+  seeded and deterministic, written into the run's temp scope; never copy a user
+  file into a fixture), runs under a private `dbus-run-session` and
+  `mutter --headless --virtual-monitor 1280x800@120` with an affinity of at most
+  16 CPUs taken from the inherited mask (never widened), drives input through
+  Mutter's RemoteDesktop API (click inside the text area first: keys are not
+  delivered before), sets `GTK_IM_MODULE` explicitly for every variant (never
+  GTK's Wayland text-input default, S7B-6), never saves (an app holding typed
+  edits is `SIGKILL`ed), fails on any fixture digest change, and records
+  `btrfs-stall-report` evidence. Budget overruns are results, not failures; the
+  nightly `quick` tier is trend evidence only, and verdicts come from a `full`
+  run on the reference machine, recorded in `docs/next/long-line-documents.md`.
+  It is not part of `make end-user-smoke`.
 - `make end-user-smoke` runs the host-supported smoke lanes together. Individual
   scripts own their dependency checks, artifact paths, and skip messages.
 

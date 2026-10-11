@@ -230,6 +230,7 @@ Accessibility proof is intentionally layered:
 | Visual geometry smoke | `make visual-geometry-smoke` | Same-session protected regions, focus/fixed-control geometry, screenshot-derived pixel anchors, and current visual-proof policy summaries. |
 | Visual smoke | `make visual-smoke` | Rendered desktop screenshots for representative states, compact layouts, dense rows, dialogs, dark/high-contrast/large-text/reduced-motion variants, transparency/readability, and other user-visible surfaces. |
 | Policy checks | `make check-accessibility-policy`, `make check-visual-proof-policy`, `make check-automation-docs` | Drift checks for helper use, stable AT-SPI anchors, smoke helper flags, automation docs, and current visual evidence. |
+| Responsiveness smoke | `make responsiveness-smoke` | Cost of the accessibility bridge itself on long-line documents: every case also runs with the AT bridge on and a `pyatspi` listener for text-changed, caret-moved and selection-changed events. It adds no anchors and asserts no accessible names; it is the evidence for ledger axiom A35. |
 
 Every scenario in the accessibility, visual, and visual-geometry lanes should
 declare the relevant matrix row ids from

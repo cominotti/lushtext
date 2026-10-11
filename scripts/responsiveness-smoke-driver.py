@@ -2184,6 +2184,7 @@ def run_main(args: argparse.Namespace) -> int:
     if not check.get("ok"):
         print(f"FAIL: preflight: {check.get('reason')}", flush=True)
         runner.rd.close()
+        shutil.rmtree(runner.fixture_root, ignore_errors=True)
         return 1
     cases = select_cases(build_cases(args.tier), args.case or [])
     calibration = [c for c in build_cases(args.tier) if c.flow == "calibration"]
