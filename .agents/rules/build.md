@@ -976,13 +976,20 @@ honestly. Keep those lane boundaries current when adding new smoke checks.
   `mutter --headless --virtual-monitor 1280x800@120` with an affinity of at most
   16 CPUs taken from the inherited mask (never widened), drives input through
   Mutter's RemoteDesktop API (click inside the text area first: keys are not
-  delivered before), sets `GTK_IM_MODULE` explicitly for every variant (never
+  delivered before), disables the caret blink (under headless Mutter the blink's
+  frames get no presentation feedback and GTK paces them at its 60 Hz fallback,
+  which would add up to 16.7 ms to every input), sets `GTK_IM_MODULE` explicitly for every variant (never
   GTK's Wayland text-input default, S7B-6), never saves (an app holding typed
   edits is `SIGKILL`ed), fails on any fixture digest change, and records
   `btrfs-stall-report` evidence. Budget overruns are results, not failures; the
   nightly `quick` tier is trend evidence only, and verdicts come from a `full`
   run on the reference machine, recorded in `docs/next/long-line-documents.md`.
-  It is not part of `make end-user-smoke`.
+  It is not part of `make end-user-smoke`. A long `full` sweep may run group by
+  group, each part into its own artifact directory, joined for one report with
+  `scripts/responsiveness-smoke-driver.py merge-runs --artifact-dir <out> --from
+  <part>...` and then `scripts/responsiveness-smoke-driver.py report
+  --artifact-dir <out> [--axiom-observations <make gtk-axioms log>]`; a case a
+  later part re-measured keeps only the later rows.
 - `make end-user-smoke` runs the host-supported smoke lanes together. Individual
   scripts own their dependency checks, artifact paths, and skip messages.
 

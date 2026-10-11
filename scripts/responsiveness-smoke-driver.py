@@ -148,6 +148,17 @@ KNOWN_DEFECTS = (
         "owner": "document-scale-policy (C1)",
         "axiom": "A32",
     },
+    {
+        # Reproduced on 1-5 MB short-line HTML, 2,000-character dense lines
+        # and the CR/CRLF delimiter sets, during the jumps of Ctrl+End, a
+        # mid-document click and find; never on the baseline or on 20 kB,
+        # 100 kB or 300 kB short-line documents (lane experiment gizmo1), so
+        # it is a document-scale defect, not an ordinary-document one.
+        "id": "gizmo-snapshot-without-allocation",
+        "pattern": re.compile(r"Trying to snapshot GtkGizmo .* without a current allocation"),
+        "owner": "document-scale-policy (C1)",
+        "axiom": None,
+    },
 )
 
 
@@ -246,32 +257,95 @@ def phase_stall(parsed: dict, start_us: int, end_us: int) -> dict[str, Any]:
     }
 
 
-def frame_times(parsed: dict, start_us: int, end_us: int) -> tuple[list[int], str]:
-    frames = [r for r in parsed["records"]["frame"] if start_us <= int(r["frame_time_us"]) <= end_us]
-    with_presentation = [r for r in frames if r.get("presentation_us")]
-    if frames and len(with_presentation) * 5 >= len(frames) * 4:
-        return sorted(int(r["presentation_us"]) for r in with_presentation), "presentation"
-    return sorted(int(r["frame_time_us"]) for r in frames), "frame-time"
+IDLE_GAP_US = 4 * 8_333
 
 
-def frame_gap_p95(parsed: dict, start_us: int, end_us: int) -> dict[str, Any]:
-    times, source = frame_times(parsed, start_us, end_us)
-    gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
+def frame_gap_p95(parsed: dict, start_us: int, end_us: int, reference_frame_us: int = 8_333) -> dict[str, Any]:
+    """p95 gap between consecutive presented frames in [start, end].
+
+    A frame-gap figure is about frames the app wanted and did not get, so
+    two kinds of gap are left out and counted instead. A gap next to a frame
+    the compositor never presented (headless Mutter reports no presentation
+    for some frames, and GTK then paces on its 60 Hz fallback timer) says
+    nothing about the app. A gap longer than four reference frames while the
+    main loop was free is idle time: no frame was requested. A gap with a
+    main-loop stall inside it always counts.
+    """
+    frames = sorted((r for r in parsed["records"]["frame"] if start_us <= int(r["frame_time_us"]) <= end_us), key=lambda r: int(r["frame_time_us"]))
+    unpresented = sum(1 for r in frames if not r.get("presentation_us"))
+    gaps: list[int] = []
+    idle = 0
+    for a, b in zip(frames, frames[1:]):
+        if not a.get("presentation_us") or not b.get("presentation_us"):
+            continue
+        gap = frame_presented(parsed, b, reference_frame_us)[0] - frame_presented(parsed, a, reference_frame_us)[0]
+        if gap <= 0:
+            continue
+        if gap > IDLE_GAP_US and not loop_stalled(parsed, int(a["frame_time_us"]), int(b["frame_time_us"]), reference_frame_us):
+            idle += 1
+            continue
+        gaps.append(gap)
     intervals = [int(r["refresh_interval_us"]) for r in parsed["records"]["frame"] if r.get("refresh_interval_us")]
     return {
-        "frames": len(times),
+        "frames": len(frames),
         "p95_gap_us": nearest_rank(gaps, 95),
         "max_gap_us": max(gaps) if gaps else None,
-        "source": source,
+        "gaps": len(gaps),
+        "source": "presentation",
+        "unpresented_frames": unpresented,
+        "idle_gaps": idle,
         "refresh_interval_us": statistics.median(intervals) if intervals else None,
     }
 
 
+def loop_stalled(parsed: dict, start_us: int, end_us: int, threshold_us: int) -> bool:
+    """Whether a main-loop stall of at least `threshold_us` overlapped [start, end]."""
+    for record in parsed["records"]["late"]:
+        ready = int(record.get("ready_us", record["t_us"] - record["lateness_us"]))
+        if int(record["lateness_us"]) >= threshold_us and record["t_us"] >= start_us and ready <= end_us:
+            return True
+    return False
+
+
+def frame_presented(parsed: dict, frame: dict, reference_frame_us: int) -> tuple[int, str]:
+    """When a frame reached the screen, and how that time was obtained.
+
+    Headless Mutter presents a lone frame after an idle period only when the
+    next commit arrives, so its presentation time can trail the frame start
+    by the time to the next input. A presentation more than two reference
+    frames after the frame started while the main loop was free is that
+    deferral, and the frame counts as presented one reference frame after it
+    started (the earliest a 120 Hz compositor could show it). A presentation
+    delayed by a main-loop stall (a long paint) keeps its real time. A frame
+    with no presentation at all is likewise counted one reference frame
+    after it started.
+    """
+    start = int(frame["frame_time_us"])
+    presentation = frame.get("presentation_us")
+    if not presentation:
+        return start + reference_frame_us, "frame-start"
+    presentation = int(presentation)
+    if presentation - start > 2 * reference_frame_us and not loop_stalled(parsed, start, presentation, reference_frame_us):
+        return start + reference_frame_us, "deferred-presentation"
+    return presentation, "presentation"
+
+
 def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int, event_clock_ok: bool, horizon_us: int | None = None) -> list[dict]:
-    """For each injected event: origin -> first presentation of a frame started after its handler."""
+    """For each measured injected event: origin -> first presentation of a frame started after its handler.
+
+    Two attribution rules keep an unrelated frame from being charged to an
+    input. An unmeasured injection (a modifier press) still consumes its
+    input record, so it cannot stand in for the key it modifies. And when
+    the first frame after an input's handler starts only after the NEXT
+    input was handled, while the main loop was free in between, that input
+    requested no frame (it changed nothing visible); it is reported as
+    `no-visible-change`, never as the later input's latency. While the loop
+    was stalled the late frame stays attributed, because the stall is what
+    delayed it.
+    """
     inputs = sorted(parsed["records"]["input"], key=lambda r: r["t_us"])
     frames = sorted(parsed["records"]["frame"], key=lambda r: int(r["frame_time_us"]))
-    results = []
+    matched: list[tuple[dict, int | None, Any]] = []
     used: set[int] = set()
     for injection in injections:
         origin = injection["inject_us"]
@@ -286,6 +360,13 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
                 event_ms = record.get("event_time_ms")
                 used.add(index)
                 break
+        matched.append((injection, handler, event_ms))
+    results = []
+    for position, (injection, handler, event_ms) in enumerate(matched):
+        if not injection.get("measured", True):
+            continue
+        origin = injection["inject_us"]
+        wanted = injection["event"]
         if handler is None:
             results.append({"event": wanted, "inject_us": origin, "status": "no-input-record"})
             continue
@@ -299,7 +380,11 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
         if frame is None:
             results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-frame"})
             continue
-        presented = int(frame.get("presentation_us") or frame["frame_time_us"])
+        next_handler = next((h for _inj, h, _ms in matched[position + 1 :] if h is not None and h > handler), None)
+        if next_handler is not None and int(frame["frame_time_us"]) > next_handler and not loop_stalled(parsed, handler, next_handler, reference_frame_us):
+            results.append({"event": wanted, "inject_us": origin, "handler_us": handler, "status": "no-visible-change"})
+            continue
+        presented, source = frame_presented(parsed, frame, reference_frame_us)
         latency = max(0, presented - origin)
         results.append(
             {
@@ -307,7 +392,7 @@ def input_to_frame(parsed: dict, injections: list[dict], reference_frame_us: int
                 "inject_us": origin,
                 "handler_us": handler,
                 "presented_us": presented,
-                "source": "presentation" if frame.get("presentation_us") else "frame-time",
+                "source": source,
                 "latency_us": latency,
                 "frames": math.ceil(latency / reference_frame_us) if latency else 0,
             }
@@ -619,17 +704,23 @@ class RemoteDesktop:
     def key(self, keysym: int, pressed: bool) -> int:
         if keysym not in ALLOWED_KEYSYMS:
             raise RuntimeError(f"refusing to inject keysym {keysym:#x}")
+        stamp = now_us()
+        self._notify_key(keysym, pressed)
+        return stamp
+
+    def _notify_key(self, keysym: int, pressed: bool) -> None:
         from gi.repository import GLib
 
-        stamp = now_us()
         self._call("NotifyKeyboardKeysym", GLib.Variant("(ub)", (keysym, pressed)))
-        return stamp
 
     def tap(self, keysym: int, injections: list[dict], control: bool = False) -> None:
         if control and 0x61 <= keysym <= 0x7A:
             raise RuntimeError("refusing Control+letter: no shortcut chord may be injected")
         if control:
-            self.key(KEY_CONTROL_L, True)
+            # The modifier press reaches the window as its own key-press
+            # record; recording it (unmeasured) keeps it from standing in
+            # for the key it modifies when inputs are matched to records.
+            injections.append({"event": "key-press", "inject_us": self.key(KEY_CONTROL_L, True), "measured": False})
         injections.append({"event": "key-press", "inject_us": self.key(keysym, True)})
         self.key(keysym, False)
         if control:
@@ -808,6 +899,15 @@ class Runner:
             else:
                 lines.append(f"{key}='{value}'")
         keyfile.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # No caret blink. Under headless Mutter the blink's frames get no
+        # presentation feedback, so GTK paces them on its 60 Hz fallback
+        # timer and every input waits up to 16.7 ms for the next tick:
+        # measured in rr exp-blink0/1 (Page Down input-to-frame median
+        # 18.6 ms with blink, 10.8 ms without). That is the lane's
+        # compositor, not the app, so the lane measures without it.
+        gtk_settings = state / "config/gtk-4.0/settings.ini"
+        gtk_settings.parent.mkdir(parents=True)
+        gtk_settings.write_text("[Settings]\ngtk-cursor-blink=false\n", encoding="utf-8")
         (case_dir / "settings.json").write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
         return {
             "XDG_CACHE_HOME": str(state / "cache"),
@@ -956,14 +1056,27 @@ class Runner:
         )
         return ok
 
-    def standard_interactions(self, phases: list[dict], tabs: int = 1) -> bool:
+    def step(self, phases: list[dict], name: str, cap: float, body, recover: Callable[[], bool] | None) -> bool:
+        """Run one phase; after a cap hit, relaunch the app and carry on.
+
+        A hang is a result, not the end of the case: the remaining
+        interactions still run against a fresh launch, so a stall in one
+        phase does not hide the cost of the phases after it.
+        """
+        if self.run_phase(phases, name, cap, body):
+            return True
+        if phases[-1].get("status") == "exceeded_cap" and recover is not None:
+            return recover()
+        return False
+
+    def standard_interactions(self, phases: list[dict], tabs: int = 1, recover: Callable[[], bool] | None = None) -> bool:
         cap = self.cap_s
 
         def background(_inj, deadline):
             time.sleep(2.0)
             return self.wait_ready("app-startup", deadline)
 
-        if not self.run_phase(phases, "background", cap, background):
+        if not self.step(phases, "background", cap, background, recover):
             return False
         if not self.rd.available:
             for name in ("scroll", "click", "pagedown", "type-start", "type-middle", "type-end"):
@@ -1019,7 +1132,7 @@ class Runner:
                 ("type-middle", type_at("middle")),
                 ("type-end", type_at("end")),
             ):
-                if not self.run_phase(phases, name, cap, body):
+                if not self.step(phases, name, cap, body, recover):
                     return False
 
         def find(_inj, deadline):
@@ -1032,7 +1145,7 @@ class Runner:
                 self.action("win", "next-match", None, deadline)
             return True, "ok"
 
-        if not self.run_phase(phases, "find", cap, find):
+        if not self.step(phases, "find", cap, find, recover):
             return False
         if tabs > 1:
 
@@ -1044,7 +1157,7 @@ class Runner:
                         return ok, status
                 return True, "ok"
 
-            if not self.run_phase(phases, "tab-switch", cap, tab_switch):
+            if not self.step(phases, "tab-switch", cap, tab_switch, recover):
                 return False
         return True
 
@@ -1089,6 +1202,34 @@ class Runner:
         outcome = "ok"
         crashed = False
         wall_start = time.time()
+        extra_states: list[str] = []
+        recoveries = [0]
+
+        def recover() -> bool:
+            for live in launches:
+                if live.process.poll() is None:
+                    live.killed_on_cap = True
+                    self.kill(live)
+            recoveries[0] += 1
+            if recoveries[0] > 6:
+                return False
+            fresh = self.fresh_state(rep_dir, case.settings)
+            extra_states.append(fresh["STATE_ROOT"])
+            renv = self.app_env(variant, fresh, rep_dir / f"probe-r{recoveries[0]}.jsonl")
+            relaunched = self.launch(rep_dir, renv, files, f"r{recoveries[0]}")
+            launches.append(relaunched)
+            scratch: list[dict] = []
+            ok = self.open_phase(scratch, relaunched, cap)
+            phases.append({"name": "recovery", "kind": "recovery", "status": scratch[-1]["status"] if scratch else "failed", "after": phases[-1]["name"] if phases else None})
+            if ok:
+                time.sleep(1.0)
+                if self.rd.available:
+                    # Give the fresh window keyboard focus (unmeasured).
+                    self.rd.click(SCREEN_W // 3, SCREEN_H // 2, [])
+                    time.sleep(0.3)
+                    self.wait_ready("app-startup", time.monotonic() + cap)
+            return ok
+
         try:
             if not self.ledger.verify(files, f"{case.id}@{variant}#{rep} before launch"):
                 self.failures.append(f"fixture digest changed before {case.id}")
@@ -1111,7 +1252,7 @@ class Runner:
                     env2["LUSHTEXT_RESPONSIVENESS_LOG"] = str(rep_dir / "probe-restore.jsonl")
                     relaunch = self.launch(rep_dir, env2, [], "restore")
                     launches.append(relaunch)
-                    ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files))
+                    ok = self.open_phase(phases, relaunch, cap, predicate="session-restore-complete") and self.standard_interactions(phases, tabs=len(files), recover=recover)
             elif case.flow == "calibration":
                 ok = self.run_calibration(rep_dir, state_env, phases, launches)
             else:
@@ -1139,14 +1280,16 @@ class Runner:
                         return self.wait_ready("file-open-complete", deadline)
 
                     ok = ok and self.run_phase(phases, "reload", cap, reload)
-                    ok = ok and self.standard_interactions(phases)
+                    ok = ok and self.standard_interactions(phases, recover=recover)
                 elif ok:
-                    ok = self.standard_interactions(phases, tabs=len(files) if len(files) > 1 else 1)
+                    ok = self.standard_interactions(phases, tabs=len(files) if len(files) > 1 else 1, recover=recover)
             for launch in launches:
                 if launch.process.poll() is not None and launch.process.returncode not in (0, -signal.SIGKILL):
                     crashed = True
-            if not ok:
-                outcome = "exceeded_cap" if any(p.get("status") == "exceeded_cap" for p in phases) else "failed"
+            if any(p.get("status") == "exceeded_cap" for p in phases):
+                outcome = "exceeded_cap"
+            elif not ok:
+                outcome = "failed"
         finally:
             for launch in launches:
                 if launch.process.poll() is None:
@@ -1154,6 +1297,8 @@ class Runner:
                     self.kill(launch)
             at_events = listener.stop() if listener else []
             shutil.rmtree(state_env["STATE_ROOT"], ignore_errors=True)
+            for root in extra_states:
+                shutil.rmtree(root, ignore_errors=True)
         if crashed and outcome != "exceeded_cap":
             outcome = "crashed"
             self.failures.append(f"app crashed in {case.id}@{variant}#{rep}")
@@ -1456,6 +1601,26 @@ def phase_lateness(rows: list[dict], phase_names: Iterable[str]) -> int | None:
     return max(values) if values else None
 
 
+def hung(rows: list[dict], phase_names: Iterable[str]) -> bool:
+    """Whether any row hit the interaction cap in (or before reaching) one of these phases.
+
+    A capped phase is a failure of the side that hung. Subtracting the
+    other side's lateness would turn two capped phases into a ~0 difference
+    and read as "within" (quick run #4 derived L_syntax = 250000 that way).
+    """
+    names = set(phase_names)
+    for row in rows:
+        present = [p for p in row.get("phases", []) if p.get("name") in names]
+        if any(p.get("status") == "exceeded_cap" or p.get("stall", {}).get("lower_bound_only") for p in present):
+            return True
+        if not present and row.get("outcome") == "exceeded_cap":
+            return True
+    return False
+
+
+SETTLE_PHASES = ("open", "background")
+
+
 def rows_for(rows: list[dict], group: str, length: int | None = None, **attrs: Any) -> list[dict]:
     selected = []
     for row in rows:
@@ -1479,7 +1644,10 @@ def series_pass(name: str, rows: list[dict], length: int, budgets: dict, slack: 
             txt = [r for r in rows_for(rows, "paragraph", length, ext="txt", wrap=wrap, minimap=False, flavor=flavor) if usable(r)]
             if not html or not txt:
                 continue
-            for phases, budget in ((("scroll",), budgets["B_INTERACT_US"]), (("open",), budgets["B_SETTLE_US"])):
+            for phases, budget in ((("scroll",), budgets["B_INTERACT_US"]), (SETTLE_PHASES, budgets["B_SETTLE_US"])):
+                if hung(html, phases):
+                    verdicts.append("over")
+                    continue
                 a, b = phase_lateness(html, phases), phase_lateness(txt, phases)
                 if a is None or b is None:
                     continue
@@ -1491,6 +1659,9 @@ def series_pass(name: str, rows: list[dict], length: int, budgets: dict, slack: 
         verdicts = []
         for wrap in (True, False):
             txt = [r for r in rows_for(rows, "paragraph", length, ext="txt", wrap=wrap, minimap=False) if usable(r)]
+            if hung(txt, ("scroll",)):
+                verdicts.append("over")
+                continue
             value = phase_lateness(txt, ("scroll",))
             if value is not None:
                 verdicts.append(classify(value, tick, slack, budgets["B_INTERACT_US"]))
@@ -1546,6 +1717,9 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
                 return None
             results = []
             for phases, budget in phases_budgets:
+                if hung(with_rows, phases):
+                    results.append("over")
+                    continue
                 a, b = phase_lateness(with_rows, phases), phase_lateness(without_rows, phases)
                 if a is None or b is None:
                     continue
@@ -1566,7 +1740,7 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
             )
 
         lengths = sorted({r["length"] for r in rows if r.get("group") == "paragraph" and r.get("attrs", {}).get("flavor") == flavor})
-        per_flavor[flavor] = largest_passing(lengths, attributable(syntax_rows, ((("scroll",), b_i), (("open",), b_s))))
+        per_flavor[flavor] = largest_passing(lengths, attributable(syntax_rows, ((("scroll",), b_i), (SETTLE_PHASES, b_s))))
     measured = {f: o for f, o in per_flavor.items() if o.get("value") is not None or "upper_bound" in o}
     if measured:
         deciding = min(measured, key=lambda f: measured[f].get("value") if measured[f].get("value") is not None else -1)
@@ -1576,14 +1750,14 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
         deciding = None
         outcome = {"value": None, "reason": "no usable cases"}
     outcome["per_flavor"] = per_flavor
-    describe("L_syntax", ".html minus .txt stall at the same length and flavour: scroll <= B_interact, open <= B_settle; the worst flavour decides", outcome, [r["case"] for r in rows if r.get("group") == "paragraph" and not r.get("attrs", {}).get("minimap")])
+    describe("L_syntax", ".html minus .txt stall at the same length and flavour: scroll <= B_interact, open and background <= B_settle; a capped .html phase fails; the worst flavour decides", outcome, [r["case"] for r in rows if r.get("group") == "paragraph" and not r.get("attrs", {}).get("minimap")])
 
     minimap_rows = lambda length, _: (
         [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=True, flavor="css")],
         [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=False, flavor="css")],
     )
-    outcome = largest_passing(para_lengths, attributable(minimap_rows, ((("scroll",), b_i), (("open",), b_s))))
-    describe("L_minimap", "minimap-on minus minimap-off stall (txt, same wrap): scroll <= B_interact, open <= B_settle", outcome, [r["case"] for r in rows if r.get("group") == "paragraph" and r.get("attrs", {}).get("ext") == "txt"])
+    outcome = largest_passing(para_lengths, attributable(minimap_rows, ((("scroll",), b_i), (SETTLE_PHASES, b_s))))
+    describe("L_minimap", "minimap-on minus minimap-off stall (txt, same wrap): scroll <= B_interact, open and background <= B_settle; a capped minimap-on phase fails", outcome, [r["case"] for r in rows if r.get("group") == "paragraph" and r.get("attrs", {}).get("ext") == "txt"])
 
     inv_lengths = sorted({r["length"] for r in rows if r.get("group") == "invisibles"})
     invisibles_rows = lambda length, _: (rows_for(rows, "invisibles", length, invisibles="all"), rows_for(rows, "invisibles", length, invisibles="off"))
@@ -1593,6 +1767,8 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
     def plain_verdict(phases: tuple[str, ...], exts=("txt",)) -> Callable[[int], bool | None]:
         def verdict(length: int) -> bool | None:
             selected = [r for ext in exts for w in (True, False) for r in rows_for(rows, "paragraph", length, ext=ext, wrap=w, minimap=False) if usable(r)]
+            if selected and hung(selected, phases):
+                return False
             value = phase_lateness(selected, phases)
             return None if value is None else classify(value, tick, slack, b_i) == "within"
 
@@ -1615,6 +1791,8 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
             selected = [r for w in (True, False) for r in rows_for(rows, "paragraph", length, ext="txt", wrap=w, minimap=False) if usable(r)]
             if not selected:
                 return None
+            if hung(selected, CARET_PHASES):
+                return False
             value = phase_lateness(selected, CARET_PHASES)
             if value is None:
                 return None
@@ -1640,6 +1818,8 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
 
     def dense_verdict(length: int) -> bool | None:
         selected = [r for r in rows_for(rows, "dense", length) if usable(r)]
+        if selected and hung(selected, ("scroll", "pagedown", "background")):
+            return False
         value = phase_lateness(selected, ("scroll", "pagedown", "background"))
         return None if value is None else classify(value, tick, slack, b_i) == "within"
 
@@ -1677,6 +1857,8 @@ def derive(rows: list[dict], budgets: dict, slack: int | None, rd_available: boo
 
     def size_verdict(size: int) -> bool | None:
         selected = [r for r in rows_for(rows, "total-size", size) if usable(r)]
+        if selected and hung(selected, ("background", "scroll", "pagedown") + CARET_PHASES):
+            return False
         value = phase_lateness(selected, ("background", "scroll", "pagedown") + CARET_PHASES)
         return None if value is None else classify(value, tick, slack, b_i) == "within"
 
@@ -1728,6 +1910,11 @@ def budget_verdict(rows: list[dict], budgets: dict, tick: int, slack: int) -> di
         "tick_us": tick,
         "slack_us": slack,
     }
+    # Informational: the scroll frame-gap limit is not a D7 verdict input.
+    # Gaps are read over presented frames only (frame_gap_p95).
+    scroll_gaps = [p["frames"]["p95_gap_us"] for row in baseline for p in row.get("phases", []) if p.get("name") == "scroll" and p.get("frames", {}).get("p95_gap_us") is not None]
+    result["scroll_frame_gap_p95_us"] = max(scroll_gaps) if scroll_gaps else None
+    result["scroll_frame_gap_limit_us"] = budgets["SCROLL_P95_FRAME_GAP_US"]
     if all(v == "within" for v in verdicts.values()):
         result["verdict"] = "confirmed"
     elif any(v == "over" for v in verdicts.values()):
@@ -1888,7 +2075,14 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
         rows = [json.loads(line) for line in results.read_text(encoding="utf-8").splitlines() if line.strip()]
     run_info = json.loads((artifact_dir / "run.json").read_text(encoding="utf-8")) if (artifact_dir / "run.json").exists() else {}
     run_info["renderer_actual"] = sorted({r["renderer_actual"] for r in rows if r.get("renderer_actual")})
-    storage = run_storage(artifact_dir, rows) if os.environ.get("RESPONSIVENESS_SKIP_STORAGE") != "1" else {"status": "skipped"}
+    if run_info.get("merged_from"):
+        # merge-runs already stamped every row with its own run's storage
+        # verdict (each part's report queried btrfs-stall-report).
+        storage = run_info.get("storage", {"status": "unavailable"})
+    elif os.environ.get("RESPONSIVENESS_SKIP_STORAGE") != "1":
+        storage = run_storage(artifact_dir, rows)
+    else:
+        storage = {"status": "skipped"}
     mark_noisy(rows)
     calibration = json.loads((artifact_dir / "calibration.json").read_text(encoding="utf-8")) if (artifact_dir / "calibration.json").exists() else {}
     budgets = read_budgets()
@@ -1942,6 +2136,94 @@ def write_report(artifact_dir: Path, axiom_path: Path | None) -> int:
     return 1 if failed else 0
 
 
+def merge_runs(out: Path, sources: list[Path], quiet: bool = False) -> int:
+    """Join the artifacts of several lane runs (one per case group) into one.
+
+    The reference sweep runs group by group so it can resume after an
+    interruption. A case measured by more than one part keeps the later
+    part's rows. Each row carries its own part's storage verdict, read from
+    that part's storage/cases.json. Case directories are linked, not copied.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ("results.jsonl", "run.json", "calibration.json", "fixtures.json", "integrity.json"):
+        (out / name).unlink(missing_ok=True)
+    if (out / "cases").exists():
+        shutil.rmtree(out / "cases")
+    rows: dict[tuple, dict] = {}
+    runs: list[dict] = []
+    fixtures: list = []
+    checks = 0
+    violations: list = []
+    calibration = None
+    storage_parts: list[dict] = []
+    for source in sources:
+        source = source.resolve()
+        run = json.loads((source / "run.json").read_text(encoding="utf-8"))
+        runs.append(run)
+        stamps = {}
+        cases_json = source / "storage/cases.json"
+        if cases_json.exists():
+            stamps = json.loads(cases_json.read_text(encoding="utf-8"))
+        report = source / "report.json"
+        if report.exists():
+            storage_parts.append({"run_id": run.get("run_id"), **json.loads(report.read_text(encoding="utf-8")).get("storage", {})})
+        part_cases = set()
+        for line in (source / "results.jsonl").read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            stamp = stamps.get(f"{row['case']}@{row['variant']}#{row['rep']}")
+            if stamp:
+                row["storage"] = stamp["status"]
+                row["storage_contaminated"] = stamp["status"] == "contaminated"
+            row["run_id"] = run.get("run_id")
+            if row["case"] not in part_cases:
+                part_cases.add(row["case"])
+                for key in [k for k in rows if k[0] == row["case"]]:
+                    del rows[key]
+            rows[(row["case"], row["variant"], row.get("rep", 0), row.get("bisection", False))] = row
+        if (source / "calibration.json").exists() and (calibration is None or any(c.startswith("baseline/calibration") for c in part_cases)):
+            calibration = json.loads((source / "calibration.json").read_text(encoding="utf-8"))
+        if (source / "fixtures.json").exists():
+            fixtures.extend(json.loads((source / "fixtures.json").read_text(encoding="utf-8")))
+        if (source / "integrity.json").exists():
+            integrity = json.loads((source / "integrity.json").read_text(encoding="utf-8"))
+            checks += int(integrity.get("checks", 0))
+            violations.extend(integrity.get("violations", []))
+        for rep_dir in sorted((source / "cases").rglob("rep*")):
+            if rep_dir.is_dir():
+                link = out / "cases" / rep_dir.relative_to(source / "cases")
+                link.parent.mkdir(parents=True, exist_ok=True)
+                if link.is_symlink() or link.exists():
+                    link.unlink()
+                link.symlink_to(rep_dir)
+    merged = dict(runs[0])
+    merged.update(
+        {
+            "run_id": "+".join(r.get("run_id", "?") for r in runs),
+            "merged_from": [{"run_id": r.get("run_id"), "artifact_dir": str(src), "wall_start": r.get("wall_start"), "wall_end": r.get("wall_end"), "repetitions": r.get("repetitions"), "bisection": r.get("bisection")} for r, src in zip(runs, sources)],
+            "wall_start": min(r.get("wall_start") or math.inf for r in runs),
+            "wall_end": max(r.get("wall_end") or 0 for r in runs),
+            "remote_desktop": {"available": all(r.get("remote_desktop", {}).get("available") for r in runs), "error": next((r["remote_desktop"].get("error") for r in runs if r.get("remote_desktop", {}).get("error")), None)},
+            "driver_failures": [f for r in runs for f in r.get("driver_failures", [])],
+            "storage": {
+                "status": "contaminated" if any(p.get("status") == "contaminated" for p in storage_parts) else ("clean" if storage_parts and all(p.get("status") == "clean" for p in storage_parts) else "mixed"),
+                "parts": storage_parts,
+                "contaminated_cases": sorted(c for p in storage_parts for c in p.get("contaminated_cases", [])),
+            },
+        }
+    )
+    (out / "run.json").write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    (out / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows.values()), encoding="utf-8")
+    if calibration is not None:
+        (out / "calibration.json").write_text(json.dumps(calibration, indent=2) + "\n", encoding="utf-8")
+    (out / "fixtures.json").write_text(json.dumps(fixtures, indent=2) + "\n", encoding="utf-8")
+    (out / "integrity.json").write_text(json.dumps({"checks": checks, "violations": violations}, indent=2) + "\n", encoding="utf-8")
+    if not quiet:
+        print(f"merged {len(rows)} row(s) from {len(sources)} run(s) into {out}")
+    return 0
+
+
 def render_markdown(report: dict) -> str:
     run = report["run"]
     lines = [
@@ -1973,7 +2255,7 @@ def render_markdown(report: dict) -> str:
     lines += ["", "## Budget verdict", "", f"**{verdict.get('verdict')}** — {json.dumps({k: v for k, v in verdict.items() if k != 'cases'})}", ""]
     lines += ["## Findings (reproduced pre-existing defects)", ""]
     for key, finding in report["warnings"].get("known_findings", {}).items():
-        lines.append(f"- `{key}` ({finding['axiom']}), owner {finding['owner']}: {finding['count']} line(s) in {len(finding['cases'])} case(s). Example: `{finding['example']}`")
+        lines.append(f"- `{key}` ({finding['axiom'] or 'no axiom'}), owner {finding['owner']}: {finding['count']} line(s) in {len(finding['cases'])} case(s). Example: `{finding['example']}`")
     if report["warnings"].get("unclassified"):
         lines.append(f"- {len(report['warnings']['unclassified'])} unclassified warning line(s); see report.json.")
     lines += ["", "## C3 install gate", "", f"{report['install_c3'].get('verdict')}", "", "## Window construction (C4)", ""]
@@ -2091,6 +2373,7 @@ def environment_info(tier: str, renderer: str) -> dict[str, Any]:
         "tier": tier,
         "renderer": renderer,
         "monitor": MONITOR,
+        "gtk_cursor_blink": False,
         "toolkit": {"gtk4": pkg("gtk4"), "libadwaita": pkg("libadwaita-1"), "pango": pkg("pango"), "gtksourceview": pkg("gtksourceview-5"), "glib": pkg("glib-2.0"), "mutter": mutter},
         "kernel": " ".join(platform.uname()[i] for i in (0, 2, 4)),
         "cpu_model": cpu_model,
@@ -2286,6 +2569,10 @@ def self_test() -> int:
     mark_noisy(rows_noise)
     expect(all(r.get("noisy") for r in rows_noise), "noisy rows are flagged")
 
+    # The GtkGizmo warning is a reported finding with an owner, not noise.
+    gizmo = "(lushtext:1): Gtk-WARNING **: 20:00:13.364: Trying to snapshot GtkGizmo 0x55596f2a1e80 without a current allocation"
+    expect([d["id"] for d in KNOWN_DEFECTS if d["pattern"].search(gizmo)] == ["gizmo-snapshot-without-allocation"], "the GtkGizmo snapshot warning is a known finding owned by C1")
+
     # Storage contamination.
     expect(storage_status({"verdict": ["Storage was NOT a bottleneck: ..."]}) == "clean", "clean verdict")
     expect(storage_status({"verdict": ["Writeback stall: ..."]}) == "contaminated", "a stall verdict contaminates")
@@ -2319,6 +2606,135 @@ def self_test() -> int:
     revised = derive(slow, budgets, 1_000, True, obs)["budget_verdict"]
     expect(revised["verdict"] == "revise" and revised["proposed"]["B_INTERACT_US"] == 22_000, f"an over-budget baseline proposes a revision ({revised})")
 
+    # merge-runs: a group-by-group sweep joins into one artifact set; a case
+    # re-measured by a later part keeps only the later rows, and each row
+    # carries its own part's storage verdict.
+    with tempfile.TemporaryDirectory(prefix="lt-resp-merge-") as raw:
+        root = Path(raw)
+        for part, (cases_rows, contaminated) in enumerate(((["a", "b"], "b@plain#0"), (["b"], None))):
+            src = root / f"part{part}"
+            (src / "storage").mkdir(parents=True)
+            (src / "cases" / "g" / f"p{part}" / "plain" / "rep0").mkdir(parents=True)
+            (src / "run.json").write_text(json.dumps({"run_id": f"rr-{part}", "wall_start": 10 + part, "wall_end": 20 + part, "remote_desktop": {"available": True}}), encoding="utf-8")
+            (src / "results.jsonl").write_text("".join(json.dumps({"case": c, "variant": "plain", "rep": 0, "part": part}) + "\n" for c in cases_rows), encoding="utf-8")
+            (src / "storage" / "cases.json").write_text(json.dumps({contaminated: {"status": "contaminated"}} if contaminated else {}), encoding="utf-8")
+            (src / "integrity.json").write_text(json.dumps({"checks": 3, "violations": []}), encoding="utf-8")
+            (src / "fixtures.json").write_text("[]", encoding="utf-8")
+        merge_runs(root / "merged", [root / "part0", root / "part1"], quiet=True)
+        merged_rows = [json.loads(line) for line in (root / "merged/results.jsonl").read_text(encoding="utf-8").splitlines()]
+        by_case = {r["case"]: r for r in merged_rows}
+        expect(len(merged_rows) == 2 and by_case["b"]["part"] == 1 and not by_case["b"].get("storage_contaminated"), f"a re-measured case keeps the later part's rows ({merged_rows})")
+        merged_run = json.loads((root / "merged/run.json").read_text(encoding="utf-8"))
+        expect(merged_run["run_id"] == "rr-0+rr-1" and merged_run["wall_start"] == 10 and merged_run["wall_end"] == 21, "merged run id and window")
+        expect((root / "merged/cases/g/p1/plain/rep0").is_symlink(), "case directories are linked into the merged set")
+
+    # Key guard: no Control+letter chord can be injected.
+    class FakeRd(RemoteDesktop):
+        def __init__(self) -> None:  # noqa: D401 - no bus
+            self.session = "fake"
+            self.error = None
+            self.sent: list[int] = []
+
+        def _call(self, method: str, params) -> None:
+            pass
+
+        def _notify_key(self, keysym: int, pressed: bool) -> None:
+            pass
+
+    # A capped phase on the "with" side is a failure, never a ~0 difference
+    # "within" (quick run #4 read L_syntax = N_visible = 250000 from pairs
+    # whose html and txt sides both hit the cap).
+    def capped(row: dict, names: tuple[str, ...]) -> dict:
+        row = dict(row, outcome="exceeded_cap")
+        row["phases"] = [dict(p, status="exceeded_cap", stall={"lateness_us": 20_000_000, "lower_bound_only": True}) if p["name"] in names else p for p in row["phases"]]
+        return row
+
+    capped_rows = [capped(r, ("scroll",)) if r["group"] == "paragraph" and r["length"] == 50_000 and r["attrs"].get("flavor") == "css" else r for r in rows]
+    derived_cap = derive(capped_rows, budgets, 1_000, True, obs)
+    expect(derived_cap["L_syntax"]["per_flavor"]["css"]["value"] == 10_000, f"a capped html phase fails L_syntax even when txt is capped too ({derived_cap['L_syntax']['per_flavor']['css']})")
+    expect(derived_cap["L_minimap"]["value"] == 10_000, f"a capped minimap-on phase fails L_minimap ({derived_cap['L_minimap']})")
+    expect(derived_cap["N_visible"]["value"] == 10_000, f"a capped plain scroll fails N_visible ({derived_cap['N_visible']})")
+
+    # The settle half of L_syntax and L_minimap reads open AND background:
+    # the context engine's 2000 ms cut-off fires after load readiness.
+    settle_rows = []
+    for r in rows:
+        r = dict(r)
+        if r["group"] == "paragraph" and r["length"] == 50_000 and r["attrs"].get("ext") == "html" and r["attrs"].get("flavor") == "css":
+            r["phases"] = r["phases"] + [{"name": "background", "kind": "settle", "status": "ok", "stall": {"lateness_us": 2_100_000}}]
+        elif r["group"] == "paragraph" and r["length"] == 50_000 and r["attrs"].get("minimap"):
+            r["phases"] = r["phases"] + [{"name": "background", "kind": "settle", "status": "ok", "stall": {"lateness_us": 300_000}}]
+        elif r["group"] == "paragraph":
+            r["phases"] = r["phases"] + [{"name": "background", "kind": "settle", "status": "ok", "stall": {"lateness_us": 3_000}}]
+        settle_rows.append(r)
+    derived_settle = derive(settle_rows, budgets, 1_000, True, obs)
+    expect(derived_settle["L_syntax"]["per_flavor"]["css"]["value"] == 10_000, f"a background-phase syntax stall fails L_syntax ({derived_settle['L_syntax']['per_flavor']['css']})")
+    expect(derived_settle["L_minimap"]["value"] == 10_000, f"a background-phase minimap stall fails L_minimap ({derived_settle['L_minimap']})")
+
+    # Input-to-frame attribution (quick run #4: 102 ms / 13 frames on the
+    # empty document's Ctrl+Home). The Control press is its own input
+    # record and must not stand in for Home; and a frame that starts after
+    # the NEXT input was handled, while the loop was free in between, is
+    # not the earlier input's frame: that input changed nothing visible.
+    fake_inj: list[dict] = []
+    fake_rd = FakeRd()
+    fake_rd.tap(KEY_HOME, fake_inj, control=True)
+    expect([e.get("measured", True) for e in fake_inj] == [False, True], f"a modifier press is recorded as an unmeasured injection ({fake_inj})")
+    home_inject = fake_inj[-1]["inject_us"]
+    attribution_log = [
+        json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000}),
+        json.dumps({"kind": "input", "t_us": home_inject - 300, "window": 1, "event": "key-press", "event_time_ms": 0}),
+        json.dumps({"kind": "input", "t_us": home_inject + 500, "window": 1, "event": "key-press", "event_time_ms": 0}),
+        json.dumps({"kind": "input", "t_us": home_inject + 100_500, "window": 1, "event": "key-press", "event_time_ms": 0}),
+        json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": home_inject + 101_000, "presentation_us": home_inject + 102_000, "refresh_interval_us": 8333, "source": "presentation"}),
+    ]
+    right = {"event": "key-press", "inject_us": home_inject + 100_000}
+    attributed = input_to_frame(parse_probe_log(attribution_log), fake_inj + [right], 8_333, True)
+    expect(len(attributed) == 2, f"unmeasured injections produce no result ({attributed})")
+    expect(attributed[0].get("status") == "no-visible-change", f"a frame after the next handled input is not this input's frame ({attributed[0]})")
+    expect(attributed[1].get("latency_us") == 2_000, f"the next input keeps its own frame ({attributed[1]})")
+    stalled_log = attribution_log + [json.dumps({"kind": "late", "t_us": home_inject + 100_400, "ready_us": home_inject + 2_000, "lateness_us": 98_400})]
+    stalled = input_to_frame(parse_probe_log(stalled_log), fake_inj + [right], 8_333, True)
+    expect(stalled[0].get("latency_us") == 102_000 - 0, f"while the loop was stalled the late frame still counts ({stalled[0]})")
+
+    # Headless Mutter presents a lone frame after an idle period only when
+    # the next commit arrives (verify-baseline: a frame started 1 ms after
+    # its key press was "presented" 52 ms later, right after the next
+    # frame started). A presentation more than two reference frames after
+    # the frame started, while the main loop was free, is the compositor's
+    # deferral: the frame counts as presented one reference frame after it
+    # started. A long app paint is a main-loop stall, so it still counts.
+    deferred_log = [
+        json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000}),
+        json.dumps({"kind": "input", "t_us": 10_000_600, "window": 1, "event": "key-press", "event_time_ms": 0}),
+        json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 1, "frame_time_us": 10_001_000, "presentation_us": 10_052_000, "refresh_interval_us": 8333, "source": "presentation"}),
+    ]
+    deferred = input_to_frame(parse_probe_log(deferred_log), [{"event": "key-press", "inject_us": 10_000_000}], 8_333, True)
+    expect(deferred[0].get("latency_us") == 9_333 and deferred[0].get("source") == "deferred-presentation", f"a compositor-deferred presentation counts one reference frame after the frame start ({deferred[0]})")
+    painted = input_to_frame(parse_probe_log(deferred_log + [json.dumps({"kind": "late", "t_us": 10_050_000, "ready_us": 10_002_000, "lateness_us": 48_000})]), [{"event": "key-press", "inject_us": 10_000_000}], 8_333, True)
+    expect(painted[0].get("latency_us") == 52_000, f"a presentation delayed by a stall keeps its real time ({painted[0]})")
+
+    # Frame gaps: only gaps between presented frames, and an idle gap (no
+    # frame requested, the loop free) is not a dropped frame.
+    gap_log = [json.dumps({"kind": "start", "t_us": 0, "version": 1, "tick_us": 2000, "late_threshold_us": 1000})]
+    t = 1_000_000
+    for i in range(40):
+        gap_log.append(json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": i, "frame_time_us": t, "presentation_us": t + 8_333, "refresh_interval_us": 8333, "source": "presentation"}))
+        t += 8_333
+    for i in range(40, 44):
+        t += 16_667 - 8_333
+        gap_log.append(json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": i, "frame_time_us": t, "presentation_us": None, "refresh_interval_us": None, "source": "frame-time"}))
+        t += 8_333
+    t += 8_333
+    gap_log.append(json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 50, "frame_time_us": t, "presentation_us": t + 8_333, "refresh_interval_us": 8333, "source": "presentation"}))
+    t += 200_000
+    gap_log.append(json.dumps({"kind": "frame", "t_us": 1, "window": 1, "frame_counter": 51, "frame_time_us": t, "presentation_us": t + 8_333, "refresh_interval_us": 8333, "source": "presentation"}))
+    gaps = frame_gap_p95(parse_probe_log(gap_log), 0, t + 100_000)
+    expect(gaps["p95_gap_us"] == 8_333, f"unpresented and idle gaps are not frame gaps ({gaps})")
+    expect(gaps.get("unpresented_frames") == 4 and gaps.get("idle_gaps") == 1, f"unpresented frames and idle gaps are counted ({gaps})")
+    stall_gap = frame_gap_p95(parse_probe_log(gap_log + [json.dumps({"kind": "late", "t_us": t - 1_000, "ready_us": t - 150_000, "lateness_us": 149_000})]), 0, t + 100_000)
+    expect(stall_gap["max_gap_us"] is not None and stall_gap["max_gap_us"] > 100_000, f"a gap with a stall inside it counts ({stall_gap})")
+
     # Data integrity, failing first: a driver-side append outside the reload
     # case must fail the check; a recorded rewrite must pass it.
     with tempfile.TemporaryDirectory(prefix="lt-resp-selftest-") as raw:
@@ -2335,16 +2751,6 @@ def self_test() -> int:
         ledger.record(fixture, hashlib.sha256(data).hexdigest())
         before = len(ledger.violations)
         expect(ledger.verify([fixture], "reload") and len(ledger.violations) == before, "a rewrite the driver recorded passes")
-
-    # Key guard: no Control+letter chord can be injected.
-    class FakeRd(RemoteDesktop):
-        def __init__(self) -> None:  # noqa: D401 - no bus
-            self.session = "fake"
-            self.error = None
-            self.sent: list[int] = []
-
-        def _call(self, method: str, params) -> None:
-            pass
 
     fake = FakeRd()
     try:
@@ -2385,6 +2791,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.add_argument("--binary", type=Path, required=True)
         p.add_argument("--tier", choices=("quick", "full"), default="quick")
         p.add_argument("--case", action="append")
+    merge = sub.add_parser("merge-runs")
+    merge.add_argument("--artifact-dir", type=Path, required=True)
+    merge.add_argument("--from", dest="sources", type=Path, action="append", required=True)
     report = sub.add_parser("report")
     report.add_argument("--artifact-dir", type=Path, required=True)
     report.add_argument("--axiom-observations", type=Path)
@@ -2407,6 +2816,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "atspi-listener":
         return atspi_listener_main(args.output)
+    if args.command == "merge-runs":
+        return merge_runs(args.artifact_dir.resolve(), args.sources)
     if args.command == "report":
         return write_report(args.artifact_dir.resolve(), args.axiom_observations)
     args.artifact_dir = args.artifact_dir.resolve()
