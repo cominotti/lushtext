@@ -73,8 +73,9 @@ println!("{}", observation.to_json_line());
 ## Adding an axiom
 
 The breakpoint work (`extend-closed-loop-geometry-verification`) added
-A14–A18 this way, A19–A20 followed, and A21 (the first window-lifecycle
-axiom) after them; every later axiom follows the same steps. Rewriting an
+A14–A18 this way, A19–A20 followed, then A21 (the first window-lifecycle
+axiom) and A22 (the first tree-model axiom, whose probe needs no window);
+every later axiom follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.
 

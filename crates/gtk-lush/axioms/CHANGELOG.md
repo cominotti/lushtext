@@ -55,3 +55,13 @@
   `windows()`, but disposes it only when the last strong reference drops,
   once, just before finalization), with a probe and sample. New fixtures:
   `fixtures::DisposeCountingWindow` and `fixtures::DisposalLog`.
+- A22 (`TreeListRow::set_expanded(true)` in a `GtkTreeListModel` with
+  `passthrough` and `autoexpand` off runs the create function before it
+  returns, so the expanded state, `children()`, and the flattened item count
+  are final on return; a `None` leaves the row collapsed and marks it empty;
+  later appends to the returned store appear at `parent + 1 + index`; and
+  `set_expanded(false)` removes the children synchronously; `is_expandable()`
+  on a row not yet probed also runs the create function and discards the
+  model), the first tree-model axiom, with a probe that needs no window and a
+  sample. New fixture: `fixtures::LazyTree`, with its values under
+  `fixtures::a22`.

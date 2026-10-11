@@ -314,6 +314,31 @@ const CATALOGUE: &[Axiom] = &[
         ],
         probe: Some(probes::probe_a21),
     },
+    Axiom {
+        id: AxiomId::new(22),
+        name: "a22_tree_row_expansion_is_synchronous",
+        statement: "in a GtkTreeListModel with passthrough and autoexpand off, \
+                    TreeListRow::set_expanded(true) on a collapsed row whose create function \
+                    has not run calls it once, before set_expanded returns: when it returns a \
+                    model the row is expanded on return, children() is that model, and the \
+                    flattened model already holds the children (items-changed fired inside the \
+                    call); when it returns None the row stays collapsed with no children, the \
+                    flattened model is unchanged, and the row is marked empty, so a later \
+                    set_expanded(true) calls nothing; items appended later to the returned \
+                    store appear at parent + 1 + index, and set_expanded(false) collapses the \
+                    row and removes its children before it returns. is_expandable() on such a \
+                    row also runs the create function, installs nothing, and discards the \
+                    model (a later expansion creates a fresh one); a None there marks the row \
+                    empty",
+        dependent_designs: &[
+            "the workspace path reveal expands each ancestor with set_expanded and reads \
+             is_expanded() straight back to tell a directory from a known-empty or \
+             non-directory row, finds scanned children by walking the flattened model, and \
+             collapses what it expanded on failure (ui/sidebar/reveal_execution.rs \
+             advance_expansion, finish_reveal)",
+        ],
+        probe: Some(probes::probe_a22),
+    },
 ];
 
 #[cfg(test)]
@@ -328,8 +353,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a21() {
-        for number in 1..=21 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a22() {
+        for number in 1..=22 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }
