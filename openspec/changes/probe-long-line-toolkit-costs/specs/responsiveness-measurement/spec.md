@@ -111,8 +111,8 @@ The lane SHALL run nightly and on demand. It SHALL NOT be a pull-request gate, a
 - **THEN** the affected cases record `unavailable` or `skipped` with the reason, and the other cases still run
 
 #### Scenario: The lane respects the core cap
-- **WHEN** more than 16 CPUs are online
-- **THEN** the session and app run under an affinity of at most 16 CPUs, and the environment report records it
+- **WHEN** the inherited CPU affinity mask allows more than 16 CPUs
+- **THEN** the session and app run under an affinity of at most 16 CPUs taken from that mask, never widened beyond it, and the environment report records it
 
 #### Scenario: A known toolkit defect is reproduced
 - **WHEN** the run reproduces a runtime warning already owned by a later change in the programme

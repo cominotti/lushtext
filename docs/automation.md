@@ -405,6 +405,42 @@ scripts/run-accessibility-smoke.sh --list-cases
 scripts/run-accessibility-smoke.sh --case open-popover-*
 ```
 
+For long-line responsiveness measurement, run:
+
+```sh
+make responsiveness-smoke                       # quick tier
+make responsiveness-smoke RESPONSIVENESS_TIER=full
+scripts/run-responsiveness-smoke.sh --list-cases
+scripts/run-responsiveness-smoke.sh --case paragraph/ --case 'session/*'
+```
+
+This lane builds a separate measurement binary with the smoke-only
+`responsiveness-probes` feature into `target/responsiveness/`
+(`make responsiveness-build`; `target/debug/lushtext` never carries it), then
+drives it under a private `dbus-run-session` and `mutter --headless
+--virtual-monitor 1280x800@120`, on at most 16 CPUs taken from the inherited
+affinity mask. It uses only existing automation surfaces: fixtures open as CLI
+file arguments, find goes through `win.set-search-query` and `win.next-match`,
+tab selection through `win.select-tab`, the graceful quit of the session case
+through `app.quit`, and every phase ends with a `WaitForReady` round trip
+(`file-open-complete`, `search-complete`, `session-restore-complete`, or
+`app-startup` as a main-loop ping). Scroll, Page Down, arrows, typing and
+primary clicks have no action, so the lane injects them through Mutter's
+`org.gnome.Mutter.RemoteDesktop` session on the private bus; when that API is
+unavailable those phases record `unavailable` and `L_protect` is not derived.
+Only printable letters, arrows, Page Down, and Control+Home/End are ever
+injected; a Control+letter chord is refused, so no save shortcut can reach the
+app, and every app holding typed edits is ended with `SIGKILL`. Fixtures are
+synthetic (`scripts/generate-long-line-fixtures.py`), generated into the run's
+temporary scope, and digest-checked before and after every case. Each case runs
+plain, with the AT bridge and a `pyatspi` text-event listener, with the probe
+input method (`GTK_IM_MODULE=lushtext-probe`), and with IBus when
+`ibus-daemon` is installed (otherwise `skipped`). The report
+(`report.json`, `report.md`) derives the long-line thresholds and the budget
+verdict; the lane is nightly and manual only
+(`.github/workflows/responsiveness-smoke.yml`) and is not part of
+`make end-user-smoke`.
+
 Scenarios that need interleaved action/readiness/action sequences, such as
 workspace Replace All preview followed by confirmation, use the capture helper's
 ordered `--step KIND:VALUE` flag instead of relying on grouped legacy action

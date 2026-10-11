@@ -27,6 +27,7 @@ EXPECTED_HELPER_FLAG_MARKER = (
     "run-crash-recovery-smoke --artifact-dir --binary --kill-point-binary "
     "run-accessibility-smoke --artifact-dir --binary --case --list-cases "
     "run-visual-smoke --artifact-dir --binary "
+    "run-responsiveness-smoke --artifact-dir --binary --tier --case --axiom-observations --list-cases --self-test generate-long-line-fixtures --kind --size --seed --scope --out --ext --delimiter --charset --flavor --count --self-test "
     "cargo-gtk-proof-run --artifact-dir --binary --scenario-dir --case-filter --oracle "
     "capture-lushtext-mutter "
     "--file --output --search --expected-search-matches --enable-minimap "

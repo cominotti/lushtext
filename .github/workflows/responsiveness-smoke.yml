@@ -1,0 +1,136 @@
+name: Responsiveness Smoke
+
+# Long-line responsiveness lane (make responsiveness-smoke), quick tier, one job
+# per case group. Nightly and on demand only: never a pull-request gate and
+# never a required check. CI runner numbers are trend evidence; the derived
+# thresholds and the budget verdict come from the reference machine's full
+# tier (docs/next/long-line-documents.md). It is separate from the weekly
+# end-user-smoke.yml so that workflow's pinned lane set is unchanged.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: responsiveness-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lane:
+    name: Responsiveness (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: baseline-reload-eviction
+            cases: "baseline/,reload/,eviction/"
+          - group: paragraph
+            cases: "paragraph/"
+          - group: dense-total-size
+            cases: "dense/,total-size/"
+          - group: delimiters-invisibles
+            cases: "delimiters/,invisibles/"
+          - group: session
+            cases: "session/"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            gettext \
+            git \
+            glib2 \
+            mutter \
+            dbus-daemon \
+            util-linux \
+            pkgconf-pkg-config \
+            python3 \
+            python3-gobject \
+            python3-pyatspi \
+            at-spi2-core
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44-responsiveness
+
+      - name: Run responsiveness lane (${{ matrix.group }}, quick tier)
+        env:
+          RESPONSIVENESS_CASES: ${{ matrix.cases }}
+        run: make responsiveness-smoke RESPONSIVENESS_TIER=quick SMOKE_ARTIFACT_DIR=build/smoke
+
+      - name: Upload responsiveness artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responsiveness-${{ matrix.group }}
+          path: build/smoke/responsiveness
+          if-no-files-found: warn
+          retention-days: 14
+
+  gtk-axioms-slow:
+    # Probes marked slow in the gtk-lush-axioms catalogue are skipped by the
+    # pull-request GTK Axioms job; this nightly job runs every probe, slow
+    # ones included, and keeps their observations.
+    name: GTK Axioms (slow probes included)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: registry.fedoraproject.org/fedora:44
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
+            gtk4-devel \
+            libadwaita-devel \
+            gtksourceview5-devel \
+            gcc \
+            git \
+            mutter \
+            dbus-daemon \
+            python3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fedora-44
+
+      - name: Run every GTK axiom probe, slow ones included
+        run: |
+          mkdir -p build/smoke/gtk-axioms-slow
+          make gtk-axioms GTK_LUSH_AXIOMS_INCLUDE_SLOW=1 2>&1 | tee build/smoke/gtk-axioms-slow/gtk-axioms.log
+          exit "${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Upload axiom observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gtk-axioms-slow
+          path: build/smoke/gtk-axioms-slow
+          if-no-files-found: warn
+          retention-days: 14

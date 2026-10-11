@@ -15,7 +15,7 @@ Every GtkTextView, GtkTextBuffer, Pango, input-method, accessibility and GtkSour
 | A30 | Input-method spot and surrounding-text work grows with the cursor's paragraph and is armed by caret moves, keys, clicks and scroll |
 | A31 | Validation runs in 2000 px batches |
 | A32 | `gtk_source_map_set_view(NULL)` with a pending update tick causes a CRITICAL (a defect axiom) |
-| A33 | `GtkSourceSearchContext`: the non-regex path sees hidden text, and the regex path sees visible text only |
+| A33 | `GtkSourceSearchContext` and invisible text: with `SearchSettings:visible-only` (default true) both paths skip hidden text; with it off, the non-regex path sees hidden text and the regex path still sees visible text only |
 | A34 | `move-cursor` with an invisible cursor moves only the viewport, unless `gtk-keynav-use-caret` is set |
 | A35 | AT-SPI text contents and offsets over invisible text, and `TextChanged` payloads on insert |
 | A36 | The btree copies both strings when it merges adjacent character segments |
