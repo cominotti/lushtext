@@ -99,6 +99,7 @@ None is allowlisted; each is reported by the lane as a finding with its owner.
 | `GtkSourceMap` detach with a pending update tick emits `Gtk-CRITICAL` and `GLib-GObject-CRITICAL` (axiom A32) | C1 |
 | The install slicer splits only on `\n`, so CR-only and U+2029 documents install in one GTK turn | C1 |
 | Window construction stalls the main loop for about 190 ms on every open | C4 |
+| `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation` (a pair per occurrence, so most likely a scrollbar's trough and slider) during the jumps of Ctrl+End, a mid-document click and find, in documents with large scroll ranges: 1–5 MB short-line HTML, 2,000-character dense lines (wrap off) and the CR/CRLF delimiter sets. Triage (lane experiment `gizmo1`): never seen on the baseline (empty and 400-byte documents) nor on 20 kB, 100 kB or 300 kB short-line HTML (plain and AT variants), so it is a document-scale defect, not an ordinary-document one. Quick run #4 first reported it under minimap-on cases; every reproduction has the minimap **off** | C1 |
 
 
 
@@ -124,6 +125,54 @@ None is allowlisted; each is reported by the lane as a finding with its owner.
   its `get_preedit_string` trampoline writes NULL out-parameters (GtkText passes
   NULL while realizing, which segfaulted), and `set_surrounding_with_selection`
   is not overridable, so GtkIMContext's own implementation swallowed the answer.
+
+## Lane measurement corrections (before the reference run)
+
+Quick run #4 (`rr-20261011T223041Z-toolbx-2000205`, non-reference: it ran
+beside `make test`) exposed four derivation and measurement flaws. Each is now
+fixed with a failing-first case in the driver's self-test:
+
+- **Capped pairs read as passing.** When both sides of a difference (html and
+  txt, minimap on and off) hit the 20 s interaction cap, the difference was about
+  zero and read as "within", which produced L_syntax = N_visible = 250000. A
+  capped phase on the measured side, or a phase never reached because the case
+  hung, is now a failure.
+- **The settle half ignored the background phase.** The context engine's
+  2000 ms cut-off fires after load readiness, in the background phase; the settle
+  half of L_syntax and L_minimap now reads `open` and `background`.
+- **Input-to-frame attribution (the 102 ms / 13 frames on the empty
+  document).** Two artifacts: the injected `Control_L` press of Ctrl+Home is its
+  own input record and was matched instead of Home, and Ctrl+Home on an empty
+  document changes nothing, so the next frame (caused by the following arrow key
+  100 ms later) was charged to it. Modifier presses are now recorded as
+  unmeasured injections, and a frame that starts after the next input was handled,
+  while the main loop was free in between, is reported as `no-visible-change`.
+  Two compositor effects of headless Mutter were also removed from the figure:
+  - with the caret blinking, the blink's frames get no presentation feedback,
+    so GTK paces them on its 60 Hz fallback timer and every input waits up to
+    16.7 ms for the next tick (Page Down median 18.6 ms with blink, 10.8 ms
+    without; lane experiments `exp-blink0`/`exp-blink1`). The lane now runs
+    with `gtk-cursor-blink=false`;
+  - after an idle period the compositor presents a lone frame only when the
+    next commit arrives (a frame started 1 ms after its key press was
+    "presented" 52 ms later). A presentation more than two reference frames
+    after its frame started while the main loop was free now counts as one
+    reference frame after the start; a presentation delayed by a stall (a long
+    paint) keeps its real time.
+
+  With these corrections the baseline input-to-frame is 9–11 ms for keys and
+  clicks and at most ~17 ms (the double-buffered 120 Hz floor, an input landing
+  just after a frame start waits one frame for the next and one to present)
+  except the first wheel step on an unscrollable document (21–29 ms, the
+  overlay-scrollbar indicator's first frame).
+- **The ~17 ms frame-gap p95 under cairo at 120 Hz is a lane limitation, not an
+  app verdict.** Across presented frames the gaps are 8.3 ms (p95 8.9 ms over
+  434 gaps); every gap above 12 ms (193 of 240) touched a frame the compositor
+  never presented, the caret-blink frames above. Frame gaps are now read between
+  presented frames only, and a gap over four reference frames while the main
+  loop was free is idle time, not a dropped frame. The scroll frame-gap limit
+  remains informational in the budget verdict (D7 confirms 8/16 ms and 2
+  frames).
 
 ## Carried-forward decisions
 

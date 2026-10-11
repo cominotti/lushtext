@@ -56,20 +56,20 @@
 
 ## 5. Synthetic fixture generator
 
-- [ ] 5.1 Create `scripts/generate-long-line-fixtures.py`. Given a kind, a size and a seed, it produces deterministic output for every kind: giant paragraph (ASCII, multibyte), minified-markup, dense near-threshold (wrap-agnostic), short-line HTML by total size, CR-only, CRLF and U+2029 variants, session set, and eviction set sized from the `model/editor_memory.rs` budget. It writes only into a given directory and prints the seed, size and SHA-256 manifest.
-- [ ] 5.2 Add a self-test: same inputs give the same digest, each kind's structure is right (longest paragraph, delimiter set, total size), and it refuses an output path outside the given scope. Wire the self-test into `make check-policy` if it is cheap; otherwise into the lane's preflight.
+- [x] 5.1 Create `scripts/generate-long-line-fixtures.py`. Given a kind, a size and a seed, it produces deterministic output for every kind: giant paragraph (ASCII, multibyte), minified-markup, dense near-threshold (wrap-agnostic), short-line HTML by total size, CR-only, CRLF and U+2029 variants, session set, and eviction set sized from the `model/editor_memory.rs` budget. It writes only into a given directory and prints the seed, size and SHA-256 manifest.
+- [x] 5.2 Add a self-test: same inputs give the same digest, each kind's structure is right (longest paragraph, delimiter set, total size), and it refuses an output path outside the given scope. Wire the self-test into `make check-policy` if it is cheap; otherwise into the lane's preflight.
 
 ## 6. The `make responsiveness-smoke` lane
 
-- [ ] 6.0 Spike first: under a private `dbus-run-session -- mutter --headless --virtual-monitor`, open an `org.gnome.Mutter.RemoteDesktop` session and inject one keysym, one pointer axis and one button into a test window, and check the virtual monitor's refresh rate and whether `@120` is accepted (open question 2). Record the result in the programme record. If RemoteDesktop is unusable, the input cases stay `unavailable` and L_protect is not derivable until an alternative is chosen by the maintainer.
-- [ ] 6.1 Create `scripts/run-responsiveness-smoke.sh` on `scripts/smoke-common.sh` and `scripts/with-temp-scope.sh`:
+- [x] 6.0 Spike first: under a private `dbus-run-session -- mutter --headless --virtual-monitor`, open an `org.gnome.Mutter.RemoteDesktop` session and inject one keysym, one pointer axis and one button into a test window, and check the virtual monitor's refresh rate and whether `@120` is accepted (open question 2). Record the result in the programme record. If RemoteDesktop is unusable, the input cases stay `unavailable` and L_protect is not derivable until an alternative is chosen by the maintainer.
+- [x] 6.1 Create `scripts/run-responsiveness-smoke.sh` on `scripts/smoke-common.sh` and `scripts/with-temp-scope.sh`:
   - a private `dbus-run-session -- mutter --headless --virtual-monitor`, with `GSK_RENDERER=cairo` by default;
   - an affinity of at most 16 CPUs taken from the inherited mask (`taskset -c` over the first 16 CPUs the process may already use, never widening it) when more than 16 are available;
   - a fresh isolated XDG state per case;
   - an explicit `GTK_IM_MODULE` for every variant (never GTK's Wayland text-input default, S7B-6);
   - an environment report (toolkit versions, kernel, CPU model, affinity, renderer);
   - refusal to touch a live session.
-- [ ] 6.2 Create `scripts/responsiveness-smoke-driver.py`:
+- [x] 6.2 Create `scripts/responsiveness-smoke-driver.py`:
   - the case table from design D7, with `RESPONSIVENESS_TIER=quick|full` and the `RESPONSIVENESS_CASES` filter;
   - launching the measurement binary with fixture arguments;
   - readiness waits and actions through `scripts/lushtext-automation.py`;
@@ -78,13 +78,13 @@
   - `CLOCK_MONOTONIC` phase markers;
   - per-interaction caps with `exceeded_cap`, kill and relaunch;
   - bounded bisection of at most 4 steps per series.
-- [ ] 6.3 Add the variants: AT bridge plus a `pyatspi` listener (reusing the accessibility-smoke bus setup), the probe IM, IBus when `ibus-daemon` is present (otherwise `skipped`), and an optional `RESPONSIVENESS_RENDERER=ngl`.
-- [ ] 6.4 Add the data-integrity check: SHA-256 of every fixture before launch and after each case, compared with the driver's own last write for the reload case. A mismatch fails the lane. The driver sends no save chord and activates no save action, ends any app holding typed edits with `SIGKILL`, and the `session` group quits gracefully only before typing. Prove the check failing-first with a self-test in which the driver itself appends to a fixture outside the reload case.
-- [ ] 6.5 Add the storage evidence: 15 s after the last case, run `btrfs-stall-report --json` over the run window, and `--no-below` per case window. Mark storage-contaminated cases. Record `unavailable` when the tool is missing, and never install it.
-- [ ] 6.6 Add the warning scan through `smoke_warning_classifiers.py`. Known defects (the minimap detach CRITICAL and any other reproduced one) are reported as findings with their owning change, with no allowlist entry.
-- [ ] 6.7 Write the report: `report.json` and `report.md`, with per-case worst-stall bounds `[L − ε, L + T]`, frame-gap p95, input-to-frame frames and µs, IM and AT counts, the noise re-run and its flag, and the D7 derivation of L_syntax, L_minimap, L_invisibles, L_search_highlight, N_visible, L_protect, V_batch, R_batch, N_dense, the N_inspect bound, S_syntax and the budget verdict, under the names C1 and C2 declare. Each value names its rule, cases, variants and repetitions, or is reported as not derived with the reason.
-- [ ] 6.8 Add the `responsiveness-smoke` Makefile target (help text, `.PHONY`), outside `end-user-smoke`. Document every helper flag in the `automation-helper-flags` comment and the helper table of `docs/automation-reference.md`, and the lane in `docs/automation.md`. Run `make check-automation-docs`.
-- [ ] 6.9 Add `.github/workflows/responsiveness-smoke.yml`: nightly cron plus `workflow_dispatch`, a matrix by case group in the `quick` tier, `timeout-minutes: 30`, and artifact upload with `if: always()`. It is not a required check. Add one job that runs `make gtk-axioms` with `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`. Run `make check-workflow-timeouts`, and confirm that `make check-end-user-smoke-workflow` is unaffected.
+- [x] 6.3 Add the variants: AT bridge plus a `pyatspi` listener (reusing the accessibility-smoke bus setup), the probe IM, IBus when `ibus-daemon` is present (otherwise `skipped`), and an optional `RESPONSIVENESS_RENDERER=ngl`.
+- [x] 6.4 Add the data-integrity check: SHA-256 of every fixture before launch and after each case, compared with the driver's own last write for the reload case. A mismatch fails the lane. The driver sends no save chord and activates no save action, ends any app holding typed edits with `SIGKILL`, and the `session` group quits gracefully only before typing. Prove the check failing-first with a self-test in which the driver itself appends to a fixture outside the reload case.
+- [x] 6.5 Add the storage evidence: 15 s after the last case, run `btrfs-stall-report --json` over the run window, and `--no-below` per case window. Mark storage-contaminated cases. Record `unavailable` when the tool is missing, and never install it.
+- [x] 6.6 Add the warning scan through `smoke_warning_classifiers.py`. Known defects (the minimap detach CRITICAL and any other reproduced one) are reported as findings with their owning change, with no allowlist entry.
+- [x] 6.7 Write the report: `report.json` and `report.md`, with per-case worst-stall bounds `[L − ε, L + T]`, frame-gap p95, input-to-frame frames and µs, IM and AT counts, the noise re-run and its flag, and the D7 derivation of L_syntax, L_minimap, L_invisibles, L_search_highlight, N_visible, L_protect, V_batch, R_batch, N_dense, the N_inspect bound, S_syntax and the budget verdict, under the names C1 and C2 declare. Each value names its rule, cases, variants and repetitions, or is reported as not derived with the reason.
+- [x] 6.8 Add the `responsiveness-smoke` Makefile target (help text, `.PHONY`), outside `end-user-smoke`. Document every helper flag in the `automation-helper-flags` comment and the helper table of `docs/automation-reference.md`, and the lane in `docs/automation.md`. Run `make check-automation-docs`.
+- [x] 6.9 Add `.github/workflows/responsiveness-smoke.yml`: nightly cron plus `workflow_dispatch`, a matrix by case group in the `quick` tier, `timeout-minutes: 30`, and artifact upload with `if: always()`. It is not a required check. Add one job that runs `make gtk-axioms` with `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`. Run `make check-workflow-timeouts`, and confirm that `make check-end-user-smoke-workflow` is unaffected.
 
 ## 7. Reference run and recorded values
 
@@ -94,7 +94,7 @@
 
 ## 8. Documentation
 
-- [ ] 8.1 Create `docs/next/long-line-documents.md`, the C0–C5 programme record, containing:
+- [x] 8.1 Create `docs/next/long-line-documents.md`, the C0–C5 programme record, containing:
   - the sequence and its gates;
   - the 2026-10-11 decisions;
   - the measured values;
@@ -113,6 +113,6 @@
 ## 9. Verification
 
 - [ ] 9.1 Run `make check` (fmt, all-feature clippy, policy audits, including `check-gtk-axioms`, `check-kani-shards`, `check-filesystem-boundary`, `check-automation-docs` and `check-workflow-boundaries`).
-- [ ] 9.2 Run `make gtk-axioms`, `make test-unit`, the new widget test's shard (`make test-widget-shard WIDGET_SHARD=<shard>`), and the Kani shard. Keep the runs within 16 cores and headless.
+- [x] 9.2 Run `make gtk-axioms`, `make test-unit`, the new widget test's shard (`make test-widget-shard WIDGET_SHARD=<shard>`), and the Kani shard. Keep the runs within 16 cores and headless.
 - [ ] 9.3 Run the lane in the `quick` tier once more after the docs land. Confirm that the artifacts are complete, no fixture digest changed, and the temp scope is clean.
 - [x] 9.4 Run `openspec validate probe-long-line-toolkit-costs --strict`.

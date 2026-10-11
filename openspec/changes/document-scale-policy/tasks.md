@@ -110,6 +110,7 @@
   - a direct (below the synchronous threshold) load of a giant-paragraph document never attaches a map.
 
   The `native-minimap-*-anchors` visual-proof policies must stay green.
+- [ ] 8.4a Fix the pre-existing `Gtk-WARNING: Trying to snapshot GtkGizmo … without a current allocation` that C0's lane reproduced (programme record, "Pre-existing blockers reproduced by C0"): it fires in pairs during the large scroll jumps of Ctrl+End, a mid-document click and find, on 1–5 MB short-line HTML, 2,000-character dense lines (wrap off) and the CR/CRLF delimiter sets, with the minimap off, and never on 20–300 kB short-line documents. First identify the gizmo (run one reproducing lane case under `G_DEBUG=fatal-warnings` with a backtrace) and the code path that invalidates its allocation; then add a failing-first widget test that reproduces the warning on the smallest fixture that shows it, fix the root cause, and confirm the lane's `gizmo-snapshot-without-allocation` finding disappears from the `total-size`, `dense` and `delimiters` groups.
 - [ ] 8.5 File the upstream GtkSourceView report for the `update_id` that survives `set_view(NULL)`, and record its link in `docs/next/long-line-documents.md`.
 
 ## 9. Reduced-features notice
