@@ -2,6 +2,8 @@
 
 > Planned-work record. This is the revised, adversarially reviewed explore-mode proposal (2026-10-11) from which the changes `probe-long-line-toolkit-costs` (C0), `document-scale-policy` (C1), `long-line-protected-view` (C2), `sliced-protected-install` (C3), `bound-window-construction-dispatch` (C4) and `explore-editing-long-paragraphs` (C5) were created. C0 owns keeping this record current. Measurements cited here were taken during exploration against a GTK 4.22.5 source checkout and a private headless session; the reproducer file itself is not in the repository.
 
+> **Current state lives in [`long-line-documents.md`](long-line-documents.md)**, the programme record C0 created: the measured thresholds and budget verdict, the axiom ids (A23–A36) each change cites, two probe corrections to claims below (A29's cut-off comes at tens of thousands of characters, not near two million; GtkSourceView's search skips invisible text by default, A33), and the blockers each later change owns. This file stays as the origin proposal.
+
 > This proposal came out of explore mode. No repository file was edited. Claims marked **(verified)** were checked again in this revision against the repository or the GTK 4.22.5 sources under `target/huge-file-explore/src/`. Claims marked **(reviewer-cited)** come from an adversarial review with a citation that I did not re-open. Claims marked **(assumption)** are unverified and need an axiom probe. Scratch evidence is under `target/huge-file-explore/` (`load/`, `scroll/`, `probe/`, `fz/`, `review/`).
 
 ## Summary of the revision

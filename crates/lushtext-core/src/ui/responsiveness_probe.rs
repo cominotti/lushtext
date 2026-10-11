@@ -15,7 +15,7 @@
 //! in the binary. With the feature, [`install`] does nothing unless
 //! `LUSHTEXT_RESPONSIVENESS_LOG` names a file; then it installs:
 //!
-//! 1. **The lateness watchdog** ([`LatenessWatchdog`]): a custom `GSource` at
+//! 1. **The lateness watchdog** (`LatenessWatchdog`): a custom `GSource` at
 //!    `G_PRIORITY_HIGH` whose ready time is set in microseconds
 //!    (`g_source_set_ready_time`) every tick `T`
 //!    (`LUSHTEXT_RESPONSIVENESS_TICK_US`, default 2,000 µs). Each dispatch

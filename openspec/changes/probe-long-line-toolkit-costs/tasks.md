@@ -51,8 +51,8 @@
 - [x] 4.3 Implement the watchdog: a custom `G_PRIORITY_HIGH` `GSource` with microsecond ready times (`g_source_set_ready_time`), tick `LUSHTEXT_RESPONSIVENESS_TICK_US` (default 2000), lateness against the ready time, and re-arming from the dispatch's own monotonic time. Implement frame timing (`after-paint`, completed `GdkFrameTimings` presentation and refresh interval) for every toplevel, including windows created later. Implement capture-phase input stamps for key, scroll and button events that record both the handler time and `gdk_event_get_time`.
 - [x] 4.4 Implement the probe IM: a `GtkIMContext` subclass registered as `lushtext-probe` when `LUSHTEXT_PROBE_IM=1`. It emits `retrieve-surrounding` on focus-in, `set_cursor_location`, `filter_keypress` and `reset`, and records counts and lengths, never text.
 - [x] 4.5 Implement bounded evidence: a fixed ring, per-second histograms and top-K worst stalls, sent over a bounded channel to one writer thread that appends JSONL to `LUSHTEXT_RESPONSIVENESS_LOG` through `services::filesystem::write`. Add a smoke-only append helper there if none fits. Dropped records are counted. Run `make check-filesystem-boundary`.
-- [ ] 4.6 Compile the watchdog source, evidence buffers and encoder under `cfg(any(test, feature = "responsiveness-probes"))`, keeping only `install()` and its GTK hooks feature-only, so `make test-unit` covers them. Add unit tests for the record encoder and the drop counter, and a watchdog test on a private `glib::MainContext` (no display) whose blocking source of known length `S` is recorded within `[S − T, S + ε]`; write it before the watchdog and watch it fail. Build the default-feature binary and confirm that neither the probe's environment-variable names nor `lushtext-probe` appear in it (`strings`), and that CI's `cargo check -p lushtext --bins --locked` still passes. Add a lane preflight that launches the measurement binary once and checks that the log receives watchdog, frame and input records.
-- [ ] 4.7 Add a Makefile target that builds the measurement binary into `target/responsiveness/`, so `target/debug/lushtext` never carries the feature.
+- [x] 4.6 Compile the watchdog source, evidence buffers and encoder under `cfg(any(test, feature = "responsiveness-probes"))`, keeping only `install()` and its GTK hooks feature-only, so `make test-unit` covers them. Add unit tests for the record encoder and the drop counter, and a watchdog test on a private `glib::MainContext` (no display) whose blocking source of known length `S` is recorded within `[S − T, S + ε]`; write it before the watchdog and watch it fail. Build the default-feature binary and confirm that neither the probe's environment-variable names nor `lushtext-probe` appear in it (`strings`), and that CI's `cargo check -p lushtext --bins --locked` still passes. Add a lane preflight that launches the measurement binary once and checks that the log receives watchdog, frame and input records.
+- [x] 4.7 Add a Makefile target that builds the measurement binary into `target/responsiveness/`, so `target/debug/lushtext` never carries the feature.
 
 ## 5. Synthetic fixture generator
 
@@ -102,17 +102,17 @@
   - the reproduced pre-existing blockers with their owning changes (the minimap CRITICAL and the `\n`-only slicer for C1, the window-construction stall for C4);
   - the carried-forward decisions (L_protect as a GSettings key, "Copy whole line", upstream reports, validation in the user's session).
 - [ ] 8.2 Update `docs/next/formal-verification.md` with the ledger growth (A23–A36, the slow and unpinned rows) and the new Kani harness with its shard and measured time.
-- [ ] 8.3 Update the remaining documentation:
+- [x] 8.3 Update the remaining documentation:
   - `docs/end-user-coverage.md`: a lane-ownership row, the scheduled expectations, and the note that the lane is not in `end-user-smoke`;
   - `.agents/rules/build.md`: the lane, the measurement feature, and its separate target directory;
   - `AGENTS.md`: the Build Commands, Testing, module layout (`model/responsiveness_budget.rs`, `ui/responsiveness_probe.rs`), the Rules Index entry for `build.md`, and Recent Changes;
   - `README.md`: the test lanes and commands;
   - `sonar-project.properties`: review `sonar.sources` and exclusions for the new scripts and workflow, per the SonarQube scope rule in `build.md`.
-- [ ] 8.4 Note in `docs/accessibility.md`'s smoke-coverage section that the lane runs with the AT bridge and a listener (no new anchors).
+- [x] 8.4 Note in `docs/accessibility.md`'s smoke-coverage section that the lane runs with the AT bridge and a listener (no new anchors).
 
 ## 9. Verification
 
 - [ ] 9.1 Run `make check` (fmt, all-feature clippy, policy audits, including `check-gtk-axioms`, `check-kani-shards`, `check-filesystem-boundary`, `check-automation-docs` and `check-workflow-boundaries`).
 - [ ] 9.2 Run `make gtk-axioms`, `make test-unit`, the new widget test's shard (`make test-widget-shard WIDGET_SHARD=<shard>`), and the Kani shard. Keep the runs within 16 cores and headless.
 - [ ] 9.3 Run the lane in the `quick` tier once more after the docs land. Confirm that the artifacts are complete, no fixture digest changed, and the temp scope is clean.
-- [ ] 9.4 Run `openspec validate probe-long-line-toolkit-costs --strict`.
+- [x] 9.4 Run `openspec validate probe-long-line-toolkit-costs --strict`.
