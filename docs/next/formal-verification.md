@@ -256,6 +256,41 @@ but does not dispose a window another strong reference keeps alive, so a
 window leaves the process draft journal on `window-removed`, and dispose's
 leave is an idempotent second path.
 
+`probe-long-line-toolkit-costs` (2026-10-11, C0 of the long-line programme,
+`docs/next/long-line-documents.md`) grew the ledger from A22 to **A36**, its first
+text-layout, text-buffer, input-method, accessibility and GtkSourceView entries
+(GTK 4.22.5, Adw 1.9.3, Pango 1.57.1, GtkSourceView 5.20.0). `gtk-lush-axioms`
+gained `pango` and `sourceview5`, text fixtures (paragraph builder, text and
+source views, a log-capture guard that keeps deliberately provoked CRITICALs out
+of the lane, a probe `GtkIMContext` selected through the view's `im-module`),
+twelve probes and samples (A23–A34), and a `slow` catalogue marker with the
+`GTK_LUSH_AXIOMS_INCLUDE_SLOW` switch (the PR job sets it to 0, local
+`make gtk-axioms` and the nightly responsiveness workflow to 1). No probe is
+slow today: A29 reaches the context engine's 2000 ms cut-off at 32,768
+characters of synthetic minified markup, so it takes about 8 s, and
+`make gtk-axioms` went from 62 s to about 92 s. Verdicts stay structural; every
+duration is a recorded value. Two rows are unpinned by design: A35 (AT-SPI
+offsets over invisible text; GtkTextView's accessible text is reachable only
+through an AT-SPI bus, which the runner does not start) is evidenced by the
+responsiveness lane's AT variant, and A36 (btree segment merge) is cost-only,
+evidenced by the lane's `install` group. Two probes corrected the design they
+came from: **A33** — GtkSourceView's `SearchSettings:visible-only` defaults to
+true, so both search paths skip invisible text by default; only with it off does
+the non-regex path see hidden text while the regex path still does not — and
+**A29**, whose cut-off comes at tens of thousands of characters of dense markup,
+not near two million. A32 is the first **defect axiom**: "holds" means the
+`GtkSourceMap` detach CRITICAL is still present, and a probe that turns violated
+after a toolkit update is reviewed as an axiom change.
+
+The same change added the first Kani harnesses over a **budget** rather than a
+geometry or journal policy: `model/responsiveness_budget/kani_proofs.rs` proves
+the stall classification against the watchdog's lower and upper bounds over
+every `u64` quadruple, its monotonicity in the lateness, histogram bucket range
+and monotonicity, and nearest-rank percentile bounds and monotonicity over
+slices of up to four samples (five harnesses, about 24 s of local CBMC, all
+covers satisfied). They joined the scheduled `core-second-writer` shard, and the
+module has a proof-strength oracle entry.
+
 ### Phase 2 — Kani lane
 
 - Add a `make kani` target, and an optional CI job using

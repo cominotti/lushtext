@@ -8,8 +8,10 @@
 # the reverse), a probed entry without its sample or whose probe is named for
 # another id, a sample naming an unknown axiom, a ledger row that claims a
 # probe the catalogue does not have (or omits one it has), a row missing its
-# "Verified against" or "Sample" cell, or a "Pinned by" cell that still names
-# the retired LushText-hosted probes (`gtk_axioms::`).
+# "Verified against" or "Sample" cell, a "Pinned by" cell that still names
+# the retired LushText-hosted probes (`gtk_axioms::`), or a slow catalogue
+# entry whose row does not say where it runs (`**slow**` and the nightly
+# workflow), or a row marked slow for an entry that is not.
 
 from __future__ import annotations
 
@@ -29,6 +31,8 @@ REQUIRED_COLUMNS = ("Id", "Axiom", "Dependent designs", "Pinned by", "Verified a
 RETIRED_PROBE_PREFIX = "gtk_axioms::"
 PROBE_MARKER = "**probe**"
 NO_SAMPLE_MARKER = "—"
+SLOW_MARKER = "**slow**"
+SLOW_RUNS_WHERE = "nightly"
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class CatalogueEntry:
     number: int
     name: str
     probe: str | None
+    slow: bool = False
 
 
 def parse_ledger(text: str, errors: list[str]) -> dict[int, LedgerRow]:
@@ -91,6 +96,7 @@ def parse_catalogue(text: str, errors: list[str]) -> dict[int, CatalogueEntry]:
         id_match = re.search(r"id:\s*AxiomId::new\((\d+)\)", block)
         name_match = re.search(r'name:\s*"([a-z0-9_]+)"', block)
         probe_match = re.search(r"probe:\s*(None|Some\(\s*probes::(probe_a\d+)\s*\))", block)
+        slow_match = re.search(r"slow:\s*(true|false)", block)
         if not (id_match and name_match and probe_match):
             continue
         number = int(id_match.group(1))
@@ -100,6 +106,7 @@ def parse_catalogue(text: str, errors: list[str]) -> dict[int, CatalogueEntry]:
             number=number,
             name=name_match.group(1),
             probe=probe_match.group(2),
+            slow=bool(slow_match and slow_match.group(1) == "true"),
         )
     if not entries:
         errors.append("no catalogue entries found in crates/gtk-lush/axioms/src/catalogue.rs")
@@ -145,6 +152,13 @@ def check(ledger_text: str, catalogue_text: str, example_stems: set[str]) -> lis
             errors.append(f"A{number}: catalogue has a probe but the ledger row does not say {PROBE_MARKER}")
         if RETIRED_PROBE_PREFIX in row.pinned_by:
             errors.append(f"A{number}: Pinned by still names the retired `{RETIRED_PROBE_PREFIX}` probes")
+        marked_slow = SLOW_MARKER in row.pinned_by
+        if entry.slow and not (marked_slow and SLOW_RUNS_WHERE in row.pinned_by):
+            errors.append(
+                f"A{number}: a slow entry's Pinned by must say {SLOW_MARKER} and where it runs ({SLOW_RUNS_WHERE})"
+            )
+        if marked_slow and not entry.slow:
+            errors.append(f"A{number}: ledger row says {SLOW_MARKER} but the catalogue entry is not slow")
         if not row.verified_against:
             errors.append(f"A{number}: Verified against is empty")
         if entry.probe is not None:
@@ -202,11 +216,21 @@ def self_test() -> int:
         ("an empty Verified against cell", {"ledger": GOOD_LEDGER.replace("GTK 4.22.5 / Adw 1.9.3 (host) | `examples", " | `examples")}, "A1: Verified against is empty"),
         ("a probed row whose Sample is wrong", {"ledger": GOOD_LEDGER.replace("`examples/a01_one.rs`", "`examples/a01_other.rs`")}, "A1: Sample must name examples/a01_one.rs"),
         ("an unprobed row without a reason", {"ledger": GOOD_LEDGER.replace("— only approximately true", "—")}, "A2: an unprobed row's Sample must be"),
+        ("a slow entry whose row does not say where it runs", {"catalogue": GOOD_CATALOGUE.replace('name: "a01_one",', 'name: "a01_one",\n        slow: true,')}, "A1: a slow entry's Pinned by must say **slow**"),
+        ("a slow row for an entry that is not slow", {"ledger": GOOD_LEDGER.replace("**probe**: `gtk_lush_axioms::probe_a01`", "**probe**: `gtk_lush_axioms::probe_a01`, **slow**: nightly only")}, "A1: ledger row says **slow** but the catalogue entry is not slow"),
     ]
+    slow_ledger = GOOD_LEDGER.replace(
+        "**probe**: `gtk_lush_axioms::probe_a01`",
+        "**probe**: `gtk_lush_axioms::probe_a01`, **slow**: runs in local `make gtk-axioms` and the nightly workflow",
+    )
+    slow_catalogue = GOOD_CATALOGUE.replace('name: "a01_one",', 'name: "a01_one",\n        slow: true,')
     baseline = check(GOOD_LEDGER, GOOD_CATALOGUE, GOOD_EXAMPLES)
     failures: list[str] = []
     if baseline:
         failures.append(f"the good fixture must pass, saw: {baseline}")
+    slow_baseline = check(slow_ledger, slow_catalogue, GOOD_EXAMPLES)
+    if slow_baseline:
+        failures.append(f"a slow entry whose row says where it runs must pass, saw: {slow_baseline}")
     for label, overrides, expected in cases:
         errors = check(
             str(overrides.get("ledger", GOOD_LEDGER)),

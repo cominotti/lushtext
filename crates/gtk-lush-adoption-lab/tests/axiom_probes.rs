@@ -7,7 +7,9 @@
 //! `gtk-lush-proof-harness` contract), so a probe inherits the harness's
 //! isolation and loud `FLAKY` reporting. Each test prints its observation as
 //! one JSON line and fails unless the axiom holds. Adding an axiom to the
-//! catalogue adds its test here with no edit.
+//! catalogue adds its test here with no edit. A probe marked slow is
+//! registered only when `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`; otherwise the
+//! runner prints `skipped (slow): <id>` for it.
 //!
 //! This binary lives in the adoption lab rather than in the axioms crate
 //! because GTK Lush family crates are strict leaves: none may depend on the
@@ -16,7 +18,7 @@
 
 use std::process::ExitCode;
 
-use gtk_lush_axioms::{Verdict, catalogue, init_toolkit};
+use gtk_lush_axioms::{Verdict, catalogue, include_slow_probes, init_toolkit, slow_skip_line};
 use gtk_lush_proof_harness::{
     HarnessConfig, RegisteredTest, recommended_pre_gtk_environment, run_registered_tests,
 };
@@ -71,9 +73,24 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = HarnessConfig::new(CHILD_TEST_ENV, HEADLESS_RUNNER_ENV, HEADLESS_MONITOR_ENV)
         .with_runner_label("GTK axiom probes");
+    let include_slow = include_slow_probes();
+    // Report each skip once: from the supervisor inside the headless session,
+    // not from the outer launcher, a probe child, or a `--list` run.
+    let reports_skips = std::env::var_os(HEADLESS_RUNNER_ENV).is_some()
+        && std::env::var_os(CHILD_TEST_ENV).is_none()
+        && !args.iter().any(|argument| argument == "--list");
     let tests: Vec<RegisteredTest> = catalogue()
         .iter()
         .filter(|axiom| axiom.probe.is_some())
+        .filter(|axiom| {
+            if axiom.slow && !include_slow {
+                if reports_skips {
+                    println!("{}", slow_skip_line(axiom));
+                }
+                return false;
+            }
+            true
+        })
         .map(|axiom| RegisteredTest::new(axiom.name, run_named_probe))
         .collect();
     run_registered_tests(&tests, &config, &args)

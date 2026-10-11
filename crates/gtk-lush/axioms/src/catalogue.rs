@@ -25,9 +25,33 @@ pub struct Axiom {
     pub statement: &'static str,
     /// The designs that rely on the statement.
     pub dependent_designs: &'static [&'static str],
+    /// Whether the probe runs for seconds by design (a fixture that must
+    /// reach a toolkit time limit). The pull-request probe job skips slow
+    /// probes and reports each as `skipped (slow): <id>`; local
+    /// `make gtk-axioms` and the nightly workflow run them
+    /// (`GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`), and the ledger row says where.
+    pub slow: bool,
     /// The isolated probe, or `None` when no minimal fixture can exhibit the
     /// axiom; the ledger row records why.
     pub probe: Option<fn() -> Observation>,
+}
+
+/// The environment switch that makes runners include slow probes: they run
+/// only when it is `1`. Local `make gtk-axioms` and the nightly
+/// responsiveness workflow set it; the pull-request `GTK Axioms` job does not.
+pub const INCLUDE_SLOW_ENV: &str = "GTK_LUSH_AXIOMS_INCLUDE_SLOW";
+
+/// Whether [`INCLUDE_SLOW_ENV`] asks runners to include slow probes.
+#[must_use]
+pub fn include_slow_probes() -> bool {
+    std::env::var(INCLUDE_SLOW_ENV).as_deref() == Ok("1")
+}
+
+/// The line a runner prints for a slow probe it skipped:
+/// `skipped (slow): <id>`.
+#[must_use]
+pub fn slow_skip_line(axiom: &Axiom) -> String {
+    format!("skipped (slow): {}", axiom.id)
 }
 
 /// Every ledger axiom, in id order.
@@ -53,6 +77,7 @@ const CATALOGUE: &[Axiom] = &[
             "ViewportSliceBin exists because of it",
             "the sidebar file tree",
         ],
+        slow: false,
         probe: Some(probes::probe_a01),
     },
     Axiom {
@@ -60,6 +85,7 @@ const CATALOGUE: &[Axiom] = &[
         name: "a02_unscrolled_list_minimum_is_its_content",
         statement: "a list outside a scroller reports its whole content as its minimum height",
         dependent_designs: &["ViewportSliceBin::measure (full content to the outer scroller)"],
+        slow: false,
         probe: Some(probes::probe_a02),
     },
     Axiom {
@@ -71,6 +97,7 @@ const CATALOGUE: &[Axiom] = &[
             "ViewportSliceBin::measure reports the full content as minimum while an outer \
              scroller exists",
         ],
+        slow: false,
         probe: Some(probes::probe_a03),
     },
     Axiom {
@@ -79,6 +106,7 @@ const CATALOGUE: &[Axiom] = &[
         statement: "the list applies scroll_to and focus scrolling inside its own allocation, \
                     as a write to its vadjustment",
         dependent_designs: &["classify_child_scroll reads the child's value after child.allocate"],
+        slow: false,
         probe: Some(probes::probe_a04),
     },
     Axiom {
@@ -88,6 +116,7 @@ const CATALOGUE: &[Axiom] = &[
                     to 0 and the value re-derived from its anchor — with a value-changed, \
                     although nothing asked it to scroll",
         dependent_designs: &["viewport_slice never shrinks the band at the bottom edge"],
+        slow: false,
         probe: Some(probes::probe_a05),
     },
     Axiom {
@@ -98,6 +127,7 @@ const CATALOGUE: &[Axiom] = &[
             "ViewportSliceBin::publish_slice_offset publishes content-box upper/page",
             "inset learning",
         ],
+        slow: false,
         probe: Some(probes::probe_a06),
     },
     Axiom {
@@ -111,6 +141,7 @@ const CATALOGUE: &[Axiom] = &[
             "the anchor model of the Kani slice loop",
             "the settle bound (reconfigure_shift) in classify_child_scroll",
         ],
+        slow: false,
         probe: Some(probes::probe_a07),
     },
     Axiom {
@@ -124,6 +155,7 @@ const CATALOGUE: &[Axiom] = &[
             "the learning-frame residual",
             "the child's own estimate settle in the Kani slice loop",
         ],
+        slow: false,
         probe: None,
     },
     Axiom {
@@ -134,6 +166,7 @@ const CATALOGUE: &[Axiom] = &[
             "a honoured request must land where the re-slice republishes exactly the child's \
              value (child_value − viewport_top)",
         ],
+        slow: false,
         probe: Some(probes::probe_a09),
     },
     Axiom {
@@ -148,6 +181,7 @@ const CATALOGUE: &[Axiom] = &[
             "rendered-row widget tests count mapped rows intersecting the outer viewport \
              (drawn_labels in workspace_tree_virtualization)",
         ],
+        slow: false,
         probe: Some(probes::probe_a10),
     },
     Axiom {
@@ -160,6 +194,7 @@ const CATALOGUE: &[Axiom] = &[
             "an unhonourable outer request ends quietly (the loop guard in \
              follow_child_request)",
         ],
+        slow: false,
         probe: Some(probes::probe_a11),
     },
     Axiom {
@@ -167,6 +202,7 @@ const CATALOGUE: &[Axiom] = &[
         name: "a12_natural_height_ignores_scroll_position",
         statement: "the child's natural height is independent of the outer scroll position",
         dependent_designs: &["the outer range stays exact while scrolling"],
+        slow: false,
         probe: None,
     },
     Axiom {
@@ -179,6 +215,7 @@ const CATALOGUE: &[Axiom] = &[
             "ViewportSliceBin::follow_child_request applies the outer move from \
                               an idle",
         ],
+        slow: false,
         probe: Some(probes::probe_a13),
     },
     Axiom {
@@ -195,6 +232,7 @@ const CATALOGUE: &[Axiom] = &[
             "properties_breakpoint_condition and workspace_breakpoint_condition compare a px \
              window width against whole-sp thresholds (ui/window/geometry/policy.rs)",
         ],
+        slow: false,
         probe: Some(probes::probe_a14),
     },
     Axiom {
@@ -209,6 +247,7 @@ const CATALOGUE: &[Axiom] = &[
             "sync_properties_breakpoint re-tunes the properties breakpoint with set_condition \
              from size_allocate (ui/window/geometry/execution.rs)",
         ],
+        slow: false,
         probe: Some(probes::probe_a15),
     },
     Axiom {
@@ -231,6 +270,7 @@ const CATALOGUE: &[Axiom] = &[
             "sync_secondary_surfaces writes properties_layout_view layout-name, which the \
              properties breakpoint's setter also owns (ui/window/geometry/execution.rs)",
         ],
+        slow: false,
         probe: Some(probes::probe_a16),
     },
     Axiom {
@@ -247,6 +287,7 @@ const CATALOGUE: &[Axiom] = &[
             "split_fraction and the sp min/max sidebar widths the shell sets \
              (ui/window/geometry/execution.rs)",
         ],
+        slow: false,
         probe: Some(probes::probe_a17),
     },
     Axiom {
@@ -264,6 +305,7 @@ const CATALOGUE: &[Axiom] = &[
              breakpoints under the window's width-request of 640 \
              (ui/window/geometry/execution.rs, resources/ui/window.blp)",
         ],
+        slow: false,
         probe: Some(probes::probe_a18),
     },
     Axiom {
@@ -280,6 +322,7 @@ const CATALOGUE: &[Axiom] = &[
             "ViewportSliceBin::rebind_outer re-slices on notify::page-size from an idle \
              instead of queueing inside layout",
         ],
+        slow: false,
         probe: Some(probes::probe_a19),
     },
     Axiom {
@@ -295,6 +338,7 @@ const CATALOGUE: &[Axiom] = &[
              allocation whenever its publish changed the value",
             "the anchor_stray ghost of the Kani slice loop (gtk-lush-widgets kani_proofs.rs)",
         ],
+        slow: false,
         probe: Some(probes::probe_a20),
     },
     Axiom {
@@ -312,6 +356,7 @@ const CATALOGUE: &[Axiom] = &[
              window-removed handler, with dispose's leave an idempotent second path \
              (ui/window/drafts/admission.rs)",
         ],
+        slow: false,
         probe: Some(probes::probe_a21),
     },
     Axiom {
@@ -337,7 +382,217 @@ const CATALOGUE: &[Axiom] = &[
              collapses what it expanded on failure (ui/sidebar/reveal_execution.rs \
              advance_expansion, terminate_reveal)",
         ],
+        slow: false,
         probe: Some(probes::probe_a22),
+    },
+    Axiom {
+        id: AxiomId::new(23),
+        name: "a23_a_paragraph_is_one_layout",
+        statement: "GtkTextView lays a paragraph out as one PangoLayout over its visible text and \
+                    never lays out part of one: once any part of a wrapped paragraph is shown, its \
+                    display height equals the height Pango gives the whole paragraph laid out \
+                    alone, and its last character's location is already valid on the paragraph's \
+                    last display line",
+        dependent_designs: &[
+            "document-scale-policy (C1): N_visible and the paragraph-length thresholds rest on \
+             layout cost growing with a paragraph's visible length",
+            "long-line-protected-view (C2): the display-only fold bounds layout only because a \
+             paragraph is laid out whole",
+            "sliced-protected-install (C3): a tail installed hidden keeps the visible text, and so \
+             the layout, a fixed head",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a23),
+    },
+    Axiom {
+        id: AxiomId::new(24),
+        name: "a24_invisible_text_is_left_out_of_the_layout",
+        statement: "text tagged invisible is left out of a paragraph's layout: a hidden tail adds \
+                    no display height and no x-advance, so the paragraph's height and its visible \
+                    head's character locations equal those of a buffer holding the head alone; \
+                    applying or removing the tag re-lays out the paragraph",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the display-only fold tags a giant paragraph's tail \
+             invisible",
+            "sliced-protected-install (C3): tail slices inserted hidden do not re-lay out the \
+             growing paragraph",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a24),
+    },
+    Axiom {
+        id: AxiomId::new(25),
+        name: "a25_insertions_at_a_tagged_run_boundary_are_untagged",
+        statement: "text inserted exactly at a tagged run's start or end boundary is untagged, and \
+                    text inserted strictly inside the run is tagged",
+        dependent_designs: &[
+            "sliced-protected-install (C3): insert_with_tags at a hidden run's end inserts \
+             untagged text first",
+            "long-line-protected-view (C2): fold-at-insertion and edit-growth tagging",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a25),
+    },
+    Axiom {
+        id: AxiomId::new(26),
+        name: "a26_log_attrs_cover_the_whole_paragraph",
+        statement: "GtkTextBuffer computes a paragraph's log attrs over the whole logical \
+                    paragraph, hidden text included: a word that starts in a visible head and \
+                    continues into an invisible run ends inside the hidden run (forward_word_end); \
+                    a character change anywhere invalidates the cached attrs, so the next word or \
+                    cursor movement recomputes the whole paragraph (cost evidence only)",
+        dependent_designs: &[
+            "long-line-protected-view (C2): giant paragraphs are caret-free because folding does \
+             not bound cursor, word or Backspace cost",
+            "sliced-protected-install (C3): the install never moves an iterator by cursor or word \
+             position inside a protected paragraph",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a26),
+    },
+    Axiom {
+        id: AxiomId::new(27),
+        name: "a27_tag_changes_do_not_dirty_the_buffer",
+        statement: "applying or removing a tag emits no changed signal, leaves the buffer's \
+                    modified flag unset, and records no undo history, with undo enabled",
+        dependent_designs: &[
+            "document-scale-policy (C1): removing highlighting tags changes no text",
+            "long-line-protected-view (C2): folding and unfolding by tag keep the document clean, \
+             unsaved and un-undoable",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a27),
+    },
+    Axiom {
+        id: AxiomId::new(28),
+        name: "a28_pango_line_width_overflows_int32",
+        statement: "Pango measures a line in int32 Pango units (1/1024 px): in a monospace font \
+                    the x position of a character on one unwrapped line stops growing at i32::MAX \
+                    / advance characters (238,319 for a 9011-unit advance) and wraps negative past \
+                    it",
+        dependent_designs: &[
+            "document-scale-policy (C1): the document profile treats a wrap-off line past the \
+             overflow length as unrenderable",
+            "long-line-protected-view (C2): the protected thresholds stay below the overflow \
+             length",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a28),
+    },
+    Axiom {
+        id: AxiomId::new(29),
+        name: "a29_the_context_engine_disables_highlighting_after_2000_ms",
+        statement: "the GtkSourceView context engine analyses a line in one call with a fixed 2000 \
+                    ms cut-off; a line whose analysis passes it logs a GtkSourceView CRITICAL from \
+                    inside that call and turns highlighting off for the whole buffer, so a short \
+                    line added afterwards is not highlighted; the engine also highlights text \
+                    inside an invisible range",
+        dependent_designs: &[
+            "document-scale-policy (C1): syntax is turned off before the engine sees a giant \
+             paragraph (L_syntax, S_syntax); folding cannot hide text from the engine",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a29),
+    },
+    Axiom {
+        id: AxiomId::new(30),
+        name: "a30_im_surrounding_text_spans_the_cursor_paragraph",
+        statement: "an input method that requests surrounding text gets the cursor's whole \
+                    paragraph from GtkTextView, and the view arms that request on every caret \
+                    move, cursor movement, typing and scrolling (focus-in and clicks are driven \
+                    only by the responsiveness lane)",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the protected view keeps the caret out of giant \
+             paragraphs (L_protect)",
+            "document-scale-policy (C1): L_protect",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a30),
+    },
+    Axiom {
+        id: AxiomId::new(31),
+        name: "a31_validation_runs_in_2000_px_batches",
+        statement: "after the on-screen part, GtkTextView validates the rest of a buffer in idle \
+                    batches of 2000 px: each batch grows the vertical adjustment's upper by 2000 \
+                    px plus at most one line, so a document of height H settles over about H / \
+                    2000 batches (observed indirectly, through upper)",
+        dependent_designs: &[
+            "document-scale-policy (C1): R_batch, rows per 2000 px with wrapping off, and N_dense \
+             = V_batch / R_batch",
+            "long-line-protected-view (C2): the fold policy's density bound",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a31),
+    },
+    Axiom {
+        id: AxiomId::new(32),
+        name: "a32_detaching_a_source_map_with_a_pending_tick_is_critical",
+        statement: "detaching a GtkSourceMap from its view (gtk_source_map_set_view(NULL)) while \
+                    its update tick is pending makes the tick run against no view and log Gtk and \
+                    GLib-GObject CRITICALs; a scroll queues the tick (a defect axiom: holds while \
+                    the defect is present)",
+        dependent_designs: &[
+            "document-scale-policy (C1): the minimap retire-and-rebuild that removes the detach \
+             CRITICAL",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a32),
+    },
+    Axiom {
+        id: AxiomId::new(33),
+        name: "a33_search_skips_hidden_text_unless_visible_only_is_off",
+        statement: "GtkSourceSearchContext's visible-only setting (GtkSourceView 5.12+) defaults \
+                    to true, and then both plain-text and regex search skip text tagged invisible; \
+                    with visible-only false, the plain-text search finds matches inside hidden \
+                    text while the regex search still finds only the visible ones",
+        dependent_designs: &[
+            "long-line-protected-view (C2): find moves to a worker and must not rely on the stock \
+             search context's treatment of hidden text",
+            "document-scale-policy (C1): L_search_highlight",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a33),
+    },
+    Axiom {
+        id: AxiomId::new(34),
+        name: "a34_move_cursor_without_a_visible_cursor_scrolls",
+        statement: "with cursor-visible false, GtkTextView's move-cursor scrolls the viewport and \
+                    leaves the insert mark where it was; with gtk-keynav-use-caret set it moves \
+                    the insert mark",
+        dependent_designs: &[
+            "long-line-protected-view (C2): navigation keys scroll a cursor-less protected \
+             document (P3 extends this axiom)",
+        ],
+        slow: false,
+        probe: Some(probes::probe_a34),
+    },
+    Axiom {
+        id: AxiomId::new(35),
+        name: "a35_atspi_text_over_invisible_text",
+        statement: "AT-SPI text contents and offsets of a paragraph whose tail is invisible, and \
+                    the TextChanged payloads emitted on insert, are reachable only through an \
+                    AT-SPI bus (unpinned in-crate; the responsiveness lane's AT case records \
+                    payload sizes and offsets)",
+        dependent_designs: &[
+            "long-line-protected-view (C2): the accessibility contract of a folded paragraph (P4 \
+             extends this axiom)",
+            "sliced-protected-install (C3): per-slice AT payloads (S3 extends this axiom)",
+        ],
+        slow: false,
+        probe: None,
+    },
+    Axiom {
+        id: AxiomId::new(36),
+        name: "a36_btree_segment_merge_copies_both_strings",
+        statement: "the GtkTextBuffer btree merges adjacent character segments by copying both \
+                    strings, so appending next to a large segment costs time proportional to the \
+                    segment (cost-only; recorded by the responsiveness lane's install case)",
+        dependent_designs: &[
+            "sliced-protected-install (C3): the adoption gate and segment separation",
+            "long-line-protected-view (C2): the install bound for giant paragraphs",
+        ],
+        slow: false,
+        probe: None,
     },
 ];
 
@@ -353,8 +608,8 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_covers_every_ledger_id_up_to_a22() {
-        for number in 1..=22 {
+    fn the_catalogue_covers_every_ledger_id_up_to_a36() {
+        for number in 1..=36 {
             assert!(find(AxiomId::new(number)).is_some(), "A{number} missing");
         }
     }
@@ -394,6 +649,23 @@ mod tests {
                 axiom.id
             );
         }
+    }
+
+    #[test]
+    fn unprobed_entries_are_never_slow() {
+        for axiom in catalogue() {
+            assert!(
+                !axiom.slow || axiom.probe.is_some(),
+                "{} is slow without a probe",
+                axiom.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_slow_skip_names_the_axiom() {
+        let axiom = find(AxiomId::new(29)).expect("A29 is catalogued");
+        assert_eq!(slow_skip_line(axiom), "skipped (slow): A29");
     }
 
     #[test]

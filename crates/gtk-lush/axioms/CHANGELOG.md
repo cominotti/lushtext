@@ -65,3 +65,35 @@
   model), the first tree-model axiom, with a probe that needs no window and a
   sample. New fixture: `fixtures::LazyTree`, with its values under
   `fixtures::a22`.
+- The long-line text axioms (`probe-long-line-toolkit-costs`), the first
+  text-layout, text-buffer, input-method and GtkSourceView axioms, with probes
+  and samples for A23 (a paragraph is one `PangoLayout`, never partly laid
+  out), A24 (invisible text is left out of the layout), A25 (insertions at a
+  tagged run's start or end are untagged, inside it tagged), A26 (log attrs
+  cover the whole paragraph, hidden text included; invalidation recorded as
+  cost), A27 (tag changes emit no `changed`, leave `modified` unset, record
+  no undo), A28 (Pango's `int32` line-width overflow), A29 (the context
+  engine's one-call 2000 ms cut-off disables highlighting; it reads hidden
+  text), A30 (an input method's surrounding text is the cursor's whole
+  paragraph), A31 (2000 px validation batches), A32 (the `GtkSourceMap`
+  detach CRITICAL, a defect axiom), A33 (`GtkSourceSearchContext` skips hidden
+  text unless `visible-only` is off, and its regex path always does), and A34
+  (`move-cursor` with an invisible cursor only scrolls, unless caret
+  browsing). A35 (AT-SPI text over invisible text) and A36 (btree segment
+  merge cost) are catalogued without probes; the responsiveness lane records
+  them. Verdicts stay structural; every duration is a recorded value.
+- The crate now depends on the toolkit crates `pango` and `sourceview5`. New
+  text fixtures: `fixtures::paragraph` with `ParagraphKind` (deterministic
+  ASCII, multibyte and minified-markup paragraphs), `TextViewFixture`,
+  `SourceViewFixture`, `invisible_tag`, `LogCapture` (keeps warnings and
+  criticals while alive, then restores the previous log handling), the probe
+  input method `ProbeImContext` registered as `PROBE_IM_ID` by
+  `register_probe_im` and read back with `take_im_requests`,
+  `text_toolkit_versions` (text probes record the Pango and GtkSourceView
+  versions), `time_us` and `offset`; each probe's values and helpers are
+  under `fixtures::a23` … `fixtures::a34`.
+- A slow-probe marker: `Axiom::slow`, with `INCLUDE_SLOW_ENV`
+  (`GTK_LUSH_AXIOMS_INCLUDE_SLOW`), `include_slow_probes` and
+  `slow_skip_line`. The probe runner and a sample's `--check` skip a slow
+  probe unless the switch is `1`, printing `skipped (slow): <id>`. No probe
+  is slow yet.

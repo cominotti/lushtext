@@ -8,7 +8,9 @@
 //! session; nothing automated runs it on one.
 //!
 //! **`--check`:** run the probe, print its observation as one JSON line, and
-//! exit `0` (holds), `1` (violated) or `2` (fixture invalid). It refuses with
+//! exit `0` (holds), `1` (violated) or `2` (fixture invalid). A probe marked
+//! slow prints `skipped (slow): <id>` and exits `0` instead unless
+//! `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`. It refuses with
 //! exit `77`, before touching GTK, unless `GTK_LUSH_AXIOMS_HEADLESS=1` is set,
 //! so it can never flash probe windows across a live desktop.
 //! `make gtk-axiom-sample AXIOM=<id> CHECK=1` sets it inside a private
@@ -20,7 +22,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use gtk_lush_axioms::{AxiomId, find, init_toolkit};
+use gtk_lush_axioms::{AxiomId, find, include_slow_probes, init_toolkit, slow_skip_line};
 use gtk4::prelude::*;
 
 /// The variable that authorizes `--check` to open probe windows.
@@ -92,8 +94,15 @@ fn check(axiom: AxiomId) -> ExitCode {
         );
         return ExitCode::from(REFUSED_EXIT_CODE);
     }
-    let Some(probe) = find(axiom).and_then(|entry| entry.probe) else {
+    let Some(entry) = find(axiom).filter(|entry| entry.probe.is_some()) else {
         eprintln!("{axiom} has no probe in the catalogue");
+        return ExitCode::from(REFUSED_EXIT_CODE);
+    };
+    if entry.slow && !include_slow_probes() {
+        println!("{}", slow_skip_line(entry));
+        return ExitCode::SUCCESS;
+    }
+    let Some(probe) = entry.probe else {
         return ExitCode::from(REFUSED_EXIT_CODE);
     };
     if let Err(error) = init_toolkit() {

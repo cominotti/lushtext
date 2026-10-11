@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Isolated probes and runnable samples for the GTK behaviours gtk-rs geometry
-//! code relies on.
+//! Isolated probes and runnable samples for the GTK behaviours gtk-rs code
+//! relies on.
 //!
 //! Each entry of [`catalogue`] is one **axiom**: a precise statement about
 //! GTK, `GtkListBase`, `GtkScrollable`, or Adwaita that some design depends
@@ -11,7 +11,12 @@
 //! probe — a function that builds the smallest pure-GTK fixture showing the
 //! behaviour, drives it to a bounded end, and returns an [`Observation`] — and
 //! one runnable sample under `examples/` that builds the same fixture for a
-//! person to watch.
+//! person to watch. From A23 on, the catalogue also covers text layout,
+//! text buffer, input-method and GtkSourceView behaviours, whose fixtures
+//! ([`fixtures::TextViewFixture`], [`fixtures::SourceViewFixture`],
+//! [`fixtures::LogCapture`], the probe input method) live in [`fixtures`].
+//! A probe's verdict comes only from structural observations; durations are
+//! recorded values.
 //!
 //! A probe that stops returning [`Verdict::Holds`] after a toolkit update is
 //! an **axiom change**, not a test to adjust: revisit the ledger entry and
@@ -32,8 +37,13 @@
 //! }
 //! ```
 //!
+//! A probe whose fixture must run for seconds is marked
+//! [`Axiom::slow`]; runners skip it unless [`include_slow_probes`] is true
+//! and print [`slow_skip_line`] instead.
+//!
 //! GTK Lush crates remain independently adoptable leaf crates. This one
-//! depends on `gtk4`, `glib`, and `libadwaita` only; it does not own an
+//! depends on the toolkit crates `gtk4`, `glib`, `libadwaita`, `pango` and
+//! `sourceview5` only; it does not own an
 //! application's control flow, define a view DSL, or add a state or message
 //! system.
 
@@ -48,7 +58,9 @@ mod session;
 
 use std::fmt;
 
-pub use catalogue::{Axiom, catalogue, find};
+pub use catalogue::{
+    Axiom, INCLUDE_SLOW_ENV, catalogue, find, include_slow_probes, slow_skip_line,
+};
 pub use observation::{Observation, Verdict};
 pub use probes::*;
 

@@ -237,6 +237,7 @@ jobs:
           dnf --disablerepo=fedora-cisco-openh264 --no-docs --setopt=install_weak_deps=False --setopt=fastestmirror=True --setopt=max_parallel_downloads=10 --setopt=minrate=100k --setopt=timeout=30 install -y \
             gtk4-devel \
             libadwaita-devel \
+            gtksourceview5-devel \
             gcc \
             git \
             mutter \
@@ -250,8 +251,11 @@ jobs:
         with:
           shared-key: fedora-44
 
+      # Probes marked slow in the catalogue (seconds-long fixtures, such as
+      # the A29 context-engine cut-off) are skipped here and reported as
+      # `skipped (slow): <id>`; the nightly responsiveness workflow runs them.
       - name: Run GTK axiom probes and sample checks
-        run: make gtk-axioms
+        run: make gtk-axioms GTK_LUSH_AXIOMS_INCLUDE_SLOW=0
 
   property-tests:
     name: Property Tests

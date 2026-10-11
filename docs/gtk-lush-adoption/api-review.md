@@ -43,6 +43,12 @@ spikes for `gtk4-rs` and Kooha.
   Fixtures are public only because the samples share them; the crate's bounded
   main-context wait stays private test tooling, and the probe runner stays in
   the adoption lab rather than behind a harness dev-dependency.
+  `probe-long-line-toolkit-costs` (2026-10-11) added the toolkit-crate
+  dependencies `pango` and `sourceview5` (never a GTK Lush or LushText crate),
+  the text fixtures (`TextViewFixture`, `SourceViewFixture`, `LogCapture`,
+  the probe input method), the catalogue's `slow` field with
+  `INCLUDE_SLOW_ENV`, `include_slow_probes` and `slow_skip_line`, and probes
+  A23–A34; the same decision holds.
 
 ## Rejected Overreach
 

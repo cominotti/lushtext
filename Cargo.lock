@@ -945,6 +945,8 @@ dependencies = [
  "glib",
  "gtk4",
  "libadwaita",
+ "pango",
+ "sourceview5",
 ]
 
 [[package]]

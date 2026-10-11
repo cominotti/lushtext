@@ -6,7 +6,11 @@
 #   scripts/run-gtk-axioms.sh all
 #       The probe binary (one isolated test per probed axiom, headless), then
 #       every sample's --check in one private headless session. This is
-#       `make gtk-axioms`, and the CI `gtk-axioms` job.
+#       `make gtk-axioms`, and the CI `gtk-axioms` job. Probes marked slow in
+#       the catalogue run only with GTK_LUSH_AXIOMS_INCLUDE_SLOW=1 (local
+#       `make gtk-axioms` and the nightly responsiveness workflow set it; the
+#       pull-request job does not); otherwise the probe runner and the sample
+#       print `skipped (slow): <id>`.
 #   scripts/run-gtk-axioms.sh sample <id> [--check]
 #       One sample. With --check it runs headless and exits with the verdict
 #       (0 holds, 1 violated, 2 fixture invalid). Without it the sample opens
@@ -57,7 +61,7 @@ BENIGN_NOISE_REGEX='(^dbus-daemon\[[0-9]+\]: |^libmutter-Message:|^\*\* Message:
 SANDBOX_FLAGS=(--no-session-bus --no-a11y-bus --no-documents-portal)
 
 usage() {
-    sed -n '4,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '4,32p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_command() {
@@ -78,6 +82,7 @@ HEADLESS_ENV=(
     GTK_USE_PORTAL=0
     GTK_IM_MODULE=gtk-im-context-simple
     "GSK_RENDERER=${GSK_RENDERER:-cairo}"
+    "GTK_LUSH_AXIOMS_INCLUDE_SLOW=${GTK_LUSH_AXIOMS_INCLUDE_SLOW:-0}"
     GDK_BACKEND=wayland
 )
 
@@ -185,11 +190,19 @@ self_test() {
             failed=1
         fi
     done
+    # A slow sample skipped by design counts as a result and is not a
+    # warning; anything else that only looks like one does not count.
+    printf '%s\n' '{"axiom":"A1","verdict":"holds","measured":{},"gtk":"4.22.5","adw":"1.9.3"}' \
+        'skipped (slow): A29' 'skipped (slow): A29 extra' 'not skipped (slow): A3' >"$log_file"
+    if ! scan_warnings "$log_file" || [[ "$(count_sample_results "$log_file")" -ne 2 ]]; then
+        echo "Error: GTK axiom self-test miscounted a slow sample skipped by design." >&2
+        failed=1
+    fi
     rm -f "$log_file"
     if [[ "$failed" -ne 0 ]]; then
         return 1
     fi
-    echo "GTK axiom warning classification self-test passed."
+    echo "GTK axiom warning classification and slow-skip self-test passed."
 }
 
 # Run "$@" with its output teed to the log file $1, failing on a nonzero exit
@@ -223,8 +236,14 @@ SAMPLE_CHECK_LOOP='
     exit "$failed"
 '
 
+# How many sample results a log holds: one observation line per sample that
+# ran, plus one `skipped (slow): <id>` line per slow sample skipped by design.
+count_sample_results() {
+    grep -cE '^(\{"axiom"|skipped \(slow\): A[0-9]+$)' "$1" || true
+}
+
 # Run the sample checks through "$@" (a command that ends where the loop's
-# arguments begin), logged to $1, and require one observation per binary in
+# arguments begin), logged to $1, and require one result per binary in
 # SAMPLE_BINARIES.
 check_samples() {
     local log_file="$1"
@@ -235,9 +254,9 @@ check_samples() {
         return 1
     fi
     local checked
-    checked="$(grep -c '^{"axiom"' "$log_file" || true)"
+    checked="$(count_sample_results "$log_file")"
     if [[ "$checked" -ne "${#SAMPLE_BINARIES[@]}" ]]; then
-        echo "Error: expected ${#SAMPLE_BINARIES[@]} sample observations, saw $checked." >&2
+        echo "Error: expected ${#SAMPLE_BINARIES[@]} sample results, saw $checked." >&2
         return 1
     fi
 }
@@ -265,7 +284,9 @@ run_all() {
 
     echo "==> Sample --check runs"
     check_samples "$LOG_DIR/samples.log" bash
-    echo "GTK axioms: probe binary passed; ${#SAMPLE_BINARIES[@]} sample checks held."
+    local skipped
+    skipped="$(grep -cE '^skipped \(slow\): ' "$LOG_DIR/samples.log" || true)"
+    echo "GTK axioms: probe binary passed; ${#SAMPLE_BINARIES[@]} sample checks held ($skipped slow skipped by design)."
 }
 
 run_sample() {

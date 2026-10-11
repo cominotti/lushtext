@@ -691,6 +691,22 @@ make gtk-axioms-runtimes                 # LOCAL ONLY: sample checks inside each
 make check-gtk-axioms                    # (in check-policy) ledger, catalogue, probes, samples agree
 ```
 
+**Slow probes.** A catalogue entry may be marked `slow` when its fixture must
+run for seconds and would push the 20-minute `GTK Axioms` job toward its
+`timeout-minutes` (never raise the timeout instead). The runner and a sample's
+`--check` skip a slow probe unless `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1`, printing
+`skipped (slow): <id>`. Local `make gtk-axioms` and `make gtk-axiom-sample`
+default it to `1`; the `GTK Axioms` PR job runs
+`make gtk-axioms GTK_LUSH_AXIOMS_INCLUDE_SLOW=0`; the nightly
+`.github/workflows/responsiveness-smoke.yml` runs it with `1`.
+`make check-gtk-axioms` rejects a slow entry whose ledger row does not say
+`**slow**` and where it runs (nightly). No probe is slow today (A29 takes about
+8 s). The text probes (A23–A34) build GtkTextView, Pango and GtkSourceView
+fixtures, so the `GTK Axioms` job installs `gtksourceview5-devel`; probes that
+provoke a toolkit CRITICAL on purpose (A29, A32) capture it through the crate's
+log-capture guard and restore the previous writer, so the lane's warning scan
+still fails on any CRITICAL that escapes.
+
 A sample's `--check` refuses with exit 77 unless `GTK_LUSH_AXIOMS_HEADLESS=1`,
 which only the headless wrapper sets, so it never flashes windows on a live
 desktop. `scripts/run-gtk-axioms.sh` fails the lane on **any** `WARNING`,

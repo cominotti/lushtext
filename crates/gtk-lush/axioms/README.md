@@ -17,9 +17,10 @@ evidence for this crate is tracked in `docs/gtk-lush-adoption/`.
 ## What an axiom is
 
 An axiom is one precise statement about GTK, `GtkListBase`, `GtkScrollable`,
-or Adwaita that a geometry or lifecycle design depends on — for example "a
-zero-height allocation makes a `GtkListView` rewrite the adjustment its host
-owns" (A5).
+Adwaita, Pango or GtkSourceView that a geometry, lifecycle or text design
+depends on — for example "a zero-height allocation makes a `GtkListView`
+rewrite the adjustment its host owns" (A5), or "text tagged invisible is left
+out of a paragraph's layout" (A24).
 The normative list, with the dependent designs and pinning status of each, is
 LushText's ledger,
 `.agents/skills/gtk4-libadwaita-internals/references/gtk-axiom-ledger.md`.
@@ -74,8 +75,11 @@ println!("{}", observation.to_json_line());
 
 The breakpoint work (`extend-closed-loop-geometry-verification`) added
 A14–A18 this way, A19–A20 followed, then A21 (the first window-lifecycle
-axiom) and A22 (the first tree-model axiom, whose probe needs no window);
-every later axiom follows the same steps. Rewriting an
+axiom) and A22 (the first tree-model axiom, whose probe needs no window).
+`probe-long-line-toolkit-costs` added A23–A36, the first text-layout,
+text-buffer, input-method and GtkSourceView axioms, with the text fixtures
+below and the slow marker; A35 and A36 have no in-crate probe, and the
+responsiveness lane records them. Every later axiom follows the same steps. Rewriting an
 unpinned axiom from measurement (as A10 was) keeps its id, gives it a probe,
 and renames its catalogue entry to the new statement.
 
@@ -109,6 +113,11 @@ and renames its catalogue entry to the new statement.
    from the catalogue with no edit), then run the new probe five times in
    isolation, for example
    `cargo test -p gtk-lush-adoption-lab --test axiom_probes -- --exact aNN_<slug>`.
+   Decide the verdict only from structural observations (positions,
+   geometry, tag membership, signal and call counts, captured log messages,
+   buffer state); record durations as values, never as a verdict input. A
+   fixture that reaches its state only after a toolkit time limit grows
+   until it does, up to a cap, and the cap is `FixtureInvalid`.
 6. **Record.** Fill the row's "Pinned by" (`**probe**:
    `gtk_lush_axioms::probe_aNN`` plus the measured values and the LushText
    consumer tests), "Verified against" (copied from the printed `gtk`/`adw`
@@ -116,10 +125,46 @@ and renames its catalogue entry to the new statement.
    `make check-gtk-axioms` fails until the ledger, catalogue, probe, and
    sample agree.
 
+## Text fixtures
+
+The text probes (A23–A34) share fixtures in `fixtures`:
+
+- `paragraph(kind, chars, seed)` builds a deterministic paragraph of exactly
+  `chars` characters with no line terminator: `ParagraphKind::Ascii`,
+  `Multibyte`, or `MinifiedMarkup` (minified HTML with inline script).
+- `TextViewFixture` (a monospace `GtkTextView` in a `GtkScrolledWindow`) and
+  `SourceViewFixture::html` (the same with a `GtkSourceView` highlighting
+  HTML); `invisible_tag` adds an `invisible` tag to a buffer.
+- `LogCapture` keeps every warning and critical GLib logs while it is alive,
+  so a probe can provoke a toolkit `CRITICAL` on purpose (A29, A32) and read it
+  back as a value; dropping it restores the previous log handling. GLib
+  accepts one structured-log writer per process, so the first guard installs a
+  forwarding writer that hands everything to GLib's default writer while no
+  guard is alive.
+- `register_probe_im` registers `ProbeImContext` on the `gtk-im-module`
+  extension point as `PROBE_IM_ID`; a view selects it with
+  `set_im_module(Some(PROBE_IM_ID))`, leaving `GTK_IM_MODULE` and the display
+  setting alone. It asks for surrounding text on focus-in, cursor-location
+  updates, key filtering and reset, and records each answer's length and
+  duration (never the text); `take_im_requests` reads them.
+- `text_toolkit_versions` is the Pango and GtkSourceView versions, which
+  every text probe records first.
+
+## Slow probes
+
+`Axiom::slow` marks a probe whose fixture must run for seconds. Mark one only
+if the pull-request `GTK Axioms` job would otherwise approach its
+`timeout-minutes`; never raise the timeout instead. Runners skip a slow probe
+unless `GTK_LUSH_AXIOMS_INCLUDE_SLOW=1` and print `skipped (slow): <id>`:
+local `make gtk-axioms` sets it, the pull-request job passes `0`, and the
+nightly responsiveness workflow runs every probe. A slow entry's ledger row
+says `**slow**` and that it runs nightly; `make check-gtk-axioms` enforces it.
+No probe is slow today: A29, the longest, takes about 8 s in isolation.
+
 ## Scope
 
-The crate depends on `gtk4`, `glib`, and `libadwaita` only and on no other
-GTK Lush or LushText crate. It spins the default main context only inside a
+The crate depends on the toolkit crates `gtk4`, `glib`, `libadwaita`,
+`pango` and `sourceview5` only, and on no GTK Lush or LushText crate. It spins the default main context only inside a
 probe, to a bounded end, as test tooling; it does not own an application's
 control flow, define a view DSL, add a state or message system, or replace
 Libadwaita adaptive behaviour. It checks the toolkit it runs against: the
