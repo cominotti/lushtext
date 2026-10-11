@@ -2314,22 +2314,40 @@ fn prepare_replace_preview_workspace(
     let folder = fixture
         .parent()
         .ok_or_else(|| "replace-preview fixture has no parent".to_string())?;
+    write_workspace_state(
+        data_dir,
+        &serde_json::json!({ "kind": "workspace", "workspace_id": "proof" }),
+        &serde_json::json!([{
+            "id": "proof",
+            "name": "Dense Replace Preview",
+            "folders": [{ "id": "proof-folder", "path": folder }]
+        }]),
+        "replace-preview workspace",
+    )
+}
+
+/// Write the app's versioned `workspaces.json` envelope into `data_dir`: the
+/// one copy of that persisted format the proof runner seeds sessions with.
+///
+/// `label` names the fixture in error messages.
+pub(crate) fn write_workspace_state(
+    data_dir: &Path,
+    current_scope: &Value,
+    workspaces: &Value,
+    label: &str,
+) -> Result<(), String> {
     let document = serde_json::json!({
         "kind": "dev.cominotti.lushtext.workspace-state",
         "version": 1,
         "data": {
-            "current_scope": { "kind": "workspace", "workspace_id": "proof" },
-            "workspaces": [{
-                "id": "proof",
-                "name": "Dense Replace Preview",
-                "folders": [{ "id": "proof-folder", "path": folder }]
-            }]
+            "current_scope": current_scope,
+            "workspaces": workspaces,
         }
     });
     let bytes = serde_json::to_vec_pretty(&document)
-        .map_err(|error| format!("cannot serialize replace-preview workspace: {error}"))?;
+        .map_err(|error| format!("cannot serialize {label}: {error}"))?;
     fs::write(data_dir.join("workspaces.json"), bytes)
-        .map_err(|error| format!("cannot write replace-preview workspace: {error}"))
+        .map_err(|error| format!("cannot write {label}: {error}"))
 }
 
 fn prepare_open_popover_recents(

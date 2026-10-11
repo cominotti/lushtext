@@ -907,11 +907,7 @@ fn evaluate_pixel_anchors(
         }
         let name = required_str(spec, "name")?;
         let detector = required_str(spec, "detector")?;
-        let min_pixels = spec
-            .get("min_pixels")
-            .and_then(Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(1);
+        let min_pixels = anchor_min_pixels(spec);
         let before_rect = rect_for_anchor_search(before_snapshot, spec)?;
         let after_rect = rect_for_anchor_search(after_snapshot, spec)?;
         let before_crop = comparison_dir.join(format!("{}-before-anchor.png", safe_name(name)));
@@ -1039,11 +1035,7 @@ fn evaluate_reference_pixel_anchor(
 ) -> Result<Value, String> {
     let name = required_str(spec, "name")?;
     let detector = required_str(spec, "detector")?;
-    let min_pixels = spec
-        .get("min_pixels")
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(1);
+    let min_pixels = anchor_min_pixels(spec);
     let maximum = spec
         .get("max_screen_y_delta")
         .and_then(Value::as_i64)
@@ -1102,6 +1094,14 @@ fn evaluate_reference_pixel_anchor(
         });
     }
     Ok(report)
+}
+
+/// A pixel-anchor spec's `min_pixels`, `1` when omitted.
+fn anchor_min_pixels(spec: &Value) -> usize {
+    spec.get("min_pixels")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(1)
 }
 
 /// Enforce declared relationships between screenshot-derived anchor rows.

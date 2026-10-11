@@ -20,6 +20,18 @@ const LARGE_DIRECTORY_ENTRIES: usize = 400;
 /// Entries in the nested and two-workspace directories.
 const NESTED_DIRECTORY_ENTRIES: usize = 300;
 
+/// Fixture kinds a `workspace-tree-reveal` manifest may list: exactly the kinds
+/// [`plan`] accepts.
+///
+/// Every kind except `already-visible` puts the revealed row past GTK's
+/// ~200-row realized cap, so the case exercises the slice bin's forwarding.
+pub(crate) const FIXTURE_KINDS: [&str; 4] = [
+    "beyond-cap",
+    "nested-beyond-cap",
+    "two-workspaces",
+    "already-visible",
+];
+
 /// One workspace folder the fixture registers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RevealWorkspace {
@@ -168,20 +180,14 @@ pub(crate) fn materialize(plan: &RevealFixturePlan, data_dir: &Path) -> Result<(
             })
         })
         .collect::<Vec<_>>();
-    let document = serde_json::json!({
-        "kind": "dev.cominotti.lushtext.workspace-state",
-        "version": 1,
-        "data": {
-            "current_scope": { "kind": "all" },
-            "workspaces": workspaces,
-        }
-    });
-    let bytes = serde_json::to_vec_pretty(&document)
-        .map_err(|error| format!("cannot serialize reveal workspaces: {error}"))?;
     fs::create_dir_all(data_dir)
         .map_err(|error| format!("cannot create {}: {error}", data_dir.display()))?;
-    fs::write(data_dir.join("workspaces.json"), bytes)
-        .map_err(|error| format!("cannot write reveal workspaces: {error}"))
+    crate::live::write_workspace_state(
+        data_dir,
+        &serde_json::json!({ "kind": "all" }),
+        &serde_json::Value::Array(workspaces),
+        "reveal workspaces",
+    )
 }
 
 #[cfg(test)]
@@ -230,6 +236,13 @@ mod tests {
             Some(Path::new("/fixture/alpha").join(entry_name(0)))
         );
         assert_eq!(plan.target, Path::new("/fixture/alpha"));
+    }
+
+    #[test]
+    fn every_listed_kind_has_a_plan() {
+        for kind in FIXTURE_KINDS {
+            plan(kind, Path::new("/fixture")).expect(kind);
+        }
     }
 
     #[test]

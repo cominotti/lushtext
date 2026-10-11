@@ -417,45 +417,53 @@ impl LushtextWorkspaceSection {
     /// which is why it is visible to the whole workflow: the reveal must reach its row
     /// through the list's own `scroll_to`, never by moving the outer scroller.
     pub(in crate::ui::sidebar) fn select_and_scroll_to(&self, target_path: &Path) {
-        if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
-            for i in 0..tree_model.n_items() {
-                if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
-                    && let Some(item) = row.item().and_downcast::<FileTreeItem>()
-                    && item.path().as_deref() == Some(target_path)
-                {
-                    if let Some(selection) = self
-                        .imp()
-                        .file_tree_view
-                        .model()
-                        .and_downcast::<gtk4::SingleSelection>()
-                    {
-                        selection.set_selected(i);
-                        self.imp()
-                            .file_tree_view
-                            .scroll_to(i, gtk4::ListScrollFlags::FOCUS, None);
-                    }
-                    self.imp().pending_selection.borrow_mut().take();
-                    return;
-                }
-            }
+        if let Some((position, _)) = self.flattened_row_for_path(target_path) {
+            self.select_and_scroll_to_position(position);
         }
     }
 
-    /// The flattened tree row currently showing `path`, if it is in the model.
+    /// Select and `scroll_to` the flattened-model `position`, and drop any pending
+    /// selection: the half of [`Self::select_and_scroll_to`] after its lookup, for
+    /// a caller that already holds the row's position.
+    pub(in crate::ui::sidebar) fn select_and_scroll_to_position(&self, position: u32) {
+        if let Some(selection) = self
+            .imp()
+            .file_tree_view
+            .model()
+            .and_downcast::<gtk4::SingleSelection>()
+        {
+            selection.set_selected(position);
+            self.imp()
+                .file_tree_view
+                .scroll_to(position, gtk4::ListScrollFlags::FOCUS, None);
+        }
+        self.imp().pending_selection.borrow_mut().take();
+    }
+
+    /// The flattened tree row currently showing `path`, with its position, if it
+    /// is in the model.
     ///
     /// A linear walk of the flattened model, so callers use it once per reveal
     /// stage rather than per frame. It reads rows the model already holds and
     /// expands nothing.
-    pub(in crate::ui::sidebar) fn tree_row_for_path(
+    pub(in crate::ui::sidebar) fn flattened_row_for_path(
         &self,
         path: &Path,
-    ) -> Option<gtk4::TreeListRow> {
+    ) -> Option<(u32, gtk4::TreeListRow)> {
         let tree_model = self.imp().tree_model.borrow().as_ref()?.clone();
         (0..tree_model.n_items()).find_map(|index| {
             let row = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()?;
             let item = row.item().and_downcast::<FileTreeItem>()?;
-            (item.path().as_deref() == Some(path)).then_some(row)
+            (item.path().as_deref() == Some(path)).then_some((index, row))
         })
+    }
+
+    /// The flattened tree row currently showing `path`, if it is in the model.
+    pub(in crate::ui::sidebar) fn tree_row_for_path(
+        &self,
+        path: &Path,
+    ) -> Option<gtk4::TreeListRow> {
+        self.flattened_row_for_path(path).map(|(_, row)| row)
     }
 
     /// Whether any child scan, admission retry, or batched reconciliation is still
@@ -518,13 +526,14 @@ impl LushtextWorkspaceSection {
             return Vec::new();
         };
         let first = position.saturating_sub(per_side);
-        let last = position
+        let end = position
             .saturating_add(per_side)
-            .min(rows.len().saturating_sub(1));
-        rows.into_iter()
-            .enumerate()
-            .filter(|(index, _)| *index != position && (first..=last).contains(index))
-            .map(|(_, (_, widget))| widget)
+            .saturating_add(1)
+            .min(rows.len());
+        rows[first..position]
+            .iter()
+            .chain(&rows[position.saturating_add(1)..end])
+            .map(|(_, widget)| widget.clone())
             .collect()
     }
 
@@ -543,25 +552,17 @@ impl LushtextWorkspaceSection {
         self.imp().header_box.get().upcast()
     }
 
-    /// Mapped realized row widgets with the path of the item each one shows.
+    /// Mapped realized row widgets with the path of the item each one shows,
+    /// read through the section's one realized-row walk.
     fn mapped_row_widgets(&self) -> Vec<(gtk4::Widget, Option<PathBuf>)> {
-        let list_view = self.imp().file_tree_view.get();
         let mut rows = Vec::new();
-        let mut child = list_view.first_child();
-        while let Some(row_widget) = child {
-            child = row_widget.next_sibling();
-            if !row_widget.is_mapped() {
-                continue;
+        super::for_each_realized_file_row_overlay(self, |overlay| {
+            if let Some(row_widget) = overlay.parent()
+                && row_widget.is_mapped()
+            {
+                rows.push((row_widget, super::file_row_overlay_path(&overlay)));
             }
-            let path = row_widget
-                .first_child()
-                .and_downcast::<gtk4::Overlay>()
-                .and_then(|overlay| overlay.child().and_downcast::<gtk4::TreeExpander>())
-                .and_then(|expander| expander.list_row())
-                .and_then(|row| row.item().and_downcast::<FileTreeItem>())
-                .and_then(|item| item.path());
-            rows.push((row_widget, path));
-        }
+        });
         rows
     }
 

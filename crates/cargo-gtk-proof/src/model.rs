@@ -68,17 +68,6 @@ impl fmt::Display for DocumentKind {
 /// Scenario type proving the workspace sidebar's rendered rows after a path reveal.
 pub(crate) const WORKSPACE_TREE_REVEAL_SCENARIO: &str = "workspace-tree-reveal";
 
-/// Fixture kinds a `workspace-tree-reveal` manifest may list.
-///
-/// Every kind except `already-visible` puts the revealed row past GTK's
-/// ~200-row realized cap, so the case exercises the slice bin's forwarding.
-pub(crate) const WORKSPACE_TREE_REVEAL_FIXTURE_KINDS: [&str; 4] = [
-    "beyond-cap",
-    "nested-beyond-cap",
-    "two-workspaces",
-    "already-visible",
-];
-
 /// Failure returned when a proof artifact cannot be trusted by policy checks.
 ///
 /// The status is machine-readable for proof reporting, while `detail` keeps the
@@ -363,11 +352,11 @@ fn validate_visual_scenario(value: &Value) -> Result<(), ProofValidationError> {
                 .matrix
                 .fixture_kinds
                 .iter()
-                .find(|kind| !WORKSPACE_TREE_REVEAL_FIXTURE_KINDS.contains(&kind.as_str()))
+                .find(|kind| !crate::reveal_fixture::FIXTURE_KINDS.contains(&kind.as_str()))
             {
                 return Err(ProofValidationError::malformed(format!(
                     "workspace-tree-reveal unsupported fixture kind {unsupported}; expected one of {}",
-                    WORKSPACE_TREE_REVEAL_FIXTURE_KINDS.join(", ")
+                    crate::reveal_fixture::FIXTURE_KINDS.join(", ")
                 )));
             }
         }
@@ -696,34 +685,7 @@ impl VisualScenarioManifest {
         &self,
         manifest_value: &Value,
     ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
-        let mut cases = Vec::new();
-        for size in &self.matrix.sizes {
-            for color_scheme in &self.matrix.color_schemes {
-                for fixture_kind in &self.matrix.fixture_kinds {
-                    let case_id = format!(
-                        "{}--{}--{}--{}",
-                        self.scenario_id, size.id, color_scheme, fixture_kind
-                    );
-                    cases.push(ExpandedCaseOverview {
-                        schema_version: SUPPORTED_SCHEMA_VERSION,
-                        case_id: case_id.clone(),
-                        manifest: manifest_value.clone(),
-                        size: serde_json::to_value(size).map_err(|error| {
-                            ProofValidationError::malformed(format!(
-                                "case size serialization failed: {error}"
-                            ))
-                        })?,
-                        color_scheme: color_scheme.clone(),
-                        artifact_dir: case_id,
-                        word_wrap: Some(false),
-                        direction: Some("reveal".to_string()),
-                        viewport_position: None,
-                        fixture_kind: Some(fixture_kind.clone()),
-                    });
-                }
-            }
-        }
-        Ok(cases)
+        self.fixture_kind_cases(manifest_value, &self.matrix.fixture_kinds, "reveal")
     }
 
     /// Expand open-popover scenarios, defaulting omitted fixtures to the dense case.
@@ -732,10 +694,21 @@ impl VisualScenarioManifest {
         manifest_value: &Value,
     ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         let fixture_kinds = default_when_empty(&self.matrix.fixture_kinds, "dense");
+        self.fixture_kind_cases(manifest_value, &fixture_kinds, "open")
+    }
+
+    /// Expand one case per size, color scheme, and fixture kind, all with one
+    /// `direction`, unwrapped text, and no viewport position.
+    fn fixture_kind_cases(
+        &self,
+        manifest_value: &Value,
+        fixture_kinds: &[String],
+        direction: &str,
+    ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
         let mut cases = Vec::new();
         for size in &self.matrix.sizes {
             for color_scheme in &self.matrix.color_schemes {
-                for fixture_kind in &fixture_kinds {
+                for fixture_kind in fixture_kinds {
                     let case_id = format!(
                         "{}--{}--{}--{}",
                         self.scenario_id, size.id, color_scheme, fixture_kind
@@ -752,7 +725,7 @@ impl VisualScenarioManifest {
                         color_scheme: color_scheme.clone(),
                         artifact_dir: case_id,
                         word_wrap: Some(false),
-                        direction: Some("open".to_string()),
+                        direction: Some(direction.to_string()),
                         viewport_position: None,
                         fixture_kind: Some(fixture_kind.clone()),
                     });

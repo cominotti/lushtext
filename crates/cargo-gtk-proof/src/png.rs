@@ -972,11 +972,15 @@ const ROW_INK_BACKGROUND_DISTANCE: u8 = 40;
 /// the row's own top margin above its centred content.
 fn crop_first_row_background(image: &PngImage, rect: Rect) -> PngResult<(u8, u8, u8, u8)> {
     let y = usize::try_from(rect.y).map_err(|error| error.to_string())?;
+    Ok(most_common_pixel(&rect_row_pixels(image, rect, y)?))
+}
+
+/// The pixels of image row `y` across `rect`'s columns.
+fn rect_row_pixels(image: &PngImage, rect: Rect, y: usize) -> PngResult<Vec<(u8, u8, u8, u8)>> {
     let x_start = usize::try_from(rect.x).map_err(|error| error.to_string())?;
-    let pixels: Vec<_> = (x_start..x_start + rect.width)
+    (x_start..x_start + rect.width)
         .map(|x| pixel_rgba(image, x, y))
-        .collect::<PngResult<_>>()?;
-    Ok(most_common_pixel(&pixels))
+        .collect()
 }
 
 /// Content-ink pixels in row `y`: those far from the crop background.
@@ -1032,10 +1036,7 @@ fn detect_row_ink_bottom(
 }
 
 fn non_background_count(image: &PngImage, rect: Rect, y: usize) -> PngResult<usize> {
-    let x_start = usize::try_from(rect.x).map_err(|error| error.to_string())?;
-    let pixels: Vec<_> = (x_start..x_start + rect.width)
-        .map(|x| pixel_rgba(image, x, y))
-        .collect::<PngResult<_>>()?;
+    let pixels = rect_row_pixels(image, rect, y)?;
     if pixels.is_empty() {
         return Ok(0);
     }

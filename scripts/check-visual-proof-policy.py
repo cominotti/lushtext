@@ -22,16 +22,15 @@ DEFAULT_ARTIFACT_DIR = REPO_ROOT / "build/smoke/visual-geometry"
 WORKSPACE_TREE_SLICE_BIN_PREFIX = "crates/gtk-lush/widgets/src/viewport_slice_bin/"
 VISUAL_SENSITIVE_PREFIXES = (
     "crates/cargo-gtk-proof/src/",
-    WORKSPACE_TREE_SLICE_BIN_PREFIX,
     "crates/lushtext-core/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/ui/",
     "resources/style/",
     "scripts/visual-geometry-scenarios/",
 )
+# Every path the workspace-tree rendered-row invariant keys on is visual-sensitive
+# as well, through `is_visual_sensitive`, so those paths are not repeated here.
 VISUAL_SENSITIVE_EXACT = (
-    "crates/gtk-lush/widgets/src/scroll_request.rs",
-    "crates/gtk-lush/widgets/src/slice_geometry.rs",
     "crates/lushtext-core/src/model/automation.rs",
     "scripts/check-visual-proof-policy.py",
     "scripts/lushtext-automation.py",
@@ -182,6 +181,7 @@ def is_visual_sensitive(path: str) -> bool:
         normalized in VISUAL_SENSITIVE_EXACT
         or normalized.startswith(VISUAL_SENSITIVE_PREFIXES)
         or normalized.endswith(VISUAL_SENSITIVE_SUFFIXES)
+        or workspace_tree_row_anchor_path(normalized)
     )
 
 

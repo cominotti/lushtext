@@ -11,11 +11,12 @@
 //! scroller is part of the picture.
 
 use crate::common::{
-    RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
-    ensure_gtk_init, find_descendant, first_label, fixture, flush_after_delay, flush_events,
-    force_layout, mapped_list_rows, mapped_row_with_label, observed_between_dispatches,
-    pin_scroller_height, placement_relative_to, present_window, realized_list_rows,
-    row_straddling_bottom, sample_placements, test_window, wait_until, wait_until_or_false,
+    RowPlacement, RowStillnessProbe, activate_reveal_workspace_path, assert_reveal_then_rest,
+    assert_rows_still_across_selection, ensure_gtk_init, find_descendant, first_label, fixture,
+    flush_after_delay, flush_events, force_layout, mapped_list_rows, mapped_row_with_label,
+    observed_between_dispatches, pin_scroller_height, placement_relative_to, present_window,
+    realized_list_rows, row_straddling_bottom, sample_placements, selected_tree_path, test_window,
+    wait_until, wait_until_or_false,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -98,14 +99,27 @@ fn mapped_sections(sidebar: &LushtextSidebar, count: usize) -> Vec<LushtextWorks
 
 fn large_tree(dirs: &[(&str, usize)], height: i32) -> LargeTree {
     let (dir, root) = seed_workspace(dirs);
+    let tree = present_single_folder(dir, root, "virtualized", height);
+    tree.section.expand_folders();
+    tree
+}
+
+/// Save one workspace `id` holding the seeded folder `root` (kept alive by
+/// `dir`), present a window of `height`, and return its one mapped section,
+/// still collapsed.
+fn present_single_folder(
+    dir: tempfile::TempDir,
+    root: PathBuf,
+    id: &str,
+    height: i32,
+) -> LargeTree {
     save_workspaces(vec![WorkspaceConfig::with_one_folder(
-        WorkspaceId::new("virtualized"),
-        "virtualized",
+        WorkspaceId::new(id),
+        id,
         root.clone(),
     )]);
     let (window, sidebar) = present_sidebar_window(height);
     let section = mapped_sections(&sidebar, 1).remove(0);
-    section.expand_folders();
     LargeTree {
         _dir: dir,
         root,
@@ -603,11 +617,7 @@ fn test_pending_selection_survives_a_batched_refresh_while_scrolled_to_the_end()
     });
     flush_after_delay(Duration::from_millis(300));
 
-    let still_selected = selection(&tree.section)
-        .selected_item()
-        .and_downcast::<gtk4::TreeListRow>()
-        .and_then(|row| row.item().and_downcast::<FileTreeItem>())
-        .and_then(|item| item.path());
+    let still_selected = selected_tree_path(&tree.section);
     assert_eq!(still_selected.as_deref(), Some(selected.as_path()));
     let adjustment = outer_adjustment(&tree.sidebar);
     assert!(
@@ -846,27 +856,21 @@ const TALL_WORKSPACE_ROWS: usize = 400;
 
 /// One workspace whose folder directly holds `TALL_WORKSPACE_ROWS` files.
 fn tall_workspace(height: i32) -> LargeTree {
-    ensure_gtk_init();
-    let dir = tempfile::tempdir().expect("tall workspace tempdir");
-    let root = dir.path().join("root");
-    seed_files(&root, TALL_WORKSPACE_ROWS);
-    save_workspaces(vec![WorkspaceConfig::with_one_folder(
-        WorkspaceId::new("tall"),
-        "tall",
-        root.clone(),
-    )]);
-    let (window, sidebar) = present_sidebar_window(height);
-    let section = mapped_sections(&sidebar, 1).remove(0);
-    section.expand_folders();
-    wait_for_refresh_idle(&section);
+    let tree = root_with_files("tall", TALL_WORKSPACE_ROWS, height);
+    tree.section.expand_folders();
+    wait_for_refresh_idle(&tree.section);
     flush_after_delay(Duration::from_millis(400));
-    LargeTree {
-        _dir: dir,
-        root,
-        window,
-        sidebar,
-        section,
-    }
+    tree
+}
+
+/// One workspace `id` whose folder directly holds `count` files, presented
+/// collapsed.
+fn root_with_files(id: &str, count: usize, height: i32) -> LargeTree {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("workspace tempdir");
+    let root = dir.path().join("root");
+    seed_files(&root, count);
+    present_single_folder(dir, root, id, height)
 }
 
 /// Two workspaces whose folders each directly hold `count` files.
@@ -1499,14 +1503,6 @@ fn test_maximize_round_trip_while_scrolled_keeps_the_sidebar_allocated() {
 // with their neighbours, and still across forced layouts — never model rows.
 // ---------------------------------------------------------------------------
 
-fn reveal(window: &LushtextWindow, target: &Path) {
-    gtk4::gio::prelude::ActionGroupExt::activate_action(
-        window,
-        "reveal-workspace-path",
-        Some(&target.to_string_lossy().as_ref().to_variant()),
-    );
-}
-
 /// Activate a reveal and wait for it to reach its terminal status.
 #[track_caller]
 fn reveal_and_settle(
@@ -1515,7 +1511,7 @@ fn reveal_and_settle(
     target: &Path,
 ) -> WorkspaceRevealStatus {
     let before = sidebar.workspace_tree_evidence().reveal_generation;
-    reveal(window, target);
+    activate_reveal_workspace_path(window, target);
     let mut status = WorkspaceRevealStatus::None;
     let settled = wait_until_or_false(Duration::from_secs(30), || {
         let evidence = sidebar.workspace_tree_evidence();
@@ -1537,29 +1533,9 @@ fn reveal_and_settle(
 /// to expand its ancestors itself.
 fn collapsed_tree(dirs: &[(&str, usize)], height: i32) -> LargeTree {
     let (dir, root) = seed_workspace(dirs);
-    save_workspaces(vec![WorkspaceConfig::with_one_folder(
-        WorkspaceId::new("reveal"),
-        "reveal",
-        root.clone(),
-    )]);
-    let (window, sidebar) = present_sidebar_window(height);
-    let section = mapped_sections(&sidebar, 1).remove(0);
-    wait_for_refresh_idle(&section);
-    LargeTree {
-        _dir: dir,
-        root,
-        window,
-        sidebar,
-        section,
-    }
-}
-
-fn selected_path(section: &LushtextWorkspaceSection) -> Option<PathBuf> {
-    selection(section)
-        .selected_item()
-        .and_downcast::<gtk4::TreeListRow>()
-        .and_then(|row| row.item().and_downcast::<FileTreeItem>())
-        .and_then(|item| item.path())
+    let tree = present_single_folder(dir, root, "reveal", height);
+    wait_for_refresh_idle(&tree.section);
+    tree
 }
 
 /// The rendered-bounds contract after a reveal: the row is selected, mapped,
@@ -1578,7 +1554,7 @@ fn assert_revealed_row_rendered(
         .to_string_lossy()
         .into_owned();
     assert_eq!(
-        selected_path(section).as_deref(),
+        selected_tree_path(section).as_deref(),
         Some(target),
         "the revealed row must be the selected one"
     );
@@ -1638,25 +1614,9 @@ fn assert_revealed_row_rendered(
 
 /// One collapsed workspace folder directly holding `count` files.
 fn collapsed_root_with_files(count: usize, height: i32) -> LargeTree {
-    ensure_gtk_init();
-    let dir = tempfile::tempdir().expect("collapsed root tempdir");
-    let root = dir.path().join("root");
-    seed_files(&root, count);
-    save_workspaces(vec![WorkspaceConfig::with_one_folder(
-        WorkspaceId::new("reveal"),
-        "reveal",
-        root.clone(),
-    )]);
-    let (window, sidebar) = present_sidebar_window(height);
-    let section = mapped_sections(&sidebar, 1).remove(0);
-    wait_for_refresh_idle(&section);
-    LargeTree {
-        _dir: dir,
-        root,
-        window,
-        sidebar,
-        section,
-    }
+    let tree = root_with_files("reveal", count, height);
+    wait_for_refresh_idle(&tree.section);
+    tree
 }
 
 #[test]
@@ -1991,7 +1951,7 @@ fn test_a_newer_reveal_supersedes_one_awaiting_a_scan() {
         .workspace_tree_evidence()
         .reveal_superseded_count;
 
-    reveal(&tree.window, &first);
+    activate_reveal_workspace_path(&tree.window, &first);
     flush_after_delay(Duration::from_millis(50));
     let status = reveal_and_settle(&tree.window, &tree.sidebar, &second);
 
@@ -2007,7 +1967,7 @@ fn test_a_newer_reveal_supersedes_one_awaiting_a_scan() {
     flush_after_delay(Duration::from_millis(1_200));
     wait_for_refresh_idle(&tree.section);
     assert_eq!(
-        selected_path(&tree.section).as_deref(),
+        selected_tree_path(&tree.section).as_deref(),
         Some(second.as_path())
     );
     assert_eq!(
@@ -2024,7 +1984,7 @@ fn test_disposing_the_window_mid_reveal_clears_the_blocker() {
     tree.section
         .set_child_scan_delay_for_test(Duration::from_millis(800));
     let target = tree.root.join("slow").join(file_name(10));
-    reveal(&tree.window, &target);
+    activate_reveal_workspace_path(&tree.window, &target);
     flush_after_delay(Duration::from_millis(50));
     assert!(
         tree.sidebar.workspace_path_reveal_pending(),
@@ -2045,29 +2005,23 @@ fn test_disposing_the_window_mid_reveal_clears_the_blocker() {
     window.destroy();
     drop(window);
     flush_after_delay(Duration::from_millis(100));
-    let tree = RevealedSidebar { sidebar };
 
     assert!(
-        !tree.sidebar.workspace_path_reveal_pending(),
+        !sidebar.workspace_path_reveal_pending(),
         "disposal must end the reveal and clear its blocker"
     );
     assert_eq!(
-        tree.sidebar.workspace_tree_evidence().reveal_status,
+        sidebar.workspace_tree_evidence().reveal_status,
         WorkspaceRevealStatus::Superseded
     );
     flush_after_delay(Duration::from_millis(1_200));
-    let evidence = tree.sidebar.workspace_tree_evidence();
+    let evidence = sidebar.workspace_tree_evidence();
     assert_eq!(
         evidence.reveal_generation, generation,
         "no continuation ran"
     );
     assert_eq!(evidence.reveal_status, WorkspaceRevealStatus::Superseded);
     drop(_dir);
-}
-
-/// The one handle a disposal test keeps after its window is gone.
-struct RevealedSidebar {
-    sidebar: LushtextSidebar,
 }
 
 #[test]

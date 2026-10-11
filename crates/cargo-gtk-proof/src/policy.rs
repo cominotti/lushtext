@@ -19,7 +19,6 @@ use crate::read_json_value;
 /// Paths whose changes require a fresh Rust visual proof because they affect rendering or proof logic.
 const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
     "crates/cargo-gtk-proof/src/",
-    WORKSPACE_TREE_SLICE_BIN_PREFIX,
     "crates/lushtext-core/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/ui/",
@@ -27,9 +26,11 @@ const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
     "scripts/visual-geometry-scenarios/",
 ];
 /// Single files outside broad prefixes that still affect visual proof trust.
+///
+/// Every path the workspace-tree rendered-row invariant keys on is
+/// visual-sensitive as well, through [`is_visual_sensitive`], so those paths
+/// are not repeated here.
 const VISUAL_SENSITIVE_EXACT: &[&str] = &[
-    "crates/gtk-lush/widgets/src/scroll_request.rs",
-    "crates/gtk-lush/widgets/src/slice_geometry.rs",
     "crates/lushtext-core/src/model/automation.rs",
     "scripts/check-visual-proof-policy.py",
     "scripts/lushtext-automation.py",
@@ -877,6 +878,7 @@ fn is_visual_sensitive(path: &str) -> bool {
         || VISUAL_SENSITIVE_SUFFIXES
             .iter()
             .any(|suffix| normalized.ends_with(suffix))
+        || workspace_tree_row_anchor_path(&normalized)
 }
 
 fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {

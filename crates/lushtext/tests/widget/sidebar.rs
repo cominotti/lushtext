@@ -878,11 +878,7 @@ fn test_workspace_tree_evidence_reads_are_inert_collapsed_and_expanded() {
     flush_after_delay(Duration::from_millis(300));
     section.set_child_scan_delay_for_test(Duration::from_millis(600));
     let target = _folders.path().join("root").join("nested").join("leaf.txt");
-    gtk4::gio::prelude::ActionGroupExt::activate_action(
-        &window,
-        "reveal-workspace-path",
-        Some(&target.to_string_lossy().as_ref().to_variant()),
-    );
+    crate::common::activate_reveal_workspace_path(&window, &target);
     wait_until(Duration::from_secs(5), || {
         let evidence = sidebar.workspace_tree_evidence();
         let pressure = section.workspace_section_evidence().scan_pressure;

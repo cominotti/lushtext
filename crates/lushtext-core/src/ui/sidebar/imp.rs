@@ -198,8 +198,7 @@ impl ObjectImpl for LushtextSidebar {
     fn dispose(&self) {
         self.visibility_signals.clear();
         // A reveal in flight ends here rather than resuming against a torn-down tree.
-        self.obj()
-            .end_active_reveal(crate::ui::sidebar::policy::WorkspaceRevealStatus::Superseded);
+        self.obj().supersede_active_reveal();
     }
 
     fn constructed(&self) {
@@ -296,8 +295,7 @@ impl WidgetImpl for LushtextSidebar {
     fn unroot(&self) {
         // Leaving the window (its destruction included) ends a reveal in flight:
         // nothing it scrolls can come to rest in a sidebar no window draws.
-        self.obj()
-            .end_active_reveal(crate::ui::sidebar::policy::WorkspaceRevealStatus::Superseded);
+        self.obj().supersede_active_reveal();
         self.parent_unroot();
     }
 }

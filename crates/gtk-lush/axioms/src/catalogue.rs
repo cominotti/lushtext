@@ -335,7 +335,7 @@ const CATALOGUE: &[Axiom] = &[
              is_expanded() straight back to tell a directory from a known-empty or \
              non-directory row, finds scanned children by walking the flattened model, and \
              collapses what it expanded on failure (ui/sidebar/reveal_execution.rs \
-             advance_expansion, finish_reveal)",
+             advance_expansion, terminate_reveal)",
         ],
         probe: Some(probes::probe_a22),
     },

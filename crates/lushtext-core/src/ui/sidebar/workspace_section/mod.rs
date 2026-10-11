@@ -68,7 +68,7 @@ mod watch_targets;
 
 #[cfg(feature = "test-utils")]
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use glib::Object;
@@ -734,16 +734,25 @@ pub(super) fn realized_file_row_overlay_for_path(
     let mut row_widget = section.imp().file_tree_view.first_child();
     while let Some(row) = row_widget {
         if let Some(overlay) = row.first_child().and_downcast::<gtk4::Overlay>()
-            && let Some(expander) = overlay.child().and_downcast::<gtk4::TreeExpander>()
-            && let Some(tree_row) = expander.list_row()
-            && let Some(item) = tree_row.item().and_downcast::<FileTreeItem>()
-            && item.path().as_deref() == Some(target_path)
+            && file_row_overlay_path(&overlay).as_deref() == Some(target_path)
         {
             return Some(overlay);
         }
         row_widget = row.next_sibling();
     }
     None
+}
+
+/// The path of the item a realized file-row overlay currently renders: the one
+/// place the row factory's overlay → expander → list row → item layout is read.
+pub(super) fn file_row_overlay_path(overlay: &gtk4::Overlay) -> Option<PathBuf> {
+    overlay
+        .child()
+        .and_downcast::<gtk4::TreeExpander>()?
+        .list_row()?
+        .item()
+        .and_downcast::<FileTreeItem>()?
+        .path()
 }
 
 /// Activate a row: open files, toggle directories, and ignore reorder drags.

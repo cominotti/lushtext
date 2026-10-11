@@ -4,7 +4,7 @@
 
 use crate::common::{
     emit_key_pressed_on_focus, ensure_gtk_init, fixture, flush_after_delay, flush_events,
-    present_window, realized_list_rows, wait_until,
+    present_window, realized_list_rows, selected_tree_path, wait_until,
 };
 use glib::prelude::ToValue;
 use glib::subclass::prelude::ObjectSubclassIsExt;
@@ -927,19 +927,6 @@ fn action_button_labels(menu_box: &gtk4::Box) -> Vec<String> {
         child = widget.next_sibling();
     }
     labels
-}
-
-fn selected_path(section: &LushtextWorkspaceSection) -> Option<PathBuf> {
-    section
-        .imp()
-        .file_tree_view
-        .model()
-        .and_downcast::<gtk4::SingleSelection>()
-        .and_then(|selection| selection.selected_item())
-        .and_then(|row| row.downcast::<gtk4::TreeListRow>().ok())
-        .and_then(|row| row.item())
-        .and_then(|item| item.downcast::<FileTreeItem>().ok())
-        .and_then(|item| item.path())
 }
 
 fn emit_key_pressed_on_file_tree(
@@ -2259,7 +2246,10 @@ fn test_workspace_row_state_css_keeps_click_selection_transient() {
             .has_css_class("workspace-file-tree")
     );
     select_path(&section, &file);
-    assert_eq!(selected_path(&section).as_deref(), Some(file.as_path()));
+    assert_eq!(
+        selected_tree_path(&section).as_deref(),
+        Some(file.as_path())
+    );
     assert_workspace_row_state(&section, &file, false, false);
 }
 
@@ -2305,7 +2295,7 @@ fn test_workspace_row_state_keyboard_peek_preserves_selection_without_open_marke
     });
 
     assert_eq!(
-        selected_path(&fixture.section).as_deref(),
+        selected_tree_path(&fixture.section).as_deref(),
         Some(fixture.text_a.as_path())
     );
     assert_workspace_row_state(&fixture.section, &fixture.text_a, false, false);
@@ -5450,9 +5440,12 @@ fn test_manual_refresh_keeps_selection_and_expansion() {
 
     wait_until(Duration::from_secs(5), || {
         tree_contains_path(&section, &created)
-            && selected_path(&section).as_deref() == Some(existing.as_path())
+            && selected_tree_path(&section).as_deref() == Some(existing.as_path())
     });
-    assert_eq!(selected_path(&section).as_deref(), Some(existing.as_path()));
+    assert_eq!(
+        selected_tree_path(&section).as_deref(),
+        Some(existing.as_path())
+    );
     assert!(
         row_for_path(&section, &nested)
             .expect("nested directory should still exist")
@@ -5834,7 +5827,10 @@ fn test_targeted_refresh_skips_full_expansion_capture_in_large_tree() {
             .all(|sub| { row_for_path(&section, sub).is_some_and(|row| row.is_expanded()) }),
         "unrelated expanded directories must stay expanded"
     );
-    assert_eq!(selected_path(&section).as_deref(), Some(seed.as_path()));
+    assert_eq!(
+        selected_tree_path(&section).as_deref(),
+        Some(seed.as_path())
+    );
     wait_until(Duration::from_secs(5), || {
         !section
             .workspace_section_evidence()
@@ -6130,7 +6126,10 @@ fn test_large_reconciliation_is_batched_supersedable_and_preserves_state() {
             .workspace_section_evidence()
             .refresh_blocks_readiness
     });
-    assert_eq!(selected_path(&section).as_deref(), Some(selected.as_path()));
+    assert_eq!(
+        selected_tree_path(&section).as_deref(),
+        Some(selected.as_path())
+    );
 
     let reconcile_after = section.workspace_section_evidence();
     let (max_batch, terminal_after, superseded_after, sources) = (
@@ -6496,7 +6495,7 @@ fn test_file_peek_selecting_directory_dismisses_preview() {
     wait_until(Duration::from_secs(2), || !fixture.section.peek_visible());
 
     assert_eq!(
-        selected_path(&fixture.section).as_deref(),
+        selected_tree_path(&fixture.section).as_deref(),
         Some(fixture.directory.as_path())
     );
     assert_tree_focus(&window, &fixture.section);

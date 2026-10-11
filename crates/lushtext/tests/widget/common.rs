@@ -489,6 +489,39 @@ pub fn action_state_bool(window: &lushtext_core::ui::window::LushtextWindow, nam
         .unwrap_or_else(|| panic!("action '{name}' should use bool state"))
 }
 
+/// Activate `win.reveal-workspace-path` for `target`, without draining events:
+/// callers observe the reveal's own wait stages.
+pub fn activate_reveal_workspace_path(
+    window: &lushtext_core::ui::window::LushtextWindow,
+    target: &Path,
+) {
+    use glib::prelude::ToVariant;
+    gio::prelude::ActionGroupExt::activate_action(
+        window,
+        "reveal-workspace-path",
+        Some(&target.to_string_lossy().as_ref().to_variant()),
+    );
+}
+
+/// The path of the file-tree row `section` currently has selected.
+///
+/// Promoted here after the second copy, in `workspace_tree_virtualization.rs`.
+pub fn selected_tree_path(
+    section: &lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection,
+) -> Option<std::path::PathBuf> {
+    use glib::subclass::prelude::ObjectSubclassIsExt;
+    section
+        .imp()
+        .file_tree_view
+        .model()
+        .and_downcast::<gtk4::SingleSelection>()
+        .and_then(|selection| selection.selected_item())
+        .and_downcast::<gtk4::TreeListRow>()
+        .and_then(|row| row.item())
+        .and_downcast::<lushtext_core::ui::sidebar::file_tree_item::FileTreeItem>()
+        .and_then(|item| item.path())
+}
+
 /// Activate a parameterless window action and drain the resulting events.
 pub fn activate_action(window: &lushtext_core::ui::window::LushtextWindow, name: &str) {
     gio::prelude::ActionGroupExt::activate_action(window, name, None);

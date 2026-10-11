@@ -39,10 +39,10 @@
 //!
 //! # Terminals
 //!
-//! Every path reaches exactly one terminal through `finish_reveal`, which retires
-//! the poll source with it. A newer reveal and sidebar disposal end the active one
-//! `superseded`; a stale poll for an older generation finds no active reveal and
-//! stops. A reveal that fails after expanding (`not-found`, `beyond-entry-cap`)
+//! Every path reaches exactly one terminal through `terminate_reveal`, which
+//! retires the poll source with it. A newer reveal and sidebar disposal end the
+//! active one `superseded`; a stale poll for an older generation finds no active
+//! reveal and stops. A reveal that fails after expanding (`not-found`, `beyond-entry-cap`)
 //! collapses what it expanded, so a failure leaves the tree as it found it.
 
 use std::cell::{Cell, RefCell};
@@ -100,6 +100,15 @@ enum RevealStage {
     },
 }
 
+/// Who retires the poll source when a reveal terminates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PollSource {
+    /// The terminal runs outside the poll, so it removes the source itself.
+    Remove,
+    /// The terminal runs inside the poll, whose `Break` removes the source.
+    RemovedByPoll,
+}
+
 /// What one poll decided.
 enum RevealStep {
     Wait,
@@ -130,7 +139,7 @@ impl LushtextSidebar {
     /// Start revealing `target`, superseding any reveal still in flight.
     pub(super) fn begin_workspace_path_reveal(&self, target: &Path) {
         let state = &self.imp().reveal;
-        self.end_active_reveal(WorkspaceRevealStatus::Superseded);
+        self.supersede_active_reveal();
         let generation = state.generation.get().saturating_add(1);
         state.generation.set(generation);
         state.depth.set(None);
@@ -188,19 +197,10 @@ impl LushtextSidebar {
         });
     }
 
-    /// End the active reveal, if any, with `status` (disposal and supersession).
-    pub(super) fn end_active_reveal(&self, status: WorkspaceRevealStatus) {
-        let Some(mut active) = self.imp().reveal.active.borrow_mut().take() else {
-            return;
-        };
-        if let Some(source) = active.source.take() {
-            source.remove();
-        }
-        if status == WorkspaceRevealStatus::Superseded {
-            let count = &self.imp().reveal.superseded_count;
-            count.set(count.get().saturating_add(1));
-        }
-        self.imp().reveal.status.set(status);
+    /// End the active reveal, if any, `superseded` (a newer reveal, sidebar
+    /// disposal, or unrooting), from outside its poll.
+    pub(super) fn supersede_active_reveal(&self) {
+        self.terminate_reveal(WorkspaceRevealStatus::Superseded, PollSource::Remove);
     }
 
     /// Whether a reveal is still expanding, scanning, or settling.
@@ -334,15 +334,15 @@ impl LushtextSidebar {
         }
         self.set_next_ancestor(next);
 
-        if section.tree_row_for_path(&target).is_none() {
+        let Some((position, _)) = section.flattened_row_for_path(&target) else {
             return RevealStep::Finish(missing_component(
                 section,
                 ancestors.last(),
                 &target,
                 false,
             ));
-        }
-        section.select_and_scroll_to(&target);
+        };
+        section.select_and_scroll_to_position(position);
         if let Some(active) = self.imp().reveal.active.borrow_mut().as_mut() {
             active.stage = RevealStage::Settling {
                 frames: 0,
@@ -420,14 +420,23 @@ impl LushtextSidebar {
         }
     }
 
-    /// The exactly-once terminal of a reveal that ended from its own poll.
+    /// The terminal of a reveal that ended from its own poll.
     fn finish_reveal(&self, status: WorkspaceRevealStatus) {
+        // The poll that finishes returns `Break`, which removes its own source;
+        // removing it here as well would be a double removal.
+        self.terminate_reveal(status, PollSource::RemovedByPoll);
+    }
+
+    /// The exactly-once terminal every reveal path reaches.
+    fn terminate_reveal(&self, status: WorkspaceRevealStatus, poll_source: PollSource) {
         let Some(mut active) = self.imp().reveal.active.borrow_mut().take() else {
             return;
         };
-        // The poll that finishes returns `Break`, which removes its own source;
-        // removing it here as well would be a double removal.
-        active.source.take();
+        if let Some(source) = active.source.take()
+            && poll_source == PollSource::Remove
+        {
+            source.remove();
+        }
         let state = &self.imp().reveal;
         state.status.set(status);
         if status == WorkspaceRevealStatus::Superseded {
