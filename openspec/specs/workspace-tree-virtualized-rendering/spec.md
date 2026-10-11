@@ -2,9 +2,7 @@
 
 ## Purpose
 Guarantee that every row in a workspace section's tree model is rendered and reachable regardless of row count, with row widgets bounded by the visible viewport rather than by the list length, so `GtkListView`'s realized-widget cap can never leave a blank band in the sidebar.
-
 ## Requirements
-
 ### Requirement: Every tree-model row is rendered regardless of row count
 The workspace sidebar SHALL render every row present in a workspace section's `GtkTreeListModel`. The set of rows a user can reach by scrolling the workspace-section area MUST equal the set of rows in the model, for any row count up to and including the per-directory truncation placeholder. Rendering completeness MUST NOT depend on `GtkListView`'s realized-widget cap (`GTK_LIST_VIEW_MAX_LIST_ITEMS`, 200 plus extra items).
 
@@ -107,3 +105,20 @@ The virtualized presentation SHALL preserve the no-horizontal-scrollbar contract
 - **WHEN** row 260 of a 300-row directory is scrolled into view
 - **THEN** its rendered row exposes the same accessible label, role, and selected/expanded states as an early row does
 - **AND** the tree's busy state and `workspace-refresh-complete` readiness are unchanged by scrolling
+
+### Requirement: A revealed path reaches its row through user navigation paths
+
+A workspace path reveal SHALL reach its row through the same bounded paths user navigation uses: ancestor expansion through the section's admitted directory scans, selection through the section's `SingleSelection`, and scrolling through `GtkListView::scroll_to` forwarded by the `ViewportSliceBin`. It SHALL NOT scroll the outer sidebar scroller directly, realize rows outside the viewport band, or bypass the per-directory entry cap. After a reveal the section's rendered rows SHALL satisfy the same rendered-bounds contract as after keyboard navigation: rows drawn contiguously, the revealed row drawn wholly inside the outer viewport, and every row drawn at the same position across repeated forced layouts.
+
+#### Scenario: Reveal beyond the cap keeps realized rows bounded
+- **WHEN** a reveal targets row 399 of a 400-row directory
+- **THEN** the number of realized row widgets stays bounded by the viewport, and the revealed row is drawn inside the outer viewport
+
+#### Scenario: Reveal comes to rest
+- **WHEN** a reveal has reported `revealed`
+- **THEN** six forced layouts draw the revealed row at one position, the outer scroller value does not change, and the slice bin's `correction_count()` does not grow
+
+#### Scenario: Reveal of an already visible row does not scroll
+- **WHEN** the target row is already drawn inside the viewport at rest
+- **THEN** the reveal selects it without moving the outer scroller, and the workspace section header is drawn where it was
+
