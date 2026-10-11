@@ -21,11 +21,12 @@
 //! | `membership_execution.rs` | coordination, `execution`: a workspace's folder add / remove / reorder |
 //! | `filter_execution.rs` | coordination, `execution`: the workspace scope filter and its fade |
 //! | `persist_execution.rs` | coordination, `execution`: the `workspaces.json` pipeline |
+//! | `reveal_execution.rs` | coordination, `execution`: the workspace path reveal (`win.reveal-workspace-path`) |
 //! | `callbacks.rs`, `dialogs.rs`, `imp.rs` | **called presentation surfaces** — no role |
 //! | `width_preset.rs` | **not this workflow's**: `WFR-SHELL-GEOMETRY` owns it |
 //! | `file_tree_item.rs` | outside this workflow — no coordination tier |
 //!
-//! # The twelve stage orders, and where control resumes
+//! # The thirteen stage orders, and where control resumes
 //!
 //! Every one of these is deferred somewhere, so "where control resumes" is the part a
 //! reader cannot guess. `⇢` marks a stage boundary control does **not** cross
@@ -45,6 +46,7 @@
 //! | file create / rename / delete | inline entry or dialog ⇢ filesystem worker ⇢ project onto the row → migrate sidecars | in the worker completion, gated by `FileOperationTicket` so a recycled row is never rewritten; sidecar migration is a **call** into the notes workflow, after the row updates settle |
 //! | `Space` peek | key (captured on the list view, gated against focused controls that own their keys) ⇢ read worker ⇢ popover | in the peek worker, rejected if the request token or path changed |
 //! | focused-folder drilldown | activate → reseed rows ⇢ scan ⇢ restore expansion | in the scan for the new root; leaving restores the original folder seeds |
+//! | workspace path reveal | resolve → expand the next ancestor ⇢ await its admitted scan → repeat → select and `scroll_to` ⇢ await the slice bin's settle → terminal | in `reveal_execution`'s one poll source, at **two** resumption points: once the section's child scans settle (only then are `not-found` and `beyond-entry-cap` decided, from the listing the scan produced), and on the first frame the row is mapped inside the viewport with no forwarded request pending in the bin. A newer reveal or disposal ends it `superseded`; the outer scroller is moved only by the bin |
 //!
 //! # The inversion most easily read wrong
 //!
@@ -90,6 +92,7 @@ mod filter_execution;
 mod list_execution;
 mod membership_execution;
 mod persist_execution;
+mod reveal_execution;
 pub mod width_preset;
 pub mod workspace_section;
 
@@ -136,6 +139,16 @@ impl LushtextSidebar {
     /// Whether any section still has watcher lifecycle, mailbox, or refresh work.
     pub(crate) fn workspace_refresh_blocks_readiness(&self) -> bool {
         self.any_section_blocks_refresh_readiness()
+    }
+
+    /// Reveal `target` in its workspace section: expand its ancestors, select its
+    /// row, and scroll it into view through the list's own `scroll_to`.
+    ///
+    /// The stage order and its two resumption points are `reveal_execution`'s; see
+    /// the table above. The outcome is observable as `reveal_status` on the evidence
+    /// surface, and never changes the scope, sidebar visibility, or persistence.
+    pub(crate) fn reveal_workspace_path(&self, target: &Path) {
+        self.begin_workspace_path_reveal(target);
     }
 
     /// Move focus to the first visible workspace file tree.

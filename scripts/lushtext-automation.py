@@ -371,6 +371,11 @@ def command_wait(args: argparse.Namespace) -> ClientResult:
             return failure("wait", "dbus-error", str(exc), {"stdout": output})
         data = {"predicate": predicate, "ok": ok, "status": status, "detail": detail}
 
+    return wait_result(predicate, data)
+
+
+def wait_result(predicate: str, data: dict[str, Any]) -> ClientResult:
+    """Map one parsed readiness reply onto the client's status envelope."""
     if data["ok"]:
         return success("wait", f"{predicate} is ready", data, status="ready")
     status = str(data["status"])
@@ -1434,6 +1439,35 @@ def command_self_test(_args: argparse.Namespace) -> ClientResult:
         error, array = parameter_array_for_action(fake_args, {"action_id": "win.set-sidebar-visible", "parameter_type": "bool"})
         assert error is None
         assert array == "[<true>]"
+        # Sidebar path reveal: a string parameter built from the catalog row,
+        # escaped like any other string, and a typed reveal failure parsed back
+        # as `workflow-failure` rather than readiness or a timeout.
+        fake_args = argparse.Namespace(
+            string="/work/it's here/entry-00399.txt",
+            bool_value=None,
+            uint32=None,
+            variant_json=None,
+        )
+        error, array = parameter_array_for_action(
+            fake_args, {"action_id": "win.reveal-workspace-path", "parameter_type": "string"}
+        )
+        assert error is None
+        assert array == "[<'/work/it\\'s here/entry-00399.txt'>]", array
+        ok, status, detail = parse_wait_ready_tuple(
+            "(false, 'workflow-failure', 'workspace-path-revealed failed because the reveal ended not-found')"
+        )
+        reveal_failure = wait_result(
+            "workspace-path-revealed",
+            {"predicate": "workspace-path-revealed", "ok": ok, "status": status, "detail": detail},
+        )
+        assert reveal_failure.status == "workflow-failure"
+        assert reveal_failure.exit_code == EXIT_CODES["workflow-failure"]
+        assert "not-found" in reveal_failure.detail
+        revealed = wait_result(
+            "workspace-path-revealed",
+            {"predicate": "workspace-path-revealed", "ok": True, "status": "ready", "detail": "ready"},
+        )
+        assert revealed.status == "ready"
         with tempfile.TemporaryDirectory() as directory:
             artifact_dir = Path(directory)
             (artifact_dir / "assertions").mkdir()

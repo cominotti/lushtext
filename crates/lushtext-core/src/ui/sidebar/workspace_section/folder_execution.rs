@@ -412,7 +412,11 @@ impl LushtextWorkspaceSection {
     }
 
     /// Select and scroll to a path after its row exists in the flattened tree model.
-    pub(super) fn select_and_scroll_to(&self, target_path: &Path) {
+    ///
+    /// Also the last stage of a workspace path reveal (`ui/sidebar/reveal_execution.rs`),
+    /// which is why it is visible to the whole workflow: the reveal must reach its row
+    /// through the list's own `scroll_to`, never by moving the outer scroller.
+    pub(in crate::ui::sidebar) fn select_and_scroll_to(&self, target_path: &Path) {
         if let Some(tree_model) = self.imp().tree_model.borrow().as_ref() {
             for i in 0..tree_model.n_items() {
                 if let Some(row) = tree_model.item(i).and_downcast::<gtk4::TreeListRow>()
@@ -435,6 +439,130 @@ impl LushtextWorkspaceSection {
                 }
             }
         }
+    }
+
+    /// The flattened tree row currently showing `path`, if it is in the model.
+    ///
+    /// A linear walk of the flattened model, so callers use it once per reveal
+    /// stage rather than per frame. It reads rows the model already holds and
+    /// expands nothing.
+    pub(in crate::ui::sidebar) fn tree_row_for_path(
+        &self,
+        path: &Path,
+    ) -> Option<gtk4::TreeListRow> {
+        let tree_model = self.imp().tree_model.borrow().as_ref()?.clone();
+        (0..tree_model.n_items()).find_map(|index| {
+            let row = tree_model.item(index).and_downcast::<gtk4::TreeListRow>()?;
+            let item = row.item().and_downcast::<FileTreeItem>()?;
+            (item.path().as_deref() == Some(path)).then_some(row)
+        })
+    }
+
+    /// Whether any child scan, admission retry, or batched reconciliation is still
+    /// in flight for this section — the reveal's "await the admitted scan" gate.
+    pub(in crate::ui::sidebar) fn child_scans_pending(&self) -> bool {
+        super::scan_execution::child_scan_blocks_readiness(self)
+    }
+
+    /// The last entry a truncated directory listing kept, read from the expanded
+    /// `dir_row`'s child store; `None` when the listing is complete.
+    pub(in crate::ui::sidebar) fn truncated_listing_tail(
+        dir_row: &gtk4::TreeListRow,
+    ) -> Option<(PathBuf, bool)> {
+        let children = dir_row.children()?;
+        let count = children.n_items();
+        let last = children
+            .item(count.checked_sub(1)?)?
+            .downcast::<FileTreeItem>()
+            .ok()?;
+        if !last.is_placeholder() {
+            return None;
+        }
+        let kept = children
+            .item(count.checked_sub(2)?)?
+            .downcast::<FileTreeItem>()
+            .ok()?;
+        Some((kept.path()?, kept.is_dir()))
+    }
+
+    /// The realized, mapped row widget whose item is `path`, if GTK currently
+    /// draws one. Walks only the realized children of the list view.
+    pub(in crate::ui::sidebar) fn mapped_row_widget_for_path(
+        &self,
+        path: &Path,
+    ) -> Option<gtk4::Widget> {
+        self.mapped_row_widgets()
+            .into_iter()
+            .find(|(_, row_path)| row_path.as_deref() == Some(path))
+            .map(|(widget, _)| widget)
+    }
+
+    /// Up to `per_side` mapped rows on each side of `row`, in list order.
+    pub(in crate::ui::sidebar) fn mapped_neighbour_rows(
+        &self,
+        row: &gtk4::Widget,
+        per_side: usize,
+    ) -> Vec<gtk4::Widget> {
+        let list_view = self.imp().file_tree_view.get();
+        let mut rows: Vec<(f32, gtk4::Widget)> = self
+            .mapped_row_widgets()
+            .into_iter()
+            .filter_map(|(widget, _)| {
+                widget
+                    .compute_bounds(&list_view)
+                    .map(|bounds| (bounds.y(), widget))
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let Some(position) = rows.iter().position(|(_, widget)| widget == row) else {
+            return Vec::new();
+        };
+        let first = position.saturating_sub(per_side);
+        let last = position
+            .saturating_add(per_side)
+            .min(rows.len().saturating_sub(1));
+        rows.into_iter()
+            .enumerate()
+            .filter(|(index, _)| *index != position && (first..=last).contains(index))
+            .map(|(_, (_, widget))| widget)
+            .collect()
+    }
+
+    /// The root of the focused-folder drilldown, when one is active.
+    pub(in crate::ui::sidebar) fn focused_root(&self) -> Option<PathBuf> {
+        self.imp().drilldown_stack.borrow().last().cloned()
+    }
+
+    /// The slice bin hosting the file tree, read for its forwarded-request evidence.
+    pub(in crate::ui::sidebar) fn file_tree_slice_bin(&self) -> gtk_lush_widgets::ViewportSliceBin {
+        self.imp().file_tree_slice.get()
+    }
+
+    /// The section header, the chrome drawn directly above the file tree.
+    pub(in crate::ui::sidebar) fn header_widget(&self) -> gtk4::Widget {
+        self.imp().header_box.get().upcast()
+    }
+
+    /// Mapped realized row widgets with the path of the item each one shows.
+    fn mapped_row_widgets(&self) -> Vec<(gtk4::Widget, Option<PathBuf>)> {
+        let list_view = self.imp().file_tree_view.get();
+        let mut rows = Vec::new();
+        let mut child = list_view.first_child();
+        while let Some(row_widget) = child {
+            child = row_widget.next_sibling();
+            if !row_widget.is_mapped() {
+                continue;
+            }
+            let path = row_widget
+                .first_child()
+                .and_downcast::<gtk4::Overlay>()
+                .and_then(|overlay| overlay.child().and_downcast::<gtk4::TreeExpander>())
+                .and_then(|expander| expander.list_row())
+                .and_then(|row| row.item().and_downcast::<FileTreeItem>())
+                .and_then(|item| item.path());
+            rows.push((row_widget, path));
+        }
+        rows
     }
 
     /// Keep manual refresh reachable even when there are no folders to reload.

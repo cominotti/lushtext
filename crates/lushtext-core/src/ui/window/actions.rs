@@ -202,6 +202,19 @@ impl LushtextWindow {
                     }
                 })
                 .build(),
+            gio::ActionEntry::builder("reveal-workspace-path")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(|window: &Self, _, parameter| {
+                    let Some(path) = parameter.and_then(glib::Variant::get::<String>) else {
+                        tracing::error!("reveal-workspace-path: expected string parameter");
+                        return;
+                    };
+                    window
+                        .imp()
+                        .sidebar
+                        .reveal_workspace_path(std::path::Path::new(&path));
+                })
+                .build(),
             gio::ActionEntry::builder("set-search-panel-query")
                 .parameter_type(Some(glib::VariantTy::STRING))
                 .activate(|window: &Self, _, parameter| {

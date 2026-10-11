@@ -12,10 +12,13 @@
 //! sanity-check, and the tests assert against those literals rather than against
 //! the constants they came from.
 
-use std::path::{Path, PathBuf};
+use std::cmp::Ordering;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use crate::model::workspace::{WorkspaceScope, WorkspacesFile};
+use crate::model::workspace::{WorkspaceId, WorkspaceScope, WorkspacesFile};
+use crate::model::workspace_visibility::WorkspaceEntryVisibility;
+use crate::services::file_tree::compare_directory_entries;
 
 /// Attempts `create_unique` makes before giving up on a free name.
 ///
@@ -692,6 +695,244 @@ impl WorkspaceScanFlight {
     }
 }
 
+// --- workspace path reveal ---
+
+/// Frame ticks a reveal waits for its row to come to rest before it ends
+/// `unsettled`.
+///
+/// 60: one second at a 60 Hz frame clock. The bin's forwarded request lands one
+/// idle after the frame that recorded it and the re-slice one frame after that,
+/// so a healthy reveal settles within a handful of ticks; the rest is headroom
+/// for a loaded compositor. Reaching the budget is a real finding, never
+/// retried.
+pub const REVEAL_SETTLE_FRAME_BUDGET: u32 = 60;
+
+/// The latest workspace path reveal's observable status.
+///
+/// Serialized through `as_str` into `window.workspace.reveal_status`; the
+/// strings are a documented automation contract.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkspaceRevealStatus {
+    /// No reveal has been requested in this window.
+    #[default]
+    None,
+    /// A reveal is expanding ancestors, awaiting a scan, or settling.
+    Pending,
+    /// The row is selected, drawn inside the sidebar viewport, and at rest.
+    Revealed,
+    /// The path lies under no configured workspace folder.
+    NotInWorkspace,
+    /// The path's workspace is hidden by the current workspace scope.
+    OutsideScope,
+    /// A path component does not exist.
+    NotFound,
+    /// A path component is excluded by the workspace entry visibility rule.
+    HiddenByVisibility,
+    /// A path component lies past the per-directory entry cap.
+    BeyondEntryCap,
+    /// A newer reveal replaced this one, or the sidebar was disposed.
+    Superseded,
+    /// The row did not come to rest within `REVEAL_SETTLE_FRAME_BUDGET`.
+    Unsettled,
+}
+
+impl WorkspaceRevealStatus {
+    /// Stable snapshot and documentation name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Pending => "pending",
+            Self::Revealed => "revealed",
+            Self::NotInWorkspace => "not-in-workspace",
+            Self::OutsideScope => "outside-scope",
+            Self::NotFound => "not-found",
+            Self::HiddenByVisibility => "hidden-by-visibility",
+            Self::BeyondEntryCap => "beyond-entry-cap",
+            Self::Superseded => "superseded",
+            Self::Unsettled => "unsettled",
+        }
+    }
+
+    /// Whether this status is one of the typed failures.
+    #[must_use]
+    pub const fn is_failure(self) -> bool {
+        !matches!(self, Self::None | Self::Pending | Self::Revealed)
+    }
+}
+
+/// Why a reveal was refused before any directory was expanded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceRevealRefusal {
+    /// The path is relative, not normal, or under no configured folder.
+    NotInWorkspace,
+    /// Every folder containing the path belongs to a workspace outside the scope.
+    OutsideScope,
+    /// A component below the folder is not admitted by the visibility rule.
+    HiddenByVisibility,
+}
+
+impl From<WorkspaceRevealRefusal> for WorkspaceRevealStatus {
+    fn from(refusal: WorkspaceRevealRefusal) -> Self {
+        match refusal {
+            WorkspaceRevealRefusal::NotInWorkspace => Self::NotInWorkspace,
+            WorkspaceRevealRefusal::OutsideScope => Self::OutsideScope,
+            WorkspaceRevealRefusal::HiddenByVisibility => Self::HiddenByVisibility,
+        }
+    }
+}
+
+/// Where a reveal goes: the workspace and folder that own the target, and the
+/// directories to expand on the way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRevealPlan {
+    /// Workspace whose section shows the target.
+    pub workspace_id: WorkspaceId,
+    /// Configured folder the target lies under (a top-level row).
+    pub folder: PathBuf,
+    /// Directories to expand, in order: the folder itself, then each directory
+    /// down to the target's parent. Empty when the target is the folder.
+    pub ancestors: Vec<PathBuf>,
+    /// The path to select.
+    pub target: PathBuf,
+}
+
+impl WorkspaceRevealPlan {
+    /// Tree depth of the target row: `0` for a folder row, one more per
+    /// directory below it.
+    #[must_use]
+    pub fn depth(&self) -> u32 {
+        u32::try_from(self.ancestors.len()).unwrap_or(u32::MAX)
+    }
+}
+
+/// Resolve a reveal target to its workspace, folder, and ancestor chain.
+///
+/// Pure: it reads no filesystem state, so whether each component exists is
+/// learned later from the section's own bounded scans. The folder is the
+/// deepest configured folder containing the target among workspaces the scope
+/// covers (the first such workspace on a tie), so nested folder memberships
+/// reveal in the section that shows the row with the shortest chain.
+///
+/// # Errors
+///
+/// `NotInWorkspace` for a relative or non-normal path or one under no folder;
+/// `OutsideScope` when only out-of-scope workspaces contain it;
+/// `HiddenByVisibility` when a component below the folder is not admitted.
+pub fn resolve_workspace_reveal(
+    workspaces: &WorkspacesFile,
+    scope: &WorkspaceScope,
+    visibility: &WorkspaceEntryVisibility,
+    target: &Path,
+) -> Result<WorkspaceRevealPlan, WorkspaceRevealRefusal> {
+    let normal = target.is_absolute()
+        && target
+            .components()
+            .all(|component| !matches!(component, Component::CurDir | Component::ParentDir));
+    if !normal {
+        return Err(WorkspaceRevealRefusal::NotInWorkspace);
+    }
+
+    let mut contained = false;
+    let mut best: Option<(&WorkspaceId, &Path)> = None;
+    for workspace in &workspaces.workspaces {
+        let in_scope = match scope {
+            WorkspaceScope::All => true,
+            WorkspaceScope::Workspace(id) => *id == workspace.id,
+        };
+        for folder in &workspace.folders {
+            if !target.starts_with(&folder.path) {
+                continue;
+            }
+            contained = true;
+            let deeper = best.is_none_or(|(_, current)| {
+                folder.path.components().count() > current.components().count()
+            });
+            if in_scope && deeper {
+                best = Some((&workspace.id, folder.path.as_path()));
+            }
+        }
+    }
+    let Some((workspace_id, folder)) = best else {
+        return Err(if contained {
+            WorkspaceRevealRefusal::OutsideScope
+        } else {
+            WorkspaceRevealRefusal::NotInWorkspace
+        });
+    };
+
+    let relative = target
+        .strip_prefix(folder)
+        .map_err(|_| WorkspaceRevealRefusal::NotInWorkspace)?;
+    let mut ancestors = Vec::new();
+    let mut current = folder.to_path_buf();
+    for component in relative.components() {
+        let name = component.as_os_str();
+        if !visibility.admits(name) {
+            return Err(WorkspaceRevealRefusal::HiddenByVisibility);
+        }
+        ancestors.push(current.clone());
+        current.push(name);
+    }
+    Ok(WorkspaceRevealPlan {
+        workspace_id: workspace_id.clone(),
+        folder: folder.to_path_buf(),
+        ancestors,
+        target: target.to_path_buf(),
+    })
+}
+
+/// Why a scanned directory did not contain the next component of a reveal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceRevealMiss {
+    /// The component does not exist (or would have been kept had it existed).
+    NotFound,
+    /// The directory was truncated and the component may lie past the cap.
+    BeyondEntryCap,
+}
+
+impl From<WorkspaceRevealMiss> for WorkspaceRevealStatus {
+    fn from(miss: WorkspaceRevealMiss) -> Self {
+        match miss {
+            WorkspaceRevealMiss::NotFound => Self::NotFound,
+            WorkspaceRevealMiss::BeyondEntryCap => Self::BeyondEntryCap,
+        }
+    }
+}
+
+/// Classify a component a completed directory scan did not list.
+///
+/// `last_kept` is the last entry the scan kept when it truncated the directory,
+/// `None` when it listed everything. The bounded scan keeps the first entries in
+/// `compare_directory_entries` order, so a missing component that sorts at or
+/// before the last kept entry would have been listed had it existed: that is
+/// `NotFound` even in a truncated directory. Only one that could sort after it
+/// is `BeyondEntryCap`. A component not known to be a directory (the target
+/// itself) is checked as either kind.
+#[must_use]
+pub fn classify_missing_reveal_component(
+    missing: &Path,
+    known_directory: bool,
+    last_kept: Option<(&Path, bool)>,
+) -> WorkspaceRevealMiss {
+    let Some(last_kept) = last_kept else {
+        return WorkspaceRevealMiss::NotFound;
+    };
+    let kinds: &[bool] = if known_directory {
+        &[true]
+    } else {
+        &[true, false]
+    };
+    let could_lie_past_cap = kinds.iter().any(|&is_dir| {
+        compare_directory_entries((missing, is_dir), last_kept) == Ordering::Greater
+    });
+    if could_lie_past_cap {
+        WorkspaceRevealMiss::BeyondEntryCap
+    } else {
+        WorkspaceRevealMiss::NotFound
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1318,5 +1559,282 @@ mod tests {
             vec!["one", "two"],
             "the merge resurrects `two`, which is correct only before the first adoption"
         );
+    }
+
+    // --- workspace path reveal ---
+
+    fn reveal_workspaces() -> WorkspacesFile {
+        use crate::model::workspace::WorkspaceConfig;
+        let mut file = WorkspacesFile::default();
+        file.workspaces.push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new("a"),
+            "a",
+            PathBuf::from("/w/a"),
+        ));
+        file.workspaces.push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new("b"),
+            "b",
+            PathBuf::from("/w/b"),
+        ));
+        file
+    }
+
+    fn hidden_off() -> WorkspaceEntryVisibility {
+        WorkspaceEntryVisibility::new(false, [".git"])
+    }
+
+    #[test]
+    fn reveal_resolves_the_folder_and_every_ancestor_in_order() {
+        let plan = resolve_workspace_reveal(
+            &reveal_workspaces(),
+            &WorkspaceScope::All,
+            &hidden_off(),
+            Path::new("/w/b/x/y/file.txt"),
+        )
+        .expect("resolves");
+        assert_eq!(plan.workspace_id, WorkspaceId::new("b"));
+        assert_eq!(plan.folder, PathBuf::from("/w/b"));
+        assert_eq!(
+            plan.ancestors,
+            vec![
+                PathBuf::from("/w/b"),
+                PathBuf::from("/w/b/x"),
+                PathBuf::from("/w/b/x/y")
+            ]
+        );
+        assert_eq!(plan.depth(), 3);
+    }
+
+    #[test]
+    fn revealing_a_folder_itself_needs_no_expansion() {
+        let plan = resolve_workspace_reveal(
+            &reveal_workspaces(),
+            &WorkspaceScope::All,
+            &hidden_off(),
+            Path::new("/w/a"),
+        )
+        .expect("resolves");
+        assert!(plan.ancestors.is_empty());
+        assert_eq!(plan.depth(), 0);
+    }
+
+    #[test]
+    fn reveal_refuses_paths_outside_every_folder() {
+        for target in [
+            "/elsewhere/file",
+            "/w/ab/file",
+            "relative/file",
+            "/w/a/../b/file",
+        ] {
+            assert_eq!(
+                resolve_workspace_reveal(
+                    &reveal_workspaces(),
+                    &WorkspaceScope::All,
+                    &hidden_off(),
+                    Path::new(target),
+                ),
+                Err(WorkspaceRevealRefusal::NotInWorkspace),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn reveal_refuses_a_workspace_the_scope_hides() {
+        assert_eq!(
+            resolve_workspace_reveal(
+                &reveal_workspaces(),
+                &WorkspaceScope::Workspace(WorkspaceId::new("a")),
+                &hidden_off(),
+                Path::new("/w/b/file"),
+            ),
+            Err(WorkspaceRevealRefusal::OutsideScope)
+        );
+    }
+
+    #[test]
+    fn reveal_refuses_hidden_and_excluded_components_but_not_the_folder_name() {
+        let mut file = WorkspacesFile::default();
+        file.workspaces
+            .push(crate::model::workspace::WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("dot"),
+                "dot",
+                PathBuf::from("/w/.config"),
+            ));
+        // A configured folder is always visible as a root, dot-named or not.
+        assert!(
+            resolve_workspace_reveal(
+                &file,
+                &WorkspaceScope::All,
+                &hidden_off(),
+                Path::new("/w/.config/app.toml")
+            )
+            .is_ok()
+        );
+        for target in ["/w/a/.secret/file", "/w/a/.git", "/w/a/sub/.env"] {
+            assert_eq!(
+                resolve_workspace_reveal(
+                    &reveal_workspaces(),
+                    &WorkspaceScope::All,
+                    &hidden_off(),
+                    Path::new(target),
+                ),
+                Err(WorkspaceRevealRefusal::HiddenByVisibility),
+                "{target}"
+            );
+        }
+        // Hidden files on admits dot-names but still not excluded names.
+        let shown = WorkspaceEntryVisibility::new(true, [".git"]);
+        assert!(
+            resolve_workspace_reveal(
+                &reveal_workspaces(),
+                &WorkspaceScope::All,
+                &shown,
+                Path::new("/w/a/.secret/file")
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            resolve_workspace_reveal(
+                &reveal_workspaces(),
+                &WorkspaceScope::All,
+                &shown,
+                Path::new("/w/a/.git/config")
+            ),
+            Err(WorkspaceRevealRefusal::HiddenByVisibility)
+        );
+    }
+
+    #[test]
+    fn reveal_prefers_the_deepest_in_scope_folder() {
+        let mut file = reveal_workspaces();
+        file.workspaces
+            .push(crate::model::workspace::WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("nested"),
+                "nested",
+                PathBuf::from("/w/a/deep"),
+            ));
+        let plan = resolve_workspace_reveal(
+            &file,
+            &WorkspaceScope::All,
+            &hidden_off(),
+            Path::new("/w/a/deep/file"),
+        )
+        .expect("resolves");
+        assert_eq!(plan.workspace_id, WorkspaceId::new("nested"));
+        assert_eq!(plan.ancestors, vec![PathBuf::from("/w/a/deep")]);
+        // Scoped to the outer workspace, the outer folder wins.
+        let plan = resolve_workspace_reveal(
+            &file,
+            &WorkspaceScope::Workspace(WorkspaceId::new("a")),
+            &hidden_off(),
+            Path::new("/w/a/deep/file"),
+        )
+        .expect("resolves");
+        assert_eq!(plan.workspace_id, WorkspaceId::new("a"));
+        assert_eq!(plan.depth(), 2);
+    }
+
+    #[test]
+    fn reveal_status_names_are_the_documented_contract() {
+        let names: Vec<&str> = [
+            WorkspaceRevealStatus::None,
+            WorkspaceRevealStatus::Pending,
+            WorkspaceRevealStatus::Revealed,
+            WorkspaceRevealStatus::NotInWorkspace,
+            WorkspaceRevealStatus::OutsideScope,
+            WorkspaceRevealStatus::NotFound,
+            WorkspaceRevealStatus::HiddenByVisibility,
+            WorkspaceRevealStatus::BeyondEntryCap,
+            WorkspaceRevealStatus::Superseded,
+            WorkspaceRevealStatus::Unsettled,
+        ]
+        .into_iter()
+        .map(WorkspaceRevealStatus::as_str)
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "none",
+                "pending",
+                "revealed",
+                "not-in-workspace",
+                "outside-scope",
+                "not-found",
+                "hidden-by-visibility",
+                "beyond-entry-cap",
+                "superseded",
+                "unsettled"
+            ]
+        );
+        assert!(!WorkspaceRevealStatus::None.is_failure());
+        assert!(!WorkspaceRevealStatus::Pending.is_failure());
+        assert!(!WorkspaceRevealStatus::Revealed.is_failure());
+        assert!(WorkspaceRevealStatus::Unsettled.is_failure());
+        assert!(WorkspaceRevealStatus::Superseded.is_failure());
+        assert_eq!(REVEAL_SETTLE_FRAME_BUDGET, 60);
+    }
+
+    #[test]
+    fn a_missing_component_in_a_complete_listing_is_not_found() {
+        assert_eq!(
+            classify_missing_reveal_component(Path::new("/d/zzz"), false, None),
+            WorkspaceRevealMiss::NotFound
+        );
+    }
+
+    #[test]
+    fn a_missing_component_sorting_past_the_last_kept_entry_is_beyond_the_cap() {
+        let last = (Path::new("/d/row-09999.txt"), false);
+        assert_eq!(
+            classify_missing_reveal_component(Path::new("/d/row-10040.txt"), false, Some(last)),
+            WorkspaceRevealMiss::BeyondEntryCap
+        );
+        // It would have been kept had it existed.
+        assert_eq!(
+            classify_missing_reveal_component(Path::new("/d/row-00001.txt"), false, Some(last)),
+            WorkspaceRevealMiss::NotFound
+        );
+        // A directory sorts before every file, so a missing directory never
+        // lies past a file.
+        assert_eq!(
+            classify_missing_reveal_component(Path::new("/d/zzz"), true, Some(last)),
+            WorkspaceRevealMiss::NotFound
+        );
+        // Unknown kind: as a file it could lie past the cap.
+        assert_eq!(
+            classify_missing_reveal_component(Path::new("/d/zzz"), false, Some(last)),
+            WorkspaceRevealMiss::BeyondEntryCap
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn reveal_ancestor_chain_always_lies_inside_the_chosen_folder(
+            folder in proptest::collection::vec("[a-z]{1,6}", 1..4),
+            relative in proptest::collection::vec("[a-z][a-z0-9.]{0,6}", 0..6),
+        ) {
+            let folder_path: PathBuf = std::iter::once("/".to_string()).chain(folder).collect();
+            let target: PathBuf = relative.iter().fold(folder_path.clone(), |path, part| path.join(part));
+            let mut file = WorkspacesFile::default();
+            file.workspaces.push(crate::model::workspace::WorkspaceConfig::with_one_folder(
+                WorkspaceId::new("p"),
+                "p",
+                folder_path.clone(),
+            ));
+            let plan = resolve_workspace_reveal(
+                &file,
+                &WorkspaceScope::All,
+                &WorkspaceEntryVisibility::new(true, Vec::<String>::new()),
+                &target,
+            ).expect("every generated target lies under the folder");
+            proptest::prop_assert_eq!(&plan.folder, &folder_path);
+            proptest::prop_assert_eq!(plan.ancestors.len(), relative.len());
+            for (index, ancestor) in plan.ancestors.iter().enumerate() {
+                proptest::prop_assert!(ancestor.starts_with(&plan.folder));
+                proptest::prop_assert!(target.starts_with(ancestor) && ancestor != &target);
+                proptest::prop_assert_eq!(ancestor.components().count(), folder_path.components().count() + index);
+            }
+        }
     }
 }

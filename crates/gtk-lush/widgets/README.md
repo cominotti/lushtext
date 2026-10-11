@@ -101,7 +101,10 @@ erase the request, because a `GtkListBase` re-anchors on any value it is handed.
 `allocation_count()` and
 `correction_count()` are layout diagnostics: a bin at rest stops allocating and
 needs no corrections, and either count growing across idle frames names which
-side of the contract is broken.
+side of the contract is broken. `outer_request_pending()` is the third piece of
+evidence: it is true while a forwarded request waits for the idle that moves
+the outer scroller (or while a divergence is held for the next allocation), so a
+caller can wait for a `scroll_to` to land without counting frames.
 
 `RenderHoldOverlay` captures already-rendered child pixels into a non-targetable
 cover picture, hides the live child, lets callers warm the live child beneath

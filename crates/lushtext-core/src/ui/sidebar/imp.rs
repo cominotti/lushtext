@@ -132,6 +132,8 @@ pub struct LushtextSidebar {
     /// Settings handlers for the visibility keys, released on dispose so a
     /// destroyed sidebar never refreshes sections it no longer owns.
     pub visibility_signals: gtk_lush_signals::SignalBag,
+    /// The window's workspace path reveal: latest status and the one active reveal.
+    pub(super) reveal: super::reveal_execution::RevealState,
 }
 
 impl Default for LushtextSidebar {
@@ -169,6 +171,7 @@ impl Default for LushtextSidebar {
             persistence_flush_waiters: RefCell::default(),
             settings: gio::Settings::new(crate::config::APP_ID),
             visibility_signals: gtk_lush_signals::SignalBag::new(),
+            reveal: super::reveal_execution::RevealState::default(),
         }
     }
 }
@@ -194,6 +197,9 @@ impl ObjectSubclass for LushtextSidebar {
 impl ObjectImpl for LushtextSidebar {
     fn dispose(&self) {
         self.visibility_signals.clear();
+        // A reveal in flight ends here rather than resuming against a torn-down tree.
+        self.obj()
+            .end_active_reveal(crate::ui::sidebar::policy::WorkspaceRevealStatus::Superseded);
     }
 
     fn constructed(&self) {
@@ -286,5 +292,13 @@ impl ObjectImpl for LushtextSidebar {
     }
 }
 
-impl WidgetImpl for LushtextSidebar {}
+impl WidgetImpl for LushtextSidebar {
+    fn unroot(&self) {
+        // Leaving the window (its destruction included) ends a reveal in flight:
+        // nothing it scrolls can come to rest in a sidebar no window draws.
+        self.obj()
+            .end_active_reveal(crate::ui::sidebar::policy::WorkspaceRevealStatus::Superseded);
+        self.parent_unroot();
+    }
+}
 impl BoxImpl for LushtextSidebar {}

@@ -446,6 +446,20 @@ widget-scoped, diagnostic-only, or known gaps. Stable setup actions include:
   Drafts group (the drafts set-aside area) in the active window. It deletes
   nothing, writes no app data, and only stops this process's soft-bound review
   notice; deleting preserved drafts stays behind the page's own confirmations.
+- `win.reveal-workspace-path` (diagnostic-only) with an absolute path inside a
+  configured workspace folder. It expands the path's collapsed ancestors through
+  the sidebar's own bounded scans, selects the row, and scrolls it into view
+  through the file tree's `scroll_to`, so the slice bin forwards the request
+  exactly as it does for a user. Wait on `workspace-path-revealed`: it is ready
+  once the row is drawn inside the sidebar viewport with no forwarded scroll
+  pending, and reports `workflow-failure` for a typed failure
+  (`not-in-workspace`, `outside-scope`, `not-found`, `hidden-by-visibility`,
+  `beyond-entry-cap`, `superseded`, `unsettled`). The outcome is
+  `workspace.reveal_status` with `reveal_generation` and `reveal_depth`; the
+  revealed row, its section header, the sidebar viewport, and up to eight
+  unlabelled neighbour rows appear as `workspace-*` visual-geometry surfaces.
+  A reveal never changes the scope, the sidebar's visibility, persistence, or any
+  tab, and a failed reveal collapses whatever it expanded.
 
 Use target-state actions for scenario setup whenever possible. They are easier
 to reason about than parity toggles because repeated calls converge on the same

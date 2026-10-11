@@ -74,6 +74,30 @@ fn help_overlay_command_is_a_supported_exported_action() {
 }
 
 #[test]
+fn reveal_workspace_path_is_a_diagnostic_string_action() {
+    let row = developer_reference_rows()
+        .into_iter()
+        .find(|row| row.action_id == "win.reveal-workspace-path")
+        .expect("the sidebar reveal action should be cataloged");
+
+    assert_eq!(row.scope, ActionScope::Window);
+    assert_eq!(row.parameter_type, ActionValueType::String);
+    assert_eq!(row.state_type, ActionValueType::None);
+    assert_eq!(row.surfaces, vec![ActionSurface::DbusAction]);
+    assert_eq!(row.exposure, ActionExposure::Exported);
+    assert_eq!(
+        row.external_activation,
+        ExternalActivationSafety::DiagnosticOnly
+    );
+    assert!(row.coverage_lanes.contains(&ActionCoverageLane::Widget));
+    assert!(
+        row.coverage_lanes
+            .contains(&ActionCoverageLane::VisualSmoke)
+    );
+    assert_eq!(row.docs_anchor, "action-win-reveal-workspace-path");
+}
+
+#[test]
 fn catalog_audit_fails_on_duplicate_action_ids() {
     let entry = minimal_entry("save", "action-win-save");
     let catalog = [entry, entry];

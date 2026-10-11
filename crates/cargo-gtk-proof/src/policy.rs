@@ -19,6 +19,7 @@ use crate::read_json_value;
 /// Paths whose changes require a fresh Rust visual proof because they affect rendering or proof logic.
 const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
     "crates/cargo-gtk-proof/src/",
+    WORKSPACE_TREE_SLICE_BIN_PREFIX,
     "crates/lushtext-core/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/ui/",
@@ -27,6 +28,8 @@ const VISUAL_SENSITIVE_PREFIXES: &[&str] = &[
 ];
 /// Single files outside broad prefixes that still affect visual proof trust.
 const VISUAL_SENSITIVE_EXACT: &[&str] = &[
+    "crates/gtk-lush/widgets/src/scroll_request.rs",
+    "crates/gtk-lush/widgets/src/slice_geometry.rs",
     "crates/lushtext-core/src/model/automation.rs",
     "scripts/check-visual-proof-policy.py",
     "scripts/lushtext-automation.py",
@@ -56,6 +59,33 @@ const NATIVE_MINIMAP_ROLE_HOME_PREFIX: &str = "crates/lushtext-core/src/ui/edito
 /// subdirectories, four of them migrated role homes no predicate has ever
 /// protected.
 const SHELL_GEOMETRY_ROLE_HOME_PREFIX: &str = "crates/lushtext-core/src/ui/window/geometry/";
+/// Invariant proving the workspace sidebar's rendered rows against screenshot
+/// anchors after a `win.reveal-workspace-path` reveal.
+const WORKSPACE_TREE_ROW_ANCHORS_INVARIANT: &str = "workspace-tree-rendered-row-anchors";
+/// The `ViewportSliceBin` widget directory, keyed as a prefix so a later split
+/// of its `imp.rs` cannot disarm the gate.
+const WORKSPACE_TREE_SLICE_BIN_PREFIX: &str = "crates/gtk-lush/widgets/src/viewport_slice_bin/";
+/// Prefix shared by both reveal manifests (`workspace-tree-reveal.json` and
+/// `workspace-tree-reveal-at-rest.json`).
+const WORKSPACE_TREE_REVEAL_SCENARIO_PREFIX: &str =
+    "scripts/visual-geometry-scenarios/workspace-tree-reveal";
+/// Single files whose changes can move the sidebar's rendered rows: the slice
+/// bin's pure geometry and request forwarding, the workspace section's list
+/// host, the reveal coordination, and the section template.
+///
+/// The whole of `ui/sidebar/` is deliberately **not** a key: dialog and
+/// persistence edits cannot move a rendered row and must not demand a live
+/// session. `scripts/check-visual-proof-policy.py` mirrors this set exactly.
+const WORKSPACE_TREE_ROW_ANCHOR_EXACT: &[&str] = &[
+    "crates/gtk-lush/widgets/src/scroll_request.rs",
+    "crates/gtk-lush/widgets/src/slice_geometry.rs",
+    "crates/lushtext-core/src/ui/sidebar/reveal_execution.rs",
+    "crates/lushtext-core/src/ui/sidebar/workspace_section/folder_execution.rs",
+    "crates/lushtext-core/src/ui/sidebar/workspace_section/imp.rs",
+    "crates/lushtext-core/src/ui/sidebar/workspace_section/row_factory.rs",
+    "resources/ui/workspace-section.blp",
+    "resources/ui/workspace-section.ui",
+];
 /// Invariant id shared with the Python visual runner and generated summaries.
 const NATIVE_MINIMAP_HIGHLIGHT_INVARIANT: &str = "native-minimap-highlight-anchors";
 /// Animation invariant id shared with existing smoke evidence.
@@ -87,6 +117,22 @@ pub(crate) fn run_self_tests() -> Result<(), String> {
         || is_visual_sensitive("docs/automation.md")
     {
         return Err("visual-sensitive path classification failed".to_string());
+    }
+    for (path, required) in [
+        ("crates/gtk-lush/widgets/src/scroll_request.rs", true),
+        (
+            "scripts/visual-geometry-scenarios/workspace-tree-reveal-at-rest.json",
+            true,
+        ),
+        ("crates/lushtext-core/src/services/draft_service.rs", false),
+    ] {
+        let requires = required_invariants_for_changes(&[path.to_string()])
+            .contains(&WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string());
+        if requires != required || (required && !is_visual_sensitive(path)) {
+            return Err(format!(
+                "workspace-tree rendered-row invariant mapping failed for {path}"
+            ));
+        }
     }
     assert_eq_detail(
         &required_invariants_for_changes(&["resources/style/style.css".to_string()]),
@@ -460,6 +506,13 @@ fn visual_failure_detail(
 ) -> String {
     let mut lines = vec![heading.to_string(), "Changed files:".to_string()];
     lines.extend(visual_changes.iter().map(|path| format!("  - {path}")));
+    let required = required_invariants_for_changes(visual_changes);
+    if !required.is_empty() {
+        lines.push(format!(
+            "Required pixel invariants: {}",
+            required.join(", ")
+        ));
+    }
     lines.push(detail.to_string());
     lines.push(format!("Artifact summary: {}", summary_path.display()));
     lines.join("\n")
@@ -728,11 +781,10 @@ fn case_has_actionable_pixel_evidence(case: &Value) -> bool {
         return false;
     }
     evidence.iter().any(|row| {
-        row.is_object()
-            && row
-                .get("before_row_y")
-                .is_some_and(|value| !value.is_null())
-            && row.get("after_row_y").is_some_and(|value| !value.is_null())
+        let has = |field: &str| row.get(field).is_some_and(|value| !value.is_null());
+        // A before/after anchor compares two detections; a reference anchor
+        // compares one after detection with the app's reported row.
+        row.is_object() && has("after_row_y") && (has("before_row_y") || has("reference_top_y"))
     })
 }
 
@@ -850,9 +902,23 @@ fn required_invariants_for_changes(paths: &[String]) -> Vec<String> {
         {
             required.push(NATIVE_MINIMAP_HIGHLIGHT_INVARIANT.to_string());
         }
+        if workspace_tree_row_anchor_path(&path)
+            && !required
+                .iter()
+                .any(|item| item == WORKSPACE_TREE_ROW_ANCHORS_INVARIANT)
+        {
+            required.push(WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string());
+        }
     }
     required.sort();
     required
+}
+
+/// Whether `path` can move the workspace sidebar's rendered rows.
+fn workspace_tree_row_anchor_path(path: &str) -> bool {
+    path.starts_with(WORKSPACE_TREE_SLICE_BIN_PREFIX)
+        || path.starts_with(WORKSPACE_TREE_REVEAL_SCENARIO_PREFIX)
+        || WORKSPACE_TREE_ROW_ANCHOR_EXACT.contains(&path)
 }
 
 fn required_animation_invariants_for_changes(paths: &[String]) -> Vec<String> {
@@ -1108,6 +1174,74 @@ mod tests {
         }
     }
     use super::*;
+
+    /// Path-keyed-gate parity with `scripts/check-visual-proof-policy.py`,
+    /// whose `--self-test` asserts the same three cases.
+    #[test]
+    fn slice_bin_sensitive_paths_require_the_workspace_tree_row_invariant() {
+        for path in [
+            "crates/gtk-lush/widgets/src/scroll_request.rs",
+            "crates/gtk-lush/widgets/src/slice_geometry.rs",
+            "crates/gtk-lush/widgets/src/viewport_slice_bin/imp.rs",
+            "crates/lushtext-core/src/ui/sidebar/workspace_section/row_factory.rs",
+            "crates/lushtext-core/src/ui/sidebar/reveal_execution.rs",
+            "resources/ui/workspace-section.blp",
+            "scripts/visual-geometry-scenarios/workspace-tree-reveal.json",
+            "scripts/visual-geometry-scenarios/workspace-tree-reveal-at-rest.json",
+        ] {
+            assert!(is_visual_sensitive(path), "{path} must be visual-sensitive");
+            assert!(
+                required_invariants_for_changes(&[path.to_string()])
+                    .contains(&WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string()),
+                "{path} must require the workspace-tree rendered-row invariant"
+            );
+        }
+        for path in [
+            "crates/lushtext-core/src/services/draft_service.rs",
+            "crates/lushtext-core/src/ui/sidebar/dialogs.rs",
+            "crates/lushtext-core/src/ui/sidebar/persist_execution.rs",
+            "crates/gtk-lush/widgets/src/clip_bin/mod.rs",
+        ] {
+            assert!(
+                !required_invariants_for_changes(&[path.to_string()])
+                    .contains(&WORKSPACE_TREE_ROW_ANCHORS_INVARIANT.to_string()),
+                "{path} must not require the workspace-tree rendered-row invariant"
+            );
+        }
+    }
+
+    #[test]
+    fn reference_anchor_rows_count_as_actionable_pixel_evidence() {
+        let case = serde_json::json!({
+            "status": "passed",
+            "pixel_anchor_evidence": [{
+                "name": "workspace-revealed-row-ink",
+                "mode": "after-against-reference-surface",
+                "after_row_y": 210,
+                "reference_top_y": 210,
+                "status": "passed"
+            }],
+            "final_geometry": {"before": [], "after": []}
+        });
+        assert!(case_has_actionable_pixel_evidence(&case));
+        let mut missing_reference = case;
+        missing_reference["pixel_anchor_evidence"][0]["reference_top_y"] = Value::Null;
+        assert!(!case_has_actionable_pixel_evidence(&missing_reference));
+    }
+
+    #[test]
+    fn a_missing_summary_names_the_required_invariants() {
+        let detail = visual_failure_detail(
+            "heading",
+            &["crates/gtk-lush/widgets/src/scroll_request.rs".to_string()],
+            "missing summary",
+            Path::new("build/smoke/visual-geometry/summary.json"),
+        );
+        assert!(
+            detail.contains(WORKSPACE_TREE_ROW_ANCHORS_INVARIANT),
+            "{detail}"
+        );
+    }
 
     #[test]
     fn self_tests_cover_policy_negative_cases() {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added `ViewportSliceBin::outer_request_pending()`, a read-only evidence
+  accessor beside `allocation_count()` and `correction_count()`: true while a
+  child-originated request waits for the idle that moves the outer scroller (or
+  while a divergence is held back for classification on the next allocation),
+  false at rest. Callers that wait for a `scroll_to` to land, such as
+  LushText's sidebar path reveal, settle on it instead of counting frames.
 - Fixed two `ViewportSliceBin`s in one outer scroller landing the outer at the
   sum of their deltas when both forwarded a request in the same frame, where
   neither request was honoured. The forwarding idle now moves the outer to the

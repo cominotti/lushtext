@@ -80,7 +80,7 @@
 //! possible: that reintroduces the scattered getters this surface replaced.
 //!
 //! `workspace_snapshot_evidence` is not such an accessor. It is the *single derivation*
-//! of the ten fields the exported `window.workspace` snapshot serializes, and the full
+//! of the thirteen fields the exported `window.workspace` snapshot serializes, and the full
 //! surface builds itself from its result rather than repeating it — so the snapshot
 //! avoids allocating every section's collections per D-Bus poll while the two values
 //! still cannot drift. An earlier revision hand-copied the body into both, which is the
@@ -176,12 +176,24 @@ pub struct WorkspaceTreeEvidence {
     pub sections_with_watch_worker_inflight: usize,
     /// Sections whose watcher settled as unavailable for the current targets.
     pub sections_with_watch_unavailable: usize,
+
+    // --- workspace path reveal (`reveal_execution`) ---
+    /// The latest reveal's status; `None` before any reveal in this window.
+    pub reveal_status: super::policy::WorkspaceRevealStatus,
+    /// The latest reveal's request generation; `0` before any reveal.
+    pub reveal_generation: u64,
+    /// Tree depth of the latest reveal's target row, once resolved.
+    pub reveal_depth: Option<u32>,
+    /// Reveals that ended `superseded` (by a newer reveal or by disposal).
+    pub reveal_superseded_count: u64,
+    /// Whether a reveal is still expanding, scanning, or settling.
+    pub reveal_pending: bool,
 }
 
 impl LushtextSidebar {
     /// Derive the scalars the exported `window.workspace` snapshot serializes.
     ///
-    /// **This is not a second derivation — it is *the* derivation of these ten fields.**
+    /// **This is not a second derivation — it is *the* derivation of these thirteen fields.**
     /// [`LushtextSidebar::workspace_tree_evidence`] calls it and moves the result into
     /// its own struct, so there is exactly one place each of these values is computed
     /// and drift between the surface and the snapshot is not expressible. An earlier
@@ -189,13 +201,14 @@ impl LushtextSidebar {
     /// scattered-getter regression the evidence rules forbid.
     ///
     /// **Why the snapshot stops here rather than reading the full surface.** The
-    /// snapshot is read on every read-only D-Bus poll and serializes ten scalars, while
+    /// snapshot is read on every read-only D-Bus poll and serializes thirteen scalars, while
     /// the full surface additionally clones each section's watch-target vector,
     /// expansion set, and both file-row identity sets. Building all of that to serialize
-    /// ten numbers turns an O(1) poll into O(sections x rows) allocation.
+    /// thirteen numbers turns an O(1) poll into O(sections x rows) allocation.
     ///
     /// Inert for the same reasons as the full surface: it reads `workspaces_file`,
-    /// `current_scope`, the persistence state, and one `Cell`, and reaches none of the
+    /// `current_scope`, the persistence state, the filter `Cell`, and the reveal's
+    /// cells, and reaches none of the
     /// six materializing accessors named in the module doc.
     #[must_use]
     pub(crate) fn workspace_snapshot_evidence(&self) -> WorkspaceSnapshotEvidence {
@@ -236,6 +249,8 @@ impl LushtextSidebar {
                 state.in_flight_generation().is_some(),
             )
         };
+        // Cells only: reading a reveal neither polls it nor touches the tree.
+        let reveal = self.workspace_reveal_observation();
 
         WorkspaceSnapshotEvidence {
             scope_kind,
@@ -248,6 +263,9 @@ impl LushtextSidebar {
             persistence_inflight,
             persistence_pending,
             filter_animation_active: imp.workspace_filter_animation_active.get(),
+            reveal_status: reveal.status,
+            reveal_generation: reveal.generation,
+            reveal_depth: reveal.depth,
         }
     }
 
@@ -261,7 +279,7 @@ impl LushtextSidebar {
         let imp = self.imp();
 
         // --- workspace list, scope, and the persistence booleans ---
-        // Delegated, not repeated: these ten values have exactly one derivation, which
+        // Delegated, not repeated: these thirteen values have exactly one derivation, which
         // the exported snapshot also reads. Every borrow it takes is dropped before it
         // returns, so nothing here is read inside a live borrow.
         let shared = self.workspace_snapshot_evidence();
@@ -319,6 +337,7 @@ impl LushtextSidebar {
             .iter()
             .filter(|section| section.watcher_unavailability_is_current)
             .count();
+        let reveal = self.workspace_reveal_observation();
 
         WorkspaceTreeEvidence {
             workspace_count: shared.workspace_count,
@@ -347,6 +366,11 @@ impl LushtextSidebar {
             refresh_blocks_readiness,
             sections_with_watch_worker_inflight,
             sections_with_watch_unavailable,
+            reveal_status: shared.reveal_status,
+            reveal_generation: shared.reveal_generation,
+            reveal_depth: shared.reveal_depth,
+            reveal_superseded_count: reveal.superseded_count,
+            reveal_pending: reveal.pending,
         }
     }
 }
@@ -368,6 +392,9 @@ pub(crate) struct WorkspaceSnapshotEvidence {
     pub(crate) persistence_inflight: bool,
     pub(crate) persistence_pending: bool,
     pub(crate) filter_animation_active: bool,
+    pub(crate) reveal_status: super::policy::WorkspaceRevealStatus,
+    pub(crate) reveal_generation: u64,
+    pub(crate) reveal_depth: Option<u32>,
 }
 
 /// One complete observation of a single workspace **section**'s state.

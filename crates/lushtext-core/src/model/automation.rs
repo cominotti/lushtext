@@ -36,6 +36,8 @@ pub const AUTOMATION_WORKFLOW_REPLACE_PREVIEW: &str = "replace-preview";
 pub const AUTOMATION_WORKFLOW_SESSION_RESTORE: &str = "session-restore";
 /// Stable workflow ID for minimap layout and marker projection refresh.
 pub const AUTOMATION_WORKFLOW_MINIMAP_REFRESH: &str = "minimap-refresh";
+/// Stable workflow ID for a workspace path reveal (`win.reveal-workspace-path`).
+pub const AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL: &str = "workspace-path-reveal";
 
 /// One live workflow observation supplied by the UI automation adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -260,6 +262,9 @@ pub const READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION: &str = "workspace-filter
 pub const READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION: &str = "workspace-sidebar-animation";
 /// Stable serialized blocker ID for workspace-wide content search.
 pub const READINESS_BLOCKER_WORKSPACE_SEARCH: &str = "workspace-search";
+/// Stable serialized blocker ID for a workspace path reveal still expanding,
+/// scanning, or settling.
+pub const READINESS_BLOCKER_WORKSPACE_PATH_REVEAL: &str = "workspace-path-reveal";
 
 /// Blocker universe for the broad `idle` predicate.
 ///
@@ -279,6 +284,7 @@ const IDLE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
     READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
     READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_MINIMAP_REFRESH,
     READINESS_BLOCKER_SAVE,
@@ -343,6 +349,14 @@ const RECOVERY_RESTORE_COMPLETE_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
 ];
+/// Blockers that keep a workspace path reveal from reaching its terminal.
+const WORKSPACE_PATH_REVEALED_BLOCKERS: &[&str] = &[
+    READINESS_BLOCKER_APP_STARTUP,
+    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+    READINESS_BLOCKER_WORKSPACE_PERSIST,
+    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+];
 /// Layout and workflow blockers that can make screenshot geometry stale.
 const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_APP_STARTUP,
@@ -354,6 +368,7 @@ const VISUAL_GEOMETRY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
     READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
@@ -378,6 +393,7 @@ const ACCESSIBILITY_SETTLED_BLOCKERS: &[&str] = &[
     READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
     READINESS_BLOCKER_WORKSPACE_PERSIST,
     READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
     READINESS_BLOCKER_COMMAND_PALETTE_INDEX,
     READINESS_BLOCKER_COMMAND_PALETTE_SEARCH,
     READINESS_BLOCKER_WORKSPACE_SEARCH,
@@ -411,6 +427,9 @@ pub enum AutomationReadinessPredicate {
     Idle,
     /// Accessibility tree metadata, focus targets, and announcement-sensitive work settled.
     AccessibilitySettled,
+    /// The latest workspace path reveal reached `revealed`; a typed failure reports
+    /// `workflow-failure`.
+    WorkspacePathRevealed,
 }
 
 impl AutomationReadinessPredicate {
@@ -418,7 +437,7 @@ impl AutomationReadinessPredicate {
     ///
     /// Keep this order append-only so generated docs, D-Bus artifacts, and smoke
     /// outputs diff predictably across releases.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::AppStartup,
         Self::WindowActionsExported,
         Self::FileOpenComplete,
@@ -430,6 +449,7 @@ impl AutomationReadinessPredicate {
         Self::VisualGeometrySettled,
         Self::Idle,
         Self::AccessibilitySettled,
+        Self::WorkspacePathRevealed,
     ];
 
     /// Parse the D-Bus predicate name.
@@ -456,6 +476,7 @@ impl AutomationReadinessPredicate {
             Self::VisualGeometrySettled => "visual-geometry-settled",
             Self::Idle => "idle",
             Self::AccessibilitySettled => "accessibility-settled",
+            Self::WorkspacePathRevealed => "workspace-path-revealed",
         }
     }
 
@@ -498,6 +519,9 @@ impl AutomationReadinessPredicate {
             Self::AccessibilitySettled => {
                 "Accessibility tree metadata, focus targets, row rebinding, search or preview rendering, and announcement-sensitive work are settled."
             }
+            Self::WorkspacePathRevealed => {
+                "The latest workspace path reveal selected its row, drew it inside the sidebar viewport, and left no forwarded scroll pending; a typed reveal failure reports workflow-failure."
+            }
         }
     }
 
@@ -516,6 +540,7 @@ impl AutomationReadinessPredicate {
             Self::VisualGeometrySettled => VISUAL_GEOMETRY_SETTLED_BLOCKERS,
             Self::Idle => IDLE_BLOCKERS,
             Self::AccessibilitySettled => ACCESSIBILITY_SETTLED_BLOCKERS,
+            Self::WorkspacePathRevealed => WORKSPACE_PATH_REVEALED_BLOCKERS,
         }
     }
 
@@ -1035,6 +1060,14 @@ pub struct AutomationWorkspaceSnapshot {
     pub excluded_names: Vec<String>,
     /// Whether `excluded_names` omitted entries past the snapshot cap.
     pub excluded_names_truncated: bool,
+    /// The latest workspace path reveal's status: `none`, `pending`, `revealed`,
+    /// or one typed failure.
+    pub reveal_status: String,
+    /// The latest reveal's request generation; `0` before any reveal.
+    pub reveal_generation: u64,
+    /// Tree depth of the latest reveal's target row (`0` for a folder row), once
+    /// resolved.
+    pub reveal_depth: Option<u32>,
 }
 
 /// Command palette state that avoids exposing result row bodies.
@@ -1500,6 +1533,12 @@ mod tests {
                 "Accessibility tree",
                 READINESS_BLOCKER_PREVIEW_ANIMATION,
             ),
+            (
+                AutomationReadinessPredicate::WorkspacePathRevealed,
+                "workspace-path-revealed",
+                "workspace path reveal",
+                READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+            ),
         ];
 
         assert_eq!(AutomationReadinessPredicate::ALL.len(), cases.len());
@@ -1530,6 +1569,54 @@ mod tests {
         assert_eq!(
             AutomationReadinessPredicate::from_name("future-ready"),
             None
+        );
+    }
+
+    #[test]
+    fn workspace_path_reveal_blocks_only_the_aggregate_predicates_and_its_own() {
+        use AutomationReadinessPredicate as P;
+        for predicate in [
+            P::VisualGeometrySettled,
+            P::AccessibilitySettled,
+            P::Idle,
+            P::WorkspacePathRevealed,
+        ] {
+            assert!(
+                predicate.includes_blocker(READINESS_BLOCKER_WORKSPACE_PATH_REVEAL),
+                "{} must wait on a reveal",
+                predicate.as_str()
+            );
+        }
+        for predicate in [
+            P::AppStartup,
+            P::WindowActionsExported,
+            P::FileOpenComplete,
+            P::SearchComplete,
+            P::SaveComplete,
+            P::WorkspaceRefreshComplete,
+            P::SessionRestoreComplete,
+            P::RecoveryRestoreComplete,
+        ] {
+            assert!(
+                !predicate.includes_blocker(READINESS_BLOCKER_WORKSPACE_PATH_REVEAL),
+                "{} must not wait on a reveal",
+                predicate.as_str()
+            );
+        }
+        assert_eq!(
+            P::WorkspacePathRevealed.blockers(),
+            &[
+                READINESS_BLOCKER_APP_STARTUP,
+                READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+                READINESS_BLOCKER_WORKSPACE_PERSIST,
+                READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+                READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+            ]
+        );
+        assert_eq!(
+            P::ALL.last(),
+            Some(&P::WorkspacePathRevealed),
+            "the predicate list is append-only"
         );
     }
 

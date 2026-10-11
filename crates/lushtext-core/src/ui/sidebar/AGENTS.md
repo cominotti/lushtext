@@ -8,7 +8,7 @@ This folder owns the multi-workspace sidebar adapter and its workspace-section s
 - Keep the top selector row responsible for editing the shared current workspace scope, not just local visibility.
 - Keep per-workspace header and tree behavior inside `workspace_section/`.
 - Keep dialog helpers and callback plumbing in sibling modules instead of re-inlining them into `mod.rs`.
-- **`mod.rs` is the workflow's narrative facade.** It narrates the twelve stage orders and delegates every one; it must own no timer, no admission bookkeeping, no generation counter, and no widget mutation. Its normative ceiling is **370 physical lines**.
+- **`mod.rs` is the workflow's narrative facade.** It narrates the thirteen stage orders and delegates every one; it must own no timer, no admission bookkeeping, no generation counter, and no widget mutation. Its normative ceiling is **370 physical lines**.
 - Keep this workflow's **pure decisions** in `policy.rs` and its **seam value
   objects** in `seams.rs`, both at this directory (the workflow's canonical role
   home). `policy.rs` must import no `gtk4`, `glib`, `gio`, `libadwaita`, or
@@ -39,6 +39,7 @@ its own module doc lists them.
 | `membership_execution.rs` | coordination `execution`: folder add/remove/reorder |
 | `filter_execution.rs` | coordination `execution`: scope filter and its fade |
 | `persist_execution.rs` | coordination `execution`: the `workspaces.json` pipeline |
+| `reveal_execution.rs` | coordination `execution`: the workspace path reveal (`win.reveal-workspace-path`) |
 | `callbacks.rs`, `dialogs.rs`, `imp.rs` | **called presentation surfaces** — no role, no `policy.rs`, no `evidence.rs` |
 | `width_preset.rs` | **not this workflow's** — `WFR-SHELL-GEOMETRY` owns it |
 | `file_tree_item.rs` | outside this workflow — no coordination tier |
@@ -57,6 +58,7 @@ diff to understand.
 - The top workspace-selector row stays fixed outside the scroller. Do not let it scroll away.
 - Each persisted workspace owns one ordered folder set and therefore one workspace section. Keep one top-level tree entry per configured folder, in stored order, and preserve empty workspaces as real sections.
 - Width presets are selected from `Preferences > Workspace` and keep their `Small=20%`, `Comfy=30%`, `Large=40%` identities while the window layer clamps their visible width on large displays. Do not reinterpret them as local paned fractions.
+- A programmatic reveal reaches its row only through user paths: `TreeListRow::set_expanded(true)` per ancestor (so admitted scans, the 10,000-entry cap, and the generation guards apply), the section's `SingleSelection`, and `GtkListView::scroll_to` forwarded by the slice bin. Never move the outer scroller from the reveal, and settle on `ViewportSliceBin::outer_request_pending()` rather than elapsed frames. A failed reveal collapses what it expanded.
 - Preserve the no-horizontal-scrollbar contract. Prefer tooltips, focused folders, or explicit drill-down behavior over widening the sidebar or clipping silently.
 - Keep workspace-section async tree loading off the main thread and preserve deduplication/placeholder behavior for large directories.
 - Give each materialized child store one `policy::WorkspaceScanFlight` (this workflow's own pure policy, relocated out of `model/` with mutation parity): one admitted scan and one replaceable latest weak/scalar request. Capture strong store ownership and the current mirror only at worker admission, and require lifetime, store, target-generation, and scan-generation agreement before reconciliation or empty-folder evidence may publish.

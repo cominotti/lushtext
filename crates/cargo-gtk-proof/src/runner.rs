@@ -20,8 +20,8 @@ use crate::{
     artifacts,
     geometry::{
         Insets, VisualBox, app_pixel_anchor_geometry as shared_app_pixel_anchor_geometry,
-        pixel_anchor_box, png_rect, png_rect_from_value, row_offset, safe_name, scroll_anchor,
-        selected_surface_rows as select_surface_rows, surface_box, visual_geometry,
+        optional_surface, pixel_anchor_box, png_rect, png_rect_from_value, row_offset, safe_name,
+        scroll_anchor, selected_surface_rows as select_surface_rows, surface_box, visual_geometry,
     },
     host, live, model, png, policy, process, read_json_value, warnings, write_envelope,
 };
@@ -816,7 +816,13 @@ fn compare_case_artifacts(
             regions.push(report);
         }
     }
-    let allowed = evaluate_allowed_region_relationships(case, before_snapshot, after_snapshot);
+    let rest_snapshot = read_after_rest_snapshot(case_dir)?;
+    let allowed = evaluate_allowed_region_relationships(
+        case,
+        before_snapshot,
+        after_snapshot,
+        rest_snapshot.as_ref(),
+    );
     if allowed.get("status").and_then(Value::as_str) != Some("passed") {
         status = "failed";
     }
@@ -879,6 +885,26 @@ fn evaluate_pixel_anchors(
     let mut app_vs_rendered_disagreements = Vec::new();
     let mut detections: HashMap<String, PixelAnchorDetectionPair> = HashMap::new();
     for spec in anchor_specs {
+        if let Some(reference_surface) = spec.get("reference_surface").and_then(Value::as_str) {
+            let report = evaluate_reference_pixel_anchor(
+                spec,
+                reference_surface,
+                after_snapshot,
+                after_screenshot,
+                comparison_dir,
+            )?;
+            if report.get("status").and_then(Value::as_str) != Some("passed") {
+                status = "failed";
+                app_vs_rendered_disagreements.push(json!({
+                    "name": report.get("name").cloned().unwrap_or(Value::Null),
+                    "status": "app-vs-rendered-anchor-disagreement",
+                    "reference_surface": reference_surface,
+                    "screen_y_delta": report.get("screen_y_delta").cloned().unwrap_or(Value::Null),
+                }));
+            }
+            reports.push(report);
+            continue;
+        }
         let name = required_str(spec, "name")?;
         let detector = required_str(spec, "detector")?;
         let min_pixels = spec
@@ -994,6 +1020,90 @@ fn evaluate_pixel_anchors(
     }))
 }
 
+/// Check one anchor against the app's own geometry in the after capture.
+///
+/// Used where the before capture has nothing to compare with, such as a row
+/// that only comes into view after the action. The detector runs on the after
+/// screenshot alone, and its row must equal the top edge of
+/// `reference_surface` in the after snapshot plus the manifest's
+/// `reference_offset_y` (the detected feature's fixed distance below that
+/// edge, `0` by default), within `max_screen_y_delta`. That equality is the
+/// claim a snapshot cannot make on its own: that the pixels are drawn where
+/// the widget reports them.
+fn evaluate_reference_pixel_anchor(
+    spec: &Value,
+    reference_surface: &str,
+    after_snapshot: &Value,
+    after_screenshot: &Path,
+    comparison_dir: &Path,
+) -> Result<Value, String> {
+    let name = required_str(spec, "name")?;
+    let detector = required_str(spec, "detector")?;
+    let min_pixels = spec
+        .get("min_pixels")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(1);
+    let maximum = spec
+        .get("max_screen_y_delta")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let offset = spec
+        .get("reference_offset_y")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let base = json!({
+        "name": name,
+        "detector": detector,
+        "mode": "after-against-reference-surface",
+        "crop_surface": spec.get("crop_surface").cloned().unwrap_or(Value::Null),
+        "crop_insets": spec.get("crop_insets").cloned().unwrap_or_else(|| json!({})),
+        "reference_surface": reference_surface,
+        "reference_offset_y": offset,
+        "max_screen_y_delta": maximum,
+    });
+    let reference = match surface_box(after_snapshot, reference_surface) {
+        Ok(reference) => reference,
+        Err(error) => {
+            let mut report = base;
+            report["status"] = json!("failed");
+            report["failure_reason"] = json!(format!("reference surface unavailable: {error}"));
+            return Ok(report);
+        }
+    };
+    let after_rect = rect_for_anchor_search(after_snapshot, spec)?;
+    let after_crop = comparison_dir.join(format!("{}-after-anchor.png", safe_name(name)));
+    let detection = png::detect_pixel_anchor_in_file(
+        after_screenshot,
+        name,
+        after_rect,
+        detector,
+        min_pixels,
+        Some(&after_crop),
+    )?;
+    let row_y = detection.row_y;
+    let detected = detection.status == "passed";
+    let screen_y_delta = row_y.map(|row_y| (i64::from(row_y) - (reference.y + offset)).abs());
+    let passed = detected && screen_y_delta.is_some_and(|delta| delta <= maximum);
+    let mut report = base;
+    report["after"] = json!(detection);
+    report["after_row_y"] = json!(row_y);
+    report["reference_top_y"] = json!(reference.y);
+    report["screen_y_delta"] = json!(screen_y_delta);
+    report["artifacts"] = json!({
+        "after_crop": artifacts::safe_display_path(&after_crop),
+    });
+    report["status"] = json!(if passed { "passed" } else { "failed" });
+    if !passed {
+        report["failure_reason"] = json!(if detected {
+            "rendered-row-differs-from-reported-row"
+        } else {
+            "row-content-not-detected"
+        });
+    }
+    Ok(report)
+}
+
 /// Enforce declared relationships between screenshot-derived anchor rows.
 fn evaluate_relative_pixel_anchors(
     case: &Value,
@@ -1073,11 +1183,27 @@ struct PixelAnchorDetectionPair {
     after_row_y: Option<i32>,
 }
 
+/// Read the optional second after-readiness snapshot some scenarios capture.
+///
+/// `workspace-tree-reveal` takes it to prove the revealed row has come to rest;
+/// other scenario types never write it, so its absence is not an error here.
+fn read_after_rest_snapshot(case_dir: &Path) -> Result<Option<Value>, String> {
+    let path = case_dir.join(live::AFTER_REST_SNAPSHOT_FILE);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    read_json_value(&path, "after-rest geometry snapshot").map(Some)
+}
+
 /// Check app geometry relationships that are allowed to change during a case.
+///
+/// `rest_snapshot` is a second snapshot taken after readiness, used only by
+/// scenario types that prove a surface has stopped moving.
 fn evaluate_allowed_region_relationships(
     case: &Value,
     before_snapshot: &Value,
     after_snapshot: &Value,
+    rest_snapshot: Option<&Value>,
 ) -> Value {
     let scenario_type = case
         .pointer("/manifest/scenario_type")
@@ -1158,6 +1284,16 @@ fn evaluate_allowed_region_relationships(
                 header_open_precedes_new_tab(after_snapshot),
             );
         }
+        model::WORKSPACE_TREE_REVEAL_SCENARIO => {
+            push_workspace_tree_reveal_relationships(
+                &mut rows,
+                &mut status,
+                case,
+                before_snapshot,
+                after_snapshot,
+                rest_snapshot,
+            );
+        }
         "replace-preview" => {
             push_relationship(
                 &mut rows,
@@ -1186,6 +1322,212 @@ fn evaluate_allowed_region_relationships(
         "specs": case.pointer("/manifest/allowed_changing_regions").cloned().unwrap_or_default(),
         "assertions": rows,
     })
+}
+
+/// The revealed row's surface in the visual-geometry snapshot.
+const REVEALED_ROW_SURFACE: &str = "workspace-revealed-row";
+/// The sidebar's outer scroller viewport surface.
+const SIDEBAR_VIEWPORT_SURFACE: &str = "workspace-sidebar-viewport";
+/// The revealed row's section header surface.
+const REVEALED_SECTION_HEADER_SURFACE: &str = "workspace-revealed-section-header";
+/// Prefix of the up to eight unlabelled neighbour row surfaces.
+const REVEALED_NEIGHBOUR_PREFIX: &str = "workspace-revealed-neighbour-";
+/// The application reports at most this many neighbour rows.
+const REVEALED_NEIGHBOUR_LIMIT: usize = 8;
+
+/// Push every relationship a `workspace-tree-reveal` case proves.
+///
+/// The status check comes first so a failed reveal is named for what it is
+/// rather than only through the missing surfaces it leaves behind.
+fn push_workspace_tree_reveal_relationships(
+    rows: &mut Vec<Value>,
+    status: &mut &'static str,
+    case: &Value,
+    before_snapshot: &Value,
+    after_snapshot: &Value,
+    rest_snapshot: Option<&Value>,
+) {
+    push_relationship(
+        rows,
+        status,
+        "reveal-status-revealed",
+        reveal_status_is_revealed(after_snapshot),
+    );
+    push_relationship(
+        rows,
+        status,
+        "revealed-row-inside-sidebar-viewport",
+        revealed_row_inside_sidebar_viewport(after_snapshot),
+    );
+    push_relationship(
+        rows,
+        status,
+        "neighbour-rows-contiguous",
+        neighbour_rows_contiguous(after_snapshot),
+    );
+    push_relationship(
+        rows,
+        status,
+        "revealed-row-at-rest",
+        revealed_row_at_rest(after_snapshot, rest_snapshot),
+    );
+    if case.get("fixture_kind").and_then(Value::as_str) == Some("already-visible") {
+        push_relationship(
+            rows,
+            status,
+            "outer-scroll-unchanged",
+            outer_scroll_unchanged(before_snapshot, after_snapshot),
+        );
+        push_relationship(
+            rows,
+            status,
+            "section-header-unchanged",
+            section_header_unchanged(before_snapshot, after_snapshot),
+        );
+    }
+}
+
+fn reveal_status_is_revealed(snapshot: &Value) -> Result<(), String> {
+    match snapshot
+        .pointer("/window/workspace/reveal_status")
+        .and_then(Value::as_str)
+    {
+        Some("revealed") => Ok(()),
+        Some(other) => Err(format!("workspace path reveal ended with status {other}")),
+        None => Err("snapshot is missing window.workspace.reveal_status".to_string()),
+    }
+}
+
+fn revealed_row_inside_sidebar_viewport(snapshot: &Value) -> Result<(), String> {
+    let row = surface_box(snapshot, REVEALED_ROW_SURFACE)?;
+    let viewport = surface_box(snapshot, SIDEBAR_VIEWPORT_SURFACE)?;
+    if row.y >= viewport.y
+        && row.y + row.height <= viewport.y + viewport.height
+        && row.x >= viewport.x
+        && row.x + row.width <= viewport.x + viewport.width
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{REVEALED_ROW_SURFACE} {row:?} lies outside {SIDEBAR_VIEWPORT_SURFACE} {viewport:?}"
+        ))
+    }
+}
+
+/// Every reported row, revealed or neighbour, in drawing order.
+fn reveal_rows_in_order(snapshot: &Value) -> Result<Vec<(String, VisualBox)>, String> {
+    let mut rows = vec![(
+        REVEALED_ROW_SURFACE.to_string(),
+        surface_box(snapshot, REVEALED_ROW_SURFACE)?,
+    )];
+    for index in 0..REVEALED_NEIGHBOUR_LIMIT {
+        let name = format!("{REVEALED_NEIGHBOUR_PREFIX}{index}");
+        if optional_surface(snapshot, &name).is_some() {
+            rows.push((name.clone(), surface_box(snapshot, &name)?));
+        }
+    }
+    rows.sort_by_key(|(_, rect)| rect.y);
+    Ok(rows)
+}
+
+/// Rows on screen around the revealed row tile at one constant pitch.
+///
+/// A list row's border box excludes its CSS margin (`navigation-sidebar` rows
+/// keep a small vertical margin), so consecutive boxes are separated by the
+/// same gap rather than touching. The relationship holds when every gap equals
+/// the run's common gap, exactly: one row drawn even one pixel off makes the
+/// gaps on either side of it differ, and that pair is named. A negative gap is
+/// an overlap and always fails.
+fn neighbour_rows_contiguous(snapshot: &Value) -> Result<(), String> {
+    let rows = reveal_rows_in_order(snapshot)?;
+    if rows.len() < 2 {
+        return Err("no neighbour rows were reported next to the revealed row".to_string());
+    }
+    let gaps: Vec<i64> = rows
+        .windows(2)
+        .map(|pair| pair[1].1.y - (pair[0].1.y + pair[0].1.height))
+        .collect();
+    let mut counts = std::collections::BTreeMap::new();
+    for gap in &gaps {
+        *counts.entry(*gap).or_insert(0usize) += 1;
+    }
+    // The most common gap is the row margin; ties go to the smaller gap.
+    let common = counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+        .map_or(0, |(gap, _)| *gap);
+    for (pair, gap) in rows.windows(2).zip(&gaps) {
+        let (previous_name, previous) = &pair[0];
+        let (next_name, next) = &pair[1];
+        if *gap < 0 || *gap != common {
+            return Err(format!(
+                "{next_name} {next:?} does not start where {previous_name} {previous:?} ends \
+                 plus the rows' common {common}px margin (gap {gap}px)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn revealed_row_at_rest(after: &Value, rest: Option<&Value>) -> Result<(), String> {
+    let rest = rest.ok_or_else(|| {
+        format!(
+            "the after-rest snapshot ({}) was not captured",
+            live::AFTER_REST_SNAPSHOT_FILE
+        )
+    })?;
+    let mut names = vec![
+        SIDEBAR_VIEWPORT_SURFACE.to_string(),
+        REVEALED_SECTION_HEADER_SURFACE.to_string(),
+        REVEALED_ROW_SURFACE.to_string(),
+    ];
+    names.extend(
+        reveal_rows_in_order(after)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| name != REVEALED_ROW_SURFACE),
+    );
+    for name in names {
+        let first = surface_box(after, &name)?;
+        let second = surface_box(rest, &name)?;
+        if first != second {
+            return Err(format!(
+                "{name} moved after readiness: {first:?} then {second:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sidebar_scroll_value_milli(snapshot: &Value) -> Result<i64, String> {
+    scroll_anchor(snapshot, SIDEBAR_VIEWPORT_SURFACE)
+        .and_then(|row| row.get("y_value_milli"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("snapshot has no {SIDEBAR_VIEWPORT_SURFACE} scroll anchor"))
+}
+
+fn outer_scroll_unchanged(before: &Value, after: &Value) -> Result<(), String> {
+    let before_value = sidebar_scroll_value_milli(before)?;
+    let after_value = sidebar_scroll_value_milli(after)?;
+    if before_value == after_value {
+        Ok(())
+    } else {
+        Err(format!(
+            "the sidebar scrolled from {before_value} to {after_value} (milli-pixels) revealing a visible row"
+        ))
+    }
+}
+
+fn section_header_unchanged(before: &Value, after: &Value) -> Result<(), String> {
+    let before_rect = surface_box(before, REVEALED_SECTION_HEADER_SURFACE)?;
+    let after_rect = surface_box(after, REVEALED_SECTION_HEADER_SURFACE)?;
+    if before_rect == after_rect {
+        Ok(())
+    } else {
+        Err(format!(
+            "{REVEALED_SECTION_HEADER_SURFACE} moved from {before_rect:?} to {after_rect:?}"
+        ))
+    }
 }
 
 fn replace_preview_state_visible(snapshot: &Value) -> Result<(), String> {
@@ -1835,7 +2177,9 @@ fn gsettings_plan(case: &model::ExpandedCaseOverview) -> Vec<GSettingsValue> {
         GSettingsValue::new("split-view-layout-migrated", "true"),
         GSettingsValue::new(
             "workspace-sidebar-visible",
-            if case.direction.as_deref() == Some("hide") {
+            // A sidebar toggle starts visible only to hide it; a reveal proves
+            // rows inside the sidebar, so it stays visible throughout.
+            if matches!(case.direction.as_deref(), Some("hide" | "reveal")) {
                 "true"
             } else {
                 "false"
@@ -1888,6 +2232,9 @@ fn write_fixture(case: &model::ExpandedCaseOverview, case_dir: &Path) -> Result<
         Some("minimap-sidebar") => minimap_fixture_text(case),
         Some("open-popover") => "Open popover visual geometry fixture\n".to_string(),
         Some("replace-preview") => replace_preview_fixture_text(),
+        Some(model::WORKSPACE_TREE_REVEAL_SCENARIO) => {
+            "Workspace tree reveal visual geometry fixture\n".to_string()
+        }
         _ => "Command palette visual geometry fixture\n".to_string(),
     };
     std::fs::write(&path, text)
@@ -2375,6 +2722,368 @@ mod tests {
                 }
             }
         })
+    }
+
+    /// A reveal snapshot: viewport at y=100..500, header at `header_y`, the
+    /// revealed row at `row_y`, two neighbours above and two below, each 34 px
+    /// tall, and the sidebar scroll anchor at `scroll_milli`.
+    fn reveal_snapshot(
+        status: &str,
+        header_y: i64,
+        row_y: i64,
+        gap_after_first: i64,
+        scroll_milli: i64,
+    ) -> serde_json::Value {
+        let mut surfaces = vec![
+            surface_row("workspace-sidebar-viewport", 0, 100, 300, 400),
+            surface_row("workspace-revealed-section-header", 0, header_y, 300, 40),
+            surface_row("workspace-revealed-row", 6, row_y, 288, 34),
+        ];
+        let tops = [
+            row_y - 68 - gap_after_first,
+            row_y - 34,
+            row_y + 34,
+            row_y + 68,
+        ];
+        for (index, top) in tops.into_iter().enumerate() {
+            surfaces.push(surface_row(
+                &format!("workspace-revealed-neighbour-{index}"),
+                6,
+                top,
+                288,
+                34,
+            ));
+        }
+        serde_json::json!({
+            "window": {
+                "workspace": {"reveal_status": status, "reveal_generation": 3, "reveal_depth": 1},
+                "visual_geometry": {
+                    "surfaces": surfaces,
+                    "scroll_anchors": [{
+                        "name": "workspace-sidebar-viewport",
+                        "at_top": scroll_milli == 0,
+                        "y_value_milli": scroll_milli
+                    }]
+                }
+            }
+        })
+    }
+
+    /// A 120x80 screenshot of a sidebar row whose top edge is drawn at
+    /// `drawn_top`: label ink from 10px below it, ending 25px below it.
+    fn sidebar_row_screenshot(path: &Path, drawn_top: usize) {
+        let background = (250, 250, 250, 255);
+        let ink = (46, 52, 54, 255);
+        let mut rows = vec![vec![background; 120]; 80];
+        for row in rows.iter_mut().skip(drawn_top + 10).take(16) {
+            for x in (20..100).step_by(3) {
+                row[x] = ink;
+            }
+        }
+        png::write_rgba_fixture(path, &rows).expect("write screenshot");
+    }
+
+    fn reveal_anchor_spec() -> Value {
+        serde_json::json!({
+            "name": "workspace-revealed-row-ink",
+            "crop_surface": "workspace-revealed-row",
+            "detector": "workspace-row-ink-bottom-edge",
+            "reference_surface": "workspace-revealed-row",
+            "reference_offset_y": 25,
+            "min_pixels": 3,
+            "max_screen_y_delta": 0
+        })
+    }
+
+    fn reveal_anchor_snapshot(row_y: i64) -> Value {
+        serde_json::json!({
+            "window": {"visual_geometry": {"surfaces": [
+                surface_row("workspace-revealed-row", 6, row_y, 108, 36)
+            ]}}
+        })
+    }
+
+    #[test]
+    fn reference_pixel_anchor_passes_when_the_row_is_drawn_at_the_reported_row() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let screenshot = root.path().join("after.png");
+        sidebar_row_screenshot(&screenshot, 30);
+
+        let report = evaluate_reference_pixel_anchor(
+            &reveal_anchor_spec(),
+            "workspace-revealed-row",
+            &reveal_anchor_snapshot(30),
+            &screenshot,
+            root.path(),
+        )
+        .expect("anchor report");
+
+        assert_eq!(report["status"], "passed", "{report}");
+        assert_eq!(report["screen_y_delta"], 0);
+    }
+
+    #[test]
+    fn reference_pixel_anchor_fails_a_row_drawn_two_pixels_below_its_report() {
+        // The v0.8.1 content-box defect: drawn 2px off while every snapshot
+        // relationship still holds.
+        let root = tempfile::tempdir().expect("tempdir");
+        let screenshot = root.path().join("after.png");
+        sidebar_row_screenshot(&screenshot, 32);
+
+        let report = evaluate_reference_pixel_anchor(
+            &reveal_anchor_spec(),
+            "workspace-revealed-row",
+            &reveal_anchor_snapshot(30),
+            &screenshot,
+            root.path(),
+        )
+        .expect("anchor report");
+
+        assert_eq!(report["status"], "failed", "{report}");
+        assert_eq!(report["screen_y_delta"], 2);
+        assert_eq!(
+            report["failure_reason"],
+            "rendered-row-differs-from-reported-row"
+        );
+    }
+
+    #[test]
+    fn reference_pixel_anchor_fails_when_no_reveal_surface_is_reported() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let screenshot = root.path().join("after.png");
+        sidebar_row_screenshot(&screenshot, 30);
+        let snapshot = serde_json::json!({"window": {"visual_geometry": {"surfaces": []}}});
+
+        let report = evaluate_reference_pixel_anchor(
+            &reveal_anchor_spec(),
+            "workspace-revealed-row",
+            &snapshot,
+            &screenshot,
+            root.path(),
+        )
+        .expect("anchor report");
+
+        assert_eq!(report["status"], "failed");
+        assert!(
+            report["failure_reason"]
+                .as_str()
+                .expect("reason")
+                .contains("reference surface unavailable")
+        );
+    }
+
+    #[test]
+    fn reveal_cases_keep_the_workspace_sidebar_visible() {
+        let value: Value = serde_json::from_str(include_str!(
+            "../../../scripts/visual-geometry-scenarios/workspace-tree-reveal.json"
+        ))
+        .expect("scenario json");
+        let cases = model::expanded_visual_cases(&value).expect("cases");
+        let plan = serde_json::json!({ "gsettings": gsettings_plan(&cases[0]) });
+
+        assert_gsettings_value(&plan, "workspace-sidebar-visible", "true");
+    }
+
+    fn reveal_case(fixture_kind: &str) -> serde_json::Value {
+        serde_json::json!({
+            "fixture_kind": fixture_kind,
+            "manifest": {"scenario_type": "workspace-tree-reveal"}
+        })
+    }
+
+    fn relationship_row<'a>(report: &'a Value, name: &str) -> &'a Value {
+        report["assertions"]
+            .as_array()
+            .expect("assertion rows")
+            .iter()
+            .find(|row| row["name"] == name)
+            .unwrap_or_else(|| panic!("missing relationship {name}: {report}"))
+    }
+
+    #[test]
+    fn reveal_relationships_pass_for_a_contiguous_resting_revealed_row() {
+        let before = reveal_snapshot("none", 60, 200, 0, 0);
+        let after = reveal_snapshot("revealed", 60, 200, 0, 0);
+        let report = evaluate_allowed_region_relationships(
+            &reveal_case("already-visible"),
+            &before,
+            &after,
+            Some(&after),
+        );
+
+        assert_eq!(report["status"], "passed", "{report}");
+        for name in [
+            "reveal-status-revealed",
+            "revealed-row-inside-sidebar-viewport",
+            "neighbour-rows-contiguous",
+            "revealed-row-at-rest",
+            "outer-scroll-unchanged",
+            "section-header-unchanged",
+        ] {
+            assert_eq!(
+                relationship_row(&report, name)["status"],
+                "passed",
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrolling_reveal_cases_do_not_require_an_unchanged_outer_scroller() {
+        let before = reveal_snapshot("none", 60, 200, 0, 0);
+        let after = reveal_snapshot("revealed", -9_000, 200, 0, 9_000_000);
+        let report = evaluate_allowed_region_relationships(
+            &reveal_case("beyond-cap"),
+            &before,
+            &after,
+            Some(&after),
+        );
+
+        assert_eq!(report["status"], "passed", "{report}");
+        let names: Vec<_> = report["assertions"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| row["name"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(!names.contains(&"outer-scroll-unchanged".to_string()));
+        assert!(!names.contains(&"section-header-unchanged".to_string()));
+    }
+
+    #[test]
+    fn rows_separated_by_a_constant_css_margin_are_contiguous() {
+        let mut after = reveal_snapshot("revealed", 60, 200, 0, 0);
+        // Re-space every row at a 36px pitch: 34px boxes with a 2px margin.
+        let surfaces = after["window"]["visual_geometry"]["surfaces"]
+            .as_array_mut()
+            .expect("surfaces");
+        for surface in surfaces.iter_mut() {
+            let name = surface["name"].as_str().unwrap_or_default().to_string();
+            let offset = match name.as_str() {
+                "workspace-revealed-neighbour-0" => -2,
+                "workspace-revealed-neighbour-1" => -1,
+                "workspace-revealed-neighbour-2" => 1,
+                "workspace-revealed-neighbour-3" => 2,
+                _ => continue,
+            };
+            let y = surface["rect"]["y"].as_i64().expect("y");
+            surface["rect"]["y"] = serde_json::json!(y + offset * 2);
+        }
+        assert_eq!(neighbour_rows_contiguous(&after), Ok(()));
+    }
+
+    #[test]
+    fn a_gapped_neighbour_row_fails_contiguity_and_names_both_rectangles() {
+        let after = reveal_snapshot("revealed", 60, 200, 1, 0);
+        let report = evaluate_allowed_region_relationships(
+            &reveal_case("beyond-cap"),
+            &after,
+            &after,
+            Some(&after),
+        );
+
+        assert_eq!(report["status"], "failed");
+        let row = relationship_row(&report, "neighbour-rows-contiguous");
+        assert_eq!(row["status"], "failed");
+        let detail = row["detail"].as_str().expect("detail");
+        assert!(
+            detail.contains("workspace-revealed-neighbour-0"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("workspace-revealed-neighbour-1"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn a_non_revealed_status_fails_the_case_with_the_status_named() {
+        let after = reveal_snapshot("unsettled", 60, 200, 0, 0);
+        let report = evaluate_allowed_region_relationships(
+            &reveal_case("beyond-cap"),
+            &after,
+            &after,
+            Some(&after),
+        );
+
+        assert_eq!(report["status"], "failed");
+        let row = relationship_row(&report, "reveal-status-revealed");
+        assert!(
+            row["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("unsettled"),
+            "{row}"
+        );
+    }
+
+    #[test]
+    fn a_revealed_row_outside_the_viewport_fails_the_inside_relationship() {
+        let after = reveal_snapshot("revealed", 60, 480, 0, 0);
+        let report = evaluate_allowed_region_relationships(
+            &reveal_case("beyond-cap"),
+            &after,
+            &after,
+            Some(&after),
+        );
+
+        let row = relationship_row(&report, "revealed-row-inside-sidebar-viewport");
+        assert_eq!(row["status"], "failed");
+        assert!(row["detail"].as_str().expect("detail").contains("outside"));
+    }
+
+    #[test]
+    fn a_moving_revealed_row_or_missing_rest_snapshot_fails_at_rest() {
+        let after = reveal_snapshot("revealed", 60, 200, 0, 0);
+        let moved = reveal_snapshot("revealed", 60, 201, 0, 0);
+        let report = evaluate_allowed_region_relationships(
+            &reveal_case("beyond-cap"),
+            &after,
+            &after,
+            Some(&moved),
+        );
+        let row = relationship_row(&report, "revealed-row-at-rest");
+        assert_eq!(row["status"], "failed");
+        assert!(
+            row["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("workspace-revealed-row"),
+            "{row}"
+        );
+
+        let report =
+            evaluate_allowed_region_relationships(&reveal_case("beyond-cap"), &after, &after, None);
+        let row = relationship_row(&report, "revealed-row-at-rest");
+        assert!(
+            row["detail"]
+                .as_str()
+                .expect("detail")
+                .contains("after-rest snapshot"),
+            "{row}"
+        );
+    }
+
+    #[test]
+    fn an_at_rest_reveal_that_scrolls_or_moves_the_header_fails() {
+        let before = reveal_snapshot("revealed", 60, 200, 0, 0);
+        let scrolled = reveal_snapshot("revealed", 58, 198, 0, 2_000);
+        let report = evaluate_allowed_region_relationships(
+            &reveal_case("already-visible"),
+            &before,
+            &scrolled,
+            Some(&scrolled),
+        );
+
+        assert_eq!(report["status"], "failed");
+        assert_eq!(
+            relationship_row(&report, "outer-scroll-unchanged")["status"],
+            "failed"
+        );
+        assert_eq!(
+            relationship_row(&report, "section-header-unchanged")["status"],
+            "failed"
+        );
     }
 
     fn surface_row(name: &str, x: i64, y: i64, width: i64, height: i64) -> serde_json::Value {

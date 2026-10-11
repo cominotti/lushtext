@@ -25,7 +25,7 @@ use crate::{
         safe_name as safe_anchor_name, selected_surface_rows as select_surface_rows, surface_box,
         visual_geometry,
     },
-    host, model, png, process, read_json_value,
+    host, model, png, process, read_json_value, reveal_fixture,
 };
 
 /// Application id used for isolated settings and process discovery.
@@ -66,6 +66,18 @@ const ANIMATION_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 /// sampling normally ends when the recorder exits and only this bound stops a
 /// hung recorder from sampling without end.
 const ANIMATION_SAMPLING_SAFETY_MARGIN: Duration = Duration::from_secs(2);
+
+/// Window action a `workspace-tree-reveal` case activates with a path parameter.
+const REVEAL_WORKSPACE_PATH_ACTION: &str = "reveal-workspace-path";
+/// Readiness predicate that settles when a reveal reaches its terminal.
+const WORKSPACE_PATH_REVEALED_PREDICATE: &str = "workspace-path-revealed";
+/// Budget for workspace loading and reveal readiness: ancestor expansion runs
+/// through admitted background scans of several-hundred-entry directories.
+const REVEAL_WAIT_TIMEOUT_MS: u32 = 30_000;
+/// File holding a reveal case's second after-readiness snapshot.
+pub(crate) const AFTER_REST_SNAPSHOT_FILE: &str = "after-rest-geometry-snapshot.json";
+/// Gap between the after capture and the second, at-rest snapshot.
+const REVEAL_REST_SNAPSHOT_DELAY: Duration = Duration::from_millis(250);
 
 /// Result of a top-level per-case Rust session launch.
 #[derive(Debug)]
@@ -341,6 +353,7 @@ fn run_mutter_child_with_programs(
         .map_err(|error| format!("cannot create {}: {error}", app_data_dir.display()))?;
     prepare_open_popover_recents(&case, &case_dir, &app_data_dir)?;
     prepare_replace_preview_workspace(&case, Path::new(fixture), &app_data_dir)?;
+    prepare_workspace_tree_reveal_fixture(&case, &case_dir, &app_data_dir)?;
     fs::write(case_dir.join("lushtext.stdout"), b"")
         .map_err(|error| format!("cannot create lushtext stdout log: {error}"))?;
     let app_env = lushtext_process_environment(&app_data_dir);
@@ -427,6 +440,14 @@ fn capture_case_steps(
     let before = capture_step(client, case_dir, "before")?;
     let action =
         run_case_action_with_optional_animation(client, case, case_dir, &before, prepared_actions)?;
+    let reveal_failure = wait_for_workspace_path_reveal(client, case, case_dir)?;
+    if let Some(failure) = reveal_failure {
+        // Keep the evidence: the after capture shows what the failed reveal
+        // left on screen, and the runner names the status from its snapshot.
+        let after = capture_step(client, case_dir, "after")?;
+        write_same_session_captures(client, case, case_dir, &before, &action, &after)?;
+        return Err(failure);
+    }
     let settle_timeout = if scenario_type(case)? == "replace-preview" {
         60_000
     } else {
@@ -442,6 +463,18 @@ fn capture_case_steps(
     }
     wait_for_case_final_geometry(client, case, case_dir, "after")?;
     let after = capture_step(client, case_dir, "after")?;
+    capture_after_rest_snapshot(client, case, case_dir)?;
+    write_same_session_captures(client, case, case_dir, &before, &action, &after)
+}
+
+fn write_same_session_captures(
+    client: &automation::AutomationClient,
+    case: &Value,
+    case_dir: &Path,
+    before: &StepCapture,
+    action: &Value,
+    after: &StepCapture,
+) -> Result<(), String> {
     let workflow_events_path = case_dir.join("workflow-events.json");
     artifacts::write_json(&workflow_events_path, &client.workflow_events()?)?;
     artifacts::write_json(
@@ -456,6 +489,55 @@ fn capture_case_steps(
             "workflow_events": artifacts::safe_display_path(&workflow_events_path),
         }),
     )
+}
+
+/// Wait for a reveal case's primary action to reach a terminal.
+///
+/// Returns `Ok(Some(reason))` when the reveal ended in a typed failure or did
+/// not settle, so the caller can still capture the after state before failing
+/// the case; other scenario types return `Ok(None)` at once.
+fn wait_for_workspace_path_reveal(
+    client: &automation::AutomationClient,
+    case: &Value,
+    case_dir: &Path,
+) -> Result<Option<String>, String> {
+    if scenario_type(case)? != model::WORKSPACE_TREE_REVEAL_SCENARIO {
+        return Ok(None);
+    }
+    let wait = client.wait_for_ready(WORKSPACE_PATH_REVEALED_PREDICATE, REVEAL_WAIT_TIMEOUT_MS)?;
+    append_automation_wait(case_dir, &wait)?;
+    if wait.ok {
+        return Ok(None);
+    }
+    let status = client
+        .snapshot()?
+        .pointer("/window/workspace/reveal_status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    Ok(Some(format!(
+        "workspace path reveal did not complete: reveal_status={status}: {}: {}",
+        wait.status, wait.detail
+    )))
+}
+
+/// Take the second after-readiness snapshot a reveal case compares against.
+///
+/// The runner's `revealed-row-at-rest` relationship requires the reveal
+/// surfaces to be identical across this snapshot and the after capture's.
+fn capture_after_rest_snapshot(
+    client: &automation::AutomationClient,
+    case: &Value,
+    case_dir: &Path,
+) -> Result<(), String> {
+    if scenario_type(case)? != model::WORKSPACE_TREE_REVEAL_SCENARIO {
+        return Ok(());
+    }
+    thread::sleep(REVEAL_REST_SNAPSHOT_DELAY);
+    let wait = client.wait_for_ready("visual-geometry-settled", 5_000)?;
+    append_automation_wait(case_dir, &wait)?;
+    let snapshot = client.snapshot()?;
+    artifacts::write_json(&case_dir.join(AFTER_REST_SNAPSHOT_FILE), &snapshot)
 }
 
 fn prepare_sidebar_target_state(
@@ -627,7 +709,7 @@ fn run_case_action_with_optional_animation(
             &case_dir.join("animation/animation-report.json"),
         ))
     } else {
-        let primary = activate_primary_case_action(client, case)?;
+        let primary = activate_primary_case_action(client, case, case_dir)?;
         actions.push(action_row(&primary));
         None
     };
@@ -657,6 +739,10 @@ fn prepare_case_before_primary_action(
     case_dir: &Path,
 ) -> Result<Vec<serde_json::Value>, String> {
     let mut actions = Vec::new();
+    if scenario_type(case)? == model::WORKSPACE_TREE_REVEAL_SCENARIO {
+        prepare_workspace_tree_reveal_before_capture(client, case, case_dir, &mut actions)?;
+        return Ok(actions);
+    }
     if scenario_type(case)? == "replace-preview" {
         actions.push(action_row(&client.activate_window_action(
             "set-search-panel-visible",
@@ -833,11 +919,92 @@ fn append_snapshot_predicate_wait(
 fn activate_primary_case_action(
     client: &automation::AutomationClient,
     case: &Value,
+    case_dir: &Path,
 ) -> Result<automation::AutomationArtifactRow, String> {
+    if scenario_type(case)? == model::WORKSPACE_TREE_REVEAL_SCENARIO {
+        let plan = workspace_tree_reveal_plan(case, case_dir)?;
+        return activate_reveal(client, &plan.target);
+    }
     client.activate_window_action(
         primary_action_name(case)?,
         automation::ActionParameter::None,
     )
+}
+
+/// Activate `win.reveal-workspace-path` for one absolute fixture path.
+///
+/// The returned row names only the action; the path parameter is never
+/// written to an artifact, so synthetic file names stay in the fixture tree.
+fn activate_reveal(
+    client: &automation::AutomationClient,
+    target: &Path,
+) -> Result<automation::AutomationArtifactRow, String> {
+    let target = target
+        .to_str()
+        .ok_or_else(|| "workspace reveal fixture path is not UTF-8".to_string())?;
+    client.activate_window_action(
+        REVEAL_WORKSPACE_PATH_ACTION,
+        automation::ActionParameter::String(target),
+    )
+}
+
+/// Recompute the reveal fixture plan for one case from its case directory.
+fn workspace_tree_reveal_plan(
+    case: &Value,
+    case_dir: &Path,
+) -> Result<reveal_fixture::RevealFixturePlan, String> {
+    let fixture_kind = required_string(case, "fixture_kind")?;
+    reveal_fixture::plan(fixture_kind, &reveal_fixture::tree_root(case_dir))
+}
+
+/// Seed the reveal fixture's folder tree and `workspaces.json`.
+fn prepare_workspace_tree_reveal_fixture(
+    case: &Value,
+    case_dir: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    if scenario_type(case)? != model::WORKSPACE_TREE_REVEAL_SCENARIO {
+        return Ok(());
+    }
+    let plan = workspace_tree_reveal_plan(case, case_dir)?;
+    reveal_fixture::materialize(&plan, data_dir)
+}
+
+/// Bring a reveal case to its before-capture state.
+///
+/// Every case waits for the workspace tree to load. `already-visible` then
+/// reveals an earlier row so the folder is expanded and the target is drawn on
+/// screen at rest, which is the state the at-rest manifest protects.
+fn prepare_workspace_tree_reveal_before_capture(
+    client: &automation::AutomationClient,
+    case: &Value,
+    case_dir: &Path,
+    actions: &mut Vec<Value>,
+) -> Result<(), String> {
+    let refresh = client.wait_for_ready("workspace-refresh-complete", REVEAL_WAIT_TIMEOUT_MS)?;
+    append_automation_wait(case_dir, &refresh)?;
+    if !refresh.ok {
+        return Err(format!(
+            "Automation1 workspace-refresh-complete before reveal failed: {}: {}",
+            refresh.status, refresh.detail
+        ));
+    }
+    let plan = workspace_tree_reveal_plan(case, case_dir)?;
+    let Some(setup_target) = plan.setup_target.as_deref() else {
+        return Ok(());
+    };
+    actions.push(action_row(&activate_reveal(client, setup_target)?));
+    for predicate in [WORKSPACE_PATH_REVEALED_PREDICATE, "visual-geometry-settled"] {
+        let wait = client.wait_for_ready(predicate, REVEAL_WAIT_TIMEOUT_MS)?;
+        append_automation_wait(case_dir, &wait)?;
+        if !wait.ok {
+            return Err(format!(
+                "Automation1 {predicate} after the setup reveal failed: {}: {}",
+                wait.status, wait.detail
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct AnimationActionResult {
@@ -913,7 +1080,7 @@ fn capture_animation_stream(
     wait_for_first_stream_frame(&frames_dir, ANIMATION_FIRST_FRAME_TIMEOUT);
     thread::sleep(ANIMATION_RECORDING_ATTACH_DELAY);
     let action_started_ms = duration_millis(started.elapsed());
-    let action = activate_primary_case_action(client, case)?;
+    let action = activate_primary_case_action(client, case, case_dir)?;
 
     // Sample geometry for as long as the recorder is capturing, so every
     // captured frame has a geometry sample near it. Stopping at a fixed
@@ -1852,6 +2019,7 @@ fn primary_action_name(case: &Value) -> Result<&'static str, String> {
         "command-palette-overlay" => Ok("toggle-command-palette"),
         "open-popover" => Ok("open-recent"),
         "replace-preview" => Ok("preview-search-panel-replacements"),
+        model::WORKSPACE_TREE_REVEAL_SCENARIO => Ok(REVEAL_WORKSPACE_PATH_ACTION),
         other => Err(format!(
             "unsupported visual geometry scenario type: {other}"
         )),

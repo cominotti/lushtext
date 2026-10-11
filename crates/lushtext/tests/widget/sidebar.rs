@@ -732,6 +732,11 @@ fn inertness_probe(sidebar: &LushtextSidebar) -> InertnessProbe {
         .map(|section| section.workspace_section_evidence().watch_target_generation)
         .sum();
     InertnessProbe {
+        reveal: (
+            evidence.reveal_status,
+            evidence.reveal_generation,
+            evidence.reveal_pending,
+        ),
         expansion_capture_scans: evidence.expansion_capture_scans,
         expansion_capture_rows: evidence.expansion_capture_rows,
         process_active_scan_tasks: evidence.process_active_scan_tasks,
@@ -748,6 +753,12 @@ fn inertness_probe(sidebar: &LushtextSidebar) -> InertnessProbe {
 /// One capture of the state a surface read must leave untouched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InertnessProbe {
+    /// A read must not advance, finish, or restart a workspace path reveal.
+    reveal: (
+        lushtext_core::ui::sidebar::policy::WorkspaceRevealStatus,
+        u64,
+        bool,
+    ),
     expansion_capture_scans: u64,
     expansion_capture_rows: u64,
     process_active_scan_tasks: usize,
@@ -857,6 +868,53 @@ fn test_workspace_tree_evidence_reads_are_inert_collapsed_and_expanded() {
     assert_eq!(
         evidence_without_live_mailbox(&first),
         evidence_without_live_mailbox(&second)
+    );
+
+    // --- during and after a workspace path reveal ---
+    // A reveal expands rows and waits on scans from its own poll source; a read
+    // taken while it waits, or after it ends, must neither drive it nor touch
+    // the scan counters and registries it relies on.
+    section.collapse_folders();
+    flush_after_delay(Duration::from_millis(300));
+    section.set_child_scan_delay_for_test(Duration::from_millis(600));
+    let target = _folders.path().join("root").join("nested").join("leaf.txt");
+    gtk4::gio::prelude::ActionGroupExt::activate_action(
+        &window,
+        "reveal-workspace-path",
+        Some(&target.to_string_lossy().as_ref().to_variant()),
+    );
+    wait_until(Duration::from_secs(5), || {
+        let evidence = sidebar.workspace_tree_evidence();
+        let pressure = section.workspace_section_evidence().scan_pressure;
+        evidence.reveal_pending
+            && pressure.active_scans + pressure.pending_scans + pressure.admission_waiting_scans > 0
+    });
+    let before_reveal = inertness_probe(&sidebar);
+    assert!(
+        before_reveal.reveal.2,
+        "the reveal must still be waiting on its scan"
+    );
+    for _ in 0..5 {
+        let _ = sidebar.workspace_tree_evidence();
+    }
+    assert_eq!(
+        before_reveal,
+        inertness_probe(&sidebar),
+        "reading the surface while a reveal waits on its scan must disturb nothing"
+    );
+    wait_until(Duration::from_secs(20), || {
+        !sidebar.workspace_tree_evidence().reveal_pending
+    });
+    section.set_child_scan_delay_for_test(Duration::ZERO);
+    flush_after_delay(Duration::from_millis(300));
+    let after_reveal = inertness_probe(&sidebar);
+    for _ in 0..5 {
+        let _ = sidebar.workspace_tree_evidence();
+    }
+    assert_eq!(
+        after_reveal,
+        inertness_probe(&sidebar),
+        "reading the surface after a reveal ends must disturb nothing"
     );
 }
 

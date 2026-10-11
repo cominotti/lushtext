@@ -227,7 +227,67 @@ fn run_png_corpus_at(root: &Path) -> PngResult<u64> {
         return Err("rendered-anchor drift did not fail despite stable app geometry".to_string());
     }
 
-    Ok(6)
+    let frozen_rows = run_frozen_workspace_row_ink(root)?;
+    Ok(6 + frozen_rows)
+}
+
+/// Frozen live crops of a revealed sidebar row, one per colour scheme, with
+/// the bounded snapshot they were captured beside (from the first passing
+/// `workspace-tree-reveal` run, desktop `beyond-cap`). The row-ink detector
+/// must find the same edge on them that the live lane accepted: the crop is
+/// the reported row, so the edge sits at the manifest's offset inside it.
+const FROZEN_WORKSPACE_ROW_INK: [(&str, &[u8], &str); 2] = [
+    (
+        "light",
+        include_bytes!("../fixtures/proof-corpus/workspace-row-ink/after-crop-light.png"),
+        include_str!("../fixtures/proof-corpus/workspace-row-ink/after-snapshot-light.json"),
+    ),
+    (
+        "dark",
+        include_bytes!("../fixtures/proof-corpus/workspace-row-ink/after-crop-dark.png"),
+        include_str!("../fixtures/proof-corpus/workspace-row-ink/after-snapshot-dark.json"),
+    ),
+];
+/// The offset the reveal manifests declare for the row-ink edge.
+const FROZEN_WORKSPACE_ROW_INK_OFFSET: i32 = 25;
+
+fn run_frozen_workspace_row_ink(root: &Path) -> PngResult<u64> {
+    for (scheme, png_bytes, snapshot) in FROZEN_WORKSPACE_ROW_INK {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(snapshot).map_err(|error| error.to_string())?;
+        let row = snapshot
+            .pointer("/visual_geometry/surfaces")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|surfaces| {
+                surfaces
+                    .iter()
+                    .find(|surface| surface["name"] == "workspace-revealed-row")
+            })
+            .and_then(|surface| surface.get("rect"))
+            .ok_or_else(|| format!("frozen {scheme} snapshot has no revealed row"))?;
+        let path = root.join(format!("workspace-row-ink-{scheme}.png"));
+        fs::write(&path, png_bytes).map_err(|error| error.to_string())?;
+        let image = read_png(&path)?;
+        let height = usize::try_from(row["height"].as_u64().unwrap_or_default())
+            .map_err(|error| error.to_string())?;
+        let width = usize::try_from(row["width"].as_u64().unwrap_or_default())
+            .map_err(|error| error.to_string())?;
+        let detection = detect_pixel_anchor(
+            &image,
+            "workspace-revealed-row-ink",
+            Rect::new(0, 0, width, height),
+            WORKSPACE_ROW_INK_DETECTOR,
+            3,
+        )?;
+        if detection.status != "passed" || detection.row_y != Some(FROZEN_WORKSPACE_ROW_INK_OFFSET)
+        {
+            return Err(format!(
+                "frozen {scheme} sidebar row: row-ink edge at {:?}, expected {FROZEN_WORKSPACE_ROW_INK_OFFSET}",
+                detection.row_y
+            ));
+        }
+    }
+    Ok(2)
 }
 
 fn native_minimap_anchor_rows() -> Vec<Vec<(u8, u8, u8, u8)>> {
@@ -677,6 +737,9 @@ fn detect_pixel_anchor(
     validate_rect(image, rect)?;
     let y_start = usize::try_from(rect.y).map_err(|error| error.to_string())?;
     let y_end = y_start + rect.height;
+    if detector == WORKSPACE_ROW_INK_DETECTOR {
+        return detect_row_ink_bottom(image, name, rect, min_pixels);
+    }
     let mut best_row_y = None;
     let mut best_count = 0;
     for y in y_start..y_end {
@@ -890,6 +953,84 @@ fn row_pixel_count(
     })
 }
 
+/// Detector for the bottom edge of a workspace sidebar row's drawn content.
+///
+/// The sidebar draws no selection fill (`listview.workspace-file-tree
+/// row:selected` is transparent by design), so the one pixel feature a row
+/// always carries is its own content: the file icon and label. Searched in a
+/// crop equal to the row the snapshot reports, the **lowest** row of
+/// content ink is a fixed distance below the row's top edge (the label is
+/// vertically centred in a whole-pixel row), and it is the same in both colour
+/// schemes, unlike the antialiased top of the glyphs. A row drawn even one
+/// pixel from where the widget reports it moves that edge by the same amount.
+pub(crate) const WORKSPACE_ROW_INK_DETECTOR: &str = "workspace-row-ink-bottom-edge";
+/// A content pixel differs from the row's background by more than this, on
+/// the largest channel difference.
+const ROW_INK_BACKGROUND_DISTANCE: u8 = 40;
+
+/// The crop's background: the most common colour of its first row, which is
+/// the row's own top margin above its centred content.
+fn crop_first_row_background(image: &PngImage, rect: Rect) -> PngResult<(u8, u8, u8, u8)> {
+    let y = usize::try_from(rect.y).map_err(|error| error.to_string())?;
+    let x_start = usize::try_from(rect.x).map_err(|error| error.to_string())?;
+    let pixels: Vec<_> = (x_start..x_start + rect.width)
+        .map(|x| pixel_rgba(image, x, y))
+        .collect::<PngResult<_>>()?;
+    Ok(most_common_pixel(&pixels))
+}
+
+/// Content-ink pixels in row `y`: those far from the crop background.
+fn row_ink_count(
+    image: &PngImage,
+    rect: Rect,
+    y: usize,
+    background: (u8, u8, u8, u8),
+) -> PngResult<usize> {
+    let x_start = usize::try_from(rect.x).map_err(|error| error.to_string())?;
+    (x_start..x_start + rect.width).try_fold(0, |count, x| {
+        let pixel = pixel_rgba(image, x, y)?;
+        Ok(count + usize::from(color_distance(pixel, background) > ROW_INK_BACKGROUND_DISTANCE))
+    })
+}
+
+/// The lowest row in `rect` with at least `min_pixels` content-ink pixels.
+fn detect_row_ink_bottom(
+    image: &PngImage,
+    name: &str,
+    rect: Rect,
+    min_pixels: usize,
+) -> PngResult<PixelAnchorDetection> {
+    let background = crop_first_row_background(image, rect)?;
+    let y_start = usize::try_from(rect.y).map_err(|error| error.to_string())?;
+    let mut best_count = 0;
+    let mut found = None;
+    for y in (y_start..y_start + rect.height).rev() {
+        let count = row_ink_count(image, rect, y, background)?;
+        best_count = best_count.max(count);
+        if count >= min_pixels {
+            found = Some((y, count));
+            break;
+        }
+    }
+    let (row_y, matched_pixels, status) = match found {
+        Some((y, count)) => (
+            Some(i32::try_from(y).map_err(|error| error.to_string())?),
+            count,
+            "passed",
+        ),
+        None => (None, best_count, "failed"),
+    };
+    Ok(PixelAnchorDetection {
+        name: name.to_string(),
+        detector: WORKSPACE_ROW_INK_DETECTOR.to_string(),
+        status: status.to_string(),
+        row_y,
+        rect,
+        matched_pixels,
+        required_pixels: min_pixels,
+    })
+}
+
 fn non_background_count(image: &PngImage, rect: Rect, y: usize) -> PngResult<usize> {
     let x_start = usize::try_from(rect.x).map_err(|error| error.to_string())?;
     let pixels: Vec<_> = (x_start..x_start + rect.width)
@@ -1099,6 +1240,103 @@ mod tests {
         assert_eq!(content.status, "passed");
         assert_eq!(content.row_y, Some(6));
         fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// A 60x36 row crop: background with a 16px icon block from row 10 and a
+    /// label whose glyphs end at row 25, with antialiased edges one shade off.
+    fn sidebar_row_rows(
+        background: (u8, u8, u8, u8),
+        ink: (u8, u8, u8, u8),
+        edge: (u8, u8, u8, u8),
+        ink_bottom: usize,
+    ) -> Vec<Vec<(u8, u8, u8, u8)>> {
+        let mut rows = vec![vec![background; 60]; 36];
+        for row in rows.iter_mut().take(ink_bottom).skip(10) {
+            for pixel in &mut row[4..12] {
+                *pixel = ink;
+            }
+            for x in (16..56).step_by(4) {
+                row[x] = ink;
+            }
+        }
+        rows[9][5] = edge;
+        rows[ink_bottom][17] = edge;
+        rows[ink_bottom][21] = edge;
+        rows
+    }
+
+    fn detect_row_ink(rows: &[Vec<(u8, u8, u8, u8)>]) -> PixelAnchorDetection {
+        let root = tempfile::Builder::new()
+            .prefix("cargo-gtk-proof-row-ink-")
+            .tempdir()
+            .expect("test dir");
+        let path = root.path().join("row-ink.png");
+        write_rgba(&path, rows).expect("write image");
+        let image = read_png(&path).expect("read image");
+        let height = rows.len();
+        detect_pixel_anchor(
+            &image,
+            "workspace-revealed-row-ink",
+            Rect::new(0, 0, 60, height),
+            WORKSPACE_ROW_INK_DETECTOR,
+            3,
+        )
+        .expect("row-ink detection")
+    }
+
+    #[test]
+    fn row_ink_detector_finds_the_content_bottom_on_a_light_row() {
+        let rows = sidebar_row_rows(
+            (250, 250, 250, 255),
+            (46, 52, 54, 255),
+            (200, 200, 200, 255),
+            26,
+        );
+
+        let detection = detect_row_ink(&rows);
+
+        assert_eq!(detection.status, "passed");
+        assert_eq!(detection.row_y, Some(25));
+    }
+
+    #[test]
+    fn row_ink_detector_finds_the_same_bottom_on_a_dark_row() {
+        let rows = sidebar_row_rows(
+            (34, 34, 38, 255),
+            (238, 238, 238, 255),
+            (70, 70, 74, 255),
+            26,
+        );
+
+        let detection = detect_row_ink(&rows);
+
+        assert_eq!(detection.status, "passed");
+        assert_eq!(detection.row_y, Some(25));
+    }
+
+    #[test]
+    fn row_ink_detector_follows_a_row_drawn_two_pixels_low() {
+        let rows = sidebar_row_rows(
+            (250, 250, 250, 255),
+            (46, 52, 54, 255),
+            (200, 200, 200, 255),
+            28,
+        );
+
+        assert_eq!(detect_row_ink(&rows).row_y, Some(27));
+    }
+
+    #[test]
+    fn row_ink_detector_fails_an_empty_row() {
+        let background = (250, 250, 250, 255);
+        let mut rows = vec![vec![background; 60]; 36];
+        // Antialiasing alone is not content.
+        rows[20][30] = (235, 235, 235, 255);
+
+        let detection = detect_row_ink(&rows);
+
+        assert_eq!(detection.status, "failed");
+        assert_eq!(detection.row_y, None);
     }
 
     #[test]

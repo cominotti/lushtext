@@ -9,9 +9,9 @@ use std::time::Duration;
 use crate::common::{
     RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
     ensure_gtk_init, first_label, flush_after_delay, flush_events, force_layout, mapped_list_rows,
-    mapped_row_with_label, numbered_label_list, pin_scroller_height, placement_relative_to,
-    present_window, row_straddling_bottom, sample_placements, test_application, wait_until,
-    wait_until_or_false,
+    mapped_row_with_label, numbered_label_list, observed_between_dispatches, pin_scroller_height,
+    placement_relative_to, present_window, row_straddling_bottom, sample_placements,
+    test_application, wait_until, wait_until_or_false,
 };
 use gtk_lush_tasks::{FreshnessToken, spawn_blocking_then};
 use gtk_lush_viewport::{ViewportAxis, ViewportObserver};
@@ -433,6 +433,57 @@ fn test_adoption_slice_bin_still_forwards_a_child_scroll_request() {
             .iter()
             .all(|value| (value - first).abs() < SCROLL_TOLERANCE),
         "an honoured request must settle instead of re-asking; saw {values:?}"
+    );
+    drop(fixture.window);
+}
+
+#[test]
+fn test_adoption_slice_bin_reports_a_forwarded_request_until_its_idle_applies_it() {
+    let fixture = SliceAdoptionFixture::present(1);
+    let bin = &fixture.bins[0];
+    let adjustment = fixture.adjustment();
+    for _ in 0..6 {
+        fixture.force_layout();
+        assert!(
+            !bin.outer_request_pending(),
+            "a bin re-allocated with no input must report no pending request"
+        );
+    }
+    let corrections = bin.correction_count();
+    let resting = adjustment.value();
+
+    fixture.lists[0].scroll_to(SLICE_ADOPTION_ROWS - 1, gtk4::ListScrollFlags::NONE, None);
+    let mut outer_when_pending = None;
+    let seen = observed_between_dispatches(Duration::from_secs(5), || {
+        let pending = bin.outer_request_pending();
+        if pending {
+            outer_when_pending = Some(adjustment.value());
+        }
+        pending
+    });
+    assert!(
+        seen,
+        "a forwarded scroll_to must be reported pending before its idle runs"
+    );
+    assert_eq!(
+        outer_when_pending,
+        Some(resting),
+        "while the request is pending the outer scroller has not moved yet"
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        !bin.outer_request_pending() && adjustment.value() > resting
+    });
+    flush_after_delay(Duration::from_millis(400));
+    assert!(
+        !bin.outer_request_pending(),
+        "once the idle has moved the outer scroller nothing is pending"
+    );
+    assert!(adjustment.value() > resting, "the request was applied");
+    assert_eq!(
+        bin.correction_count(),
+        corrections,
+        "an honoured request is not a correction"
     );
     drop(fixture.window);
 }

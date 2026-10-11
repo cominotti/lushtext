@@ -65,6 +65,20 @@ impl fmt::Display for DocumentKind {
     }
 }
 
+/// Scenario type proving the workspace sidebar's rendered rows after a path reveal.
+pub(crate) const WORKSPACE_TREE_REVEAL_SCENARIO: &str = "workspace-tree-reveal";
+
+/// Fixture kinds a `workspace-tree-reveal` manifest may list.
+///
+/// Every kind except `already-visible` puts the revealed row past GTK's
+/// ~200-row realized cap, so the case exercises the slice bin's forwarding.
+pub(crate) const WORKSPACE_TREE_REVEAL_FIXTURE_KINDS: [&str; 4] = [
+    "beyond-cap",
+    "nested-beyond-cap",
+    "two-workspaces",
+    "already-visible",
+];
+
 /// Failure returned when a proof artifact cannot be trusted by policy checks.
 ///
 /// The status is machine-readable for proof reporting, while `detail` keeps the
@@ -339,6 +353,24 @@ fn validate_visual_scenario(value: &Value) -> Result<(), ProofValidationError> {
             }
         }
         "command-palette-overlay" | "open-popover" | "replace-preview" => {}
+        WORKSPACE_TREE_REVEAL_SCENARIO => {
+            if manifest.matrix.fixture_kinds.is_empty() {
+                return Err(ProofValidationError::malformed(
+                    "workspace-tree-reveal matrix.fixture_kinds must not be empty",
+                ));
+            }
+            if let Some(unsupported) = manifest
+                .matrix
+                .fixture_kinds
+                .iter()
+                .find(|kind| !WORKSPACE_TREE_REVEAL_FIXTURE_KINDS.contains(&kind.as_str()))
+            {
+                return Err(ProofValidationError::malformed(format!(
+                    "workspace-tree-reveal unsupported fixture kind {unsupported}; expected one of {}",
+                    WORKSPACE_TREE_REVEAL_FIXTURE_KINDS.join(", ")
+                )));
+            }
+        }
         other => {
             return Err(ProofValidationError::malformed(format!(
                 "unsupported scenario_type {other}"
@@ -554,6 +586,7 @@ impl VisualScenarioManifest {
                 self.command_palette_cases(manifest_value)
             }
             "open-popover" => self.open_popover_cases(manifest_value),
+            WORKSPACE_TREE_REVEAL_SCENARIO => self.workspace_tree_reveal_cases(manifest_value),
             _ => Ok(Vec::new()),
         }
     }
@@ -650,6 +683,44 @@ impl VisualScenarioManifest {
                     viewport_position: None,
                     fixture_kind: Some("plain-lines".to_string()),
                 });
+            }
+        }
+        Ok(cases)
+    }
+
+    /// Expand workspace-tree reveal scenarios across size, color, and fixture axes.
+    ///
+    /// Every case carries the direction `reveal`, which keeps the workspace
+    /// sidebar visible for the whole session (see the runner's GSettings plan).
+    fn workspace_tree_reveal_cases(
+        &self,
+        manifest_value: &Value,
+    ) -> Result<Vec<ExpandedCaseOverview>, ProofValidationError> {
+        let mut cases = Vec::new();
+        for size in &self.matrix.sizes {
+            for color_scheme in &self.matrix.color_schemes {
+                for fixture_kind in &self.matrix.fixture_kinds {
+                    let case_id = format!(
+                        "{}--{}--{}--{}",
+                        self.scenario_id, size.id, color_scheme, fixture_kind
+                    );
+                    cases.push(ExpandedCaseOverview {
+                        schema_version: SUPPORTED_SCHEMA_VERSION,
+                        case_id: case_id.clone(),
+                        manifest: manifest_value.clone(),
+                        size: serde_json::to_value(size).map_err(|error| {
+                            ProofValidationError::malformed(format!(
+                                "case size serialization failed: {error}"
+                            ))
+                        })?,
+                        color_scheme: color_scheme.clone(),
+                        artifact_dir: case_id,
+                        word_wrap: Some(false),
+                        direction: Some("reveal".to_string()),
+                        viewport_position: None,
+                        fixture_kind: Some(fixture_kind.clone()),
+                    });
+                }
             }
         }
         Ok(cases)
@@ -838,6 +909,18 @@ struct PixelAnchor {
     crop_surface: String,
     detector: String,
     min_pixels: u32,
+    #[serde(default)]
+    crop_insets: Option<Value>,
+    /// Snapshot surface whose top edge the after-capture detection must match.
+    ///
+    /// When present the anchor is checked against app geometry in the after
+    /// capture only, instead of comparing before and after detections.
+    #[serde(default)]
+    reference_surface: Option<String>,
+    /// Fixed distance of the detected feature below `reference_surface`'s
+    /// top edge, in logical pixels (`0` when the feature is that edge).
+    #[serde(default)]
+    reference_offset_y: Option<i32>,
     #[serde(default)]
     min_row_offset: Option<i32>,
     #[serde(default)]
@@ -1522,6 +1605,107 @@ mod tests {
         let error = validate_document(&value).expect_err("unsupported schema");
 
         assert_eq!(error.status, ProofStatus::UnsupportedSchemaVersion);
+    }
+
+    fn workspace_tree_reveal_manifest(fixture_kinds: &Value) -> Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "scenario_id": "workspace-tree-reveal",
+            "scenario_type": "workspace-tree-reveal",
+            "invariant_id": "workspace-tree-rendered-row-anchors",
+            "matrix": {
+                "sizes": [
+                    { "id": "desktop", "width": 1260, "height": 900 },
+                    { "id": "short-wide", "width": 1738, "height": 342 }
+                ],
+                "color_schemes": ["force-light", "force-dark"],
+                "fixture_kinds": fixture_kinds
+            },
+            "protected_regions": [{
+                "name": "header-bar",
+                "surface": "header-bar",
+                "comparison": "exact-equality",
+                "require_same_rect": true,
+                "mask_rects": []
+            }],
+            "readiness_predicates": ["workspace-path-revealed", "visual-geometry-settled"]
+        })
+    }
+
+    #[test]
+    fn workspace_tree_reveal_manifest_expands_twelve_stable_cases() {
+        let value = workspace_tree_reveal_manifest(&serde_json::json!([
+            "beyond-cap",
+            "nested-beyond-cap",
+            "two-workspaces"
+        ]));
+
+        let outcome = validate_document(&value).expect("valid reveal scenario");
+        assert_eq!(outcome.kind, DocumentKind::VisualScenario);
+        let overview = visual_scenario_overview(&value).expect("reveal overview");
+
+        assert_eq!(overview.case_count, 12);
+        assert_eq!(overview.filtered_case_count("nested-beyond-cap"), 4);
+        assert!(overview.case_ids.contains(
+            &"workspace-tree-reveal--short-wide--force-dark--two-workspaces".to_string()
+        ));
+        let cases = expanded_visual_cases(&value).expect("expanded reveal cases");
+        assert!(
+            cases
+                .iter()
+                .all(|case| case.direction.as_deref() == Some("reveal"))
+        );
+        assert_eq!(cases[0].fixture_kind(), "beyond-cap");
+        // Stable: expanding twice yields the same ids in the same order.
+        assert_eq!(
+            overview.case_ids,
+            visual_scenario_overview(&value)
+                .expect("second overview")
+                .case_ids
+        );
+    }
+
+    #[test]
+    fn workspace_tree_reveal_rejects_an_unknown_fixture_kind() {
+        let value = workspace_tree_reveal_manifest(&serde_json::json!(["beyond-cap", "huge"]));
+
+        let error = validate_document(&value).expect_err("unknown fixture kind");
+
+        assert_eq!(error.status, ProofStatus::MalformedField);
+        assert!(error.detail.contains("huge"), "{}", error.detail);
+    }
+
+    #[test]
+    fn workspace_tree_reveal_rejects_empty_fixture_kinds() {
+        let value = workspace_tree_reveal_manifest(&serde_json::json!([]));
+
+        let error = validate_document(&value).expect_err("empty fixture kinds");
+
+        assert_eq!(error.status, ProofStatus::MalformedField);
+        assert!(error.detail.contains("fixture_kinds"), "{}", error.detail);
+    }
+
+    #[test]
+    fn current_workspace_tree_reveal_manifests_validate() {
+        for (text, cases) in [
+            (
+                include_str!(
+                    "../../../scripts/visual-geometry-scenarios/workspace-tree-reveal.json"
+                ),
+                12,
+            ),
+            (
+                include_str!(
+                    "../../../scripts/visual-geometry-scenarios/workspace-tree-reveal-at-rest.json"
+                ),
+                4,
+            ),
+        ] {
+            let value: Value = serde_json::from_str(text).expect("scenario json");
+            validate_document(&value).expect("valid reveal manifest");
+            let overview = visual_scenario_overview(&value).expect("overview");
+            assert_eq!(overview.case_count, cases, "{}", overview.scenario_id);
+        }
     }
 
     #[test]

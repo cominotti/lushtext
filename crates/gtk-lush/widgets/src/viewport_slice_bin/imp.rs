@@ -677,6 +677,12 @@ impl ViewportSliceBin {
         }
     }
 
+    /// Backs `ViewportSliceBin::outer_request_pending`: a batch awaiting its
+    /// idle, or a divergence deferred to the next allocation.
+    pub(super) fn outer_request_pending(&self) -> bool {
+        self.pending_outer.get().is_some() || self.deferred.get().is_some()
+    }
+
     /// Translate a child-originated scroll request into an outer scroll so the
     /// requested band enters the real viewport; the next allocation re-derives
     /// the slice from the outer position.

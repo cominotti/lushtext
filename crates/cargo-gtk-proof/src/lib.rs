@@ -27,6 +27,7 @@ mod model;
 mod png;
 mod policy;
 mod process;
+mod reveal_fixture;
 mod runner;
 mod warnings;
 

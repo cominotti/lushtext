@@ -13,9 +13,9 @@
 use crate::common::{
     RowPlacement, RowStillnessProbe, assert_reveal_then_rest, assert_rows_still_across_selection,
     ensure_gtk_init, find_descendant, first_label, fixture, flush_after_delay, flush_events,
-    force_layout, mapped_list_rows, mapped_row_with_label, pin_scroller_height,
-    placement_relative_to, present_window, realized_list_rows, row_straddling_bottom,
-    sample_placements, test_window, wait_until, wait_until_or_false,
+    force_layout, mapped_list_rows, mapped_row_with_label, observed_between_dispatches,
+    pin_scroller_height, placement_relative_to, present_window, realized_list_rows,
+    row_straddling_bottom, sample_placements, test_window, wait_until, wait_until_or_false,
 };
 use glib::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::prelude::*;
@@ -24,6 +24,7 @@ use lushtext_core::services::{json_store, workspace_manager};
 use lushtext_core::ui::accessibility::test_audit::AccessibleAudit;
 use lushtext_core::ui::sidebar::LushtextSidebar;
 use lushtext_core::ui::sidebar::file_tree_item::FileTreeItem;
+use lushtext_core::ui::sidebar::policy::WorkspaceRevealStatus;
 use lushtext_core::ui::sidebar::workspace_section::LushtextWorkspaceSection;
 use lushtext_core::ui::window::LushtextWindow;
 use std::collections::BTreeSet;
@@ -1485,5 +1486,721 @@ fn test_maximize_round_trip_while_scrolled_keeps_the_sidebar_allocated() {
             "the scrolled tree must still render rows after the round trip"
         );
     }
+    drop(tree.window);
+}
+
+// ---------------------------------------------------------------------------
+// Workspace path reveal (`win.reveal-workspace-path`).
+//
+// The reveal must reach its row through the same bounded paths a user takes:
+// ancestor expansion through admitted scans, selection, and the list's own
+// `scroll_to` forwarded by the slice bin. So every case asserts **rendered**
+// rows — selected, mapped, drawn wholly inside the outer viewport, contiguous
+// with their neighbours, and still across forced layouts — never model rows.
+// ---------------------------------------------------------------------------
+
+fn reveal(window: &LushtextWindow, target: &Path) {
+    gtk4::gio::prelude::ActionGroupExt::activate_action(
+        window,
+        "reveal-workspace-path",
+        Some(&target.to_string_lossy().as_ref().to_variant()),
+    );
+}
+
+/// Activate a reveal and wait for it to reach its terminal status.
+#[track_caller]
+fn reveal_and_settle(
+    window: &LushtextWindow,
+    sidebar: &LushtextSidebar,
+    target: &Path,
+) -> WorkspaceRevealStatus {
+    let before = sidebar.workspace_tree_evidence().reveal_generation;
+    reveal(window, target);
+    let mut status = WorkspaceRevealStatus::None;
+    let settled = wait_until_or_false(Duration::from_secs(30), || {
+        let evidence = sidebar.workspace_tree_evidence();
+        status = evidence.reveal_status;
+        evidence.reveal_generation > before && status != WorkspaceRevealStatus::Pending
+    });
+    assert!(
+        settled,
+        "the reveal of {} never reached a terminal status; last status {status:?}",
+        target.display()
+    );
+    // Let the forwarded outer scroll and the re-slice it causes land before
+    // any rendered-row assertion.
+    flush_after_delay(Duration::from_millis(200));
+    status
+}
+
+/// A workspace folder seeded with `dirs`, loaded collapsed so the reveal has
+/// to expand its ancestors itself.
+fn collapsed_tree(dirs: &[(&str, usize)], height: i32) -> LargeTree {
+    let (dir, root) = seed_workspace(dirs);
+    save_workspaces(vec![WorkspaceConfig::with_one_folder(
+        WorkspaceId::new("reveal"),
+        "reveal",
+        root.clone(),
+    )]);
+    let (window, sidebar) = present_sidebar_window(height);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    wait_for_refresh_idle(&section);
+    LargeTree {
+        _dir: dir,
+        root,
+        window,
+        sidebar,
+        section,
+    }
+}
+
+fn selected_path(section: &LushtextWorkspaceSection) -> Option<PathBuf> {
+    selection(section)
+        .selected_item()
+        .and_downcast::<gtk4::TreeListRow>()
+        .and_then(|row| row.item().and_downcast::<FileTreeItem>())
+        .and_then(|item| item.path())
+}
+
+/// The rendered-bounds contract after a reveal: the row is selected, mapped,
+/// wholly inside the outer viewport, drawn contiguously with its on-screen
+/// neighbours, and still across six forced layouts without the bin having to
+/// correct the list.
+#[track_caller]
+fn assert_revealed_row_rendered(
+    sidebar: &LushtextSidebar,
+    section: &LushtextWorkspaceSection,
+    target: &Path,
+) {
+    let label = target
+        .file_name()
+        .expect("target has a file name")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        selected_path(section).as_deref(),
+        Some(target),
+        "the revealed row must be the selected one"
+    );
+    let list = file_tree_view(section);
+    let row = mapped_row_with_label(&list, &label)
+        .unwrap_or_else(|| panic!("the revealed row {label} must be mapped"));
+    assert!(
+        inside_outer_viewport(sidebar, &row),
+        "the revealed row {label} must be drawn wholly inside the sidebar viewport"
+    );
+    let slice = &section.imp().file_tree_slice;
+    assert!(
+        !slice.outer_request_pending(),
+        "a revealed row's bin must have no forwarded request left"
+    );
+
+    // Neighbours on screen tile at one constant pitch: a row's border box
+    // excludes its CSS margin, so consecutive boxes are separated by the same
+    // small gap. A row drawn even one pixel off makes two gaps differ.
+    let outer = &*sidebar.imp().outer_scrolled_window;
+    let viewport = outer.height() as f32;
+    let mut drawn: Vec<(f32, f32)> = mapped_list_rows(&list)
+        .filter_map(|candidate| candidate.compute_bounds(outer))
+        .filter(|bounds| bounds.y() + bounds.height() > 0.0 && bounds.y() < viewport)
+        .map(|bounds| (bounds.y(), bounds.height()))
+        .collect();
+    drawn.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let target_top = row.compute_bounds(outer).expect("revealed row bounds").y();
+    let position = drawn
+        .iter()
+        .position(|(top, _)| *top == target_top)
+        .expect("the revealed row among the drawn rows");
+    let first = position.saturating_sub(4);
+    let last = (position + 4).min(drawn.len() - 1);
+    let gaps: Vec<f32> = drawn[first..=last]
+        .windows(2)
+        .map(|pair| pair[1].0 - (pair[0].0 + pair[0].1))
+        .collect();
+    assert!(
+        gaps.iter().all(|gap| *gap >= 0.0 && *gap == gaps[0]),
+        "rows around the revealed row must tile at one constant pitch; gaps were {gaps:?} for {:?}",
+        &drawn[first..=last]
+    );
+
+    let corrections = slice.correction_count();
+    let samples = sampled_row_placements(section, &label, 6);
+    assert!(
+        samples.iter().all(|placement| *placement == samples[0]),
+        "the revealed row {label} must stay still across forced layouts: {samples:?}"
+    );
+    assert_eq!(
+        slice.correction_count(),
+        corrections,
+        "the bin must not correct the list after a reveal settles"
+    );
+}
+
+/// One collapsed workspace folder directly holding `count` files.
+fn collapsed_root_with_files(count: usize, height: i32) -> LargeTree {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("collapsed root tempdir");
+    let root = dir.path().join("root");
+    seed_files(&root, count);
+    save_workspaces(vec![WorkspaceConfig::with_one_folder(
+        WorkspaceId::new("reveal"),
+        "reveal",
+        root.clone(),
+    )]);
+    let (window, sidebar) = present_sidebar_window(height);
+    let section = mapped_sections(&sidebar, 1).remove(0);
+    wait_for_refresh_idle(&section);
+    LargeTree {
+        _dir: dir,
+        root,
+        window,
+        sidebar,
+        section,
+    }
+}
+
+#[test]
+fn test_reveal_reaches_the_last_of_four_hundred_files() {
+    // `beyond-cap`: past GTK's realized-row cap in a collapsed folder.
+    let tree = collapsed_root_with_files(400, 800);
+    let target = tree.root.join(file_name(399));
+
+    let status = reveal_and_settle(&tree.window, &tree.sidebar, &target);
+
+    assert_eq!(status, WorkspaceRevealStatus::Revealed);
+    assert_revealed_row_rendered(&tree.sidebar, &tree.section, &target);
+    assert_eq!(tree.sidebar.workspace_tree_evidence().reveal_depth, Some(1));
+    assert!(
+        realized_list_rows(&tree.section.imp().file_tree_view).len() < GTK_LIST_VIEW_REALIZED_CAP,
+        "realized rows stay bounded by the viewport"
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_reveal_expands_two_collapsed_ancestors_to_reach_entry_250() {
+    // `nested-beyond-cap`: two collapsed directories, then entry 250 of 300.
+    let tree = collapsed_tree(&[("outer/inner", 300), ("sibling", 3)], 800);
+    let target = tree.root.join("outer/inner").join(file_name(249));
+
+    let status = reveal_and_settle(&tree.window, &tree.sidebar, &target);
+
+    assert_eq!(status, WorkspaceRevealStatus::Revealed);
+    assert_revealed_row_rendered(&tree.sidebar, &tree.section, &target);
+    assert_eq!(tree.sidebar.workspace_tree_evidence().reveal_depth, Some(3));
+    let expanded = tree.section.workspace_section_evidence().expanded_paths;
+    assert_eq!(
+        expanded,
+        [
+            tree.root.clone(),
+            tree.root.join("outer"),
+            tree.root.join("outer/inner")
+        ]
+        .into_iter()
+        .collect(),
+        "only the ancestor chain is expanded"
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_reveal_reaches_a_row_in_the_second_of_two_tall_workspaces() {
+    ensure_gtk_init();
+    let dir = tempfile::tempdir().expect("two tall workspaces tempdir");
+    let mut configs = Vec::new();
+    for name in ["left", "right"] {
+        let root = dir.path().join(name);
+        seed_files(&root, 300);
+        configs.push(WorkspaceConfig::with_one_folder(
+            WorkspaceId::new(name),
+            name,
+            root,
+        ));
+    }
+    save_workspaces(configs);
+    let (window, sidebar) = present_sidebar_window(800);
+    let sections = mapped_sections(&sidebar, 2);
+    // The first section is expanded so the chrome above the second bin
+    // includes a whole tall section.
+    sections[0].expand_folders();
+    wait_for_refresh_idle(&sections[0]);
+    wait_for_refresh_idle(&sections[1]);
+    let target = dir.path().join("right").join(file_name(260));
+
+    let status = reveal_and_settle(&window, &sidebar, &target);
+
+    assert_eq!(status, WorkspaceRevealStatus::Revealed);
+    assert_revealed_row_rendered(&sidebar, &sections[1], &target);
+    drop(window);
+}
+
+#[test]
+fn test_reveal_of_a_visible_row_moves_neither_the_sidebar_nor_the_header() {
+    // `already-visible`: the resting-bin claim.
+    let tree = tall_workspace(800);
+    scroll_outer_to(&tree.sidebar, 0.0);
+    assert_sidebar_can_scroll(&tree.sidebar, "before revealing a visible row");
+    let label = fully_visible_labels(&tree.sidebar, &tree.section)
+        .into_iter()
+        .nth(4)
+        .expect("a fifth fully visible row");
+    let outer = outer_adjustment(&tree.sidebar);
+    let outer_before = outer.value();
+    let header = header_of(&tree.section);
+    let header_before = header
+        .compute_bounds(&*tree.sidebar.imp().outer_scrolled_window)
+        .expect("header bounds");
+    let target = tree.root.join(&label);
+
+    let status = reveal_and_settle(&tree.window, &tree.sidebar, &target);
+
+    assert_eq!(status, WorkspaceRevealStatus::Revealed);
+    assert_revealed_row_rendered(&tree.sidebar, &tree.section, &target);
+    assert!(
+        settled_outer_values(&tree.sidebar, 6)
+            .iter()
+            .all(|value| *value == outer_before),
+        "revealing a visible row must not scroll the sidebar from {outer_before}"
+    );
+    let header_after = header
+        .compute_bounds(&*tree.sidebar.imp().outer_scrolled_window)
+        .expect("header bounds");
+    assert_eq!(
+        (header_after.y(), header_after.height()),
+        (header_before.y(), header_before.height()),
+        "the workspace header must be drawn where it was"
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_reveal_of_a_visible_row_in_a_short_sidebar_does_not_scroll() {
+    // The at-rest scenario's short-wide geometry: a sidebar viewport of about
+    // 178 px, where the header and a few rows fill it. A setup reveal first
+    // (as the scenario does), then a reveal of the folder row, which lies
+    // wholly inside the bin's band, margins included.
+    let tree = collapsed_root_with_files(400, 800);
+    pin_scroller_height(&tree.sidebar.imp().outer_scrolled_window, 178);
+    flush_after_delay(Duration::from_millis(400));
+    let setup = tree.root.join(file_name(0));
+    assert_eq!(
+        reveal_and_settle(&tree.window, &tree.sidebar, &setup),
+        WorkspaceRevealStatus::Revealed
+    );
+    assert_sidebar_can_scroll(&tree.sidebar, "before revealing a visible row");
+    let outer_before = outer_adjustment(&tree.sidebar).value();
+    let header = header_of(&tree.section);
+    let header_before = header
+        .compute_bounds(&*tree.sidebar.imp().outer_scrolled_window)
+        .expect("header bounds");
+
+    let status = reveal_and_settle(&tree.window, &tree.sidebar, &tree.root);
+
+    assert_eq!(status, WorkspaceRevealStatus::Revealed);
+    assert_eq!(tree.sidebar.workspace_tree_evidence().reveal_depth, Some(0));
+    assert!(
+        settled_outer_values(&tree.sidebar, 6)
+            .iter()
+            .all(|value| *value == outer_before),
+        "revealing a visible row must not scroll a short sidebar from {outer_before}"
+    );
+    let header_after = header
+        .compute_bounds(&*tree.sidebar.imp().outer_scrolled_window)
+        .expect("header bounds");
+    assert_eq!(header_after.y(), header_before.y(), "the header stays put");
+    drop(tree.window);
+}
+
+/// Pins the documented price of the slice bin's forwarding rule
+/// (`gtk_lush_widgets::outer_scroll_request`): a row at the band's bottom edge
+/// whose CSS margin GTK counts as clipped asks for one pixel, and honouring it
+/// scrolls the chrome above the bin away, so a reveal of such a row is a
+/// scrolling reveal, never an at-rest one. If this ever stops scrolling, the
+/// forwarding rule changed and the at-rest fixture choice should be revisited.
+#[test]
+fn test_reveal_of_a_row_clipped_by_its_margin_scrolls_the_chrome_away() {
+    let tree = collapsed_root_with_files(400, 800);
+    pin_scroller_height(&tree.sidebar.imp().outer_scrolled_window, 178);
+    flush_after_delay(Duration::from_millis(400));
+    assert_eq!(
+        reveal_and_settle(&tree.window, &tree.sidebar, &tree.root.join(file_name(0))),
+        WorkspaceRevealStatus::Revealed
+    );
+    let outer_before = outer_adjustment(&tree.sidebar).value();
+    let target = tree.root.join(file_name(1));
+
+    let status = reveal_and_settle(&tree.window, &tree.sidebar, &target);
+
+    assert_eq!(status, WorkspaceRevealStatus::Revealed);
+    assert!(
+        outer_adjustment(&tree.sidebar).value() > outer_before,
+        "the margin-clipped row's one-pixel request scrolls the outer"
+    );
+    assert_revealed_row_rendered(&tree.sidebar, &tree.section, &target);
+    drop(tree.window);
+}
+
+/// Everything a failed reveal must leave exactly as it found it.
+#[derive(Debug, PartialEq)]
+struct SidebarRestState {
+    selected: Vec<u32>,
+    outer: f64,
+    scope: lushtext_core::model::workspace::WorkspaceScope,
+    show_hidden: bool,
+    expanded: Vec<std::collections::HashSet<PathBuf>>,
+}
+
+fn rest_state(sidebar: &LushtextSidebar) -> SidebarRestState {
+    let sections = sidebar.imp().sections.borrow().clone();
+    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    SidebarRestState {
+        selected: sections
+            .iter()
+            .map(|section| selection(section).selected())
+            .collect(),
+        outer: outer_adjustment(sidebar).value(),
+        scope: sidebar.current_scope(),
+        show_hidden: settings.boolean(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES),
+        expanded: sections
+            .iter()
+            .map(|section| section.workspace_section_evidence().expanded_paths)
+            .collect(),
+    }
+}
+
+#[track_caller]
+fn assert_reveal_fails_without_side_effects(
+    window: &LushtextWindow,
+    sidebar: &LushtextSidebar,
+    target: &Path,
+    expected: WorkspaceRevealStatus,
+) {
+    let before = rest_state(sidebar);
+    let scans_before = sidebar
+        .workspace_tree_evidence()
+        .process_scan_task_high_water;
+    let status = reveal_and_settle(window, sidebar, target);
+    assert_eq!(status, expected, "reveal of {}", target.display());
+    flush_after_delay(Duration::from_millis(300));
+    assert_eq!(
+        rest_state(sidebar),
+        before,
+        "a failed reveal must leave selection, scroll, scope, visibility, and expansion unchanged"
+    );
+    if matches!(
+        expected,
+        WorkspaceRevealStatus::NotInWorkspace
+            | WorkspaceRevealStatus::OutsideScope
+            | WorkspaceRevealStatus::HiddenByVisibility
+    ) {
+        assert_eq!(
+            sidebar
+                .workspace_tree_evidence()
+                .process_scan_task_high_water,
+            scans_before,
+            "a reveal refused before expansion starts no scan"
+        );
+    }
+}
+
+#[test]
+fn test_reveal_outside_every_workspace_fails_as_not_in_workspace() {
+    let tree = collapsed_tree(&[("nested", 3)], 800);
+    let elsewhere = tempfile::tempdir().expect("outside tempdir");
+    fixture::write_text(&elsewhere.path().join("loose.txt"), "x");
+    assert_reveal_fails_without_side_effects(
+        &tree.window,
+        &tree.sidebar,
+        &elsewhere.path().join("loose.txt"),
+        WorkspaceRevealStatus::NotInWorkspace,
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_reveal_in_a_workspace_hidden_by_scope_fails_as_outside_scope() {
+    let (_dir, _first, second) = two_workspaces(5);
+    let (window, sidebar) = present_sidebar_window(800);
+    let sections = mapped_sections(&sidebar, 2);
+    // Narrow the scope to the first workspace.
+    sidebar.imp().workspace_filter_dropdown.set_selected(1);
+    flush_after_delay(Duration::from_millis(400));
+    for section in &sections {
+        wait_for_refresh_idle(section);
+    }
+    assert_reveal_fails_without_side_effects(
+        &window,
+        &sidebar,
+        &second.join("nested").join(file_name(2)),
+        WorkspaceRevealStatus::OutsideScope,
+    );
+    sidebar.imp().workspace_filter_dropdown.set_selected(0);
+    flush_after_delay(Duration::from_millis(400));
+    drop(window);
+}
+
+#[test]
+fn test_reveal_of_a_missing_middle_component_fails_as_not_found() {
+    let tree = collapsed_tree(&[("present", 3)], 800);
+    assert_reveal_fails_without_side_effects(
+        &tree.window,
+        &tree.sidebar,
+        &tree.root.join("present/missing/file.txt"),
+        WorkspaceRevealStatus::NotFound,
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_reveal_through_a_hidden_component_fails_without_changing_visibility() {
+    let tree = collapsed_tree(&[(".secret", 3)], 800);
+    let settings = gtk4::gio::Settings::new(lushtext_core::config::APP_ID);
+    settings.reset(lushtext_core::config::keys::WORKSPACE_SHOW_HIDDEN_FILES);
+    flush_events();
+    assert_reveal_fails_without_side_effects(
+        &tree.window,
+        &tree.sidebar,
+        &tree.root.join(".secret").join(file_name(1)),
+        WorkspaceRevealStatus::HiddenByVisibility,
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_reveal_past_the_directory_entry_cap_fails_as_beyond_entry_cap() {
+    // 10,000 is the per-directory cap; the target sorts after every kept row.
+    let tree = collapsed_tree(&[("huge", 10_050)], 800);
+    assert_reveal_fails_without_side_effects(
+        &tree.window,
+        &tree.sidebar,
+        &tree.root.join("huge").join(file_name(10_040)),
+        WorkspaceRevealStatus::BeyondEntryCap,
+    );
+    drop(tree.window);
+}
+
+#[test]
+fn test_a_newer_reveal_supersedes_one_awaiting_a_scan() {
+    let tree = collapsed_tree(&[("slow", 20), ("fast", 20)], 800);
+    tree.section
+        .set_child_scan_delay_for_test(Duration::from_millis(800));
+    let first = tree.root.join("slow").join(file_name(15));
+    let second = tree.root.join("top.txt");
+    let superseded_before = tree
+        .sidebar
+        .workspace_tree_evidence()
+        .reveal_superseded_count;
+
+    reveal(&tree.window, &first);
+    flush_after_delay(Duration::from_millis(50));
+    let status = reveal_and_settle(&tree.window, &tree.sidebar, &second);
+
+    assert_eq!(status, WorkspaceRevealStatus::Revealed);
+    assert_eq!(
+        tree.sidebar
+            .workspace_tree_evidence()
+            .reveal_superseded_count,
+        superseded_before + 1,
+        "the first reveal must end superseded"
+    );
+    // Outlive the first reveal's delayed scan: its result must select nothing.
+    flush_after_delay(Duration::from_millis(1_200));
+    wait_for_refresh_idle(&tree.section);
+    assert_eq!(
+        selected_path(&tree.section).as_deref(),
+        Some(second.as_path())
+    );
+    assert_eq!(
+        tree.sidebar.workspace_tree_evidence().reveal_status,
+        WorkspaceRevealStatus::Revealed
+    );
+    tree.section.set_child_scan_delay_for_test(Duration::ZERO);
+    drop(tree.window);
+}
+
+#[test]
+fn test_disposing_the_window_mid_reveal_clears_the_blocker() {
+    let tree = collapsed_tree(&[("slow", 20)], 800);
+    tree.section
+        .set_child_scan_delay_for_test(Duration::from_millis(800));
+    let target = tree.root.join("slow").join(file_name(10));
+    reveal(&tree.window, &target);
+    flush_after_delay(Duration::from_millis(50));
+    assert!(
+        tree.sidebar.workspace_path_reveal_pending(),
+        "the reveal must still be waiting on its scan"
+    );
+    let generation = tree.sidebar.workspace_tree_evidence().reveal_generation;
+
+    // Destroy the window and drop every handle but the sidebar's, so the window
+    // is really disposed and tears its widget tree down around the reveal.
+    let LargeTree {
+        _dir,
+        window,
+        sidebar,
+        section,
+        ..
+    } = tree;
+    drop(section);
+    window.destroy();
+    drop(window);
+    flush_after_delay(Duration::from_millis(100));
+    let tree = RevealedSidebar { sidebar };
+
+    assert!(
+        !tree.sidebar.workspace_path_reveal_pending(),
+        "disposal must end the reveal and clear its blocker"
+    );
+    assert_eq!(
+        tree.sidebar.workspace_tree_evidence().reveal_status,
+        WorkspaceRevealStatus::Superseded
+    );
+    flush_after_delay(Duration::from_millis(1_200));
+    let evidence = tree.sidebar.workspace_tree_evidence();
+    assert_eq!(
+        evidence.reveal_generation, generation,
+        "no continuation ran"
+    );
+    assert_eq!(evidence.reveal_status, WorkspaceRevealStatus::Superseded);
+    drop(_dir);
+}
+
+/// The one handle a disposal test keeps after its window is gone.
+struct RevealedSidebar {
+    sidebar: LushtextSidebar,
+}
+
+#[test]
+fn test_sidebar_slice_bin_reports_a_forwarded_request_until_its_idle_applies_it() {
+    let tree = tall_workspace(800);
+    scroll_outer_to(&tree.sidebar, 0.0);
+    let slice = &tree.section.imp().file_tree_slice;
+    for _ in 0..6 {
+        force_section_layout(&tree.section);
+        assert!(
+            !slice.outer_request_pending(),
+            "a resting sidebar bin must report no pending request"
+        );
+    }
+    let outer = outer_adjustment(&tree.sidebar);
+    let resting = outer.value();
+    let index = tree_index_for_path(&tree.section, &tree.root.join(file_name(399)))
+        .expect("last row index");
+
+    file_tree_view(&tree.section).scroll_to(index, gtk4::ListScrollFlags::FOCUS, None);
+    let mut outer_when_pending = None;
+    let seen = observed_between_dispatches(Duration::from_secs(5), || {
+        let pending = slice.outer_request_pending();
+        if pending {
+            outer_when_pending = Some(outer.value());
+        }
+        pending
+    });
+    assert!(
+        seen,
+        "the sidebar bin must report its forwarded request as pending"
+    );
+    assert_eq!(outer_when_pending, Some(resting));
+
+    wait_until(Duration::from_secs(5), || {
+        !slice.outer_request_pending() && outer.value() > resting
+    });
+    flush_after_delay(Duration::from_millis(300));
+    assert!(!slice.outer_request_pending());
+    drop(tree.window);
+}
+
+#[test]
+fn test_reveal_geometry_snapshot_is_bounded_and_unlabelled() {
+    let tree = collapsed_root_with_files(400, 800);
+    let app = tree
+        .window
+        .application()
+        .and_downcast::<lushtext_core::app::LushtextApplication>()
+        .expect("test window belongs to a LushtextApplication");
+    let surface = |snapshot: &lushtext_core::model::automation::AutomationSnapshot, name: &str| {
+        snapshot
+            .window
+            .as_ref()
+            .expect("window snapshot")
+            .visual_geometry
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == name)
+            .cloned()
+    };
+
+    // Before any reveal the named surfaces are present, absent, and explained.
+    let before = lushtext_core::ui::automation::app_snapshot(&app);
+    for name in [
+        "workspace-sidebar-viewport",
+        "workspace-revealed-row",
+        "workspace-revealed-section-header",
+    ] {
+        let absent = surface(&before, name).unwrap_or_else(|| panic!("{name} reported"));
+        assert!(!absent.visible);
+        assert_eq!(absent.absence_reason.as_deref(), Some("no-reveal"));
+    }
+    assert_eq!(
+        before
+            .window
+            .as_ref()
+            .expect("window")
+            .workspace
+            .reveal_status,
+        "none"
+    );
+
+    let target = tree.root.join(file_name(399));
+    assert_eq!(
+        reveal_and_settle(&tree.window, &tree.sidebar, &target),
+        WorkspaceRevealStatus::Revealed
+    );
+    let after = lushtext_core::ui::automation::app_snapshot(&app);
+    let window_snapshot = after.window.as_ref().expect("window snapshot");
+    assert_eq!(window_snapshot.workspace.reveal_status, "revealed");
+    assert_eq!(window_snapshot.workspace.reveal_depth, Some(1));
+    let viewport = surface(&after, "workspace-sidebar-viewport")
+        .and_then(|surface| surface.rect)
+        .expect("viewport rect");
+    let row = surface(&after, "workspace-revealed-row")
+        .and_then(|surface| surface.rect)
+        .expect("revealed row rect");
+    assert!(surface(&after, "workspace-revealed-section-header").is_some_and(|s| s.visible));
+    assert!(
+        row.y >= viewport.y && row.y + row.height <= viewport.y + viewport.height,
+        "the revealed row {row:?} lies inside the sidebar viewport {viewport:?}"
+    );
+    let neighbours = window_snapshot
+        .visual_geometry
+        .surfaces
+        .iter()
+        .filter(|surface| surface.name.starts_with("workspace-revealed-neighbour-"))
+        .count();
+    assert!(
+        (2..=8).contains(&neighbours),
+        "between two and eight neighbour rows are reported, not {neighbours}"
+    );
+    let anchor = window_snapshot
+        .visual_geometry
+        .pixel_anchors
+        .iter()
+        .find(|anchor| anchor.name == "workspace-revealed-row-ink")
+        .expect("selected-row pixel anchor");
+    assert_eq!(anchor.rect, Some(row));
+    assert!(
+        window_snapshot
+            .visual_geometry
+            .scroll_anchors
+            .iter()
+            .any(|anchor| anchor.name == "workspace-sidebar-viewport"
+                && anchor.y_value_milli.is_some()),
+        "the outer sidebar scroller is reported as a scroll anchor"
+    );
+    let json = serde_json::to_string(&after).expect("snapshot serializes");
+    assert!(
+        !json.contains("row-00"),
+        "no file name may cross the automation privacy boundary"
+    );
     drop(tree.window);
 }

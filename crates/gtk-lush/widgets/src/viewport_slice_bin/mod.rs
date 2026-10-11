@@ -109,6 +109,25 @@ impl ViewportSliceBin {
         self.imp().correction_count.get()
     }
 
+    /// Whether a scroll request the child made has yet to reach the outer
+    /// scroller.
+    ///
+    /// True from the allocation in which the bin reads a child-originated
+    /// request (a `scroll_to`, keyboard focus scrolling) until the idle that
+    /// moves the outer adjustment has run, and while the bin holds back a
+    /// divergence it has not yet told apart from a settle (it is handed back
+    /// and classified on the next allocation). False at rest.
+    ///
+    /// Evidence, like [`Self::allocation_count`] and
+    /// [`Self::correction_count`]: it reads two cells and never allocates,
+    /// queues a layout, or touches an adjustment. A caller waiting for a
+    /// `scroll_to` to land waits on this rather than on elapsed frames or on
+    /// the outer value holding still, which it does in the gap before the idle.
+    #[must_use]
+    pub fn outer_request_pending(&self) -> bool {
+        self.imp().outer_request_pending()
+    }
+
     /// Return the outer scroller the bin currently slices against.
     #[must_use]
     pub fn outer_scrolled_window(&self) -> Option<gtk4::ScrolledWindow> {

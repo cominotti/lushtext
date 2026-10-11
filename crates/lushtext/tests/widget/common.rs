@@ -219,6 +219,29 @@ pub fn wait_until_or_false(budget: Duration, predicate: impl FnMut() -> bool) ->
     .is_ok()
 }
 
+/// Run the main loop one dispatch at a time for up to `budget`, sampling
+/// `predicate` before every dispatch, and report whether it ever held.
+///
+/// GLib dispatches one priority level per iteration, so a state that exists
+/// only between two sources of different priority is visible here and
+/// invisible to `wait_until`, which drains every ready source before it looks.
+/// A slice bin's forwarded request is that kind of state: the frame clock's
+/// layout (priority 120) records it and a default-priority idle (200) applies
+/// it, both normally inside one `wait_until` drain.
+pub fn observed_between_dispatches(budget: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if predicate() {
+            return true;
+        }
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    predicate()
+}
+
 /// The editor page of the currently selected tab.
 ///
 /// Promoted here after a fifth copy appeared; `window.rs`, `app.rs`,

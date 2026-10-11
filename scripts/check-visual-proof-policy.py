@@ -17,8 +17,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_DIR = REPO_ROOT / "build/smoke/visual-geometry"
+# The `ViewportSliceBin` widget directory, keyed as a prefix so a later split of
+# its `imp.rs` cannot disarm the workspace-tree rendered-row gate.
+WORKSPACE_TREE_SLICE_BIN_PREFIX = "crates/gtk-lush/widgets/src/viewport_slice_bin/"
 VISUAL_SENSITIVE_PREFIXES = (
     "crates/cargo-gtk-proof/src/",
+    WORKSPACE_TREE_SLICE_BIN_PREFIX,
     "crates/lushtext-core/src/ui/",
     "crates/lushtext/tests/widget/",
     "resources/ui/",
@@ -26,6 +30,8 @@ VISUAL_SENSITIVE_PREFIXES = (
     "scripts/visual-geometry-scenarios/",
 )
 VISUAL_SENSITIVE_EXACT = (
+    "crates/gtk-lush/widgets/src/scroll_request.rs",
+    "crates/gtk-lush/widgets/src/slice_geometry.rs",
     "crates/lushtext-core/src/model/automation.rs",
     "scripts/check-visual-proof-policy.py",
     "scripts/lushtext-automation.py",
@@ -56,6 +62,23 @@ NATIVE_MINIMAP_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/editor_page/minim
 # subdirectories, four of them migrated role homes no predicate has ever
 # protected.
 SHELL_GEOMETRY_ROLE_HOME_PREFIX = "crates/lushtext-core/src/ui/window/geometry/"
+# Invariant proving the workspace sidebar's rendered rows against screenshot
+# anchors after a `win.reveal-workspace-path` reveal. The path set below mirrors
+# `crates/cargo-gtk-proof/src/policy.rs` exactly; both self-tests assert the
+# same required and not-required paths. The whole of `ui/sidebar/` is
+# deliberately not a key: dialog and persistence edits cannot move a row.
+WORKSPACE_TREE_ROW_ANCHORS_INVARIANT = "workspace-tree-rendered-row-anchors"
+WORKSPACE_TREE_REVEAL_SCENARIO_PREFIX = "scripts/visual-geometry-scenarios/workspace-tree-reveal"
+WORKSPACE_TREE_ROW_ANCHOR_EXACT = (
+    "crates/gtk-lush/widgets/src/scroll_request.rs",
+    "crates/gtk-lush/widgets/src/slice_geometry.rs",
+    "crates/lushtext-core/src/ui/sidebar/reveal_execution.rs",
+    "crates/lushtext-core/src/ui/sidebar/workspace_section/folder_execution.rs",
+    "crates/lushtext-core/src/ui/sidebar/workspace_section/imp.rs",
+    "crates/lushtext-core/src/ui/sidebar/workspace_section/row_factory.rs",
+    "resources/ui/workspace-section.blp",
+    "resources/ui/workspace-section.ui",
+)
 NATIVE_MINIMAP_HIGHLIGHT_INVARIANT = "native-minimap-highlight-anchors"
 NATIVE_MINIMAP_ANIMATION_INVARIANT = "native-minimap-animation-highlight-anchors"
 WORKSPACE_SIDEBAR_ANIMATION_CASE_IDS = (
@@ -186,7 +209,19 @@ def required_invariants_for_changes(paths: list[str]) -> list[str]:
             or path.startswith("scripts/visual-geometry-scenarios/minimap-sidebar-")
         ):
             required.add(NATIVE_MINIMAP_HIGHLIGHT_INVARIANT)
+        if workspace_tree_row_anchor_path(path):
+            required.add(WORKSPACE_TREE_ROW_ANCHORS_INVARIANT)
     return sorted(required)
+
+
+def workspace_tree_row_anchor_path(path: str) -> bool:
+    """Whether `path` can move the workspace sidebar's rendered rows."""
+
+    return (
+        path.startswith(WORKSPACE_TREE_SLICE_BIN_PREFIX)
+        or path.startswith(WORKSPACE_TREE_REVEAL_SCENARIO_PREFIX)
+        or path in WORKSPACE_TREE_ROW_ANCHOR_EXACT
+    )
 
 
 def required_animation_invariants_for_changes(paths: list[str]) -> list[str]:
@@ -496,10 +531,12 @@ def case_has_actionable_pixel_evidence(case: dict[str, object]) -> bool:
         return False
     if not isinstance(final_geometry, dict):
         return False
+    # A before/after anchor compares two detections; a reference anchor
+    # compares one after detection with the app's reported row.
     return any(
         isinstance(row, dict)
-        and row.get("before_row_y") is not None
         and row.get("after_row_y") is not None
+        and (row.get("before_row_y") is not None or row.get("reference_top_y") is not None)
         for row in evidence
     )
 
@@ -563,6 +600,8 @@ def check_policy(artifact_dir: Path, base_ref: str | None) -> tuple[bool, str]:
         return True, "No local visual-sensitive changes require visual geometry proof."
 
     summary, error = read_summary(artifact_dir)
+    required = required_invariants_for_changes(visual_changes)
+    required_lines = [f"Required pixel invariants: {', '.join(required)}"] if required else []
     if error:
         return (
             False,
@@ -571,6 +610,7 @@ def check_policy(artifact_dir: Path, base_ref: str | None) -> tuple[bool, str]:
                     "Visual-sensitive changes require same-session visual geometry proof.",
                     "Changed files:",
                     *(f"  - {path}" for path in visual_changes),
+                    *required_lines,
                     error,
                     "Run `make visual-geometry-smoke` and rerun this check.",
                 ]
@@ -597,6 +637,7 @@ def check_policy(artifact_dir: Path, base_ref: str | None) -> tuple[bool, str]:
                 "Visual-sensitive changes require a passing visual geometry proof.",
                 "Changed files:",
                 *(f"  - {path}" for path in visual_changes),
+                *required_lines,
                 detail,
                 f"Artifact summary: {artifact_dir / 'summary.json'}",
             ]
@@ -606,6 +647,7 @@ def check_policy(artifact_dir: Path, base_ref: str | None) -> tuple[bool, str]:
 
 def run_self_tests() -> None:
     _self_test_shell_geometry_role_home_rekey()
+    _self_test_workspace_tree_row_anchor_paths()
     assert is_visual_sensitive("crates/lushtext-core/src/ui/window/imp.rs")
     assert is_visual_sensitive("crates/lushtext-core/src/model/automation.rs")
     assert is_visual_sensitive("resources/ui/window.blp")
@@ -931,6 +973,54 @@ def _self_test_shell_geometry_role_home_rekey() -> None:
         assert workspace_sidebar_animation_matrix_required([retained]), (
             f"{retained} must still require the animation matrix"
         )
+
+
+def _self_test_workspace_tree_row_anchor_paths() -> None:
+    """Parity assertion for the workspace-tree rendered-row invariant.
+
+    The identical required and not-required cases are asserted in
+    `crates/cargo-gtk-proof/src/policy.rs`, so a one-sided edit to either path
+    set fails a self-test instead of leaving the two gates disagreeing.
+    """
+    for path in (
+        "crates/gtk-lush/widgets/src/scroll_request.rs",
+        "crates/gtk-lush/widgets/src/slice_geometry.rs",
+        "crates/gtk-lush/widgets/src/viewport_slice_bin/imp.rs",
+        "crates/lushtext-core/src/ui/sidebar/workspace_section/row_factory.rs",
+        "crates/lushtext-core/src/ui/sidebar/reveal_execution.rs",
+        "resources/ui/workspace-section.blp",
+        "scripts/visual-geometry-scenarios/workspace-tree-reveal.json",
+        "scripts/visual-geometry-scenarios/workspace-tree-reveal-at-rest.json",
+    ):
+        assert is_visual_sensitive(path), f"{path} must be visual-sensitive"
+        assert WORKSPACE_TREE_ROW_ANCHORS_INVARIANT in required_invariants_for_changes([path]), (
+            f"{path} must require the workspace-tree rendered-row invariant"
+        )
+    for path in (
+        "crates/lushtext-core/src/services/draft_service.rs",
+        "crates/lushtext-core/src/ui/sidebar/dialogs.rs",
+        "crates/lushtext-core/src/ui/sidebar/persist_execution.rs",
+        "crates/gtk-lush/widgets/src/clip_bin/mod.rs",
+    ):
+        assert WORKSPACE_TREE_ROW_ANCHORS_INVARIANT not in required_invariants_for_changes(
+            [path]
+        ), f"{path} must not require the workspace-tree rendered-row invariant"
+    reference_case = {
+        "status": "passed",
+        "pixel_anchor_evidence": [
+            {
+                "name": "workspace-revealed-row-ink",
+                "mode": "after-against-reference-surface",
+                "after_row_y": 210,
+                "reference_top_y": 210,
+                "status": "passed",
+            }
+        ],
+        "final_geometry": {"before": [], "after": []},
+    }
+    assert case_has_actionable_pixel_evidence(reference_case)
+    reference_case["pixel_anchor_evidence"][0]["reference_top_y"] = None
+    assert not case_has_actionable_pixel_evidence(reference_case)
 
 
 if __name__ == "__main__":

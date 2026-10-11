@@ -1,0 +1,173 @@
+{
+  "case_id": "workspace-tree-reveal--desktop--force-dark--beyond-cap",
+  "workspace": {
+    "excluded_names": [
+      ".git"
+    ],
+    "excluded_names_truncated": false,
+    "filter_animation_active": false,
+    "folder_count": 1,
+    "no_workspaces": false,
+    "persistence_dirty": false,
+    "persistence_inflight": false,
+    "reveal_depth": 1,
+    "reveal_generation": 1,
+    "reveal_status": "revealed",
+    "scope_kind": "all",
+    "scope_workspace_id": null,
+    "scope_workspace_name": null,
+    "scoped_folder_count": 1,
+    "show_hidden_files": false,
+    "workspace_count": 1
+  },
+  "visual_geometry": {
+    "surfaces": [
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 773,
+          "width": 359
+        },
+        "name": "workspace-sidebar",
+        "rect": {
+          "height": 773,
+          "width": 360,
+          "x": 0,
+          "y": 94
+        },
+        "visible": true
+      },
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 718,
+          "width": 359
+        },
+        "name": "workspace-sidebar-viewport",
+        "rect": {
+          "height": 718,
+          "width": 359,
+          "x": 0,
+          "y": 149
+        },
+        "visible": true
+      },
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 36,
+          "width": 331
+        },
+        "name": "workspace-revealed-row",
+        "rect": {
+          "height": 36,
+          "width": 347,
+          "x": 6,
+          "y": 825
+        },
+        "visible": true
+      },
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 54,
+          "width": 341
+        },
+        "name": "workspace-revealed-section-header",
+        "rect": {
+          "height": 54,
+          "width": 341,
+          "x": 12,
+          "y": -14435
+        },
+        "visible": true
+      },
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 36,
+          "width": 331
+        },
+        "name": "workspace-revealed-neighbour-0",
+        "rect": {
+          "height": 36,
+          "width": 347,
+          "x": 6,
+          "y": 673
+        },
+        "visible": true
+      },
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 36,
+          "width": 331
+        },
+        "name": "workspace-revealed-neighbour-1",
+        "rect": {
+          "height": 36,
+          "width": 347,
+          "x": 6,
+          "y": 711
+        },
+        "visible": true
+      },
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 36,
+          "width": 331
+        },
+        "name": "workspace-revealed-neighbour-2",
+        "rect": {
+          "height": 36,
+          "width": 347,
+          "x": 6,
+          "y": 749
+        },
+        "visible": true
+      },
+      {
+        "absence_reason": null,
+        "allocation": {
+          "height": 36,
+          "width": 331
+        },
+        "name": "workspace-revealed-neighbour-3",
+        "rect": {
+          "height": 36,
+          "width": 347,
+          "x": 6,
+          "y": 787
+        },
+        "visible": true
+      }
+    ],
+    "pixel_anchors": [
+      {
+        "absence_reason": null,
+        "name": "workspace-revealed-row-ink",
+        "rect": {
+          "height": 36,
+          "width": 347,
+          "x": 6,
+          "y": 825
+        },
+        "surface": "workspace-revealed-row",
+        "visible": true
+      }
+    ],
+    "scroll_anchors": [
+      {
+        "at_left": null,
+        "at_top": false,
+        "name": "workspace-sidebar-viewport",
+        "x_lower_milli": null,
+        "x_value_milli": null,
+        "y_lower_milli": 0,
+        "y_value_milli": 14585000
+      }
+    ],
+    "scale_factor": 1
+  }
+}

@@ -13,13 +13,14 @@ use crate::model::automation::{
     AUTOMATION_WORKFLOW_CONTENT_SEARCH, AUTOMATION_WORKFLOW_FILE_LOAD,
     AUTOMATION_WORKFLOW_MINIMAP_REFRESH, AUTOMATION_WORKFLOW_REPLACE_PREVIEW,
     AUTOMATION_WORKFLOW_SAVE, AUTOMATION_WORKFLOW_SEARCH, AUTOMATION_WORKFLOW_SESSION_RESTORE,
-    AUTOMATION_WORKFLOW_WORKSPACE_REFRESH, AutomationCommandPaletteSnapshot,
-    AutomationContentSearchSnapshot, AutomationLocalHistorySnapshot,
-    AutomationNativeMinimapDiagnosticSnapshot, AutomationNotesSnapshot,
-    AutomationNotificationSnapshot, AutomationReadinessPredicate, AutomationReadinessResult,
-    AutomationReadinessStatus, AutomationSearchSnapshot, AutomationSnapshot,
-    AutomationSurfaceSnapshot, AutomationTabSnapshot, AutomationVisualAdjustmentSnapshot,
-    AutomationVisualGeometrySnapshot, AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
+    AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL, AUTOMATION_WORKFLOW_WORKSPACE_REFRESH,
+    AutomationCommandPaletteSnapshot, AutomationContentSearchSnapshot,
+    AutomationLocalHistorySnapshot, AutomationNativeMinimapDiagnosticSnapshot,
+    AutomationNotesSnapshot, AutomationNotificationSnapshot, AutomationReadinessPredicate,
+    AutomationReadinessResult, AutomationReadinessStatus, AutomationSearchSnapshot,
+    AutomationSnapshot, AutomationSurfaceSnapshot, AutomationTabSnapshot,
+    AutomationVisualAdjustmentSnapshot, AutomationVisualGeometrySnapshot,
+    AutomationVisualPixelAnchorSnapshot, AutomationVisualRect,
     AutomationVisualScrollAnchorSnapshot, AutomationVisualSize, AutomationVisualSurfaceSnapshot,
     AutomationWindowSnapshot, AutomationWorkflowEventsSnapshot, AutomationWorkflowObservation,
     AutomationWorkspaceSnapshot, READINESS_BLOCKER_APP_STARTUP, READINESS_BLOCKER_CLOSE_SAFETY,
@@ -27,9 +28,9 @@ use crate::model::automation::{
     READINESS_BLOCKER_DRAFT_AUTOSAVE, READINESS_BLOCKER_EDITOR_SEARCH, READINESS_BLOCKER_FILE_LOAD,
     READINESS_BLOCKER_MINIMAP_REFRESH, READINESS_BLOCKER_PREVIEW_ANIMATION,
     READINESS_BLOCKER_REPLACE_PREVIEW, READINESS_BLOCKER_SAVE, READINESS_BLOCKER_SESSION_RESTORE,
-    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PERSIST,
-    READINESS_BLOCKER_WORKSPACE_SEARCH, READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION,
-    READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
+    READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION, READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
+    READINESS_BLOCKER_WORKSPACE_PERSIST, READINESS_BLOCKER_WORKSPACE_SEARCH,
+    READINESS_BLOCKER_WORKSPACE_SIDEBAR_ANIMATION, READINESS_BLOCKER_WORKSPACE_TREE_REFRESH,
 };
 use crate::model::palette::SearchMode;
 use crate::services::action_catalog;
@@ -504,12 +505,30 @@ fn current_readiness_blocker(
 
 /// Return terminal workflow failures that should stop a readiness wait early.
 ///
-/// Today this is limited to file-open completion: a failed editor load is
-/// settled, but it is not a successful ready state for agents opening a file.
+/// Two predicates have one: a failed editor load is settled but is not a
+/// successful ready state for agents opening a file, and a workspace path reveal
+/// that ended in a typed failure is settled but did not reveal its row.
 fn current_readiness_failure(
     app: &LushtextApplication,
     predicate: AutomationReadinessPredicate,
 ) -> Option<String> {
+    if predicate == AutomationReadinessPredicate::WorkspacePathRevealed {
+        // A typed reveal failure is settled but is not the requested ready state.
+        // Read from the workspace tree workflow's evidence projection, the same
+        // value `window.workspace.reveal_status` serializes.
+        let window = active_lushtext_window(app)?;
+        let status = window
+            .imp()
+            .sidebar
+            .workspace_snapshot_evidence()
+            .reveal_status;
+        return status.is_failure().then(|| {
+            format!(
+                "workspace-path-revealed failed because the reveal ended {}",
+                status.as_str()
+            )
+        });
+    }
     if predicate != AutomationReadinessPredicate::FileOpenComplete {
         return None;
     }
@@ -559,6 +578,7 @@ fn inactive_workflow_observations() -> Vec<AutomationWorkflowObservation> {
         AUTOMATION_WORKFLOW_REPLACE_PREVIEW,
         AUTOMATION_WORKFLOW_SESSION_RESTORE,
         AUTOMATION_WORKFLOW_MINIMAP_REFRESH,
+        AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
     ]
     .into_iter()
     .map(|workflow_id| AutomationWorkflowObservation::new(workflow_id, false, None))
@@ -604,6 +624,7 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
         window,
         AutomationReadinessPredicate::WorkspaceRefreshComplete,
     );
+    let path_reveal_active = imp.sidebar.workspace_path_reveal_pending();
     vec![
         AutomationWorkflowObservation::new(
             AUTOMATION_WORKFLOW_FILE_LOAD,
@@ -648,6 +669,11 @@ fn window_workflow_observations(window: &LushtextWindow) -> Vec<AutomationWorkfl
             AUTOMATION_WORKFLOW_MINIMAP_REFRESH,
             minimap_refresh_active,
             minimap_refresh_active.then_some(READINESS_BLOCKER_MINIMAP_REFRESH),
+        ),
+        AutomationWorkflowObservation::new(
+            AUTOMATION_WORKFLOW_WORKSPACE_PATH_REVEAL,
+            path_reveal_active,
+            path_reveal_active.then_some(READINESS_BLOCKER_WORKSPACE_PATH_REVEAL),
         ),
     ]
 }
@@ -770,6 +796,15 @@ fn window_readiness_blocker(
         predicate,
         imp.sidebar.workspace_filter_animation_active(),
         READINESS_BLOCKER_WORKSPACE_FILTER_ANIMATION,
+    ) {
+        return Some(blocker);
+    }
+    // A cheap read of the reveal's one active slot, identical by construction to
+    // `WorkspaceTreeEvidence::reveal_pending`.
+    if let Some(blocker) = included_blocker(
+        predicate,
+        imp.sidebar.workspace_path_reveal_pending(),
+        READINESS_BLOCKER_WORKSPACE_PATH_REVEAL,
     ) {
         return Some(blocker);
     }
@@ -927,6 +962,7 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
     // chained `evidence\n.field` across lines where that match cannot see it.
     let scope_workspace_id = evidence.scope_workspace_id;
     let scope_workspace_name = evidence.scope_workspace_name;
+    let reveal_status = evidence.reveal_status;
     // The two visibility fields are preference state, not tree evidence: they
     // are read from the same GSettings keys every workspace surface reads.
     let settings = &window.imp().settings;
@@ -954,6 +990,9 @@ fn workspace_snapshot(window: &LushtextWindow) -> AutomationWorkspaceSnapshot {
         show_hidden_files,
         excluded_names,
         excluded_names_truncated,
+        reveal_status: reveal_status.as_str().to_string(),
+        reveal_generation: evidence.reveal_generation,
+        reveal_depth: evidence.reveal_depth,
     }
 }
 
@@ -1137,6 +1176,15 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
     push_widget_surface(&mut surfaces, "tab-strip", &*imp.tab_bar, root);
     push_widget_surface(&mut surfaces, "status-bar", &*imp.status_bar, root);
     push_widget_surface(&mut surfaces, "workspace-sidebar", &*imp.sidebar, root);
+    push_workspace_reveal_surfaces(window, &mut surfaces, &mut pixel_anchors, root);
+    let sidebar_vadjustment = imp.sidebar.sidebar_viewport_vadjustment();
+    scroll_anchors.push(scroll_anchor_snapshot(
+        "workspace-sidebar-viewport",
+        None,
+        Some(&sidebar_vadjustment),
+        0.0,
+        0.0,
+    ));
     push_widget_surface(
         &mut surfaces,
         "document-properties",
@@ -1328,6 +1376,67 @@ fn visual_geometry_snapshot(window: &LushtextWindow) -> AutomationVisualGeometry
         pixel_anchors,
         native_minimap,
         scroll_anchors,
+    }
+}
+
+/// Project the latest `revealed` workspace path reveal onto named surfaces.
+///
+/// Rectangles only, never a label: the revealed row, its section header, the
+/// sidebar viewport, and at most eight unlabelled neighbour rows in list order.
+/// With no current reveal the three named surfaces are absent with a reason and
+/// no neighbour is emitted. The pixel anchor hands screenshot proof the revealed
+/// row as its crop hint; the runner still detects the drawn row content itself.
+fn push_workspace_reveal_surfaces(
+    window: &LushtextWindow,
+    surfaces: &mut Vec<AutomationVisualSurfaceSnapshot>,
+    pixel_anchors: &mut Vec<AutomationVisualPixelAnchorSnapshot>,
+    root: &gtk4::Widget,
+) {
+    match window.imp().sidebar.workspace_reveal_geometry() {
+        Ok(geometry) => {
+            push_widget_surface(
+                surfaces,
+                "workspace-sidebar-viewport",
+                &geometry.viewport,
+                root,
+            );
+            let row = widget_visual_surface("workspace-revealed-row", &geometry.row, root);
+            pixel_anchors.push(pixel_anchor(
+                "workspace-revealed-row-ink",
+                "workspace-revealed-row",
+                row.rect,
+                "row-not-drawn",
+            ));
+            surfaces.push(row);
+            push_widget_surface(
+                surfaces,
+                "workspace-revealed-section-header",
+                &geometry.header,
+                root,
+            );
+            for (index, neighbour) in geometry.neighbours.iter().enumerate() {
+                push_widget_surface(
+                    surfaces,
+                    &format!("workspace-revealed-neighbour-{index}"),
+                    neighbour,
+                    root,
+                );
+            }
+        }
+        Err(reason) => {
+            for name in [
+                "workspace-sidebar-viewport",
+                "workspace-revealed-row",
+                "workspace-revealed-section-header",
+            ] {
+                surfaces.push(absent_visual_surface(name, reason));
+            }
+            pixel_anchors.push(absent_pixel_anchor(
+                "workspace-revealed-row-ink",
+                "workspace-revealed-row",
+                reason,
+            ));
+        }
     }
 }
 

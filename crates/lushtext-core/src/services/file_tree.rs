@@ -38,7 +38,7 @@ pub struct DirectoryEntry {
 
 impl Ord for DirectoryEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        compare_entries(
+        compare_directory_entries(
             (self.path.as_path(), self.is_dir),
             (other.path.as_path(), other.is_dir),
         )
@@ -609,7 +609,12 @@ fn drain_sorted_entries(heap: BinaryHeap<DirectoryEntry>) -> Vec<DirectoryEntry>
 
 /// Sort order: directories before files, then case-insensitive alphabetical.
 /// Uses `UniCase` for Unicode-aware comparison without allocation.
-fn compare_entries(
+///
+/// Public because the bounded scan keeps the *first* `max_entries` entries in
+/// exactly this order, so a caller deciding whether a missing entry could lie
+/// past the cap (the sidebar's path reveal) must compare in the same order.
+#[must_use]
+pub fn compare_directory_entries(
     (path_a, is_dir_a): (&Path, bool),
     (path_b, is_dir_b): (&Path, bool),
 ) -> Ordering {

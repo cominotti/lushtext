@@ -718,6 +718,24 @@ const ACTION_CATALOG: &[ActionCatalogEntry] = &[
     ),
     ActionCatalogEntry::new(
         ActionScope::Window,
+        "reveal-workspace-path",
+        "Reveal Workspace Path",
+        ActionValueType::String,
+        ActionValueType::None,
+        "Takes an absolute path inside a configured workspace folder; expands its ancestors through the sidebar's bounded scans, selects its row, and scrolls it into view. Typed failures are reported through `workspace-path-revealed`.",
+        "sidebar/reveal",
+        &[ActionSurface::DbusAction],
+        ExternalActivationSafety::DiagnosticOnly,
+        ActionExposure::Exported,
+        "action-win-reveal-workspace-path",
+        &[
+            ActionCoverageLane::Unit,
+            ActionCoverageLane::Widget,
+            ActionCoverageLane::VisualSmoke,
+        ],
+    ),
+    ActionCatalogEntry::new(
+        ActionScope::Window,
         "set-search-panel-query",
         "Set Workspace Search Query",
         ActionValueType::String,
@@ -2224,6 +2242,12 @@ pub const BASELINE_WINDOW_ACTIONS: &[ObservedAction] = &[
         ActionScope::Window,
         "set-search-panel-visible",
         ActionValueType::Bool,
+        ActionValueType::None,
+    ),
+    ObservedAction::new(
+        ActionScope::Window,
+        "reveal-workspace-path",
+        ActionValueType::String,
         ActionValueType::None,
     ),
     ObservedAction::new(
