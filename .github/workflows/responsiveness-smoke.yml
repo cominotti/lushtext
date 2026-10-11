@@ -35,8 +35,13 @@ jobs:
         include:
           - group: baseline-reload-eviction
             cases: "baseline/,reload/,eviction/"
-          - group: paragraph
-            cases: "paragraph/"
+          # One paragraph length per job: each quick-tier length is about 36
+          # launches (12 cases x 3 variants), and a 250k .html case can sit at
+          # its 20 s cap, so both lengths in one job would not fit 30 minutes.
+          - group: paragraph-10k
+            cases: "paragraph/10000/"
+          - group: paragraph-250k
+            cases: "paragraph/250000/"
           - group: dense-total-size
             cases: "dense/,total-size/"
           - group: delimiters-invisibles

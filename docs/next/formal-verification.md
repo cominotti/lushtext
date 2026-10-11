@@ -288,8 +288,10 @@ the stall classification against the watchdog's lower and upper bounds over
 every `u64` quadruple, its monotonicity in the lateness, histogram bucket range
 and monotonicity, and nearest-rank percentile bounds and monotonicity over
 slices of up to four samples (five harnesses, about 24 s of local CBMC, all
-covers satisfied). They joined the scheduled `core-second-writer` shard, and the
-module has a proof-strength oracle entry.
+covers satisfied). They joined the scheduled `core-second-writer` shard (two dispatched runs,
+38181384069 and 38182511805, re-measured it at 6.44 and 6.42 min and 2.68 GiB,
+inside its recorded 6.6 min / 2.7 GiB), and the module has a proof-strength
+oracle entry.
 
 ### Phase 2 — Kani lane
 

@@ -130,6 +130,13 @@ MULTI_WINDOW_MEASURED_IN = "runs 36172512752, 36180356173 (max of the two)"
 # A shard keeps the larger of its earlier figure and those two runs (rounded
 # up); the ones that rose carry this suffix. core-memory-policy measured
 # 9.5 min / 3.9 GiB, inside its recorded figure.
+# probe-long-line-toolkit-costs added the responsiveness-budget harnesses to
+# core-second-writer; two dispatched runs re-measured it at 6.44 and 6.42 min,
+# 2.68 GiB each, inside the recorded figure, which therefore stands.
+RESPONSIVENESS_BUDGET_REMEASURED_IN = (
+    "; re-measured with the responsiveness-budget harnesses by runs 38181384069, "
+    "38182511805 (6.44 min / 2.68 GiB max, inside the figure)"
+)
 PROOF_STRENGTH_RAISED_IN = "; raised by runs 38087161968, 38088387193 (max of the two)"
 SHARDS: dict[str, Shard] = {
     "widgets-geometry": Shard(
@@ -253,7 +260,7 @@ SHARDS: dict[str, Shard] = {
         gate="scheduled",
         ci_minutes=6.6,
         ci_peak_gib=2.7,
-        measured_in=MULTI_WINDOW_MEASURED_IN,
+        measured_in=MULTI_WINDOW_MEASURED_IN + RESPONSIVENESS_BUDGET_REMEASURED_IN,
     ),
     # verify-multi-window-draft-journal: two windows of one process over the
     # journal machine, too large to share a job with the single-window harness.

@@ -37,7 +37,7 @@
 
   Register it in `model/mod.rs`.
 - [x] 3.2 Write these tests first, against a stub that returns `Indeterminate`, and watch them fail: every classification edge (`L + T == B`, `L + T == B + 1`, `L − ε == B`, `L − ε == B + 1`, `L < ε`, saturation at `u64::MAX`), and a property test that the percentile is monotone in the rank and bounded by the minimum and maximum.
-- [ ] 3.3 Add `model/responsiveness_budget/kani_proofs.rs`, proving:
+- [x] 3.3 Add `model/responsiveness_budget/kani_proofs.rs`, proving:
   - classification soundness (with tick and slack) and saturation for every `u64`;
   - bucket monotonicity and range;
   - percentile bounds over arrays of ≤ 4 elements.
@@ -101,7 +101,7 @@
   - the axiom ids per change;
   - the reproduced pre-existing blockers with their owning changes (the minimap CRITICAL and the `\n`-only slicer for C1, the window-construction stall for C4);
   - the carried-forward decisions (L_protect as a GSettings key, "Copy whole line", upstream reports, validation in the user's session).
-- [ ] 8.2 Update `docs/next/formal-verification.md` with the ledger growth (A23–A36, the slow and unpinned rows) and the new Kani harness with its shard and measured time.
+- [x] 8.2 Update `docs/next/formal-verification.md` with the ledger growth (A23–A36, the slow and unpinned rows) and the new Kani harness with its shard and measured time.
 - [x] 8.3 Update the remaining documentation:
   - `docs/end-user-coverage.md`: a lane-ownership row, the scheduled expectations, and the note that the lane is not in `end-user-smoke`;
   - `.agents/rules/build.md`: the lane, the measurement feature, and its separate target directory;
